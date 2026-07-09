@@ -689,6 +689,252 @@ fn attach_retrieval(v: &mut Value, root: &Path, intent: &str, gloss: Option<&str
     }
 }
 
+// ---------------------------------------------------------------------------
+// LLM selection hop (OPT-IN, `retrieval.hop = "haiku"` / MUSTARD_RETRIEVAL_HOP)
+// — the same two deterministic lists, fused WIDER (~25 candidates, each with
+// its source/position/matched-terms evidence), handed to ONE fail-open Haiku
+// call that CHOOSES the files (`shared::llm_hop`). Every failure — hop off,
+// claude absent, timeout, malformed answer, zero valid picks — degrades to
+// the deterministic `insumos` top-10. With the hop OFF none of this runs and
+// the stdout stays byte-identical.
+// ---------------------------------------------------------------------------
+
+/// Fused candidate-pool size handed to the hop (wider than the deterministic
+/// top-10 so the selector sees past the RRF cut).
+const HOP_POOL_MAX: usize = 25;
+
+/// Minimum validated picks below which a returned `requery` triggers the ONE
+/// allowed second funnel round (re-query → re-fuse → second call).
+const HOP_REQUERY_FLOOR: usize = 5;
+
+/// Order the digest's anchor audit for the hop pool: the same ordering
+/// contract as [`digest_ranked_files`] (max `score_x1024` per file desc, path
+/// asc; separators normalised) but keeping each file's matched-term evidence
+/// (first-occurrence order across duplicates, deduped). Pure + byte-stable.
+fn digest_pool(detail: &[FileDetail]) -> Vec<(String, Vec<String>)> {
+    use std::collections::BTreeMap;
+    let mut best: BTreeMap<String, u64> = BTreeMap::new();
+    let mut terms: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for d in detail {
+        let file = d.file.replace('\\', "/");
+        let e = best.entry(file.clone()).or_insert(0);
+        *e = (*e).max(d.score_x1024);
+        let t = terms.entry(file).or_default();
+        for term in &d.terms {
+            if !t.contains(term) {
+                t.push(term.clone());
+            }
+        }
+    }
+    let mut rows: Vec<(String, u64)> = best.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.into_iter()
+        .map(|(f, _)| {
+            let t = terms.remove(&f).unwrap_or_default();
+            (f, t)
+        })
+        .collect()
+}
+
+/// The ranker side of the hop pool: `scan rank` over the expanded query
+/// (same C2 shape as [`insumos_rows`]) at [`HOP_POOL_MAX`] depth, WITH the
+/// per-file `terms` evidence. Fail-open: no dictionary sidecar or a rank
+/// error yields an empty list.
+fn rank_pool(root: &Path, intent: &str) -> Vec<(String, Vec<String>)> {
+    let dict = root.join(".claude").join("grain.dictionary.json");
+    if !dict.is_file() {
+        return Vec::new();
+    }
+    let equiv = super::scan_equivalences::load_equivalences(root);
+    let model = root.join(".claude").join("grain.model.json");
+    let query = expand_query(intent, &equiv);
+    Scan::locate()
+        .rank_detail(&model, &dict, &query, HOP_POOL_MAX, RANK_DIRECT_BASE)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.file, r.terms))
+        .collect()
+}
+
+/// RRF-fuse the two evidence-carrying lists into the hop candidate pool: the
+/// same arithmetic as [`fuse_rrf`] (`Σ 1/(k + rank)`, k = [`RRF_K`], score
+/// desc, path asc) but keeping each row's provenance — 1-based position per
+/// list + the union of matched terms (rank-side first, first-occurrence
+/// order) — and capped at `cap` instead of the insumos ten. Pure +
+/// deterministic; [`fuse_rrf`] stays untouched (the hop-off byte contract).
+fn fuse_pool(
+    rank_list: &[(String, Vec<String>)],
+    digest_list: &[(String, Vec<String>)],
+    cap: usize,
+) -> Vec<crate::shared::llm_hop::Candidate> {
+    use std::collections::BTreeMap;
+    struct Acc {
+        score: f64,
+        rank_pos: Option<usize>,
+        digest_pos: Option<usize>,
+        terms: Vec<String>,
+    }
+    let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut add = |file: &str, pos: usize, terms: &[String], from_rank: bool| {
+        let e = acc
+            .entry(file.to_string())
+            .or_insert(Acc { score: 0.0, rank_pos: None, digest_pos: None, terms: Vec::new() });
+        e.score += 1.0 / (RRF_K + (pos + 1) as f64);
+        if from_rank {
+            e.rank_pos = Some(pos + 1);
+        } else {
+            e.digest_pos = Some(pos + 1);
+        }
+        for t in terms {
+            if !e.terms.contains(t) {
+                e.terms.push(t.clone());
+            }
+        }
+    };
+    for (i, (f, terms)) in rank_list.iter().enumerate() {
+        add(f, i, terms, true);
+    }
+    for (i, (f, terms)) in digest_list.iter().enumerate() {
+        add(f, i, terms, false);
+    }
+    let mut rows: Vec<(String, Acc)> = acc.into_iter().collect();
+    rows.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(cap);
+    rows.into_iter()
+        .map(|(file, a)| crate::shared::llm_hop::Candidate {
+            file,
+            source: match (a.rank_pos.is_some(), a.digest_pos.is_some()) {
+                (true, true) => "both",
+                (true, false) => "rank",
+                _ => "digest",
+            },
+            rank_pos: a.rank_pos,
+            digest_pos: a.digest_pos,
+            terms: a.terms,
+        })
+        .collect()
+}
+
+/// Build the hop candidate pool for one funnel round: rank side (expanded
+/// query, [`HOP_POOL_MAX`] deep) RRF-fused with the digest side (full anchor
+/// audit), both carrying their term evidence.
+fn build_pool(root: &Path, intent: &str, detail: &[FileDetail]) -> Vec<crate::shared::llm_hop::Candidate> {
+    fuse_pool(&rank_pool(root, intent), &digest_pool(detail), HOP_POOL_MAX)
+}
+
+/// Merge the hop's validated picks with the deterministic complement into the
+/// final `insumos` rows: picks first (each `{file, source, why}` — source
+/// from the pool the picks were validated against, `why` only when the model
+/// gave one), then the deterministic rows that are not already picked, up to
+/// [`INSUMOS_MAX`]. Pure + deterministic given its inputs, unit-tested.
+fn hop_rows(
+    picks: &[crate::shared::llm_hop::HopPick],
+    pool: &[crate::shared::llm_hop::Candidate],
+    det_rows: &[Value],
+) -> Vec<Value> {
+    use std::collections::BTreeMap;
+    let source_of: BTreeMap<&str, &'static str> = pool.iter().map(|c| (c.file.as_str(), c.source)).collect();
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for p in picks.iter().take(INSUMOS_MAX) {
+        let mut row = json!({
+            "file": p.file,
+            "source": source_of.get(p.file.as_str()).copied().unwrap_or("hop"),
+        });
+        if !p.why.is_empty() {
+            if let Some(obj) = row.as_object_mut() {
+                obj.insert("why".to_string(), json!(p.why));
+            }
+        }
+        seen.push(p.file.as_str());
+        out.push(row);
+    }
+    for det in det_rows {
+        if out.len() >= INSUMOS_MAX {
+            break;
+        }
+        let file = det.get("file").and_then(Value::as_str).unwrap_or("");
+        if !file.is_empty() && !seen.contains(&file) {
+            seen.push(file);
+            out.push(det.clone());
+        }
+    }
+    out
+}
+
+/// Attach the retrieval fields on the HOP path: the deterministic `insumos`
+/// stays the floor (computed first, exactly as [`attach_retrieval`] would),
+/// then up to two `llm_hop` calls try to improve the selection over the wide
+/// pool. Additive keys on top of the deterministic contract: `insumosMode`
+/// (`"hop"` when the picks landed, `"deterministic"` on any fail-open) and
+/// `hop` (the calls/requery/usage/latency audit the measurement reads).
+/// `effective` is the gloss-augmented intent [`run`] already built — the
+/// requery round re-tokenizes it plus the hop's terms for the digest side.
+fn attach_retrieval_hop(v: &mut Value, root: &Path, intent: &str, effective: &str, gloss: Option<&str>, q: &DigestQuery) {
+    let det_rows = insumos_rows(root, intent, &q.files_detail);
+    let pool = build_pool(root, intent, &q.files_detail);
+    let mut calls: u64 = 0;
+    let mut requeried = false;
+    let (mut in_tok, mut out_tok, mut dur_ms) = (0u64, 0u64, 0u64);
+    let mut picks: Vec<crate::shared::llm_hop::HopPick> = Vec::new();
+    let mut pool_used = pool.clone();
+    if !pool.is_empty() {
+        if let Some(call) = crate::shared::llm_hop::select(intent, gloss, &pool, true) {
+            calls += 1;
+            in_tok += call.input_tokens;
+            out_tok += call.output_tokens;
+            dur_ms += call.duration_ms;
+            picks = call.files;
+            // ONE re-query round, only when the model both asked for it and
+            // selected too few valid files: widen the funnel with the hop's
+            // English identifier terms (they seed the ungated direct match),
+            // re-fuse, and make the single second call over the new pool.
+            if let Some(req) = call.requery.filter(|_| picks.len() < HOP_REQUERY_FLOOR) {
+                requeried = true;
+                let model = root.join(".claude").join("grain.model.json");
+                let terms2 = domain_terms(&format!("{effective} {req}"));
+                if let Ok(q2) = Scan::locate().digest_query(&model, &terms2) {
+                    let pool2 = build_pool(root, &format!("{intent} {req}"), &q2.files_detail);
+                    if !pool2.is_empty() {
+                        if let Some(call2) = crate::shared::llm_hop::select(intent, gloss, &pool2, false) {
+                            calls += 1;
+                            in_tok += call2.input_tokens;
+                            out_tok += call2.output_tokens;
+                            dur_ms += call2.duration_ms;
+                            if !call2.files.is_empty() {
+                                picks = call2.files;
+                                pool_used = pool2;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (rows, mode) = if picks.is_empty() {
+        (det_rows.clone(), "deterministic")
+    } else {
+        (hop_rows(&picks, &pool_used, &det_rows), "hop")
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("insumos".to_string(), json!(rows));
+        obj.insert("insumosMode".to_string(), json!(mode));
+        obj.insert(
+            "hop".to_string(),
+            json!({
+                "calls": calls,
+                "requeried": requeried,
+                "inputTokens": in_tok,
+                "outputTokens": out_tok,
+                "durationMs": dur_ms,
+            }),
+        );
+        if let Some(en) = gloss {
+            obj.insert("gloss".to_string(), json!(en));
+        }
+    }
+}
+
 /// Run the research step: print the feature insumos JSON for `intent`.
 ///
 /// PURE DETERMINISTIC — no `claude` subprocess. Cross-lingual translation
@@ -736,8 +982,18 @@ pub fn run(intent: &str, root: &Path) {
             let mut v = payload(intent, &q, &index);
             // Additive retrieval fields: the RRF-fused `insumos` short-list
             // (+ `gloss` when the auto-gloss fired). Attached AFTER the
-            // payload so no existing field moves; fail-open inside.
-            attach_retrieval(&mut v, root, intent, gloss.as_deref(), &q.files_detail);
+            // payload so no existing field moves; fail-open inside. With the
+            // OPT-IN hop enabled (`retrieval.hop = "haiku"` or the env
+            // override) the selection goes through `attach_retrieval_hop`;
+            // OFF (the default) keeps this exact call — byte-identical stdout.
+            match crate::shared::llm_hop::mode(root) {
+                crate::shared::llm_hop::HopMode::Haiku => {
+                    attach_retrieval_hop(&mut v, root, intent, &effective, gloss.as_deref(), &q);
+                }
+                crate::shared::llm_hop::HopMode::Off => {
+                    attach_retrieval(&mut v, root, intent, gloss.as_deref(), &q.files_detail);
+                }
+            }
             v
         }
         Err(err) => {
@@ -1469,5 +1725,110 @@ mod tests {
         attach_retrieval(&mut v, &root, "x", Some("where is it done"), &[]);
         assert_eq!(v["insumos"], json!([]), "insumos always present: {v}");
         assert_eq!(v["gloss"], json!("where is it done"));
+    }
+
+    #[test]
+    fn hop_off_stdout_carries_no_hop_keys() {
+        // The BYTE-IDENTITY proof of the off path: `attach_retrieval` (the
+        // only attach the off path calls) adds exactly `insumos` (+ `gloss`
+        // when fired) — no `insumosMode`, no `hop` — so a default config
+        // renders the same bytes as before the hop existed.
+        let root = std::env::temp_dir().join("mustard-feature-hop-off");
+        let detail: Vec<FileDetail> =
+            serde_json::from_str(r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]}]"#).expect("detail rows");
+        let mut v = json!({ "intent": "x" });
+        attach_retrieval(&mut v, &root, "x", None, &detail);
+        assert!(v.get("insumosMode").is_none(), "off path never emits insumosMode: {v}");
+        assert!(v.get("hop").is_none(), "off path never emits the hop audit: {v}");
+        let mut keys: Vec<&str> = v.as_object().expect("object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["insumos", "intent"], "exactly the pre-hop keys: {v}");
+    }
+
+    #[test]
+    fn digest_pool_keeps_order_and_merges_term_evidence() {
+        // Same ordering contract as digest_ranked_files (max score per file,
+        // desc, path asc) with the per-file terms unioned across duplicates.
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src\\dup.cs","score_x1024":10,"terms":["contrato"]},
+                {"file":"src/dup.cs","score_x1024":90,"terms":["parcela","contrato"]},
+                {"file":"src/z.cs","score_x1024":200,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        let pool = digest_pool(&detail);
+        assert_eq!(pool[0].0, "src/z.cs");
+        assert_eq!(pool[0].1, Vec::<String>::new());
+        assert_eq!(pool[1].0, "src/dup.cs");
+        assert_eq!(pool[1].1, vec!["contrato".to_string(), "parcela".to_string()], "terms unioned, first-occurrence order");
+        assert!(digest_pool(&[]).is_empty());
+    }
+
+    #[test]
+    fn fuse_pool_carries_positions_sources_terms_and_caps() {
+        let rank: Vec<(String, Vec<String>)> = vec![
+            ("a".into(), vec!["aging".into()]),
+            ("b".into(), vec!["payable".into()]),
+        ];
+        let digest: Vec<(String, Vec<String>)> = vec![
+            ("b".into(), vec!["vencimento".into(), "payable".into()]),
+            ("c".into(), vec![]),
+        ];
+        let pool = fuse_pool(&rank, &digest, 25);
+        // b rides both lists → top, source both, positions kept, terms unioned.
+        assert_eq!(pool[0].file, "b");
+        assert_eq!(pool[0].source, "both");
+        assert_eq!(pool[0].rank_pos, Some(2));
+        assert_eq!(pool[0].digest_pos, Some(1));
+        assert_eq!(pool[0].terms, vec!["payable".to_string(), "vencimento".to_string()]);
+        assert_eq!(pool[1].file, "a");
+        assert_eq!(pool[1].source, "rank");
+        assert_eq!(pool[1].digest_pos, None);
+        assert_eq!(pool[2].file, "c");
+        assert_eq!(pool[2].source, "digest");
+        // The wide cap actually widens past INSUMOS_MAX (the hop's reason to
+        // exist) and truncates at the requested cap.
+        let many: Vec<(String, Vec<String>)> = (0..30).map(|i| (format!("f{i:02}"), Vec::new())).collect();
+        assert_eq!(fuse_pool(&many, &[], 25).len(), 25);
+        assert_eq!(fuse_pool(&many, &[], 3).len(), 3);
+        // Deterministic: same inputs, same pool, twice.
+        let a: Vec<String> = fuse_pool(&rank, &digest, 25).into_iter().map(|c| c.file).collect();
+        let b: Vec<String> = fuse_pool(&rank, &digest, 25).into_iter().map(|c| c.file).collect();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hop_rows_merges_picks_with_deterministic_complement() {
+        use crate::shared::llm_hop::{Candidate, HopPick};
+        let pool = vec![
+            Candidate { file: "src/b.cs".into(), source: "both", rank_pos: Some(1), digest_pos: Some(2), terms: vec![] },
+            Candidate { file: "src/x.cs".into(), source: "rank", rank_pos: Some(2), digest_pos: None, terms: vec![] },
+        ];
+        let det = vec![
+            json!({"file": "src/a.cs", "source": "digest"}),
+            json!({"file": "src/b.cs", "source": "both"}),
+        ];
+        let picks = vec![
+            HopPick { file: "src/b.cs".into(), why: "main form".into() },
+            HopPick { file: "src/x.cs".into(), why: String::new() },
+        ];
+        let rows = hop_rows(&picks, &pool, &det);
+        // Picks lead, with source from the pool and why only when given; the
+        // deterministic complement fills WITHOUT duplicating a picked file.
+        assert_eq!(
+            rows,
+            vec![
+                json!({"file": "src/b.cs", "source": "both", "why": "main form"}),
+                json!({"file": "src/x.cs", "source": "rank"}),
+                json!({"file": "src/a.cs", "source": "digest"}),
+            ],
+            "picks first, complement deduped"
+        );
+        // The cap holds: 10 picks leave no room for the complement.
+        let many_picks: Vec<HopPick> =
+            (0..12).map(|i| HopPick { file: format!("p{i:02}"), why: String::new() }).collect();
+        let many_pool: Vec<Candidate> = (0..12)
+            .map(|i| Candidate { file: format!("p{i:02}"), source: "rank", rank_pos: Some(i + 1), digest_pos: None, terms: vec![] })
+            .collect();
+        assert_eq!(hop_rows(&many_picks, &many_pool, &det).len(), INSUMOS_MAX);
     }
 }

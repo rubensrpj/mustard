@@ -177,6 +177,25 @@ impl GateModes {
     }
 }
 
+/// The `retrieval` block — opt-in knobs for the `feature` research funnel.
+/// `hop` selects the LLM selection hop over the deterministic candidate pool
+/// (`"haiku"` enables it; absent/anything else keeps the funnel fully
+/// deterministic — the default). The `MUSTARD_RETRIEVAL_HOP` env var overrides
+/// this per-run (kill-switch), resolved at the consumer (`apps/rt`), keeping
+/// the same env → config → default cascade as [`GateModes`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Retrieval {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop: Option<String>,
+}
+
+impl Retrieval {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.hop.is_none()
+    }
+}
+
 /// Host runtime metadata stamped into `mustard.json` by `init`/`update`.
 ///
 /// `kind` is the literal `"native"` (the CLI is a compiled binary, not a JS
@@ -282,6 +301,8 @@ pub struct ProjectConfig {
     pub amend: Amend,
     #[serde(skip_serializing_if = "GateModes::is_empty")]
     pub gates: GateModes,
+    #[serde(skip_serializing_if = "Retrieval::is_empty")]
+    pub retrieval: Retrieval,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
@@ -439,6 +460,18 @@ impl ProjectConfig {
         self.amend.drift_threshold.and_then(|n| u32::try_from(n).ok())
     }
 
+    /// `retrieval.hop`, trimmed + lowercased; `None` when absent or blank —
+    /// the deterministic default. The env-var override lives at the consumer.
+    #[must_use]
+    pub fn retrieval_hop(&self) -> Option<String> {
+        let raw = self.retrieval.hop.as_deref()?.trim();
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw.to_ascii_lowercase())
+        }
+    }
+
     /// Resolve the banner/drafter [`I18n`] (locale + tone) for this project.
     ///
     /// Locale precedence: `lang` then `spec_lang`; unparseable / absent ⇒
@@ -578,6 +611,28 @@ mod tests {
         assert_eq!(cfg.vcs(), Some("jj".to_string()));
         cfg.vcs = Some("  ".into());
         assert_eq!(cfg.vcs(), None);
+    }
+
+    #[test]
+    fn retrieval_hop_defaults_off_and_round_trips() {
+        // Absent block → None (deterministic default); serialization omits it.
+        let cfg = ProjectConfig::default();
+        assert_eq!(cfg.retrieval_hop(), None);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("retrieval"), "empty block omitted on write: {json}");
+
+        // Set → normalised (trim + lowercase); blank → None.
+        let mut cfg = ProjectConfig::default();
+        cfg.retrieval.hop = Some(" Haiku ".into());
+        assert_eq!(cfg.retrieval_hop(), Some("haiku".to_string()));
+        cfg.retrieval.hop = Some("  ".into());
+        assert_eq!(cfg.retrieval_hop(), None);
+
+        // On-disk round trip: the block loads from mustard.json.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"retrieval":{"hop":"haiku"}}"#).unwrap();
+        let back = ProjectConfig::load(dir.path());
+        assert_eq!(back.retrieval_hop(), Some("haiku".to_string()));
     }
 
     #[test]

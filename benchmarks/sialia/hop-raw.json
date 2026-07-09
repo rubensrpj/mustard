@@ -1,0 +1,1916 @@
+{
+  "perId": {
+    "1": {
+      "pt": "adicionar um campo de observações no formulário de contrato",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/client-section.tsx",
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/dates-section.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Helpers/ContractMappingHelper.cs"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/client-section.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/dates-section.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Helpers/ContractMappingHelper.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "add a field of observations to the contract form",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/client-section.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Helpers/ContractMappingHelper.cs",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/dates-section.tsx",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/EndPoints/ContractPlanEndPoints.cs",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank",
+            "why": "Schema definition - add observations field validation"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/client-section.tsx",
+            "source": "digest",
+            "why": "Contract form section - add observations input UI"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank",
+            "why": "Backend service - handle observations field in creation"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Helpers/ContractMappingHelper.cs",
+            "source": "digest",
+            "why": "Field mapping - map observations between models"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+            "source": "rank",
+            "why": "GraphQL schema - expose observations via API"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank",
+            "why": "Client hook - manage observations data state"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/dates-section.tsx",
+            "source": "digest",
+            "why": "Form section reference - pattern for adding fields"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+            "source": "digest",
+            "why": "Migration reference - schema modification pattern"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/EndPoints/ContractPlanEndPoints.cs",
+            "source": "digest",
+            "why": "Endpoints - verify observations exposed in API routes"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+            "source": "digest"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31497,
+          "outputTokens": 3292,
+          "durationMs": 34025
+        },
+        "gloss": "add a field of observations to the contract form",
+        "wallSecs": 35.1
+      }
+    },
+    "2": {
+      "pt": "ajustar o gráfico de contas a pagar por vencimento (aging) para incluir a faixa de 90+ dias",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/payables/_components/aging-bar.tsx",
+          "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/charts/aging-payables-bar.tsx",
+          "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/charge-breakdown.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/Payables/GraphQL/PayableDataLoader.cs",
+          "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/cards/card-breakdown.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/FinancialAccounts/GraphQL/FinancialAccountDataLoader.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-totalizer.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/FinancialAccounts/GraphQL/FinancialAccountQueryResolver.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/FinancialAccounts/GraphQL/FinancialAccountTypeExtensions.cs"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/aging-bar.tsx",
+            "source": "both"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/charts/aging-payables-bar.tsx",
+            "source": "both"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/charge-breakdown.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Payables/GraphQL/PayableDataLoader.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/cards/card-breakdown.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/FinancialAccounts/GraphQL/FinancialAccountDataLoader.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-totalizer.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/FinancialAccounts/GraphQL/FinancialAccountQueryResolver.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/FinancialAccounts/GraphQL/FinancialAccountTypeExtensions.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "adjust the graph of accounts payable per maturity (58) to include the 90+ day range",
+        "wallSecs": 1.2
+      },
+      "hop": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/payables/_components/aging-bar.tsx",
+          "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/charts/aging-payables-bar.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Dashboard/DTOs/FinancialDashboardDto.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Dashboard/Services/ClientsDashboardService.cs",
+          "backend/Sialia.Backend/Backend/Modules/v1/Payables/GraphQL/PayableQueryResolver.cs",
+          "apps/sialia-app/app/(dashboard)/payables/_components/payables-list-page.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/Payables/GraphQL/PayableDataLoader.cs",
+          "apps/sialia-app/app/(dashboard)/_shared/editable-charges.tsx",
+          "backend/Sialia.Backend/Infra/Time/BusinessCalendar.cs",
+          "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/charge-breakdown.tsx"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/aging-bar.tsx",
+            "source": "both",
+            "why": "Main UI component for payables aging chart"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/charts/aging-payables-bar.tsx",
+            "source": "both",
+            "why": "Alternative dashboard chart for aging display"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Dashboard/DTOs/FinancialDashboardDto.cs",
+            "source": "digest",
+            "why": "Defines day ranges and aging bracket data structure"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Dashboard/Services/ClientsDashboardService.cs",
+            "source": "rank",
+            "why": "Service generating aging calculation and bracket logic"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Payables/GraphQL/PayableQueryResolver.cs",
+            "source": "digest",
+            "why": "GraphQL resolver querying payable aging data"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/payables-list-page.tsx",
+            "source": "rank",
+            "why": "Page containing aging chart and related payables context"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Payables/GraphQL/PayableDataLoader.cs",
+            "source": "digest",
+            "why": "Data loader processing payable records for aging"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/_shared/editable-charges.tsx",
+            "source": "rank",
+            "why": "Shared component with days/maturity date handling logic"
+          },
+          {
+            "file": "backend/Sialia.Backend/Infra/Time/BusinessCalendar.cs",
+            "source": "digest",
+            "why": "Time calculations for aging day bracket computation"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/charge-breakdown.tsx",
+            "source": "rank",
+            "why": "Breakdown dialog showing aging details per charge"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31267,
+          "outputTokens": 3795,
+          "durationMs": 37541
+        },
+        "gloss": "adjust the graph of accounts payable per maturity (58) to include the 90+ day range",
+        "wallSecs": 38.8
+      }
+    },
+    "3": {
+      "pt": "adicionar uma aba de documentos no cadastro de parceiro",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/user-tab.tsx",
+          "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/IPartnerOnboardingService.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerOnboardingService.cs",
+          "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/form-context.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerService.Onboarding.cs",
+          "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Repositories/Configurations/PartnerDocumentConfiguration.cs"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/user-tab.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/IPartnerOnboardingService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerOnboardingService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/form-context.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerService.Onboarding.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Repositories/Configurations/PartnerDocumentConfiguration.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "add a document tab to the partner's registry",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/form-context.tsx",
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/user-tab.tsx",
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+          "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Repositories/Configurations/PartnerDocumentConfiguration.cs",
+          "backend/Sialia.Backend/Infra/Validation/DocumentValidator.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerOnboardingService.cs",
+          "backend/Sialia.Backend/Backend/Modules/v1/Partners/PartnerModule.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/IPartnerOnboardingService.cs",
+          "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/form-context.tsx",
+            "source": "rank",
+            "why": "Central form context to add documents tab"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/user-tab.tsx",
+            "source": "both",
+            "why": "Reference implementation of existing tab component"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+            "source": "rank",
+            "why": "Another tab pattern for partner form"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+            "source": "rank",
+            "why": "Partner schema to add documents field"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Repositories/Configurations/PartnerDocumentConfiguration.cs",
+            "source": "digest",
+            "why": "Database configuration for partner documents"
+          },
+          {
+            "file": "backend/Sialia.Backend/Infra/Validation/DocumentValidator.cs",
+            "source": "digest",
+            "why": "Document validation logic"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerOnboardingService.cs",
+            "source": "digest",
+            "why": "Onboarding service for document handling"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Partners/PartnerModule.cs",
+            "source": "rank",
+            "why": "Partner module registration"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/IPartnerOnboardingService.cs",
+            "source": "both",
+            "why": "Service interface for onboarding"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+            "source": "rank",
+            "why": "Import schema for documents"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31454,
+          "outputTokens": 2220,
+          "durationMs": 22685
+        },
+        "gloss": "add a document tab to the partner's registry",
+        "wallSecs": 23.9
+      }
+    },
+    "4": {
+      "pt": "corrigir o card de status de sincronização do contrato que não atualiza",
+      "det": {
+        "files": [
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/ui/sync-status-card.tsx",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractGatewaySyncService.cs",
+          "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractGatewaySyncService.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Update.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Jobs/ContractSyncJob.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "both"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/sync-status-card.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractGatewaySyncService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractGatewaySyncService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Update.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Jobs/ContractSyncJob.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "fix the sync mode contract card that does not update",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/ui/sync-status-card.tsx",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractGatewaySyncService.cs",
+          "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractGatewaySyncService.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Update.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Jobs/ContractSyncJob.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "both"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/sync-status-card.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractGatewaySyncService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractGatewaySyncService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Update.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Jobs/ContractSyncJob.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank"
+          }
+        ],
+        "mode": "deterministic",
+        "hop": {
+          "calls": 0,
+          "requeried": false,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "durationMs": 0
+        },
+        "gloss": "fix the sync mode contract card that does not update",
+        "wallSecs": 46.4
+      }
+    },
+    "5": {
+      "pt": "adicionar validação de CNPJ no schema de escrita (zod) do parceiro",
+      "det": {
+        "files": [
+          "backend/Sialia.Backend/Infra/Validation/DocumentValidator.cs",
+          "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+          "packages/sialia-core/src/shared/schemas/partners/partners-portal.zod.ts",
+          "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+          "packages/sialia-core/src/shared/schemas/partners-portal/partner-channels.zod.ts",
+          "packages/sialia-core/src/shared/schemas/partners-portal/partner-profile.zod.ts",
+          "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+          "packages/sialia-core/src/shared/schemas/partners-portal/partner-stats.zod.ts",
+          "packages/sialia-core/src/shared/schemas/users/users.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260626222129_AddPartnerImportValidationStatus.cs"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/Infra/Validation/DocumentValidator.cs",
+            "source": "both"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners-portal.zod.ts",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners-portal/partner-channels.zod.ts",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners-portal/partner-profile.zod.ts",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners-portal/partner-stats.zod.ts",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/users/users.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260626222129_AddPartnerImportValidationStatus.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "add CNPJ validation to partner's writing scheme (zod)",
+        "wallSecs": 1.2
+      },
+      "hop": {
+        "files": [
+          "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+          "packages/sialia-core/src/shared/schemas/validators/document.ts",
+          "packages/sialia-core/src/shared/utils/validation.ts",
+          "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+          "packages/sialia-core/src/shared/schemas/partners/partners-portal.zod.ts",
+          "packages/sialia-core/src/shared/schemas/auth/register-wizard.zod.ts",
+          "packages/sialia-core/src/shared/schemas/partners-portal/partner-profile.zod.ts",
+          "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+          "apps/sialia-partners/app/api/public/cnpj/[cnpj]/route.ts",
+          "backend/Sialia.Backend/ServiceBridge/CnpjLookup/ICnpjLookupService.cs"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+            "source": "rank",
+            "why": "Main partner schema; likely contains writing validation"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/validators/document.ts",
+            "source": "rank",
+            "why": "Document validators; probably has CNPJ validation logic"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/utils/validation.ts",
+            "source": "rank",
+            "why": "Shared validation utilities for schema reference"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners-import.zod.ts",
+            "source": "rank",
+            "why": "Partner import schema; may need CNPJ validation too"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners/partners-portal.zod.ts",
+            "source": "digest",
+            "why": "Portal partner schema with CNPJ field"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/auth/register-wizard.zod.ts",
+            "source": "rank",
+            "why": "May contain existing CNPJ validation pattern"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/partners-portal/partner-profile.zod.ts",
+            "source": "digest",
+            "why": "Partner profile schema definition"
+          },
+          {
+            "file": "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+            "source": "rank",
+            "why": "Backend validation for partner requests"
+          },
+          {
+            "file": "apps/sialia-partners/app/api/public/cnpj/[cnpj]/route.ts",
+            "source": "digest",
+            "why": "Public CNPJ endpoint; validation reference"
+          },
+          {
+            "file": "backend/Sialia.Backend/ServiceBridge/CnpjLookup/ICnpjLookupService.cs",
+            "source": "digest",
+            "why": "CNPJ lookup service contract"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31562,
+          "outputTokens": 3436,
+          "durationMs": 32321
+        },
+        "gloss": "add CNPJ validation to partner's writing scheme (zod)",
+        "wallSecs": 33.6
+      }
+    },
+    "6": {
+      "pt": "incluir um novo campo no tipo de resposta da API de contrato",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/contract-actions.tsx",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "apps/sialia-app/app/(dashboard)/partner-types/_components/fields.tsx",
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/addon-plans-field.tsx",
+          "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/client-section.tsx",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractChangeLogService.cs",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260422034143_ContractApprovalAuditFields.cs"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/contract-actions.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partner-types/_components/fields.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/addon-plans-field.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/client-section.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractChangeLogService.cs",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260422034143_ContractApprovalAuditFields.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "include a new field in the type of contract API response",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Helpers/ContractMappingHelper.cs",
+          "packages/sialia-core/src/shared/types/api-response.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/ContractsModule.cs",
+          "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractLogTypeExtensions.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractStateTransitionService.cs",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/contract-actions.tsx"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank",
+            "why": "Defines contract response schema and types"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+            "source": "rank",
+            "why": "GraphQL contract type definition for API responses"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Helpers/ContractMappingHelper.cs",
+            "source": "digest",
+            "why": "Maps contract data to API response format"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/types/api-response.ts",
+            "source": "digest",
+            "why": "Base API response type definition"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank",
+            "why": "Service that returns contract data in response"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank",
+            "why": "Client hook consuming contract API responses"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/ContractsModule.cs",
+            "source": "rank",
+            "why": "Module configuration for contracts API"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractLogTypeExtensions.cs",
+            "source": "digest",
+            "why": "Additional GraphQL type definitions for contracts"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractStateTransitionService.cs",
+            "source": "rank",
+            "why": "Service returning contract state data"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/contract-actions.tsx",
+            "source": "digest",
+            "why": "UI component displaying contract data from API"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31526,
+          "outputTokens": 3213,
+          "durationMs": 31616
+        },
+        "gloss": "include a new field in the type of contract API response",
+        "wallSecs": 32.8
+      }
+    },
+    "7": {
+      "pt": "criar um hook para listar os canais de venda",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "packages/sialia-core/src/client/hooks/use-sales-channels.ts",
+          "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs",
+          "packages/sialia-core/src/client/hooks/use-sales-plan-promotions.ts",
+          "apps/sialia-app/configs/navigation/icons.ts",
+          "packages/sialia-core/src/client/hooks/use-sales-plans.ts",
+          "packages/sialia-core/src/client/hooks/use-partner-approval.ts",
+          "packages/sialia-core/src/client/hooks/use-sales-rule-catalog.ts",
+          "backend/Sialia.Backend/Backend/Modules/v1/SalesChannels/EndPoints/SalesChannelEndPoints.cs",
+          "packages/sialia-core/src/client/hooks/use-financial-titles.ts"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-channels.ts",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-plan-promotions.ts",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/configs/navigation/icons.ts",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-plans.ts",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-partner-approval.ts",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-rule-catalog.ts",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/SalesChannels/EndPoints/SalesChannelEndPoints.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-financial-titles.ts",
+            "source": "rank"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "create a rendition to list the sales channels",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "packages/sialia-core/src/client/hooks/use-sales-channels.ts",
+          "backend/Sialia.Backend/Backend/Modules/v1/SalesChannels/EndPoints/SalesChannelEndPoints.cs",
+          "packages/sialia-core/src/client/hooks/use-sales-plans.ts",
+          "packages/sialia-core/src/client/hooks/use-sales-plan-promotions.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/SalesChannels/DTOs/SalesChannelResponseDto.cs",
+          "packages/sialia-core/src/client/hooks/use-sales-rule-catalog.ts",
+          "apps/sialia-app/app/(dashboard)/sales-channels/_components/fields.tsx",
+          "packages/sialia-core/src/client/hooks/use-banks.ts",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-channels.ts",
+            "source": "digest",
+            "why": "Hook específico para canais de venda"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/SalesChannels/EndPoints/SalesChannelEndPoints.cs",
+            "source": "digest",
+            "why": "Endpoint API que retorna dados de canais"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-plans.ts",
+            "source": "digest",
+            "why": "Padrão de hook similar para listar dados"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-plan-promotions.ts",
+            "source": "digest",
+            "why": "Outro padrão de hook com listagem"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/SalesChannels/DTOs/SalesChannelResponseDto.cs",
+            "source": "digest",
+            "why": "Estrutura de resposta dos canais"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-sales-rule-catalog.ts",
+            "source": "digest",
+            "why": "Padrão de hook para vendas"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/sales-channels/_components/fields.tsx",
+            "source": "digest",
+            "why": "Uso de canais de venda na UI"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-banks.ts",
+            "source": "rank",
+            "why": "Padrão similar de hook cliente"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs",
+            "source": "rank"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31346,
+          "outputTokens": 1880,
+          "durationMs": 21183
+        },
+        "gloss": "create a rendition to list the sales channels",
+        "wallSecs": 22.3
+      }
+    },
+    "8": {
+      "pt": "adicionar um novo valor no status de aprovação bancária",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Enums/BankApprovalStatus.cs",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/ui/bank-approval-banner.tsx",
+          "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+          "apps/sialia-app/app/(auth)/register/page.tsx",
+          "apps/sialia-app/app/(dashboard)/banks/_components/form/form-context-base.ts",
+          "apps/sialia-app/app/(dashboard)/banks/_components/ui/approval-badge.tsx",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/ui/grand-totalizer.tsx",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/ui/contract-plans-table.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/DTOs/AddContractLogDto.cs"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/BankApprovalStatus.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/bank-approval-banner.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(auth)/register/page.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/banks/_components/form/form-context-base.ts",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/banks/_components/ui/approval-badge.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/grand-totalizer.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/contract-plans-table.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/DTOs/AddContractLogDto.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "add a new value to the bank approval status",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "backend/Sialia.Backend/DataAccess/Enums/BankApprovalStatus.cs",
+          "packages/sialia-core/src/shared/schemas/banks/banks.zod.ts",
+          "apps/sialia-app/app/(dashboard)/banks/_components/ui/approval-badge.tsx",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/ui/bank-approval-banner.tsx",
+          "apps/sialia-app/app/(dashboard)/banks/_components/form/form-context-base.ts",
+          "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs",
+          "backend/Sialia.Backend/Backend/Modules/v1/Banks/EndPoints/BankEndPoints.cs",
+          "apps/sialia-admin/app/(dashboard)/banks/pending-approval/page.tsx",
+          "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/BankApprovalStatus.cs",
+            "source": "digest",
+            "why": "Core enum definition where new status value is added"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/banks/banks.zod.ts",
+            "source": "both",
+            "why": "Zod schema validating approval status, needs new value"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/banks/_components/ui/approval-badge.tsx",
+            "source": "digest",
+            "why": "UI component displaying approval status badge"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/bank-approval-banner.tsx",
+            "source": "digest",
+            "why": "UI component showing bank approval status banner"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/banks/_components/form/form-context-base.ts",
+            "source": "digest",
+            "why": "Bank form context handling approval status logic"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs",
+            "source": "rank",
+            "why": "Database seeder with approval status test data"
+          },
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Banks/EndPoints/BankEndPoints.cs",
+            "source": "digest",
+            "why": "Bank API endpoints likely referencing approval status"
+          },
+          {
+            "file": "apps/sialia-admin/app/(dashboard)/banks/pending-approval/page.tsx",
+            "source": "digest",
+            "why": "Admin page handling pending bank approvals"
+          },
+          {
+            "file": "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+            "source": "digest",
+            "why": "Exception codes possibly referencing approval statuses"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank",
+            "why": "Financial view displaying status values"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31449,
+          "outputTokens": 2702,
+          "durationMs": 27902
+        },
+        "gloss": "add a new value to the bank approval status",
+        "wallSecs": 29.0
+      }
+    },
+    "9": {
+      "pt": "onde fica a lógica de desdobramento (split) de contas a pagar",
+      "det": {
+        "files": [
+          "backend/Sialia.Backend/Application/Modules/v1/PartnerCommissions/DTOs/SplitPayloadDto.cs",
+          "backend/Sialia.Backend/Infra/Extensions/WebApplicationExtensions.cs",
+          "apps/sialia-partners/proxy.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/ClientStatementDto.cs",
+          "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/cards/card-breakdown.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/SupplierStatementDto.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-totalizer.tsx",
+          "backend/Sialia.Backend/DataAccess/Enums/PayableStatus.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Enums/ReceivableStatus.cs"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/PartnerCommissions/DTOs/SplitPayloadDto.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Infra/Extensions/WebApplicationExtensions.cs",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-partners/proxy.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/ClientStatementDto.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/cards/card-breakdown.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/SupplierStatementDto.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-totalizer.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/PayableStatus.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/ReceivableStatus.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "where is the logic of unfolding (split) accounts to be paid",
+        "wallSecs": 1.1
+      },
+      "hop": {
+        "files": [
+          "backend/Sialia.Backend/Application/Modules/v1/PartnerCommissions/DTOs/SplitPayloadDto.cs",
+          "backend/Sialia.Backend/Infra/Extensions/WebApplicationExtensions.cs",
+          "apps/sialia-partners/proxy.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/ClientStatementDto.cs",
+          "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/cards/card-breakdown.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/SupplierStatementDto.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-totalizer.tsx",
+          "backend/Sialia.Backend/DataAccess/Enums/PayableStatus.cs",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Enums/ReceivableStatus.cs"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/PartnerCommissions/DTOs/SplitPayloadDto.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Infra/Extensions/WebApplicationExtensions.cs",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-partners/proxy.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/ClientStatementDto.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/dashboard/financial/_components/cards/card-breakdown.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/SupplierStatementDto.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-totalizer.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/PayableStatus.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/ReceivableStatus.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "deterministic",
+        "hop": {
+          "calls": 0,
+          "requeried": false,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "durationMs": 0
+        },
+        "gloss": "where is the logic of unfolding (split) accounts to be paid",
+        "wallSecs": 46.4
+      }
+    },
+    "11": {
+      "pt": "corrigir o cálculo da data de vencimento da parcela do contrato",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/calc.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractCalculationService.cs",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/contract-form-sidebar.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Calculation.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractCalculationService.cs",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractService.cs",
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/fields/pricing-phases.tsx",
+          "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/calc.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractCalculationService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/contract-form-sidebar.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Calculation.cs",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractCalculationService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractService.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/fields/pricing-phases.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+            "source": "rank"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "correct the calculation of the maturity date of the contract portion",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractCalculationService.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Calculation.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractCalculationService.cs",
+          "backend/Sialia.Backend/Infra/Financial/FinancialChargeCalculator.cs",
+          "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/calc.ts",
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "apps/sialia-app/app/(dashboard)/receivables/config.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractService.cs",
+          "apps/sialia-app/app/(dashboard)/payables/_components/form.tsx",
+          "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractCalculationService.cs",
+            "source": "digest",
+            "why": "Primary calculation service for contract maturity dates"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Calculation.cs",
+            "source": "digest",
+            "why": "Calculation implementation details for contracts"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractCalculationService.cs",
+            "source": "digest",
+            "why": "Interface defining calculation contract methods"
+          },
+          {
+            "file": "backend/Sialia.Backend/Infra/Financial/FinancialChargeCalculator.cs",
+            "source": "digest",
+            "why": "Financial calculations including date computations"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/calc.ts",
+            "source": "rank",
+            "why": "Frontend calculation logic for contract portions"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank",
+            "why": "Schema validation for contract structure and dates"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/receivables/config.tsx",
+            "source": "rank",
+            "why": "Receivables configuration with installment maturity"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractService.cs",
+            "source": "digest",
+            "why": "Main contract service interface and methods"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/payables/_components/form.tsx",
+            "source": "rank",
+            "why": "Payables form with installment due dates"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+            "source": "rank",
+            "why": "Schema for installment vencimento date validation"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31562,
+          "outputTokens": 3343,
+          "durationMs": 31418
+        },
+        "gloss": "correct the calculation of the maturity date of the contract portion",
+        "wallSecs": 32.6
+      }
+    },
+    "12": {
+      "pt": "adicionar uma validação no handler de criação de contrato",
+      "det": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/main-plan-editor.tsx",
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260422121808_AddContractNaturallyEndedNotificationType.cs",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+          "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+          "apps/sialia-app/app/(auth)/register/_components/step-confirmation-new.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractStateTransitionService.cs",
+          "packages/sialia-core/src/client/utils/form-error-handler.ts"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/main-plan-editor.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260422121808_AddContractNaturallyEndedNotificationType.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(auth)/register/_components/step-confirmation-new.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractStateTransitionService.cs",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/utils/form-error-handler.ts",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "add a validation to the contract creation editor",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/main-plan-editor.tsx",
+          "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260422121808_AddContractNaturallyEndedNotificationType.cs",
+          "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+          "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+          "apps/sialia-app/app/(auth)/register/_components/step-confirmation-new.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractStateTransitionService.cs",
+          "packages/sialia-core/src/client/utils/form-error-handler.ts"
+        ],
+        "insumos": [
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/main-plan-editor.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260422121808_AddContractNaturallyEndedNotificationType.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(auth)/register/_components/step-confirmation-new.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractStateTransitionService.cs",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/utils/form-error-handler.ts",
+            "source": "digest"
+          }
+        ],
+        "mode": "deterministic",
+        "hop": {
+          "calls": 0,
+          "requeried": false,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "durationMs": 0
+        },
+        "gloss": "add a validation to the contract creation editor",
+        "wallSecs": 46.2
+      }
+    },
+    "13": {
+      "pt": "onde é feita a conciliação do extrato bancário",
+      "det": {
+        "files": [
+          "packages/sialia-core/src/client/hooks/use-reconciliation.ts",
+          "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Services/BankStatementLineMappers.cs",
+          "packages/sialia-core/src/shared/schemas/financial-transactions/financial-transactions.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Repositories/Configurations/BankStatementLineConfiguration.cs",
+          "packages/sialia-core/src/shared/schemas/reconciliation/reconciliation.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Migrations/20260605034319_AddBankStatementLines.cs",
+          "apps/sialia-app/app/(dashboard)/banks/[id]/statement/_components/bank-statement-view.tsx",
+          "packages/sialia-core/src/index.ts",
+          "apps/sialia-app/app/(dashboard)/suppliers/statement/page.tsx"
+        ],
+        "insumos": [
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-reconciliation.ts",
+            "source": "both"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Services/BankStatementLineMappers.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/financial-transactions/financial-transactions.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Repositories/Configurations/BankStatementLineConfiguration.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/reconciliation/reconciliation.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260605034319_AddBankStatementLines.cs",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/banks/[id]/statement/_components/bank-statement-view.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/index.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/suppliers/statement/page.tsx",
+            "source": "rank"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "where the bank statement is reconciled",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "backend/Sialia.Backend/Backend/Modules/v1/Reconciliation/EndPoints/ReconciliationEndPoints.cs",
+          "packages/sialia-core/src/client/hooks/use-reconciliation.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Services/BankStatementLineMappers.cs",
+          "apps/sialia-app/app/(dashboard)/financial/reconciliation/page.tsx",
+          "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Repositories/BankStatementLineRepository.cs",
+          "packages/sialia-core/src/shared/schemas/reconciliation/reconciliation.zod.ts",
+          "backend/Sialia.Backend/DataAccess/Repositories/Configurations/BankStatementLineConfiguration.cs",
+          "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Repositories/IBankStatementLineRepository.cs",
+          "apps/sialia-app/app/(dashboard)/banks/[id]/statement/_components/bank-statement-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Enums/BankStatementLineStatus.cs"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/Backend/Modules/v1/Reconciliation/EndPoints/ReconciliationEndPoints.cs",
+            "source": "both",
+            "why": "API endpoints for reconciliation logic and entry points"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-reconciliation.ts",
+            "source": "both",
+            "why": "Frontend hook containing reconciliation business logic"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Services/BankStatementLineMappers.cs",
+            "source": "digest",
+            "why": "Core service for mapping and processing bank statements"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/reconciliation/page.tsx",
+            "source": "rank",
+            "why": "Main reconciliation UI page where users interact"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Repositories/BankStatementLineRepository.cs",
+            "source": "digest",
+            "why": "Data access layer for bank statement line records"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/reconciliation/reconciliation.zod.ts",
+            "source": "rank",
+            "why": "Data model and validation schema for reconciliation"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Repositories/Configurations/BankStatementLineConfiguration.cs",
+            "source": "both",
+            "why": "Database entity configuration for bank statement lines"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Repositories/IBankStatementLineRepository.cs",
+            "source": "digest",
+            "why": "Interface defining repository contract for bank statements"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/banks/[id]/statement/_components/bank-statement-view.tsx",
+            "source": "digest",
+            "why": "Bank statement view component for reconciliation UI"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Enums/BankStatementLineStatus.cs",
+            "source": "digest",
+            "why": "Enum defining possible bank statement line statuses"
+          }
+        ],
+        "mode": "hop",
+        "hop": {
+          "calls": 1,
+          "requeried": false,
+          "inputTokens": 31405,
+          "outputTokens": 3455,
+          "durationMs": 21591
+        },
+        "gloss": "where the bank statement is reconciled",
+        "wallSecs": 22.7
+      }
+    },
+    "14": {
+      "pt": "adicionar um campo na configuração (EF) da entidade de fatura/título",
+      "det": {
+        "files": [
+          "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+          "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+          "packages/sialia-core/src/shared/schemas/receivables/receivables.zod.ts",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/title-row-actions.tsx",
+          "packages/sialia-core/src/client/hooks/use-payables.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+          "packages/sialia-core/src/client/components/ui/entity-picker-create.tsx",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Entities/NotificationDefinition.cs"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/receivables/receivables.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/title-row-actions.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-payables.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/components/ui/entity-picker-create.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Entities/NotificationDefinition.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "",
+        "hop": null,
+        "gloss": "add a field in the Invoice Entity/Title configuration (EF)",
+        "wallSecs": 1.0
+      },
+      "hop": {
+        "files": [
+          "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+          "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+          "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+          "packages/sialia-core/src/shared/schemas/receivables/receivables.zod.ts",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/title-row-actions.tsx",
+          "packages/sialia-core/src/client/hooks/use-payables.ts",
+          "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+          "packages/sialia-core/src/client/components/ui/entity-picker-create.tsx",
+          "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "backend/Sialia.Backend/DataAccess/Entities/NotificationDefinition.cs"
+        ],
+        "insumos": [
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Migrations/20260514003212_AddContractPlanAndMovePlanFields.cs",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/add-plan-dialog.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/shared/schemas/receivables/receivables.zod.ts",
+            "source": "rank"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/title-row-actions.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "packages/sialia-core/src/client/hooks/use-payables.ts",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+            "source": "rank"
+          },
+          {
+            "file": "packages/sialia-core/src/client/components/ui/entity-picker-create.tsx",
+            "source": "digest"
+          },
+          {
+            "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+            "source": "rank"
+          },
+          {
+            "file": "backend/Sialia.Backend/DataAccess/Entities/NotificationDefinition.cs",
+            "source": "digest"
+          }
+        ],
+        "mode": "deterministic",
+        "hop": {
+          "calls": 0,
+          "requeried": false,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "durationMs": 0
+        },
+        "gloss": "add a field in the Invoice Entity/Title configuration (EF)",
+        "wallSecs": 46.3
+      }
+    }
+  },
+  "det": {
+    "n": 13,
+    "ids": [
+      1,
+      2,
+      4,
+      6,
+      7,
+      8
+    ],
+    "h5": 6,
+    "h10": 9
+  },
+  "hop": {
+    "n": 13,
+    "ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "h5": 8,
+    "h10": 9
+  },
+  "stress": [
+    {
+      "pt": "revisar o projeto sialia-partners (portal de revenda): dashboard de indicações ativas e planos disponíveis",
+      "mode": "hop",
+      "wallSecs": 19.5,
+      "top5": [
+        {
+          "file": "apps/sialia-partners/app/(dashboard)/dashboard/page.tsx",
+          "source": "digest",
+          "why": "Main dashboard for active indications and plans"
+        },
+        {
+          "file": "packages/sialia-core/src/shared/schemas/partners-portal/partner-stats.graphql.ts",
+          "source": "both",
+          "why": "Stats schema for active indications data"
+        },
+        {
+          "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/PartnerPortalStatsDto.cs",
+          "source": "digest",
+          "why": "Backend data transfer object for portal stats"
+        },
+        {
+          "file": "backend/Sialia.Backend/Backend/Modules/v1/Partners/EndPoints/PartnerPortalEndPoints.cs",
+          "source": "digest",
+          "why": "API endpoints serving partner portal data"
+        },
+        {
+          "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "source": "rank",
+          "why": "Contract and plan definitions schema"
+        }
+      ]
+    },
+    {
+      "pt": "listar planos por canal de venda do parceiro somente-leitura igual sales-plans do sialia-admin",
+      "mode": "deterministic",
+      "wallSecs": 46.4,
+      "top5": [
+        {
+          "file": "apps/sialia-app/app/(dashboard)/sales-plans/_components/form/fields/channels-section.tsx",
+          "source": "digest"
+        },
+        {
+          "file": "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+          "source": "rank"
+        },
+        {
+          "file": "backend/Sialia.Backend/Application/Modules/v1/SalesPlans/Repositories/ISalesPlanChannelRepository.cs",
+          "source": "digest"
+        },
+        {
+          "file": "backend/Sialia.Backend/Application/Seeds/DatabaseSeeder.cs",
+          "source": "rank"
+        },
+        {
+          "file": "backend/Sialia.Backend/Application/Modules/v1/SalesPlans/Repositories/SalesPlanChannelRepository.cs",
+          "source": "digest"
+        }
+      ]
+    },
+    {
+      "pt": "CRUD de indicar clientes no padrão de cadastro de cliente do sialia-app com abas e validações",
+      "mode": "deterministic",
+      "wallSecs": 46.7,
+      "top5": [
+        {
+          "file": "packages/sialia-core/src/client/hooks/use-crud-permissions.ts",
+          "source": "both"
+        },
+        {
+          "file": "packages/sialia-core/src/client/components/ui/tab-error-indicator.tsx",
+          "source": "digest"
+        },
+        {
+          "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+          "source": "rank"
+        },
+        {
+          "file": "apps/sialia-app/app/(dashboard)/companies/_components/form/fields/address-tab.tsx",
+          "source": "digest"
+        },
+        {
+          "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+          "source": "rank"
+        }
+      ]
+    },
+    {
+      "pt": "dashboard meus ganhos dos clientes indicados que fecharam contrato",
+      "mode": "hop",
+      "wallSecs": 27.6,
+      "top5": [
+        {
+          "file": "apps/sialia-partners/app/(dashboard)/earnings/page.tsx",
+          "source": "digest",
+          "why": "Main earnings dashboard page for partner indicated customers"
+        },
+        {
+          "file": "apps/sialia-partners/app/(dashboard)/earnings/loading.tsx",
+          "source": "digest",
+          "why": "Loading state for earnings dashboard"
+        },
+        {
+          "file": "packages/sialia-core/src/client/hooks/use-contracts-dashboard.ts",
+          "source": "digest",
+          "why": "Dashboard-specific contracts hook with filter logic"
+        },
+        {
+          "file": "backend/Sialia.Backend/DataAccess/Enums/PartnerIndicationStatus.cs",
+          "source": "digest",
+          "why": "Enum for partner indication status filtering"
+        },
+        {
+          "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+          "source": "rank",
+          "why": "Contracts hook for closed contract queries"
+        }
+      ]
+    }
+  ]
+}

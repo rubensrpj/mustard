@@ -16,8 +16,12 @@
 //! - [`translate`] — fail-open client for the optional `mustard-translate`
 //!   sidecar (local MT), shared by the `feature` auto-gloss and the
 //!   `scan-equivalences` artifact generation.
+//! - [`llm_hop`] — the opt-in LLM selection hop of the `feature` retrieval
+//!   funnel (one fail-open `claude` Haiku call that picks from the
+//!   deterministic candidate pool; off by default).
 
 pub mod context;
 pub mod events;
+pub mod llm_hop;
 pub mod proc;
 pub mod translate;

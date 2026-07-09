@@ -241,6 +241,13 @@ pub struct ScoredFile {
     pub file: String,
     /// PageRank mass ×1024 relative to the total (`r_i * 1024 / PR_SCALE`).
     pub score_x1024: u64,
+    /// ADDITIVE per-file evidence: the matched dictionary terms and the direct
+    /// identifier query tokens that seeded this file (sorted asc, deduped —
+    /// byte-stable). Empty when only graph propagation carried the file, and
+    /// omitted from the JSON then, so pre-existing consumers read unchanged
+    /// rows.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terms: Vec<String>,
 }
 
 /// One query term the request bridged to, with the rarity it seeded at and how
@@ -410,6 +417,18 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
         .max(1);
         matched.push(Matched { term: e.term.clone(), idf_x1024, specificity_x1024: e.specificity_x1024, weight, seeds });
     }
+    // Per-file term evidence (the ADDITIVE `files[].terms` audit): which
+    // matched dictionary terms — and, below, which direct identifier query
+    // tokens — seeded each file. BTreeSet keeps each list sorted + deduped
+    // (byte-stable); a file only graph propagation carries stays absent
+    // (empty evidence, honestly).
+    let mut evidence: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    for m in &matched {
+        for &i in &m.seeds {
+            evidence.entry(i).or_default().insert(m.term.clone());
+        }
+    }
+
     // Personalization vector: each matched term contributes its weight SPLIT
     // across its seeds — so a rare term (few seeds) concentrates mass on the
     // files that carry it, while a ubiquitous term spreads thin. Accumulated at
@@ -437,7 +456,7 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
     let mut direct_score: Vec<u128> = vec![0; n];
     if cfg.direct_seed {
         let n_elig = (eligible.iter().filter(|&&e| e).count() as u128).max(1);
-        for qf in &qfolds {
+        for (qi, qf) in qfolds.iter().enumerate() {
             if qf.len() < 3 {
                 continue;
             }
@@ -453,6 +472,11 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
             let idf = ((n_elig * SCALE) / seeds_q.len() as u128).max(1);
             for &i in &seeds_q {
                 direct_score[i] += idf;
+                // The ORIGINAL query token (qfolds[qi] folds ql[qi]) is the
+                // evidence a direct identifier match leaves on the file.
+                if let Some(tok) = ql.get(qi) {
+                    evidence.entry(i).or_default().insert(tok.clone());
+                }
             }
         }
         // BM25 length normalization (b ≈ 0.75): divide each file's summed idf by
@@ -504,7 +528,11 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
     ranked.truncate(cfg.top);
     let files = ranked
         .into_iter()
-        .map(|(i, mass)| ScoredFile { file: model.modules[i].path.clone(), score_x1024: (mass * SCALE / PR_SCALE) as u64 })
+        .map(|(i, mass)| ScoredFile {
+            file: model.modules[i].path.clone(),
+            score_x1024: (mass * SCALE / PR_SCALE) as u64,
+            terms: evidence.get(&i).map(|s| s.iter().cloned().collect()).unwrap_or_default(),
+        })
         .collect();
 
     // Matched terms rarest-first (idf desc, term asc) for the audit.
@@ -739,6 +767,41 @@ mod tests {
         let walked =
             rank(&model, &dict, &["form".to_string()], &RankConfig { direction: Direction::Forward, propagate: true, fanin_penalty_x1024: 0, ..Default::default() });
         assert!(ranked_files(&walked).contains(&"src/core/schema.ts"), "forward walk surfaces the imported neighbour: {:?}", ranked_files(&walked));
+    }
+
+    /// EVIDENCE — each ranked row carries the ADDITIVE `terms` audit: the
+    /// dictionary terms and direct query tokens that seeded it, sorted and
+    /// deduped; a propagation-only file carries an empty list (omitted from
+    /// the JSON so pre-existing consumers read unchanged rows).
+    #[test]
+    fn ranked_rows_carry_term_evidence() {
+        let model = ProjectModel {
+            modules: vec![
+                module("src/payables/aging-bar.tsx", &["AgingBar"], &["src/core/schema.ts"]),
+                module("src/core/schema.ts", &["Schema"], &[]),
+            ],
+            ..Default::default()
+        };
+        // "aging" seeds the bar twice over (the dict term resolves to its
+        // declaration AND the raw token direct-matches the identifier — dedup
+        // keeps one); "bar" lands as a direct identifier token only.
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("aging", 4, 2, 2048, &[], "both")] };
+        let walked = rank(
+            &model,
+            &dict,
+            &["ajustar o aging bar".to_string()],
+            &RankConfig { direction: Direction::Forward, fanin_penalty_x1024: 0, ..Default::default() },
+        );
+        let bar = walked.files.iter().find(|f| f.file.contains("aging-bar")).expect("seeded file ranks");
+        assert_eq!(bar.terms, vec!["aging".to_string(), "bar".to_string()], "dict term + direct tokens, sorted+deduped: {:?}", bar.terms);
+        let schema = walked.files.iter().find(|f| f.file.contains("schema"));
+        if let Some(s) = schema {
+            assert!(s.terms.is_empty(), "propagation-only file carries no term evidence: {:?}", s.terms);
+        }
+        // JSON: empty evidence is OMITTED (unchanged rows for old consumers).
+        let json = serde_json::to_string(&walked).expect("serialize");
+        assert!(json.contains("\"terms\":[\"aging\",\"bar\"]"), "evidence serialized: {json}");
+        assert!(!json.contains("\"terms\":[]"), "empty evidence omitted: {json}");
     }
 
     /// DETERMINISM — two runs over the same inputs serialize to identical bytes.
