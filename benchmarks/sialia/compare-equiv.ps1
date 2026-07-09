@@ -138,11 +138,23 @@ function HitK { param([int]$tr,[int[]]$sr,[int]$k)
 
 $labels = @(); foreach ($line in (Get-Content -LiteralPath $LabelsPath)) { $t=$line.Trim(); if ($t.Length){ $labels += ($t | ConvertFrom-Json -Depth 64) } }
 
+$mtEq = Load-Equiv $mtPath
+$coocEq = Load-Equiv $coocPath
+# hybrid: per-term UNION — the MT gives the English WORD, the co-occurrence gives
+# the REPO's word (cliente → customer ∪ client); cached for the product.
+$hybrid = @{}
+foreach ($k in @($mtEq.Keys) + @($coocEq.Keys) | Select-Object -Unique) {
+    $hybrid[$k] = @(@($mtEq[$k]) + @($coocEq[$k]) | Where-Object { $_ } | Select-Object -Unique)
+}
+$hybridOut = [ordered]@{}; foreach ($k in ($hybrid.Keys | Sort-Object)) { $hybridOut[$k] = $hybrid[$k] }
+@{ equivalences = $hybridOut } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'equivalences-hybrid.json') -Encoding UTF8
+
 $sources = [ordered]@{
     'none (raw PT)'      = @{}
     'claude (the bar)'   = Load-Equiv (Join-Path $PSScriptRoot 'equivalences.json')
-    'mt (local Marian)'  = Load-Equiv $mtPath
-    'cooc (no model)'    = Load-Equiv $coocPath
+    'mt (local Marian)'  = $mtEq
+    'cooc (no model)'    = $coocEq
+    'hybrid (mt+cooc)'   = $hybrid
 }
 $rows = [ordered]@{}
 foreach ($name in $sources.Keys) {
