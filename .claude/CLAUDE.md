@@ -14,7 +14,7 @@ You are the orchestrator: route intent, coordinate pipelines, delegate non-trivi
 
 The user describes what they want; YOU classify, narrate, confirm only on genuine ambiguity, dispatch the internal flow, emit the kind. `/mustard:*` commands remain as power-override only. For every request that touches the codebase:
 
-**(a) Classify** intent + coarse scope. `mustard-rt run scope-classify` is deterministic (`layerCount` is a FACT); `plan-prepare`/`spec-draft` refine once a flow opens.
+**(a) Classify** intent + coarse scope — YOUR reading (there is NO pre-spec classifier: `scope-classify` derives `layerCount` from a spec's file list, so it only exists once a flow opens). After `spec-draft`/`plan-prepare`, `mustard-rt run scope-classify --from-spec <spec>` CHECKS your call deterministically (`layerCount` is a FACT there) — reclassify if it contradicts you.
 
 | Intent | Signals | Flow (`kind`) |
 |--------|---------|---------------|
