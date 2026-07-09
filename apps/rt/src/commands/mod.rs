@@ -84,6 +84,26 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Persist a CONFIRMED vocabulary bridge into the learned-equivalences
+    /// overlay (`.claude/grain.equivalences.learned.json`) — the write-back of
+    /// a settled `uncovered` row: the existence gate found which code
+    /// vocabulary a request concept maps to, and every later query covers it.
+    /// The generated `grain.equivalences.json` is never touched, so re-scans
+    /// never wipe what was learned. Explicit write only — never automatic.
+    #[command(name = "equivalence-learn")]
+    EquivalenceLearn {
+        /// The request-language concept that went uncovered (accent-folded to
+        /// the lookup key, e.g. `abas`).
+        #[arg(long)]
+        term: String,
+        /// Comma/space-separated code-vocabulary tokens the concept maps to
+        /// (e.g. `tab,tabs`).
+        #[arg(long)]
+        tokens: String,
+        /// Workspace root (holds `.claude/`). Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Research a feature request against the repo via the `scan` digest (no
     /// source reading) and emit the structured insumos for decomposition +
     /// `scan spec`. The grounding step of the elicitation loop.
@@ -1676,6 +1696,7 @@ pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         RunCmd::ScanEquivalences { root } => scan_equivalences::run(&root),
+        RunCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
         RunCmd::Orient { root } => orient::run(&root),
         RunCmd::GlossaryCoverage {

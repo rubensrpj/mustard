@@ -89,16 +89,27 @@ fn build_equivalences(rows: &[(String, Translation)]) -> BTreeMap<String, Vec<St
     map
 }
 
-/// Read `.claude/grain.equivalences.json` under `root` into the expansion map.
-/// Fail-open: missing/unparseable file → empty map (query expands to itself).
+/// Read `.claude/grain.equivalences.json` under `root` into the expansion map,
+/// then MERGE the learned overlay on top (learned tokens extend — never
+/// replace — the generated aliases, deduped, generated-first order). Fail-open
+/// both sides: missing/unparseable files → empty map (query expands to itself).
 pub(crate) fn load_equivalences(root: &Path) -> BTreeMap<String, Vec<String>> {
     let path = root.join(".claude").join("grain.equivalences.json");
-    std::fs::read_to_string(&path)
+    let mut map = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v.get("equivalences").cloned())
         .and_then(|e| serde_json::from_value::<BTreeMap<String, Vec<String>>>(e).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for (term, toks) in load_learned(root) {
+        let e = map.entry(term).or_default();
+        for t in toks {
+            if !e.contains(&t) {
+                e.push(t);
+            }
+        }
+    }
+    map
 }
 
 /// Generate `<dict dir>/grain.equivalences.json` from the dictionary at
@@ -153,6 +164,79 @@ pub(crate) fn generate_at(dict_path: &Path) -> Value {
 pub fn run(root: &Path) {
     let dict_path = root.join(".claude").join("grain.dictionary.json");
     let result = generate_at(&dict_path);
+    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Learned overlay — the retrieval LEARNING from its own misses. When the
+// orchestrator settles an `uncovered` row (the existence gate FOUND which
+// code vocabulary a request concept maps to), it persists the bridge here.
+// Own sidecar — the generator above never touches it — so a re-scan
+// regeneration NEVER wipes what was learned. Write path: the explicit
+// `equivalence-learn` command only; never automatic.
+// ---------------------------------------------------------------------------
+
+/// The learned-overlay sidecar, beside the generated artifact.
+const LEARNED_FILE: &str = "grain.equivalences.learned.json";
+
+/// Read the learned overlay. Fail-open: missing/unparseable → empty map.
+fn load_learned(root: &Path) -> BTreeMap<String, Vec<String>> {
+    let path = root.join(".claude").join(LEARNED_FILE);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("learned").cloned())
+        .and_then(|e| serde_json::from_value::<BTreeMap<String, Vec<String>>>(e).ok())
+        .unwrap_or_default()
+}
+
+/// Persist one CONFIRMED bridge into the learned overlay: the term is
+/// accent-folded (the lookup-key contract), the tokens are folded, deduped in
+/// first-occurrence order and NOT capped (a confirmed bridge is curated
+/// knowledge, unlike the generator's [`TOP_TOKENS`] guess). Re-learning a term
+/// EXTENDS its token list. Byte-stable (`BTreeMap` keys + atomic write).
+/// Returns the JSON summary; never panics, never exits non-zero.
+pub(crate) fn learn_at(root: &Path, term: &str, tokens: &str) -> Value {
+    let key = fold_tok(term.trim());
+    if key.chars().count() < 2 || !key.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return json!({ "ok": false, "reason": "bad-term" });
+    }
+    let mut toks: Vec<String> = Vec::new();
+    for raw in tokens.split(|c: char| c == ',' || c.is_whitespace()) {
+        let t = fold_tok(raw.trim());
+        if t.chars().count() >= 2
+            && t.chars().any(|c| c.is_ascii_alphabetic())
+            && t != key
+            && !toks.contains(&t)
+        {
+            toks.push(t);
+        }
+    }
+    if toks.is_empty() {
+        return json!({ "ok": false, "reason": "no-tokens" });
+    }
+    let mut learned = load_learned(root);
+    let entry = learned.entry(key.clone()).or_default();
+    for t in &toks {
+        if !entry.contains(t) {
+            entry.push(t.clone());
+        }
+    }
+    let body = json!({ "version": 1, "learned": learned });
+    let Ok(pretty) = serde_json::to_string_pretty(&body) else {
+        return json!({ "ok": false, "reason": "serialize-failed" });
+    };
+    let out_path = root.join(".claude").join(LEARNED_FILE);
+    if let Err(e) = mustard_core::io::fs::write_atomic(&out_path, format!("{pretty}\n").as_bytes()) {
+        eprintln!("equivalence-learn: cannot write {}: {e}", out_path.display());
+        return json!({ "ok": false, "reason": "write-failed" });
+    }
+    json!({ "ok": true, "term": key, "tokens": toks, "out": out_path.to_string_lossy() })
+}
+
+/// Run `equivalence-learn`: persist the bridge and print the JSON summary.
+pub fn run_learn(root: &Path, term: &str, tokens: &str) {
+    let result = learn_at(root, term, tokens);
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
@@ -219,5 +303,49 @@ mod tests {
     fn load_equivalences_fails_open_to_an_empty_map() {
         let root = std::env::temp_dir().join("mustard-no-such-root-e2e");
         assert!(load_equivalences(&root).is_empty());
+    }
+
+    /// `equivalence-learn` round-trip: the bridge persists (folded key, folded
+    /// deduped tokens), re-learning EXTENDS the list, and `load_equivalences`
+    /// merges the overlay on top of the generated map without clobbering it.
+    #[test]
+    fn learn_persists_merges_and_load_overlays() {
+        let root = std::env::temp_dir().join(format!("mustard-learn-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".claude")).expect("mkdir");
+        // Generated artifact with one term, to prove the merge extends it.
+        std::fs::write(
+            root.join(".claude").join("grain.equivalences.json"),
+            r#"{"version":1,"equivalences":{"abas":["flaps"]}}"#,
+        )
+        .expect("seed generated");
+
+        let v = learn_at(&root, "Abas", "Tab, tabs tab");
+        assert_eq!(v["ok"], json!(true), "learn succeeds: {v}");
+        assert_eq!(v["term"], json!("abas"), "key is folded");
+        assert_eq!(v["tokens"], json!(["tab", "tabs"]), "folded + deduped");
+
+        // Re-learn extends, never duplicates.
+        let v2 = learn_at(&root, "abas", "tabs,tabsheet");
+        assert_eq!(v2["tokens"], json!(["tabs", "tabsheet"]));
+
+        let merged = load_equivalences(&root);
+        assert_eq!(
+            merged["abas"],
+            vec!["flaps", "tab", "tabs", "tabsheet"],
+            "generated first, learned extend deduped"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn learn_rejects_empty_or_glueless_input() {
+        let root = std::env::temp_dir().join("mustard-learn-reject-e2e");
+        assert_eq!(learn_at(&root, "  ", "tab")["reason"], json!("bad-term"));
+        assert_eq!(learn_at(&root, "abas", " , 42 ")["reason"], json!("no-tokens"));
+        assert_eq!(
+            learn_at(&root, "abas", "abas")["reason"],
+            json!("no-tokens"),
+            "a token equal to the term never self-aliases"
+        );
     }
 }
