@@ -177,25 +177,6 @@ impl GateModes {
     }
 }
 
-/// The `retrieval` block — opt-in knobs for the `feature` research funnel.
-/// `hop` selects the LLM selection hop over the deterministic candidate pool
-/// (`"haiku"` enables it; absent/anything else keeps the funnel fully
-/// deterministic — the default). The `MUSTARD_RETRIEVAL_HOP` env var overrides
-/// this per-run (kill-switch), resolved at the consumer (`apps/rt`), keeping
-/// the same env → config → default cascade as [`GateModes`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Retrieval {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hop: Option<String>,
-}
-
-impl Retrieval {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.hop.is_none()
-    }
-}
-
 /// Host runtime metadata stamped into `mustard.json` by `init`/`update`.
 ///
 /// `kind` is the literal `"native"` (the CLI is a compiled binary, not a JS
@@ -301,8 +282,6 @@ pub struct ProjectConfig {
     pub amend: Amend,
     #[serde(skip_serializing_if = "GateModes::is_empty")]
     pub gates: GateModes,
-    #[serde(skip_serializing_if = "Retrieval::is_empty")]
-    pub retrieval: Retrieval,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
@@ -458,18 +437,6 @@ impl ProjectConfig {
     #[must_use]
     pub fn drift_threshold(&self) -> Option<u32> {
         self.amend.drift_threshold.and_then(|n| u32::try_from(n).ok())
-    }
-
-    /// `retrieval.hop`, trimmed + lowercased; `None` when absent or blank —
-    /// the deterministic default. The env-var override lives at the consumer.
-    #[must_use]
-    pub fn retrieval_hop(&self) -> Option<String> {
-        let raw = self.retrieval.hop.as_deref()?.trim();
-        if raw.is_empty() {
-            None
-        } else {
-            Some(raw.to_ascii_lowercase())
-        }
     }
 
     /// Resolve the banner/drafter [`I18n`] (locale + tone) for this project.
