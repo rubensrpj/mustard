@@ -686,14 +686,77 @@ fn insumos_rows(root: &Path, intent: &str, detail: &[FileDetail]) -> Vec<Value> 
 /// gates, and every key is additive + deterministic.
 fn attach_retrieval(v: &mut Value, root: &Path, intent: &str, gloss: Option<&str>, detail: &[FileDetail]) {
     let rows = insumos_rows(root, intent, detail);
-    let pool = candidates_rows(&build_pool(root, intent, detail));
+    let pool = build_pool(root, intent, detail);
+    let equiv = super::scan_equivalences::load_equivalences(root);
+    let uncovered = uncovered_terms(intent, &equiv, &pool);
+    let pool_rows = candidates_rows(&pool);
     if let Some(obj) = v.as_object_mut() {
         obj.insert("insumos".to_string(), json!(rows));
-        obj.insert("candidates".to_string(), json!(pool));
+        obj.insert("candidates".to_string(), json!(pool_rows));
+        obj.insert("uncovered".to_string(), json!(uncovered));
         if let Some(en) = gloss {
             obj.insert("gloss".to_string(), json!(en));
         }
     }
+}
+
+/// The pool's BLIND SPOTS — request concepts with NO representation in the
+/// candidate evidence. For each intent token (≥4 chars, at least one letter,
+/// not an EN/PT function word), the probe set is its accent-folded form plus
+/// every equivalence expansion of it; the concept counts covered when ANY
+/// probe matches ANY candidate's matched-term evidence (folded; exact, or
+/// prefix-either-way with both sides ≥4 chars, so `cliente`/`clientes` and
+/// `lista`/`listar` join). Everything else is emitted as a `{term, tried}`
+/// row, term-ascending (byte-stable). Deliberately a LOWER bound on
+/// blindness: a term matched by an irrelevant file still counts covered — the
+/// field DIRECTS the existence gate (one targeted enumeration per row), it
+/// never replaces it.
+fn uncovered_terms(
+    intent: &str,
+    equiv: &std::collections::BTreeMap<String, Vec<String>>,
+    pool: &[Candidate],
+) -> Vec<Value> {
+    let evidence: Vec<String> = pool
+        .iter()
+        .flat_map(|c| c.terms.iter())
+        .map(|t| super::scan_equivalences::fold_tok(&t.to_lowercase()))
+        .collect();
+    let hits = |probe: &str| {
+        evidence.iter().any(|e| {
+            e == probe
+                || (probe.len() >= 4
+                    && e.len() >= 4
+                    && (e.starts_with(probe) || probe.starts_with(e.as_str())))
+        })
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    for raw in intent.split(|c: char| !c.is_alphanumeric()) {
+        if raw.chars().count() < 4 || !raw.chars().any(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let lower = raw.to_lowercase();
+        if EN_STOP.contains(&lower.as_str()) || PT_STOP.contains(&lower.as_str()) {
+            continue;
+        }
+        let folded = super::scan_equivalences::fold_tok(&lower);
+        if !seen.insert(folded.clone()) {
+            continue;
+        }
+        let mut tried = vec![folded.clone()];
+        for t in equiv.get(&folded).map(Vec::as_slice).unwrap_or(&[]) {
+            let f = super::scan_equivalences::fold_tok(&t.to_lowercase());
+            if !tried.contains(&f) {
+                tried.push(f);
+            }
+        }
+        if tried.iter().any(|p| hits(p)) {
+            continue;
+        }
+        rows.push((lower, tried));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.into_iter().map(|(term, tried)| json!({ "term": term, "tried": tried })).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1662,8 +1725,9 @@ mod tests {
     fn stdout_never_carries_subprocess_keys() {
         // The removed `claude -p` selection hop must leave NO residue:
         // `attach_retrieval` (the only attach) adds exactly `insumos` +
-        // `candidates` (+ `gloss` when fired) — never `insumosMode`, never a
-        // `hop` audit. Regression guard for the subprocess removal.
+        // `candidates` + `uncovered` (+ `gloss` when fired) — never
+        // `insumosMode`, never a `hop` audit. Regression guard for the
+        // subprocess removal.
         let root = std::env::temp_dir().join("mustard-feature-no-subprocess");
         let detail: Vec<FileDetail> =
             serde_json::from_str(r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]}]"#).expect("detail rows");
@@ -1673,7 +1737,11 @@ mod tests {
         assert!(v.get("hop").is_none(), "the hop audit never emitted: {v}");
         let mut keys: Vec<&str> = v.as_object().expect("object").keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["candidates", "insumos", "intent"], "exactly the additive keys: {v}");
+        assert_eq!(
+            keys,
+            vec!["candidates", "insumos", "intent", "uncovered"],
+            "exactly the additive keys: {v}"
+        );
     }
 
     #[test]
@@ -1780,6 +1848,46 @@ mod tests {
         let a: Vec<String> = fuse_pool(&rank, &digest, 25).into_iter().map(|c| c.file).collect();
         let b: Vec<String> = fuse_pool(&rank, &digest, 25).into_iter().map(|c| c.file).collect();
         assert_eq!(a, b);
+    }
+
+    /// `uncovered` — only the request concept absent from EVERY candidate's
+    /// evidence flags; coverage arrives directly (accent-folded exact), by
+    /// prefix (inflections: cliente/clientes) or via an equivalence expansion
+    /// (contrato→contract, abas→tabs); EN/PT function words and <4-char
+    /// tokens never flag; duplicates collapse.
+    #[test]
+    fn uncovered_flags_only_unrepresented_concepts() {
+        let pool = vec![Candidate {
+            file: "src/a.ts".into(),
+            source: "both",
+            rank_pos: Some(1),
+            digest_pos: Some(1),
+            terms: vec!["contract".into(), "clientes".into(), "tabs".into(), "validacoes".into()],
+        }];
+        let mut equiv = std::collections::BTreeMap::new();
+        equiv.insert("contrato".to_string(), vec!["contract".to_string()]);
+        equiv.insert("abas".to_string(), vec!["tabs".to_string()]);
+        let out = uncovered_terms(
+            "cadastro do cliente para o contrato com abas e validações the ver cadastro",
+            &equiv,
+            &pool,
+        );
+        let terms: Vec<&str> = out.iter().filter_map(|v| v["term"].as_str()).collect();
+        assert_eq!(terms, vec!["cadastro"], "only the blind concept flags: {out:?}");
+        let tried: Vec<&str> = out[0]["tried"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(tried, vec!["cadastro"], "probe set = folded term (no expansion configured)");
+    }
+
+    /// Empty pool → every content concept flags, term-ascending (the radar
+    /// stays honest when retrieval returns nothing).
+    #[test]
+    fn uncovered_on_empty_pool_flags_content_words_sorted() {
+        let out = uncovered_terms("vencimento reajuste", &std::collections::BTreeMap::new(), &[]);
+        let terms: Vec<&str> = out.iter().filter_map(|v| v["term"].as_str()).collect();
+        assert_eq!(terms, vec!["reajuste", "vencimento"], "sorted ascending");
     }
 
 }
