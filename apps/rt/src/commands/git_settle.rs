@@ -1,24 +1,33 @@
-//! `mustard-rt run git-settle` — post-merge housekeeping for delivered work
-//! units, answering "the PR merged; now what?" deterministically:
+//! `mustard-rt run git-settle` — the EXIT RITUAL of a delivered work unit,
+//! answering "the PR merged; now what?" with the user's exact contract:
 //!
-//! 1. **Fetch** every integration base (`mustard.json#git.flow`).
-//! 2. **Fast-forward the base you are on** — only when the MAIN checkout sits
-//!    on a base with a CLEAN tree (a dirty tree or a diverged base is reported,
-//!    never touched).
-//! 3. **Prune settled work units**: every `.claude/worktrees/` worktree whose
-//!    branch already landed on its base — ancestor check first, `gh pr list
-//!    --state merged` as the squash-merge fallback (this repo squash-merges,
-//!    which breaks pure ancestry) — has its worktree removed and its local
-//!    branch deleted; the remote branch delete is attempted fail-open (GitHub
-//!    auto-delete usually got there first).
-//!
-//! A dirty worktree, the worktree this process runs inside, or an unmerged
-//! branch is SKIPPED with its reason — settle never forces, never destroys
-//! unmerged work (the /git iron law: only reversible operations).
+//! 1. **Runs from the WORK BRANCH** — invoked bare while sitting on an
+//!    integration base (`dev`/`main`) it REFUSES (`on-integration-base`):
+//!    settle is how a unit leaves the stage, not a base-side sweeper. From a
+//!    base it only runs with an explicit `--unit <branch>` (the finish step
+//!    of the dance below).
+//! 2. **100% merged or nothing**: the unit's branch must verifiably be on its
+//!    base — true ancestry first, `gh pr list --state merged` as the
+//!    squash-merge fallback (this repo squash-merges, which breaks pure
+//!    ancestry). Not merged → `{ok:false, reason:"not-merged"}` and NOTHING
+//!    is touched.
+//! 3. **Back to an up-to-date base**: every local base advances — the one the
+//!    MAIN checkout sits on via `merge --ff-only` (clean tree only; the
+//!    harness-owned `.claude/worktrees/` dir is exempt from the dirty check),
+//!    every other via `git fetch origin <base>:<base>`, which fast-forwards a
+//!    non-checked-out ref and refuses anything unsafe.
+//! 4. **Only then prune**: the unit's worktree is removed and its local
+//!    branch deleted (`-D` — merge is already proven), remote delete
+//!    attempted fail-open (GitHub auto-delete usually got there first). When
+//!    the process runs INSIDE the unit's worktree it cannot remove its own
+//!    floor: it verifies + updates and answers `action:"exit-and-rerun"` —
+//!    leave the worktree (`ExitWorktree`), then finish with
+//!    `git-settle --unit <branch>` from the main checkout.
 //!
 //! Output: one JSON report (sorted arrays, no timestamps). Fail-open
-//! everywhere: a missing remote, absent `gh`, or a locked path degrades to a
-//! skip entry, exit 0.
+//! everywhere: absent `gh`, no remote, or a locked path degrades to an
+//! honest field, exit 0 — but the MERGE VERIFICATION itself is a hard gate,
+//! never fail-open (guarding a verdict: missing evidence blocks).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,7 +61,6 @@ fn main_checkout_root(from: &Path) -> Option<PathBuf> {
     if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
         common.parent().map(Path::to_path_buf)
     } else {
-        // Bare/odd layout — fall back to the toplevel of `from`.
         git_out(from, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
     }
 }
@@ -97,8 +105,8 @@ fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
 }
 
 /// Whether `branch` already landed on `origin/<base>`: true ancestry first;
-/// squash-merge fallback via `gh pr list --state merged` (fail-open — no `gh`,
-/// no network, no PR → false, the branch is simply not settled yet).
+/// squash-merge fallback via `gh pr list --state merged`. This is the 100%
+/// gate — no evidence means NOT merged (conservative, never fail-open).
 fn is_merged(main: &Path, branch: &str, base: &str) -> bool {
     if git_ok(main, &["merge-base", "--is-ancestor", branch, &format!("origin/{base}")]) {
         return true;
@@ -113,75 +121,14 @@ fn is_merged(main: &Path, branch: &str, base: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The settle pass against an explicit repo root — the testable core of
-/// [`run`]. Never panics; every failure lands as a `skipped` reason.
-pub(crate) fn settle_at(start: &Path) -> Value {
-    let Some(main) = main_checkout_root(start) else {
-        return json!({ "ok": false, "reason": "not-a-git-repo" });
-    };
-    // BTreeSet → Vec keeps the deterministic (sorted) order downstream.
-    let bases: Vec<String> =
-        mustard_core::ProjectConfig::load(&main).git.integration_bases().into_iter().collect();
-
-    // One fetch for every base — fail-open (offline settle still prunes by
-    // whatever origin/<base> is already known locally).
-    let mut fetch_args: Vec<&str> = vec!["fetch", "origin"];
-    fetch_args.extend(bases.iter().map(String::as_str));
-    let fetched = git_ok(&main, &fetch_args);
-
-    // --- Prune settled worktrees -------------------------------------------
-    let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().replace('\\', "/");
-    let mut settled: Vec<Value> = Vec::new();
-    let mut skipped: Vec<Value> = Vec::new();
-    let entries = git_out(&main, &["worktree", "list", "--porcelain"])
-        .map(|s| parse_worktrees(&s))
-        .unwrap_or_default();
-    for e in entries {
-        let Some(base) = base_of_branch(&e.branch, &bases) else {
-            skipped.push(json!({ "branch": e.branch, "reason": "no-base-prefix" }));
-            continue;
-        };
-        if cwd.starts_with(&e.path) {
-            skipped.push(json!({ "branch": e.branch, "reason": "current-worktree" }));
-            continue;
-        }
-        let dirty = git_out(Path::new(&e.path), &["status", "--porcelain"])
-            .map(|s| !s.is_empty())
-            .unwrap_or(true);
-        if dirty {
-            skipped.push(json!({ "branch": e.branch, "reason": "dirty" }));
-            continue;
-        }
-        if !is_merged(&main, &e.branch, &base) {
-            skipped.push(json!({ "branch": e.branch, "reason": "not-merged" }));
-            continue;
-        }
-        if !git_ok(&main, &["worktree", "remove", &e.path]) {
-            skipped.push(json!({ "branch": e.branch, "reason": "worktree-remove-failed" }));
-            continue;
-        }
-        // Merged is confirmed above, so -D is safe (squash merges make -d
-        // refuse even for delivered work).
-        let branch_deleted = git_ok(&main, &["branch", "-D", &e.branch]);
-        // GitHub's auto-delete usually beat us to it — attempt, never insist.
-        let remote_deleted = git_ok(&main, &["push", "origin", "--delete", &e.branch]);
-        settled.push(json!({
-            "branch": e.branch,
-            "base": base,
-            "worktree": e.path,
-            "branchDeleted": branch_deleted,
-            "remoteDeleted": remote_deleted,
-        }));
-    }
-
-    // --- Fast-forward the base under our feet ------------------------------
-    let current = git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    let base_report = if bases.iter().any(|b| b == &current) {
-        // Dirty check for the BASE ignores the harness-owned worktrees dir:
-        // in a repo that does not gitignore it, the linked worktrees would
-        // read as untracked and permanently veto the fast-forward — but that
-        // dir is exactly what settle manages, never user work at risk.
-        let clean = git_out(&main, &["status", "--porcelain"])
+/// Advance every local base: the MAIN checkout's own branch via ff-only merge
+/// (clean tree only, `.claude/worktrees/` exempt), every other base via the
+/// ff-safe `fetch origin <base>:<base>`. Returns (report-of-current,
+/// reports-of-others) — pure bookkeeping, all reversible.
+fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
+    let current = git_out(main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let current_report = if bases.iter().any(|b| b == &current) {
+        let clean = git_out(main, &["status", "--porcelain"])
             .map(|s| {
                 !s.lines().any(|l| {
                     l.len() > 3
@@ -191,7 +138,7 @@ pub(crate) fn settle_at(start: &Path) -> Value {
             .unwrap_or(false);
         if !clean {
             json!({ "branch": current, "updated": false, "reason": "dirty-tree" })
-        } else if git_ok(&main, &["merge", "--ff-only", &format!("origin/{current}")]) {
+        } else if git_ok(main, &["merge", "--ff-only", &format!("origin/{current}")]) {
             json!({ "branch": current, "updated": true })
         } else {
             json!({ "branch": current, "updated": false, "reason": "non-ff-or-no-remote" })
@@ -199,35 +146,124 @@ pub(crate) fn settle_at(start: &Path) -> Value {
     } else {
         json!({ "branch": current, "updated": false, "reason": "not-on-a-base" })
     };
-
-    // Update the OTHER local bases without checking them out: `git fetch
-    // origin <base>:<base>` fast-forwards a non-checked-out local ref and
-    // REFUSES anything that is not a clean ff — so a base you are not sitting
-    // on never goes stale, and nothing risky can happen to it. The base under
-    // HEAD is excluded here (its ff went through `merge --ff-only` above; git
-    // refuses the refspec form for the checked-out branch anyway).
-    let other_bases: Vec<Value> = bases
+    let others: Vec<Value> = bases
         .iter()
         .filter(|b| *b != &current)
         .map(|b| {
-            let updated = git_ok(&main, &["fetch", "origin", &format!("{b}:{b}")]);
+            let updated = git_ok(main, &["fetch", "origin", &format!("{b}:{b}")]);
             json!({ "branch": b, "updated": updated })
         })
+        .collect();
+    (current_report, others)
+}
+
+/// The settle pass — the testable core of [`run`]. `unit` = the work branch to
+/// settle; `None` reads it from the invocation directory's HEAD (and REFUSES
+/// when that is an integration base). Never panics.
+pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
+    let Some(main) = main_checkout_root(start) else {
+        return json!({ "ok": false, "reason": "not-a-git-repo" });
+    };
+    let bases: Vec<String> =
+        mustard_core::ProjectConfig::load(&main).git.integration_bases().into_iter().collect();
+
+    // The user's contract: bare settle NEVER runs from a base — it is the
+    // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
+    let inv_branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let unit_branch = match unit {
+        Some(u) => u.trim().to_string(),
+        None => {
+            if bases.iter().any(|b| b == &inv_branch) {
+                return json!({
+                    "ok": false,
+                    "reason": "on-integration-base",
+                    "branch": inv_branch,
+                    "hint": "settle é o ritual de saída da unidade: rode a partir do BRANCH DE TRABALHO; numa base, só com --unit <branch>",
+                });
+            }
+            inv_branch.clone()
+        }
+    };
+    let Some(base) = base_of_branch(&unit_branch, &bases) else {
+        return json!({ "ok": false, "reason": "no-base-prefix", "branch": unit_branch });
+    };
+
+    // One fetch for every base — fail-open (offline still verifies against
+    // whatever origin/<base> is already known locally; the merge gate below
+    // stays conservative either way).
+    let mut fetch_args: Vec<&str> = vec!["fetch", "origin"];
+    fetch_args.extend(bases.iter().map(String::as_str));
+    let fetched = git_ok(&main, &fetch_args);
+
+    // THE gate: 100% merged or nothing happens.
+    if !is_merged(&main, &unit_branch, &base) {
+        return json!({
+            "ok": false,
+            "reason": "not-merged",
+            "branch": unit_branch,
+            "base": base,
+            "fetched": fetched,
+            "hint": "nada foi tocado — mergeie o PR primeiro (squash é detectado via gh)",
+        });
+    }
+
+    // Merged confirmed → bring every local base up to date.
+    let (base_report, other_bases) = update_bases(&main, &bases);
+
+    // Prune the unit. Inside its own worktree the process cannot remove its
+    // floor — verify+update happened; hand back the finish step.
+    let entries = git_out(&main, &["worktree", "list", "--porcelain"])
+        .map(|s| parse_worktrees(&s))
+        .unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().replace('\\', "/");
+    let unit_entry = entries.iter().find(|e| e.branch == unit_branch);
+    let (action, worktree_removed) = match unit_entry {
+        Some(e) if cwd.starts_with(&e.path) => ("exit-and-rerun", false),
+        Some(e) => {
+            let removed = git_ok(&main, &["worktree", "remove", &e.path]);
+            (if removed { "settled" } else { "worktree-remove-failed" }, removed)
+        }
+        None => ("settled", false), // worktree already gone; finish the branch.
+    };
+    let (branch_deleted, remote_deleted) = if action == "settled" {
+        (
+            git_ok(&main, &["branch", "-D", &unit_branch]),
+            git_ok(&main, &["push", "origin", "--delete", &unit_branch]),
+        )
+    } else {
+        (false, false)
+    };
+
+    // Other merged harness worktrees — informative only (settle acts on ONE
+    // unit; the user decides about the rest, each via its own settle).
+    let also_mergeable: Vec<String> = entries
+        .iter()
+        .filter(|e| e.branch != unit_branch)
+        .filter(|e| base_of_branch(&e.branch, &bases).is_some_and(|b| is_merged(&main, &e.branch, &b)))
+        .map(|e| e.branch.clone())
         .collect();
 
     json!({
         "ok": true,
-        "fetched": fetched,
-        "base": base_report,
+        "unit": {
+            "branch": unit_branch,
+            "base": base,
+            "merged": true,
+            "action": action,
+            "worktreeRemoved": worktree_removed,
+            "branchDeleted": branch_deleted,
+            "remoteDeleted": remote_deleted,
+        },
+        "baseCheckout": base_report,
         "otherBases": other_bases,
-        "settled": settled,
-        "skipped": skipped,
+        "alsoMergeable": also_mergeable,
+        "fetched": fetched,
     })
 }
 
 /// Run `git-settle` from `root` and print the JSON report.
-pub fn run(root: &Path) {
-    let result = settle_at(root);
+pub fn run(root: &Path, unit: Option<&str>) {
+    let result = settle_at(root, unit);
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
@@ -268,11 +304,11 @@ mod tests {
         );
     }
 
-    /// End-to-end on a real repo: a merged work unit is pruned (worktree +
-    /// local branch), an unmerged one is skipped, and the base fast-forwards
-    /// to origin. Mirrors the house pattern of real-git tempdir fixtures.
-    #[test]
-    fn settles_merged_worktree_skips_unmerged_and_ffs_base() {
+    /// Build the two-unit fixture: a bare origin, a main checkout on `dev`
+    /// (with `.claude/` gitignored so worktrees never read as dirt), one unit
+    /// MERGED into origin/dev (`dev_done`), one open (`dev_open`), and the
+    /// local dev rewound one merge so settle has something to fast-forward.
+    fn fixture() -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().expect("tempdir");
         let bare = dir.path().join("origin.git");
         let main = dir.path().join("repo");
@@ -284,9 +320,6 @@ mod tests {
         git(&main, &["config", "user.name", "t"]);
         git(&main, &["checkout", "-b", "dev"]);
         std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev"}}}"#).expect("cfg");
-        // Ignore the harness dir — a linked worktree under `.claude/worktrees/`
-        // must not read as an untracked (dirty) path in the MAIN tree, exactly
-        // like real projects exclude harness runtime paths.
         std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
         std::fs::write(main.join("a.txt"), "a").expect("seed");
         git(&main, &["add", "-A"]);
@@ -294,7 +327,6 @@ mod tests {
         git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
         git(&main, &["push", "-u", "origin", "dev"]);
 
-        // Work unit 1 — merged into dev and pushed to origin.
         git(&main, &["worktree", "add", ".claude/worktrees/dev_done", "-b", "dev_done"]);
         let wt1 = main.join(".claude").join("worktrees").join("dev_done");
         std::fs::write(wt1.join("done.txt"), "x").expect("wt file");
@@ -302,36 +334,50 @@ mod tests {
         git(&wt1, &["commit", "-m", "done work"]);
         git(&main, &["merge", "--no-ff", "dev_done", "-m", "merge dev_done"]);
         git(&main, &["push", "origin", "dev"]);
-        // Rewind the LOCAL base one merge so settle has something to ff.
         git(&main, &["reset", "--hard", "HEAD~1"]);
 
-        // Work unit 2 — never merged; must be skipped untouched.
         git(&main, &["worktree", "add", ".claude/worktrees/dev_open", "-b", "dev_open"]);
         let wt2 = main.join(".claude").join("worktrees").join("dev_open");
         std::fs::write(wt2.join("open.txt"), "y").expect("wt file");
         git(&wt2, &["add", "-A"]);
         git(&wt2, &["commit", "-m", "open work"]);
 
-        let report = settle_at(&main);
-        assert_eq!(report["ok"], json!(true), "{report}");
-        assert_eq!(report["base"]["updated"], json!(true), "base ff'd to origin: {report}");
-        let settled: Vec<&str> =
-            report["settled"].as_array().expect("settled").iter().filter_map(|s| s["branch"].as_str()).collect();
-        assert_eq!(settled, vec!["dev_done"], "{report}");
-        let skipped: Vec<(&str, &str)> = report["skipped"]
-            .as_array()
-            .expect("skipped")
-            .iter()
-            .filter_map(|s| Some((s["branch"].as_str()?, s["reason"].as_str()?)))
-            .collect();
-        assert!(skipped.contains(&("dev_open", "not-merged")), "{report}");
-        assert!(!wt1.exists(), "merged worktree pruned");
+        (dir, main)
+    }
+
+    /// The user's contract, end to end: bare settle on a base REFUSES; settle
+    /// of an UNMERGED unit refuses touching nothing; `--unit` of the merged
+    /// one prunes worktree + branch and fast-forwards the base.
+    #[test]
+    fn contract_refuses_on_base_blocks_unmerged_and_settles_merged_unit() {
+        let (_dir, main) = fixture();
+
+        // (1) Bare settle from the base → refused (settle is the unit's exit
+        // ritual, never a base-side command).
+        let v = settle_at(&main, None);
+        assert_eq!(v["ok"], json!(false), "{v}");
+        assert_eq!(v["reason"], json!("on-integration-base"));
+
+        // (2) The open unit, from ITS worktree — not merged → hard stop,
+        // nothing touched.
+        let wt2 = main.join(".claude").join("worktrees").join("dev_open");
+        let v = settle_at(&wt2, None);
+        assert_eq!(v["reason"], json!("not-merged"), "{v}");
         assert!(wt2.exists(), "unmerged worktree untouched");
+
+        // (3) The merged unit via --unit from the base (the finish step) →
+        // worktree pruned, branch gone, base fast-forwarded to origin.
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["worktreeRemoved"], json!(true));
+        assert_eq!(v["unit"]["branchDeleted"], json!(true));
+        assert_eq!(v["baseCheckout"]["updated"], json!(true), "base ff'd: {v}");
+        assert!(!main.join(".claude").join("worktrees").join("dev_done").exists());
         assert!(
             git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
             "merged local branch deleted"
         );
-        // Local dev now equals origin/dev (the merge came back via ff).
         let local = git_out(&main, &["rev-parse", "dev"]).expect("local");
         let remote = git_out(&main, &["rev-parse", "origin/dev"]).expect("remote");
         assert_eq!(local, remote, "base fast-forwarded");

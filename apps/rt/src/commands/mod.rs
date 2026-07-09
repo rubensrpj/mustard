@@ -85,15 +85,21 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Post-merge housekeeping (the `/git settle` action): fetch the
-    /// integration bases, fast-forward the base the MAIN checkout sits on
-    /// (clean tree only), and prune every `.claude/worktrees/` unit whose
-    /// branch already landed on its base (worktree removed + local branch
-    /// deleted; remote delete attempted fail-open). Ancestor check first,
-    /// `gh pr list --state merged` as the squash-merge fallback. Dirty /
-    /// current / unmerged worktrees are SKIPPED with a reason — never forced.
+    /// The EXIT RITUAL of a delivered work unit (the `/git settle` action):
+    /// runs from the WORK BRANCH (bare invocation on `dev`/`main` REFUSES),
+    /// verifies the unit is 100% merged on its base (ancestry + `gh` fallback
+    /// for squash merges — not merged: hard stop, nothing touched), advances
+    /// EVERY local base (ff-only merge on the checked-out one, ff-safe
+    /// `fetch base:base` on the rest), then prunes the unit's worktree +
+    /// local branch (remote delete fail-open). Inside the unit's own worktree
+    /// it verifies + updates and answers `exit-and-rerun` — leave, then
+    /// finish with `--unit <branch>` from the main checkout.
     #[command(name = "git-settle")]
     GitSettle {
+        /// The work branch to settle. Omitted: read from the invocation
+        /// directory's HEAD (which must NOT be an integration base).
+        #[arg(long)]
+        unit: Option<String>,
         /// Any directory inside the repo (worktrees welcome — the command
         /// resolves the main checkout itself). Defaults to the current dir.
         #[arg(long, default_value = ".")]
@@ -1713,7 +1719,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         RunCmd::ScanEquivalences { root } => scan_equivalences::run(&root),
         RunCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
-        RunCmd::GitSettle { root } => git_settle::run(&root),
+        RunCmd::GitSettle { unit, root } => git_settle::run(&root, unit.as_deref()),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
         RunCmd::Orient { root } => orient::run(&root),
         RunCmd::GlossaryCoverage {
