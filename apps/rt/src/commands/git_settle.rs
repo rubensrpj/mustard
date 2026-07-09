@@ -200,10 +200,26 @@ pub(crate) fn settle_at(start: &Path) -> Value {
         json!({ "branch": current, "updated": false, "reason": "not-on-a-base" })
     };
 
+    // Update the OTHER local bases without checking them out: `git fetch
+    // origin <base>:<base>` fast-forwards a non-checked-out local ref and
+    // REFUSES anything that is not a clean ff — so a base you are not sitting
+    // on never goes stale, and nothing risky can happen to it. The base under
+    // HEAD is excluded here (its ff went through `merge --ff-only` above; git
+    // refuses the refspec form for the checked-out branch anyway).
+    let other_bases: Vec<Value> = bases
+        .iter()
+        .filter(|b| *b != &current)
+        .map(|b| {
+            let updated = git_ok(&main, &["fetch", "origin", &format!("{b}:{b}")]);
+            json!({ "branch": b, "updated": updated })
+        })
+        .collect();
+
     json!({
         "ok": true,
         "fetched": fetched,
         "base": base_report,
+        "otherBases": other_bases,
         "settled": settled,
         "skipped": skipped,
     })
