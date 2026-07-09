@@ -28,6 +28,7 @@ source: manual
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<pattern>` |
 | `push` | Sync first, then commit + push ONLY the current branch |
 | `pr [<target>]` | Open a PR (idempotent), **one per repo, submodules before parent**, then return each repo to its base. Work branch → its prefix base; bare base `B` → `<target>` or `flow[B]` (promote `dev→main` / backport `main→dev`) |
+| `settle` | Post-merge housekeeping — run AFTER a PR merges: ff-update the base you sit on (clean tree only) + prune every `.claude/worktrees/` unit whose PR landed (worktree + local branch; remote delete fail-open). Delegates WHOLE to `mustard-rt run git-settle` |
 
 → `../../../refs/git/git-flow.md` (mustard.json, integration-base derivation, work-branch naming, scope policy, backport reminder).
 
@@ -48,6 +49,7 @@ Step 0: resolve `$BASE` from the current branch's `{base}_` prefix (bases derive
 - **commit** — analyze → ensure-excluded + detect ephemerals → resolve scope → commit submodules (parallel) → commit parent → Final Status Report.
 - **push** — sync first (stop on conflict) → commit + push ONLY the current branch (set upstream), in each repo → Final Status Report. In a submodule sitting on its OWN base with changes, cut its `{base}_{slug}` work branch FIRST (checkout `-b` carries the edits over) and push THAT — never an integration branch, in any repo. → `../../../refs/git/submodule-rules.md`.
 - **pr** — **work branch** (`{base}_…`): `push` first (this creates each dirty submodule's own `{base}_{slug}` work branch and pushes it — a submodule never commits onto its base; see submodule-rules.md). Then open **one PR per repo, submodules before parent**: for each submodule whose work branch is ahead of its base, `gh pr create --base <sub-base> --head <sub-work-branch> --fill` run INSIDE the submodule; then the parent → `gh pr create --base "$BASE" --head <current> --fill`. Finally **return every repo to its base** — `git checkout <base>` in each submodule, then the parent — so the delivered unit stops accumulating and the tree is clean for the next one. **Bare base** `B` (the sole op allowed on a base): NO push, NO submodule/base-return steps → `gh pr create --base <target|flow[B]> --head "$B" --fill` — promotion `dev → main`, or backport `main → dev` via `/git pr dev`. Existing PR in any repo → print its URL instead of re-creating.
+- **settle** — after the merge lands: `mustard-rt run git-settle` (ONE call; deterministic). It fetches the bases, ff-updates the base the main checkout sits on (skips a dirty tree), and prunes every merged `.claude/worktrees/` unit — ancestor check first, `gh pr list --state merged` fallback for squash merges; dirty/current/unmerged worktrees are skipped with a reason, never forced. Print its JSON report verbatim. Running INSIDE the worktree being settled? `ExitWorktree` first, then settle from the main checkout.
 
 ## Ephemeral Paths
 

@@ -22,6 +22,7 @@ pub mod event;
 pub mod wave;
 pub mod spec;
 pub mod maint;
+pub mod git_settle;
 pub mod scan;
 pub mod scan_claude;
 pub mod scan_equivalences;
@@ -84,6 +85,21 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Post-merge housekeeping (the `/git settle` action): fetch the
+    /// integration bases, fast-forward the base the MAIN checkout sits on
+    /// (clean tree only), and prune every `.claude/worktrees/` unit whose
+    /// branch already landed on its base (worktree removed + local branch
+    /// deleted; remote delete attempted fail-open). Ancestor check first,
+    /// `gh pr list --state merged` as the squash-merge fallback. Dirty /
+    /// current / unmerged worktrees are SKIPPED with a reason — never forced.
+    #[command(name = "git-settle")]
+    GitSettle {
+        /// Any directory inside the repo (worktrees welcome — the command
+        /// resolves the main checkout itself). Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+
     /// Persist a CONFIRMED vocabulary bridge into the learned-equivalences
     /// overlay (`.claude/grain.equivalences.learned.json`) — the write-back of
     /// a settled `uncovered` row: the existence gate found which code
@@ -1697,6 +1713,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         RunCmd::ScanEquivalences { root } => scan_equivalences::run(&root),
         RunCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
+        RunCmd::GitSettle { root } => git_settle::run(&root),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
         RunCmd::Orient { root } => orient::run(&root),
         RunCmd::GlossaryCoverage {
