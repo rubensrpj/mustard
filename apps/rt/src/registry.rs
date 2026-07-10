@@ -10,6 +10,7 @@ use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
 use crate::hooks::observe::feature_outcome_observer::FeatureOutcomeObserver;
 use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
+use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::task::delegation_advisory::DelegationAdvisory;
@@ -482,6 +483,19 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(AgentSummaryObserver)),
             },
+            // T5 (forgeable-approval gate) — on the user's answer to the PLAN
+            // approval `AskUserQuestion`, record `<spec>/.approved-by-user` when
+            // it is a genuine approval of the active Full spec still awaiting
+            // approval in PLAN. `approve-spec` requires that marker in strict
+            // mode, so the orchestrator cannot self-approve. The marker is born
+            // ONLY from the user's real `tool_response` (which the model does not
+            // author). Pure Observer, fail-closed, never blocks.
+            Module {
+                id: "approval_marker_observer",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
+                check: None,
+                observer: Some(Box::new(ApprovalMarkerObserver)),
+            },
             Module {
                 id: "subagent_stop_observer",
                 // T8.5 — SubagentStop reinforcement: bump `last_used` on any
@@ -707,6 +721,25 @@ mod tests {
     }
 
     #[test]
+    fn ask_user_question_post_tool_use_runs_approval_marker_observer() {
+        let registry = Registry::new();
+        // The approval recorder fires only on PostToolUse(AskUserQuestion).
+        assert!(
+            applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
+                .contains(&"approval_marker_observer")
+        );
+        // Never on the Pre side, nor on an unrelated tool.
+        assert!(
+            !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
+                .contains(&"approval_marker_observer")
+        );
+        assert!(
+            !applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
+                .contains(&"approval_marker_observer")
+        );
+    }
+
+    #[test]
     fn by_id_finds_registered_modules() {
         let registry = Registry::new();
         for id in [
@@ -719,6 +752,7 @@ mod tests {
             "skill_usage_observer",
             "tool_result_observer",
             "skills_advisory",
+            "approval_marker_observer",
             "size_gate",
             "path_gate",
             "close_gate",

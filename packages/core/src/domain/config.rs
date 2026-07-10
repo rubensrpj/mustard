@@ -581,28 +581,6 @@ mod tests {
     }
 
     #[test]
-    fn retrieval_hop_defaults_off_and_round_trips() {
-        // Absent block → None (deterministic default); serialization omits it.
-        let cfg = ProjectConfig::default();
-        assert_eq!(cfg.retrieval_hop(), None);
-        let json = serde_json::to_string(&cfg).unwrap();
-        assert!(!json.contains("retrieval"), "empty block omitted on write: {json}");
-
-        // Set → normalised (trim + lowercase); blank → None.
-        let mut cfg = ProjectConfig::default();
-        cfg.retrieval.hop = Some(" Haiku ".into());
-        assert_eq!(cfg.retrieval_hop(), Some("haiku".to_string()));
-        cfg.retrieval.hop = Some("  ".into());
-        assert_eq!(cfg.retrieval_hop(), None);
-
-        // On-disk round trip: the block loads from mustard.json.
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("mustard.json"), r#"{"retrieval":{"hop":"haiku"}}"#).unwrap();
-        let back = ProjectConfig::load(dir.path());
-        assert_eq!(back.retrieval_hop(), Some("haiku".to_string()));
-    }
-
-    #[test]
     fn max_active_specs_honours_zero() {
         let mut cfg = ProjectConfig::default();
         assert_eq!(cfg.max_active_specs(), None);

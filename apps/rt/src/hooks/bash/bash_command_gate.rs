@@ -10,6 +10,13 @@
 //! the parity tests (and `hooks/__tests__/hooks.test.js` /
 //! `harness-wave9.test.js`) are the oracle.
 //!
+//! **One intentional divergence** from that 1:1 port: `bash-native-redirect`
+//! allows (does not nudge) a read of ONE explicit file — `head -20 file.txt`,
+//! `grep foo file.txt`, `cat src/main.ts` — because slicing a single captured
+//! file is the CLAUDE.md "capture to a file, slice the file" idiom, not a tree
+//! scan a native tool does better. The nudge still fires for tree scans
+//! (`grep -r`, globs, directories). See [`redirect_targets_single_file`].
+//!
 //! `BashCommandGate` therefore implements [`Check`] for PreToolUse(Bash) **and**
 //! [`Observer`] for PostToolUse(Bash).
 //!
@@ -602,13 +609,87 @@ fn is_sed_in_place(cmd: &str) -> bool {
     false
 }
 
+/// A path operand that names a *directory / tree* by its shape alone: a
+/// trailing `/`, or the `.`/`..` current/parent dir. Used by
+/// [`redirect_targets_single_file`] to keep the native-tool nudge on a
+/// directory scan.
+fn is_dir_shaped(tok: &str) -> bool {
+    tok == "." || tok == ".." || tok.ends_with('/')
+}
+
+/// A path operand that names *one explicit file* by its shape alone: a path
+/// segment (`src/main.ts` — a `/` with no trailing slash) or a bare name that
+/// carries an extension dot (`file.txt`, `app.log`). A bare word with neither a
+/// dot nor a slash (a grep/rg *pattern*, or an extension-less name) is neither
+/// file- nor directory-shaped, so on its own it does not make a command
+/// single-file — the file operand elsewhere on the line is what does.
+fn is_file_shaped(tok: &str) -> bool {
+    if tok.ends_with('/') {
+        return false;
+    }
+    tok.contains('/') || tok.contains('.')
+}
+
+/// Whether a native-redirectable command targets ONE explicit file, decided by
+/// argument FORM only (no filesystem probe — deterministic and cheap).
+///
+/// True when the command carries **no** tree signal — no recursion flag
+/// (`-r`/`-R`/`--recursive`, including a short cluster like `-rn`), no glob
+/// metacharacter (`*`, `?`, `[`) in any operand, no directory-shaped operand
+/// ([`is_dir_shaped`]) — **and** at least one file-shaped operand
+/// ([`is_file_shaped`]). So `grep foo bar.txt`, `head -20 file.txt`,
+/// `cat src/main.ts` → true; `grep -r foo src/`, `grep foo *.rs`, `cat dir/`
+/// and bare `ls` (no file target at all) → false.
+fn redirect_targets_single_file(cmd: &str) -> bool {
+    let mut has_file = false;
+    let mut seen_cmd = false;
+    for tok in cmd.split_whitespace() {
+        if !seen_cmd {
+            // Skip leading `VAR=value` env-prefix tokens; the first bare token
+            // is the command name itself (mirrors [`first_token`]).
+            if tok.contains('=') {
+                continue;
+            }
+            seen_cmd = true;
+            continue;
+        }
+        if let Some(flag) = tok.strip_prefix('-') {
+            // Recursion turns a read into a tree walk → keep the nudge. Matches
+            // `-r`/`-R`/`--recursive`, or a short flag cluster containing r/R
+            // (`-rn`). Long `--…` flags other than `--recursive` are neutral.
+            let is_recursive = tok == "--recursive"
+                || (!flag.starts_with('-')
+                    && flag.bytes().any(|b| b == b'r' || b == b'R'));
+            if is_recursive {
+                return false;
+            }
+            continue;
+        }
+        // Non-flag operand.
+        if tok.contains('*') || tok.contains('?') || tok.contains('[') {
+            return false; // a glob fans out over many paths
+        }
+        if is_dir_shaped(tok) {
+            return false; // a directory is a tree, not one file
+        }
+        if is_file_shaped(tok) {
+            has_file = true;
+        }
+    }
+    has_file
+}
+
 /// The `bash-native-redirect` gate. Returns the verdict for a command, or
 /// `None` to fall through to the next gate.
 ///
-/// Verdicts, all 1:1 with `bash-native-redirect.js`:
+/// Verdicts (1:1 with `bash-native-redirect.js`, except the single-file
+/// `Allow` — see module § Scope):
 /// - output redirect / `rtk` prefix / non-mapped command → `None` (pass).
 /// - piped/chained with a redirectable first segment → `Inject` (advisory).
-/// - read-only `grep`/`cat`/`ls`/`sed`… → `Deny`.
+/// - read of ONE explicit file (`grep foo file.txt`, `cat main.rs`) → `Allow`
+///   (nudge silenced; [`redirect_targets_single_file`]).
+/// - tree scan `grep -r`/glob/dir, or read-only `sed`, or no clear file
+///   target → `Deny`.
 fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
     let cmd = strip_stderr_redirects(raw_cmd);
     if cmd.is_empty() {
@@ -695,11 +776,22 @@ fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
         });
     }
 
-    let (tool, tip) = redirect_for(&token.to_ascii_lowercase())?;
+    let token_lc = token.to_ascii_lowercase();
+    let (tool, tip) = redirect_for(&token_lc)?;
+
+    // Divergence from the 1:1 JS port (module § Scope): when the command slices
+    // ONE explicit file (`head -20 captured.json`, `grep foo file.txt`), the
+    // "use a native tool" nudge is noise — that is the CLAUDE.md "capture to a
+    // file, slice the file" idiom. Allow it. The nudge stays for a tree scan
+    // (`grep -r`, a glob, a directory) native tools do better, and when no file
+    // target is clear (bare `ls`).
+    if redirect_targets_single_file(&cmd) {
+        return Some(Verdict::Allow);
+    }
+
     Some(Verdict::Deny {
         reason: format!(
-            "[Native Tool Redirect] Use the {tool} tool instead of `{}` in Bash. {tip}",
-            token.to_ascii_lowercase()
+            "[Native Tool Redirect] Use the {tool} tool instead of `{token_lc}` in Bash. {tip}"
         ),
     })
 }
@@ -1195,6 +1287,53 @@ fn commit_stages_inline(cmd: &str) -> bool {
     })
 }
 
+/// `true` when `seg` — one command from a compound line, tolerating a leading
+/// `rtk` — is `git <sub>` (e.g. `git add`, `git commit`). Anchored at the
+/// segment start so a `git add` mentioned *inside a commit message* does not
+/// count as a staging command.
+fn seg_is_git_subcmd(seg: &str, sub: &str) -> bool {
+    let stripped = strip_leading_rtk(seg.trim());
+    let lower = stripped.trim_start().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("git") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(|c: char| c.is_whitespace()) else {
+        return false;
+    };
+    match rest.trim_start().strip_prefix(sub) {
+        Some(after) => after.is_empty() || after.starts_with(char::is_whitespace),
+        None => false,
+    }
+}
+
+/// `true` when the same compound command runs a `git add` **before** the
+/// `git commit` — `git add -A && git commit -m x`, `git add . ; git commit …`.
+///
+/// At `PreToolUse` the chained `git add` has not run yet, so the index the gate
+/// inspects is still empty even though the commit *will* record the files the
+/// earlier `git add` stages. Recognising the chained add keeps the "No staged
+/// changes detected" advisory off the most common commit idiom, while a plain
+/// `git commit` against an empty index still warns. Segment boundaries are read
+/// on the quote-masked view so a `;`/`&` inside a commit message is not
+/// mistaken for a command separator.
+fn chained_git_add_precedes_commit(cmd: &str) -> bool {
+    let masked = mask_quoted_operators(cmd);
+    let mut saw_git_add = false;
+    for seg in masked.split(is_cmd_separator) {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        if seg_is_git_subcmd(seg, "commit") && saw_git_add {
+            return true;
+        }
+        if seg_is_git_subcmd(seg, "add") {
+            saw_git_add = true;
+        }
+    }
+    false
+}
+
 /// The `MUSTARD_COMMIT_GATE_MODE` mode for the commit gate.
 ///
 /// Default is `warn` (retro-compat with `getCommitGateMode` in
@@ -1445,12 +1584,18 @@ fn review_gate(cmd: &str, ctx: &Ctx, mode: Mode) -> Option<Verdict> {
 
     // Check 1-4: staged changes — sensitive / generated / large.
     match staged_files(project_dir) {
-        // A `git commit -a/-am` (or `commit -- <paths>`) stages its changes as
-        // part of the commit, so an empty index here is expected — not a
-        // missing-changes problem. Only a plain `git commit` relying on a
-        // pre-staged index warns; an inline-staging commit falls through to the
-        // (empty) file-scan arm below, which is a harmless no-op.
-        Some(files) if files.is_empty() && !commit_stages_inline(cmd) => {
+        // An empty index here is expected — not a missing-changes problem —
+        // when the commit stages its own changes (`-a`/`-am`/`commit -- <paths>`)
+        // or when a `git add` is chained *before* the commit in the same command
+        // (`git add -A && git commit -m x`; that add has not run yet at
+        // PreToolUse). Only a plain `git commit` relying on a pre-staged index
+        // warns; the self/chained-staging forms fall through to the (empty)
+        // file-scan arm below, a harmless no-op.
+        Some(files)
+            if files.is_empty()
+                && !commit_stages_inline(cmd)
+                && !chained_git_add_precedes_commit(cmd) =>
+        {
             warnings.push("No staged changes detected".to_string());
         }
         Some(files) => {
@@ -1928,12 +2073,10 @@ mod tests {
     }
 
     #[test]
-    fn redirect_denies_cat_suggesting_read() {
-        let v = verdict_for("cat src/main.ts");
-        match v {
-            Verdict::Deny { reason } => assert!(reason.contains("Read")),
-            other => panic!("expected Deny, got {other:?}"),
-        }
+    fn redirect_allows_single_file_cat() {
+        // T4: `cat` of ONE explicit file is the "slice a captured file" idiom,
+        // not a tree scan — the native-tool nudge is silenced (Allow).
+        assert!(!verdict_for("cat src/main.ts").is_blocking());
     }
 
     #[test]
@@ -1964,9 +2107,32 @@ mod tests {
     }
 
     #[test]
-    fn redirect_denies_head_tail_find() {
-        for cmd in ["head -20 file.txt", "tail -50 app.log", "find . -name '*.ts'"] {
-            assert!(verdict_for(cmd).is_blocking(), "expected deny for: {cmd}");
+    fn redirect_allows_single_file_head_tail() {
+        // T4: slicing ONE explicit file with head/tail is silenced.
+        for cmd in ["head -20 file.txt", "tail -50 app.log"] {
+            assert!(!verdict_for(cmd).is_blocking(), "expected silent for: {cmd}");
+        }
+    }
+
+    #[test]
+    fn redirect_denies_find_tree_scan() {
+        // `find` walks a directory tree → the Glob nudge stands.
+        assert!(verdict_for("find . -name '*.ts'").is_blocking());
+    }
+
+    /// T4 single-file vs tree heuristic (AC4): the nudge is silenced for a read
+    /// of ONE explicit file (the "capture to a file, slice the file" idiom) and
+    /// kept for a tree scan native tools do better.
+    #[test]
+    fn redirect_single_file_silent_tree_scan_denied() {
+        // Single explicit file → silent (Allow). `grep foo bar.txt` — the `foo`
+        // pattern is neither file- nor dir-shaped; the trailing file decides.
+        for silent in ["grep foo bar.txt", "grep TODO src/main.rs", "head -20 file.txt"] {
+            assert!(!verdict_for(silent).is_blocking(), "expected silent: {silent}");
+        }
+        // Tree scan → nudge stands (Deny): recursion, glob, or a directory.
+        for denied in ["grep -r foo src/", "grep foo *.rs", "cat dir/", "grep foo src/"] {
+            assert!(verdict_for(denied).is_blocking(), "expected deny: {denied}");
         }
     }
 
@@ -2071,7 +2237,11 @@ mod tests {
 
     #[test]
     fn redirect_handles_env_var_prefix() {
-        assert!(verdict_for("NODE_ENV=test grep pattern file.txt").is_blocking());
+        // The `VAR=value` prefix is skipped when finding the command; the tree
+        // scan `grep -r … src/` is still denied. (A single-file target such as
+        // `grep pattern file.txt` is now silenced by the T4 heuristic, so this
+        // parity check uses a tree form to keep exercising the prefix skip.)
+        assert!(verdict_for("NODE_ENV=test grep -r pattern src/").is_blocking());
     }
 
     #[test]
@@ -2257,6 +2427,22 @@ mod tests {
         assert!(!commit_stages_inline("git commit --amend -m x"));
         // `-m"attached"` is not an all-letters cluster → not misread as `-a`.
         assert!(!commit_stages_inline("git commit -m\"add auth\""));
+    }
+
+    /// T6 (AC7): a `git add` chained *before* the commit pre-stages it, so the
+    /// empty index at PreToolUse must NOT trip the "No staged changes" advisory.
+    /// A plain commit with no chained add still warns.
+    #[test]
+    fn chained_git_add_before_commit_is_detected() {
+        assert!(chained_git_add_precedes_commit("git add -A && git commit -m x"));
+        assert!(chained_git_add_precedes_commit("git add . ; git commit -m x"));
+        assert!(chained_git_add_precedes_commit("rtk git add -A && rtk git commit -m x"));
+        // No add before the commit → the empty-index warning must stand.
+        assert!(!chained_git_add_precedes_commit("git commit -m x"));
+        // An add *after* the commit does not pre-stage it.
+        assert!(!chained_git_add_precedes_commit("git commit -m x && git add -A"));
+        // `git add` only inside the commit message is not a staging command.
+        assert!(!chained_git_add_precedes_commit("git commit -m \"git add stuff\""));
     }
 
     /// A non-commit Bash command never triggers the review gate — non-blocking.

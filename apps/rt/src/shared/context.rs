@@ -414,6 +414,31 @@ fn pending_branch_marker(project_dir_path: &str, session_id: &str) -> Option<Pat
     )
 }
 
+/// Filename of the per-spec **user-approval** marker (see
+/// [`approval_marker_path`]).
+pub const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";
+
+/// Compose the per-spec user-approval marker path:
+/// `<project>/.claude/spec/<spec>/.approved-by-user`.
+///
+/// The single home for this path so its two consumers cannot drift: the
+/// `approval_marker_observer` (which WRITES it on a genuine human PLAN approval)
+/// and `approve-spec` (which REQUIRES it before emitting the `draft→approved`
+/// signal). The marker can only be born from the user's real `AskUserQuestion`
+/// answer — echoed by the harness in `tool_response`, which the model does not
+/// author — so an orchestrator cannot forge the approval it is itself gated by.
+/// `None` on an I1 guard rejection of the project root or an invalid spec name.
+#[must_use]
+pub fn approval_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .and_then(|p| p.for_spec(spec))
+            .ok()?
+            .dir()
+            .join(APPROVED_BY_USER_MARKER),
+    )
+}
+
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the
 /// harness sets on every wave dispatch and that `route` already stamps on each
 /// emitted event. Co-located with [`current_spec`] so a hook (e.g. the
