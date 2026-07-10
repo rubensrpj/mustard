@@ -155,16 +155,22 @@ fn family_of<'a>(build: &'a Option<String>, test: &'a Option<String>) -> Option<
 /// over every subproject breaks a poliglot repo (a C#/.NET backend and a
 /// TypeScript dashboard cannot both run `cargo test`). When this subproject's
 /// OWN stack resolves to a default command whose family DIFFERS from the global
-/// command's family, run the subproject's stack default; otherwise keep the
-/// global command verbatim.
+/// command's family, this subproject is a genuinely different stack than the
+/// global command assumes; otherwise keep the global command verbatim.
 ///
-/// Conservative fall-through to the global command (never invents behavior):
-/// - `detected_stacks` empty — the grain model inferred no stack for this
-///   subproject (older model, or nothing matched). Overriding on a bare
-///   directory guess could degrade a working monolingual repo, so we trust the
-///   global command. This is what makes "absence of detection ⇒ global" hold.
+/// A different family is resolved by whether grain positively detected a stack:
+/// - `detected_stacks` non-empty — grain confirmed this subproject's stack, so
+///   ADOPT its default command (the poliglot case).
+/// - `detected_stacks` empty (older grain model, or nothing matched) — we won't
+///   GUESS a replacement command from a bare directory manifest, but we also
+///   decline to spray the mismatched global command here: running `npm test`
+///   inside a C#/.NET subproject (no `package.json`) always fails, which is what
+///   forced routine `MUSTARD_QA_GATE_MODE=warn`. The subproject returns
+///   command-less ⇒ reported as skipped, never a spurious failure.
+///
+/// Keeps the global command verbatim (never invents behavior) when:
 /// - no default resolvable at `target_cwd` (no top-level manifest recognised by
-///   [`discover_defaults`]) — nothing concrete to switch to, keep the global.
+///   [`discover_defaults`]) — nothing concrete to compare, keep the global.
 /// - same command family — a MONOLINGUAL repo stays BYTE-FOR-BYTE unchanged: we
 ///   return the global commands as-is, never the stack default's decorated
 ///   (`--workspace --quiet`) form.
@@ -178,22 +184,30 @@ fn stack_aware_commands(
     global_test: &Option<String>,
 ) -> (Option<String>, Option<String>) {
     let global = || (global_build.clone(), global_test.clone());
-    // No positive stack detection → keep the global command (conservative).
-    if detected_stacks.is_empty() {
-        return global();
-    }
     // The subproject's own stack default, from the shared stack→command table.
+    // `None` when no top-level manifest is recognised — nothing concrete to
+    // compare against, so the global command stands (unchanged).
     let Some(stack_default) = discover_defaults(target_cwd).into_iter().next() else {
         return global();
     };
     let global_family = family_of(global_build, global_test);
     let stack_family = family_of(&stack_default.build, &stack_default.test);
-    // A different, resolvable family ⇒ genuinely different stack ⇒ adopt its
-    // default. Same family (or indeterminate) ⇒ keep the global untouched.
-    if stack_family.is_some() && stack_family != global_family {
-        (stack_default.build, stack_default.test)
+    // Same family (or indeterminate) ⇒ keep the global untouched — a MONOLINGUAL
+    // repo stays byte-for-byte unchanged.
+    if stack_family.is_none() || stack_family == global_family {
+        return global();
+    }
+    // A genuinely different, resolvable family: this subproject is NOT the stack
+    // the global command assumes.
+    if detected_stacks.is_empty() {
+        // No positive per-subproject detection. Decline the mismatched global
+        // command rather than run it and always fail; a command-less target is
+        // reported skipped (see [`verify_targets`]), not a spurious failure. We
+        // do NOT guess a replacement from the bare directory manifest.
+        (None, None)
     } else {
-        global()
+        // Positive detection confirms the different stack ⇒ adopt its default.
+        (stack_default.build, stack_default.test)
     }
 }
 
@@ -1010,12 +1024,14 @@ mod tests {
     }
 
     #[test]
-    fn stack_aware_falls_back_to_global_without_detection() {
-        // Conservative gate: no detected stacks → keep the global command even
-        // when the directory alone would resolve a different stack default.
-        // Absence of detection must never silently switch a working repo.
+    fn stack_aware_without_detection_keeps_global_for_same_family() {
+        // Older grain model (no detected_stacks) whose subproject manifest is the
+        // SAME family as the global command (a monolingual repo, or a same-stack
+        // subproject): the global command fits here → keep it byte-for-byte. Only
+        // a provably-DIFFERENT family is declined (see the foreign-subproject
+        // regression below). Absence of detection never GUESSES a switch.
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
         let (b, t) = stack_aware_commands(
             dir.path(),
             &[],
@@ -1024,5 +1040,28 @@ mod tests {
         );
         assert_eq!(b.as_deref(), Some("cargo build"));
         assert_eq!(t.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn stack_aware_skips_foreign_subproject_without_detection() {
+        // AC1 (T1) regression: a poliglot repo whose grain model predates
+        // per-subproject stack detection (detected_stacks empty). The global
+        // mustard.json command is a JS `npm test`; one subproject is a C#/.NET dir
+        // (a top-level `.csproj`, no package.json). Spraying `npm test` there runs
+        // npm in a dir with no package.json and ALWAYS fails — the case that
+        // "never passed" and forced MUSTARD_QA_GATE_MODE=warn. Without positive
+        // detection we don't guess the subproject's own command, but we DO decline
+        // the provably-mismatched global one: the target comes back command-less
+        // (skipped), not failed.
+        let dotnet_dir = tempdir().unwrap();
+        std::fs::write(dotnet_dir.path().join("Api.csproj"), "<Project/>").unwrap();
+        let (b, t) = stack_aware_commands(
+            dotnet_dir.path(),
+            &[],
+            &None,
+            &Some("npm test".to_string()),
+        );
+        assert_eq!(b, None, "no mismatched build sprayed into a C# dir");
+        assert_eq!(t, None, "`npm test` not sprayed into a C# subproject → skipped, not failed");
     }
 }

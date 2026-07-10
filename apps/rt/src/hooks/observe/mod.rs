@@ -3,6 +3,7 @@ mod memory_block;
 
 pub mod agent_summary_observer;
 pub mod amend_window_inject;
+pub mod approval_marker_observer;
 pub mod change_request_log;
 pub mod feature_outcome_observer;
 pub mod memory_promote_observer;

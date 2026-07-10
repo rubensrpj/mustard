@@ -11,14 +11,17 @@
 //! slices, shared contracts, hubs),
 //! the anchor files to read (plus the per-anchor `anchorsDetail` audit —
 //! score/terms — and the `report.reason` strength, so the orchestrator never
-//! opens the scan JSON), and a `miss` flag + note. `miss=true` means no repo
-//! precedent matched — the AI must treat it as net-new (do NOT conclude "absent"
-//! blindly: the term index has false negatives and no synonyms; confirm by
-//! reading). Fail-open: a missing model / unavailable tool yields a miss result.
+//! opens the scan JSON), the wide `candidates` pool (~25 fused rows with
+//! per-file evidence — the menu the ORCHESTRATOR selects 5-10 files from,
+//! in-session, no subprocess), and a `miss` flag + note. `miss=true` means no
+//! repo precedent matched — the AI must treat it as net-new (do NOT conclude
+//! "absent" blindly: the term index has false negatives and no synonyms;
+//! confirm by reading). Fail-open: a missing model / unavailable tool yields
+//! a miss result.
 
 use std::path::Path;
 
-use mustard_core::domain::scan::{DigestQuery, DigestTerm};
+use mustard_core::domain::scan::{DigestQuery, DigestTerm, FileDetail};
 use mustard_core::io::fs as mfs;
 use mustard_core::Scan;
 use serde_json::{json, Value};
@@ -76,41 +79,41 @@ fn withhold_planning(reason: &str, bridged: bool) -> bool {
     matches!(reason, "weak" | "none") && !bridged
 }
 
-/// Max `candidates` rows emitted on a NON-strong result — the menu the
-/// orchestration-layer translator (a Haiku step that lives OUTSIDE this
-/// command) selects from to re-query in the code's own vocabulary. The source
-/// is the PUBLISHED domain-term index (`Scan::digest().terms`, already
-/// `build_terms`-ranked and capped at the scan tool's `MAX_TERMS`); this is the
-/// emission-side bound on top of that, so the menu stays a few KB regardless of
-/// the catalogue's published cap. The published order is preserved verbatim
-/// (byte-stable), never re-derived or re-sorted here.
-const CANDIDATES_MAX: usize = 80;
+/// Max `vocabulary` rows emitted on a NON-strong result — the menu the
+/// ORCHESTRATOR (the Claude session that ran this command) re-queries against
+/// in the code's own vocabulary. The source is the PUBLISHED domain-term index
+/// (`Scan::digest().terms`, already `build_terms`-ranked and capped at the
+/// scan tool's `MAX_TERMS`); this is the emission-side bound on top of that,
+/// so the menu stays a few KB regardless of the catalogue's published cap. The
+/// published order is preserved verbatim (byte-stable), never re-derived or
+/// re-sorted here.
+const VOCABULARY_MAX: usize = 80;
 
 /// `true` when the report's strength is NOT `strong` — i.e. the orchestrator
 /// must re-query in the code's own vocabulary before planning. Drives whether
-/// `candidates` (the translator's menu) is attached: emitted on
+/// `vocabulary` (the re-query menu) is attached: emitted on
 /// `weak`/`none`/`generated_only` or any legacy `miss`, omitted on `strong`
 /// (the strong path stays lean — the anchors already ARE the evidence).
 fn non_strong(reason: &str, miss: bool) -> bool {
     reason != "strong" && (matches!(reason, "weak" | "none" | "generated_only") || miss || reason.is_empty())
 }
 
-/// Project the PUBLISHED domain-term index into the bounded `candidates` menu:
+/// Project the PUBLISHED domain-term index into the bounded `vocabulary` menu:
 /// each row is `{ term, count }` drawn verbatim from the catalogue
 /// (`Scan::digest().terms`) — REUSED, never re-derived or re-sorted, so the
 /// published rank order (frequency/rank desc, term asc) carries through
-/// byte-stably. Bounded by [`CANDIDATES_MAX`] (rows). Pure (no spawn, no IO) so
+/// byte-stably. Bounded by [`VOCABULARY_MAX`] (rows). Pure (no spawn, no IO) so
 /// the shape is unit-testable without the scan binary.
 ///
 /// `samples` (a couple of "where this vocabulary lives" paths) was DROPPED from
-/// stdout: the consumer — the orchestration layer that re-queries against this
-/// menu — reads the `term` column ONLY, never the samples; they were emitted
-/// solely for a manual fallback. Dropping them trims the weak/none JSON without
+/// stdout: the consumer — the orchestrator re-querying against this menu —
+/// reads the `term` column ONLY, never the samples; they were emitted solely
+/// for a manual fallback. Dropping them trims the weak/none JSON without
 /// affecting the term menu.
-fn candidates_from_index(index: &[DigestTerm]) -> Vec<serde_json::Value> {
+fn vocabulary_from_index(index: &[DigestTerm]) -> Vec<serde_json::Value> {
     index
         .iter()
-        .take(CANDIDATES_MAX)
+        .take(VOCABULARY_MAX)
         .map(|t| {
             json!({
                 "term": t.term,
@@ -122,9 +125,9 @@ fn candidates_from_index(index: &[DigestTerm]) -> Vec<serde_json::Value> {
 
 /// Build the insumos payload for a successful digest query. Pure (no spawn, no
 /// IO) so the payload shape — including the `stacks` passthrough and the
-/// `candidates` menu — is unit-testable without the scan binary. `index` is the
+/// `vocabulary` menu — is unit-testable without the scan binary. `index` is the
 /// PUBLISHED domain-term catalogue (`Scan::digest().terms`), used ONLY on a
-/// non-strong result to build `candidates`; on a strong result it is ignored
+/// non-strong result to build `vocabulary`; on a strong result it is ignored
 /// (and the caller passes an empty slice, skipping the extra fetch).
 fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::Value {
     let withhold = withhold_planning(q.report.reason.as_str(), q.report.bridged);
@@ -209,17 +212,17 @@ fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::V
         }),
         "note": note(q),
     });
-    // On a NON-strong result, attach the translator's menu: a bounded slice of
-    // the PUBLISHED domain-term index so an orchestration-layer (Haiku) step can
-    // map a cross-lingual intent onto the repo's real code vocabulary and
-    // re-query. Omitted on `strong` — there the anchors already ARE the
-    // evidence, and the strong path stays lean. No LLM call here: this command
-    // only PUBLISHES the menu, deterministically. The non-strong fallback path
-    // (scan unavailable) has no catalogue, so it passes an empty slice → an
-    // empty `candidates`, honestly signalling "no vocabulary to offer".
+    // On a NON-strong result, attach the re-query menu: a bounded slice of the
+    // PUBLISHED domain-term index so the orchestrator can map a cross-lingual
+    // intent onto the repo's real code vocabulary and re-query. Omitted on
+    // `strong` — there the anchors already ARE the evidence, and the strong
+    // path stays lean. Deterministic: this command only PUBLISHES the menu.
+    // The non-strong fallback path (scan unavailable) has no catalogue, so it
+    // passes an empty slice → an empty `vocabulary`, honestly signalling "no
+    // vocabulary to offer".
     if non_strong(q.report.reason.as_str(), q.miss) {
         if let Some(obj) = out.as_object_mut() {
-            obj.insert("candidates".to_string(), json!(candidates_from_index(index)));
+            obj.insert("vocabulary".to_string(), json!(vocabulary_from_index(index)));
         }
     }
     // Multi-concern split: when scan partitioned the query's concepts into ≥2
@@ -484,17 +487,469 @@ fn reason_note(q: &DigestQuery) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Retrieval fusion — the pagerank short-list (`scan rank`, C2 query shape)
+// RRF-fused with the digest anchors into the additive `insumos` field, plus
+// the automatic gloss for a non-English intent. Every rung is FAIL-OPEN: a
+// missing translator / dictionary / scan binary degrades to the digest list
+// alone — the field always renders, existing fields never change.
+// ---------------------------------------------------------------------------
+
+/// Fused short-list length (top 10 — the measured Acc@10 operating point).
+const INSUMOS_MAX: usize = 10;
+
+/// The RRF constant (`k = 60`, the measured winner in the fusion benchmark).
+const RRF_K: f64 = 60.0;
+
+/// `scan rank`'s direct identifier-match floor (the tool default, pinned
+/// explicitly — the calibrated product contract).
+const RANK_DIRECT_BASE: u64 = 100_000;
+
+/// English function words for the language vote — the EN side of the scan
+/// dictionary's `is_non_english` heuristic, embedded compactly (a router,
+/// not a classifier).
+const EN_STOP: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "if", "of", "at", "by", "for", "with", "about", "into",
+    "through", "before", "after", "to", "from", "in", "out", "on", "off", "over", "under", "again",
+    "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each",
+    "few", "more", "most", "some", "such", "no", "not", "only", "same", "than", "too", "very",
+    "is", "are", "was", "were", "been", "being", "be", "have", "has", "had", "does", "did", "this",
+    "that", "these", "those", "will", "would", "can", "could", "should", "must", "it", "its",
+    "his", "her", "our", "their", "your", "you", "they", "she", "what", "which", "who", "as",
+];
+
+/// Portuguese function words — the accent-bearing romance side of the vote.
+const PT_STOP: &[&str] = &[
+    "o", "a", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "no", "na",
+    "nos", "nas", "ao", "aos", "à", "às", "pelo", "pela", "pelos", "pelas", "em", "por", "para",
+    "com", "sem", "sob", "sobre", "entre", "até", "e", "ou", "mas", "que", "se", "não", "sim",
+    "é", "são", "foi", "foram", "ser", "sendo", "era", "eram", "está", "estão", "estava", "tem",
+    "têm", "tinha", "há", "já", "mais", "menos", "muito", "muitos", "como", "quando", "onde",
+    "qual", "quais", "quem", "isso", "isto", "esse", "essa", "esses", "essas", "este", "esta",
+    "estes", "estas", "ele", "ela", "eles", "elas", "você", "nós", "eu", "seu", "sua", "seus",
+    "suas", "meu", "minha", "nosso", "nossa", "também", "depois", "antes", "agora", "aqui",
+    "cada", "todo", "toda", "todos", "todas", "outro", "outra", "outros", "outras", "mesmo",
+    "mesma", "ainda", "então", "pois", "porque",
+];
+
+/// `true` when the intent reads as NON-English: the PT function words outvote
+/// the English ones, or the vote ties WITH Latin-accent evidence present —
+/// the exact rule of the scan dictionary's `is_non_english`. Biased to send:
+/// a falsely-English verdict merely skips the gloss; a falsely-foreign one
+/// costs a single no-op MT call (the sidecar passes English through).
+fn looks_non_english(intent: &str) -> bool {
+    let mut en_hits = 0usize;
+    let mut pt_hits = 0usize;
+    for word in intent.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let w = word.to_lowercase();
+        if EN_STOP.contains(&w.as_str()) {
+            en_hits += 1;
+        }
+        if PT_STOP.contains(&w.as_str()) {
+            pt_hits += 1;
+        }
+    }
+    let lower = intent.to_lowercase();
+    let has_accent = super::scan_equivalences::fold_tok(&lower) != lower;
+    pt_hits > en_hits || (has_accent && pt_hits >= en_hits)
+}
+
+/// Auto-gloss: translate a non-English-looking intent through the OPTIONAL
+/// local `mustard-translate` sidecar, returning the English text to ride
+/// inside the effective intent. `None` (no gloss, original behavior) when the
+/// intent votes English, the translator is absent or fails, the sidecar
+/// detected English anyway, or the translation adds nothing — fail-open.
+fn auto_gloss(intent: &str) -> Option<String> {
+    if !looks_non_english(intent) {
+        return None;
+    }
+    let translation = crate::shared::translate::Translate::locate()?.text(intent)?;
+    if translation.detected == "en" {
+        return None;
+    }
+    let en = translation.en.trim().to_string();
+    if en.is_empty() || en.eq_ignore_ascii_case(intent.trim()) {
+        return None;
+    }
+    Some(en)
+}
+
+/// Expand the raw intent with the scan-time equivalence tokens (the measured
+/// C2 query shape: raw PT + added EN tokens): each intent token ≥3 chars is
+/// accent-folded and looked up EXACTLY in the `grain.equivalences.json` map;
+/// hits append their tokens, deduped across the whole intent in
+/// first-occurrence order. No hit → the intent passes through verbatim.
+fn expand_query(intent: &str, equiv: &std::collections::BTreeMap<String, Vec<String>>) -> String {
+    let mut added: Vec<String> = Vec::new();
+    for tok in intent.split(|c: char| !c.is_alphanumeric()) {
+        if tok.chars().count() < 3 {
+            continue;
+        }
+        let key = super::scan_equivalences::fold_tok(tok);
+        if let Some(toks) = equiv.get(&key) {
+            for t in toks {
+                if !added.contains(t) {
+                    added.push(t.clone());
+                }
+            }
+        }
+    }
+    if added.is_empty() {
+        intent.to_string()
+    } else {
+        format!("{intent} {}", added.join(" "))
+    }
+}
+
+/// Order the digest's anchor audit into ONE ranked file list for the fusion:
+/// max `score_x1024` per file, score desc, tie → path asc; separators
+/// normalised to `/` so the rank and digest keys join. Pure + byte-stable.
+fn digest_ranked_files(detail: &[FileDetail]) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut best: BTreeMap<String, u64> = BTreeMap::new();
+    for d in detail {
+        let file = d.file.replace('\\', "/");
+        let e = best.entry(file).or_insert(0);
+        *e = (*e).max(d.score_x1024);
+    }
+    let mut rows: Vec<(String, u64)> = best.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.into_iter().map(|(f, _)| f).collect()
+}
+
+/// Reciprocal Rank Fusion of the two retrieval lists:
+/// `score(f) = Σ_lists 1/(k + rank_f)` with 1-based ranks and `k` =
+/// [`RRF_K`]; sorted score desc, tie → path asc; capped at [`INSUMOS_MAX`].
+/// Fully deterministic: fixed accumulation order, no NaN possible,
+/// `total_cmp` keeps the sort total. Each row carries its provenance —
+/// `rank`, `digest`, or `both`. Pure (no spawn, no IO), unit-tested.
+fn fuse_rrf(rank_list: &[String], digest_list: &[String]) -> Vec<(String, &'static str)> {
+    use std::collections::BTreeMap;
+    let mut acc: BTreeMap<String, (f64, bool, bool)> = BTreeMap::new();
+    for (i, f) in rank_list.iter().enumerate() {
+        let e = acc.entry(f.clone()).or_insert((0.0, false, false));
+        e.0 += 1.0 / (RRF_K + (i + 1) as f64);
+        e.1 = true;
+    }
+    for (i, f) in digest_list.iter().enumerate() {
+        let e = acc.entry(f.clone()).or_insert((0.0, false, false));
+        e.0 += 1.0 / (RRF_K + (i + 1) as f64);
+        e.2 = true;
+    }
+    let mut rows: Vec<(String, f64, bool, bool)> =
+        acc.into_iter().map(|(f, (s, r, d))| (f, s, r, d)).collect();
+    rows.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(INSUMOS_MAX);
+    rows.into_iter()
+        .map(|(f, _, r, d)| {
+            let source = match (r, d) {
+                (true, true) => "both",
+                (true, false) => "rank",
+                _ => "digest",
+            };
+            (f, source)
+        })
+        .collect()
+}
+
+/// Build the fused `insumos` rows: the pagerank short-list (`scan rank` over
+/// the expanded query) RRF-fused with the digest's anchor audit. Gated on the
+/// dictionary sidecar existing; a missing scan binary or a rank error
+/// degrades to the digest list alone (fail-open) — the field ALWAYS renders.
+fn insumos_rows(root: &Path, intent: &str, detail: &[FileDetail]) -> Vec<Value> {
+    let digest_list = digest_ranked_files(detail);
+    let dict = root.join(".claude").join("grain.dictionary.json");
+    let rank_list: Vec<String> = if dict.is_file() {
+        let equiv = super::scan_equivalences::load_equivalences(root);
+        let model = root.join(".claude").join("grain.model.json");
+        let query = expand_query(intent, &equiv);
+        Scan::locate()
+            .rank(&model, &dict, &query, INSUMOS_MAX, RANK_DIRECT_BASE)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    fuse_rrf(&rank_list, &digest_list)
+        .into_iter()
+        .map(|(file, source)| json!({ "file": file, "source": source }))
+        .collect()
+}
+
+/// Attach the ADDITIVE retrieval fields to the insumos payload: `insumos`
+/// (the RRF-fused top-10 short-list — ALWAYS present, possibly empty),
+/// `candidates` (the WIDE fused pool with per-file evidence — ALWAYS present,
+/// the in-session selection menu) and `gloss` (only when the auto-gloss
+/// fired). No existing field is touched — the run output is byte-compared in
+/// gates, and every key is additive + deterministic.
+fn attach_retrieval(v: &mut Value, root: &Path, intent: &str, gloss: Option<&str>, detail: &[FileDetail]) {
+    let rows = insumos_rows(root, intent, detail);
+    let pool = build_pool(root, intent, detail);
+    let equiv = super::scan_equivalences::load_equivalences(root);
+    let uncovered = uncovered_terms(intent, &equiv, &pool);
+    let pool_rows = candidates_rows(&pool);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("insumos".to_string(), json!(rows));
+        obj.insert("candidates".to_string(), json!(pool_rows));
+        obj.insert("uncovered".to_string(), json!(uncovered));
+        if let Some(en) = gloss {
+            obj.insert("gloss".to_string(), json!(en));
+        }
+    }
+}
+
+/// The pool's BLIND SPOTS — request concepts with NO representation in the
+/// candidate evidence. For each intent token (≥4 chars, at least one letter,
+/// not an EN/PT function word), the probe set is its accent-folded form plus
+/// every equivalence expansion of it; the concept counts covered when ANY
+/// probe matches ANY candidate's matched-term evidence (folded; exact, or
+/// prefix-either-way with both sides ≥4 chars, so `cliente`/`clientes` and
+/// `lista`/`listar` join). Everything else is emitted as a `{term, tried}`
+/// row, term-ascending (byte-stable). Deliberately a LOWER bound on
+/// blindness: a term matched by an irrelevant file still counts covered — the
+/// field DIRECTS the existence gate (one targeted enumeration per row), it
+/// never replaces it.
+fn uncovered_terms(
+    intent: &str,
+    equiv: &std::collections::BTreeMap<String, Vec<String>>,
+    pool: &[Candidate],
+) -> Vec<Value> {
+    let evidence: Vec<String> = pool
+        .iter()
+        .flat_map(|c| c.terms.iter())
+        .map(|t| super::scan_equivalences::fold_tok(&t.to_lowercase()))
+        .collect();
+    let hits = |probe: &str| {
+        evidence.iter().any(|e| {
+            e == probe
+                || (probe.len() >= 4
+                    && e.len() >= 4
+                    && (e.starts_with(probe) || probe.starts_with(e.as_str())))
+        })
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    for raw in intent.split(|c: char| !c.is_alphanumeric()) {
+        if raw.chars().count() < 4 || !raw.chars().any(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let lower = raw.to_lowercase();
+        if EN_STOP.contains(&lower.as_str()) || PT_STOP.contains(&lower.as_str()) {
+            continue;
+        }
+        let folded = super::scan_equivalences::fold_tok(&lower);
+        if !seen.insert(folded.clone()) {
+            continue;
+        }
+        let mut tried = vec![folded.clone()];
+        for t in equiv.get(&folded).map(Vec::as_slice).unwrap_or(&[]) {
+            let f = super::scan_equivalences::fold_tok(&t.to_lowercase());
+            if !tried.contains(&f) {
+                tried.push(f);
+            }
+        }
+        if tried.iter().any(|p| hits(p)) {
+            continue;
+        }
+        rows.push((lower, tried));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.into_iter().map(|(term, tried)| json!({ "term": term, "tried": tried })).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Candidate pool — the same two deterministic lists, fused WIDER (~25 rows,
+// each with its source + position + matched-terms evidence) and PUBLISHED as
+// the additive `candidates` field. The SELECTION over this pool happens
+// IN-SESSION: the orchestrator (the Claude already running the pipeline)
+// reads the evidence lines and picks the 5-10 files worth opening — zero
+// subprocess, zero cold start. Measured before the in-session move: with the
+// pool containing the target, an LLM selector hit top-1 on 7/9 queries — the
+// pool's recall is the ceiling the selection inherits.
+// ---------------------------------------------------------------------------
+
+/// Fused candidate-pool size published as `candidates` (wider than the
+/// deterministic top-10 so the in-session selector sees past the RRF cut).
+const POOL_MAX: usize = 25;
+
+/// Max matched terms rendered per candidate evidence line (payload budget).
+const TERMS_SHOWN: usize = 6;
+
+/// One row of the fused candidate pool: the file plus its deterministic
+/// evidence — which list(s) surfaced it (`rank` / `digest` / `both`), the
+/// 1-based position in each, and the matched terms that carry it.
+struct Candidate {
+    file: String,
+    source: &'static str,
+    rank_pos: Option<usize>,
+    digest_pos: Option<usize>,
+    terms: Vec<String>,
+}
+
+/// Order the digest's anchor audit for the candidate pool: the same ordering
+/// contract as [`digest_ranked_files`] (max `score_x1024` per file desc, path
+/// asc; separators normalised) but keeping each file's matched-term evidence
+/// (first-occurrence order across duplicates, deduped). Pure + byte-stable.
+fn digest_pool(detail: &[FileDetail]) -> Vec<(String, Vec<String>)> {
+    use std::collections::BTreeMap;
+    let mut best: BTreeMap<String, u64> = BTreeMap::new();
+    let mut terms: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for d in detail {
+        let file = d.file.replace('\\', "/");
+        let e = best.entry(file.clone()).or_insert(0);
+        *e = (*e).max(d.score_x1024);
+        let t = terms.entry(file).or_default();
+        for term in &d.terms {
+            if !t.contains(term) {
+                t.push(term.clone());
+            }
+        }
+    }
+    let mut rows: Vec<(String, u64)> = best.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.into_iter()
+        .map(|(f, _)| {
+            let t = terms.remove(&f).unwrap_or_default();
+            (f, t)
+        })
+        .collect()
+}
+
+/// The ranker side of the candidate pool: `scan rank` over the expanded query
+/// (same C2 shape as [`insumos_rows`]) at [`POOL_MAX`] depth, WITH the
+/// per-file `terms` evidence. Fail-open: no dictionary sidecar or a rank
+/// error yields an empty list.
+fn rank_pool(root: &Path, intent: &str) -> Vec<(String, Vec<String>)> {
+    let dict = root.join(".claude").join("grain.dictionary.json");
+    if !dict.is_file() {
+        return Vec::new();
+    }
+    let equiv = super::scan_equivalences::load_equivalences(root);
+    let model = root.join(".claude").join("grain.model.json");
+    let query = expand_query(intent, &equiv);
+    Scan::locate()
+        .rank_detail(&model, &dict, &query, POOL_MAX, RANK_DIRECT_BASE)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.file, r.terms))
+        .collect()
+}
+
+/// RRF-fuse the two evidence-carrying lists into the candidate pool: the
+/// same arithmetic as [`fuse_rrf`] (`Σ 1/(k + rank)`, k = [`RRF_K`], score
+/// desc, path asc) but keeping each row's provenance — 1-based position per
+/// list + the union of matched terms (rank-side first, first-occurrence
+/// order) — and capped at `cap` instead of the insumos ten. Pure +
+/// deterministic; [`fuse_rrf`] stays untouched (the `insumos` byte contract).
+fn fuse_pool(
+    rank_list: &[(String, Vec<String>)],
+    digest_list: &[(String, Vec<String>)],
+    cap: usize,
+) -> Vec<Candidate> {
+    use std::collections::BTreeMap;
+    struct Acc {
+        score: f64,
+        rank_pos: Option<usize>,
+        digest_pos: Option<usize>,
+        terms: Vec<String>,
+    }
+    let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut add = |file: &str, pos: usize, terms: &[String], from_rank: bool| {
+        let e = acc
+            .entry(file.to_string())
+            .or_insert(Acc { score: 0.0, rank_pos: None, digest_pos: None, terms: Vec::new() });
+        e.score += 1.0 / (RRF_K + (pos + 1) as f64);
+        if from_rank {
+            e.rank_pos = Some(pos + 1);
+        } else {
+            e.digest_pos = Some(pos + 1);
+        }
+        for t in terms {
+            if !e.terms.contains(t) {
+                e.terms.push(t.clone());
+            }
+        }
+    };
+    for (i, (f, terms)) in rank_list.iter().enumerate() {
+        add(f, i, terms, true);
+    }
+    for (i, (f, terms)) in digest_list.iter().enumerate() {
+        add(f, i, terms, false);
+    }
+    let mut rows: Vec<(String, Acc)> = acc.into_iter().collect();
+    rows.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(cap);
+    rows.into_iter()
+        .map(|(file, a)| Candidate {
+            file,
+            source: match (a.rank_pos.is_some(), a.digest_pos.is_some()) {
+                (true, true) => "both",
+                (true, false) => "rank",
+                _ => "digest",
+            },
+            rank_pos: a.rank_pos,
+            digest_pos: a.digest_pos,
+            terms: a.terms,
+        })
+        .collect()
+}
+
+/// Build the candidate pool: rank side (expanded query, [`POOL_MAX`] deep)
+/// RRF-fused with the digest side (full anchor audit), both carrying their
+/// term evidence. Fail-open: a missing dictionary/scan binary degrades to the
+/// digest side alone; an empty digest degrades to the rank side alone.
+fn build_pool(root: &Path, intent: &str, detail: &[FileDetail]) -> Vec<Candidate> {
+    fuse_pool(&rank_pool(root, intent), &digest_pool(detail), POOL_MAX)
+}
+
+/// Project the fused pool into the `candidates` payload rows: per file, the
+/// provenance `source` and ONE compact `evidence` line — 1-based position per
+/// list plus up to [`TERMS_SHOWN`] matched terms (e.g. `"rank#3 digest#1
+/// terms=contract,installment"`) — so the in-session selector reads WHY each
+/// row is offered without any second lookup. Pure + byte-stable: the pool
+/// order (RRF score desc, path asc) is preserved verbatim.
+fn candidates_rows(pool: &[Candidate]) -> Vec<Value> {
+    pool.iter()
+        .map(|c| {
+            let mut ev: Vec<String> = Vec::new();
+            if let Some(r) = c.rank_pos {
+                ev.push(format!("rank#{r}"));
+            }
+            if let Some(d) = c.digest_pos {
+                ev.push(format!("digest#{d}"));
+            }
+            if !c.terms.is_empty() {
+                let shown: Vec<&str> = c.terms.iter().take(TERMS_SHOWN).map(String::as_str).collect();
+                ev.push(format!("terms={}", shown.join(",")));
+            }
+            json!({ "file": c.file, "source": c.source, "evidence": ev.join(" ") })
+        })
+        .collect()
+}
+
 /// Run the research step: print the feature insumos JSON for `intent`.
 ///
-/// PURE DETERMINISTIC — no `claude` subprocess. Cross-lingual translation now
-/// lives in the ORCHESTRATION layer: the caller passes the english translation
-/// INSIDE `--intent` (`--intent "<user prompt PT> <english translation>"`), so
-/// this command only tokenizes the DISTINCT union of the terms it receives
-/// (`domain_terms` dedups), queries the digest once, and prints the insumos. On
-/// a NON-strong result the `candidates` menu still rides along — a deterministic
-/// fallback the orchestration layer can re-query against.
+/// PURE DETERMINISTIC — no `claude` subprocess (an earlier opt-in LLM hop
+/// spawned one per call and died of its cold start; the selection now happens
+/// IN-SESSION, over the published `candidates` pool). Cross-lingual
+/// translation arrives two fail-open ways: the ORCHESTRATION layer may pass
+/// the english translation INSIDE `--intent` (`--intent "<user prompt PT>
+/// <english>"`), and a non-English-looking intent is ALSO auto-glossed
+/// through the optional local `mustard-translate` sidecar (`"<original> --
+/// <en>"` feeds the digest tokenization; `domain_terms` dedups the union).
+/// The digest is queried once; the pagerank short-list is RRF-fused into the
+/// additive `insumos` field (top-10) and the WIDE `candidates` pool (~25 rows
+/// with per-file evidence) the orchestrator selects from. On a NON-strong
+/// result the `vocabulary` menu still rides along — a deterministic fallback
+/// the orchestrator can re-query against.
 pub fn run(intent: &str, root: &Path) {
-    let terms = domain_terms(intent);
+    let gloss = auto_gloss(intent);
+    let effective = gloss
+        .as_ref()
+        .map_or_else(|| intent.to_string(), |en| format!("{intent} -- {en}"));
+    let terms = domain_terms(&effective);
     let model = root.join(".claude").join("grain.model.json");
 
     let payload = match Scan::locate().digest_query(&model, &terms) {
@@ -513,7 +968,7 @@ pub fn run(intent: &str, root: &Path) {
             drop_research_marker(&terms, &q);
             // On a NON-strong result, fetch the PUBLISHED domain-term catalogue
             // (the `build_terms`-ranked, scan-capped index) so `payload` can
-            // attach the `candidates` fallback menu. The fetch is gated on
+            // attach the `vocabulary` fallback menu. The fetch is gated on
             // non-strong so the strong (lean) path pays for no extra spawn; a
             // failed fetch degrades to an empty menu (fail-open). On `strong`,
             // `payload` ignores the slice, so an empty one is correct.
@@ -522,11 +977,17 @@ pub fn run(intent: &str, root: &Path) {
             } else {
                 Vec::new()
             };
-            payload(intent, &q, &index)
+            let mut v = payload(intent, &q, &index);
+            // Additive retrieval fields: the RRF-fused `insumos` short-list +
+            // the wide `candidates` selection pool (+ `gloss` when the
+            // auto-gloss fired). Attached AFTER the payload so no existing
+            // field moves; fail-open inside.
+            attach_retrieval(&mut v, root, intent, gloss.as_deref(), &q.files_detail);
+            v
         }
         Err(err) => {
             eprintln!("feature: scan digest unavailable: {err}");
-            json!({
+            let mut v = json!({
                 "intent": intent,
                 "stacks": [],
                 "miss": true,
@@ -538,12 +999,17 @@ pub fn run(intent: &str, root: &Path) {
                 "anchors": [],
                 "anchorsDetail": [],
                 "report": { "matched": 0, "total": 0, "reason": "none", "terms": [] },
-                // Non-strong (`none`/`miss`), so the `candidates` key is present
+                // Non-strong (`none`/`miss`), so the `vocabulary` key is present
                 // for a stable shape — but empty: the scan model is unavailable,
-                // so there is no published vocabulary to offer the translator.
-                "candidates": [],
+                // so there is no published vocabulary to re-query against.
+                "vocabulary": [],
                 "note": "scan model unavailable — run `mustard-rt run scan` first; treat as net-new until then",
-            })
+            });
+            // `insumos` + `candidates` are part of the stable shape — attached
+            // on the fallback too (an unavailable digest usually means an
+            // unavailable ranker, so both degrade to empty lists, honestly).
+            attach_retrieval(&mut v, root, intent, gloss.as_deref(), &[]);
+            v
         }
     };
     // The FULL digest goes to a file (the single source of truth for the long
@@ -551,9 +1017,11 @@ pub fn run(intent: &str, root: &Path) {
     // paid the ~22 KB payload twice — once as full stdout, once re-reading a
     // self-captured file — and used only ~6 anchors + the reason. Writing the file
     // here removes the capture dance, and the compact stdout drops the
-    // reference-only bulk (`report.terms`, `candidates`) the common path never
-    // reads inline. Fail-open: a write failure just means the deep-tail detail is
-    // unavailable; stdout (the actionable summary) still prints.
+    // reference-only bulk (`report.terms`, `vocabulary`) the common path never
+    // reads inline — `candidates` (the in-session selection pool) stays inline:
+    // the orchestrator selects from it without a second read. Fail-open: a write
+    // failure just means the deep-tail detail is unavailable; stdout (the
+    // actionable summary) still prints.
     let digest_path = root.join(".claude").join("feature-digest.json");
     let full = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into());
     let _ = mfs::write_atomic(&digest_path, full.as_bytes());
@@ -565,15 +1033,17 @@ pub fn run(intent: &str, root: &Path) {
 
 /// Trim the full digest payload to the COMPACT stdout summary: the actionable
 /// fields the orchestrator reads inline (anchors + per-anchor provenance,
+/// `candidates` — the in-session selection pool with its evidence lines —
 /// slices, contracts, hubs, stacks, `report.reason`, `note`) MINUS the
 /// reference-only bulk that belongs in the file — the 32-term `report.terms`
-/// tier list (debug; the validator re-runs its own digest) and the `candidates`
-/// vocabulary menu (only consulted on a weak/none re-translation, a file-read
-/// deep-dive). A `detail` pointer names the file with the complete payload.
+/// tier list (debug; the validator re-runs its own digest) and the
+/// `vocabulary` re-query menu (only consulted on a weak/none re-translation,
+/// a file-read deep-dive). A `detail` pointer names the file with the
+/// complete payload.
 fn compact_digest(full: &Value) -> Value {
     let mut c = full.clone();
     if let Some(obj) = c.as_object_mut() {
-        obj.remove("candidates");
+        obj.remove("vocabulary");
         if let Some(rep) = obj.get_mut("report").and_then(Value::as_object_mut) {
             if let Some(terms) = rep.remove("terms") {
                 rep.insert("termCount".to_string(), json!(terms.as_array().map_or(0, Vec::len)));
@@ -1011,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn non_strong_predicate_gates_the_candidates_menu() {
+    fn non_strong_predicate_gates_the_vocabulary_menu() {
         // The menu rides on every NON-strong outcome and only those: weak,
         // none, generated_only, a legacy `miss`, and an empty reason (older
         // scan binary). `strong` is the single case that omits it.
@@ -1026,10 +1496,10 @@ mod tests {
     }
 
     #[test]
-    fn candidates_from_index_is_bounded_byte_stable_and_reuses_publish_order() {
+    fn vocabulary_from_index_is_bounded_byte_stable_and_reuses_publish_order() {
         // The menu is the PUBLISHED term index projected verbatim: {term, count}
         // in the catalogue's own order (NOT re-sorted here), bounded to
-        // CANDIDATES_MAX rows. `samples` is NOT emitted — the translator reads
+        // VOCABULARY_MAX rows. `samples` is NOT emitted — the re-query reads
         // the `term` column only. Catalogue order is rank-desc (the scan tool's
         // `build_terms`) — kept as given so the menu matches byte-for-byte.
         let index = idx(&[
@@ -1037,7 +1507,7 @@ mod tests {
             ("contract", 22, &["src/contract.cs"]),
             ("payable", 9, &[]),
         ]);
-        let c = candidates_from_index(&index);
+        let c = vocabulary_from_index(&index);
         assert_eq!(c.len(), 3, "one row per catalogue term: {c:?}");
         // Order preserved verbatim from the catalogue (no re-sort).
         assert_eq!(c[0]["term"], "supplier");
@@ -1046,28 +1516,28 @@ mod tests {
         // Shape: term + count ONLY — samples dropped from stdout.
         assert_eq!(c[0]["count"], 40);
         assert!(c[0].get("samples").is_none(), "samples dropped from stdout: {c:?}");
-        let row = c[0].as_object().expect("candidate row is an object");
+        let row = c[0].as_object().expect("vocabulary row is an object");
         assert_eq!(row.len(), 2, "exactly term + count per row: {c:?}");
-        // Row cap: a catalogue past CANDIDATES_MAX trims to the bound, head-first.
-        let big: Vec<DigestTerm> = (0..CANDIDATES_MAX + 25)
+        // Row cap: a catalogue past VOCABULARY_MAX trims to the bound, head-first.
+        let big: Vec<DigestTerm> = (0..VOCABULARY_MAX + 25)
             .map(|i| DigestTerm { term: format!("t{i:04}"), count: 1, specificity_x1024: 0, samples: Vec::new(), purpose: None })
             .collect();
-        let cb = candidates_from_index(&big);
-        assert_eq!(cb.len(), CANDIDATES_MAX, "row count bounded by CANDIDATES_MAX");
+        let cb = vocabulary_from_index(&big);
+        assert_eq!(cb.len(), VOCABULARY_MAX, "row count bounded by VOCABULARY_MAX");
         assert_eq!(cb[0]["term"], "t0000", "head of the published order survives the cap");
         // Byte-stable for the same input.
-        let a = serde_json::to_string(&json!(candidates_from_index(&index))).expect("ser");
-        let b = serde_json::to_string(&json!(candidates_from_index(&index))).expect("ser");
+        let a = serde_json::to_string(&json!(vocabulary_from_index(&index))).expect("ser");
+        let b = serde_json::to_string(&json!(vocabulary_from_index(&index))).expect("ser");
         assert_eq!(a, b);
     }
 
     #[test]
-    fn weak_result_includes_a_nonempty_bounded_candidates_menu() {
-        // On a weak result the payload attaches `candidates` — the translator's
+    fn weak_result_includes_a_nonempty_bounded_vocabulary_menu() {
+        // On a weak result the payload attaches `vocabulary` — the re-query
         // menu drawn from the PUBLISHED term index — even though the planning
         // fields are withheld. The menu is the repo's real code vocabulary, so
-        // an orchestration-layer (Haiku) step can map a cross-lingual intent
-        // onto it and re-query. Bounded, byte-stable shape.
+        // the orchestrator can map a cross-lingual intent onto it and
+        // re-query. Bounded, byte-stable shape.
         let weak: DigestQuery = serde_json::from_str(
             r#"{"query":["cancelado"],
                 "files":["src/cancel.cs"],
@@ -1084,21 +1554,21 @@ mod tests {
         let v = payload("cancelar titulo", &weak, &index);
         // Planning is withheld (plain weak) but the menu is present.
         assert_eq!(v["planningWithheld"], json!(true), "weak still withholds planning: {v}");
-        let cands = v["candidates"].as_array().expect("candidates present on weak");
-        assert!(!cands.is_empty(), "candidates is the real vocabulary menu, not empty: {v}");
-        assert_eq!(cands.len(), 2, "one row per published term: {v}");
-        assert_eq!(cands[0]["term"], "supplier", "publish order preserved: {v}");
-        assert_eq!(cands[0]["count"], 40);
-        assert!(cands[0].get("samples").is_none(), "samples dropped from stdout: {v}");
+        let vocab = v["vocabulary"].as_array().expect("vocabulary present on weak");
+        assert!(!vocab.is_empty(), "vocabulary is the real re-query menu, not empty: {v}");
+        assert_eq!(vocab.len(), 2, "one row per published term: {v}");
+        assert_eq!(vocab[0]["term"], "supplier", "publish order preserved: {v}");
+        assert_eq!(vocab[0]["count"], 40);
+        assert!(vocab[0].get("samples").is_none(), "samples dropped from stdout: {v}");
         // Byte-stable: the same inputs serialize identically.
         let a = serde_json::to_string(&payload("cancelar titulo", &weak, &index)).expect("ser");
         let b = serde_json::to_string(&payload("cancelar titulo", &weak, &index)).expect("ser");
-        assert_eq!(a, b, "candidates payload is byte-stable");
+        assert_eq!(a, b, "vocabulary payload is byte-stable");
     }
 
     #[test]
-    fn none_and_bridged_results_also_carry_the_candidates_menu() {
-        // `none` (no precedent) is exactly when the translator needs the menu
+    fn none_and_bridged_results_also_carry_the_vocabulary_menu() {
+        // `none` (no precedent) is exactly when the re-query needs the menu
         // most — it must be present and non-empty when a catalogue exists.
         let none: DigestQuery = serde_json::from_str(
             r#"{"query":["zzz"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"zzz","tier":"none","lang":"","files":[]}]}}"#,
@@ -1106,12 +1576,12 @@ mod tests {
         .expect("none digest");
         let index = idx(&[("supplier", 40, &["src/supplier.cs"]), ("contract", 22, &[])]);
         let v = payload("zzz", &none, &index);
-        let cands = v["candidates"].as_array().expect("candidates present on none");
-        assert_eq!(cands.len(), 2, "none carries the full menu: {v}");
-        assert_eq!(cands[0]["term"], "supplier");
+        let vocab = v["vocabulary"].as_array().expect("vocabulary present on none");
+        assert_eq!(vocab.len(), 2, "none carries the full menu: {v}");
+        assert_eq!(vocab[0]["term"], "supplier");
 
         // A bridged weak is still NON-strong by reason, so the menu rides along
-        // too (harmless — the translator can ignore it given the bridge).
+        // too (harmless — the orchestrator can ignore it given the bridge).
         let bridged: DigestQuery = serde_json::from_str(
             r#"{"query":["cancelado"],"files":["src/cancel.cs"],"miss":false,
                 "report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[
@@ -1119,13 +1589,13 @@ mod tests {
         )
         .expect("bridged digest");
         let v = payload("cancelar titulo", &bridged, &index);
-        assert!(v.get("candidates").is_some(), "bridged weak is non-strong → menu present: {v}");
+        assert!(v.get("vocabulary").is_some(), "bridged weak is non-strong → menu present: {v}");
         // The bridge still returns planning fields (the existing contract).
         assert_eq!(v["planningWithheld"], json!(false), "bridge keeps planning: {v}");
     }
 
     #[test]
-    fn strong_result_omits_candidates() {
+    fn strong_result_omits_vocabulary() {
         // On `strong` the anchors already ARE the evidence; the menu is omitted
         // to keep the strong path lean — even if a catalogue is handed in.
         let strong: DigestQuery = serde_json::from_str(
@@ -1136,7 +1606,288 @@ mod tests {
         .expect("strong digest");
         let index = idx(&[("supplier", 40, &["src/supplier.cs"]), ("contract", 22, &[])]);
         let v = payload("supplier", &strong, &index);
-        assert!(v.get("candidates").is_none(), "strong omits the candidates menu: {v}");
+        assert!(v.get("vocabulary").is_none(), "strong omits the vocabulary menu: {v}");
         assert_eq!(v["anchors"], json!(["src/supplier.cs"]), "strong keeps anchors: {v}");
     }
+
+    #[test]
+    fn rrf_fusion_scores_ties_and_caps_deterministically() {
+        // b rides in BOTH lists (1/62 + 1/62) and beats a (rank #1 alone,
+        // 1/61) and c (digest #2 alone, 1/62); provenance is tagged per row.
+        let fused = fuse_rrf(
+            &["a".to_string(), "b".to_string()],
+            &["b".to_string(), "c".to_string()],
+        );
+        assert_eq!(
+            fused,
+            vec![
+                ("b".to_string(), "both"),
+                ("a".to_string(), "rank"),
+                ("c".to_string(), "digest"),
+            ]
+        );
+        // An exact score tie (same rank, different lists) breaks by path asc.
+        let tie = fuse_rrf(&["y".to_string()], &["x".to_string()]);
+        assert_eq!(tie, vec![("x".to_string(), "digest"), ("y".to_string(), "rank")]);
+        // Deterministic: the same inputs fuse to the same output, twice.
+        let a = fuse_rrf(&["a".into(), "b".into()], &["b".into(), "c".into()]);
+        let b = fuse_rrf(&["a".into(), "b".into()], &["b".into(), "c".into()]);
+        assert_eq!(a, b);
+        // Capped at INSUMOS_MAX; empty ∪ empty → empty (the field still
+        // renders as an empty array upstream).
+        let many: Vec<String> = (0..15).map(|i| format!("f{i:02}")).collect();
+        assert_eq!(fuse_rrf(&many, &[]).len(), INSUMOS_MAX);
+        assert!(fuse_rrf(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn expand_query_folds_keys_exactly_and_dedups_added_tokens() {
+        let mut eq = std::collections::BTreeMap::new();
+        eq.insert("conciliacao".to_string(), vec!["reconciliation".to_string(), "bank".to_string()]);
+        eq.insert("extrato".to_string(), vec!["statement".to_string(), "bank".to_string()]);
+        // Accent-folded lookup hits; `bank` (shared by both terms) appends once.
+        let q = expand_query("onde é feita a conciliação do extrato bancário", &eq);
+        assert_eq!(q, "onde é feita a conciliação do extrato bancário reconciliation bank statement");
+        // No key hit (incl. sub-3-char tokens) → the intent passes verbatim.
+        assert_eq!(expand_query("do it", &eq), "do it");
+        assert_eq!(expand_query("payment handler", &std::collections::BTreeMap::new()), "payment handler");
+    }
+
+    #[test]
+    fn digest_ranked_files_takes_max_per_file_desc_with_path_tiebreak() {
+        // Duplicate file (backslash variant): max score wins; the 90-tie
+        // between a.cs and dup.cs breaks by path asc; separators normalise.
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src\\dup.cs","score_x1024":10,"terms":[]},
+                {"file":"src/dup.cs","score_x1024":90,"terms":[]},
+                {"file":"src/a.cs","score_x1024":90,"terms":[]},
+                {"file":"src/z.cs","score_x1024":200,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        assert_eq!(digest_ranked_files(&detail), vec!["src/z.cs", "src/a.cs", "src/dup.cs"]);
+        assert!(digest_ranked_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn looks_non_english_votes_stoplists_and_accents() {
+        // Mirrors the scan dictionary's is_non_english contract.
+        assert!(
+            looks_non_english("onde é feita a conciliação do extrato bancário"),
+            "pt function words outvote + accent evidence"
+        );
+        assert!(
+            looks_non_english("adicionar validação no handler de criação de contrato"),
+            "pt vote wins despite EN loanwords"
+        );
+        assert!(
+            !looks_non_english("add validation to the contract creation handler"),
+            "english stays english"
+        );
+        assert!(
+            !looks_non_english("maps the naïve café names into the user profile"),
+            "english wins its vote despite an accented word"
+        );
+    }
+
+    #[test]
+    fn insumos_field_always_attaches_and_fails_open_without_sidecars() {
+        // A root with NO dictionary sidecar → the ranker is never spawned and
+        // the digest audit alone carries the field (source: digest).
+        let root = std::env::temp_dir().join("mustard-feature-insumos-none");
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]},
+                {"file":"src/b.cs","score_x1024":10,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        let mut v = json!({ "intent": "x" });
+        attach_retrieval(&mut v, &root, "x", None, &detail);
+        assert_eq!(
+            v["insumos"],
+            json!([
+                { "file": "src/a.cs", "source": "digest" },
+                { "file": "src/b.cs", "source": "digest" }
+            ]),
+            "ranker unavailable → digest top-10 alone: {v}"
+        );
+        assert!(v.get("gloss").is_none(), "no gloss key when the gloss did not fire: {v}");
+        assert_eq!(v["intent"], json!("x"), "existing fields untouched: {v}");
+
+        // Empty digest too → the fields STILL render, as empty arrays; a
+        // fired gloss rides along as the additive `gloss` key.
+        let mut v = json!({});
+        attach_retrieval(&mut v, &root, "x", Some("where is it done"), &[]);
+        assert_eq!(v["insumos"], json!([]), "insumos always present: {v}");
+        assert_eq!(v["candidates"], json!([]), "candidates always present: {v}");
+        assert_eq!(v["gloss"], json!("where is it done"));
+    }
+
+    #[test]
+    fn stdout_never_carries_subprocess_keys() {
+        // The removed `claude -p` selection hop must leave NO residue:
+        // `attach_retrieval` (the only attach) adds exactly `insumos` +
+        // `candidates` + `uncovered` (+ `gloss` when fired) — never
+        // `insumosMode`, never a `hop` audit. Regression guard for the
+        // subprocess removal.
+        let root = std::env::temp_dir().join("mustard-feature-no-subprocess");
+        let detail: Vec<FileDetail> =
+            serde_json::from_str(r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]}]"#).expect("detail rows");
+        let mut v = json!({ "intent": "x" });
+        attach_retrieval(&mut v, &root, "x", None, &detail);
+        assert!(v.get("insumosMode").is_none(), "insumosMode never emitted: {v}");
+        assert!(v.get("hop").is_none(), "the hop audit never emitted: {v}");
+        let mut keys: Vec<&str> = v.as_object().expect("object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["candidates", "insumos", "intent", "uncovered"],
+            "exactly the additive keys: {v}"
+        );
+    }
+
+    #[test]
+    fn candidates_pool_carries_evidence_and_is_byte_stable() {
+        // The `candidates` field is the in-session selection menu: per row
+        // {file, source, evidence} where evidence is ONE compact line — the
+        // 1-based position per list + up to TERMS_SHOWN matched terms. Built
+        // here from the digest side alone (no dictionary sidecar → no spawn),
+        // the pool order (RRF score desc, path asc) is preserved verbatim.
+        let root = std::env::temp_dir().join("mustard-feature-candidates-pool");
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src/a.cs","score_x1024":90,"terms":["contrato","parcela"]},
+                {"file":"src/b.cs","score_x1024":10,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        let mut v = json!({ "intent": "x" });
+        attach_retrieval(&mut v, &root, "x", None, &detail);
+        assert_eq!(
+            v["candidates"],
+            json!([
+                { "file": "src/a.cs", "source": "digest", "evidence": "digest#1 terms=contrato,parcela" },
+                { "file": "src/b.cs", "source": "digest", "evidence": "digest#2" }
+            ]),
+            "one evidence line per pool row: {v}"
+        );
+        // Byte-stable: two identical attaches serialize to the same bytes.
+        let mut v2 = json!({ "intent": "x" });
+        attach_retrieval(&mut v2, &root, "x", None, &detail);
+        let a = serde_json::to_string(&v).expect("ser");
+        let b = serde_json::to_string(&v2).expect("ser");
+        assert_eq!(a, b, "candidates payload is byte-stable across runs");
+
+        // The pool caps at POOL_MAX (25) — wider than the insumos ten, so the
+        // selector sees past the RRF cut but the payload stays bounded.
+        let many: Vec<FileDetail> = (0u64..30)
+            .map(|i| FileDetail {
+                file: format!("src/f{i:02}.cs"),
+                score_x1024: 1024 - i,
+                terms: Vec::new(),
+            })
+            .collect();
+        let mut vm = json!({});
+        attach_retrieval(&mut vm, &root, "x", None, &many);
+        let pool = vm["candidates"].as_array().expect("candidates array");
+        assert_eq!(pool.len(), POOL_MAX, "pool bounded at POOL_MAX: {}", pool.len());
+        assert_eq!(vm["insumos"].as_array().expect("insumos").len(), INSUMOS_MAX, "insumos stays top-10");
+        // Evidence terms cap at TERMS_SHOWN per line.
+        let wide: Vec<FileDetail> = vec![FileDetail {
+            file: "src/w.cs".into(),
+            score_x1024: 10,
+            terms: (0..9).map(|i| format!("t{i}")).collect(),
+        }];
+        let rows = candidates_rows(&build_pool(&root, "x", &wide));
+        let ev = rows[0]["evidence"].as_str().expect("evidence line");
+        assert_eq!(ev, "digest#1 terms=t0,t1,t2,t3,t4,t5", "terms capped at TERMS_SHOWN: {ev}");
+    }
+
+    #[test]
+    fn digest_pool_keeps_order_and_merges_term_evidence() {
+        // Same ordering contract as digest_ranked_files (max score per file,
+        // desc, path asc) with the per-file terms unioned across duplicates.
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src\\dup.cs","score_x1024":10,"terms":["contrato"]},
+                {"file":"src/dup.cs","score_x1024":90,"terms":["parcela","contrato"]},
+                {"file":"src/z.cs","score_x1024":200,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        let pool = digest_pool(&detail);
+        assert_eq!(pool[0].0, "src/z.cs");
+        assert_eq!(pool[0].1, Vec::<String>::new());
+        assert_eq!(pool[1].0, "src/dup.cs");
+        assert_eq!(pool[1].1, vec!["contrato".to_string(), "parcela".to_string()], "terms unioned, first-occurrence order");
+        assert!(digest_pool(&[]).is_empty());
+    }
+
+    #[test]
+    fn fuse_pool_carries_positions_sources_terms_and_caps() {
+        let rank: Vec<(String, Vec<String>)> = vec![
+            ("a".into(), vec!["aging".into()]),
+            ("b".into(), vec!["payable".into()]),
+        ];
+        let digest: Vec<(String, Vec<String>)> = vec![
+            ("b".into(), vec!["vencimento".into(), "payable".into()]),
+            ("c".into(), vec![]),
+        ];
+        let pool = fuse_pool(&rank, &digest, 25);
+        // b rides both lists → top, source both, positions kept, terms unioned.
+        assert_eq!(pool[0].file, "b");
+        assert_eq!(pool[0].source, "both");
+        assert_eq!(pool[0].rank_pos, Some(2));
+        assert_eq!(pool[0].digest_pos, Some(1));
+        assert_eq!(pool[0].terms, vec!["payable".to_string(), "vencimento".to_string()]);
+        assert_eq!(pool[1].file, "a");
+        assert_eq!(pool[1].source, "rank");
+        assert_eq!(pool[1].digest_pos, None);
+        assert_eq!(pool[2].file, "c");
+        assert_eq!(pool[2].source, "digest");
+        // The wide cap actually widens past INSUMOS_MAX (the hop's reason to
+        // exist) and truncates at the requested cap.
+        let many: Vec<(String, Vec<String>)> = (0..30).map(|i| (format!("f{i:02}"), Vec::new())).collect();
+        assert_eq!(fuse_pool(&many, &[], 25).len(), 25);
+        assert_eq!(fuse_pool(&many, &[], 3).len(), 3);
+        // Deterministic: same inputs, same pool, twice.
+        let a: Vec<String> = fuse_pool(&rank, &digest, 25).into_iter().map(|c| c.file).collect();
+        let b: Vec<String> = fuse_pool(&rank, &digest, 25).into_iter().map(|c| c.file).collect();
+        assert_eq!(a, b);
+    }
+
+    /// `uncovered` — only the request concept absent from EVERY candidate's
+    /// evidence flags; coverage arrives directly (accent-folded exact), by
+    /// prefix (inflections: cliente/clientes) or via an equivalence expansion
+    /// (contrato→contract, abas→tabs); EN/PT function words and <4-char
+    /// tokens never flag; duplicates collapse.
+    #[test]
+    fn uncovered_flags_only_unrepresented_concepts() {
+        let pool = vec![Candidate {
+            file: "src/a.ts".into(),
+            source: "both",
+            rank_pos: Some(1),
+            digest_pos: Some(1),
+            terms: vec!["contract".into(), "clientes".into(), "tabs".into(), "validacoes".into()],
+        }];
+        let mut equiv = std::collections::BTreeMap::new();
+        equiv.insert("contrato".to_string(), vec!["contract".to_string()]);
+        equiv.insert("abas".to_string(), vec!["tabs".to_string()]);
+        let out = uncovered_terms(
+            "cadastro do cliente para o contrato com abas e validações the ver cadastro",
+            &equiv,
+            &pool,
+        );
+        let terms: Vec<&str> = out.iter().filter_map(|v| v["term"].as_str()).collect();
+        assert_eq!(terms, vec!["cadastro"], "only the blind concept flags: {out:?}");
+        let tried: Vec<&str> = out[0]["tried"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(tried, vec!["cadastro"], "probe set = folded term (no expansion configured)");
+    }
+
+    /// Empty pool → every content concept flags, term-ascending (the radar
+    /// stays honest when retrieval returns nothing).
+    #[test]
+    fn uncovered_on_empty_pool_flags_content_words_sorted() {
+        let out = uncovered_terms("vencimento reajuste", &std::collections::BTreeMap::new(), &[]);
+        let terms: Vec<&str> = out.iter().filter_map(|v| v["term"].as_str()).collect();
+        assert_eq!(terms, vec!["reajuste", "vencimento"], "sorted ascending");
+    }
+
 }

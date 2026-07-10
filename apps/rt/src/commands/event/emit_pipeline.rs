@@ -401,6 +401,14 @@ pub fn run(opts: EmitPipelineOpts) {
             let _ = fs::remove_file(&state_file);
         }
     }
+
+    // Success echo — the emitter used to succeed in TOTAL silence, which made
+    // the harness's own traceability tool opaque on the happy path (field
+    // feedback, sialia 2026-07-09: "para um harness de rastreabilidade, a
+    // própria ferramenta é opaca no sucesso"). One deterministic line: what
+    // was recorded, for which spec. No timestamp/session in it (run outputs
+    // are byte-compared in gates) — the NDJSON row carries those.
+    println!("{}", json!({ "ok": true, "kind": kind_str, "spec": spec_name }));
 }
 
 /// Returns `true` when the spec has a `qa.result` event with

@@ -7,6 +7,7 @@
 
 mod classify;
 mod condense;
+mod dictionary;
 mod digest;
 mod facts;
 mod extract;
@@ -16,6 +17,7 @@ mod manifests;
 mod matching;
 mod mine;
 mod model;
+mod pagerank;
 mod purpose;
 mod rank;
 mod spec;
@@ -108,6 +110,61 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Rank the model's files for a raw (e.g. Portuguese) request via personalized
+    /// PageRank over the dependency graph, SEEDED by the distinctive-vocabulary
+    /// dictionary — the localization layer over the dictionary's PT→term bridge.
+    /// `path` is a project dir to scan, or a grain.model.json; `--dict` is the
+    /// `grain.dictionary.json` sidecar. Emits byte-stable JSON `{query,
+    /// matched_terms, files:[{file, score_x1024}]}`; an empty `files` means
+    /// nothing bridged. Deterministic, no LLM.
+    Rank {
+        path: PathBuf,
+        /// The `grain.dictionary.json` sidecar (the seed vocabulary).
+        #[arg(long)]
+        dict: PathBuf,
+        /// Comma/space-separated request terms (the raw intent), e.g. a PT prompt.
+        #[arg(long, default_value = "")]
+        query: String,
+        /// Edge orientation: `forward` | `reverse` | `undirected` (default —
+        /// the graph splits by language, so domain-locality is undirected).
+        #[arg(long, default_value = "undirected")]
+        direction: String,
+        /// Damping ×1024 (default ≈ 0.60 → 614: a strong topic bias keeps mass
+        /// near the seeds; classic PageRank ≈ 0.85 → 870).
+        #[arg(long, default_value_t = 614)]
+        damping: u64,
+        /// Fixed power-iteration count (byte-stable — never a float convergence test).
+        #[arg(long, default_value_t = 50)]
+        iters: usize,
+        /// Seed weighting: `specificity` (default) | `idf` | `balanced` | `uniform`.
+        #[arg(long, default_value = "specificity")]
+        seed_weight: String,
+        /// Rank the personalization vector alone (ablation: no graph walk).
+        #[arg(long)]
+        no_propagate: bool,
+        /// Hub penalty ×1024 against a file's dictionary-anchor promiscuity
+        /// (cross-cutting comment-dense files); 0 = off (default).
+        #[arg(long, default_value_t = 0)]
+        hub_penalty: u64,
+        /// Fan-in penalty ×1024 against a file's global import fan-in (deep
+        /// shared sinks a walk piles onto); default 1.0 → 1024, `0` = off.
+        #[arg(long, default_value_t = 1024)]
+        fanin_penalty: u64,
+        /// Disable the ungated direct-identifier seeding (Wave-2b fix): when set,
+        /// only dictionary-matched terms seed (the pre-fix, dict-gated behavior).
+        #[arg(long)]
+        no_direct_seed: bool,
+        /// Multiplier ×1024 on the absolute direct identifier-match score (the
+        /// fan-in-exempt floor); calibrated so a strong match competes with the
+        /// top propagated mass. `0` = no floor (walk only).
+        #[arg(long, default_value_t = 100_000)]
+        direct_base: u64,
+        /// How many ranked files to emit.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Verify an implementation against the spec's acceptance criteria: for each
     /// required location, check the project has a file for the entity. `path` is
     /// the (implemented) project dir, or a grain.model.json (+ its root).
@@ -140,7 +197,10 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
-        analyze(path)
+        // Projections (digest/facts/spec/purpose) want only the model; the
+        // dictionary sidecar is a scan-write concern, discarded here — so the
+        // EN normalization (a sidecar spawn) is skipped too.
+        Ok(analyze(path)?.0)
     }
 }
 
@@ -148,10 +208,22 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { path, out } => {
-            let model = analyze(&path)?;
+            let (model, dictionary) = analyze(&path)?;
             print_summary(&model);
             std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
             println!("\nModel written to {}", out.display());
+            // The distinctive-vocabulary sidecar lands NEXT TO the model
+            // (`grain.dictionary.json` beside `grain.model.json`), so `/scan`
+            // (rt → grain --out .claude/grain.model.json) produces both.
+            let dict_out = out.with_file_name("grain.dictionary.json");
+            std::fs::write(&dict_out, serde_json::to_string_pretty(&dictionary)?)?;
+            println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
+            if dictionary.non_english_comments > 0 {
+                println!(
+                    "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
+                    dictionary.non_english_comments
+                );
+            }
         }
         Command::Digest { path, query, out } => {
             let model = load_model(&path)?;
@@ -212,6 +284,37 @@ fn main() -> Result<()> {
                 None => println!("{json}"),
             }
         }
+        Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, no_direct_seed, direct_base, top, out } => {
+            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let cfg = pagerank::RankConfig {
+                direction: pagerank::Direction::parse(&direction),
+                damping_x1024: damping,
+                iterations: iters,
+                top,
+                seed_weight: pagerank::SeedWeight::parse(&seed_weight),
+                propagate: !no_propagate,
+                hub_penalty_x1024: hub_penalty,
+                fanin_penalty_x1024: fanin_penalty,
+                direct_seed: !no_direct_seed,
+                direct_base_x1024: direct_base,
+            };
+            // Fail-open like purpose-search: a degraded/unreadable model or
+            // dictionary yields an empty ranked list, never a hard error.
+            let dictionary: dictionary::Dictionary =
+                std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            let result = match load_model(&path) {
+                Ok(model) => pagerank::rank(&model, &dictionary, &terms, &cfg),
+                Err(_) => pagerank::rank(&ProjectModel::default(), &dictionary, &terms, &cfg),
+            };
+            let json = serde_json::to_string_pretty(&result)?;
+            match out {
+                Some(p) => {
+                    std::fs::write(&p, &json)?;
+                    println!("rank written to {} ({} bytes)", p.display(), json.len());
+                }
+                None => println!("{json}"),
+            }
+        }
         Command::Verify { path, entity, like, ops } => {
             let model = load_model(&path)?;
             // Where to check files: the project dir given, or the model's own root.
@@ -257,8 +360,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Deterministic stages: produce the project model (no synthesis).
-fn analyze(root: &Path) -> Result<ProjectModel> {
+/// Deterministic stages: produce the project model AND the distinctive-
+/// vocabulary dictionary sidecar (no synthesis, no AI). The dictionary is
+/// returned alongside the model because it is mined from the in-memory
+/// `content` (comments), which only exists during the scan — see [`dictionary`].
+fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
     let ing = ingest::ingest(root)?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
@@ -297,26 +403,33 @@ fn analyze(root: &Path) -> Result<ProjectModel> {
         m.fan_in = degrees.get(&m.path).map_or(0, |d| d.0);
     }
     let mined = mine::mine(&modules, &degrees, &content);
+    // Distinctive-vocabulary dictionary: a stage right after mining, over the
+    // same `modules` + in-memory `content` (the only place comments survive),
+    // reusing the mined role affixes to demote structural glue.
+    let dictionary = dictionary::build(&modules, &content, &mined.roles);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     let mut projects = build_projects(&ing.manifests, &modules);
     infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &ing.source_files);
 
-    Ok(ProjectModel {
-        root: ing.root.to_string_lossy().to_string(),
-        languages: ing.languages,
-        manifests: ing.manifests,
-        frameworks: ing.frameworks,
-        detected_stacks: ing.detected_stacks,
-        skeleton,
-        modules,
-        graph: graph_stats,
-        roles: mined.roles,
-        conventions: mined.conventions,
-        coverage: ing.coverage,
-        projects,
-        shared_contracts: mined.shared_contracts,
-    })
+    Ok((
+        ProjectModel {
+            root: ing.root.to_string_lossy().to_string(),
+            languages: ing.languages,
+            manifests: ing.manifests,
+            frameworks: ing.frameworks,
+            detected_stacks: ing.detected_stacks,
+            skeleton,
+            modules,
+            graph: graph_stats,
+            roles: mined.roles,
+            conventions: mined.conventions,
+            coverage: ing.coverage,
+            projects,
+            shared_contracts: mined.shared_contracts,
+        },
+        dictionary,
+    ))
 }
 
 /// Map each project (one per manifest) to its directory and count the source

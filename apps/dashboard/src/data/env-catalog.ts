@@ -103,6 +103,18 @@ export const ENV_CATALOG: EnvGroup[] = [
           off: 'Desabilita o check de boundary.',
         },
       },
+      {
+        key: 'MUSTARD_APPROVAL_MODE',
+        label: 'Gate de aprovação do plano (PLAN) pelo usuário',
+        default: 'strict',
+        options: ['strict', 'warn', 'off'],
+        desc: 'Exige que a aprovação de um plano Full venha do usuário: approve-spec só emite o sinal draft→approved quando existe o marcador .approved-by-user, gravado pelo observer somente quando você responde à pergunta de aprovação (AskUserQuestion). Impede o orquestrador de se auto-aprovar.',
+        valueDocs: {
+          strict: 'Bloqueia approve-spec (exit≠0) sem o marcador de aprovação do usuário.',
+          warn: 'Avisa mas deixa approve-spec seguir sem o marcador.',
+          off: 'Desabilita a exigência (comportamento anterior ao T5).',
+        },
+      },
     ],
   },
   {

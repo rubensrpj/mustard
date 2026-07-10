@@ -22,8 +22,10 @@ pub mod event;
 pub mod wave;
 pub mod spec;
 pub mod maint;
+pub mod git_settle;
 pub mod scan;
 pub mod scan_claude;
+pub mod scan_equivalences;
 pub mod scan_guards;
 pub mod scan_patterns;
 pub mod feature;
@@ -68,6 +70,61 @@ pub enum RunCmd {
         /// exceed the size threshold.
         #[arg(long)]
         full: bool,
+    },
+    /// Project the scan dictionary's non-English terms through the local
+    /// `mustard-translate` sidecar into `.claude/grain.equivalences.json` —
+    /// the PT→EN query-expansion table `run feature` feeds to `scan rank`.
+    /// ONE batch spawn over the whole dictionary; byte-stable output (keys
+    /// accent-folded + sorted). Runs automatically at the end of `run scan`;
+    /// this is the standalone (re)generation face. Fail-open: a missing
+    /// dictionary or absent translator prints `{ok:false, reason}`, exit 0.
+    #[command(name = "scan-equivalences")]
+    ScanEquivalences {
+        /// Workspace root (holds `.claude/grain.dictionary.json`). Defaults
+        /// to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The EXIT RITUAL of a delivered work unit (the `/git settle` action):
+    /// runs from the WORK BRANCH (bare invocation on `dev`/`main` REFUSES),
+    /// verifies the unit is 100% merged on its base (ancestry + `gh` fallback
+    /// for squash merges — not merged: hard stop, nothing touched), advances
+    /// EVERY local base (ff-only merge on the checked-out one, ff-safe
+    /// `fetch base:base` on the rest), then prunes the unit's worktree +
+    /// local branch (remote delete fail-open). Inside the unit's own worktree
+    /// it verifies + updates and answers `exit-and-rerun` — leave, then
+    /// finish with `--unit <branch>` from the main checkout.
+    #[command(name = "git-settle")]
+    GitSettle {
+        /// The work branch to settle. Omitted: read from the invocation
+        /// directory's HEAD (which must NOT be an integration base).
+        #[arg(long)]
+        unit: Option<String>,
+        /// Any directory inside the repo (worktrees welcome — the command
+        /// resolves the main checkout itself). Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+
+    /// Persist a CONFIRMED vocabulary bridge into the learned-equivalences
+    /// overlay (`.claude/grain.equivalences.learned.json`) — the write-back of
+    /// a settled `uncovered` row: the existence gate found which code
+    /// vocabulary a request concept maps to, and every later query covers it.
+    /// The generated `grain.equivalences.json` is never touched, so re-scans
+    /// never wipe what was learned. Explicit write only — never automatic.
+    #[command(name = "equivalence-learn")]
+    EquivalenceLearn {
+        /// The request-language concept that went uncovered (accent-folded to
+        /// the lookup key, e.g. `abas`).
+        #[arg(long)]
+        term: String,
+        /// Comma/space-separated code-vocabulary tokens the concept maps to
+        /// (e.g. `tab,tabs`).
+        #[arg(long)]
+        tokens: String,
+        /// Workspace root (holds `.claude/`). Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
     /// Research a feature request against the repo via the `scan` digest (no
     /// source reading) and emit the structured insumos for decomposition +
@@ -1660,6 +1717,9 @@ pub enum RunCmd {
 pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
+        RunCmd::ScanEquivalences { root } => scan_equivalences::run(&root),
+        RunCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
+        RunCmd::GitSettle { unit, root } => git_settle::run(&root, unit.as_deref()),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
         RunCmd::Orient { root } => orient::run(&root),
         RunCmd::GlossaryCoverage {

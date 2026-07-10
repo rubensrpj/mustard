@@ -1,0 +1,1376 @@
+[
+  {
+    "id": 1,
+    "difficulty": "media",
+    "scored": true,
+    "target": "apps/sialia-app/app/(dashboard)/contracts/_components/form/form-context.tsx",
+    "secondary": [
+      "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+      "apps/sialia-app/app/(dashboard)/contracts/_components/form.tsx"
+    ],
+    "note": "",
+    "tokens": [
+      "adicionar",
+      "campo",
+      "observacoes",
+      "formulario",
+      "contrato"
+    ],
+    "matchedCount": 6,
+    "matched": [
+      {
+        "term": "contrato",
+        "spec": 2427722,
+        "source": "comment"
+      },
+      {
+        "term": "campos",
+        "spec": 1377930,
+        "source": "comment"
+      },
+      {
+        "term": "contratos",
+        "spec": 1110352,
+        "source": "comment"
+      },
+      {
+        "term": "campo",
+        "spec": 797530,
+        "source": "comment"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      },
+      {
+        "term": "formulário",
+        "spec": 371840,
+        "source": "comment"
+      }
+    ],
+    "targetRank": 15,
+    "secRanks": [
+      -1,
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 3805652
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractStateTransitionService.cs",
+        "score": 2427722
+      },
+      {
+        "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+        "score": 1377930
+      },
+      {
+        "file": "packages/sialia-core/src/shared/utils/graphql-dynamic.ts",
+        "score": 1377930
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+        "score": 1110352
+      }
+    ],
+    "fileCount": 17,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 2,
+    "difficulty": "facil",
+    "scored": true,
+    "target": "apps/sialia-app/app/(dashboard)/payables/_components/aging-bar.tsx",
+    "secondary": [
+      "backend/Sialia.Backend/Application/Modules/v1/Dashboard/Services/FinancialDashboardService.cs"
+    ],
+    "note": "ja implementado (faixa 90+ existe)",
+    "tokens": [
+      "ajustar",
+      "grafico",
+      "contas",
+      "pagar",
+      "vencimento",
+      "aging",
+      "incluir",
+      "faixa",
+      "dias"
+    ],
+    "matchedCount": 7,
+    "matched": [
+      {
+        "term": "conta",
+        "spec": 1299000,
+        "source": "comment"
+      },
+      {
+        "term": "vencimento",
+        "spec": 1221600,
+        "source": "comment"
+      },
+      {
+        "term": "dias",
+        "spec": 900660,
+        "source": "both"
+      },
+      {
+        "term": "pagar",
+        "spec": 863282,
+        "source": "both"
+      },
+      {
+        "term": "contas",
+        "spec": 605838,
+        "source": "comment"
+      },
+      {
+        "term": "inclui",
+        "spec": 447282,
+        "source": "comment"
+      },
+      {
+        "term": "aging",
+        "spec": 381132,
+        "source": "both"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      19
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/receivables/_components/receivable-status.tsx",
+        "score": 2122260
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Auth/Services/AuthService.cs",
+        "score": 1299000
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableService.cs",
+        "score": 1299000
+      },
+      {
+        "file": "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+        "score": 1299000
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+        "score": 1221600
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/config.tsx",
+        "score": 1221600
+      }
+    ],
+    "fileCount": 19,
+    "cruHit5": true,
+    "justoHit5": true,
+    "cruRank": 1,
+    "justoRank": 3
+  },
+  {
+    "id": 3,
+    "difficulty": "media",
+    "scored": true,
+    "target": "apps/sialia-app/app/(dashboard)/partners/_components/form/form-context.tsx",
+    "secondary": [
+      "apps/sialia-app/app/(dashboard)/partners/_components/form.tsx"
+    ],
+    "note": "",
+    "tokens": [
+      "adicionar",
+      "aba",
+      "documentos",
+      "cadastro",
+      "parceiro"
+    ],
+    "matchedCount": 7,
+    "matched": [
+      {
+        "term": "parceiro",
+        "spec": 1358910,
+        "source": "comment"
+      },
+      {
+        "term": "cada",
+        "spec": 1125486,
+        "source": "comment"
+      },
+      {
+        "term": "documento",
+        "spec": 969782,
+        "source": "comment"
+      },
+      {
+        "term": "parceiros",
+        "spec": 697060,
+        "source": "comment"
+      },
+      {
+        "term": "aba",
+        "spec": 460506,
+        "source": "comment"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      },
+      {
+        "term": "cadastro",
+        "spec": 448188,
+        "source": "comment"
+      }
+    ],
+    "targetRank": 13,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Repositories/PartnerRepository.cs",
+        "score": 1807182
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+        "score": 1417970
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerImportService.cs",
+        "score": 1358910
+      },
+      {
+        "file": "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+        "score": 1358910
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/contract-meta-row.tsx",
+        "score": 1125486
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+        "score": 1125486
+      }
+    ],
+    "fileCount": 19,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 4,
+    "difficulty": "facil",
+    "scored": true,
+    "target": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/sync-status-card.tsx",
+    "secondary": [
+      "packages/sialia-core/src/client/hooks/use-contracts.ts"
+    ],
+    "note": "",
+    "tokens": [
+      "corrigir",
+      "card",
+      "status",
+      "sincronizacao",
+      "contrato",
+      "atualiza"
+    ],
+    "matchedCount": 5,
+    "matched": [
+      {
+        "term": "contrato",
+        "spec": 2427722,
+        "source": "comment"
+      },
+      {
+        "term": "contratos",
+        "spec": 1110352,
+        "source": "comment"
+      },
+      {
+        "term": "cards",
+        "spec": 782818,
+        "source": "both"
+      },
+      {
+        "term": "atual",
+        "spec": 656910,
+        "source": "comment"
+      },
+      {
+        "term": "atualiza",
+        "spec": 413420,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractStateTransitionService.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 2427722
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+        "score": 1110352
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Dashboard/DTOs/ContractsDashboardDto.cs",
+        "score": 1110352
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Dashboard/Services/ContractsDashboardService.cs",
+        "score": 1110352
+      }
+    ],
+    "fileCount": 15,
+    "cruHit5": true,
+    "justoHit5": true,
+    "cruRank": 1,
+    "justoRank": 1
+  },
+  {
+    "id": 5,
+    "difficulty": "facil",
+    "scored": true,
+    "target": "packages/sialia-core/src/shared/schemas/partners/partners.zod.ts",
+    "secondary": [],
+    "note": "",
+    "tokens": [
+      "adicionar",
+      "validacao",
+      "cnpj",
+      "schema",
+      "escrita",
+      "zod",
+      "parceiro"
+    ],
+    "matchedCount": 7,
+    "matched": [
+      {
+        "term": "parceiro",
+        "spec": 1358910,
+        "source": "comment"
+      },
+      {
+        "term": "parceiros",
+        "spec": 697060,
+        "source": "comment"
+      },
+      {
+        "term": "valida",
+        "spec": 679098,
+        "source": "comment"
+      },
+      {
+        "term": "validação",
+        "spec": 677602,
+        "source": "comment"
+      },
+      {
+        "term": "zod",
+        "spec": 601126,
+        "source": "both"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      },
+      {
+        "term": "valid",
+        "spec": 359408,
+        "source": "both"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Repositories/PartnerRepository.cs",
+        "score": 1807182
+      },
+      {
+        "file": "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+        "score": 1716108
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerImportService.cs",
+        "score": 1358910
+      },
+      {
+        "file": "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+        "score": 1358910
+      },
+      {
+        "file": "apps/sialia-app/configs/navigation/navigation.ts",
+        "score": 697060
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/DTOs/PartnerImportCancelResultDto.cs",
+        "score": 697060
+      }
+    ],
+    "fileCount": 18,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 6,
+    "difficulty": "facil",
+    "scored": true,
+    "target": "backend/Sialia.Backend/Application/Modules/v1/Contracts/DTOs/ContractResponseDto.cs",
+    "secondary": [
+      "packages/sialia-core/src/shared/schemas/contracts/contracts.zod.ts",
+      "backend/Sialia.Backend/Application/Modules/v1/Contracts/Mappers/ContractMapConfig.cs"
+    ],
+    "note": "",
+    "tokens": [
+      "incluir",
+      "novo",
+      "campo",
+      "tipo",
+      "resposta",
+      "api",
+      "contrato"
+    ],
+    "matchedCount": 10,
+    "matched": [
+      {
+        "term": "contrato",
+        "spec": 2427722,
+        "source": "comment"
+      },
+      {
+        "term": "tipo",
+        "spec": 1390368,
+        "source": "comment"
+      },
+      {
+        "term": "campos",
+        "spec": 1377930,
+        "source": "comment"
+      },
+      {
+        "term": "contratos",
+        "spec": 1110352,
+        "source": "comment"
+      },
+      {
+        "term": "novo",
+        "spec": 824040,
+        "source": "comment"
+      },
+      {
+        "term": "resposta",
+        "spec": 810160,
+        "source": "comment"
+      },
+      {
+        "term": "campo",
+        "spec": 797530,
+        "source": "comment"
+      },
+      {
+        "term": "tipos",
+        "spec": 534520,
+        "source": "comment"
+      },
+      {
+        "term": "inclui",
+        "spec": 447282,
+        "source": "comment"
+      },
+      {
+        "term": "novos",
+        "spec": 430122,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1,
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 3805652
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractStateTransitionService.cs",
+        "score": 2427722
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+        "score": 1924888
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Dashboard/DTOs/ContractsDashboardDto.cs",
+        "score": 1540474
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/config.tsx",
+        "score": 1390368
+      }
+    ],
+    "fileCount": 27,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 7,
+    "difficulty": "facil",
+    "scored": true,
+    "target": "packages/sialia-core/src/client/hooks/use-sales-channels.ts",
+    "secondary": [],
+    "note": "ja existe",
+    "tokens": [
+      "criar",
+      "hook",
+      "listar",
+      "canais",
+      "venda"
+    ],
+    "matchedCount": 5,
+    "matched": [
+      {
+        "term": "hook",
+        "spec": 1293828,
+        "source": "both"
+      },
+      {
+        "term": "lista",
+        "spec": 1218350,
+        "source": "comment"
+      },
+      {
+        "term": "cria",
+        "spec": 911820,
+        "source": "comment"
+      },
+      {
+        "term": "venda",
+        "spec": 623610,
+        "source": "both"
+      },
+      {
+        "term": "criar",
+        "spec": 470448,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "packages/sialia-core/src/client/hooks/base-entity-hooks.ts",
+        "score": 1688798
+      },
+      {
+        "file": "packages/sialia-core/src/client/hooks/use-auth.ts",
+        "score": 1293828
+      },
+      {
+        "file": "packages/sialia-core/src/client/hooks/use-contracts.ts",
+        "score": 1293828
+      },
+      {
+        "file": "packages/sialia-core/src/client/hooks/use-payables.ts",
+        "score": 1293828
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/all-titles-view.tsx",
+        "score": 1218350
+      },
+      {
+        "file": "packages/sialia-core/src/client/hooks/use-financial-titles.ts",
+        "score": 1218350
+      }
+    ],
+    "fileCount": 13,
+    "cruHit5": false,
+    "justoHit5": true,
+    "cruRank": -1,
+    "justoRank": 1
+  },
+  {
+    "id": 8,
+    "difficulty": "media",
+    "scored": true,
+    "target": "backend/Sialia.Backend/DataAccess/Enums/BankApprovalStatus.cs",
+    "secondary": [
+      "packages/sialia-core/src/shared/schemas/banks/banks.zod.ts"
+    ],
+    "note": "",
+    "tokens": [
+      "adicionar",
+      "novo",
+      "valor",
+      "status",
+      "aprovacao",
+      "bancaria"
+    ],
+    "matchedCount": 6,
+    "matched": [
+      {
+        "term": "valor",
+        "spec": 2065020,
+        "source": "comment"
+      },
+      {
+        "term": "novo",
+        "spec": 824040,
+        "source": "comment"
+      },
+      {
+        "term": "valores",
+        "spec": 572094,
+        "source": "comment"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      },
+      {
+        "term": "novos",
+        "spec": 430122,
+        "source": "comment"
+      },
+      {
+        "term": "aprovação",
+        "spec": 429840,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/_shared/editable-charges.tsx",
+        "score": 2065020
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/ClientStatementService.cs",
+        "score": 2065020
+      },
+      {
+        "file": "packages/sialia-core/src/client/components/sales-rules/condition-value-controls.tsx",
+        "score": 2065020
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+        "score": 824040
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/ContractPlans/Services/ContractPlanMainChangeService.cs",
+        "score": 824040
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableService.cs",
+        "score": 824040
+      }
+    ],
+    "fileCount": 18,
+    "cruHit5": false,
+    "justoHit5": true,
+    "cruRank": -1,
+    "justoRank": 1
+  },
+  {
+    "id": 9,
+    "difficulty": "dificil",
+    "scored": true,
+    "target": "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+    "secondary": [
+      "backend/Sialia.Backend/Application/Modules/v1/Payables/DTOs/PayableSplitDto.cs"
+    ],
+    "note": "",
+    "tokens": [
+      "fica",
+      "logica",
+      "desdobramento",
+      "split",
+      "contas",
+      "pagar"
+    ],
+    "matchedCount": 5,
+    "matched": [
+      {
+        "term": "conta",
+        "spec": 1299000,
+        "source": "comment"
+      },
+      {
+        "term": "desdobramento",
+        "spec": 1074928,
+        "source": "comment"
+      },
+      {
+        "term": "pagar",
+        "spec": 863282,
+        "source": "both"
+      },
+      {
+        "term": "contas",
+        "spec": 605838,
+        "source": "comment"
+      },
+      {
+        "term": "fica",
+        "spec": 446244,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/config.tsx",
+        "score": 1521172
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Auth/Services/AuthService.cs",
+        "score": 1299000
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableService.cs",
+        "score": 1299000
+      },
+      {
+        "file": "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+        "score": 1299000
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/payable-status.tsx",
+        "score": 1074928
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/receivables/_components/receivable-status.tsx",
+        "score": 1074928
+      }
+    ],
+    "fileCount": 14,
+    "cruHit5": false,
+    "justoHit5": true,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 10,
+    "difficulty": "na",
+    "scored": false,
+    "target": "",
+    "secondary": [
+      "backend/Sialia.Backend/DataAccess/Entities/PartnerCommission.cs"
+    ],
+    "note": "SEM ALVO CLARO - CommissionType nao existe no modelo; retrieval boa NAO deve apontar confiante em lugar nenhum (teste anti-alucinacao, fora do Acc@5)",
+    "tokens": [
+      "adicionar",
+      "novo",
+      "tipo",
+      "comissao"
+    ],
+    "matchedCount": 5,
+    "matched": [
+      {
+        "term": "tipo",
+        "spec": 1390368,
+        "source": "comment"
+      },
+      {
+        "term": "novo",
+        "spec": 824040,
+        "source": "comment"
+      },
+      {
+        "term": "tipos",
+        "spec": 534520,
+        "source": "comment"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      },
+      {
+        "term": "novos",
+        "spec": 430122,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -2,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/partners/_components/form/fields/principal-tab.tsx",
+        "score": 1924888
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/config.tsx",
+        "score": 1390368
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/PartnerImportCancelService.cs",
+        "score": 1390368
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+        "score": 824040
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/ContractPlans/Services/ContractPlanMainChangeService.cs",
+        "score": 824040
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableService.cs",
+        "score": 824040
+      }
+    ],
+    "fileCount": 14,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -2,
+    "justoRank": -2
+  },
+  {
+    "id": 11,
+    "difficulty": "dificil",
+    "scored": true,
+    "target": "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableQueryService.cs",
+    "secondary": [
+      "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableRollingService.cs"
+    ],
+    "note": "",
+    "tokens": [
+      "corrigir",
+      "calculo",
+      "data",
+      "vencimento",
+      "parcela",
+      "contrato"
+    ],
+    "matchedCount": 6,
+    "matched": [
+      {
+        "term": "contrato",
+        "spec": 2427722,
+        "source": "comment"
+      },
+      {
+        "term": "vencimento",
+        "spec": 1221600,
+        "source": "comment"
+      },
+      {
+        "term": "contratos",
+        "spec": 1110352,
+        "source": "comment"
+      },
+      {
+        "term": "parcelas",
+        "spec": 981890,
+        "source": "comment"
+      },
+      {
+        "term": "parcela",
+        "spec": 924192,
+        "source": "comment"
+      },
+      {
+        "term": "datas",
+        "spec": 397740,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractStateTransitionService.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 2427722
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/split-dialog.tsx",
+        "score": 1906082
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/receivables/_components/receivable-status.tsx",
+        "score": 1619340
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+        "score": 1221600
+      }
+    ],
+    "fileCount": 16,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 12,
+    "difficulty": "media",
+    "scored": true,
+    "target": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+    "secondary": [
+      "backend/Sialia.Backend/Application/Modules/v1/Contracts/DTOs/ContractUpSertDto.cs"
+    ],
+    "note": "",
+    "tokens": [
+      "adicionar",
+      "validacao",
+      "handler",
+      "criacao",
+      "contrato"
+    ],
+    "matchedCount": 8,
+    "matched": [
+      {
+        "term": "contrato",
+        "spec": 2427722,
+        "source": "comment"
+      },
+      {
+        "term": "contratos",
+        "spec": 1110352,
+        "source": "comment"
+      },
+      {
+        "term": "cria",
+        "spec": 911820,
+        "source": "comment"
+      },
+      {
+        "term": "valida",
+        "spec": 679098,
+        "source": "comment"
+      },
+      {
+        "term": "validação",
+        "spec": 677602,
+        "source": "comment"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      },
+      {
+        "term": "criação",
+        "spec": 409104,
+        "source": "comment"
+      },
+      {
+        "term": "valid",
+        "spec": 359408,
+        "source": "both"
+      }
+    ],
+    "targetRank": 1,
+    "secRanks": [
+      -1
+    ],
+    "hit5": true,
+    "hit10": true,
+    "top": [
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractStateTransitionService.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 2427722
+      },
+      {
+        "file": "packages/sialia-core/src/server/backend/backend-request-validator.ts",
+        "score": 1716108
+      },
+      {
+        "file": "packages/sialia-core/src/server/backend/backend-response-builder.ts",
+        "score": 1589422
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+        "score": 1110352
+      }
+    ],
+    "fileCount": 21,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 13,
+    "difficulty": "dificil",
+    "scored": true,
+    "target": "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Services/ReconciliationService.cs",
+    "secondary": [
+      "backend/Sialia.Backend/Application/Modules/v1/Reconciliation/Services/OfxParser.cs"
+    ],
+    "note": "",
+    "tokens": [
+      "feita",
+      "conciliacao",
+      "extrato",
+      "bancario"
+    ],
+    "matchedCount": 1,
+    "matched": [
+      {
+        "term": "extrato",
+        "spec": 772764,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/clients/statement/_components/client-statement-view.tsx",
+        "score": 772764
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/financial/_components/all-titles/titles-table.tsx",
+        "score": 772764
+      },
+      {
+        "file": "packages/sialia-core/src/client/hooks/use-reconciliation.ts",
+        "score": 772764
+      }
+    ],
+    "fileCount": 3,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  },
+  {
+    "id": 14,
+    "difficulty": "dificil",
+    "scored": true,
+    "target": "backend/Sialia.Backend/DataAccess/Repositories/Configurations/ReceivableConfiguration.cs",
+    "secondary": [
+      "backend/Sialia.Backend/DataAccess/Repositories/Configurations/PayableConfiguration.cs",
+      "backend/Sialia.Backend/DataAccess/Entities/Receivable.cs"
+    ],
+    "note": "",
+    "tokens": [
+      "adicionar",
+      "campo",
+      "configuracao",
+      "entidade",
+      "fatura",
+      "titulo"
+    ],
+    "matchedCount": 8,
+    "matched": [
+      {
+        "term": "título",
+        "spec": 1700504,
+        "source": "comment"
+      },
+      {
+        "term": "campos",
+        "spec": 1377930,
+        "source": "comment"
+      },
+      {
+        "term": "títulos",
+        "spec": 843960,
+        "source": "comment"
+      },
+      {
+        "term": "campo",
+        "spec": 797530,
+        "source": "comment"
+      },
+      {
+        "term": "entidade",
+        "spec": 737100,
+        "source": "comment"
+      },
+      {
+        "term": "configuração",
+        "spec": 504830,
+        "source": "comment"
+      },
+      {
+        "term": "titulos",
+        "spec": 481462,
+        "source": "comment"
+      },
+      {
+        "term": "adiciona",
+        "spec": 448272,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1,
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/payables/_components/dialogs/group-dialog.tsx",
+        "score": 1700504
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Payables/Services/PayableService.cs",
+        "score": 1700504
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Receivables/Services/ReceivableService.cs",
+        "score": 1700504
+      },
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 1377930
+      },
+      {
+        "file": "packages/sialia-core/src/shared/schemas/payables/payables.zod.ts",
+        "score": 1377930
+      },
+      {
+        "file": "packages/sialia-core/src/shared/utils/graphql-dynamic.ts",
+        "score": 1377930
+      }
+    ],
+    "fileCount": 24,
+    "cruHit5": false,
+    "justoHit5": true,
+    "cruRank": -1,
+    "justoRank": 1
+  },
+  {
+    "id": 15,
+    "difficulty": "dificil",
+    "scored": false,
+    "target": "apps/sialia-partners/app/(dashboard)/sistemas/page.tsx",
+    "secondary": [
+      "backend/Sialia.Backend/Application/Modules/v1/Partners/Services/IPartnerPortalService.cs",
+      "packages/sialia-core/src/shared/schemas/partners-portal/partner-channels.graphql.ts"
+    ],
+    "note": "CASO DE ESTRESSE cross-app multi-concern (real, do user); qualitativo, fora do Acc@5",
+    "tokens": [
+      "revisar",
+      "projeto",
+      "sialia",
+      "partners",
+      "portal",
+      "revenda",
+      "dashboard",
+      "indicacoes",
+      "ativas",
+      "planos",
+      "disponiveis",
+      "listar",
+      "canal",
+      "venda",
+      "parceiro",
+      "somente",
+      "leitura",
+      "igual",
+      "sales",
+      "plans",
+      "admin",
+      "crud",
+      "indicar",
+      "clientes",
+      "padrao",
+      "cadastro",
+      "cliente",
+      "app",
+      "abas",
+      "validacoes",
+      "meus",
+      "ganhos",
+      "indicados",
+      "fecharam",
+      "contrato"
+    ],
+    "matchedCount": 23,
+    "matched": [
+      {
+        "term": "contrato",
+        "spec": 2427722,
+        "source": "comment"
+      },
+      {
+        "term": "plano",
+        "spec": 2157000,
+        "source": "comment"
+      },
+      {
+        "term": "parceiro",
+        "spec": 1358910,
+        "source": "comment"
+      },
+      {
+        "term": "lista",
+        "spec": 1218350,
+        "source": "comment"
+      },
+      {
+        "term": "padrão",
+        "spec": 1216690,
+        "source": "comment"
+      },
+      {
+        "term": "cada",
+        "spec": 1125486,
+        "source": "comment"
+      },
+      {
+        "term": "contratos",
+        "spec": 1110352,
+        "source": "comment"
+      },
+      {
+        "term": "cliente",
+        "spec": 997594,
+        "source": "comment"
+      },
+      {
+        "term": "sialia",
+        "spec": 926850,
+        "source": "both"
+      },
+      {
+        "term": "admin",
+        "spec": 907120,
+        "source": "both"
+      },
+      {
+        "term": "parceiros",
+        "spec": 697060,
+        "source": "comment"
+      },
+      {
+        "term": "valida",
+        "spec": 679098,
+        "source": "comment"
+      }
+    ],
+    "targetRank": -1,
+    "secRanks": [
+      -1,
+      -1
+    ],
+    "hit5": false,
+    "hit10": false,
+    "top": [
+      {
+        "file": "apps/sialia-app/app/(dashboard)/contracts/_components/ui/contract-plans-table.tsx",
+        "score": 4401312
+      },
+      {
+        "file": "apps/sialia-app/app/(dashboard)/contracts/_components/form/fields/_components/active-contract-plans-table.tsx",
+        "score": 3733048
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/ContractService.Create.cs",
+        "score": 3042512
+      },
+      {
+        "file": "backend/Sialia.Backend/Application/Modules/v1/Contracts/Services/IContractStateTransitionService.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Backend/Modules/v1/Contracts/GraphQL/ContractTypeExtensions.cs",
+        "score": 2427722
+      },
+      {
+        "file": "backend/Sialia.Backend/Infra/Exceptions/ApiExceptionErrorCodes.cs",
+        "score": 2415478
+      }
+    ],
+    "fileCount": 51,
+    "cruHit5": false,
+    "justoHit5": false,
+    "cruRank": -1,
+    "justoRank": -1
+  }
+]

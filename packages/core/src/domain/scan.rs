@@ -370,6 +370,56 @@ pub fn read_entity_names(model_path: &std::path::Path) -> Vec<String> {
     Scan::locate().facts(model_path).map(|f| f.entities).unwrap_or_default()
 }
 
+/// One ranked row of `scan rank` (`files[]`): the path plus the ADDITIVE
+/// per-file `terms` evidence (the matched dictionary terms / direct query
+/// tokens that seeded it — empty on an older scan binary or a purely
+/// propagation-carried file). The fixed-point score stays in the tool's own
+/// output (the fusion downstream is rank-based, never score-based).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RankFile {
+    pub file: String,
+    #[serde(default)]
+    pub terms: Vec<String>,
+}
+
+/// The `scan rank` output envelope (`{query, matched_terms, files}`) — only
+/// `files` is projected; the rest stays with the tool.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RankOut {
+    #[serde(default)]
+    files: Vec<RankFile>,
+}
+
+/// Project a `scan rank` stdout into the ordered file list, tolerating any
+/// non-JSON preamble (parse from the first `{`, the same rule the benchmark
+/// harness used) and normalising separators to `/` for stable fusion keys.
+///
+/// # Errors
+/// [`Error::Parse`] when no JSON object is present or it is not the rank shape.
+fn parse_rank_files(out: &str) -> Result<Vec<String>> {
+    Ok(parse_rank_detail(out)?.into_iter().map(|f| f.file).collect())
+}
+
+/// Project a `scan rank` stdout into the ordered rows WITH the per-file
+/// `terms` evidence (additive in the tool output; missing → empty, so an
+/// older scan binary degrades to term-less rows). Same preamble tolerance and
+/// separator normalisation as [`parse_rank_files`].
+///
+/// # Errors
+/// [`Error::Parse`] when no JSON object is present or it is not the rank shape.
+fn parse_rank_detail(out: &str) -> Result<Vec<RankFile>> {
+    let json = out.find('{').map_or(out, |i| &out[i..]);
+    let parsed: RankOut = serde_json::from_str(json)?;
+    Ok(parsed
+        .files
+        .into_iter()
+        .map(|mut f| {
+            f.file = f.file.replace('\\', "/");
+            f
+        })
+        .collect())
+}
+
 impl Scan {
     /// A client for the grain binary at `binary` (a name on `PATH` or a path).
     #[must_use]
@@ -432,6 +482,33 @@ impl Scan {
     pub fn facts(&self, model: &Path) -> Result<ModelFacts> {
         let out = self.run(&facts_args(model))?;
         Ok(serde_json::from_str(&out)?)
+    }
+
+    /// Rank the model's files for a raw (e.g. PT) request via the tool's
+    /// personalized PageRank (`scan rank`), seeded by the
+    /// `grain.dictionary.json` sidecar. Returns the ordered file list
+    /// (separators normalised to `/`); every tuning knob stays on the tool's
+    /// defaults except the explicit `top` / `direct_base` contract.
+    ///
+    /// # Errors
+    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
+    /// [`Error::Parse`] if the output is not the expected JSON.
+    pub fn rank(&self, model: &Path, dict: &Path, query: &str, top: usize, direct_base: u64) -> Result<Vec<String>> {
+        let out = self.run(&rank_args(model, dict, query, top, direct_base))?;
+        parse_rank_files(&out)
+    }
+
+    /// Like [`Self::rank`], but returning each ranked row WITH its per-file
+    /// matched-term evidence (`files[].terms`, additive in the tool output) —
+    /// the audit line the retrieval hop shows per candidate. An older scan
+    /// binary (no `terms` field) yields empty term lists (fail-open).
+    ///
+    /// # Errors
+    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
+    /// [`Error::Parse`] if the output is not the expected JSON.
+    pub fn rank_detail(&self, model: &Path, dict: &Path, query: &str, top: usize, direct_base: u64) -> Result<Vec<RankFile>> {
+        let out = self.run(&rank_args(model, dict, query, top, direct_base))?;
+        parse_rank_detail(&out)
     }
 
     /// Compile the deterministic spec draft for `req` (`grain spec`). Returns the
@@ -504,6 +581,21 @@ fn facts_args(model: &Path) -> Vec<String> {
     vec!["facts".to_string(), model.to_string_lossy().into_owned()]
 }
 
+fn rank_args(model: &Path, dict: &Path, query: &str, top: usize, direct_base: u64) -> Vec<String> {
+    vec![
+        "rank".to_string(),
+        model.to_string_lossy().into_owned(),
+        "--dict".to_string(),
+        dict.to_string_lossy().into_owned(),
+        "--query".to_string(),
+        query.to_string(),
+        "--top".to_string(),
+        top.to_string(),
+        "--direct-base".to_string(),
+        direct_base.to_string(),
+    ]
+}
+
 fn spec_args(model: &Path, req: &SpecRequest) -> Vec<String> {
     let ops = if req.ops.is_empty() { "create".to_string() } else { req.ops.join(",") };
     let mut args = vec![
@@ -552,6 +644,52 @@ mod tests {
     fn facts_args_shape() {
         let a = facts_args(&PathBuf::from("m.json"));
         assert_eq!(a, vec!["facts", "m.json"]);
+    }
+
+    #[test]
+    fn rank_args_shape() {
+        let a = rank_args(
+            &PathBuf::from("m.json"),
+            &PathBuf::from("d.json"),
+            "onde é feita a conciliação reconciliation",
+            10,
+            100_000,
+        );
+        assert_eq!(
+            a,
+            vec![
+                "rank", "m.json", "--dict", "d.json", "--query",
+                "onde é feita a conciliação reconciliation", "--top", "10",
+                "--direct-base", "100000",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rank_files_tolerates_preamble_and_normalises_separators() {
+        // The benchmark-harness rule: parse from the first `{` (a tool warning
+        // line before the JSON must not break the client) and fold `\` → `/`.
+        let out = "note: something\n{\"query\":[\"x\"],\"matched_terms\":[],\"files\":[{\"file\":\"src\\\\a.cs\",\"score_x1024\":42},{\"file\":\"src/b.cs\",\"score_x1024\":7}]}";
+        let files = parse_rank_files(out).expect("rank output parses");
+        assert_eq!(files, vec!["src/a.cs", "src/b.cs"], "order preserved, separators normalised");
+
+        // The detailed projection reads the ADDITIVE per-file `terms` when the
+        // tool emits them, and degrades to empty lists when it does not (an
+        // older scan binary) — same rows, same order, same normalisation.
+        let detail = parse_rank_detail(out).expect("term-less rank output parses");
+        assert_eq!(detail.len(), 2);
+        assert_eq!(detail[0].file, "src/a.cs");
+        assert!(detail[0].terms.is_empty(), "older binary → empty terms");
+        let with_terms = "{\"files\":[{\"file\":\"src\\\\a.cs\",\"score_x1024\":42,\"terms\":[\"aging\",\"payable\"]}]}";
+        let detail = parse_rank_detail(with_terms).expect("terms parse");
+        assert_eq!(detail[0].terms, vec!["aging", "payable"]);
+
+        // An empty ranked list is a valid answer (nothing bridged), not an error.
+        let none = parse_rank_files(r#"{"query":[],"files":[]}"#).expect("empty rank parses");
+        assert!(none.is_empty());
+
+        // No JSON at all → a parse error the caller degrades on (fail-open there).
+        assert!(parse_rank_files("garbage with no json").is_err());
     }
 
     #[test]

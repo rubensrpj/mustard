@@ -162,6 +162,17 @@ fn signals_obj(
     })
 }
 
+/// Minimum `## Files` mass for a `layerCount >= 2` census to warrant multi-wave
+/// decomposition. Two files the role classifier happens to split into two roles
+/// (`handler.rs` + `model.rs`) is single-pass growth, NOT a genuine multi-layer
+/// feature — decomposing it into waves fragments a change one subagent finishes
+/// in a single pass. So the `multi-layer` promotion requires real breadth: a
+/// census of at least this many files. Calibrated at 3 against the field
+/// regression (a 2-file/2-role growth that came back a false `full`); 3 files
+/// across distinct roles is the smallest census that still reads as genuine
+/// breadth (matches the wave-size gate's own multi-layer floor).
+const MULTI_LAYER_FILE_FLOOR: i64 = 3;
+
 /// Compute the decomposition decision for an input JSON value.
 pub fn decide(input: &Value) -> Value {
     let file_count = input.get("fileCount").and_then(Value::as_i64).unwrap_or(0);
@@ -203,7 +214,7 @@ pub fn decide(input: &Value) -> Value {
         });
     }
 
-    if layer_count >= 2 {
+    if layer_count >= 2 && file_count >= MULTI_LAYER_FILE_FLOOR {
         return json!({
             "decompose": true,
             "reason": "multi-layer",
@@ -219,9 +230,19 @@ pub fn decide(input: &Value) -> Value {
         });
     }
 
+    // Single-wave verdict. `layer_count >= 2` here means the roles spread but the
+    // census is below MULTI_LAYER_FILE_FLOOR — too small to be a genuine
+    // multi-layer feature (a two-file, two-role growth), so it stays one wave.
+    // Name that case distinctly from a true single-role change so the keep-single
+    // reason is diagnosable rather than mislabelled `single-layer`.
+    let reason = if layer_count >= 2 {
+        "multi-layer-below-file-floor"
+    } else {
+        "single-layer"
+    };
     json!({
         "decompose": false,
-        "reason": "single-layer",
+        "reason": reason,
         "signals": signals_obj(file_count, layer_count, new_entity_count, touch_points, 0),
     })
 }
@@ -696,15 +717,25 @@ fileCount=0; classificacao nao-confiavel ate preencher o censo";
 /// [`FILES_SECTION_EMPTY_WARNING`]. The exit code is unchanged (this stays
 /// non-blocking).
 ///
-/// Fail-open: an unreadable spec yields `{ "scope": "full", ... }` — the
-/// conservative default, since `full` gets the most pipeline rigor (PLAN +
-/// /spec approval + per-wave gates).
+/// Unreadable spec: routing stays conservative (`scope: "full"` gets the most
+/// pipeline rigor — PLAN + /spec approval + per-wave gates), but the verdict is
+/// DIAGNOSABLE, not a silent `full`: the `reason` names the path that failed to
+/// read AND the cwd it was resolved against (`spec-unreadable: <path> (cwd:
+/// <cwd>)`), so a wrong-path / wrong-worktree invocation is visible instead of
+/// mistaken for a settled classification.
 #[must_use]
 pub fn classify_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
     let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
+        // Routing-safe `full`, but name the failing path + cwd so an unreadable
+        // spec is diagnosable, never a mute `full` with zeroed signals.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         return json!({
             "scope": "full",
-            "reason": "error-fallback",
+            "reason": format!(
+                "spec-unreadable: {} (cwd: {})",
+                spec_file.display(),
+                cwd.display()
+            ),
             "signals": signals_obj(0, 0, 0, 0, 0),
         });
     };
@@ -785,15 +816,24 @@ pub fn decide_from_spec(spec_file: &Path) -> Value {
 ///     Plan agent raises N above the floor), `0` for light
 ///   - `signals` + `filesSectionEmpty`: identical to `scope-classify`
 ///
-/// Fail-open: an unreadable spec yields the conservative `full` / single-wave
-/// `error-fallback`, mirroring the two commands it replaces.
+/// Unreadable spec: the conservative `full` / single-wave shape, but with a
+/// DIAGNOSABLE `spec-unreadable: <path> (cwd: <cwd>)` reason (not a silent
+/// `full`), mirroring [`classify_from_spec`] and the two commands it replaces.
 #[must_use]
 pub fn prepare_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
     let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
+        // Same diagnosable-unreadable contract as `classify_from_spec`: keep the
+        // routing-safe `full` / single-wave shape, but name the failing path +
+        // cwd so an unreadable spec is not mistaken for a settled `full`.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         return json!({
             "scope": "full",
             "decompose": false,
-            "reason": "error-fallback",
+            "reason": format!(
+                "spec-unreadable: {} (cwd: {})",
+                spec_file.display(),
+                cwd.display()
+            ),
             "waves": wave_floor_for_full(false),
             "sliceMatchCount": slice_match_count,
             "signals": signals_obj(0, 0, 0, 0, 0),
@@ -1069,20 +1109,44 @@ mod tests {
     fn from_spec_computes_multi_layer_signals() {
         let dir = tempfile::tempdir().unwrap();
         plant_project(dir.path());
-        // Two distinct roles (schema + api) ⇒ layerCount 2 ⇒ multi-layer.
-        let spec = "# Spec\n\n## Files\n- src/schema/user.ts\n- src/api/users.ts\n";
+        // Two distinct roles (schema + api) across ≥3 files ⇒ multi-layer with
+        // enough file mass to clear MULTI_LAYER_FILE_FLOOR ⇒ decomposes.
+        let spec = "# Spec\n\n## Files\n\
+            - src/schema/user.ts\n- src/schema/account.ts\n- src/api/users.ts\n";
         let signals = compute_signals_from_spec(spec, dir.path());
-        assert_eq!(signals["fileCount"], json!(2));
+        assert_eq!(signals["fileCount"], json!(3));
         assert_eq!(signals["layerCount"], json!(2));
 
         // The deterministic path agrees with the equivalent stdin path.
         let from_spec_decision = decide(&signals);
         let stdin_equiv = decide(&json!({
-            "fileCount": 2, "layerCount": 2, "newEntityCount": 0, "text": spec,
+            "fileCount": 3, "layerCount": 2, "newEntityCount": 0, "text": spec,
         }));
         assert_eq!(from_spec_decision, stdin_equiv);
         assert_eq!(from_spec_decision["decompose"], json!(true));
         assert_eq!(from_spec_decision["reason"], json!("multi-layer"));
+    }
+
+    /// AC3 (T3): the `layerCount >= 2` → multi-layer promotion now requires a
+    /// file-mass floor ([`MULTI_LAYER_FILE_FLOOR`]). Two files the role
+    /// classifier happens to split into two roles (`handler.rs` + `model.rs`) is
+    /// single-pass growth, not a genuine multi-layer feature — decomposing it
+    /// into waves fragments what one subagent does in a single pass. Below the
+    /// floor it stays a single wave (named distinctly for diagnosability); real
+    /// growth still decomposes.
+    #[test]
+    fn multi_layer_needs_file_floor_to_decompose() {
+        // 2 files across 2 roles ⇒ below the floor ⇒ NOT promoted.
+        let small = decide(&json!({ "layerCount": 2, "fileCount": 2 }));
+        assert_eq!(small["decompose"], json!(false), "2 files/2 roles must not promote");
+        assert_eq!(small["reason"], json!("multi-layer-below-file-floor"));
+        // Real growth (6 files) across the same 2 roles ⇒ clears the floor ⇒ promotes.
+        let grown = decide(&json!({ "layerCount": 2, "fileCount": 6 }));
+        assert_eq!(grown["decompose"], json!(true), ">5 files clears the floor");
+        assert_eq!(grown["reason"], json!("multi-layer"));
+        // Boundary: exactly MULTI_LAYER_FILE_FLOOR (3) files promotes.
+        let floor = decide(&json!({ "layerCount": 2, "fileCount": 3 }));
+        assert_eq!(floor["decompose"], json!(true), "3 files == floor ⇒ promotes");
     }
 
     #[test]
@@ -1374,11 +1438,30 @@ mod tests {
         assert!(df.get("warning").is_none(), "≥1 real path ⇒ no warning");
     }
 
+    /// AC8 (T7): an unreadable spec (wrong path / wrong cwd in a worktree) must
+    /// be DIAGNOSABLE, not a silent `full` with zeroed signals. Routing stays
+    /// safe (conservative `full`), but the `reason` names the failing path AND
+    /// the cwd so the caller sees it was a read error, not a real verdict.
     #[test]
-    fn classify_from_spec_unreadable_is_fail_open_to_full() {
+    fn classify_from_spec_unreadable_is_diagnosable() {
         let d = classify_from_spec(std::path::Path::new("/no/such/spec.md"), 0);
-        assert_eq!(d["scope"], json!("full"), "unreadable spec ⇒ conservative full");
-        assert_eq!(d["reason"], json!("error-fallback"));
+        assert_eq!(d["scope"], json!("full"), "routing-safe conservative full");
+        let reason = d["reason"].as_str().unwrap_or_default();
+        assert!(reason.starts_with("spec-unreadable:"), "diagnostic reason: {reason}");
+        assert!(reason.contains("spec.md"), "names the failing path: {reason}");
+        assert!(reason.contains("cwd:"), "names the resolving cwd: {reason}");
+    }
+
+    /// The fused `plan-prepare` shares the same diagnosable-unreadable contract:
+    /// routing-safe `full` / single-wave floor, with a path+cwd reason.
+    #[test]
+    fn prepare_from_spec_unreadable_is_diagnosable() {
+        let d = prepare_from_spec(std::path::Path::new("/no/such/spec.md"), 0);
+        assert_eq!(d["scope"], json!("full"), "routing-safe conservative full");
+        assert_eq!(d["waves"], json!(1), "single-wave floor preserved");
+        let reason = d["reason"].as_str().unwrap_or_default();
+        assert!(reason.starts_with("spec-unreadable:"), "diagnostic reason: {reason}");
+        assert!(reason.contains("cwd:"), "names the resolving cwd: {reason}");
     }
 
     #[test]
