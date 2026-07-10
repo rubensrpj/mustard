@@ -14,7 +14,7 @@ You are the orchestrator: route intent, coordinate pipelines, delegate non-trivi
 
 The user describes what they want; YOU classify, narrate, confirm only on genuine ambiguity, dispatch the internal flow, emit the kind. `/mustard:*` commands remain as power-override only. For every request that touches the codebase:
 
-**(a) Classify** intent + coarse scope. `mustard-rt run scope-classify` is deterministic (`layerCount` is a FACT); `plan-prepare`/`spec-draft` refine once a flow opens.
+**(a) Classify** intent + coarse scope — YOUR reading (there is NO pre-spec classifier: `scope-classify` derives `layerCount` from a spec's file list, so it only exists once a flow opens). After `spec-draft`/`plan-prepare`, `mustard-rt run scope-classify --from-spec <spec>` CHECKS your call deterministically (`layerCount` is a FACT there) — reclassify if it contradicts you.
 
 | Intent | Signals | Flow (`kind`) |
 |--------|---------|---------------|
@@ -35,7 +35,7 @@ The user describes what they want; YOU classify, narrate, confirm only on genuin
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-- `--intent` + `--base` seed the work unit's isolation: it runs in its OWN git worktree — Desktop auto-isolates; CLI foreground calls `EnterWorktree` name `{base}_{slug}` first (the `{base}_` prefix records the `/git` PR target). → `refs/git/worktree-isolation.md`.
+- `--intent` + `--base` seed the work unit's isolation: it runs in its OWN git worktree — Desktop auto-isolates; CLI foreground isolates BEFORE the first edit. `EnterWorktree` cuts from the repo's DEFAULT branch — correct only when `{base}` IS the default; for any other base create the worktree explicitly off it (`git worktree add .claude/worktrees/{base}_{slug} -b {base}_{slug} origin/{base}`) and enter via `EnterWorktree` `path`. The `{base}_` prefix records the `/git` PR target. → `refs/git/worktree-isolation.md`.
 - Lean paths (`task`, bugfix) emit too — no run is invisible.
 - Keep it agnostic: the options are the project's OWN bases, never a hardcoded pair.
 

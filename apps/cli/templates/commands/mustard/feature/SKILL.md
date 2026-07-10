@@ -22,15 +22,16 @@ No stage emit here — the slug is born at §2; `spec-draft` backfills the ANALY
 
 | Digest contract | Rule |
 |---|---|
-| stdout | compact insumos (slices, contracts, hubs, anchors+anchorsDetail, report, stacks, miss, note) — read ONCE, never redirect |
+| stdout | compact payload (`insumos` fused top-10, `candidates` ~25 with per-file evidence, slices, contracts, hubs, anchors+anchorsDetail, report, stacks, miss, note) — read ONCE, never redirect |
 | long tail | already written to `.claude/feature-digest.json` — Read it sliced (`offset`/`limit`); NEVER re-run the command |
-| `strong` | use the anchors |
-| `weak`/`none` | planning fields withheld; read the `candidates` vocabulary in the detail file, sharpen terms, re-call — a `miss` is NOT "absent"; true net-new is DESIGN |
-| confirmed bridge | after a successful re-query, suggest `mustard-rt run lexicon-suggest` (writes only via `--accept <missed>=<bridged>`) |
+| `strong` | SELECT from `candidates` (rule below); `insumos` is the pre-fused top-10 fallback |
+| `weak`/`none` | planning fields withheld; read the `vocabulary` menu (payload/detail file), sharpen terms, re-call — a `miss` is NOT "absent"; true net-new is DESIGN |
+| confirmed bridge | after a successful re-query or a settled `uncovered` row, persist it: `mustard-rt run equivalence-learn --term <missed> --tokens <bridged>` (learned overlay only; explicit, never automatic) |
 
-- Prune by provenance (drop anchors whose matched terms are tangential), then read ONLY the survivors (~12 files) — never the repo, never `grain.model.json`.
+- **In-session selection (YOU are the selector — no second model call):** `candidates` lists ~25 files, each with an evidence line (`rank#`/`digest#` positions + matched terms). SELECT the 5-10 a developer would actually open for THIS request, judging by the evidence; prefer production code over migrations/seeds/`loading` skeletons; keep frontend AND backend when the request spans layers. Your selection (never all 25) is what you read and what dispatched agents receive as anchors — never the repo, never `grain.model.json`.
+- **Absence radar (`uncovered`):** request concepts with NO representation among the candidates (probe = folded term + its equivalence expansions). These rows are exactly where the pool is BLIND — settle EACH with one targeted Grep/Glob (existence gate) BEFORE planning, and hand the findings to the dispatched agents alongside your selection. Never conclude "doesn't exist" from the pool alone; an empty `uncovered` means every content concept matched SOMETHING, not that the pool is complete. When the gate SETTLES a row — you found which code vocabulary the concept maps to — persist the bridge: `mustard-rt run equivalence-learn --term <concept> --tokens <code-terms>`. The retrieval LEARNS it (learned overlay, survives re-scans); the next query covers it.
 - Reading: ONE consolidated Task(Explore) when the survivors fit a single subagent; one Explore per subproject ONLY when anchors genuinely span ≥2 subprojects with volume in each. Each Explore returns ≤40 lines. Direct parent reads only for a single-subproject feature too small for a subagent — sliced, never whole files.
-- Composition/enhancement: the `slices` LEAD — a slice names the recurring pattern and carries `exemplarFiles`; go straight to those, treat the pruned anchors as the secondary signal. Net-new entity: a sibling's anchors lead instead.
+- Composition/enhancement: the `slices` LEAD — a slice names the recurring pattern and carries `exemplarFiles`; go straight to those, treat the selected candidates as the secondary signal. Net-new entity: a sibling's anchors lead instead.
 - Glossary grill (optional, non-blocking): `mustard-rt run glossary-coverage --intent "<request>" --context {root}/CONTEXT.md`; only on `missing`/`weak` grill lightly (≤3 central uncovered terms, one batched AskUserQuestion) and persist confirmed pairs via `grill-capture`. `ok`/`na`/absent-tool → silent.
 - Specification grill (selective, EARLY — before any §2 ceremony): when the digest stayed `weak`/`none` after the re-query, OR the request names an outcome/symptom without the mechanism → ONE batched AskUserQuestion (2-3 targeted questions offering options inferred from the anchors, didactic). Fold answers into the intent (later the spec's context/AC); maybe one digest re-call. A concrete, well-covered request SKIPS this — the grill never taxes a clear ask.
 

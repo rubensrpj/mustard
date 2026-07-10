@@ -35,6 +35,14 @@ Prefetch returns `title`/`body`/`author`/`base`/`head`/`additions`/`deletions`/`
 
 Scan return for `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. Per entry print *"Tactical fix candidate: <descrição>\nRun: /mustard:tactical-fix <parent-spec> \"<descrição>\""*. Does NOT block APPROVED or trigger fix-loop. REJECTED still routes through normal fix-loop. Qualification: `pipeline-config.md § Tactical Fix Discovery`.
 
+**Emit the verdict (required — the resume gate reads this).** Once the fix-loop settles `approved`/`rejected`, record it so `resume-bootstrap`'s post-execute gate advances past REVIEW — with no `review.result` event the spec stays at `ReviewPending` even though review finished:
+
+```bash
+mustard-rt run review-result --spec "$MUSTARD_SPEC" --verdict <approved|rejected> --critical <N> [--subproject {sub}]
+```
+
+`<N>` = count of critical findings (0 when `approved`). Emit `rejected` honestly when the fix-loop did not clear the blocking findings — a rejected verdict routes back to REVIEW by design; never record `approved` to unblock.
+
 **Structured payload contract (F4-c — Rust detector).** When emitting `review.result`, include a `tactical_fix_candidates` array in the payload so `mustard-rt run tactical-fix-detect --spec <spec>` can propose each fix deterministically. Each entry:
 
 ```json

@@ -18,6 +18,18 @@
 //! to use directly; it is validated against the same anchor predicate and the
 //! I1 `.claude/.claude/` guard before being accepted.
 //!
+//! ## Worktree redirect
+//!
+//! When the resolved anchor sits inside a LINKED git worktree — `git rev-parse
+//! --git-dir` differs from `--git-common-dir` — the root is remapped to the
+//! MAIN checkout (the parent of the shared `…/.git` common dir). All Mustard
+//! state (specs, events, active-spec markers, telemetry) then lands under the
+//! primary checkout's `.claude/`, never the worktree's: the worktree carries
+//! only code. The redirect is SURGICAL and fail-open — the main checkout,
+//! every non-git tree, and any git failure keep the un-redirected walk result,
+//! so only a proven linked worktree changes. It applies to the ancestor-walk
+//! path only; the `MUSTARD_WORKSPACE_ROOT` override is honoured verbatim.
+//!
 //! ## Inviolable safety contract
 //!
 //! - **No cwd fallback.** If no ancestor satisfies the predicate, the function
@@ -46,6 +58,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -163,7 +176,12 @@ fn resolve_uncached(
         let override_path = PathBuf::from(override_raw);
         return validate_override(override_path);
     }
-    walk_ancestors(start_dir)
+    let resolved = walk_ancestors(start_dir)?;
+    // Worktree redirect (the ONE behavioural change): a resolved anchor sitting
+    // inside a LINKED git worktree is remapped to its MAIN checkout so specs,
+    // events, markers, and telemetry land under the primary `.claude/`. The main
+    // checkout and every non-git tree return `None` here and keep `resolved`.
+    Ok(main_checkout_if_linked(&resolved).unwrap_or(resolved))
 }
 
 /// Validate an override value: the path must exist, satisfy the anchor
@@ -204,6 +222,67 @@ fn is_anchor(dir: &Path) -> bool {
     let mustard_json = dir.join("mustard.json");
     let claude_dir = dir.join(".claude");
     mustard_json.is_file() && claude_dir.is_dir()
+}
+
+/// Canonicalise `p`, falling back to the path as-given on error — so a relative
+/// and an absolute reading of the same directory compare equal without panicking.
+fn canonical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Run `git rev-parse <args>` in `dir`, returning the trimmed stdout as a
+/// [`PathBuf`] on success. `None` on any failure — git absent, not a repo, a
+/// non-zero exit, or empty output. Never panics: this is the fail-open seam of
+/// the worktree redirect.
+fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .arg("rev-parse")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s))
+    }
+}
+
+/// When `dir` is inside a LINKED git worktree, return the MAIN checkout root;
+/// otherwise `None` (⇒ the caller keeps today's walk result unchanged).
+///
+/// Detection mirrors `work_branch_gate::is_isolated_worktree`: a linked worktree
+/// reports a per-worktree `--git-dir` distinct from the shared `--git-common-dir`,
+/// while the MAIN checkout reports the same path for both. Derivation mirrors
+/// `git_settle::main_checkout_root`: the parent of the absolute `…/.git` common
+/// dir IS the main checkout. Fully fail-open — git absent, not a repo, the main
+/// checkout (dirs equal), or a derived root that is not a valid Mustard anchor
+/// all yield `None`, so only a proven linked worktree is ever redirected.
+fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
+    let git_dir = git_rev_parse(dir, &["--path-format=absolute", "--git-dir"])?;
+    let common = git_rev_parse(dir, &["--path-format=absolute", "--git-common-dir"])?;
+    // Main checkout ⇒ identical dirs ⇒ nothing to redirect (behaviour identical).
+    if canonical(&git_dir) == canonical(&common) {
+        return None;
+    }
+    // Linked worktree: the parent of the shared `…/.git` common dir is the main
+    // checkout root; `--show-toplevel` is the fallback for an unusual common dir.
+    let main = if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
+        common.parent()?.to_path_buf()
+    } else {
+        git_rev_parse(dir, &["--path-format=absolute", "--show-toplevel"])?
+    };
+    // Redirect only to a genuine, uncontaminated Mustard anchor — otherwise keep
+    // today's resolution rather than invent a root.
+    if is_anchor(&main) && !violates_dot_claude_guard(&main) {
+        Some(main)
+    } else {
+        None
+    }
 }
 
 /// I1 guard mirrored from [`crate::io::claude_paths`] — kept private so the two

@@ -1,0 +1,51 @@
+[package]
+name = "mustard-translate"
+version = "0.1.0"
+edition = "2024"
+description = "Local prompt→English machine translation for Mustard — OPUS-MT Marian (CC-BY-4.0, commercial OK) run with candle on CPU, greedy (deterministic) decoding, ZERO cloud/LLM tokens. Detects {en,pt,es,fr}; non-English is translated to English, English passes through."
+
+# Intentionally OUTSIDE the workspace (see root Cargo.toml `exclude`; same
+# precedent as the former apps/embed sidecar): candle (tensor runtime + gemm)
+# and lingua (embedded language-detection corpora) are heavy deps that must NOT
+# bloat the `mustard-rt` hook binary (runs on every tool call) nor the
+# deterministic `mustard-scan` (no-network, no-AI ethos). This crate is invoked
+# only on the query path (translate the user's intent once), like a sidecar tool.
+#
+# Model licensing: Helsinki-NLP/opus-mt-* checkpoints are CC-BY-4.0 (commercial
+# use allowed, attribution required). Deliberately NOT NLLB or Tower — those are
+# CC-BY-NC (non-commercial) and are banned from the product.
+
+# Empty table = this package is its own workspace. The root manifest also
+# lists apps/translate under `exclude`, but exclusion alone only stops the
+# FIRST workspace root cargo meets — from a nested git worktree the walk would
+# continue up into the outer checkout's manifest and fail. This makes the
+# sidecar self-contained in every layout.
+[workspace]
+
+[dependencies]
+# Pure-Rust tensor runtime — no ONNX Runtime, no cmake, no Python. The
+# candle-transformers `marian` module implements exactly the OPUS-MT
+# encoder/decoder with KV cache; weights load from safetensors.
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+# Loads the HF fast-tokenizer JSON (Unigram/SentencePiece + Metaspace) that the
+# Xenova mirror ships for the same OPUS-MT checkpoint (joint source/target vocab).
+tokenizers = "0.21"
+# One-time model download into the per-MACHINE cache (never per project, never
+# vendored into the repo) — same pattern the embed sidecar used via fastembed.
+hf-hub = "0.4"
+# Language detection. Chosen over whatlang: prompts are SHORT (3–12 words) and
+# lingua is built for short-text accuracy; restricting it to {en,pt,es,fr}
+# shrinks the embedded corpora and removes confusion classes. The only decision
+# that matters is "English or not" (pt/es/fr all route to the same ROMANCE→en
+# model, so a pt↔es confusion is harmless); lingua is decisively stronger than
+# whatlang exactly on that short-text call. Size lands in this sidecar only.
+lingua = { version = "1.7", default-features = false, features = ["english", "portuguese", "spanish", "french"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3

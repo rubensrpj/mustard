@@ -325,6 +325,42 @@ mod tests {
         assert!(out.qa_command.is_none());
     }
 
+    /// AC2 (regression): the events `/review` emits today — `review.start` +
+    /// `review.complete`, but NO `review.result` — do NOT satisfy the gate.
+    /// This reproduces the false-positive `ReviewPending` the fix targets: only
+    /// a `review.result` verdict advances past REVIEW, so a review that finished
+    /// without emitting one still (correctly) reports pending.
+    #[test]
+    fn post_execute_gate_review_start_complete_without_result_is_review_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        std::fs::create_dir_all(spec_dir.join("wave-0-mixed")).unwrap();
+        // The two events `/review` emits today — neither is a `review.result`.
+        write_event_line(
+            spec_dir,
+            "review.start",
+            r#"{"spec":"demo","target":"dev"}"#,
+            "2026-05-25T10:00:00.000Z",
+        );
+        write_event_line(
+            spec_dir,
+            "review.complete",
+            r#"{"spec":"demo","target":"dev"}"#,
+            "2026-05-25T10:01:00.000Z",
+        );
+
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 3,
+            total_waves: 3,
+            ..Default::default()
+        };
+        apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
+
+        assert_eq!(out.stage.as_deref(), Some("ReviewPending"));
+        assert_eq!(out.next_action.as_deref(), Some("dispatch-review"));
+    }
+
     /// Approved REVIEW + no QA → `QaPending` + `run-qa` + qaCommand.
     #[test]
     fn post_execute_gate_signals_qa_pending_after_approved_review() {

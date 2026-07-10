@@ -110,6 +110,79 @@ fn approval_sequence(wave_plan: bool, resume: bool) -> Vec<Step> {
     steps
 }
 
+// ---------------------------------------------------------------------------
+// T5 — the approval gate.
+//
+// `approve-spec` may emit the `draft→approved` signal ONLY once a real user has
+// approved the plan. The `approval_marker_observer` records that human answer as
+// `<spec>/.approved-by-user` — a marker the model cannot author, since it is born
+// from the user's `AskUserQuestion` `tool_response`. Without the marker, `strict`
+// refuses: a gate the gated could open by running this very command is not a
+// gate. Mode reads exactly like the `MUSTARD_*_GATE_MODE` close-gate family.
+// ---------------------------------------------------------------------------
+
+/// Three-state mode for the user-approval requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalMode {
+    /// Emit approval unconditionally (pre-T5 behaviour).
+    Off,
+    /// Warn on a missing marker but proceed.
+    Warn,
+    /// Refuse (exit≠0) on a missing marker — the default.
+    Strict,
+}
+
+/// Map a mode string to [`ApprovalMode`]; an absent/unknown value is `strict`
+/// (the safe default — an approval must be proven, never assumed).
+fn parse_approval_mode(s: &str) -> ApprovalMode {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "off" => ApprovalMode::Off,
+        "warn" => ApprovalMode::Warn,
+        _ => ApprovalMode::Strict,
+    }
+}
+
+/// Resolve `MUSTARD_APPROVAL_MODE` (default `strict`), mirroring the cascade the
+/// close-gate family uses for `MUSTARD_QA_GATE_MODE` / `MUSTARD_COMMIT_GATE_MODE`
+/// (`resolve_mode`): a non-empty env value wins; absent or blank → `strict`.
+fn resolve_approval_mode() -> ApprovalMode {
+    std::env::var("MUSTARD_APPROVAL_MODE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map_or(ApprovalMode::Strict, |v| parse_approval_mode(&v))
+}
+
+/// The gate outcome for a resolved mode + marker presence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalGate {
+    /// Emit the approval sequence as normal.
+    Proceed,
+    /// Emit, but first warn that no user approval was recorded.
+    Warn,
+    /// Refuse — no user approval recorded and the mode is strict.
+    Block,
+}
+
+/// Decide the gate outcome. Pure: the env read and the marker existence check are
+/// resolved by the caller, so the whole policy is unit-testable without touching
+/// process-global state (env / cwd).
+fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
+    match mode {
+        ApprovalMode::Off => ApprovalGate::Proceed,
+        _ if marker_present => ApprovalGate::Proceed,
+        ApprovalMode::Warn => ApprovalGate::Warn,
+        ApprovalMode::Strict => ApprovalGate::Block,
+    }
+}
+
+/// Didactic refusal surfaced as the report `error` when strict mode finds no
+/// user-approval marker. The flow relays `{ok:false,error}` straight to the user.
+const APPROVAL_REQUIRED_MSG: &str = "approval must come from the user — present \
+the plan and ask via AskUserQuestion; the user's own answer records the \
+.approved-by-user marker. approve-spec will not self-approve a Full plan (that \
+is what the field incident did). To temporarily relax, set \
+MUSTARD_APPROVAL_MODE=warn or off.";
+
 /// CLI entry — `mustard-rt run approve-spec --spec <name> [--wave-plan] [--resume]`.
 ///
 /// Emits the approval sequence by delegating each step to the canonical
@@ -127,6 +200,42 @@ pub fn run(opts: ApproveSpecOpts) {
             serde_json::to_string(&err).unwrap_or_else(|_| "{\"ok\":false}".to_string())
         );
         return;
+    }
+
+    // T5 approval gate — refuse (strict) to emit the approval signal without a
+    // recorded HUMAN approval. The `<spec>/.approved-by-user` marker is written
+    // ONLY by `approval_marker_observer` from the user's real AskUserQuestion
+    // answer, so a background job (no user, no answer, no marker) halts cleanly
+    // here and the Full spec stays in PLAN instead of auto-approving.
+    let mode = resolve_approval_mode();
+    if mode != ApprovalMode::Off {
+        let cwd = crate::shared::context::cwd();
+        let marker_present = crate::shared::context::approval_marker_path(&cwd, &opts.spec)
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        match approval_gate(mode, marker_present) {
+            ApprovalGate::Block => {
+                let err = ApproveError {
+                    ok: false,
+                    error: APPROVAL_REQUIRED_MSG.to_string(),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string(&err).unwrap_or_else(|_| "{\"ok\":false}".to_string())
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                std::process::exit(1);
+            }
+            ApprovalGate::Warn => {
+                eprintln!(
+                    "[approval] proceeding without a user-approval marker for spec '{}' \
+                     (MUSTARD_APPROVAL_MODE=warn) — the plan was not confirmed by the user; \
+                     strict mode would refuse this.",
+                    opts.spec
+                );
+            }
+            ApprovalGate::Proceed => {}
+        }
     }
 
     for (kind, payload) in approval_sequence(opts.wave_plan, opts.resume) {
@@ -339,5 +448,61 @@ mod tests {
         assert_eq!(v["phase"], json!("PLAN"), "{v}");
         assert_eq!(v["scope"], json!("full"), "{v}");
         assert_eq!(v["checkpoint"], json!("2026-06-02T10:00:00Z"), "{v}");
+    }
+
+    // -----------------------------------------------------------------------
+    // T5 — the approval gate (AC6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_approval_mode_maps_values() {
+        assert_eq!(parse_approval_mode("off"), ApprovalMode::Off);
+        assert_eq!(parse_approval_mode("warn"), ApprovalMode::Warn);
+        assert_eq!(parse_approval_mode("strict"), ApprovalMode::Strict);
+        assert_eq!(parse_approval_mode("STRICT"), ApprovalMode::Strict);
+        assert_eq!(parse_approval_mode("  warn "), ApprovalMode::Warn);
+        // Unknown / empty → strict (the safe default: prove approval, don't assume).
+        assert_eq!(parse_approval_mode(""), ApprovalMode::Strict);
+        assert_eq!(parse_approval_mode("banana"), ApprovalMode::Strict);
+    }
+
+    #[test]
+    fn approval_gate_blocks_strict_without_marker_and_proceeds_with_it() {
+        // AC6 core: SEM marcador → strict FALHA (Block ⇒ exit≠0); COM marcador → procede.
+        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
+        assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
+        // Warn surfaces a nudge but never blocks; off restores pre-T5 behaviour.
+        assert_eq!(approval_gate(ApprovalMode::Warn, false), ApprovalGate::Warn);
+        assert_eq!(approval_gate(ApprovalMode::Warn, true), ApprovalGate::Proceed);
+        assert_eq!(approval_gate(ApprovalMode::Off, false), ApprovalGate::Proceed);
+        assert_eq!(approval_gate(ApprovalMode::Off, true), ApprovalGate::Proceed);
+    }
+
+    #[test]
+    fn background_job_without_user_stops_at_plan() {
+        // A background job poses no AskUserQuestion, so the observer records no
+        // marker; strict `approve-spec` then refuses (Block), and the Full spec
+        // cannot leave PLAN without a human. This is AC6's bg-job scenario.
+        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
+    }
+
+    #[test]
+    fn approval_marker_presence_toggles_with_the_file() {
+        // The exact path `approve-spec` gates on is the one the observer writes
+        // — `<spec>/.approved-by-user`. Toggling the file flips the decision.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = "epic";
+        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
+        let marker = crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec)
+            .expect("marker path resolves");
+        assert!(marker.ends_with(".approved-by-user"));
+
+        assert!(!marker.exists(), "no marker yet");
+        assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Block);
+
+        std::fs::write(&marker, b"spec=epic\n").unwrap();
+        assert!(marker.exists(), "marker present after the observer writes it");
+        assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Proceed);
     }
 }

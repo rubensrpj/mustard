@@ -6,7 +6,10 @@ Every work unit (feature, bugfix, any file change) runs in its OWN git worktree,
 
 - **Desktop** — the app already creates a worktree for EVERY session automatically; nothing to do. Its branch carries no `{base}_` prefix, so `/git` recovers the PR target through its fallback = the primary base (`git.flow["*"]`). For a non-primary base, pass the target to `/git` explicitly.
 - **CLI, background** (`claude --bg`) — `settings.json#worktree.bgIsolation: "auto"` isolates each background session before its first edit. Automatic.
-- **CLI, foreground** (live session) — NOT auto-isolated. Before the first edit of a work unit, call `EnterWorktree` with `name` = `{base}_{slug}`. The `{base}_` prefix is load-bearing: `/git` reads it to target the PR (`refs/git/git-flow.md`). `ExitWorktree` when done. Never `git checkout -b` on the shared tree.
+- **CLI, foreground** (live session) — NOT auto-isolated. Before the first edit of a work unit, isolate with the branch cut FROM THE RIGHT BASE — `EnterWorktree name={base}_{slug}` cuts from the repo's DEFAULT branch (`worktree.baseRef: fresh`), which is correct ONLY when `{base}` is the default. For any other base (e.g. work integrating into `dev` when the default is `main`):
+  1. `git worktree add .claude/worktrees/{base}_{slug} -b {base}_{slug} origin/{base}` (fetch first),
+  2. `EnterWorktree` with `path` pointing at it.
+  The `{base}_` prefix is load-bearing: `/git` reads it to target the PR (`refs/git/git-flow.md`). `ExitWorktree` when done. Never `git checkout -b` on the shared tree.
 
 ## The gate
 

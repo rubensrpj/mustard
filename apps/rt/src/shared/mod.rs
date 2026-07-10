@@ -13,7 +13,11 @@
 //! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
 //!   port, liveness probe) shared by the collector-spawning hook and the
 //!   collector-stopping `run` command.
+//! - [`translate`] — fail-open client for the optional `mustard-translate`
+//!   sidecar (local MT), shared by the `feature` auto-gloss and the
+//!   `scan-equivalences` artifact generation.
 
 pub mod context;
 pub mod events;
 pub mod proc;
+pub mod translate;
