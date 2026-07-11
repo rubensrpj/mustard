@@ -216,23 +216,36 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         .map(|s| parse_worktrees(&s))
         .unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().replace('\\', "/");
+    // Prune in three steps, each tried and reported on its OWN field. The only
+    // real coupling: git refuses to delete a branch a worktree still checks out,
+    // so the LOCAL delete waits for the floor to be clear (removed by us, or
+    // already absent). The REMOTE delete does not depend on the worktree outcome
+    // and runs either way — a worktree the OS still locks must never strand the
+    // server branch. `worktreeRemoved` stays true only when WE removed it (an
+    // already-absent worktree reports false, matching the prior happy path).
     let unit_entry = entries.iter().find(|e| e.branch == unit_branch);
-    let (action, worktree_removed) = match unit_entry {
-        Some(e) if cwd.starts_with(&e.path) => ("exit-and-rerun", false),
-        Some(e) => {
-            let removed = git_ok(&main, &["worktree", "remove", &e.path]);
-            (if removed { "settled" } else { "worktree-remove-failed" }, removed)
-        }
-        None => ("settled", false), // worktree already gone; finish the branch.
-    };
-    let (branch_deleted, remote_deleted) = if action == "settled" {
-        (
-            git_ok(&main, &["branch", "-D", &unit_branch]),
-            git_ok(&main, &["push", "origin", "--delete", &unit_branch]),
-        )
-    } else {
-        (false, false)
-    };
+    let (action, worktree_removed, branch_deleted, remote_deleted) =
+        if unit_entry.is_some_and(|e| cwd.starts_with(&e.path)) {
+            // Inside our own worktree we cannot remove our floor; verify+update
+            // already ran, so hand back the finish step and touch nothing else.
+            ("exit-and-rerun", false, false, false)
+        } else {
+            let (worktree_removed, floor_clear) = match unit_entry {
+                Some(e) => {
+                    let removed = git_ok(&main, &["worktree", "remove", &e.path]);
+                    (removed, removed)
+                }
+                None => (false, true), // never removed by us, but already free to delete
+            };
+            let branch_deleted = floor_clear && git_ok(&main, &["branch", "-D", &unit_branch]);
+            let remote_deleted = git_ok(&main, &["push", "origin", "--delete", &unit_branch]);
+            // Floor clear → unit fully off the local stage: "settled". A leftover
+            // worktree still blocking local cleanup → "partial"; the per-field
+            // booleans tell the true story (remote may be gone while the worktree
+            // and local branch remain).
+            let action = if floor_clear { "settled" } else { "partial" };
+            (action, worktree_removed, branch_deleted, remote_deleted)
+        };
 
     // Other merged harness worktrees — informative only (settle acts on ONE
     // unit; the user decides about the rest, each via its own settle).
@@ -381,5 +394,33 @@ mod tests {
         let local = git_out(&main, &["rev-parse", "dev"]).expect("local");
         let remote = git_out(&main, &["rev-parse", "origin/dev"]).expect("remote");
         assert_eq!(local, remote, "base fast-forwarded");
+    }
+
+    /// Partial failure: a worktree git refuses to remove (here LOCKED, a stand-in
+    /// for the OS still holding the folder open) must not strand the remote branch.
+    /// Each step tries and reports on its own field — the remote delete runs even
+    /// though worktree-remove and the (still-checked-out) local delete both fail.
+    #[test]
+    fn partial_failure_still_deletes_remote_and_reports_each_step() {
+        let (_dir, main) = fixture();
+        git(&main, &["push", "origin", "dev_done"]);
+        let wt = main.join(".claude").join("worktrees").join("dev_done");
+        git(&main, &["worktree", "lock", wt.to_string_lossy().as_ref()]);
+
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("partial"), "{v}");
+        assert_eq!(v["unit"]["worktreeRemoved"], json!(false), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
+        assert_eq!(v["unit"]["remoteDeleted"], json!(true), "{v}"); // the fix
+        assert!(wt.exists(), "leftover worktree preserved (removal really failed)");
+        assert!(
+            !git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
+            "local branch kept (worktree still holds it checked out)"
+        );
+        assert!(
+            git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"]).unwrap_or_default().is_empty(),
+            "remote branch deleted independently of the worktree"
+        );
     }
 }
