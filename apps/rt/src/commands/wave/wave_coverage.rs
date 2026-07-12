@@ -12,11 +12,12 @@
 //! `wave_complete_observer`: a wave that left promised files untouched is not
 //! truly done, regardless of what the agent *claimed* in its report.
 //!
-//! Mode ([`mode`], env `MUSTARD_WAVE_COVERAGE_MODE`): `off` | `warn` (default)
-//! | `strict`. `strict` blocks the `pipeline.wave.complete` emission (the wave
-//! reopens on the next `wave-advance`); `warn` surfaces the gap but lets
-//! completion proceed; `off` disables the guard. Mirrors the sibling gates'
-//! env-mode shape.
+//! Mode ([`mode`], env `MUSTARD_WAVE_COVERAGE_MODE`): `strict` (default) |
+//! `warn` | `off`. The guard ENFORCES by default: `strict` blocks the
+//! `pipeline.wave.complete` emission so the wave reopens on the next
+//! `wave-advance` instead of shipping a half-vertical to QA. The env var is
+//! only an escape hatch to relax — `warn` surfaces the gap but lets completion
+//! proceed, `off` disables the guard — never the primary interface.
 
 use std::path::Path;
 
@@ -62,15 +63,17 @@ pub fn check(wave_dir: &Path) -> CoverageVerdict {
 }
 
 /// Resolve the coverage-guard mode from `MUSTARD_WAVE_COVERAGE_MODE`
-/// (`off` | `warn` | `strict`). Default [`Mode::Warn`] — surface the gap
-/// without blocking. Any unrecognised value collapses to `warn` via
-/// [`Mode::parse`].
+/// (`off` | `warn` | `strict`). Default (unset **or** unrecognised)
+/// [`Mode::Strict`] — the guard ENFORCES by default: a wave that left promised
+/// files untouched does not complete. The env var is only an escape hatch to
+/// relax in an edge case (`warn` = surface the gap without blocking, `off` =
+/// disable), never the primary interface.
 #[must_use]
 pub fn mode() -> Mode {
     std::env::var("MUSTARD_WAVE_COVERAGE_MODE")
         .ok()
         .and_then(|raw| Mode::parse(&raw))
-        .unwrap_or(Mode::Warn)
+        .unwrap_or(Mode::Strict)
 }
 
 /// Whether a coverage `verdict` should BLOCK wave completion under `mode`.
