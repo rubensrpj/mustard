@@ -129,12 +129,6 @@ fn memory_root(project: &Path) -> Option<PathBuf> {
         .map(|p| p.claude_dir().join("memory"))
 }
 
-fn knowledge_root(project: &Path) -> Option<PathBuf> {
-    ClaudePaths::for_project(project)
-        .ok()
-        .map(|p| p.claude_dir().join("knowledge"))
-}
-
 fn agent_dir(project: &Path) -> Option<PathBuf> {
     memory_root(project).map(|p| p.join("agent"))
 }
@@ -359,63 +353,6 @@ fn run_decision(input: &Value) {
     emit_decision_event(&entry_type, &content, &context, &source, &project_dir_str);
 }
 
-fn run_knowledge(input: &Value) {
-    let cwd = input_cwd(input);
-    let project = Path::new(&cwd);
-    let name = input
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let description = input
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let source = input
-        .get("source")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let confidence = input
-        .get("confidence")
-        .and_then(Value::as_f64)
-        .filter(|&c| (0.0..=1.0).contains(&c))
-        .unwrap_or(0.3);
-
-    if name.is_empty() || description.is_empty() {
-        eprintln!("[memory] knowledge: missing name or description");
-        return;
-    }
-    let Some(store) = knowledge_store(project) else {
-        return;
-    };
-    // A `pattern` is a reusable convention → `Kind::Principle`, `Scope::Global`
-    // → `.claude/knowledge/`. The store mirrors `label` onto the legacy `name` +
-    // `description` frontmatter keys the readers (session_start_inject, list)
-    // expect; `description` (the body) stays the searchable text. `source`
-    // becomes the origin spec when it names one.
-    let spec = source
-        .as_deref()
-        .map(|s| s.strip_prefix("spec:").unwrap_or(s).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let k = Knowledge {
-        kind: Kind::Principle,
-        scope: Scope::Global,
-        label: name,
-        content: description,
-        origin: Origin {
-            spec,
-            captured_at: now_iso8601(),
-            ..Origin::default()
-        },
-        confidence: confidence as f32,
-        status: Status::Active,
-    };
-    let _ = store.write(&k);
-}
-
 fn agent_input_from_flags(
     spec: Option<&str>,
     wave: Option<u32>,
@@ -563,9 +500,6 @@ fn run_list(grouped: bool, format: &str) {
     let cwd = project_dir();
     let project = Path::new(&cwd);
     let mut rows: Vec<MemoryRow> = Vec::new();
-    if let Some(d) = knowledge_root(project) {
-        rows.extend(collect_dir_rows(&d, "pattern"));
-    }
     if let Some(d) = decisions_dir(project) {
         rows.extend(collect_dir_rows(&d, "decision"));
     }
@@ -1003,9 +937,9 @@ pub fn dispatch(
         run_feedback(opts);
         return;
     }
-    if !matches!(subcommand, "agent" | "decision" | "knowledge") {
+    if !matches!(subcommand, "agent" | "decision") {
         println!(
-            "Usage: memory <agent|decision|knowledge|list|write|search|feedback> [--json '<JSON>']"
+            "Usage: memory <agent|decision|list|write|search|feedback> [--json '<JSON>']"
         );
         return;
     }
@@ -1027,7 +961,6 @@ pub fn dispatch(
     match subcommand {
         "agent" => run_agent(&input),
         "decision" => run_decision(&input),
-        "knowledge" => run_knowledge(&input),
         _ => {}
     }
 }
@@ -1090,28 +1023,6 @@ mod tests {
             })
             .unwrap_or(0);
         assert_eq!(count, 1, "one .md file expected");
-    }
-
-    #[test]
-    fn knowledge_writes_pattern_markdown() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("mustard.json"), b"{}").unwrap();
-        let input = json!({
-            "cwd": dir.path().to_string_lossy(),
-            "name": "fail-open",
-            "description": "hooks never abort user work",
-            "confidence": 0.8,
-        });
-        run_knowledge(&input);
-        let dir_path = dir.path().join(".claude").join("knowledge");
-        let count = std::fs::read_dir(&dir_path)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
-                    .count()
-            })
-            .unwrap_or(0);
-        assert_eq!(count, 1);
     }
 
     #[test]

@@ -69,9 +69,6 @@ use mustard_core::time::now_iso8601;
 /// Archived sessions older than this are pruned on `SessionStart` (30 days).
 const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
 
-/// Number of knowledge entries injected from `.claude/knowledge/*.md`.
-const KB_MAX_ENTRIES: usize = 5;
-
 /// Injection caps — total budget per memory section.
 /// Top-3 entries from the active-spec context, plus top-2 global fallbacks.
 /// Entries are surfaced newest-first by their frontmatter timestamp.
@@ -495,25 +492,6 @@ fn doc_label(doc: &MarkdownDoc) -> String {
         .to_string()
 }
 
-/// Load knowledge entries from `.claude/knowledge/*.md` via `MarkdownStore`.
-///
-/// Each `.md` file is one pattern entry, surfaced newest-first (see
-/// [`newest_full_docs`]). The label is the frontmatter `name`/`description`
-/// when present, else the first body line — where the knowledge writer puts
-/// the pattern text. Accepts an empty or missing directory — returns an
-/// empty vec.
-fn load_knowledge_md(knowledge_dir: &Path) -> Vec<String> {
-    newest_full_docs(MarkdownStore::scan_dir(knowledge_dir), KB_MAX_ENTRIES)
-        .iter()
-        .map(|doc| {
-            format!(
-                "- [pattern] (unverified — verify before recommending) {}",
-                doc_label(doc)
-            )
-        })
-        .collect()
-}
-
 /// Load memory entries from `.claude/memory/{decisions,lessons}/*.md`.
 ///
 /// Scoped to the durable sub-stores: `memory/agent/` holds per-turn resume
@@ -534,7 +512,6 @@ fn load_memory_md(memory_dir: &Path, max: usize) -> Vec<String> {
 /// source has any content.
 ///
 /// Reads the memory sources from the filesystem via `MarkdownStore`:
-/// - `.claude/knowledge/` → Project Knowledge
 /// - `.claude/memory/{decisions,lessons}/` → Recent Decisions (the `agent/`
 ///   sub-store is per-turn resume state, never injected here)
 ///
@@ -546,16 +523,9 @@ fn build_memory_context(cwd: &str) -> Option<String> {
         return None;
     };
     let claude_dir = paths.claude_dir();
-    let knowledge_dir = claude_dir.join("knowledge");
     let memory_dir = claude_dir.join("memory");
 
     let mut parts: Vec<String> = Vec::new();
-
-    let kb = load_knowledge_md(&knowledge_dir);
-    if !kb.is_empty() {
-        parts.push("## Project Knowledge".to_string());
-        parts.extend(kb);
-    }
 
     let total_max = SPEC_SCOPED_MAX + GLOBAL_FALLBACK_MAX;
     let decisions = load_memory_md(&memory_dir, total_max);
@@ -811,39 +781,6 @@ mod tests {
 
     // --- session-memory parity (W3B: reads from MarkdownStore) ---------------
 
-    /// Write a `.md` knowledge file to `.claude/knowledge/` so
-    /// `build_memory_context` can load it via `MarkdownStore::scan_dir`.
-    fn seed_knowledge_md(project: &std::path::Path, name: &str, description: &str) {
-        let knowledge_dir = project.join(".claude").join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-        let content = format!(
-            "---\nname: {name}\ndescription: {description}\n---\n"
-        );
-        std::fs::write(knowledge_dir.join(format!("{name}.md")), content).unwrap();
-    }
-
-    #[test]
-    fn memory_injection_surfaces_knowledge_as_inject() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        SessionStartInject.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        // Seed name uses capital `Foo` so the surfaced label (which loads
-        // `name` preferentially via `load_knowledge_md`) contains the
-        // assertion string. The description is informational only.
-        seed_knowledge_md(dir.path(), "Foo-use-bar", "Foo: use bar");
-        let verdict = SessionStartInject
-            .evaluate(&session_input("s"), &ctx(project))
-            .unwrap();
-        match verdict {
-            Verdict::Inject { context } => {
-                assert!(context.contains("Persistent Memory"));
-                assert!(context.contains("Project Knowledge"));
-                assert!(context.contains("Foo"));
-            }
-            other => panic!("expected Inject, got {other:?}"),
-        }
-    }
-
     #[test]
     fn memory_injection_allows_when_no_sources() {
         let dir = tempdir().unwrap();
@@ -853,15 +790,6 @@ mod tests {
             .unwrap();
         // No knowledge/memory dirs → build_memory_context returns None → Allow.
         assert_eq!(verdict, Verdict::Allow);
-    }
-
-    /// Write a knowledge file in the REAL writer's shape: provenance-only
-    /// frontmatter (`kind`/`captured_at`), payload in the BODY.
-    fn seed_knowledge_body(project: &std::path::Path, stem: &str, captured_at: &str, body: &str) {
-        let knowledge_dir = project.join(".claude").join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-        let content = format!("---\nkind: decision\ncaptured_at: {captured_at}\n---\n{body}\n");
-        std::fs::write(knowledge_dir.join(format!("{stem}.md")), content).unwrap();
     }
 
     /// Write a decision file under `.claude/memory/decisions/` in the real
@@ -881,34 +809,6 @@ mod tests {
         let content =
             format!("---\nsession_id: s\nsummary: interrupted at wave ?\nat: {at}\n---\n");
         std::fs::write(dir.join(format!("{stem}.md")), content).unwrap();
-    }
-
-    #[test]
-    fn knowledge_label_falls_back_to_body_line_not_stem() {
-        // The real knowledge writer puts the content in the BODY and no
-        // name/description in the frontmatter — the injected label must be
-        // that body line, never the opaque timestamp-hash filename stem.
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        seed_knowledge_body(
-            dir.path(),
-            "20260602T115441987Z-dc82555e",
-            "2026-06-02T11:54:41.987Z",
-            "**D1** — actionable sections live at the executing level",
-        );
-        let verdict = SessionStartInject.evaluate(&session_input("s"), &ctx(project)).unwrap();
-        let context = match verdict {
-            Verdict::Inject { context } => context,
-            other => panic!("expected Inject, got {other:?}"),
-        };
-        assert!(
-            context.contains("**D1** — actionable sections live at the executing level"),
-            "the body line is the label; got: {context}"
-        );
-        assert!(
-            !context.contains("20260602T115441987Z-dc82555e"),
-            "the opaque filename stem must not surface; got: {context}"
-        );
     }
 
     #[test]
@@ -973,27 +873,6 @@ mod tests {
         assert!(
             !context.contains("c5c446b9"),
             "agent marker stems never surface: {context}"
-        );
-    }
-
-    #[test]
-    fn session_start_injection_marks_knowledge_as_unverified() {
-        // W3B: knowledge entries loaded from .claude/knowledge/*.md carry the
-        // "unverified" prefix in the injected context.
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        SessionStartInject.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        seed_knowledge_md(dir.path(), "alpha-entry", "alpha-entry: some description");
-        let verdict = SessionStartInject
-            .evaluate(&session_input("s"), &ctx(project))
-            .unwrap();
-        let context = match verdict {
-            Verdict::Inject { context } => context,
-            other => panic!("expected Inject, got {other:?}"),
-        };
-        assert!(
-            context.contains("(unverified — verify before recommending) alpha-entry"),
-            "MarkdownStore-backed knowledge must carry the unverified prefix; got: {context}"
         );
     }
 }

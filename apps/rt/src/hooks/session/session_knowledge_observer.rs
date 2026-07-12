@@ -29,9 +29,11 @@
 //!   reproduces exactly that: it writes `friction.json` and emits
 //!   `retry.attempt`.
 //! - W3D: `memory-auto-extract` no longer shells out to `memory.js`. Decisions
-//!   and lessons extracted from spec bullets are written directly to
-//!   `.claude/knowledge/{slug}.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
-//!   YAML frontmatter carries `kind`, `captured_at`, `source_event`, and `spec`.
+//!   and lessons extracted from spec bullets are persisted under
+//!   `.claude/memory/{decisions,lessons}/{slug}.md` via the unified
+//!   [`mustard_core::io::knowledge_store::KnowledgeStore`], which routes each
+//!   record to its legacy directory by `kind`. YAML frontmatter carries `kind`,
+//!   `captured_at`, and `spec`.
 
 use mustard_core::io::fs;
 use mustard_core::io::knowledge_store::KnowledgeStore;
@@ -619,8 +621,8 @@ fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
 }
 
 /// `memory-auto-extract`: on `SessionEnd`, scan active specs for Decisions /
-/// Lessons bullets and persist them as `.claude/knowledge/{slug}.md` via
-/// [`MarkdownStore::write_atomic`]. Pure side effect.
+/// Lessons bullets and persist them under `.claude/memory/{decisions,lessons}/`
+/// via the unified [`KnowledgeStore`]. Pure side effect.
 fn run_memory_auto_extract(cwd: &str) {
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return;
@@ -629,9 +631,6 @@ fn run_memory_auto_extract(cwd: &str) {
     if !active.exists() {
         return;
     }
-    // knowledge/ is created on first write by persist_memory; ensure it exists
-    // here so the seen-path cache can also be written under .cache/.
-    let _ = fs::create_dir_all(paths.claude_dir().join("knowledge"));
 
     let seen_path = paths.memory_seen_path();
     let mut seen_hashes: Vec<String> = fs::read_to_string(&seen_path)

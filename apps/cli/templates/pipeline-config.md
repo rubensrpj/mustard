@@ -135,6 +135,6 @@ IDs in the deny reason (`[bash-safety BGnn]`): BG01 `rm -rf`; BG02 force push (`
 
 Truth: per-spec append-only NDJSON under `.claude/spec/{name}/.events/` (and per-wave) — no SQLite append, no central `events.jsonl`.
 
-Knowledge patterns: `.claude/knowledge/{slug}.md` (writer `session_knowledge_observer`). Decisions/Lessons: `.claude/memory/{decisions,lessons}/{slug}.md` (writer `run memory decision`).
+Decisions/Lessons: `.claude/memory/{decisions,lessons}/{slug}.md` — written by `run memory decision` and by `memory-auto-extract` (spec `## Decisions`/`## Lessons` bullets), both routed through the unified `KnowledgeStore`.
 
 Views (`run event-projections --view <name>`): `agent-visibility`, `pipeline-state`, `active-pipelines`, `session-summary`, `spec-tree`, `epic-summary`, `pr-metrics`. SessionStart injection is capped (`MEMORY_MAX_CHARS` 2000); the views serve deeper history.
