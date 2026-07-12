@@ -154,21 +154,27 @@ pub(crate) fn build_plan(
     //    of the same level group into one dispatch round.
     let mut items: Vec<DispatchItem> = rows
         .iter()
-        .map(|row| {
-            let subproject = derive_subproject(project, spec_dir, row.wave, &row.role);
+        .flat_map(|row| {
             let level = levels.get(&row.wave).copied().unwrap_or(0);
-            DispatchItem {
-                wave: row.wave,
-                role: row.role.clone(),
-                subproject: subproject.clone(),
-                depends_on: row.depends_on.clone(),
-                level,
-                prompt_cmd: render_prompt_cmd(spec, row.wave, &row.role, &subproject),
-                subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
-                    &row.role,
-                )
-                .to_string(),
-            }
+            // Frente 1b: one dispatch item per subproject the wave spans, so no
+            // agent receives a cross-subproject pile. A single-subproject wave
+            // (or a `.` non-convergence) yields exactly one item — unchanged.
+            derive_subprojects(project, spec_dir, row.wave, &row.role)
+                .into_iter()
+                .map(move |subproject| DispatchItem {
+                    wave: row.wave,
+                    role: row.role.clone(),
+                    subproject: subproject.clone(),
+                    depends_on: row.depends_on.clone(),
+                    level,
+                    prompt_cmd: render_prompt_cmd(spec, row.wave, &row.role, &subproject),
+                    subagent_type:
+                        crate::commands::agent::agent_prompt_render::recommended_subagent_type(
+                            &row.role,
+                        )
+                        .to_string(),
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -542,24 +548,6 @@ fn assign_levels(rows: &[WaveRow]) -> BTreeMap<u32, u32> {
 // Subproject derivation
 // ---------------------------------------------------------------------------
 
-/// Derive the subproject for a wave from its `spec.md` `## Files` section.
-///
-/// Reuses `parse_files_section` (wave-lib) + `detect_subproject`
-/// (dependency-precheck). Returns a project-relative `apps/<name>` /
-/// `packages/<name>` string, or `"."` when the files do not converge on one
-/// subproject / the wave dir is absent (fail-open).
-fn derive_subproject(project: &Path, spec_dir: &Path, wave: u32, role: &str) -> String {
-    let wave_spec = wave_spec_path(spec_dir, wave, role);
-    let Some(wave_spec) = wave_spec else {
-        return ".".to_string();
-    };
-    let Ok(text) = mfs::read_to_string(&wave_spec) else {
-        return ".".to_string();
-    };
-    let files = parse_files_section(&text).unwrap_or_default();
-    files_to_subproject(project, &files)
-}
-
 /// Convert a parsed `## Files` list into the project-relative subproject
 /// string (`apps/<name>` / `packages/<name>`), or `"."` when the files are
 /// empty or do not converge on a single subproject (fail-open). Shared by the
@@ -575,6 +563,37 @@ fn files_to_subproject(project: &Path, files: &[String]) -> String {
             .to_string_lossy()
             .replace('\\', "/"),
         None => ".".to_string(),
+    }
+}
+
+/// The distinct subprojects a wave's `## Files` span. When **≥2** recognised
+/// subprojects (`apps/*`/`packages/*`) are present, returns them sorted so the
+/// wave is dispatched **one agent per subproject** (Frente 1b) — no agent gets
+/// a cross-subproject pile it can rationalise away. Otherwise returns the single
+/// [`files_to_subproject`] result (`["apps/foo"]` or `["."]`), preserving the
+/// historical one-agent-per-wave behaviour. Files under no recognised
+/// subproject (root/config) never force a split; they ride along every split
+/// agent (kept by the render's subproject filter) so nothing is dropped.
+fn derive_subprojects(project: &Path, spec_dir: &Path, wave: u32, role: &str) -> Vec<String> {
+    let files = wave_spec_path(spec_dir, wave, role)
+        .and_then(|p| mfs::read_to_string(&p).ok())
+        .and_then(|t| parse_files_section(&t))
+        .unwrap_or_default();
+    let mut subs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for f in &files {
+        if let Some(abs) = detect_subproject(std::slice::from_ref(f), project) {
+            subs.insert(
+                abs.strip_prefix(project)
+                    .unwrap_or(&abs)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    if subs.len() >= 2 {
+        subs.into_iter().collect()
+    } else {
+        vec![files_to_subproject(project, &files)]
     }
 }
 
@@ -823,6 +842,48 @@ mod tests {
         assert_eq!(items[1].subproject, "apps/cli");
         assert_eq!(items[1].level, 1);
         assert_eq!(items[1].depends_on, vec![1]);
+    }
+
+    /// Frente 1b: a wave whose `## Files` span two subprojects dispatches ONE
+    /// item per subproject — no agent gets the cross-subproject pile it could
+    /// rationalise away.
+    #[test]
+    fn build_plan_splits_wave_by_subproject() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("cross")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-impl]] | impl | — | cross-subproject |
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# W1\n\n## Files\n- apps/rt/src/a.rs\n- packages/core/src/b.rs\n",
+        )
+        .unwrap();
+
+        let items = build_plan(project, &spec_dir, "cross", None);
+        // One wave, but TWO items — one per subproject, sorted.
+        assert_eq!(items.len(), 2, "wave split into one item per subproject");
+        let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
+        assert_eq!(subs, vec!["apps/rt", "packages/core"]);
+        // Same wave/role; each item's render command scopes to its subproject.
+        assert!(items.iter().all(|i| i.wave == 1 && i.role == "impl"));
+        assert!(items[0].prompt_cmd.contains("--subproject apps/rt"));
+        assert!(items[1].prompt_cmd.contains("--subproject packages/core"));
     }
 
     /// `--wave N` slices to a single item, preserving its real depends_on.

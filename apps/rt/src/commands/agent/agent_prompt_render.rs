@@ -1205,6 +1205,23 @@ fn build_reference_files(project: &Path, subproject: &str, spec_path: &Path) -> 
     if files.is_empty() {
         return String::new();
     }
+    // Scope a per-subproject dispatch item to ITS OWN files: drop files that
+    // belong to a DIFFERENT recognised subproject (`apps/*`/`packages/*`), so a
+    // wave split across subprojects gives each agent only its slice — not the
+    // whole cross-subproject list. Files under this subproject, and root/config
+    // files (under no recognised subproject), are kept. A `.` subproject (no
+    // convergence) keeps everything — the historical behaviour, byte-for-byte.
+    let files: Vec<String> = if subproject == "." {
+        files
+    } else {
+        files
+            .into_iter()
+            .filter(|f| file_belongs_to_subproject(f, subproject))
+            .collect()
+    };
+    if files.is_empty() {
+        return String::new();
+    }
     let sub_root = project.join(subproject);
     // One shared grammar loader for every file (built once, with builtins so the
     // AST path is available for the common languages; the fallback floor covers
@@ -1230,6 +1247,23 @@ fn build_reference_files(project: &Path, subproject: &str, spec_path: &Path) -> 
         }
     }
     out.trim_end().to_string()
+}
+
+/// Whether `file` (a project-relative `## Files` path) belongs in a render
+/// scoped to `subproject`. A file under the agent's own subproject, or under no
+/// recognised subproject at all (root/config — `apps/*`/`packages/*` are the
+/// only recognised roots), is kept; a file under a *different* recognised
+/// subproject is dropped. Pure string test — no disk access.
+fn file_belongs_to_subproject(file: &str, subproject: &str) -> bool {
+    let f = file.replace('\\', "/");
+    let sub = subproject.replace('\\', "/");
+    if f.starts_with(&format!("{sub}/")) {
+        return true; // under the agent's own subproject
+    }
+    if f.starts_with("apps/") || f.starts_with("packages/") {
+        return false; // under a different recognised subproject
+    }
+    true // root/config file — under no recognised subproject
 }
 
 /// Compact structural summary of one source file: up to a few public function
@@ -1479,6 +1513,20 @@ fn collapse_empty_sections(text: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn file_belongs_scopes_to_own_subproject_keeping_root() {
+        // Own subproject → kept.
+        assert!(file_belongs_to_subproject("apps/rt/src/a.rs", "apps/rt"));
+        // A DIFFERENT recognised subproject → dropped.
+        assert!(!file_belongs_to_subproject("packages/core/b.ts", "apps/rt"));
+        assert!(!file_belongs_to_subproject("apps/cli/c.rs", "apps/rt"));
+        // Root/config file (under no recognised subproject) → kept for everyone.
+        assert!(file_belongs_to_subproject("README.md", "apps/rt"));
+        assert!(file_belongs_to_subproject("mustard.json", "apps/rt"));
+        // Backslash paths normalise first.
+        assert!(file_belongs_to_subproject("apps\\rt\\src\\d.rs", "apps/rt"));
+    }
 
     #[test]
     fn extract_block_returns_dispatch_body() {
