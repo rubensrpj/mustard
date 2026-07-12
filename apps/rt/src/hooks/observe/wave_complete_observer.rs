@@ -37,9 +37,11 @@
 //! (default) is `on`. No `deny`/`strict` mode — wave advance is bookkeeping.
 
 use crate::commands::review::review_spans::{self, ConsolidationCheck};
+use crate::commands::wave::wave_coverage;
 use crate::shared::events::economy;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::ActorKind;
+use mustard_core::platform::config::Mode;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -148,6 +150,27 @@ impl Observer for WaveCompleteObserver {
         };
         if !wave_is_complete(&wave_dir) {
             return;
+        }
+        // Execution-coverage guard: a wave that left promised files untouched is
+        // not truly done — regardless of what the agent claimed in its report.
+        // The signal is the wave's own `meta.json` checklist (promised files the
+        // auto-mark hook never flipped to done). See [`wave_coverage`].
+        let coverage_mode = wave_coverage::mode();
+        if !matches!(coverage_mode, Mode::Off) {
+            let cov = wave_coverage::check(&wave_dir);
+            if !cov.ok {
+                eprintln!(
+                    "[wave-coverage] wave {wave}: {} promised file(s) not covered: {}",
+                    cov.missing.len(),
+                    cov.missing.join(", ")
+                );
+                if wave_coverage::blocks(&cov, coverage_mode) {
+                    // Do NOT emit `pipeline.wave.complete`: the wave reopens on
+                    // the next `wave-advance` instead of shipping a half-vertical
+                    // to QA.
+                    return;
+                }
+            }
         }
         // Idempotency: never emit the same wave's completion twice.
         if already_emitted(&cwd, &spec, wave) {
@@ -289,5 +312,23 @@ mod tests {
             ..HookInput::default()
         };
         WaveCompleteObserver.observe(&input, &ctx); // must not panic
+    }
+
+    #[test]
+    fn coverage_blocks_completion_only_in_strict() {
+        // The gate policy: a promised-but-untouched file blocks wave completion
+        // ONLY under strict; warn surfaces it without blocking; off never gates.
+        let gap = wave_coverage::CoverageVerdict {
+            ok: false,
+            missing: vec!["backend/Service.cs".to_string()],
+        };
+        let clean = wave_coverage::CoverageVerdict {
+            ok: true,
+            missing: vec![],
+        };
+        assert!(wave_coverage::blocks(&gap, Mode::Strict), "strict + gap → block");
+        assert!(!wave_coverage::blocks(&gap, Mode::Warn), "warn + gap → surface, not block");
+        assert!(!wave_coverage::blocks(&gap, Mode::Off), "off → never block");
+        assert!(!wave_coverage::blocks(&clean, Mode::Strict), "no gap → never block");
     }
 }

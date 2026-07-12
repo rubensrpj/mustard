@@ -8,3 +8,4 @@ pub mod wave_collapse;
 pub mod wave_lib;
 pub mod exec_rewave_check;
 pub mod epic_fold;
+pub mod wave_coverage;
