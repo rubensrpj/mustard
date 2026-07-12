@@ -129,7 +129,7 @@ After `push` (which committed + pushed each submodule's `$SUB_WORK` and the pare
    ```
    The subshell `cd` is fine here — this is `gh`, which reads the repo from its cwd, and a `( … )` subshell isolates the change so the outer cwd never moves. (The "no `cd`" rule targets `git`; there you still use `git -C`.) `gh` infers the submodule's repo from its own `origin`; or pass `-R <owner/repo>` explicitly. An existing PR → print its URL instead of re-creating.
 2. **Then the parent** — `rtk gh pr create --base "$BASE" --head <parent-work-branch> --fill`.
-3. **Return every repo to its base** — `rtk git -C <SUB_ABS> checkout "$SUB_BASE"` for each submodule, then `rtk git checkout "$BASE"` in the parent. The unit is delivered (PRs open, awaiting review); leaving each repo on its base stops the next unit from piling onto this one and keeps the tree clean. The push already published every work branch, so nothing is lost by checking out the base.
+3. **No return to base** — every repo stays on its work branch; the work stays live, and a later `push`/`pr` re-targets the SAME PR until `pr close` prunes it.
 
 Only for the **work-branch** `pr`. A **base→base** `pr` (promotion/backport) opens its single PR and does NOT push, cut submodule branches, or return anywhere.
 
