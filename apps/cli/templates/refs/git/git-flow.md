@@ -48,7 +48,7 @@ Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`
 | `sync` | Rebase the current branch onto `origin/<its base>` (base from its `{base}_` prefix). Abort on conflict. |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<path-pattern>` |
 | `push` | Sync-first (onto its base), then commit + push ONLY the current branch (set upstream). Never touches an integration branch. |
-| `pr [<target>]` | Open a PR (`gh`), idempotent, **one per repo, submodules before parent**, then return each repo to its base. **Work branch** `{B}_…`: commit(scope=all)+push (each dirty submodule on its OWN `{base}_{slug}`), then a PR per repo into each prefix base — submodules first, parent last. **Bare base** `B`: PR `B → <target>` (or `flow[B]` if omitted) — promotion `dev→main` / backport `main→dev`; no push, no submodule/return steps. |
+| `pr [<target>]` | Open a PR (`gh`), idempotent, **one per repo, submodules before parent** — work stays live on the branch; each `push`/`pr` updates the SAME PR until `pr close`. **Work branch** `{B}_…`: commit(scope=all)+push (each dirty submodule on its OWN `{base}_{slug}`), then a PR per repo into each prefix base — submodules first, parent last. **Bare base** `B`: PR `B → <target>` (or `flow[B]` if omitted) — promotion `dev→main` / backport `main→dev`; no push, no submodule/return steps. |
 
 **PRs are the integration path.** A work branch reaches its base branch through a PR, never a local push to the base. The base is the branch's own `{base}_` prefix, matched against the project's integration bases (`git.flow`).
 
