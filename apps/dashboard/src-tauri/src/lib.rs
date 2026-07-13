@@ -1846,43 +1846,6 @@ pub struct ActivePipeline {
     pub updated_at: Option<String>,
 }
 
-fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-}
-
-#[allow(dead_code)]
-fn epoch_to_iso(secs: u64) -> String {
-    // Minimal ISO formatter: seconds since epoch → YYYY-MM-DDTHH:MM:SSZ
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let mut days = secs / 86400;
-    let mut year = 1970u64;
-    loop {
-        let dy = if is_leap(year) { 366 } else { 365 };
-        if days < dy { break; }
-        days -= dy;
-        year += 1;
-    }
-    let days_in_month = [31u64, if is_leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1u64;
-    for dm in &days_in_month {
-        if days < *dm { break; }
-        days -= dm;
-        month += 1;
-    }
-    let day = days + 1;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, h, m, s)
-}
-
-#[allow(dead_code)]
-fn mtime_to_iso(path: &std::path::Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    let mtime = meta.modified().ok()?;
-    let secs = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    Some(epoch_to_iso(secs))
-}
-
 #[tauri::command]
 fn dashboard_watch_repos(
     repo_paths: Vec<String>,

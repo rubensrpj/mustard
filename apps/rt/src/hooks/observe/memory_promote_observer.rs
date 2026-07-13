@@ -20,7 +20,7 @@ use std::path::Path;
 
 pub struct MemoryPromoteObserver;
 
-pub const PROMOTION_CONFIDENCE_THRESHOLD: f64 = 0.85;
+pub(crate) const PROMOTION_CONFIDENCE_THRESHOLD: f64 = 0.85;
 
 /// Classify a summary as decision or lesson. Imperative verbs → decision.
 fn classify(summary: &str) -> &'static str {

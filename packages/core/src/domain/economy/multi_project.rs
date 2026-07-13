@@ -59,23 +59,6 @@ impl MultiProjectReader {
         }
         out
     }
-
-    /// Like [`Self::fan_out`], but also produce an aggregate via `merge`.
-    pub fn fan_out_merge<T, F, M>(
-        &self,
-        projects: &[ProjectPath],
-        query: F,
-        merge: M,
-    ) -> (HashMap<ProjectPath, T>, Option<T>)
-    where
-        T: Clone,
-        F: Fn(&Path, &ProjectPath) -> Result<T>,
-        M: Fn(T, T) -> T,
-    {
-        let per_project = self.fan_out(projects, query);
-        let aggregate = per_project.values().cloned().reduce(merge);
-        (per_project, aggregate)
-    }
 }
 
 #[cfg(test)]
@@ -109,20 +92,4 @@ mod tests {
         assert_eq!(out[&path_b], 42);
     }
 
-    #[test]
-    fn fan_out_merge_aggregates_when_provided_a_merge_fn() {
-        let dir_a = tempdir().unwrap();
-        let dir_b = tempdir().unwrap();
-        let path_a = ProjectPath::new(dir_a.path());
-        let path_b = ProjectPath::new(dir_b.path());
-
-        let reader = MultiProjectReader::new();
-        let (per_project, aggregate) = reader.fan_out_merge(
-            &[path_a, path_b],
-            |_, _| Ok::<_, crate::platform::error::Error>(5i64),
-            |a, b| a + b,
-        );
-        assert_eq!(per_project.len(), 2);
-        assert_eq!(aggregate, Some(10));
-    }
 }

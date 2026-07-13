@@ -22,7 +22,7 @@
 //! never abort the gate run.
 
 use super::{
-    AstError, DetectionMode, FunctionSig, GrammarLoader, QuerySet, StubMatch, StubPattern,
+    AstError, DetectionMode, GrammarLoader, QuerySet, StubMatch, StubPattern,
     TreeSitterParser,
 };
 use crate::domain::vocabulary::{Layer, VocabLayer, VocabularyDoc, VocabularyMatcher};
@@ -348,12 +348,6 @@ fn detect_via_textual_fallback(
     }
     out
 }
-
-// Keep the unused-import warning silenced when neither path inspects the
-// `FunctionSig` directly. The type is needed for the public `extract_*`
-// surface and used internally above.
-#[allow(dead_code)]
-fn _force_function_sig_use(_s: FunctionSig) {}
 
 // ---------------------------------------------------------------------------
 // Tests

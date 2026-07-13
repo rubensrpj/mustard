@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod maint_deps;
 pub mod maint_validate;
 pub mod refresh_claude;

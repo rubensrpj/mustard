@@ -35,7 +35,7 @@ pub struct TacticalFixOpts {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct TacticalFixReport {
+pub(crate) struct TacticalFixReport {
     pub parent: String,
     pub slug: String,
     pub spec_dir: String,

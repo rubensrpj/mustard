@@ -70,7 +70,7 @@ use std::path::{Path, PathBuf};
 
 /// One ready-to-dispatch agent of the pending level.
 #[derive(Debug, Serialize)]
-pub struct AdvanceItem {
+pub(crate) struct AdvanceItem {
     /// 1-based wave number (`0` marks the wave-less single-spec fallback).
     pub wave: u32,
     /// Role token (the `{role}` suffix of `wave-N-{role}`).

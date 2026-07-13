@@ -53,7 +53,7 @@ use std::path::{Path, PathBuf};
 /// Line-change threshold above which a `Modified` snapshot delta becomes a
 /// regression signal. Five lines is the empirical floor — below this, deltas
 /// are noise (rename, whitespace, single-line tweak) per the W6 fixture audit.
-pub const LINE_CHANGE_THRESHOLD: usize = 5;
+pub(crate) const LINE_CHANGE_THRESHOLD: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -194,7 +194,7 @@ pub struct GateInput {
 /// `slots`. Unknown placeholders are left as-is so missing keys surface in the
 /// final output instead of silently disappearing.
 #[must_use]
-pub fn interpolate(template: &str, slots: &[(&str, &str)]) -> String {
+pub(crate) fn interpolate(template: &str, slots: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
@@ -525,7 +525,7 @@ fn line_count(cap: Option<&mustard_core::domain::regression_check::FunctionCaptu
 /// - **Amber** when ≥1 Medium signal OR (exactly one layer with Low-only hits).
 /// - **Green** otherwise.
 #[must_use]
-pub fn classify_verdict(signals: &[Signal]) -> RegressionVerdict {
+pub(crate) fn classify_verdict(signals: &[Signal]) -> RegressionVerdict {
     if signals.is_empty() {
         return RegressionVerdict::Green;
     }
@@ -550,7 +550,7 @@ pub fn classify_verdict(signals: &[Signal]) -> RegressionVerdict {
 /// with `authorize` / `block` options + the localised labels) without
 /// capturing stdout.
 #[must_use]
-pub fn amber_askuser_json(signals: &[Signal], i18n: &I18n) -> String {
+pub(crate) fn amber_askuser_json(signals: &[Signal], i18n: &I18n) -> String {
     let question = i18n.render("gate.askuser.amber.question");
     let opt_authorize = i18n.render("gate.askuser.amber.option_authorize");
     let opt_block = i18n.render("gate.askuser.amber.option_block");
@@ -574,13 +574,13 @@ pub fn amber_askuser_json(signals: &[Signal], i18n: &I18n) -> String {
 
 /// Print the Amber-verdict JSON payload to stdout. The orchestrator consumes
 /// it to render an `AskUserQuestion` prompt.
-pub fn emit_amber_askuser_json(signals: &[Signal], i18n: &I18n) {
+pub(crate) fn emit_amber_askuser_json(signals: &[Signal], i18n: &I18n) {
     let _ = writeln!(std::io::stdout(), "{}", amber_askuser_json(signals, i18n));
 }
 
 /// Print the Red-verdict JSON payload to stdout. The CLI dispatcher maps the
 /// returned [`GateError::Blocked`] to exit code 2.
-pub fn emit_red_blocked_json(signals: &[Signal], i18n: &I18n) {
+pub(crate) fn emit_red_blocked_json(signals: &[Signal], i18n: &I18n) {
     let label = i18n.render("gate.verdict.red.label");
     let message = i18n.render("gate.verdict.red.message");
     let payload = serde_json::json!({

@@ -47,7 +47,7 @@ const FILE_CHUNK_CAP: usize = 4 * 1024;
 /// `apps/dashboard/src-tauri/src/telemetry.rs` (followup-2 § 4c). All inner
 /// fields are optional — different tools populate different subsets.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ToolResultPayload {
+pub(crate) struct ToolResultPayload {
     /// Correlates this result with the matching `tool.use` event (when the
     /// harness forwards `tool_use_id`). Falls back to chronological pairing
     /// downstream when absent.

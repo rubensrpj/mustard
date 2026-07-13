@@ -22,23 +22,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use mustard_core::io::fs;
 
-/// Directory or file basenames that *may* legitimately live under a nested
-/// `.claude/` (scan output, per-subproject context). Kept for documentation:
-/// the leak detector is allow-by-default (anything not in [`LEAK_ENTRIES`] is
-/// fine), so we never have to read this list at runtime — but it codifies the
-/// contract for future maintainers and is exported for tests.
-#[allow(dead_code)]
-pub(crate) const LEGITIMATE_ENTRIES: &[&str] = &[
-    "commands",
-    "skills",
-    "agents",
-    "services.json",
-    "refs",
-    "CLAUDE.md",
-    ".cluster-cache.json",
-    ".interpret-cache.json",
-];
-
 /// Basenames that MUST live only at the workspace root `.claude/`. Finding
 /// any of these under a nested `.claude/` is a leak.
 const LEAK_ENTRIES: &[&str] = &[

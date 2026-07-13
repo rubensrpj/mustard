@@ -152,7 +152,7 @@ struct CacheManifest {
 ///
 /// Cache miss path: download from the pinned URL, validate the pinned sha (when
 /// present), persist `grammar.wasm` + `manifest.json`, and return the bytes.
-pub fn acquire_wasm_bytes(lang_id: &str) -> Option<Vec<u8>> {
+pub(crate) fn acquire_wasm_bytes(lang_id: &str) -> Option<Vec<u8>> {
     let pin = registry_entry(lang_id)?;
     let dir = cache_dir(lang_id, pin.version)?;
     let wasm_path = dir.join("grammar.wasm");

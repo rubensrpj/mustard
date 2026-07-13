@@ -416,7 +416,7 @@ fn pending_branch_marker(project_dir_path: &str, session_id: &str) -> Option<Pat
 
 /// Filename of the per-spec **user-approval** marker (see
 /// [`approval_marker_path`]).
-pub const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";
+pub(crate) const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";
 
 /// Compose the per-spec user-approval marker path:
 /// `<project>/.claude/spec/<spec>/.approved-by-user`.

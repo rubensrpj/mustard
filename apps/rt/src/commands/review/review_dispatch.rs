@@ -47,7 +47,7 @@ pub struct ReviewDispatchOpts {
 
 /// One step in the dispatch sequence.
 #[derive(Debug, Serialize)]
-pub struct DispatchStep {
+pub(crate) struct DispatchStep {
     pub name: String,
     pub ok: bool,
     pub duration_ms: u64,
@@ -55,7 +55,7 @@ pub struct DispatchStep {
 
 /// Aggregate report.
 #[derive(Debug, Serialize)]
-pub struct DispatchReport {
+pub(crate) struct DispatchReport {
     pub pr: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spec: Option<String>,

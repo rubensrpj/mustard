@@ -67,7 +67,7 @@ pub struct CacheEntry {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct CacheReport {
+pub(crate) struct CacheReport {
     pub mode: &'static str,
     pub hash: String,
     pub found: bool,
@@ -90,7 +90,7 @@ pub struct CacheReport {
 /// Pure and reproducible: identical `(files, error)` ⇒ identical hash; any
 /// change to the file set or the leading error text ⇒ a different hash.
 #[must_use]
-pub fn root_cause_hash(files: &[String], error_message: &str) -> String {
+pub(crate) fn root_cause_hash(files: &[String], error_message: &str) -> String {
     let mut sorted: Vec<String> = files
         .iter()
         .map(|f| f.trim().to_string())

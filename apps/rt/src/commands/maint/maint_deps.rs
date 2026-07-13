@@ -23,7 +23,7 @@ pub struct MaintDepsOpts {
 
 /// One subproject install result.
 #[derive(Debug, Serialize)]
-pub struct InstallRecord {
+pub(crate) struct InstallRecord {
     pub subproject: String,
     pub command: String,
     pub ok: bool,
@@ -32,7 +32,7 @@ pub struct InstallRecord {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct MaintDepsReport {
+pub(crate) struct MaintDepsReport {
     pub dry_run: bool,
     pub installs: Vec<InstallRecord>,
 }
@@ -40,7 +40,7 @@ pub struct MaintDepsReport {
 /// Pick the canonical install command for a project kind (grain's manifest
 /// `kind`: npm/cargo/dotnet/go/pub/maven; common stack aliases also accepted).
 #[must_use]
-pub fn install_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)> {
+pub(crate) fn install_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)> {
     match kind.to_ascii_lowercase().as_str() {
         "npm" | "node" | "typescript" | "javascript" | "react" | "nextjs" | "next" => {
             Some(("pnpm", vec!["install"]))

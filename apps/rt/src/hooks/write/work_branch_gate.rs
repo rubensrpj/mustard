@@ -105,24 +105,6 @@ fn current_branch(vcs: &str, root: &str) -> Option<String> {
     }
 }
 
-/// `true` when a local branch `refs/heads/<branch>` exists. Retained as part of
-/// the gate's git-plumbing surface — no live caller since the shared-tree
-/// checkout was retired in favour of worktree isolation.
-#[allow(dead_code)]
-fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    Command::new(vcs)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
 /// to `Err(<stderr|io error>)`. Never panics.
 fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
@@ -277,30 +259,6 @@ fn refresh_integration_bases(vcs: &str, root: &str, config: &ProjectConfig, curr
             run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
         };
     }
-}
-
-/// Recover the integration base a work branch was cut from, from its NAME:
-/// among the project's integration bases (`git.flow`), the LONGEST base `B`
-/// such that `target` starts with `"{B}_"`. When none match, the project's
-/// primary base (`config.git.primary_base()`).
-///
-/// Longest-match disambiguates nested bases (a `dev_release` base wins over
-/// `dev` for `dev_release_x`). Agnostic — the base set and the primary both
-/// come from `git.flow`; no branch name is hardcoded.
-///
-/// Retained (with unit coverage) as the canonical base-recovery helper even
-/// though the shared-tree checkout that consumed it was retired; exercised only
-/// under `#[cfg(test)]`, hence the allow in a non-test build.
-#[allow(dead_code)]
-fn base_for(target: &str, config: &ProjectConfig) -> String {
-    let bases = config.git.integration_bases();
-    let mut best: Option<&str> = None;
-    for b in &bases {
-        if target.starts_with(&format!("{b}_")) && best.is_none_or(|cur| b.len() > cur.len()) {
-            best = Some(b.as_str());
-        }
-    }
-    best.map_or_else(|| config.git.primary_base(), str::to_string)
 }
 
 /// `true` when `branch` is a bare integration branch that must never be edited
@@ -845,24 +803,6 @@ mod tests {
             Some("dev_pending-thing"),
             "the marker survives for the first in-repo edit",
         );
-    }
-
-    #[test]
-    fn base_for_picks_longest_matching_prefix_else_primary() {
-        let mut config = ProjectConfig::default();
-        config.git.flow.insert("*".into(), "dev".into());
-        config.git.flow.insert("dev".into(), "main".into());
-        assert_eq!(base_for("dev_thing", &config), "dev");
-        assert_eq!(base_for("main_close-gate", &config), "main");
-        // No `{base}_` prefix match → the primary base (flow["*"]).
-        assert_eq!(base_for("random-branch", &config), "dev");
-
-        // Agnostic: a develop/master project resolves against ITS bases.
-        let mut dm = ProjectConfig::default();
-        dm.git.flow.insert("*".into(), "develop".into());
-        dm.git.flow.insert("develop".into(), "master".into());
-        assert_eq!(base_for("master_hotfix", &dm), "master");
-        assert_eq!(base_for("develop_x", &dm), "develop");
     }
 
     #[test]

@@ -65,15 +65,6 @@ fn parent_branch_for(config: &mustard_core::ProjectConfig, current_branch: &str)
         .unwrap_or_else(|| "main".to_string())
 }
 
-/// Resolve the canonical spec directory under `.claude/spec/{name}/`.
-#[allow(dead_code)]
-fn spec_dir(cwd: &Path, spec: &str) -> PathBuf {
-    ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| cwd.to_path_buf())
-}
-
 /// Resolve the per-spec NDJSON `.events/` directory.
 fn spec_events_dir(cwd: &Path, spec: &str) -> Option<PathBuf> {
     ClaudePaths::for_project(cwd)
@@ -439,7 +430,7 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
 /// gate passes — can fold it into their own report without spawning a
 /// subprocess. Deterministic and idempotent (the underlying emits are
 /// idempotent on phase/status and short-circuit an already-terminal spec).
-pub fn run_complete(cwd: &Path, spec: &str) -> Value {
+pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Value {
     run_qa_fail_open(cwd, spec);
     finalize(cwd, spec)
 }

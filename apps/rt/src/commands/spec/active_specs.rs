@@ -48,14 +48,14 @@ struct SpecCandidate {
 
 /// Progress for a wave-plan spec.
 #[derive(Debug, Clone, Serialize)]
-pub struct WaveProgress {
+pub(crate) struct WaveProgress {
     pub done: usize,
     pub total: usize,
 }
 
 /// One active spec entry in the final output.
 #[derive(Debug, Clone, Serialize)]
-pub struct ActiveSpec {
+pub(crate) struct ActiveSpec {
     pub name: String,
     pub stage: String,
     pub outcome: String,
@@ -74,7 +74,7 @@ pub struct ActiveSpec {
 
 /// Full JSON output schema.
 #[derive(Debug, Serialize)]
-pub struct ActiveSpecsOutput {
+pub(crate) struct ActiveSpecsOutput {
     pub specs: Vec<ActiveSpec>,
     #[serde(rename = "parentMap")]
     pub parent_map: HashMap<String, String>,

@@ -31,7 +31,7 @@ use crate::platform::error::{Error, Result};
 /// Default tool name — resolved on `PATH`. A project can point at a pinned
 /// binary later (e.g. via `mustard.json`); the locator is injected, never
 /// hardcoded at a call site.
-pub const DEFAULT_BINARY: &str = "scan";
+pub(crate) const DEFAULT_BINARY: &str = "scan";
 
 /// A handle to the grain tool at a known location.
 #[derive(Debug, Clone)]

@@ -1,5 +1,4 @@
 pub mod error;
-pub mod env;
 pub mod hook_resolve;
 pub mod i18n;
 pub mod metrics;

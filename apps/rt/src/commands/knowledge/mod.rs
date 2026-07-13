@@ -8,13 +8,15 @@
 //! "now" once and passes it in, so a test can pin the timestamp and the result
 //! is byte-stable.
 
+pub mod cli;
+
 pub mod memory;
 
 /// Days over which a record's confidence linearly decays to zero, measured from
 /// its reference timestamp (`last_used` when the legacy agent store tracks it,
 /// else `captured_at`). The single decay window for the whole knowledge
 /// subsystem — `memory` derives from it.
-pub const DECAY_WINDOW_DAYS: f64 = 30.0;
+pub(crate) const DECAY_WINDOW_DAYS: f64 = 30.0;
 
 /// The *effective* confidence of a record: its stored `confidence` linearly
 /// attenuated by how stale its reference timestamp `ts` is, relative to `now`.

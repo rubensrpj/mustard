@@ -86,7 +86,6 @@ struct Mod {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Proj {
-    #[allow(dead_code)]
     name: String,
     dir: String,
 }

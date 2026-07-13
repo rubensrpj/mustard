@@ -12,8 +12,8 @@
 //!   atomic writes (tempfile + `rename`, so a crash never leaves a torn file),
 //!   and the hook point where a path-guard will later live — all centralised.
 //! - **Testability (Dependency Inversion).** Logic that must be unit-tested
-//!   without a real disk depends on the [`Fs`] *trait* and is handed a
-//!   [`memory::FakeFs`]. The production code path uses [`real::RealFs`].
+//!   without a real disk depends on the [`Fs`] *trait*. The production code
+//!   path uses [`real::RealFs`].
 //! - **A drop-in migration target.** The module-level free functions
 //!   ([`read_to_string`], [`write_atomic`], …) mirror the `std::fs` surface, so
 //!   the ~700 mechanical call-site migrations across the workspace are a textual
@@ -25,7 +25,7 @@
 //! | Use… | When |
 //! |---|---|
 //! | **Free functions** ([`read_to_string`], [`write_atomic`], …) | The default. The vast majority of call sites only ever touch the real disk; threading a port through them is pure ceremony. They delegate to a process-wide [`RealFs`](real::RealFs). |
-//! | **`&dyn Fs` parameter** | A function whose filesystem behaviour you want to exercise in a unit test *without* a `tempdir` — inject a [`FakeFs`](memory::FakeFs). Reserve this for hot paths and logic-heavy code; do not virally convert leaf helpers. |
+//! | **`&dyn Fs` parameter** | A function whose filesystem behaviour you want to exercise in a unit test *without* a `tempdir` — inject a test double over the [`Fs`] port. Reserve this for hot paths and logic-heavy code; do not virally convert leaf helpers. |
 //!
 //! Both share the same [`Fs`] implementation, so behaviour (fail-open mapping,
 //! atomic writes) is identical whichever you pick.
@@ -41,7 +41,6 @@
 //!   convenience, UTF-8 strings). CRLF / UTF-8 normalisation belongs to the
 //!   string-handling caller, not to `fs`.
 
-pub mod memory;
 pub mod real;
 
 use crate::platform::error::Result;
@@ -52,7 +51,7 @@ use std::time::SystemTime;
 ///
 /// A flattened, owned snapshot of a directory entry — name, full path, and
 /// whether it is a directory — so the trait can be object-safe (`&dyn Fs`) and
-/// the [`FakeFs`](memory::FakeFs) can synthesise entries without a real
+/// a test double can synthesise entries without a real
 /// `std::fs::DirEntry` (which is not constructible outside `std`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
@@ -65,8 +64,8 @@ pub struct DirEntry {
 }
 
 /// The filesystem port: the operations `mustard-core` actually performs,
-/// abstracted so production code uses [`real::RealFs`] and tests inject a
-/// [`memory::FakeFs`] (Dependency Inversion).
+/// abstracted so production code uses [`real::RealFs`] and tests can inject a
+/// a double (Dependency Inversion).
 ///
 /// Object-safe by design — consumers take `&dyn Fs`. Every method is fail-open:
 /// it returns [`Result`] and never panics, even on hostile input.
@@ -202,7 +201,7 @@ pub fn real() -> &'static dyn Fs {
 // Module-level convenience free functions (backed by the default `RealFs`).
 //
 // These are the drop-in replacement for `std::fs::X`. Prefer them; reach for
-// `&dyn Fs` only where a unit test needs to inject `FakeFs`.
+// `&dyn Fs` only where a unit test needs to inject a double.
 // ---------------------------------------------------------------------------
 
 /// Read `path` to a `String` via the default real filesystem. See

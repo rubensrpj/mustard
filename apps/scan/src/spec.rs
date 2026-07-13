@@ -82,7 +82,7 @@ pub fn compile(model: &ProjectModel, entity: &str, like: &str, ops: &[String], i
 /// One acceptance criterion: the role(s) and the target folder (entity already
 /// substituted). Same selection + target-dedup as `compile`, so `grain verify`
 /// checks exactly what the spec promised.
-pub struct Accept {
+pub(crate) struct Accept {
     pub roles: String,
     pub folder: String,
     pub optional: bool,

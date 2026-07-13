@@ -80,7 +80,7 @@ fn project_is_own_crate(project: &Path) -> bool {
 /// Falls back to `.claude/.session/{slug}/.events/` when `spec` is empty — the
 /// W5.T5.4 sessions sidebar consumes that directory.
 #[must_use]
-pub fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
+pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
     if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
         // Prefer the typed ClaudePaths accessor for the canonical
         // `<project>/.claude/spec/<name>/[<wave>/].events/` layout. On I1
@@ -213,7 +213,6 @@ fn write_event_inner(
         return Ok(WriteOutcome {
             bytes_written: 0,
             duration_ns: 0,
-            path: PathBuf::new(),
         });
     }
     let dir = event_dir(project, spec, wave_role, session_slug);
@@ -270,7 +269,6 @@ fn write_event_inner(
     Ok(WriteOutcome {
         bytes_written,
         duration_ns,
-        path,
     })
 }
 
@@ -283,12 +281,6 @@ pub struct WriteOutcome {
     /// Wall-clock duration of the write, in nanoseconds. The economy event
     /// reports this for the `/economia` baseline-vs-post chart.
     pub duration_ns: u64,
-    /// Absolute path of the NDJSON file that was appended to. Returned for
-    /// tests + future ad-hoc inspection (the production routing layer ignores
-    /// it — Clippy's `dead_code` linter still flags struct fields with no
-    /// read site so the field is annotated locally).
-    #[allow(dead_code)]
-    pub path: PathBuf,
 }
 
 /// Fail-open wrapper around [`write_event_inner`]. Any IO error degrades to a
@@ -299,13 +291,11 @@ pub struct WriteOutcome {
 /// to the same file (T5.8) — best-effort, never recursing. The economy event
 /// is always stamped with the wall-clock time of the write (it measures the
 /// write itself), regardless of `ts_override`.
-// Kept `pub` + `#[allow(dead_code)]` because the production callsite
-// (`route::emit`) routes through [`write_event_with_ts`] for the W6
-// ts-preservation fix, while the in-crate unit tests still call this
-// historical entry point directly. Clippy in `--bin` mode (the gate that
-// blocks PRs) doesn't see test code and would otherwise flag this as
-// unused.
-#[allow(dead_code, clippy::too_many_arguments)]
+// Test-only entry point: the production callsite (`route::emit`) routes
+// through [`write_event_with_ts`] for the W6 ts-preservation fix, so this
+// historical signature survives solely for the in-crate unit tests.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub fn write_event(
     project: &Path,
     spec: Option<&str>,

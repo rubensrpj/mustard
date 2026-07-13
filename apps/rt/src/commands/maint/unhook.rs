@@ -39,7 +39,7 @@ pub struct UnhookOpts {
 
 /// One per `.claude/` directory the sweep touched.
 #[derive(Serialize)]
-pub struct DisabledEntry {
+pub(crate) struct DisabledEntry {
     /// The settings.json path we targeted.
     pub settings_path: String,
     /// The disabled path (`Some` only when state == "disabled").
@@ -55,7 +55,7 @@ pub struct DisabledEntry {
 
 /// The full machine-readable report.
 #[derive(Serialize)]
-pub struct UnhookReport {
+pub(crate) struct UnhookReport {
     pub scope: String,
     pub timestamp: String,
     pub entries: Vec<DisabledEntry>,

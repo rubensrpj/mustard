@@ -38,7 +38,7 @@ pub struct InstallNerdFontOptions {
 }
 
 /// The font installed when `--font` is not given.
-pub const DEFAULT_FONT: &str = "JetBrainsMono";
+pub(crate) const DEFAULT_FONT: &str = "JetBrainsMono";
 
 /// Known font families and their package names per platform.
 ///

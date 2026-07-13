@@ -121,7 +121,7 @@ impl MetricLine {
 ///
 /// Mirrors the JS `path.join(cwd, '.claude', '.metrics', event + '.jsonl')`.
 #[must_use]
-pub fn metric_file_path(cwd: &Path, event: &str) -> std::path::PathBuf {
+pub(crate) fn metric_file_path(cwd: &Path, event: &str) -> std::path::PathBuf {
     cwd.join(".claude")
         .join(".metrics")
         .join(format!("{event}.jsonl"))

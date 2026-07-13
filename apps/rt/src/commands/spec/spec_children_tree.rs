@@ -176,7 +176,7 @@ fn child_from_entry(entry: ChildEntry) -> Subspec {
 /// stdout, no process exit. Fail-open at every source: a reader that cannot
 /// open contributes empty waves/acs, and sub-spec discovery degrades to `[]`.
 #[must_use]
-pub fn build_tree(project: &Path, spec: &str) -> ChildrenTree {
+pub(crate) fn build_tree(project: &Path, spec: &str) -> ChildrenTree {
     // W8A-1 (no-sqlite): SqliteSpecReader removed; both projections now fold
     // directly over the NDJSON workspace events. Fail-open: an empty events
     // walk returns empty `waves` / `acs`, same as the legacy DB-open failure.

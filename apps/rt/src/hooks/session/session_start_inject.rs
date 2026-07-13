@@ -318,114 +318,8 @@ fn free_otel_port() {
 }
 
 // ===========================================================================
-// spec-hygiene — flat layout; classification helpers kept for unit tests
+// spec-hygiene — flat layout; no-op
 // ===========================================================================
-
-/// The classification of a spec (retained for tests; hygiene is a no-op in prod).
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpecClass {
-    /// Completed/cancelled with all checklist items done → move to completed/.
-    AutoMove,
-    /// `implementing` but all done, or anything else → no action.
-    Silent,
-}
-
-/// Classify a spec from its `spec.md` content. Port of `classify` (test-only).
-#[cfg_attr(not(test), allow(dead_code))]
-fn classify_spec(content: &str) -> SpecClass {
-    // 1. Status from the `### Status:` header — first word.
-    let Some(status_raw) = parse_status(content) else {
-        return SpecClass::Silent;
-    };
-    // 2. A BLOCKED concern keeps the spec put.
-    if let Some(concerns) = section_body(content, "Concerns") {
-        if concerns.to_ascii_uppercase().contains("BLOCKED") {
-            return SpecClass::Silent;
-        }
-    }
-    // 3. Checklist completeness.
-    let checklist = section_body(content, "Checklist").unwrap_or_else(|| content.to_string());
-    let checked = count_occurrences_ci(&checklist, "[x]");
-    let unchecked = checklist.matches("[ ]").count();
-    let total = checked + unchecked;
-    let all_done = total > 0 && unchecked == 0;
-
-    if (status_raw == "completed" || status_raw == "cancelled") && all_done {
-        return SpecClass::AutoMove;
-    }
-    SpecClass::Silent
-}
-
-/// Parse the first word of the `### Status:` header, lowercased (test-only).
-#[cfg_attr(not(test), allow(dead_code))]
-fn parse_status(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let t = line.trim_start();
-        if let Some(rest) = t.strip_prefix("###") {
-            let rest = rest.trim_start();
-            if let Some(after) = rest.strip_prefix("Status:") {
-                let word: String = after
-                    .trim_start()
-                    .chars()
-                    .take_while(char::is_ascii_alphanumeric)
-                    .collect();
-                if !word.is_empty() {
-                    return Some(word.to_ascii_lowercase());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract the body of an `## <name>` section up to the next `## ` heading (test-only).
-#[cfg_attr(not(test), allow(dead_code))]
-fn section_body(content: &str, name: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut start = None;
-    for (i, line) in lines.iter().enumerate() {
-        if is_h2_named(line, name) {
-            start = Some(i + 1);
-            break;
-        }
-    }
-    let start = start?;
-    let mut body = String::new();
-    for line in &lines[start..] {
-        if line.starts_with("## ") {
-            break;
-        }
-        body.push_str(line);
-        body.push('\n');
-    }
-    Some(body)
-}
-
-/// `true` if `line` is an `## <name>` heading (case-sensitive name match,
-/// word-boundaried) (test-only).
-#[cfg_attr(not(test), allow(dead_code))]
-fn is_h2_named(line: &str, name: &str) -> bool {
-    let Some(rest) = line.strip_prefix("##") else {
-        return false;
-    };
-    if !rest.starts_with(char::is_whitespace) {
-        return false;
-    }
-    let rest = rest.trim_start();
-    if !rest.starts_with(name) {
-        return false;
-    }
-    rest.as_bytes()
-        .get(name.len())
-        .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
-}
-
-/// Count case-insensitive occurrences of `needle` in `haystack` (test-only).
-#[cfg_attr(not(test), allow(dead_code))]
-fn count_occurrences_ci(haystack: &str, needle: &str) -> usize {
-    haystack.to_ascii_lowercase().matches(needle).count()
-}
 
 /// `spec-hygiene`: flat layout — spec status lives in the `SQLite` event store;
 /// no bucket directories to move specs between (wave-2 removed them).
@@ -786,23 +680,6 @@ mod tests {
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         assert!(dir.path().join(".claude/spec/blocked-spec").exists());
-    }
-
-    #[test]
-    fn classify_completed_all_done_is_automove() {
-        assert_eq!(
-            classify_spec("### Status: completed\n## Checklist\n- [x] a\n"),
-            SpecClass::AutoMove
-        );
-        assert_eq!(
-            classify_spec("### Status: cancelled\n## Checklist\n- [x] a\n"),
-            SpecClass::AutoMove
-        );
-    }
-
-    #[test]
-    fn classify_no_status_is_silent() {
-        assert_eq!(classify_spec("# Spec\nno header here\n"), SpecClass::Silent);
     }
 
     // --- port-takeover PID parsing -----------------------------------------

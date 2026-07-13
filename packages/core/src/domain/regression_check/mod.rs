@@ -68,14 +68,6 @@ pub struct TextSpan {
 }
 
 impl TextSpan {
-    /// Build a span from a half-open `Range<usize>`.
-    #[must_use]
-    pub fn from_range(range: std::ops::Range<usize>) -> Self {
-        Self {
-            start: range.start,
-            end: range.end,
-        }
-    }
 
     /// Length of the span in bytes.
     #[must_use]
@@ -511,9 +503,7 @@ mod tests {
 
     #[test]
     fn text_span_helpers() {
-        let s = TextSpan::from_range(3..10);
-        assert_eq!(s.start, 3);
-        assert_eq!(s.end, 10);
+        let s = TextSpan { start: 3, end: 10 };
         assert_eq!(s.len(), 7);
         assert!(!s.is_empty());
         assert!(TextSpan { start: 5, end: 5 }.is_empty());

@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod wave_context;
 pub mod wave_tree;
 pub mod wave_dependency;

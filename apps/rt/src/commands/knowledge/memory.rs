@@ -625,7 +625,7 @@ fn truncate_col(s: &str, max: usize) -> String {
 use super::effective_confidence;
 
 #[derive(Debug, Default, Clone)]
-pub struct WriteOpts {
+pub(crate) struct WriteOpts {
     pub spec: Option<String>,
     pub wave: Option<i64>,
     pub role: Option<String>,
@@ -706,7 +706,7 @@ pub(crate) fn run_write(opts: WriteOpts) {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct SearchRow {
+pub(crate) struct SearchRow {
     pub path: PathBuf,
     pub spec: Option<String>,
     pub wave: Option<i64>,
@@ -721,7 +721,7 @@ pub struct SearchRow {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct SearchOpts {
+pub(crate) struct SearchOpts {
     pub query: String,
     pub spec: Option<String>,
     pub cluster: Option<String>,
@@ -827,7 +827,7 @@ pub(crate) fn touch_last_used_md(path: &Path, ts: &str) -> std::io::Result<()> {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct FeedbackOpts {
+pub(crate) struct FeedbackOpts {
     pub path: PathBuf,
     pub kind: String,
     pub by_role: Option<String>,

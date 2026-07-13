@@ -104,7 +104,7 @@ impl std::error::Error for WaveContextError {
 }
 
 /// Hard cap on the rendered `_context.md` word count — AC-A-9.
-pub const CONTEXT_WORD_CAP: usize = 8_000;
+pub(crate) const CONTEXT_WORD_CAP: usize = 8_000;
 
 // ---------------------------------------------------------------------------
 // Public types

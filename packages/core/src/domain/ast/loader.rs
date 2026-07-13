@@ -29,7 +29,7 @@
 //! - Any `LoaderError` during `find_all_languages` is surfaced as
 //!   [`AstError::LoaderConfigFailed`] **only when constructing**; consumers
 //!   that need fail-open behaviour wrap the constructor in
-//!   [`crate::platform::error::fail_open_with`].
+//!   [`crate::platform::error::fail_open`].
 //! - The lookup function `language()` is infallible — a missing id returns
 //!   `None`, never an error.
 

@@ -67,7 +67,6 @@ pub struct WaveCollapseOpts {
 #[derive(Debug, Clone)]
 struct WaveDir {
     n: u32,
-    #[allow(dead_code)] // retained for clarity / future use; folder name carries it
     role: String,
     path: PathBuf,
 }

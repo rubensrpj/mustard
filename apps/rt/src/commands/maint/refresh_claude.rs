@@ -87,7 +87,7 @@ pub struct RefreshClaudeOpts {
 
 /// Report emitted to stdout.
 #[derive(Debug, Default, Serialize)]
-pub struct RefreshReport {
+pub(crate) struct RefreshReport {
     pub copied: Vec<String>,
     pub skipped: Vec<String>,
     pub conflicts: Vec<String>,

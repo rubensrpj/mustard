@@ -237,7 +237,7 @@ impl Default for RankConfig {
 
 /// One ranked file (byte-stable score for the audit trail).
 #[derive(Serialize)]
-pub struct ScoredFile {
+pub(crate) struct ScoredFile {
     pub file: String,
     /// PageRank mass ×1024 relative to the total (`r_i * 1024 / PR_SCALE`).
     pub score_x1024: u64,
@@ -253,7 +253,7 @@ pub struct ScoredFile {
 /// One query term the request bridged to, with the rarity it seeded at and how
 /// many eligible model files it resolved to — the localization audit.
 #[derive(Serialize)]
-pub struct MatchedTerm {
+pub(crate) struct MatchedTerm {
     pub term: String,
     pub idf_x1024: u64,
     pub specificity_x1024: u64,
@@ -262,7 +262,7 @@ pub struct MatchedTerm {
 
 /// The byte-stable ranker result.
 #[derive(Serialize)]
-pub struct RankResult {
+pub(crate) struct RankResult {
     /// The query tokens actually searched (glue-filtered, deduped).
     pub query: Vec<String>,
     /// Ranker settings echoed back so a result is reproducible from the JSON.

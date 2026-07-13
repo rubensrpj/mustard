@@ -43,7 +43,7 @@ pub fn is_manifest(filename: &str) -> bool {
     find_def(filename).is_some()
 }
 
-pub struct Parsed {
+pub(crate) struct Parsed {
     pub kind: String,
     pub deps: Vec<String>,
     pub scripts: Vec<String>,

@@ -56,6 +56,8 @@
 //! empty string). [`create`] reports usage errors as JSON and returns; nothing
 //! here uses `unwrap`/`expect` outside `#[cfg(test)]`.
 
+pub mod cli;
+
 use crate::shared::context::project_dir;
 use mustard_core::domain::capability::{Capability, Requirement, Scenario};
 use mustard_core::io::atomic_md::scan_links;
