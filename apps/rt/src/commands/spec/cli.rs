@@ -42,7 +42,7 @@ pub enum SpecCmd {
     /// no `spec.link` event in this developer's SQLite) still surface.
     /// Emits JSON `Vec<ChildEntry>` with a `source: event|header|both` tag
     /// per row. Fail-open: any error degrades to `[]`.
-    #[command(display_order = 15)]
+    #[command(display_order = 14)]
     SpecChildren {
         /// Parent (epic) spec slug whose children to enumerate.
         #[arg(long)]
@@ -52,7 +52,7 @@ pub enum SpecCmd {
     /// single JSON document. Consumed by the dashboard's `spec_children_tree`
     /// Tauri command (Wave 3 of `spec-lifecycle-unification`). Fail-open: a
     /// missing spec or store degrades to empty arrays.
-    #[command(display_order = 16)]
+    #[command(display_order = 15)]
     SpecChildrenTree {
         /// Parent spec slug under `.claude/spec/` (flat layout).
         #[arg(long)]
@@ -64,7 +64,7 @@ pub enum SpecCmd {
     /// `newEntityCount` deterministically in Rust from the spec's `## Files`
     /// section + a diff against the repo model's entity names (no LLM). Without
     /// it, reads a pre-computed signals JSON from stdin (legacy / override).
-    #[command(display_order = 22)]
+    #[command(display_order = 21)]
     ScopeDecompose {
         /// Compute the signals deterministically from this spec file instead of
         /// reading them from stdin.
@@ -78,7 +78,7 @@ pub enum SpecCmd {
     /// from the `feature` digest's `sliceMatchCount`, and encodes the `/feature`
     /// SKILL's prose thresholds in code. Fail-open: an unreadable spec yields
     /// `{"scope":"full",...}` (the conservative default).
-    #[command(display_order = 23)]
+    #[command(display_order = 22)]
     ScopeClassify {
         /// Compute the signals deterministically from this spec file.
         #[arg(long = "from-spec")]
@@ -95,7 +95,7 @@ pub enum SpecCmd {
     /// Returns `{scope, decompose, reason, waves, signals, filesSectionEmpty?}`
     /// — the union the `/feature` PLAN step needs to route, pick 1-vs-N, and
     /// seed `spec-draft --waves`. Replaces calling the two commands in sequence.
-    #[command(display_order = 24)]
+    #[command(display_order = 23)]
     PlanPrepare {
         /// Compute the signals deterministically from this spec file.
         #[arg(long = "from-spec")]
@@ -110,7 +110,7 @@ pub enum SpecCmd {
     /// opened: pre-2026-05-20 nothing populated those tables since the JS
     /// harness writer was removed, which is why every dashboard spec card
     /// fell back to `"unknown"`.
-    #[command(display_order = 30)]
+    #[command(display_order = 29)]
     RebuildSpecs,
     /// Discover active specs from the filesystem (Outcome=Active, Stage=Plan|Execute).
     ///
@@ -118,7 +118,7 @@ pub enum SpecCmd {
     /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
     /// progress, extracts a one-line resumo.
     /// Output is either a markdown table (default) or a JSON document.
-    #[command(display_order = 51)]
+    #[command(display_order = 49)]
     ActiveSpecs {
         /// Output format: `table` (default) or `json`.
         #[arg(long, default_value = "table")]
@@ -136,7 +136,7 @@ pub enum SpecCmd {
     /// materialised by `wave-scaffold`. `--lang` accepts BCP-47 only (`pt-BR` /
     /// `en-US`); short codes are rejected. `--signals` is a free-form
     /// comma-separated list embedded in `spec.md` as a comment.
-    #[command(display_order = 59)]
+    #[command(display_order = 57)]
     SpecDraft {
         /// Free-text intent (becomes the spec title + slug seed).
         #[arg(long)]
@@ -179,7 +179,7 @@ pub enum SpecCmd {
     /// `mustard_core::domain::scan::Scan::spec`. Invoke as
     /// `mustard-rt run scan spec --entity <Name>`.
     #[command(name = "scan-spec")]
-    #[command(display_order = 60)]
+    #[command(display_order = 58)]
     ScanSpec {
         /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
         #[arg(long)]
@@ -207,7 +207,7 @@ pub enum SpecCmd {
     /// `meta.json` sidecar is patched for dispatch. Reuses the canonical
     /// `emit-pipeline` internals (no subprocess). Prints a JSON report; exit 0.
     #[command(name = "approve-spec")]
-    #[command(display_order = 69)]
+    #[command(display_order = 67)]
     ApproveSpec {
         /// Spec slug under `.claude/spec/` to approve.
         #[arg(long)]
@@ -222,7 +222,7 @@ pub enum SpecCmd {
     },
     /// W5.T5.3 — Create a sub-spec linked to a parent spec for a tactical fix.
     #[command(name = "tactical-fix-create")]
-    #[command(display_order = 70)]
+    #[command(display_order = 68)]
     TacticalFixCreate {
         /// Parent spec slug (already created in `.claude/spec/`).
         #[arg(long)]
@@ -239,7 +239,7 @@ pub enum SpecCmd {
     /// events. Emits one `tactical_fix.proposed` event per new candidate;
     /// never scaffolds a sub-spec (decision 6 — "não auto-aprovar").
     #[command(name = "tactical-fix-detect")]
-    #[command(display_order = 71)]
+    #[command(display_order = 69)]
     TacticalFixDetect {
         /// Spec whose review/qa events are scanned for candidates.
         #[arg(long)]

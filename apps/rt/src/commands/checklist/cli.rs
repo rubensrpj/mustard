@@ -19,7 +19,7 @@ use crate::commands::{checklist};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ChecklistCmd {
     /// Mark a `## Checklist` item done in a spec.
-    #[command(display_order = 18)]
+    #[command(display_order = 17)]
     MarkChecklistItem {
         /// Spec name or absolute `spec.md` path.
         #[arg(long)]

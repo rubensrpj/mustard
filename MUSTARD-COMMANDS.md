@@ -142,7 +142,7 @@ flowchart TD
 
     subgraph ex["4. EXECUTE (inline p/ light)"]
         exec["emit Execute → exec-rewave-check<br/>→ dependency-precheck"] --> disp["agent-prompt-render → dispatch Task<br/>(todos agentes da onda em 1 msg)"]
-        disp --> valw["valida por onda + memory agent"]
+        disp --> valw["valida por onda"]
         valw --> rev["REVIEW por subprojeto<br/>(re-reviews em sonnet, máx 2 loops)"]
         rev --> qa2["QA: qa-run"]
     end
@@ -300,7 +300,7 @@ flowchart TD
     overall -->|pass| chain["encadeia complete-spec IN-PROCESS<br/>spec → closed-followup<br/>emite pipeline.complete + auto-verifica"]
 
     chain --> stamp["emit Stage: Close · Outcome: Completed · flag followup_open"]
-    stamp --> know["memory knowledge + decision (máx 3 cada)"]
+    stamp --> know["emit-event decision/lesson (máx 3 cada)"]
     know --> metrics["arquiva métricas → .claude/metrics/{spec}.json"]
     metrics --> banner["pipeline-summary → wave-tree → banner PIPELINE COMPLETE"]
     banner --> epic["fold por épico (in-process no close-orchestrate)"]
@@ -505,24 +505,26 @@ flowchart TD
 
 ## `/knowledge` — Gestão de conhecimento
 
+Conhecimento = memória nativa do Claude Code (prosa durável) + eventos `decision`/`lesson` no NDJSON por spec (emitidos no CLOSE via `emit-event`).
+
 | Ação | Backend / propósito |
 |---|---|
-| `list` | `memory list --grouped` — entradas por tipo |
-| `search <term>` | `memory search` — match em nome/descrição/tags |
-| `add` | interativo → `memory knowledge` |
+| `list [spec]` | `event-projections --view pipeline-state` — decisions[]/lessons[] da spec |
+| `search <term>` | MCP `search_knowledge` — match em title/detail dos eventos |
+| `add` | interativo → `emit-event --event decision`/`lesson` |
 | `notes [target]` | edita `notes.md` (nunca sobrescrito por `/scan`) |
-| `audit` | compara auto-memory vs CLAUDE.md/skills (report-only) |
-| `report / evolve / export / import` | reporting + compartilhamento |
+| `audit` | compara memória nativa vs CLAUDE.md/skills (report-only) |
+| `report <period>` | relatórios de progresso via git |
 
 ```mermaid
 flowchart TD
     start(["/knowledge &lt;action&gt;"]) --> action{"action?"}
-    action -->|list| list["memory list --grouped --format table"]
-    action -->|search| search["memory search &lt;term&gt;"]
-    action -->|add| add["interativo → memory knowledge"]
+    action -->|list| list["event-projections --view pipeline-state<br/>(decisions[] / lessons[])"]
+    action -->|search| search["MCP search_knowledge &lt;term&gt;"]
+    action -->|add| add["interativo → emit-event decision/lesson"]
     action -->|notes| notes["edita {subproject}/.claude/commands/notes.md<br/>(injetado no contexto dos agentes)"]
-    action -->|audit| audit["compara auto-memory vs CLAUDE.md/skills<br/>(report-only, nunca auto-edita)"]
-    action -->|"report/evolve/export/import"| rep["evolve-report"]
+    action -->|audit| audit["compara memória nativa vs CLAUDE.md/skills<br/>(report-only, nunca auto-edita)"]
+    action -->|report| rep["relatórios git (refs/knowledge/report.md)"]
     list --> print["print verbatim (sempre mostra contagem)"]
     search --> print
     add --> print

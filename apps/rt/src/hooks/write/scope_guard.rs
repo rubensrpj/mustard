@@ -47,7 +47,7 @@ pub struct ScopeGuard;
 
 /// Path prefixes that are spec artifacts / infrastructure — NEVER production
 /// code. An edit under any of these during PLAN is legitimate (the spec.md, the
-/// wave plan, the harness config). Mirrors `path_gate::META_PREFIXES` plus the
+/// wave plan, the harness config). Mirrors `boundary_gate::META_PREFIXES` plus the
 /// forward-slash-normalised spec dir.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
 

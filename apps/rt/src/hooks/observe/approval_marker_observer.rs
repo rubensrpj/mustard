@@ -72,15 +72,16 @@ const APPROVAL_STEMS: &[&str] = &["approv", "aprov"];
 /// Resolve the spec the current session is deciding on; `None` on any
 /// uncertainty (which the caller treats as "record nothing"). Prefers the
 /// session→spec binding (precise), then the newest-pipeline-state hint — the
-/// same two-tier resolution the other spec-scoped hooks use.
-fn active_spec(cwd: &str, input: &HookInput) -> Option<String> {
+/// same two-tier resolution the other spec-scoped hooks use. Shared with
+/// [`super::plan_approval_observer`] (the plan-mode recorder).
+pub(crate) fn active_spec(cwd: &str, input: &HookInput) -> Option<String> {
     let sid = input.session_id.as_deref().unwrap_or("");
     spec_for_session(cwd, sid).or_else(|| current_spec(cwd))
 }
 
 /// `true` when `spec` is a Full-scope spec still in stage `Plan` (from its
 /// `meta.json`) — the only lifecycle state where a PLAN approval is pending.
-fn is_full_plan(cwd: &str, spec: &str) -> bool {
+pub(crate) fn is_full_plan(cwd: &str, spec: &str) -> bool {
     let Some(sp) = ClaudePaths::for_project(Path::new(cwd))
         .and_then(|p| p.for_spec(spec))
         .ok()
@@ -105,7 +106,7 @@ fn is_full_plan(cwd: &str, spec: &str) -> bool {
 
 /// `true` when the spec already carries a `pipeline.status{to:approved}` event —
 /// approval has already happened, so there is nothing to record.
-fn already_approved(cwd: &str, spec: &str) -> bool {
+pub(crate) fn already_approved(cwd: &str, spec: &str) -> bool {
     let Some(events_dir) = ClaudePaths::for_project(Path::new(cwd))
         .and_then(|p| p.for_spec(spec))
         .ok()

@@ -178,10 +178,11 @@ fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
 /// Didactic refusal surfaced as the report `error` when strict mode finds no
 /// user-approval marker. The flow relays `{ok:false,error}` straight to the user.
 const APPROVAL_REQUIRED_MSG: &str = "approval must come from the user — present \
-the plan and ask via AskUserQuestion; the user's own answer records the \
-.approved-by-user marker. approve-spec will not self-approve a Full plan (that \
-is what the field incident did). To temporarily relax, set \
-MUSTARD_APPROVAL_MODE=warn or off.";
+the plan in plan mode and let the user accept it (ExitPlanMode), which records \
+the .approved-by-user marker; when plan mode is unavailable, ask via \
+AskUserQuestion (fallback — the user's own answer records the same marker). \
+approve-spec will not self-approve a Full plan (that is what the field \
+incident did). To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off.";
 
 /// CLI entry — `mustard-rt run approve-spec --spec <name> [--wave-plan] [--resume]`.
 ///

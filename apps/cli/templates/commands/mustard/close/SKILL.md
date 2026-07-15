@@ -47,7 +47,9 @@ mustard-rt run close-orchestrate --spec {spec}
 
    A close lands straight on `completed` — there is no follow-up grace window. Any follow-up work goes into a separate linked sub-spec (`/mustard:tactical-fix`), not a flag on this spec.
 
-5. Knowledge: one `mustard-rt run memory knowledge` per significant pattern; one `mustard-rt run memory decision` per lesson (max 3 each, skip trivial).
+5. Knowledge: emit decision/lesson EVENTS (max 3 each, skip trivial; durable prose belongs to native auto-memory):
+   - per non-obvious decision: `mustard-rt run emit-event --event decision --spec {spec} --payload "title=<what was decided>" --payload "rationale=<why>"`
+   - per lesson: `mustard-rt run emit-event --event lesson --spec {spec} --payload "takeaway=<the lesson>" --payload "trigger=<what surfaced it>"`
 6. Metrics archive: read pipeline-state projection → save to `.claude/.metrics/{spec}.json` (omit missing fields).
 7. Print: `pipeline-summary` → `wave-tree` → banner `PIPELINE COMPLETE — {spec}` with agents/files/registry + optional `rtk gain` token line. All fail-open.
 8. Epic auto-fold (Wave 8): handled in-process by `close-orchestrate` — it detects epics whose children are all closed (NDJSON event stream — `spec.link` + `pipeline.phase`) and folds each one. Nothing to run by hand.

@@ -43,18 +43,8 @@ Empty `$IDX` (sentinel not found) → do nothing.
 
 ## Forbidden Operations
 
-Irreversible at filesystem or history level — **BANNED**.
-
-| Forbidden | Reversible alternative |
-|-----------|------------------------|
-| `rm -f` / `rm -rf <path>` | `rtk git rm --cached <path>` (preserves file on disk) |
-| `git clean -fd` / `-fdx` | Append to `$(rtk git rev-parse --git-path info/exclude)` |
-| `git checkout -f` / `--force` | Auto-stash Protocol with retry |
-| `git reset --hard` | `rtk git stash push` snapshot, then `rtk git checkout <ref>` |
-| Forced unlink of lock files | Investigate process holding lock; never delete blindly |
-
-Rationale: all state transitions must be recoverable via `rtk git reflog` / `rtk git stash list`. Filesystem-destructive shortcuts silently lose user work.
-
+The destructive-ops law lives in ONE home — `pipeline-config.md § Destructive-ops Law` (`settings.json permissions.deny` + the `bash_command_gate` safety residue); do not re-list commands here.
+Rule of thumb: every transition stays recoverable via `rtk git reflog` / `rtk git stash list` — prefer `rtk git rm --cached`, `info/exclude`, and the Auto-stash Protocol above over destructive shortcuts.
 ## sync — Per-repo Procedure
 
 1. Ensure-excluded (ephemerals) — silent, idempotent.

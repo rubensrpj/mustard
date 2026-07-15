@@ -37,13 +37,17 @@ pub struct SpecRow {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct KnowledgeRow {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub type_: String,
-    pub name: String,
-    pub description: String,
-    pub confidence: f64,
-    pub source: Option<String>,
+    /// Event kind: `decision` or `lesson`.
+    pub kind: String,
+    /// Decision → `payload.title`; lesson → `payload.takeaway`.
+    pub title: String,
+    /// Decision → `payload.rationale`; lesson → `payload.trigger`. Optional —
+    /// both payload fields are nullable at the emitter.
+    pub body: Option<String>,
+    /// Spec attribution from the event's top-level `spec` field.
+    pub spec: Option<String>,
+    /// ISO-8601 event timestamp (empty when the record carries none).
+    pub ts: String,
 }
 
 // ── Consumption / cost summary (Phase 2 spans) ──────────────────────────────
@@ -104,109 +108,59 @@ pub struct ConsumptionSummary {
     pub daily_series: Vec<DailyPoint>,
 }
 
-/// §5: project the on-disk `.claude/knowledge/*.md` files into [`KnowledgeRow`]s.
-///
-/// There are NO knowledge events in the NDJSON stream, so the honest source is
-/// the captured-knowledge markdown the harness writes. Each file is YAML
-/// frontmatter (`kind`, `captured_at`, `source_event`, `spec`) plus a markdown
-/// body. We map:
-///   * `id`          → file stem
-///   * `type_`       → frontmatter `kind` (e.g. `decision`, `pattern`, `convention`)
-///   * `name`        → first non-empty body line (heading stripped), truncated
-///   * `description` → the full body, trimmed
-///   * `confidence`  → frontmatter `confidence` if present (0..1), else 1.0 —
-///                     captured decisions are confirmed, not probabilistic, so
-///                     a confirmed entry reads as fully confident. No score is
-///                     fabricated: when the file declares one we honour it.
-///   * `source`      → frontmatter `spec` (falls back to `source_event`)
-///
-/// Fail-open: a missing dir / unreadable file yields an empty list.
-fn read_knowledge_rows(base: &std::path::Path) -> Vec<KnowledgeRow> {
-    let dir = base.join(".claude").join("knowledge");
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
+/// Project the workspace NDJSON event walk into [`KnowledgeRow`]s: one row per
+/// `decision` / `lesson` event (the memory channel — the markdown knowledge
+/// store is gone). Field mapping:
+///   * decision → `title` = `payload.title`, `body` = `payload.rationale`
+///   * lesson   → `title` = `payload.takeaway`, `body` = `payload.trigger`
+/// Attribution (`spec`) and `ts` come from the event envelope. Rows sort
+/// newest-first by `ts`. Fail-open: a project with no events (or a title-less
+/// record) contributes nothing — never an error.
+fn knowledge_rows_from_events(base: &std::path::Path) -> Vec<KnowledgeRow> {
+    let events = telemetry::walk_ndjson_events_cached(base);
     let mut rows: Vec<KnowledgeRow> = Vec::new();
-    for entry in entries {
-        let path = &entry.path;
-        if entry.is_dir {
+    for v in events.iter() {
+        let kind = telemetry::event_name_of(v);
+        if kind != "decision" && kind != "lesson" {
             continue;
         }
-        if path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let payload = v.get("payload");
+        let field = |key: &str| {
+            payload
+                .and_then(|p| p.get(key))
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
         };
-        let (front, body) = split_frontmatter(&content);
-        let kind = yaml_value(&front, "kind").unwrap_or_else(|| "decision".to_string());
-        let source = yaml_value(&front, "spec")
-            .or_else(|| yaml_value(&front, "source_event"));
-        let confidence = yaml_value(&front, "confidence")
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|c| c.clamp(0.0, 1.0))
-            .unwrap_or(1.0);
-        let body_trim = body.trim();
-        let name = body_trim
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map(|l| l.trim_start_matches('#').trim())
-            .map(|l| l.chars().take(120).collect::<String>())
-            .unwrap_or_default();
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
+        let (title, body) = if kind == "decision" {
+            (field("title"), field("rationale"))
+        } else {
+            (field("takeaway"), field("trigger"))
+        };
+        // A record with no renderable title carries nothing to show — skip.
+        let Some(title) = title else { continue };
+        let spec = v
+            .get("spec")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let ts = v
+            .get("ts")
+            .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
         rows.push(KnowledgeRow {
-            id,
-            type_: kind,
-            name,
-            description: body_trim.to_string(),
-            confidence,
-            source,
+            kind: kind.to_string(),
+            title,
+            body,
+            spec,
+            ts,
         });
     }
-    // Most-recent first (file stems are ISO-ish timestamps → lexical sort).
-    rows.sort_by(|a, b| b.id.cmp(&a.id));
+    // Newest first (ISO-8601 is lexically chronological); ts-less rows sink.
+    rows.sort_by(|a, b| b.ts.cmp(&a.ts));
     rows
-}
-
-/// Split a markdown document into `(frontmatter, body)`. When the file opens
-/// with a `---` fence the frontmatter is everything up to the closing `---`;
-/// otherwise the whole document is the body and the frontmatter is empty.
-fn split_frontmatter(content: &str) -> (String, String) {
-    let stripped = content.strip_prefix('\u{FEFF}').unwrap_or(content);
-    if let Some(after) = stripped.strip_prefix("---\n").or_else(|| stripped.strip_prefix("---\r\n")) {
-        if let Some(end) = after.find("\n---") {
-            let front = after[..end].to_string();
-            let rest = &after[end + 4..];
-            let body = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n")).unwrap_or(rest);
-            return (front, body.to_string());
-        }
-    }
-    (String::new(), content.to_string())
-}
-
-/// Read one `key: value` scalar out of a YAML frontmatter block. Returns the
-/// trimmed, unquoted value or `None`.
-fn yaml_value(front: &str, key: &str) -> Option<String> {
-    for line in front.lines() {
-        let mut parts = line.splitn(2, ':');
-        let k = parts.next()?.trim();
-        if !k.eq_ignore_ascii_case(key) {
-            continue;
-        }
-        let v = parts.next()?.trim().trim_matches(|c| c == '"' || c == '\'');
-        if v.is_empty() {
-            return None;
-        }
-        return Some(v.to_string());
-    }
-    None
 }
 
 #[derive(Serialize)]
@@ -1140,32 +1094,49 @@ fn dashboard_spec_reactivate(repo_path: String, spec_name: String) -> Result<Str
 }
 
 #[tauri::command]
-fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
-    // §5: substring search over the on-disk `.claude/knowledge/` projection.
-    let needle = query.trim().to_lowercase();
-    let rows: Vec<KnowledgeRow> = read_knowledge_rows(&PathBuf::from(&repo_path))
-        .into_iter()
-        .filter(|r| {
-            if needle.is_empty() {
-                return true;
-            }
-            format!("{} {} {} {}", r.type_, r.name, r.description, r.source.as_deref().unwrap_or(""))
+async fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
+    // Case-insensitive substring search over the event-projected rows
+    // (title + body + spec). Off-main-thread: a cold call pays the full
+    // workspace event walk; a join error degrades to an empty list.
+    tauri::async_runtime::spawn_blocking(move || {
+        let needle = query.trim().to_lowercase();
+        let rows: Vec<KnowledgeRow> = knowledge_rows_from_events(&PathBuf::from(&repo_path))
+            .into_iter()
+            .filter(|r| {
+                if needle.is_empty() {
+                    return true;
+                }
+                format!(
+                    "{} {} {}",
+                    r.title,
+                    r.body.as_deref().unwrap_or(""),
+                    r.spec.as_deref().unwrap_or("")
+                )
                 .to_lowercase()
                 .contains(&needle)
-        })
-        .take(limit.unwrap_or(100).min(1000))
-        .collect();
-    Ok(rows)
+            })
+            .take(limit.unwrap_or(100).min(1000))
+            .collect();
+        Ok(rows)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 #[tauri::command]
-fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
-    // §5: project the on-disk `.claude/knowledge/` files, newest first.
-    let rows: Vec<KnowledgeRow> = read_knowledge_rows(&PathBuf::from(&repo_path))
-        .into_iter()
-        .take(limit.unwrap_or(200).min(2000))
-        .collect();
-    Ok(rows)
+async fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
+    // Decision/lesson events projected from the workspace walk, newest first.
+    // Off-main-thread: a cold call pays the full workspace event walk; a join
+    // error degrades to an empty list.
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows: Vec<KnowledgeRow> = knowledge_rows_from_events(&PathBuf::from(&repo_path))
+            .into_iter()
+            .take(limit.unwrap_or(200).min(2000))
+            .collect();
+        Ok(rows)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 /// Friction telemetry from `.claude/.metrics/friction.json` — measured atrito
@@ -1832,40 +1803,67 @@ mod onda2_tests {
     }
 
     #[test]
-    fn knowledge_rows_project_frontmatter_and_body() {
+    fn knowledge_rows_project_decision_and_lesson_events() {
         let tmp = TempDir::new().unwrap();
-        let kdir = tmp.path().join(".claude").join("knowledge");
-        std::fs::create_dir_all(&kdir).unwrap();
-        std::fs::write(
-            kdir.join("20260101T000000Z-aaa.md"),
-            "---\nkind: decision\nspec: my-spec\n---\n**D1** — keep state in meta.json\n",
-        )
-        .unwrap();
-        std::fs::write(
-            kdir.join("20260102T000000Z-bbb.md"),
-            "---\nkind: pattern\nconfidence: 0.5\nspec: other\n---\nReuse the projection layer\n",
-        )
-        .unwrap();
+        write_event(
+            tmp.path(),
+            "my-spec",
+            "a.ndjson",
+            concat!(
+                r#"{"event":"decision","ts":"2026-07-01T10:00:00.000Z","spec":"my-spec","actor":{"kind":"hook","id":"memory"},"payload":{"title":"Keep state in meta.json","rationale":"spec.md stays pure narrative"}}"#,
+                "\n",
+                r#"{"event":"tool.use","ts":"2026-07-01T10:00:01.000Z","spec":"my-spec","payload":{"tool":"Read"}}"#,
+                "\n",
+            ),
+        );
+        write_event(
+            tmp.path(),
+            "other",
+            "b.ndjson",
+            concat!(
+                r#"{"event":"lesson","ts":"2026-07-02T09:00:00.000Z","spec":"other","actor":{"kind":"cli","id":"memory"},"payload":{"trigger":"qa-run under cmd.exe","takeaway":"Avoid bang in AC commands"}}"#,
+                "\n",
+            ),
+        );
 
-        let rows = read_knowledge_rows(tmp.path());
-        assert_eq!(rows.len(), 2);
-        // Newest first (lexical stem desc).
-        assert_eq!(rows[0].id, "20260102T000000Z-bbb");
-        assert_eq!(rows[0].type_, "pattern");
-        assert!((rows[0].confidence - 0.5).abs() < 1e-9);
-        assert_eq!(rows[0].source.as_deref(), Some("other"));
-        assert!(rows[0].name.contains("Reuse the projection"));
-        // Decision with no confidence field defaults to 1.0 (confirmed).
-        let d = rows.iter().find(|r| r.type_ == "decision").unwrap();
-        assert!((d.confidence - 1.0).abs() < 1e-9);
-        assert_eq!(d.source.as_deref(), Some("my-spec"));
-
+        let rows = knowledge_rows_from_events(tmp.path());
+        assert_eq!(rows.len(), 2, "only decision/lesson events project");
+        // Newest first by ts.
+        assert_eq!(rows[0].kind, "lesson");
+        assert_eq!(rows[0].title, "Avoid bang in AC commands");
+        assert_eq!(rows[0].body.as_deref(), Some("qa-run under cmd.exe"));
+        assert_eq!(rows[0].spec.as_deref(), Some("other"));
+        assert_eq!(rows[0].ts, "2026-07-02T09:00:00.000Z");
+        assert_eq!(rows[1].kind, "decision");
+        assert_eq!(rows[1].title, "Keep state in meta.json");
+        assert_eq!(rows[1].body.as_deref(), Some("spec.md stays pure narrative"));
+        assert_eq!(rows[1].spec.as_deref(), Some("my-spec"));
     }
 
     #[test]
-    fn knowledge_empty_when_dir_absent() {
+    fn knowledge_rows_tolerate_null_body_and_skip_titleless_records() {
         let tmp = TempDir::new().unwrap();
-        assert!(read_knowledge_rows(tmp.path()).is_empty());
+        write_event(
+            tmp.path(),
+            "s1",
+            "a.ndjson",
+            concat!(
+                r#"{"event":"decision","ts":"2026-07-03T10:00:00.000Z","spec":"s1","payload":{"title":"Solo title","rationale":null}}"#,
+                "\n",
+                r#"{"event":"lesson","ts":"2026-07-03T11:00:00.000Z","spec":"s1","payload":{"trigger":"orphan trigger","takeaway":""}}"#,
+                "\n",
+            ),
+        );
+        let rows = knowledge_rows_from_events(tmp.path());
+        assert_eq!(rows.len(), 1, "title-less lesson is skipped");
+        assert_eq!(rows[0].title, "Solo title");
+        assert_eq!(rows[0].body, None);
+    }
+
+    #[test]
+    fn knowledge_rows_empty_without_events() {
+        let tmp = TempDir::new().unwrap();
+        assert!(knowledge_rows_from_events(tmp.path()).is_empty());
     }
 
     #[test]

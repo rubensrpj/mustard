@@ -16,13 +16,17 @@ export interface SpecRow {
   parent: string | null;
 }
 
+/**
+ * One decision/lesson record projected from the per-spec NDJSON event log
+ * (`decision` → title/rationale, `lesson` → takeaway/trigger). Rows arrive
+ * sorted `ts` desc from the backend.
+ */
 export interface KnowledgeRow {
-  id: string;
-  type: string;
-  name: string;
-  description: string;
-  confidence: number;
-  source: string | null;
+  kind: "decision" | "lesson";
+  title: string;
+  body: string | null;
+  spec: string | null;
+  ts: string;
 }
 
 export interface SubprojectInfo {
@@ -224,8 +228,6 @@ export function onSpecsSnapshot(
     handler(payload),
   );
 }
-
-export type KnowledgeBrowseRow = KnowledgeRow;
 
 export function fetchKnowledgeBrowse(repoPath: string, limit = 500): Promise<KnowledgeRow[]> {
   return invoke<KnowledgeRow[]>("dashboard_knowledge_browse", { repoPath, limit });

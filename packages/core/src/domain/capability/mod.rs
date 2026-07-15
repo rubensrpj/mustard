@@ -1,16 +1,16 @@
 //! `capability` — the **durable** "what the system does" record.
 //!
-//! ## Why this is its own type (not a [`Knowledge`])
+//! ## Why this is its own type (not transient knowledge)
 //!
-//! [`crate::domain::model::knowledge::Knowledge`] is the unified store for
-//! *transient, decaying* knowledge — decisions, lessons, run summaries that age
-//! out and are pruned. A [`Capability`] is the opposite: it is the **living
+//! Decisions, lessons and run summaries are *transient, decaying* knowledge —
+//! they age out (today they live as `decision` / `lesson` events in the
+//! per-spec NDJSON log). A [`Capability`] is the opposite: it is the **living
 //! capability spec** — the durable statement of a behaviour the system
 //! provides. It must **never decay or be pruned**; it is updated in place as
 //! the behaviour changes and deprecated (never deleted) when the behaviour is
-//! removed. That different lifecycle is exactly why it does not reuse
-//! `Knowledge` (whose `Status::Deprecated` + confidence-decay model would let a
-//! pruner drop it). It is, however, held to the **same serde discipline**:
+//! removed. That different lifecycle is exactly why it does not reuse the
+//! transient-knowledge shape (whose decay model would let a pruner drop it).
+//! It is, however, held to the **same serde discipline**:
 //! every field is `#[serde(default)]`, forward-compatible, and fail-open —
 //! unknown / missing fields never break a parse, and nothing here panics.
 //!
@@ -33,7 +33,6 @@
 //! (`entity.{name}`, `cap.{slug}`) the caller mints — this module never invents
 //! or matches them.
 //!
-//! [`Knowledge`]: crate::domain::model::knowledge::Knowledge
 //! [`specs`]: Capability::specs
 //! [`related`]: Capability::related
 

@@ -98,11 +98,7 @@ When a pipeline is paused (user leaves session or requests pause):
    ```bash
    mustard-rt run emit-pipeline --kind pipeline.pause --spec {spec-name} --payload '{"pausedAt":"<ISO>","pauseReason":"<reason or session ended>","nextAction":"<ONE sentence>"}'
    ```
-2. Write agent memory for carry-over:
-   ```bash
-   mustard-rt run memory agent --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
-   ```
-3. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
+2. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
 
 ## Next Action Rule
 

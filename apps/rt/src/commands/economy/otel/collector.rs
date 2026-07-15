@@ -156,8 +156,8 @@ fn metric_target(project: &Path, projects_root: Option<&Path>, row_session_id: O
 
 /// The global Claude Code transcript store, `~/.claude/projects/`, or `None`
 /// when the home directory cannot be resolved. Reuses [`home_dir`] +
-/// [`ClaudePaths`] (the same composition `transcript_watcher` and
-/// `session_cleanup` use) so the path encoding cannot drift.
+/// [`ClaudePaths`] — composed via [`crate::util::home_dir`] so the path
+/// encoding cannot drift.
 fn global_projects_root() -> Option<PathBuf> {
     let home = home_dir()?;
     let paths = ClaudePaths::for_project(&home).ok()?;
@@ -169,7 +169,7 @@ fn global_projects_root() -> Option<PathBuf> {
 ///
 /// Each Claude Code session writes `<projects_root>/<encoded-cwd>/<id>.jsonl`.
 /// The directory name is a *lossy* encoding of the cwd (`/`, `\`, `:` all
-/// collapse to `-`, see [`crate::util::encode_cwd`]) so it cannot be decoded
+/// collapse to `-`, the Claude Code projects-dir convention) so it cannot be decoded
 /// back to a path — but every transcript line carries a lossless absolute
 /// `cwd` field, which is the authoritative project root. We find the `<id>.jsonl`
 /// file under any encoded-cwd subdir and read the first `cwd` from it.
@@ -730,7 +730,16 @@ mod tests {
     /// `<projects_root>/<encoded-cwd>/<sid>.jsonl` carrying the lossless `cwd`,
     /// exactly as Claude Code does. Mirrors the real layout the resolver scans.
     fn seed_transcript(projects_root: &Path, origin_project: &Path, sid: &str) {
-        let encoded = crate::util::encode_cwd(&origin_project.to_string_lossy());
+        // The Claude Code projects-dir convention: every path separator and
+        // drive-letter colon collapses to a dash.
+        let encoded: String = origin_project
+            .to_string_lossy()
+            .chars()
+            .map(|c| match c {
+                '/' | '\\' | ':' => '-',
+                other => other,
+            })
+            .collect();
         let dir = projects_root.join(encoded);
         std::fs::create_dir_all(&dir).unwrap();
         let line = json!({

@@ -8,8 +8,8 @@
 
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
-use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
+use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::task::delegation_advisory::DelegationAdvisory;
@@ -17,12 +17,13 @@ use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::scope_guard::ScopeGuard;
+use crate::hooks::write::secret_files::SecretFiles;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::observe::prompt_observer::PromptObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
 use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
 use crate::hooks::observe::wave_start_observer::WaveStartObserver;
-use crate::hooks::write::path_gate::PathGate;
+use crate::hooks::write::boundary_gate::BoundaryGate;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::write::work_branch_gate::WorkBranchGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
@@ -31,8 +32,6 @@ use crate::hooks::session::session_start_inject::SessionStartInject;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
 use crate::hooks::observe::session_stop_observer::SessionStopObserver;
-use crate::hooks::observe::subagent_stop_observer::SubagentStopObserver;
-use crate::hooks::observe::memory_promote_observer::MemoryPromoteObserver;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
@@ -233,16 +232,31 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "path_gate",
-                // `file-guard` (PreToolUse(Read|Write|Edit) sensitive-file
-                // gate) + `boundary-gate` (PreToolUse(Write|Edit) spec-boundary
-                // gate). Registered on Read too so `file-guard` covers reads.
+                id: "secret_files",
+                // `file-guard` — the Rust residue of the secret-file law. The
+                // 24 `permissions.deny` globs are the config-level first line;
+                // this residue restores the OLD semantics globs cannot express
+                // (case-insensitive substring over the FULL path) and is the
+                // one Write-family gate that also covers Read.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Read")),
                     (Trigger::PreToolUse, ToolMatch::Named("Write")),
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
                 ],
-                check: Some(Box::new(PathGate)),
+                check: Some(Box::new(SecretFiles)),
+                observer: None,
+            },
+            Module {
+                id: "boundary_gate",
+                // `boundary-gate` — PreToolUse(Write|Edit) spec-boundary gate.
+                // The sensitive-file law lives in `permissions.deny` (first
+                // line) + the `secret_files` residue above; boundary itself
+                // never inspects Read.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(BoundaryGate)),
                 observer: None,
             },
             Module {
@@ -357,8 +371,8 @@ impl Registry {
             },
             Module {
                 id: "session_start_inject",
-                // `harness-init` + `session-memory` + `spec-hygiene` — the
-                // SessionStart bootstrap. A `Check` (the memory-injection
+                // `harness-init` + `spec-hygiene` + terrain census — the
+                // SessionStart bootstrap. A `Check` (the terrain-census
                 // payload is its `Inject` verdict).
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
                 check: Some(Box::new(SessionStartInject)),
@@ -366,7 +380,7 @@ impl Registry {
             },
             Module {
                 id: "session_knowledge_observer",
-                // `session-knowledge` + `memory-auto-extract` on SessionEnd,
+                // `session-knowledge` (friction telemetry) on SessionEnd,
                 // `session-knowledge-inc` on PostToolUse(Task). Pure telemetry
                 // — an `Observer`.
                 applies_to: &[
@@ -414,17 +428,6 @@ impl Registry {
                 check: Some(Box::new(SubagentInject)),
                 observer: None,
             },
-            Module {
-                id: "agent_summary_observer",
-                // T8.4 — on Task return, parse `<MEMORY>` or `Resumo:` and
-                // persist to `agent_memory`.
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: None,
-                observer: Some(Box::new(AgentSummaryObserver)),
-            },
             // T5 (forgeable-approval gate) — on the user's answer to the PLAN
             // approval `AskUserQuestion`, record `<spec>/.approved-by-user` when
             // it is a genuine approval of the active Full spec still awaiting
@@ -438,30 +441,25 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ApprovalMarkerObserver)),
             },
+            // Plan-mode approval recorder — the primary source of the same
+            // `<spec>/.approved-by-user` marker. When the user ACCEPTS the
+            // plan-mode plan (`ExitPlanMode` succeeds with the plan payload)
+            // for an unapproved Full spec in PLAN, the marker is minted from
+            // the harness `tool_response` (which the model does not author).
+            // AskUserQuestion above stays as the fallback source. Pure
+            // Observer, fail-closed, never blocks.
             Module {
-                id: "subagent_stop_observer",
-                // T8.5 — SubagentStop reinforcement: bump `last_used` on any
-                // agent_memory row whose summary appeared in the output.
-                applies_to: &[(Trigger::SubagentStop, ToolMatch::Any)],
+                id: "plan_approval_observer",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("ExitPlanMode"))],
                 check: None,
-                observer: Some(Box::new(SubagentStopObserver)),
-            },
-            Module {
-                id: "memory_promote_observer",
-                // T8.6 — SessionEnd promotion of high-confidence agent_memory
-                // rows to permanent memory_decisions / memory_lessons rows.
-                applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(MemoryPromoteObserver)),
+                observer: Some(Box::new(PlanApprovalObserver)),
             },
             // ── W9 deep-refactor: Stop trigger ───────────────────────────────
             Module {
                 id: "session_stop_observer",
                 // `Stop` lifecycle observer — touches the 5-minute anti-spam
-                // marker AND captures the orchestrator's own `<MEMORY>…</MEMORY>`
-                // blocks from its final output as Knowledge (the capture point
-                // for light, direct `/task`/bugfix work that dispatches no
-                // subagent). Main session only — never SubagentStop.
+                // marker the Stop-adjacent bookkeeping relies on. Main session
+                // only — never SubagentStop.
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(SessionStopObserver)),
@@ -654,6 +652,25 @@ mod tests {
     }
 
     #[test]
+    fn exit_plan_mode_post_tool_use_runs_plan_approval_observer() {
+        let registry = Registry::new();
+        // The plan-mode approval recorder fires only on PostToolUse(ExitPlanMode).
+        assert!(
+            applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode"))
+                .contains(&"plan_approval_observer")
+        );
+        // Never on the Pre side, nor on an unrelated tool.
+        assert!(
+            !applicable_ids(&registry, Trigger::PreToolUse, Some("ExitPlanMode"))
+                .contains(&"plan_approval_observer")
+        );
+        assert!(
+            !applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
+                .contains(&"plan_approval_observer")
+        );
+    }
+
+    #[test]
     fn ask_user_question_post_tool_use_runs_approval_marker_observer() {
         let registry = Registry::new();
         // The approval recorder fires only on PostToolUse(AskUserQuestion).
@@ -685,8 +702,10 @@ mod tests {
             "skill_usage_observer",
             "tool_result_observer",
             "approval_marker_observer",
+            "plan_approval_observer",
             "size_gate",
-            "path_gate",
+            "secret_files",
+            "boundary_gate",
             "close_gate",
             "scan_gate",
             "scope_guard",
@@ -771,7 +790,7 @@ mod tests {
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "path_gate", "close_gate", "scope_guard"] {
+            for want in ["size_gate", "secret_files", "boundary_gate", "close_gate", "scope_guard"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }
@@ -782,10 +801,11 @@ mod tests {
                 "scope_guard missing for {tool}"
             );
         }
-        // `path_gate` (file-guard) also covers Read.
-        assert!(
-            applicable_ids(&registry, Trigger::PreToolUse, Some("Read")).contains(&"path_gate")
-        );
+        // The secret-file residue is the ONE Write-family gate that also
+        // covers Read; `boundary_gate` itself stays Write/Edit-only.
+        let read_ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Read"));
+        assert!(read_ids.contains(&"secret_files"));
+        assert!(!read_ids.contains(&"boundary_gate"));
         // `post_edit` runs on PostToolUse(Write|Edit).
         for tool in ["Write", "Edit"] {
             assert!(

@@ -19,7 +19,7 @@ use crate::commands::{wave};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum WaveCmd {
     /// Render a spec's wave structure as an ASCII or JSON tree.
-    #[command(display_order = 19)]
+    #[command(display_order = 18)]
     WaveTree {
         /// Path to the spec directory.
         #[arg(long = "spec-dir")]
@@ -34,7 +34,7 @@ pub enum WaveCmd {
     /// stdin (legacy). Both transports accept BOTH shapes: the derivation form
     /// `{files, projectRoot}` and the rich plan JSON (`{waves: [{files}]}`,
     /// per-wave censuses unioned) that `plan-materialize --plan` consumes.
-    #[command(display_order = 20)]
+    #[command(display_order = 19)]
     WaveDependency {
         /// Path to a JSON file: `{files, projectRoot}` or a `--plan`-style
         /// `{waves: [...]}` document. Omit to read the same JSON from stdin.
@@ -46,7 +46,7 @@ pub enum WaveCmd {
     /// dashboard "Ondas" tab to show the canon `## Arquivos` count and pop
     /// open a drawer with the wave markdown. Fail-open: missing files →
     /// `{"count":0,"markdown":"","path":null}`.
-    #[command(display_order = 21)]
+    #[command(display_order = 20)]
     WaveFiles {
         /// Parent spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -56,14 +56,14 @@ pub enum WaveCmd {
         wave: Option<u32>,
     },
     /// Check whether a spec should be decomposed at EXECUTE entry.
-    #[command(display_order = 25)]
+    #[command(display_order = 24)]
     ExecRewaveCheck {
         /// Path to the spec file.
         #[arg(long)]
         spec: Option<String>,
     },
     /// Audit per-wave file/layer counts inside a wave-plan.
-    #[command(display_order = 27)]
+    #[command(display_order = 26)]
     WaveSizeCheck {
         /// Path to the spec directory.
         #[arg(long = "spec-dir")]
@@ -114,7 +114,7 @@ pub enum WaveCmd {
     /// Inside the pipeline prefer `plan-materialize`, which composes this
     /// scaffold with validation and the PLAN-phase events.
     #[command(verbatim_doc_comment)]
-    #[command(display_order = 46)]
+    #[command(display_order = 44)]
     WaveScaffold {
         /// Target spec directory.
         #[arg(long = "spec-dir")]
@@ -138,7 +138,7 @@ pub enum WaveCmd {
     /// BEFORE any dir is deleted. Reuses `is_heading` / `write_atomic` /
     /// the wave-scaffold renderers.
     #[command(name = "wave-collapse")]
-    #[command(display_order = 47)]
+    #[command(display_order = 45)]
     WaveCollapse {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

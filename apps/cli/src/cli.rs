@@ -1,9 +1,10 @@
 //! Argument parsing and subcommand dispatch.
 //!
-//! Mirrors the JavaScript `cli.ts`, which used Commander: the same five
-//! subcommands (`init`, `update`, `config`, `add`, `review`)
+//! Mirrors the JavaScript `cli.ts`, which used Commander: the same core
+//! subcommands (`init`, `update`, `config`, `add`)
 //! with the same flags. `clap`'s derive API builds the parser from the types
-//! below.
+//! below. (`review` was retired — the /mustard:review SKILL drives the
+//! native code-review skill; the direct-API path is dead.)
 //!
 //! Every subcommand has a real body — Wave 1 ported `init`, Wave 2 ported the
 //! rest. Each dispatch arm forwards to a module under [`crate::commands`].
@@ -16,7 +17,6 @@ use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
 use crate::commands::install_grammars::{self, InstallGrammarsArgs};
 use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
-use crate::commands::review::{self, ReviewOptions};
 use crate::commands::update::{self, UpdateOptions};
 
 /// Framework-agnostic CLI for Claude Code project setup.
@@ -64,15 +64,6 @@ enum Commands {
         /// Overwrite existing files.
         #[arg(short, long)]
         force: bool,
-    },
-    /// Review a pull request (local or CI mode).
-    Review {
-        /// CI mode: post the review as a PR comment, exit non-zero on critical issues.
-        #[arg(long)]
-        ci: bool,
-        /// PR number to review.
-        #[arg(long)]
-        pr: Option<u64>,
     },
     /// Install a Nerd Font on the host (required for powerline statusline themes).
     #[command(name = "install-nerd-font")]
@@ -135,7 +126,6 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Add { template, force } => {
             add::add(&cwd, &template, &AddOptions { force })
         }
-        Commands::Review { ci, pr } => review::review(&cwd, &ReviewOptions { ci, pr }),
         Commands::InstallNerdFont {
             font,
             force,
@@ -188,15 +178,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parses_review_pr_number() {
-        let cli = Cli::try_parse_from(["mustard", "review", "--pr", "42", "--ci"]).unwrap();
-        match cli.command {
-            Commands::Review { pr, ci } => {
-                assert_eq!(pr, Some(42));
-                assert!(ci);
-            }
-            other => panic!("expected Review, got {other:?}"),
-        }
-    }
 }

@@ -83,7 +83,7 @@ pub enum EventCmd {
         base: Option<String>,
     },
     /// Query the harness event log by view.
-    #[command(display_order = 33)]
+    #[command(display_order = 32)]
     EventProjections {
         /// View name: `agent-visibility`, `pipeline-state`, `session-summary`,
         /// `epic-summary`, `cross-session-timeline`, `spec-tree`, `pr-metrics`,

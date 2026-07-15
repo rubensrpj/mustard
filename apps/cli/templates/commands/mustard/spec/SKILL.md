@@ -38,7 +38,7 @@ rtk mustard-rt run resume-bootstrap --spec {specName} --json
 
 Parse: `stage`, `mode`, `operationalSpecPath`, `currentWave`, `totalWaves`, `specSummary`, `lastDispatchFailure`, `needsDiff`, `needsContextSlice`.
 
-- **`Plan`** → `../../../refs/spec/resume-loop.md` (**§A Approve**). It owns the focused single-spec render **and** the one approve/implement question (primary = approve + implement inline; secondary = approve only / new session). A letter-mode `r` suffix **pre-answers** that question as approve + implement inline (skip the question).
+- **`Plan`** → `../../../refs/spec/resume-loop.md` (**§A Approve**). It owns the focused single-spec render **and** the approval: plan mode first (present the plan as the plan-mode plan file; the user accepting `ExitPlanMode` mints the `.approved-by-user` marker), with the one approve/implement `AskUserQuestion` as fallback (primary = approve + implement inline; secondary = approve only / new session). A letter-mode `r` suffix **pre-answers** the fallback question as approve + implement inline (skip the question).
 - **`Execute`/`Analyze`/`QaReview`/`Close`** → `../../../refs/spec/resume-loop.md` (**§B Loop**). In focused mode, first print a one-line header (`{specName} — retomando (EXEC)`; precise wave numbering comes from `wave-tree`, not from `currentWave`, which is 0-based) and ask a single **"Implementar agora?"** confirm before dispatch; letter mode (and a letter-mode `r`) skip the confirm. (EXEC ignores `r`.)
 
 #### EXEC branch — `wave-advance` relay

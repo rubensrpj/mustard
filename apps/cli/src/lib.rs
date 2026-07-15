@@ -19,7 +19,7 @@
 //!
 //! - [`cli`] — `clap` argument parsing and the subcommand dispatch table.
 //! - [`commands`] — one module per subcommand (`init`, `update`, `config`,
-//!   `add`, `review` — all ported as of Wave 2).
+//!   `add`).
 //! - [`fs_ops`] — recursive directory copy and surgical JSON merge, shared by
 //!   `init` and `update`.
 

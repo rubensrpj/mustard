@@ -111,7 +111,6 @@ fn documented_dirs() -> &'static BTreeSet<&'static str> {
 const LEGACY_DIRS: &[&str] = &[
     "scripts",          // pre-Rust-monorepo JS payload, retired 2026-05-19
     "adapters",         // pre-mustard-rt adapter shims
-    "plans",            // pre-spec wave plan staging
     "agent-memory",     // superseded by SQLite memory_decisions/lessons
     ".agent-memory",    // dotfile variant of above
     "memory",           // superseded by per-spec memory/ inside spec dirs
@@ -472,14 +471,14 @@ mod tests {
     #[test]
     fn legacy_dirs_are_classified_legacy() {
         let dir = tempdir().unwrap();
-        fake_dirs(dir.path(), &["scripts", "adapters", "plans", "memory", "metrics"]);
+        fake_dirs(dir.path(), &["scripts", "adapters", "memory", "metrics"]);
         let report = audit(dir.path());
         let legacy: Vec<&Entry> = report
             .entries
             .iter()
             .filter(|e| e.classification == "LEGACY")
             .collect();
-        assert_eq!(legacy.len(), 5, "all 5 legacy names hit");
+        assert_eq!(legacy.len(), 4, "all 4 legacy names hit");
         for e in &legacy {
             assert_eq!(e.recommendation, "remove");
         }

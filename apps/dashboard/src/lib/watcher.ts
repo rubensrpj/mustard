@@ -70,9 +70,6 @@ export function subscribeFsChange(): Promise<() => void> {
         // `meta.json#checklist` writes (seed / done flips) classify as `spec`
         // — they carry the per-wave totals the progress fold reads.
         queryClient.invalidateQueries({ queryKey: ["spec-checklist", repo_path] });
-      } else if (kind === "knowledge") {
-        queryClient.invalidateQueries({ queryKey: ["knowledge-browse", repo_path] });
-        queryClient.invalidateQueries({ queryKey: ["knowledge-search", repo_path] });
       }
     },
   );

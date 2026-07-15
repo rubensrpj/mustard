@@ -1,22 +1,22 @@
-//! `path_gate` — the consolidated Write/Edit path-boundary module.
+//! `boundary_gate` — flag a Write/Edit outside the active spec's declared
+//! boundary (`## Files` / `## Boundaries`).
 //!
-//! ## Scope (b3 Wave 4, Write/Edit family)
+//! ## Scope
 //!
-//! This module ports two JavaScript hooks, both `PreToolUse` gates on a file
-//! path:
+//! ONE behavior: a `PreToolUse(Write|Edit)` gate that checks the edited path
+//! against the active spec's declared file list. Mode `MUSTARD_BOUNDARY_MODE`
+//! (default `warn`): warn → advisory, strict → deny.
 //!
-//! - `file-guard.js` — a `PreToolUse(Read|Write|Edit)` **safety** gate: denies
-//!   access to a sensitive file (`credentials*`, `*.pem`, `*.key`,
-//!   `.git/config`, SSH keys, `*.pfx`/`*.p12`). It has no mode — always
-//!   strict, like `bash-safety`.
-//! - `boundary-gate.js` — a `PreToolUse(Write|Edit)` gate that flags an edit
-//!   outside the active spec's `## Files` / `## Boundaries` declaration. Mode
-//!   `MUSTARD_BOUNDARY_MODE` (default `warn`): warn → advisory, strict → deny.
+//! The sensitive-file law that used to live here as `file-guard`
+//! (`credentials*`, `*.pem`, `*.key`, `.git/config`, SSH keys, `*.pfx`,
+//! `*.p12`) is now two-layer: `settings.json permissions.deny`
+//! `Read`/`Edit`/`Write` globs (first line, survives `/unhook`) + the
+//! [`super::secret_files`] residue, which keeps the old case-insensitive
+//! full-path substring semantics the globs cannot express.
 //!
-//! Consolidation **regroups, it does not re-decide** — every verdict is a 1:1
-//! port of the JS decision logic. The parity tests at the bottom mirror
-//! `__tests__/hooks.test.js` ("file-guard.js").
-
+//! This module also hosts the shared path helpers ([`file_path_of`],
+//! [`relative_to_cwd`]) that `work_branch_gate` consumes to scope branching
+//! to in-repo mutations.
 //!
 //! ## W3C migration
 //!
@@ -28,8 +28,6 @@
 //! 2. Spec header (`### Stage:` / `### Outcome:`) — fallback to determine
 //!    whether the spec is already completed/closed when no `pipeline.status`
 //!    event exists in the NDJSON log.
-//!
-//! The SQLite store is fully removed from this module.
 
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
@@ -42,84 +40,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::commands::{PipelineStateView, pipeline_state_from_events};
 
-/// The consolidated Write/Edit path-boundary module.
-pub struct PathGate;
-
-// ---------------------------------------------------------------------------
-// file-guard — deny access to sensitive files
-// ---------------------------------------------------------------------------
-
-/// `true` if `path` (forward-slash normalised, original case) matches a
-/// sensitive-file pattern. Mirrors `BLOCKED_PATTERNS` in `file-guard.js`:
-/// `credentials`, `*.pem`, `*.key`, `.git/config`, `id_rsa`, `id_ed25519`,
-/// `*.pfx`, `*.p12` — all case-insensitive.
-fn sensitive_pattern_match(path: &str) -> Option<&'static str> {
-    let lower = path.replace('\\', "/").to_ascii_lowercase();
-    // /credentials/i — substring.
-    if lower.contains("credentials") {
-        return Some("credentials");
-    }
-    // /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i — extension.
-    // `lower` is already ASCII-lowercased, so ends_with is case-insensitive here.
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
-    {
-    if lower.ends_with(".pem") {
-        return Some("\\.pem$");
-    }
-    if lower.ends_with(".key") {
-        return Some("\\.key$");
-    }
-    if lower.ends_with(".pfx") {
-        return Some("\\.pfx$");
-    }
-    if lower.ends_with(".p12") {
-        return Some("\\.p12$");
-    }
-    }
-    // /\.git[/\\]config$/i — `.git/config` at the end of the path.
-    if lower.ends_with(".git/config") {
-        return Some("\\.git[/\\\\]config$");
-    }
-    // /id_rsa/i, /id_ed25519/i — substring.
-    if lower.contains("id_rsa") {
-        return Some("id_rsa");
-    }
-    if lower.contains("id_ed25519") {
-        return Some("id_ed25519");
-    }
-    None
-}
-
-/// The `file-guard` gate: deny a Read/Write/Edit on a sensitive file.
-///
-/// 1:1 with `file-guard.js`: only `Read`/`Write`/`Edit` tools are inspected;
-/// the file path *and* its basename are tested against every pattern. A match
-/// → `Deny`; otherwise `None` (fall through to `boundary-gate`).
-fn file_guard(input: &HookInput) -> Option<Verdict> {
-    let tool = input.tool_name.as_deref().unwrap_or_default();
-    if !matches!(tool, "Read" | "Write" | "Edit") {
-        return None;
-    }
-    let file_path = file_path_of(input)?;
-    let normalized = file_path.replace('\\', "/");
-    let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
-
-    // The JS tests `pattern.test(normalized) || pattern.test(basename)`.
-    // `sensitive_pattern_match` already covers both: substring patterns hit
-    // the full path, extension patterns hit either — so testing the full path
-    // and the basename separately reproduces the JS exactly.
-    let pattern = sensitive_pattern_match(&normalized).or_else(|| sensitive_pattern_match(basename))?;
-    Some(Verdict::Deny {
-        reason: format!(
-            "[file-guard] Access to sensitive file blocked: {basename}\n\
-             Matched pattern: {pattern}"
-        ),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// boundary-gate — flag edits outside the active spec's declared boundary
-// ---------------------------------------------------------------------------
+/// The spec-boundary gate.
+pub struct BoundaryGate;
 
 /// Path prefixes always allowed — infrastructure edits a spec rarely lists.
 /// Mirrors `META_PREFIXES` in `boundary-gate.js`.
@@ -200,11 +122,12 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
 /// Resolve the spec a Write/Edit should be checked against, fail-open `None`.
 ///
 /// Priority:
-/// 1. [`spec_for_session`] — the `.session/<id>/active-spec` marker bound to
-///    THIS session. This is the canonical session→spec link the event router
-///    maintains; the rest of the harness already resolves the active spec this
-///    way. Using it here means the boundary check runs against the spec the
-///    session is actually working on.
+/// 1. [`crate::shared::context::spec_for_session`] — the
+///    `.session/<id>/active-spec` marker bound to THIS session. This is the
+///    canonical session→spec link the event router maintains; the rest of the
+///    harness already resolves the active spec this way. Using it here means
+///    the boundary check runs against the spec the session is actually
+///    working on.
 /// 2. `MUSTARD_ACTIVE_SPEC` — the explicit env override `/feature` & `/spec` set.
 /// 3. Legacy: the newest *fresh* (`mtime < 10 min`) `.pipeline-states/*.json`
 ///    `specName`. Kept only for flows that carry no session binding; the
@@ -311,10 +234,7 @@ fn extract_allowed_patterns(spec_text: &str) -> Vec<String> {
 /// `true` if `line` is a `## Files`/`## Boundaries` (or PT) H2 heading.
 fn is_files_or_boundaries_heading(line: &str) -> bool {
     let lower = line.trim().to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        s if s.starts_with("## files") && h2_word_boundary(&lower, "files")
-    ) || h2_named(&lower, "files")
+    h2_named(&lower, "files")
         || h2_named(&lower, "arquivos")
         || h2_named(&lower, "boundaries")
         || h2_named(&lower, "limites")
@@ -333,11 +253,6 @@ fn h2_named(lower: &str, name: &str) -> bool {
     rest.as_bytes()
         .get(name.len())
         .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_')
-}
-
-/// Helper retained for readability of [`is_files_or_boundaries_heading`].
-fn h2_word_boundary(lower: &str, name: &str) -> bool {
-    h2_named(lower, name)
 }
 
 /// `true` if `line` is any `## ` H2 heading (used to close a section).
@@ -586,8 +501,8 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
     }
 }
 
-/// The `boundary-gate` gate: flag a Write/Edit outside the active spec's
-/// declared `## Files` / `## Boundaries`.
+/// The boundary check: flag a Write/Edit outside the active spec's declared
+/// `## Files` / `## Boundaries`.
 ///
 /// 1:1 with `boundary-gate.js` — every early `process.exit(0)` maps to
 /// `None` (pass through). A real mismatch → `Deny` in strict mode, `Warn` in
@@ -684,22 +599,13 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
 // Contract impl
 // ---------------------------------------------------------------------------
 
-impl Check for PathGate {
-    /// Run `file-guard` then `boundary-gate` on a `PreToolUse` invocation.
-    ///
-    /// `file-guard` is the non-negotiable safety gate (no mode — always
-    /// strict); it runs first and a sensitive-file `Deny` short-circuits.
-    /// `boundary-gate` runs only for `Write`/`Edit` and computes its verdict
-    /// with its own `MUSTARD_BOUNDARY_MODE`.
+impl Check for BoundaryGate {
+    /// Run the boundary check on a `PreToolUse(Write|Edit)` invocation; any
+    /// other trigger/tool self-allows.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
-        // `file-guard` — Read/Write/Edit, always strict.
-        if let Some(verdict) = file_guard(input) {
-            return Ok(verdict);
-        }
-        // `boundary-gate` — Write/Edit only.
         let tool = input.tool_name.as_deref().unwrap_or_default();
         if tool == "Write" || tool == "Edit" {
             let cwd = ctx.project_dir_or_cwd(input);
@@ -734,57 +640,7 @@ mod tests {
 
     fn verdict_for(tool: &str, file_path: &str) -> Verdict {
         let (input, ctx) = pre(tool, file_path);
-        PathGate.evaluate(&input, &ctx).expect("check never errors")
-    }
-
-    // --- file-guard parity (hooks.test.js "file-guard.js") -----------------
-
-    #[test]
-    fn file_guard_blocks_pem_key() {
-        assert!(verdict_for("Read", "/project/secrets/server.pem").is_blocking());
-        assert!(verdict_for("Write", "config/private.key").is_blocking());
-    }
-
-    #[test]
-    fn file_guard_blocks_credentials() {
-        assert!(verdict_for("Read", "/project/.aws/credentials").is_blocking());
-    }
-
-    #[test]
-    fn file_guard_blocks_git_config_and_ssh_keys() {
-        assert!(verdict_for("Edit", "/project/.git/config").is_blocking());
-        assert!(verdict_for("Read", "/home/user/.ssh/id_rsa").is_blocking());
-        assert!(verdict_for("Read", "/home/user/.ssh/id_ed25519").is_blocking());
-    }
-
-    #[test]
-    fn file_guard_allows_env_files() {
-        // file-guard does NOT block .env (user decision).
-        assert_eq!(verdict_for("Read", "/project/.env"), Verdict::Allow);
-        assert_eq!(verdict_for("Write", "/project/.env.local"), Verdict::Allow);
-    }
-
-    #[test]
-    fn file_guard_allows_normal_source() {
-        assert_eq!(verdict_for("Edit", "/project/src/main.ts"), Verdict::Allow);
-    }
-
-    #[test]
-    fn file_guard_ignores_non_file_tools() {
-        // Only Read/Write/Edit are inspected.
-        let input = HookInput {
-            tool_name: Some("Bash".to_string()),
-            tool_input: json!({ "command": "cat server.pem" }),
-            hook_event_name: Some("PreToolUse".to_string()),
-            ..HookInput::default()
-        };
-        assert!(file_guard(&input).is_none());
-    }
-
-    #[test]
-    fn file_guard_blocks_pfx_p12() {
-        assert!(verdict_for("Read", "/p/cert.pfx").is_blocking());
-        assert!(verdict_for("Read", "/p/cert.p12").is_blocking());
+        BoundaryGate.evaluate(&input, &ctx).expect("check never errors")
     }
 
     // --- boundary-gate parity ----------------------------------------------
@@ -796,6 +652,13 @@ mod tests {
             verdict_for("Write", "/project/.claude/settings.json"),
             Verdict::Allow
         );
+    }
+
+    #[test]
+    fn boundary_gate_ignores_non_write_tools() {
+        // Read (or any non-Write/Edit tool) is not this gate's business.
+        assert_eq!(verdict_for("Read", "src/main.ts"), Verdict::Allow);
+        assert_eq!(verdict_for("Bash", "src/main.ts"), Verdict::Allow);
     }
 
     #[test]
@@ -815,7 +678,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            PathGate.evaluate(&input, &ctx).expect("no error"),
+            BoundaryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -891,7 +754,7 @@ mod tests {
         assert!(boundary_gate(&allowed, &cwd_str).is_none());
     }
 
-    // --- W3C: NDJSON+SQLite merged event source ----------------------------
+    // --- W3C: NDJSON event source -------------------------------------------
 
     #[test]
     fn boundary_gate_allows_when_no_events_and_no_patterns() {
@@ -1017,8 +880,8 @@ mod tests {
     #[test]
     fn non_pre_tool_use_trigger_allows() {
         let input = HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: json!({ "file_path": "server.pem" }),
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": "src/main.ts" }),
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
@@ -1028,7 +891,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            PathGate.evaluate(&input, &ctx).expect("no error"),
+            BoundaryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }

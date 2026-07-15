@@ -21,7 +21,7 @@ use crate::commands::{agent};
 pub enum AgentCmd {
     /// Finalize open amendment windows for a session (appends `## Amendments` to spec.md,
     /// moves archived specs, updates the DB, and emits `pipeline.amend_close`).
-    #[command(display_order = 44)]
+    #[command(display_order = 42)]
     AmendFinalize {
         /// Session identifier whose open windows to finalize.
         #[arg(long = "session-id")]
@@ -34,7 +34,7 @@ pub enum AgentCmd {
     /// and prints the same JSON. Fire-and-forget telemetry: fail-open, no
     /// events means zero counts, always exits 0.
     #[command(name = "digest-adherence-finalize")]
-    #[command(display_order = 45)]
+    #[command(display_order = 43)]
     DigestAdherenceFinalize {
         /// Spec slug the summary event attributes to.
         #[arg(long)]
@@ -44,7 +44,7 @@ pub enum AgentCmd {
     /// template. Substitutes every `{placeholder}` it can resolve; warns on
     /// stderr for any left unfilled. Stdout = raw prompt string ready for
     /// the Task tool (no JSON framing).
-    #[command(display_order = 55)]
+    #[command(display_order = 53)]
     AgentPromptRender {
         /// Spec slug under `.claude/spec/`. Optional: spec-less callers (the
         /// `/scan` Guards enrich step, `/task` with no scope) omit it — the

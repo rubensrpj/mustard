@@ -13,7 +13,7 @@ Every work unit (feature, bugfix, any file change) runs in its OWN git worktree,
 
 ## The gate
 
-`work_branch_gate` (PreToolUse Write/Edit) detects isolation by comparing `git rev-parse --git-dir` with `--git-common-dir` (they differ ⇔ a linked worktree):
+`work_branch_gate` (PreToolUse Write/Edit/MultiEdit) enforces the law on the tree that HOSTS the edit: branch detection runs against the LOCAL tree of the edited file (the worktree), while state — the pending-branch marker, `mustard.json` flow — still resolves to the main checkout. A worktree on a work branch is never judged by the main checkout's branch (the nested-worktree false-block fix).
 
-- **isolated** → allow; the worktree already carries its own branch (no checkout, which is what used to collide).
-- **not isolated** → `MUSTARD_WORKTREE_ISOLATION_MODE` (`strict|warn|off`, default `warn`): `strict` denies with an `EnterWorktree` instruction; `warn` allows and advises; `off` is silent. Editing a bare integration base (`dev`/`main`) without a marker is denied regardless.
+- **pending work-unit marker** → cuts `{base}_{slug}` off the freshly fetched base and checks it out IN the session's own tree, then allows (fail-open: a git failure warns, never blocks). In a per-session worktree the cut collides with nobody.
+- **no marker** → a direct edit on a bare integration base (`dev`/`main`) is denied; any work branch edits freely.

@@ -20,7 +20,7 @@ use crate::commands::{review};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ReviewCmd {
     /// Validate a spec's structure (WARN-level — never blocks).
-    #[command(display_order = 17)]
+    #[command(display_order = 16)]
     AnalyzeValidation {
         /// Path to the spec file.
         #[arg(long)]
@@ -31,7 +31,7 @@ pub enum ReviewCmd {
     /// `export` is missing. Self-created paths (declared in `## Files`) are
     /// excluded. Output is single-line JSON; exit code is always 0
     /// (fail-open) — the orchestrator decides whether to block dispatch.
-    #[command(display_order = 26)]
+    #[command(display_order = 25)]
     DependencyPrecheck {
         /// Path to the spec file or its containing directory (resolves
         /// `<dir>/spec.md`).
@@ -51,7 +51,7 @@ pub enum ReviewCmd {
     /// integration.
     /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
     #[command(name = "gate-regression-check")]
-    #[command(display_order = 28)]
+    #[command(display_order = 27)]
     GateRegressionCheck {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -69,7 +69,7 @@ pub enum ReviewCmd {
         wave_dir: Option<String>,
     },
     /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
-    #[command(display_order = 29)]
+    #[command(display_order = 28)]
     QaRun {
         /// Spec name (resolved under `.claude/specs` or `.claude/spec` — flat layout).
         #[arg(long)]
@@ -79,7 +79,7 @@ pub enum ReviewCmd {
         format: String,
     },
     /// Record a REVIEW-phase verdict (emits a `review.result` event + metric).
-    #[command(display_order = 36)]
+    #[command(display_order = 35)]
     ReviewResult {
         /// Spec name.
         #[arg(long)]
@@ -95,7 +95,7 @@ pub enum ReviewCmd {
         subproject: Option<String>,
     },
     /// Scan a project tree for committed secrets + misconfigurations.
-    #[command(display_order = 38)]
+    #[command(display_order = 37)]
     SecurityScan {
         /// Directory to scan. Defaults to the current directory.
         dir: Option<String>,
@@ -109,7 +109,7 @@ pub enum ReviewCmd {
     /// ready for the LLM to consume. `--format table` prints a compact
     /// executive summary (title, author, scope, comments, review states).
     /// Fail-open: if `gh` is not in the PATH, emits `{"error":"gh-not-found"}`.
-    #[command(display_order = 53)]
+    #[command(display_order = 51)]
     ReviewPrefetch {
         /// PR reference: a number (`123`) or GitHub URL.
         pr_ref: Option<String>,
@@ -122,7 +122,7 @@ pub enum ReviewCmd {
     },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
-    #[command(display_order = 68)]
+    #[command(display_order = 66)]
     ReviewDispatch {
         /// PR number.
         #[arg(long)]

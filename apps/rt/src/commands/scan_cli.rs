@@ -66,7 +66,7 @@ pub enum ScanCmd {
     /// block's facts comment. Excludes the workspace-root unit. Fail-open: any
     /// IO error degrades to `[]` and exit 0.
     #[command(name = "scan-guards-list")]
-    #[command(display_order = 61)]
+    #[command(display_order = 59)]
     ScanGuardsList {
         /// Workspace root to walk. Defaults to the current directory.
         #[arg(long, default_value = ".")]
@@ -78,7 +78,7 @@ pub enum ScanCmd {
     /// flips to its non-pending form so a re-run of `scan-guards-list` skips
     /// it). Refuses the workspace-root `CLAUDE.md`.
     #[command(name = "scan-guards-apply")]
-    #[command(display_order = 62)]
+    #[command(display_order = 60)]
     ScanGuardsApply {
         /// Path to the subproject `CLAUDE.md` to enrich.
         #[arg(long)]
@@ -101,7 +101,7 @@ pub enum ScanCmd {
     /// `[{subproject, label, slug, moldPath, affix, exemplars, ...}]`. The mold
     /// twin of `scan-guards-list`. Fail-open: a missing/unparseable model → `[]`.
     #[command(name = "scan-patterns-list")]
-    #[command(display_order = 63)]
+    #[command(display_order = 61)]
     ScanPatternsList {
         /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
@@ -113,7 +113,7 @@ pub enum ScanCmd {
     /// `scan-guards-apply`; being a `run` command it sidesteps the
     /// background-isolation gate that blocks the orchestrator's own Write.
     #[command(name = "scan-patterns-apply")]
-    #[command(display_order = 64)]
+    #[command(display_order = 62)]
     ScanPatternsApply {
         /// Path to the mold `SKILL.md` to create.
         #[arg(long)]

@@ -31,7 +31,6 @@ pub mod agent;
 pub mod checklist;
 pub mod doctor;
 pub mod review;
-pub mod knowledge;
 pub mod economy;
 pub mod pipeline;
 pub mod event;
@@ -97,9 +96,6 @@ pub enum RunCmd {
     /// The git exit ritual of a delivered work unit.
     #[command(flatten)]
     Git(git_cli::GitCmd),
-    /// Agent memory (decisions, lessons, knowledge entries).
-    #[command(flatten)]
-    Knowledge(knowledge::cli::KnowledgeCmd),
     /// Installation maintenance: deps, validate, refresh, prune, (un)hook.
     #[command(flatten)]
     Maint(maint::cli::MaintCmd),
@@ -138,7 +134,6 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Economy(c) => economy::cli::dispatch(c),
         RunCmd::Event(c) => event::cli::dispatch(c),
         RunCmd::Git(c) => git_cli::dispatch(c),
-        RunCmd::Knowledge(c) => knowledge::cli::dispatch(c),
         RunCmd::Maint(c) => maint::cli::dispatch(c),
         RunCmd::Pipeline(c) => pipeline::cli::dispatch(c),
         RunCmd::Review(c) => review::cli::dispatch(c),

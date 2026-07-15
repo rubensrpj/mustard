@@ -29,9 +29,12 @@
 //! **read-only by design**: writes happen in the hooks, where session / wave /
 //! spec attribution is authentic; the MCP face exposes queries only. It
 //! exposes five tools (the same five as the TypeScript original), with the
-//! same input schemas and output shapes:
+//! same input schemas and output shapes (except `search_knowledge`, re-pointed
+//! at the event log when the markdown knowledge store was retired):
 //!
-//! - `search_knowledge`   — substring search over `.claude/knowledge/*.md`.
+//! - `search_knowledge`   — substring search over the `decision` / `lesson`
+//!   events in the per-spec NDJSON log; rows are `{ts, kind, title, body?,
+//!   spec?}` — the same shape the dashboard knowledge surface renders.
 //! - `query_events`       — filter the per-spec NDJSON event log by spec /
 //!   event / since.
 //! - `find_similar_specs` — rank specs by token overlap on a description.
@@ -43,7 +46,9 @@
 //!
 //! No SQLite. Every read is filesystem-backed:
 //!
-//! - knowledge → `.claude/knowledge/*.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
+//! - knowledge → `decision` / `lesson` events in the per-spec NDJSON log
+//!   (emitted at CLOSE via `run emit-event`; durable prose knowledge lives in
+//!   Claude Code native auto-memory, outside this server).
 //! - events    → `.claude/spec/<spec>/.events/*.ndjson` via [`mustard_core::EventReader`].
 //! - specs     → `.claude/spec/<spec>/spec.md` header walk (name + body).
 //! - metrics   → projected from events via the same NDJSON channel.
@@ -73,7 +78,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
-use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::{Event, EventReader};
@@ -135,7 +139,7 @@ fn resolve_project_dir() -> PathBuf {
 struct SearchKnowledgeArgs {
     /// Free-text query (non-empty). Substring match, case-insensitive.
     query: String,
-    /// Optional knowledge-kind filter: `pattern`, `convention`, or `entity`.
+    /// Optional kind filter: `decision` or `lesson`.
     #[serde(default)]
     r#type: Option<String>,
     /// Maximum rows to return (`1..=50`, default `10`).
@@ -202,14 +206,24 @@ struct GetRunSummaryArgs {
 // Output shapes — serialized to JSON text exactly like the TS `jsonResult`
 // ---------------------------------------------------------------------------
 
-/// One knowledge row in `search_knowledge` output.
+/// One knowledge row in `search_knowledge` output — a `decision` / `lesson`
+/// event projected to its salient fields.
 #[derive(Debug, Serialize)]
 struct KnowledgeOut {
-    id: String,
-    r#type: Option<String>,
-    name: Option<String>,
-    description: Option<String>,
-    confidence: Option<f64>,
+    /// Event timestamp (ISO-8601).
+    ts: String,
+    /// `decision` or `lesson`.
+    kind: String,
+    /// `payload.title` (decision) / `payload.takeaway` (lesson).
+    title: String,
+    /// `payload.rationale` (decision) / `payload.trigger` (lesson). Named
+    /// `body` so the MCP row and the dashboard knowledge surface stop
+    /// drifting on the same concept: `{ts, kind, title, body?, spec?}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    /// Owning spec, when the event was spec-attributed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spec: Option<String>,
 }
 
 /// One event row in `query_events` output. Mirrors the TS `EventRecord`.
@@ -327,13 +341,14 @@ impl MustardMemory {
         ClaudePaths::for_project(&self.project_dir).ok()
     }
 
-    /// Tool 1 — substring search past learnings / decisions / patterns.
+    /// Tool 1 — substring search over the recorded decisions / lessons.
     ///
-    /// Reads `.claude/knowledge/*.md` via `MarkdownStore::scan_dir`. The
-    /// optional `type` filter narrows by the frontmatter `kind` field. The
-    /// substring match is case-insensitive over `name + description + body`.
+    /// Reads the `decision` / `lesson` events from every per-spec NDJSON log
+    /// (the same channel `query_events` reads). The optional `type` filter
+    /// narrows to one kind; the substring match is case-insensitive over
+    /// `title + body`. Rows rank by match count, newest first on ties.
     #[tool(
-        description = "Substring search past learnings/decisions/patterns from .claude/knowledge/*.md"
+        description = "Substring search recorded decisions/lessons from the per-spec NDJSON event log"
     )]
     fn search_knowledge(
         &self,
@@ -343,35 +358,17 @@ impl MustardMemory {
         let Some(paths) = self.claude_paths() else {
             return json_result(&Vec::<KnowledgeOut>::new());
         };
-        let knowledge_dir = paths.claude_dir().join("knowledge");
-        let docs = MarkdownStore::scan_dir(&knowledge_dir);
-        let needle = args.query.to_lowercase();
-        let type_filter = args.r#type.as_deref();
-        let mut hits: Vec<(usize, KnowledgeOut)> = docs
-            .into_iter()
-            .filter_map(|doc| {
-                let row = doc_to_knowledge_out(&doc);
-                if let Some(t) = type_filter {
-                    if row.r#type.as_deref() != Some(t) {
-                        return None;
-                    }
+        let specs_root = paths.spec_dir();
+        let mut events: Vec<Event> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&specs_root) {
+            for entry in entries {
+                if !entry.path.is_dir() {
+                    continue;
                 }
-                let hay = format!(
-                    "{} {} {}",
-                    row.name.as_deref().unwrap_or(""),
-                    row.description.as_deref().unwrap_or(""),
-                    doc.body,
-                )
-                .to_lowercase();
-                if !hay.contains(&needle) {
-                    return None;
-                }
-                let score = hay.matches(&needle).count();
-                Some((score, row))
-            })
-            .collect();
-        hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-        let rows: Vec<KnowledgeOut> = hits.into_iter().take(limit).map(|(_, r)| r).collect();
+                collect_ndjson_under(&entry.path.join(".events"), &mut events);
+            }
+        }
+        let rows = knowledge_rows(events, &args.query, args.r#type.as_deref(), limit);
         json_result(&rows)
     }
 
@@ -652,32 +649,69 @@ impl ServerHandler for MustardMemory {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a `MarkdownDoc` to a `KnowledgeOut` row.
-fn doc_to_knowledge_out(doc: &MarkdownDoc) -> KnowledgeOut {
-    let fm = doc.frontmatter.as_ref();
-    let id = doc
-        .path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    KnowledgeOut {
-        id,
-        r#type: fm
-            .and_then(|f| f.get("kind"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        name: fm
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        description: fm
-            .and_then(|f| f.get("description"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        confidence: fm
-            .and_then(|f| f.get("confidence"))
-            .and_then(Value::as_f64),
+/// Project a `decision` / `lesson` event to a `KnowledgeOut` row. `None` for
+/// any other event kind or a row with no usable title.
+fn event_to_knowledge_out(ev: &Event) -> Option<KnowledgeOut> {
+    let kind = event_name(ev);
+    if kind != "decision" && kind != "lesson" {
+        return None;
     }
+    let (title_key, body_key) = if kind == "decision" {
+        ("title", "rationale")
+    } else {
+        ("takeaway", "trigger")
+    };
+    let title = ev
+        .payload
+        .get(title_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let body = ev
+        .payload
+        .get(body_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(KnowledgeOut {
+        ts: event_ts(ev),
+        kind: kind.to_string(),
+        title,
+        body,
+        spec: ev.raw.get("spec").and_then(Value::as_str).map(str::to_string),
+    })
+}
+
+/// Filter + rank the `decision` / `lesson` rows for `search_knowledge`.
+///
+/// Case-insensitive substring match of `query` over `title + body`;
+/// `type_filter` narrows to one kind. Rows rank by match count, newest first
+/// on ties, capped at `limit`. Pure — unit-tested without a server.
+fn knowledge_rows(
+    events: Vec<Event>,
+    query: &str,
+    type_filter: Option<&str>,
+    limit: usize,
+) -> Vec<KnowledgeOut> {
+    let needle = query.to_lowercase();
+    let mut hits: Vec<(usize, KnowledgeOut)> = events
+        .iter()
+        .filter_map(event_to_knowledge_out)
+        .filter(|row| type_filter.is_none_or(|t| row.kind == t))
+        .filter_map(|row| {
+            let hay = format!("{} {}", row.title, row.body.as_deref().unwrap_or(""))
+                .to_lowercase();
+            if needle.is_empty() || !hay.contains(&needle) {
+                return None;
+            }
+            let score = hay.matches(&needle).count();
+            Some((score, row))
+        })
+        .collect();
+    hits.sort_by(|(sa, ra), (sb, rb)| sb.cmp(sa).then_with(|| rb.ts.cmp(&ra.ts)));
+    hits.into_iter().take(limit).map(|(_, r)| r).collect()
 }
 
 /// Recursively collect `.ndjson` files under `dir` into `out`. Fail-open: a
@@ -777,7 +811,7 @@ fn missing_metrics(spec: &str) -> Value {
 
 
 // ---------------------------------------------------------------------------
-// Tests — `get_run_summary` consolidation onto the core economy reader
+// Tests — search_knowledge (event-backed) + `get_run_summary` consolidation
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -797,6 +831,53 @@ mod tests {
             .join(".events");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("seed.ndjson"), lines.join("\n")).unwrap();
+    }
+
+    /// Deserialize one NDJSON-shaped JSON value into an [`Event`].
+    fn event_from(value: serde_json::Value) -> Event {
+        serde_json::from_value(value).expect("valid event")
+    }
+
+    /// `search_knowledge` backend: decision/lesson events filter, rank by
+    /// match count (newest first on ties), and honor kind filter + limit.
+    #[test]
+    fn knowledge_rows_filters_and_ranks_decision_lesson_events() {
+        let events = vec![
+            event_from(json!({
+                "kind": "knowledge", "event": "decision", "ts": "2026-07-01T00:00:00.000Z",
+                "spec": "alpha",
+                "payload": { "title": "Use atomic writes for stores", "rationale": "torn writes corrupt state" },
+            })),
+            event_from(json!({
+                "kind": "knowledge", "event": "lesson", "ts": "2026-07-02T00:00:00.000Z",
+                "spec": "alpha",
+                "payload": { "trigger": "atomic rename failed on NFS", "takeaway": "atomic atomic writes need same-volume tempfiles" },
+            })),
+            event_from(json!({
+                "kind": "tool", "event": "tool.use", "ts": "2026-07-03T00:00:00.000Z",
+                "payload": { "tool": "Bash" },
+            })),
+        ];
+
+        // Substring match over title+body, both kinds; the lesson carries
+        // "atomic" three times (2x takeaway + 1x trigger) and outranks the
+        // decision (1x title + 1x rationale = 2).
+        let rows = knowledge_rows(events.clone(), "atomic", None, 10);
+        assert_eq!(rows.len(), 2, "tool.use is never a knowledge row");
+        assert_eq!(rows[0].kind, "lesson");
+        assert_eq!(rows[1].kind, "decision");
+        assert_eq!(rows[1].title, "Use atomic writes for stores");
+        assert_eq!(rows[1].body.as_deref(), Some("torn writes corrupt state"));
+        assert_eq!(rows[1].spec.as_deref(), Some("alpha"));
+
+        // Kind filter narrows to one event kind.
+        let decisions = knowledge_rows(events.clone(), "atomic", Some("decision"), 10);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].kind, "decision");
+
+        // Limit caps the rows; an unmatched needle yields nothing.
+        assert_eq!(knowledge_rows(events.clone(), "atomic", None, 1).len(), 1);
+        assert!(knowledge_rows(events, "no-such-term", None, 10).is_empty());
     }
 
     /// A `claude_code.token.usage` metric NDJSON line for one model + type.

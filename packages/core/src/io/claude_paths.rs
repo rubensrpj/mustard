@@ -33,8 +33,7 @@
 //! ├── .cache/
 //! │   ├── detect.json
 //! │   ├── scan-dispatch.json
-//! │   ├── knowledge-seen.json
-//! │   └── memory-seen.json
+//! │   └── knowledge-seen.json
 //! ├── .harness/
 //! ├── .metrics/
 //! ├── .agent-state/
@@ -168,6 +167,8 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "spec",
     "graph",
     "capabilities",
+    // Plan-mode plan files — `settings.json#plansDirectory` points here.
+    "plans",
 ];
 
 /// File names under `<root>/.claude/.cache/` that Mustard owns. Single source
@@ -176,7 +177,6 @@ const CACHE_FILES: &[&str] = &[
     "detect.json",
     "scan-dispatch.json",
     "knowledge-seen.json",
-    "memory-seen.json",
 ];
 
 impl ClaudePaths {
@@ -379,13 +379,6 @@ impl ClaudePaths {
     #[must_use]
     pub fn knowledge_seen_path(&self) -> PathBuf {
         self.cache_dir().join("knowledge-seen.json")
-    }
-
-    /// `<root>/.claude/.cache/memory-seen.json` — memory ingestion dedupe
-    /// marker.
-    #[must_use]
-    pub fn memory_seen_path(&self) -> PathBuf {
-        self.cache_dir().join("memory-seen.json")
     }
 
     // -- catalogs --------------------------------------------------------
@@ -774,20 +767,20 @@ mod tests {
             "spec",
             "graph",
             "capabilities",
+            "plans",
         ] {
             assert!(dirs.contains(&expected), "missing {expected} from documented_dirs");
         }
     }
 
     #[test]
-    fn cache_files_lists_four_caches() {
+    fn cache_files_lists_three_caches() {
         let files = ClaudePaths::cache_files();
-        assert_eq!(files.len(), 4);
+        assert_eq!(files.len(), 3);
         for expected in [
             "detect.json",
             "scan-dispatch.json",
             "knowledge-seen.json",
-            "memory-seen.json",
         ] {
             assert!(files.contains(&expected), "missing {expected} from cache_files");
         }

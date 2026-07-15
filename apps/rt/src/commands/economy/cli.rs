@@ -38,7 +38,7 @@ pub enum EconomyCmd {
         context_claude_md: Option<String>,
     },
     /// Render pipeline + hook telemetry (`collect` / `report` subcommand).
-    #[command(display_order = 31)]
+    #[command(display_order = 30)]
     Metrics {
         /// Subcommand: `collect` or `report`.
         subcommand: Option<String>,
@@ -56,7 +56,7 @@ pub enum EconomyCmd {
     /// invoked from CLI as `mustard-rt run metrics wave-status --spec <parent>`
     /// via argv pre-routing in `main.rs`.
     #[command(name = "metrics-wave-status")]
-    #[command(display_order = 32)]
+    #[command(display_order = 31)]
     MetricsWaveStatus {
         /// Parent (epic) spec name under `.claude/spec/` (flat layout).
         #[arg(long)]
@@ -70,7 +70,7 @@ pub enum EconomyCmd {
     /// telemetry writer (rows stamped with attribution at write time). Runs
     /// until a shutdown signal — the harness spawns it as a long-lived child
     /// via [`crate::hooks::session::session_start_inject`].
-    #[command(display_order = 39)]
+    #[command(display_order = 38)]
     OtelCollector,
     /// Stop the local OTEL collector for this project.
     ///
@@ -80,25 +80,10 @@ pub enum EconomyCmd {
     /// by port (not by the drift-prone PID file) is the reliable teardown. Used
     /// by `install.ps1` before a reinstall so the previous daemon releases its
     /// exclusive lock on `mustard-rt.exe`. Fully fail-open; never exits non-zero.
-    #[command(display_order = 40)]
+    #[command(display_order = 39)]
     OtelStop,
-    /// Watch `~/.claude/projects/**/*.jsonl` and re-ingest each session
-    /// transcript into telemetry.db's `run_usage` table on every change.
-    ///
-    /// Opt-in daemon (Wave 3 — economia-moat-unification) spawned by
-    /// [`crate::hooks::session::session_start_inject`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
-    /// Runs until process termination. With `--once`, performs a single
-    /// backfill sweep of the current cwd's transcript directory and exits.
-    #[command(display_order = 41)]
-    TranscriptWatcher {
-        /// Backfill mode: ingest every transcript currently in
-        /// `~/.claude/projects/<encoded(cwd)>/` once, then exit. Default `false`
-        /// (long-lived daemon).
-        #[arg(long)]
-        once: bool,
-    },
     /// End-to-end health check of the Mustard ↔ Claude Code OTEL pipeline.
-    #[command(display_order = 42)]
+    #[command(display_order = 40)]
     DiagnoseOtel {
         /// Emit the machine-readable JSON report.
         #[arg(long)]
@@ -136,7 +121,6 @@ pub fn dispatch(cmd: EconomyCmd) {
         }
         EconomyCmd::OtelCollector => economy::otel::collector::run(),
         EconomyCmd::OtelStop => economy::otel::stop::run(),
-        EconomyCmd::TranscriptWatcher { once } => economy::transcript_watcher::run(once),
         EconomyCmd::DiagnoseOtel {
             json,
             expect_rows_after,

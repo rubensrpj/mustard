@@ -7,22 +7,16 @@ import {
   fetchKnowledgeBrowse,
   fetchSearchKnowledge,
   fetchFriction,
-  type KnowledgeBrowseRow,
   type KnowledgeRow,
   type FrictionEntry,
 } from "@/lib/dashboard";
 import { Badge } from "@/components/ui/badge";
 import { KnowledgeCard } from "@/features/knowledge/KnowledgeCard";
-import {
-  KnowledgeBadge,
-  KIND_BADGE,
-  kindFromType,
-} from "@/features/knowledge/KnowledgeBadge";
+import { KnowledgeBadge, kindFromType } from "@/features/knowledge/KnowledgeBadge";
 import {
   SectionHeader,
   EmptyState,
   DataCard,
-  CollapsibleGroup,
   PageSurface,
   EditorialBand,
 } from "@/components/page";
@@ -30,78 +24,32 @@ import { relativeTime } from "@/lib/time";
 import { useT } from "@/lib/i18n";
 
 /**
- * Knowledge type → i18n key map. Only `convention` is rendered as
- * "CONVENTION" — and only for rows whose backend type is literally
- * `convention`. Friction signals (hook-retry, heavy pipeline) are NOT
- * knowledge: they come from a separate source (friction.json) and render in
- * their own section below.
+ * Knowledge kind → i18n label key. Rows are projected from the per-spec NDJSON
+ * event log and carry exactly two kinds: `decision` and `lesson`. Friction
+ * signals (hook-retry, heavy pipeline) are NOT knowledge: they come from a
+ * separate source (friction.json) and render in their own section below.
  */
-const TYPE_LABEL_KEYS: Record<string, string> = {
-  "entity-cluster": "knowledge.types.entityCluster",
-  "naming-pattern": "knowledge.types.namingPattern",
+const KIND_LABEL_KEYS: Record<string, string> = {
   decision: "knowledge.types.decision",
   lesson: "knowledge.types.lesson",
-  convention: "knowledge.types.convention",
-  pattern: "knowledge.types.pattern",
 };
 
-/** Sort order so "real knowledge" types lead and noisier ones trail. */
-const TYPE_ORDER = [
-  "decision",
-  "pattern",
-  "naming-pattern",
-  "entity-cluster",
-  "convention",
-  "lesson",
-];
-function typeRank(t: string): number {
-  const i = TYPE_ORDER.indexOf(t);
-  return i === -1 ? TYPE_ORDER.length : i;
+/** Sort order: decisions lead, lessons trail. */
+const KIND_ORDER = ["decision", "lesson"];
+function kindRank(k: string): number {
+  const i = KIND_ORDER.indexOf(k);
+  return i === -1 ? KIND_ORDER.length : i;
 }
-
-// Page-level alias of the kind→colour lookup from `KnowledgeBadge`, used to
-// theme container styles (not just inline badges) so the friction sub-section
-// frame stays consistent with the friction badge swatch.
-const typeColor = KIND_BADGE;
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-/**
- * Defensive friction classifier. A legacy `session-knowledge` extractor wrote
- * telemetry rows into `knowledge.json` with a knowledge `type` (`convention` /
- * `pattern`). We classify by the row's real nature — its `name` — not by the
- * stored type, so those rows never pollute "Padrões e decisões".
- */
-const FRICTION_NAME_PATTERNS = [/^heavy-pipeline-/, /^high-hook-retry-/, /\.metrics$/];
-function isFrictionEntry(row: KnowledgeBrowseRow): boolean {
-  return FRICTION_NAME_PATTERNS.some((re) => re.test(row.name));
-}
-
-/**
- * Normalize a legacy friction row from `knowledge.json` into the `FrictionEntry`
- * shape used by `friction.json`. Measured counts (`retry_count` / `api_calls`)
- * are not present on `KnowledgeRow`, so they are left null — never invented.
- */
-function toFrictionEntry(row: KnowledgeBrowseRow): FrictionEntry {
-  return {
-    name: row.name,
-    description: row.description,
-    source: row.source,
-    tags: [],
-    retry_count: null,
-    api_calls: null,
-    prescription: null,
-    updated_at: null,
-  };
-}
-
 export function Knowledge() {
   const t = useT();
-  const labelType = (typ: string): string => {
-    const key = TYPE_LABEL_KEYS[typ];
-    return key ? t(key) : typ;
+  const labelKind = (kind: string): string => {
+    const key = KIND_LABEL_KEYS[kind];
+    return key ? t(key) : kind;
   };
   const projectsRoot = useStore((s) => s.projectsRoot);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -124,10 +72,11 @@ export function Knowledge() {
   const trimmed = debouncedQuery.trim();
   const hasQuery = trimmed.length >= 2;
 
-  // Browse: all knowledge rows for the active workspace. Event-driven — the
-  // FS watcher invalidates ["knowledge-browse"] on NDJSON event-shard writes
-  // (kind "events") and on knowledge-file writes (kind "knowledge"), so the
-  // 10s poll is gone. staleTime + window-focus refetch remain as a safety net.
+  // Browse: decision/lesson rows projected from the per-spec NDJSON event
+  // log, already sorted ts desc by the backend. Event-driven — the FS watcher
+  // invalidates ["knowledge-browse"] on NDJSON event-shard writes (kind
+  // "events"), so there is no poll. staleTime + window-focus refetch remain
+  // as a safety net.
   const { data: browseRows, isLoading: browseLoading } = useQuery({
     queryKey: ["knowledge-browse", activeProject?.path],
     queryFn: () => fetchKnowledgeBrowse(activeProject!.path, 500),
@@ -136,7 +85,7 @@ export function Knowledge() {
     refetchOnWindowFocus: true,
   });
 
-  // Search: when query >= 2 chars. Event-driven via the same watcher kinds.
+  // Search: when query >= 2 chars. Event-driven via the same watcher kind.
   const { data: searchRows, isLoading: searchLoading } = useQuery({
     queryKey: ["knowledge-search", activeProject?.path, trimmed],
     queryFn: () => fetchSearchKnowledge(activeProject!.path, trimmed, 200),
@@ -156,54 +105,32 @@ export function Knowledge() {
     refetchInterval: 60_000,
   });
 
-  // Split browse rows by real nature: legacy friction telemetry written into
-  // knowledge.json (wrong type) is segregated from genuine reusable knowledge.
-  const realRows = useMemo<KnowledgeBrowseRow[]>(
-    () => (browseRows ?? []).filter((r) => !isFrictionEntry(r)),
-    [browseRows],
-  );
-  // Wave 5 fix (2026-05-20): the legacy `knowledge.json` extractor appended
-  // one row per friction event without deduplicating, so `high-hook-retry-*`
-  // and `heavy-pipeline-*` series produced 10+ visually identical rows.
-  // Dedup by `name` here at the read path — same shape, fewer rows. We keep
-  // whichever row has the most recent `updated_at` (lexicographic compare
-  // works for ISO-8601 strings; missing dates lose to present ones).
-  const legacyFriction = useMemo<FrictionEntry[]>(() => {
-    const byName = new Map<string, FrictionEntry>();
-    for (const row of browseRows ?? []) {
-      if (!isFrictionEntry(row)) continue;
-      const entry = toFrictionEntry(row);
-      const prev = byName.get(entry.name);
-      const newTs = entry.updated_at ?? "";
-      const oldTs = prev?.updated_at ?? "";
-      if (!prev || newTs > oldTs) {
-        byName.set(entry.name, entry);
-      }
-    }
-    return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [browseRows]);
+  const rows = useMemo<KnowledgeRow[]>(() => browseRows ?? [], [browseRows]);
 
-  // Instant in-memory refinement of the browse list when a query is typed.
-  const refinedBrowse = useMemo<KnowledgeBrowseRow[]>(() => {
-    if (!hasQuery) return realRows;
+  // Instant in-memory refinement of the browse list while the backend search
+  // is in flight — same fields the backend matches (title + body + spec).
+  const refinedBrowse = useMemo<KnowledgeRow[]>(() => {
+    if (!hasQuery) return rows;
     const q = trimmed.toLowerCase();
-    return realRows.filter(
+    return rows.filter(
       (r) =>
-        r.name.toLowerCase().includes(q) ||
-        r.description?.toLowerCase().includes(q) ||
-        r.type.toLowerCase().includes(q),
+        r.title.toLowerCase().includes(q) ||
+        (r.body ?? "").toLowerCase().includes(q) ||
+        (r.spec ?? "").toLowerCase().includes(q),
     );
-  }, [realRows, hasQuery, trimmed]);
+  }, [rows, hasQuery, trimmed]);
 
-  // Group browse results by type, real-knowledge types first.
-  const grouped = useMemo<[string, KnowledgeBrowseRow[]][]>(() => {
-    const source = hasQuery ? refinedBrowse : realRows;
-    const map = source.reduce<Record<string, KnowledgeBrowseRow[]>>((acc, row) => {
-      (acc[row.type] ??= []).push(row);
+  // Group browse results by kind, decisions first. Rows inside a group keep
+  // the backend's ts-desc order.
+  const grouped = useMemo<[string, KnowledgeRow[]][]>(() => {
+    // `refinedBrowse` already returns the full `rows` when there is no query,
+    // so it is the single source for both browse and in-flight-refine modes.
+    const map = refinedBrowse.reduce<Record<string, KnowledgeRow[]>>((acc, row) => {
+      (acc[row.kind] ??= []).push(row);
       return acc;
     }, {});
-    return Object.entries(map).sort(([a], [b]) => typeRank(a) - typeRank(b));
-  }, [realRows, refinedBrowse, hasQuery]);
+    return Object.entries(map).sort(([a], [b]) => kindRank(a) - kindRank(b));
+  }, [refinedBrowse]);
 
   const searchResults: KnowledgeRow[] = hasQuery
     ? (searchRows ?? refinedBrowse)
@@ -264,19 +191,29 @@ export function Knowledge() {
             <SectionHeader title={t("knowledge.section.results")} right={`${searchResults.length}`} />
             <DataCard padded>
               <ul className="flex flex-col gap-0.5 text-sm">
-                {searchResults.map((row) => (
+                {searchResults.map((row, i) => (
                   <li
-                    key={row.id}
+                    key={`${row.ts}-${i}`}
                     className="flex items-baseline gap-2 flex-wrap px-2 py-1.5 rounded hover:bg-muted/40"
                   >
                     <KnowledgeBadge
-                      kind={kindFromType(row.type)}
-                      label={labelType(row.type)}
+                      kind={kindFromType(row.kind)}
+                      label={labelKind(row.kind)}
                     />
-                    <span className="font-mono font-medium text-[13px]">{row.name}</span>
-                    {row.description && (
+                    <span className="font-mono font-medium text-[13px]">{row.title}</span>
+                    {row.spec && (
+                      <span className="text-[11px] font-mono text-muted-foreground">
+                        {row.spec}
+                      </span>
+                    )}
+                    {row.ts && (
+                      <span className="text-[11px] text-muted-foreground/60 ml-auto">
+                        {relativeTime(row.ts)}
+                      </span>
+                    )}
+                    {row.body && (
                       <span className="text-muted-foreground text-[12.5px] basis-full pl-1">
-                        {truncate(row.description, 160)}
+                        {truncate(row.body, 160)}
                       </span>
                     )}
                   </li>
@@ -293,7 +230,7 @@ export function Knowledge() {
             <SectionHeader
               title={t("knowledge.section.patterns.title")}
               description={t("knowledge.section.patterns.description")}
-              right={browseRows ? `${realRows.length}` : undefined}
+              right={browseRows ? `${rows.length}` : undefined}
             />
             {browseLoading ? (
               <ul className="flex flex-col gap-1">
@@ -301,7 +238,7 @@ export function Knowledge() {
                   <li key={i} className="h-8 bg-muted rounded animate-pulse" />
                 ))}
               </ul>
-            ) : realRows.length === 0 ? (
+            ) : rows.length === 0 ? (
               <EmptyState
                 title={t("knowledge.empty.noPatterns.title")}
                 description={
@@ -312,20 +249,20 @@ export function Knowledge() {
               />
             ) : (
               <div className="flex flex-col gap-6">
-                {grouped.map(([type, rows]) => (
-                  <div key={type} className="flex flex-col gap-2">
+                {grouped.map(([kind, kindRows]) => (
+                  <div key={kind} className="flex flex-col gap-2">
                     <div className="flex items-baseline gap-2">
                       <KnowledgeBadge
-                        kind={kindFromType(type)}
-                        label={labelType(type)}
+                        kind={kindFromType(kind)}
+                        label={labelKind(kind)}
                       />
                       <span className="text-[11px] font-mono text-muted-foreground/50">
-                        {rows.length}
+                        {kindRows.length}
                       </span>
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-                      {rows.map((row) => (
-                        <KnowledgeCard key={row.id} row={row} />
+                      {kindRows.map((row, i) => (
+                        <KnowledgeCard key={`${row.ts}-${i}`} row={row} />
                       ))}
                     </div>
                   </div>
@@ -335,14 +272,14 @@ export function Knowledge() {
           </section>
 
           {/* Atrito */}
-          <FrictionSection friction={friction} legacyFriction={legacyFriction} />
+          <FrictionSection friction={friction} />
         </div>
       )}
     </PageSurface>
   );
 }
 
-/** One friction row — measured signal or legacy telemetry. */
+/** One friction row — measured signal from friction.json. */
 function FrictionRow({ f }: { f: FrictionEntry }) {
   const t = useT();
   return (
@@ -393,70 +330,33 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
 }
 
 /**
- * Friction section — measured atrito, kept strictly separate from real
- * knowledge. Two sources feed it: `friction.json` (measured, prescriptive,
- * rare) and legacy telemetry rows that an old `session-knowledge` extractor
- * mis-wrote into `knowledge.json`. The legacy rows are collapsed by default
- * since they carry no measured counts — they are noise, not diagnosis.
+ * Friction section — measured atrito from `friction.json`, kept strictly
+ * separate from real knowledge. (The legacy telemetry rows an old extractor
+ * mis-wrote into the knowledge store died with that store — the event channel
+ * carries only genuine decision/lesson records.)
  */
-function FrictionSection({
-  friction,
-  legacyFriction,
-}: {
-  friction: FrictionEntry[] | undefined;
-  legacyFriction: FrictionEntry[];
-}) {
+function FrictionSection({ friction }: { friction: FrictionEntry[] | undefined }) {
   const t = useT();
   const measured = friction ?? [];
-  const total = measured.length + legacyFriction.length;
   return (
     <section className="flex flex-col gap-3">
       <SectionHeader
         title={t("knowledge.friction.title")}
         description={t("knowledge.friction.description")}
-        right={`${total}`}
+        right={`${measured.length}`}
       />
-      {total === 0 ? (
+      {measured.length === 0 ? (
         <EmptyState
           title={t("knowledge.friction.empty.title")}
           description={t("knowledge.friction.empty.description")}
         />
       ) : (
         <DataCard padded>
-          {measured.length > 0 && (
-            <ul className="flex flex-col divide-y divide-border">
-              {measured.map((f) => (
-                <FrictionRow key={f.name} f={f} />
-              ))}
-            </ul>
-          )}
-          {legacyFriction.length > 0 && (
-            <div
-              className={
-                "rounded bg-muted/30 p-3 mt-3 " +
-                typeColor.friction +
-                (measured.length > 0 ? " border-t" : "")
-              }
-            >
-              <div className="flex items-baseline gap-2 mb-2">
-                <KnowledgeBadge kind="friction" label={t("knowledge.friction.legacy.label")} />
-                <span className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
-                  {t("knowledge.friction.legacy.tag")}
-                </span>
-              </div>
-              <CollapsibleGroup
-                label={t("knowledge.friction.legacy.collapse")}
-                count={legacyFriction.length}
-                hint={t("knowledge.friction.legacy.hint")}
-              >
-                <ul className="flex flex-col divide-y divide-border mt-2">
-                  {legacyFriction.map((f) => (
-                    <FrictionRow key={f.name} f={f} />
-                  ))}
-                </ul>
-              </CollapsibleGroup>
-            </div>
-          )}
+          <ul className="flex flex-col divide-y divide-border">
+            {measured.map((f) => (
+              <FrictionRow key={f.name} f={f} />
+            ))}
+          </ul>
         </DataCard>
       )}
     </section>
