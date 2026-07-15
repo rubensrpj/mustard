@@ -1,21 +1,24 @@
-//! `mustard add` — install a community template into `.claude/`.
+//! `mustard add` — install a third-party community template into `.claude/`.
 //!
-//! Ported from `commands/add.ts`. A template is fetched from one of two
-//! sources, in order:
+//! This is the one install path the `mustard` plugin marketplace does NOT
+//! cover: an arbitrary third-party template published outside the marketplace.
+//! Skills are shipped by the plugin now — there is no `skill:` path here.
+//!
+//! A template is fetched from one of two sources, in order:
 //!
 //! 1. **GitHub** — `git clone --depth 1` of `mustard-templates/<name>`. Kept
 //!    as a `git` shell-out: cloning speaks the git smart-HTTP protocol, which
 //!    a plain HTTP client cannot drive.
-//! 2. **npm** — `mustard-template-<name>`, downloaded as a `.tgz` tarball.
-//!    The JS port shelled out to `npm pack`; the Rust port fetches the tarball
-//!    directly over HTTP (`ureq`) from the npm registry, then gunzips
-//!    (`flate2`) and untars (`tar`) it. npm packs into a `package/` subdir, so
-//!    that becomes the fetched root.
+//! 2. **npm** — `mustard-template-<name>`, downloaded as a `.tgz` tarball
+//!    directly over HTTP (`ureq`), then gunzipped (`flate2`) and untarred
+//!    (`tar`). npm packs into a `package/` subdir, so that becomes the fetched
+//!    root.
 //!
 //! Once fetched, a `mustard-template.json` manifest (or, absent one, the set
 //! of known `.claude/` subdirectories) drives the copy into `.claude/`.
 //! Existing files are skipped unless `--force`. Manifest `hooks_additions` are
-//! merged into `.claude/settings.json`.
+//! merged into `.claude/settings.json` (a template may still register a
+//! project-level hook alongside the plugin's).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,24 +73,18 @@ fn default_timeout() -> u64 {
 
 /// Run `mustard add <spec>` in `cwd`.
 ///
-/// `spec` may be:
+/// `spec` selects a third-party community template — the one install path the
+/// `mustard` plugin marketplace does not cover:
 ///
-/// - `"template:<name>"` — fetch a community template from GitHub or npm and
-///   copy it into `.claude/` (the legacy behavior).
-/// - `"skill:<name>"` — install a skill from the bundled extras under
-///   `templates-extras/skills/<name>/` into `.claude/skills/<name>/`. There is
-///   no remote skill fetch: a name outside the bundle is an error that points
-///   to the manual install path (copy the folder into `.claude/skills/`).
-/// - `"<name>"` (no prefix) — treated as `template:<name>` for backwards
-///   compatibility.
+/// - `"template:<name>"` — fetch `mustard-templates/<name>` (GitHub) or the npm
+///   package `mustard-template-<name>` and copy it into `.claude/`.
+/// - `"<name>"` (no prefix) — treated as `template:<name>`.
+///
+/// Skills are shipped by the `mustard` plugin now — there is no `skill:` path.
 pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> {
     let claude_dir = cwd.join(".claude");
     if !claude_dir.is_dir() {
         bail!("no .claude/ directory found - run `mustard init` first");
-    }
-
-    if let Some(name) = template_spec.strip_prefix("skill:") {
-        return install_skill(name, &claude_dir, options);
     }
 
     let name = template_spec.strip_prefix("template:").unwrap_or(template_spec);
@@ -110,94 +107,6 @@ pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> 
     println!("\nTemplate installed: {copied} file(s) copied, {skipped} skipped.");
     if skipped > 0 {
         println!("Use --force to overwrite existing files.");
-    }
-    Ok(())
-}
-
-/// Install a skill from the bundled extras.
-///
-/// Resolution: check `templates-extras/skills/<name>/` next to the bundled
-/// `templates/` payload and copy it into `.claude/skills/<name>/`. There is no
-/// other source — mustard ships no remote skill fetch — so any other name is
-/// an error telling the user to copy the skill into `.claude/skills/` manually.
-///
-/// Existing skills are preserved unless `--force`.
-fn install_skill(name: &str, claude_dir: &Path, options: &AddOptions) -> Result<()> {
-    validate_name(name)?;
-    println!("Installing skill: {name}");
-
-    let dest = claude_dir.join("skills").join(name);
-    if dest.exists() && !options.force {
-        bail!(
-            "skill already installed at {} — pass --force to overwrite",
-            dest.display(),
-        );
-    }
-
-    // Try bundled extras first — `templates-extras/skills/<name>/` lives next
-    // to the bundled `templates/` payload that `init` resolves.
-    if let Some(extras) = locate_bundled_extras() {
-        let src = extras.join("skills").join(name);
-        if src.is_dir() {
-            copy_dir_recursive(&src, &dest)?;
-            println!("  Installed from bundled extras: {}", dest.display());
-            return Ok(());
-        }
-    }
-
-    // Not bundled — and there is no remote skill fetch. Fail with the manual path.
-    bail!(
-        "skill \"{name}\" is not bundled with mustard (no skill source ships a \
-         remote fetch). Install it manually: copy the skill folder into {}.",
-        dest.display()
-    )
-}
-
-/// Locate `templates-extras/` next to the bundled `templates/` payload.
-///
-/// Mirrors `init::resolve_templates_dir`'s resolution order: env override →
-/// next to the executable → in-repo Cargo manifest. Returns `None` when no
-/// extras directory is found (the caller then fails with manual-install guidance).
-fn locate_bundled_extras() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("MUSTARD_TEMPLATES_DIR") {
-        let extras = Path::new(&dir).with_file_name("templates-extras");
-        if extras.is_dir() {
-            return Some(extras);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            for candidate in [
-                exe_dir.join("templates-extras"),
-                exe_dir.join("../templates-extras"),
-            ] {
-                if candidate.is_dir() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates-extras");
-    manifest.is_dir().then_some(manifest)
-}
-
-/// Recursively copy `src` into `dest`, creating directories as needed.
-/// Overwrites existing files (the `install_skill` caller has already enforced
-/// the `--force` policy).
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
-    mfs::create_dir_all(dest)
-        .with_context(|| format!("creating {}", dest.display()))?;
-    let Ok(entries) = mfs::read_dir(src) else {
-        return Ok(());
-    };
-    for entry in entries {
-        let from = entry.path;
-        let to = dest.join(&entry.file_name);
-        if entry.is_dir {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            copy_one(&from, &to)?;
-        }
     }
     Ok(())
 }
@@ -362,7 +271,6 @@ fn copy_files(
     }
     Ok((copied, skipped))
 }
-
 /// Copy a single file, creating its parent directory.
 fn copy_one(src: &Path, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {

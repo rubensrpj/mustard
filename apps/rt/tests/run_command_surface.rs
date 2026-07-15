@@ -16,7 +16,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 77 declared variants + `help`, which clap generates at build time.
+/// 76 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "adapt-cursor",
@@ -63,7 +63,6 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "plan-prepare",
     "qa-run",
     "rebuild-specs",
-    "refresh-claude",
     "rehook",
     "resume-bootstrap",
     "review-dispatch",

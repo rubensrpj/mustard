@@ -8,9 +8,10 @@
 //!   read `<path>/mustard.json` (the project-root config) and surface the
 //!   `version` stamp written by `mustard-cli init`.
 //!
-//! Update is NOT defined here. The native `mustard_update` command (see
-//! `lib.rs`) wraps `mustard_cli::update` without a sidecar process and is
-//! reused verbatim from the TS side.
+//! In-place refresh is no longer a dashboard command. Template and plugin
+//! content now ships through the `mustard` plugin marketplace, and re-seeding
+//! the local harness (settings, version stamp, plugin-enable) is `mustard init`
+//! - idempotent, a CLI/plugin concern the dashboard does not drive.
 //!
 //! `find_mustard_root()` is intentionally NOT used — the user-selected `path`
 //! is the target, not the dashboard's own scaffold root.

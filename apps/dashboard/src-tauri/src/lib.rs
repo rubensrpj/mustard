@@ -1423,17 +1423,6 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
     Ok(())
 }
 
-/// Refresh an existing Mustard install at `path` (B5 Wave 3).
-///
-/// Calls `mustard_cli::update` natively. `force: true` skips the confirmation
-/// prompt (there is no terminal in the GUI); the timestamped backup the CLI
-/// takes is never skipped.
-#[tauri::command]
-fn mustard_update(path: String) -> Result<(), String> {
-    let options = mustard_cli::UpdateOptions { force: true };
-    mustard_cli::update(std::path::Path::new(&path), &options).map_err(|e| format!("{e:#}"))
-}
-
 // ── Wave-2 per-spec rollup commands ──────────────────────────────────────────
 
 /// Wave 4 (2026-05-20) — these spec commands now delegate to
@@ -1761,7 +1750,6 @@ pub fn run() {
             dashboard_watch_repos, dashboard_active_pipelines,
             dashboard_read_env, dashboard_write_env,
             discover_projects,
-            mustard_update,
             projects::detect_project_mustard,
             projects::uninstall_mustard,
             artifact_update::artifact_update_check,

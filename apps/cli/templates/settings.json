@@ -3,10 +3,13 @@
   "respectGitignore": true,
   "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
-  "attribution": { "commit": "assistant", "pr": "assistant" },
-
-  "worktree": { "bgIsolation": "auto" },
-
+  "attribution": {
+    "commit": "assistant",
+    "pr": "assistant"
+  },
+  "worktree": {
+    "bgIsolation": "auto"
+  },
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
@@ -23,14 +26,6 @@
     "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
     "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
-
-  "mcpServers": {
-    "mustard-memory": {
-      "command": "mustard-mcp",
-      "args": []
-    }
-  },
-
   "permissions": {
     "allow": [
       "Read",
@@ -52,8 +47,7 @@
       "WebSearch",
       "Bash",
       "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)",
-      "Bash(mustard-rt run refresh-claude:*)"
+      "Bash(mustard-rt run qa-run:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",
@@ -132,114 +126,6 @@
       "Grep(**/Migrations/**)"
     ]
   },
-
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on PreToolUse",
-            "timeout": 310
-          }
-        ]
-      }
-    ],
-
-    "PostToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on PostToolUse",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SessionStart",
-            "statusMessage": "Initializing harness, memory, and budgets...",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-
-    "SessionEnd": [
-      {
-        "matcher": "prompt_input_exit|clear|other",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SessionEnd",
-            "statusMessage": "Extracting knowledge and cleaning state...",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SubagentStart",
-            "statusMessage": "Registering agent...",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SubagentStop",
-            "statusMessage": "Agent completed",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-
-    "UserPromptSubmit": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on UserPromptSubmit",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on Stop",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
-
   "statusLine": {
     "type": "command",
     "command": "mustard-rt run statusline",

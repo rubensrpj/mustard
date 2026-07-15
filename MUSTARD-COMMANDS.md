@@ -538,7 +538,7 @@ flowchart TD
 
 | Ação | Backend |
 |---|---|
-| `install <name>` | manual — `mustard add skill:<name>` (extras empacotados) ou cópia para `.claude/skills/<name>/` (sem fetch embutido) |
+| `install <name>` | manual — cópia para `.claude/skills/<name>/` (sem fetch embutido) |
 | `create <name>` | skill `skill-creator` (interativo) |
 | `list` | listagem manual de `.claude/skills/` (sem comando dedicado) |
 | `remove <name>` | apaga `.claude/skills/{name}/` (avisa se `source: scan`) |
@@ -548,7 +548,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     start(["/skill &lt;action&gt;"]) --> action{"action?"}
-    action -->|install| inst["manual: mustard add skill:&lt;name&gt; (extras)<br/>ou copiar para .claude/skills/&lt;name&gt;/<br/>→ source: manual"]
+    action -->|install| inst["manual: copiar para .claude/skills/&lt;name&gt;/<br/>→ source: manual"]
     action -->|create| create["skill-creator (interativo) → source: manual"]
     action -->|list| list["listagem manual de .claude/skills/"]
     action -->|remove| remove{"source: manual?"}
@@ -633,10 +633,10 @@ flowchart TD
 | `/status` | observabilidade | `status` | não |
 | `/stats` | observabilidade | `metrics collect/report`, `event-projections` | não |
 | `/knowledge` | conhecimento | `memory list/search/knowledge` | não |
-| `/skill` | skills | manual (`mustard add skill:<name>` p/ extras; sem backend `run`) | não |
+| `/skill` | skills | manual (copiar para `.claude/skills/`; sem backend `run`) | não |
 | `/unhook` | harness | `unhook` | não |
 | `/rehook` | harness | `rehook` | não |
 
 ---
 
-*Gerado a partir dos `SKILL.md` em `apps/cli/templates/commands/mustard/`. Quando um fluxo mudar, re-derive deste diretório — ele é a fonte da verdade.*
+*Gerado a partir dos comandos do plugin em `plugin/commands/`. Quando um fluxo mudar, re-derive deste diretório — ele é a fonte da verdade.*

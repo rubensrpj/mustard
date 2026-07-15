@@ -27,6 +27,10 @@ use mustard_rt::commands::RunCmd;
 /// must NOT be parked here — remove the registration instead. Kept sorted.
 const RUNTIME_WHITELIST: &[(&str, &str)] = &[
     (
+        "adapt-cursor",
+        "user-invoked .cursorrules generator (commands/maint/adapt_cursor.rs); its \n         only prose caller was the pre-2.0 `init --cursor` hint, dropped by the \n         thin-init rewrite; a maintenance escape hatch with no scripted caller",
+    ),
+    (
         "amend-finalize",
         "SessionEnd finalizes the amend window in-process \
          (hooks/session/session_cleanup_observer.rs); the CLI face is the \
@@ -226,6 +230,19 @@ fn reverse_prose_corpus(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     walk_files(&templates, &mut files);
     files.retain(|p| has_extension(p, &["md", "json"]));
+
+    // Mustard 2.0: the command/skill/ref callers moved from `apps/cli/templates`
+    // into the `plugin/` tree (init ships them via the plugin, not a copy). Walk
+    // it too so those `mustard-rt run <name>` instructions still count as product
+    // callers — otherwise every plugin-hosted command reads as dark surface.
+    let plugin = root.join("plugin");
+    if plugin.is_dir() {
+        let mut plugin_files = Vec::new();
+        walk_files(&plugin, &mut plugin_files);
+        plugin_files.retain(|p| has_extension(p, &["md", "json"]));
+        files.extend(plugin_files);
+    }
+
     let mut cli_sources = Vec::new();
     walk_files(&root.join("apps/cli/src"), &mut cli_sources);
     cli_sources.retain(|p| has_extension(p, &["rs"]));

@@ -2,54 +2,11 @@
   "schemaVersion": 1,
   "artifacts": [
     {
-      "id": "skill:karpathy-guidelines",
-      "category": "skill",
-      "source": { "kind": "git", "repo": "https://github.com/forrestchang/andrej-karpathy-skills", "subdir": "skills/karpathy-guidelines", "ref": "2c606141936f1eeef17fa3043a72095b4765b9c2" },
-      "version": "2c606141936f1eeef17fa3043a72095b4765b9c2",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/karpathy-guidelines",
-      "checksum": null
-    },
-    {
-      "id": "skill:karpathy-guidelines-detail",
-      "category": "skill",
-      "source": { "kind": "manual" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "skills/karpathy-guidelines-detail",
-      "checksum": null
-    },
-    {
-      "id": "skill:grill-with-docs",
-      "category": "skill",
-      "source": { "kind": "git", "repo": "https://github.com/mattpocock/skills", "subdir": "skills/engineering/grill-with-docs", "ref": "d54c497aa94400a496d3f2c38be10fa5f284c5a9" },
-      "version": "d54c497aa94400a496d3f2c38be10fa5f284c5a9",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/grill-with-docs",
-      "checksum": null
-    },
-    {
-      "id": "skill:diagnose",
-      "category": "skill",
-      "source": { "kind": "git", "repo": "https://github.com/mattpocock/skills", "subdir": "skills/engineering/diagnose", "ref": "d54c497aa94400a496d3f2c38be10fa5f284c5a9" },
-      "version": "d54c497aa94400a496d3f2c38be10fa5f284c5a9",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/diagnose",
-      "checksum": null
-    },
-    {
-      "id": "skill:improve-codebase-architecture",
-      "category": "skill",
-      "source": { "kind": "git", "repo": "https://github.com/mattpocock/skills", "subdir": "skills/engineering/improve-codebase-architecture", "ref": "d54c497aa94400a496d3f2c38be10fa5f284c5a9" },
-      "version": "d54c497aa94400a496d3f2c38be10fa5f284c5a9",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/improve-codebase-architecture",
-      "checksum": null
-    },
-    {
       "id": "skill:pipeline-execution",
       "category": "skill",
-      "source": { "kind": "manual" },
+      "source": {
+        "kind": "manual"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "skills/pipeline-execution",
@@ -58,7 +15,9 @@
     {
       "id": "ref:agent-prompt",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/agent-prompt",
@@ -67,7 +26,9 @@
     {
       "id": "ref:canonical-phases",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/canonical-phases.md",
@@ -76,7 +37,9 @@
     {
       "id": "ref:feature",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/feature",
@@ -85,7 +48,9 @@
     {
       "id": "ref:git",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/git",
@@ -94,7 +59,9 @@
     {
       "id": "ref:knowledge",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/knowledge",
@@ -103,7 +70,9 @@
     {
       "id": "ref:resume",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/resume",
@@ -112,7 +81,9 @@
     {
       "id": "ref:task",
       "category": "ref",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/task",
@@ -121,7 +92,9 @@
     {
       "id": "command:bugfix",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/bugfix",
@@ -130,7 +103,9 @@
     {
       "id": "command:close",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/close",
@@ -139,7 +114,9 @@
     {
       "id": "command:feature",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/feature",
@@ -148,7 +125,9 @@
     {
       "id": "command:git",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/git",
@@ -157,7 +136,9 @@
     {
       "id": "command:knowledge",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/knowledge",
@@ -166,7 +147,9 @@
     {
       "id": "command:maint",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/maint",
@@ -175,7 +158,9 @@
     {
       "id": "command:qa",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/qa",
@@ -184,7 +169,9 @@
     {
       "id": "command:review",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/review",
@@ -193,7 +180,9 @@
     {
       "id": "command:scan",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/scan",
@@ -202,7 +191,9 @@
     {
       "id": "command:skill",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/skill",
@@ -211,7 +202,9 @@
     {
       "id": "command:stats",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/stats",
@@ -220,7 +213,9 @@
     {
       "id": "command:status",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/status",
@@ -229,7 +224,9 @@
     {
       "id": "command:task",
       "category": "command",
-      "source": { "kind": "first-party" },
+      "source": {
+        "kind": "first-party"
+      },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/task",
@@ -238,7 +235,12 @@
     {
       "id": "tool:rtk",
       "category": "tool",
-      "source": { "kind": "git", "repo": "https://github.com/rtk-ai/rtk", "subdir": null, "ref": "develop" },
+      "source": {
+        "kind": "git",
+        "repo": "https://github.com/rtk-ai/rtk",
+        "subdir": null,
+        "ref": "develop"
+      },
       "version": "15a0d2e7d6e3f33442675f502ed8bc868710dfd6",
       "vendoredAt": "2026-05-19"
     }

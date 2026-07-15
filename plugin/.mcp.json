@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mustard-memory": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

@@ -66,7 +66,6 @@ import {
 import { useProjectDetections } from "@/hooks/useProjectDetections";
 import { useArtifactDrift } from "@/hooks/useArtifactDrift";
 import {
-  updateMustard,
   uninstallMustard,
   artifactUpdateApply,
   type ProjectDetection,
@@ -190,7 +189,7 @@ function ProjectTreeNode({
   const isMustardRepo = useIsMustardRepo(project.path);
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionPending, setActionPending] = useState<
-    "update" | "uninstall" | "artifacts" | null
+    "uninstall" | "artifacts" | null
   >(null);
 
   const staleCount = driftReport?.stale ?? 0;
@@ -203,7 +202,6 @@ function ProjectTreeNode({
 
   const kind = statusKind(isLoading, detection);
   const updateAvailable = kind === "updateAvailable";
-  const showUpdate = updateAvailable;
   const showUninstall = detection?.installed === true;
 
   const statusLabel =
@@ -237,22 +235,6 @@ function ProjectTreeNode({
 
   async function ensureActive() {
     if (!isActive) await activateProject(project.path);
-  }
-
-  async function runUpdate() {
-    setActionPending("update");
-    try {
-      await updateMustard(project.path);
-      toast.success(t("projects.toastUpdated", { name: project.name }));
-      await queryClient.invalidateQueries({
-        queryKey: ["project-detection", project.path],
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(t("projects.toastActionFailed", { msg }));
-    } finally {
-      setActionPending(null);
-    }
   }
 
   async function runUninstall() {
@@ -410,16 +392,6 @@ function ProjectTreeNode({
                 {t("artifact.updateAction")}
               </DropdownMenuItem>
             )}
-            {showUpdate && (
-              <DropdownMenuItem
-                onSelect={() => {
-                  setMenuOpen(false);
-                  void runUpdate();
-                }}
-              >
-                {t("sidebar.projectMenu.update")}
-              </DropdownMenuItem>
-            )}
             {showUninstall && (
               <DropdownMenuItem
                 onSelect={() => {
@@ -430,7 +402,7 @@ function ProjectTreeNode({
                 {t("sidebar.projectMenu.uninstall")}
               </DropdownMenuItem>
             )}
-            {(showArtifactUpdate || showUpdate || showUninstall) && (
+            {(showArtifactUpdate || showUninstall) && (
               <DropdownMenuSeparator />
             )}
             <DropdownMenuItem

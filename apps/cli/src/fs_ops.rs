@@ -1,4 +1,4 @@
-//! Filesystem primitives for `init`/`update`.
+//! Filesystem primitives for `init` (backup + `.github` copy) and `add`.
 //!
 //! - [`copy_dir`] — recursive directory copy, the engine behind
 //!   `templates/` → `.claude/`. It honours an *overwrite* flag (a fresh

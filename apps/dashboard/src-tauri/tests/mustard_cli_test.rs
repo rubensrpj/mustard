@@ -1,38 +1,37 @@
-//! Smoke test for the B5 Wave 3 Tauri integration.
+//! Smoke test for the dashboard `mustard-cli` path dependency (Mustard 2.0).
 //!
-//! The `mustard_update` Tauri command is a private wrapper around
-//! `mustard_cli::update`. This test exercises that same library API from the
-//! dashboard crate's test context — proving the `mustard-cli` path dependency
-//! is linked and the non-interactive install path runs to completion without
-//! a terminal.
+//! The dashboard links `mustard-cli` to reuse its library API natively (no
+//! sidecar process). This test drives `init` from the dashboard crate test
+//! context — proving the path dependency is linked and the non-interactive
+//! bootstrap runs to completion without a terminal. Because `init` is now
+//! idempotent (it subsumes the retired `mustard update`), a second run must
+//! re-seed an already-initialized project without error.
 
 use std::fs;
 
 use mustard_cli::commands::init::{InitOptions, init_with_templates};
-use mustard_cli::commands::update::{UpdateOptions, update_with_templates};
 
-/// Build a minimal fake `templates/` payload `init`/`update` can copy.
+/// Build a minimal fake `templates/` payload `init` can seed from. The thin
+/// Mustard 2.0 init reads only `CLAUDE.md`, `settings.json`, and `.gitignore`;
+/// the content payload (commands/skills/agents/refs) ships in the plugin now.
 fn fake_templates(root: &std::path::Path) -> std::path::PathBuf {
     let templates = root.join("templates");
-    fs::create_dir_all(templates.join("commands/mustard")).unwrap();
-    fs::create_dir_all(templates.join("hooks")).unwrap();
-    fs::create_dir_all(templates.join("skills")).unwrap();
-    fs::create_dir_all(templates.join("scripts")).unwrap();
-    fs::create_dir_all(templates.join("refs")).unwrap();
+    fs::create_dir_all(&templates).unwrap();
     fs::write(templates.join("CLAUDE.md"), "# rules").unwrap();
-    fs::write(templates.join("settings.json"), "{}").unwrap();
-    fs::write(templates.join("commands/mustard/feature.md"), "feature").unwrap();
+    fs::write(templates.join("settings.json"), r#"{"env":{"MUSTARD_TEST":"1"}}"#).unwrap();
+    fs::write(templates.join(".gitignore"), "spec/*/.events/
+").unwrap();
     templates
 }
 
 #[test]
-fn install_then_update_runs_non_interactively() {
+fn init_runs_non_interactively_and_is_idempotent() {
     let work = tempfile::tempdir().unwrap();
     let templates = fake_templates(work.path());
     let project = work.path().join("project");
     fs::create_dir_all(&project).unwrap();
 
-    // Non-interactive init: seed a project the update path can refresh.
+    // Non-interactive init: seed a fresh project the way the dashboard would.
     init_with_templates(
         &project,
         &templates,
@@ -45,12 +44,17 @@ fn install_then_update_runs_non_interactively() {
     assert!(project.join("mustard.json").exists(), "version stamp written at project root");
     assert!(!claude.join("mustard.json").exists(), "no .claude/mustard.json");
 
-    // What `mustard_update` does under the hood: forced, non-interactive update.
-    update_with_templates(&project, &templates, &UpdateOptions { force: true })
-        .expect("update should run without a terminal");
+    // Idempotent re-run — the job the retired `mustard update` used to do.
+    // Re-seeding an already-initialized project must succeed non-interactively.
+    init_with_templates(
+        &project,
+        &templates,
+        &InitOptions { force: true, yes: true, ..InitOptions::default() },
+    )
+    .expect("re-running init should re-seed without a terminal");
 
     assert!(
-        claude.join("commands/mustard/feature.md").exists(),
-        "core files refreshed by update",
+        claude.join("CLAUDE.md").exists(),
+        "core seed still present after the idempotent re-seed",
     );
 }

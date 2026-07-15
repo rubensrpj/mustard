@@ -180,6 +180,12 @@ pub fn run(opts: RehookOpts) {
         "{}",
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
     );
+
+    // Mustard 2.0 ships as a Claude Code plugin; the native toggle is the real
+    // on-switch now. This snapshot restore stays as the legacy fallback.
+    eprintln!();
+    eprintln!("Mustard now ships as a Claude Code plugin. Primary way to turn it back ON: claude plugin enable mustard");
+    eprintln!("The snapshot restore above is the legacy fallback for a settings.json that mustard-rt run unhook renamed.");
 }
 
 // ---------------------------------------------------------------------------

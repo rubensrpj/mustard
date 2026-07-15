@@ -2,11 +2,11 @@
 // `clippy::unwrap_used` is `deny` workspace-wide. Test modules are exempt so a
 // panicking assertion *is* a test failure (mirrors `mustard-core`).
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-//! `mustard-cli` — the Mustard command-line tool, ported from TypeScript.
+//! `mustard-cli` — the Mustard command-line tool.
 //!
-//! Mustard scaffolds the `.claude/` folder Claude Code projects need: prompts,
-//! commands, hooks, and rules. The JavaScript CLI ran under Bun; this crate is
-//! the native Rust port (epic B5).
+//! Mustard 2.0 scaffolds the thin `.claude/` bootstrap Claude Code projects
+//! need and enables the `mustard` plugin (which ships the commands, skills,
+//! agents, refs, and hooks). The heavy payload is no longer copied by the CLI.
 //!
 //! The crate ships **two faces**:
 //!
@@ -18,19 +18,16 @@
 //! Both faces share the same modules:
 //!
 //! - [`cli`] — `clap` argument parsing and the subcommand dispatch table.
-//! - [`commands`] — one module per subcommand (`init`, `update`, `config`,
-//!   `add`).
-//! - [`fs_ops`] — recursive directory copy and surgical JSON merge, shared by
-//!   `init` and `update`.
+//! - [`commands`] — one module per subcommand (`init`, `config`, `add`).
+//! - [`fs_ops`] — recursive directory copy and surgical JSON merge.
 
 pub mod cli;
 pub mod commands;
 pub mod fs_ops;
 
 pub use commands::init::{InitOptions, init};
-pub use commands::update::{UpdateOptions, update};
 
-/// The version stamped into `mustard.json` by `init`/`update`.
+/// The version stamped into `mustard.json` by `init`.
 ///
 /// Sourced from this crate's `Cargo.toml` at compile time so the package
 /// version is the single source of truth — no `package.json` lookup, no

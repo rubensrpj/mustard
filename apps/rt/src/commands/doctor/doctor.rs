@@ -12,8 +12,8 @@
 //! - **residue** (`--residue` only) — scan `settings.json`, SKILL.md files,
 //!   and refs for mentions of paths/commands that no longer exist (dead `.js`
 //!   names, `scripts/` entries with no resolvable target). WARN per hit.
-//! - **drift** — compare by hash the folders that `mustard-cli update`
-//!   regenerates (`CORE_FOLDERS`) between the installed `.claude/` and the
+//! - **drift** — compare by hash the folders a fresh payload owns
+//!   (`CORE_FOLDERS`) between the installed `.claude/` and the
 //!   `templates/` source. Degrades to `skip` when `templates/` is not
 //!   reachable from cwd (consumer project).
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
@@ -112,8 +112,10 @@ fn known_run_subcommands() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// The Mustard-owned folders that `mustard-cli update` regenerates.
-/// Derived from the `CORE_FOLDERS` constant in `apps/cli/src/commands/update.rs`.
+/// The Mustard-owned folders the drift check compares against `templates/`.
+/// They historically shipped in the payload; in Mustard 2.0 they move to the
+/// plugin, so the check degrades to a no-op where they are absent. Re-seed the
+/// harness with `mustard init` (idempotent).
 const CORE_FOLDERS: &[&str] = &["commands/mustard", "hooks", "skills", "scripts", "refs"];
 
 // ---------------------------------------------------------------------------
@@ -331,7 +333,7 @@ fn check_drift(claude_dir: &Path) -> CheckResult {
         let source_hash = hash_directory(&source);
 
         if installed_hash != source_hash {
-            drifted.push(format!("{folder}: differs from templates/ (run `mustard update`)"));
+            drifted.push(format!("{folder}: differs from templates/ (run `mustard init`)"));
         }
     }
 

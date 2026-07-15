@@ -131,30 +131,9 @@ pub enum MaintCmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Refresh stale `.claude/` installs after edits in `apps/cli/templates/`.
-    ///
-    /// Walks `apps/cli/templates/{refs,commands/mustard,skills}/**`, SHA-256
-    /// compares each source against the consumer `.claude/<sub>/`, and copies
-    /// divergent files. Generated artefacts (`grain.model.json`, caches)
-    /// and volatile state dirs are excluded. Emits `{copied, skipped,
-    /// conflicts, errors}` JSON. Fail-open; exit code is always 0.
-    #[command(name = "refresh-claude")]
-    #[command(display_order = 71)]
-    RefreshClaude {
-        /// Target consumer directory (the project whose `.claude/` to refresh).
-        /// Defaults to the current working directory.
-        #[arg(long)]
-        target: Option<PathBuf>,
-        /// Preview only — compare and report, but do NOT write any files.
-        #[arg(long)]
-        dry_run: bool,
-        /// Override the templates source directory (defaults to auto-discovery).
-        #[arg(long = "templates-dir")]
-        templates_dir: Option<PathBuf>,
-    },
     /// W5.T5.7a — Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 72)]
+    #[command(display_order = 71)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -162,7 +141,7 @@ pub enum MaintCmd {
     },
     /// W5.T5.7b — Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 73)]
+    #[command(display_order = 72)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -217,13 +196,6 @@ pub fn dispatch(cmd: MaintCmd) {
         }
         MaintCmd::AdaptCursor { repo, dry_run } => {
             maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });
-        }
-        MaintCmd::RefreshClaude { target, dry_run, templates_dir } => {
-            maint::refresh_claude::run(maint::refresh_claude::RefreshClaudeOpts {
-                target,
-                dry_run,
-                templates_dir,
-            });
         }
         MaintCmd::MaintDeps { dry_run } => {
             maint::maint_deps::run(maint::maint_deps::MaintDepsOpts { dry_run });

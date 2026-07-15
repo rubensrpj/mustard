@@ -2,7 +2,7 @@
 //! conforming to [`mustard_core::domain::spec::contract`].
 //!
 //! Replaces the ~80 lines of literal-template boilerplate that lived inline in
-//! `apps/cli/templates/commands/mustard/feature/SKILL.md` (W6 will remove the
+//! `plugin/commands/feature.md` (W6 will remove the
 //! literal block from that SKILL.md once this subcommand is in place).
 //!
 //! ## CLI shape
