@@ -144,3 +144,24 @@ case_sensitive_file_extension_comparisons = "allow"
 # it crate-wide. Clippy already exempts `#[cfg(test)]` code from this lint, so
 # test modules may still use `.unwrap()`.
 unwrap_used = "deny"
+
+# The shipped binaries (`mustard-rt`, `scan`) run on every tool call and every
+# scan. A tuned release profile shrinks the image the OS maps per hook spawn —
+# the dominant per-invocation cost — for free. NOTE: `panic = "abort"` is
+# deliberately NOT set — `ast/loader.rs::load_config` relies on `catch_unwind`
+# to degrade when `tree-sitter-loader`'s `Config::initial()` panics on a
+# missing home dir (containers/CI); aborting there would break the fail-open
+# contract. `strip`+`lto`+`codegen-units` capture the size win without it.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+# Faster incremental link + smaller debug artifact for the dev loop. Line-table
+# debuginfo keeps backtraces useful; optimizing deps (not our crates) cuts the
+# cold-build tail without slowing our own recompiles.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 1

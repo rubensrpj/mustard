@@ -518,7 +518,7 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
 /// as unknown.
 fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     // Cascade override: load the project config once and read gates.boundary.
-    let gates = mustard_core::ProjectConfig::load(Path::new(cwd)).gates;
+    let gates = crate::shared::context::project_config_cached(Path::new(cwd)).gates;
     let mode = boundary_mode(gates.boundary.as_deref());
     if mode == BoundaryMode::Off {
         return None;

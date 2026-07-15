@@ -147,8 +147,45 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// One-shot research bundle for the `feature` flow: parse the model ONCE and
+    /// return the per-query digest, the full domain-term index (the non-strong
+    /// vocabulary menu) and the personalized-PageRank pool — the three
+    /// projections `feature` used to fetch with three separate spawns, each
+    /// re-parsing the model. `--query` carries the digest terms, `--rank-query`
+    /// the expanded rank query, `--dict` the dictionary sidecar (rank is SKIPPED
+    /// when the dict is absent, matching the fail-open gate the caller applies —
+    /// an absent dict must yield an empty rank, never a direct-seeded one).
+    /// Byte-stable JSON `{digest, terms, rank}`; `rank` is the pool at `--top`.
+    FeatureBundle {
+        path: PathBuf,
+        /// Comma/space-separated digest query terms (the `digest --query` input).
+        #[arg(long, default_value = "")]
+        query: String,
+        /// The `grain.dictionary.json` sidecar; rank is skipped when it is absent.
+        #[arg(long)]
+        dict: PathBuf,
+        /// The expanded rank query (raw intent + equivalence tokens) for PageRank.
+        #[arg(long, default_value = "")]
+        rank_query: String,
+        /// Rank pool depth; the caller derives the top-10 insumos list from this.
+        #[arg(long, default_value_t = 25)]
+        top: usize,
+        /// Direct identifier-match floor multiplier (the `rank` --direct-base).
+        #[arg(long, default_value_t = 100_000)]
+        direct_base: u64,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
+/// The `feature-bundle` output — the three projections `feature` consumes,
+/// serialized together from ONE model parse (borrowed, so nothing is cloned).
+#[derive(serde::Serialize)]
+struct FeatureBundleOut<'a> {
+    digest: &'a digest::QueryResult,
+    terms: &'a [digest::TermD],
+    rank: &'a [pagerank::ScoredFile],
+}
 
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
 fn load_model(path: &Path) -> Result<ProjectModel> {
@@ -250,6 +287,39 @@ fn main() -> Result<()> {
                 Some(p) => {
                     std::fs::write(&p, &json)?;
                     println!("rank written to {} ({} bytes)", p.display(), json.len());
+                }
+                None => println!("{json}"),
+            }
+        }
+        Command::FeatureBundle { path, query, dict, rank_query, top, direct_base, out } => {
+            let model = load_model(&path)?;
+            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let digest = digest::query(&model, &terms);
+            // The full domain-term index (the non-strong vocabulary menu) from the
+            // SAME parsed model — so `feature` never spawns a second `digest`.
+            let full = digest::build(&model);
+            // Rank pool: SKIPPED when the dictionary is absent (the fail-open gate
+            // the caller applies — an absent dict must yield an empty rank, never a
+            // direct-seeded one). Present -> personalized PageRank at `top` depth
+            // with the SAME config `rank` uses (only top + direct_base overridden),
+            // so the pool, and its top-10 prefix (the insumos list), is byte-
+            // identical to the two `rank` spawns it replaces.
+            let rank: Vec<pagerank::ScoredFile> = if dict.is_file() {
+                let dictionary: dictionary::Dictionary =
+                    std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+                let rank_terms: Vec<String> =
+                    rank_query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let cfg = pagerank::RankConfig { top, direct_base_x1024: direct_base, ..Default::default() };
+                pagerank::rank(&model, &dictionary, &rank_terms, &cfg).files
+            } else {
+                Vec::new()
+            };
+            let bundle = FeatureBundleOut { digest: &digest, terms: &full.terms, rank: &rank };
+            let json = serde_json::to_string_pretty(&bundle)?;
+            match out {
+                Some(p) => {
+                    std::fs::write(&p, &json)?;
+                    println!("bundle written to {} ({} bytes)", p.display(), json.len());
                 }
                 None => println!("{json}"),
             }

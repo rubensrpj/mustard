@@ -551,15 +551,35 @@ struct ParsedStep {
 }
 
 fn parse_step(step: &str) -> ParsedStep {
-    let role = cap(r"\*\*(.+?)\*\*", step);
-    let folder = cap(r" em `([^`]+?)`", step);
-    let example = cap(r"ex\.: `([^`]+?)`", step);
-    let model = cap(r"modelado em `([^`]+?)`", step);
+    let [role_re, folder_re, example_re, model_re] = step_regexes();
+    let role = cap(role_re, step);
+    let folder = cap(folder_re, step);
+    let example = cap(example_re, step);
+    let model = cap(model_re, step);
     ParsedStep { role, folder, example, model, optional: step.contains("opcional") }
 }
 
-fn cap(pat: &str, text: &str) -> String {
-    Regex::new(pat).ok().and_then(|re| re.captures(text)).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()).unwrap_or_default()
+/// The four step-line field regexes, compiled ONCE (the OnceLock pattern the
+/// rest of scan uses for embedded data) instead of on every `parse_step` call —
+/// the spec compiler parses one line per role per convention. The patterns are
+/// hardcoded and valid, so a compile failure is a programmer error caught by any
+/// test run (same contract as `digest::stopwords` over stopwords.toml).
+fn step_regexes() -> &'static [Regex; 4] {
+    static RES: std::sync::OnceLock<[Regex; 4]> = std::sync::OnceLock::new();
+    RES.get_or_init(|| {
+        [
+            Regex::new(r"\*\*(.+?)\*\*").expect("step role regex"),
+            Regex::new(r" em `([^`]+?)`").expect("step folder regex"),
+            Regex::new(r"ex\.: `([^`]+?)`").expect("step example regex"),
+            Regex::new(r"modelado em `([^`]+?)`").expect("step model regex"),
+        ]
+    })
+}
+
+/// First capture group of `re` in `text`, empty when it does not match. The
+/// regex is precompiled (see [`step_regexes`]).
+fn cap(re: &Regex, text: &str) -> String {
+    re.captures(text).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()).unwrap_or_default()
 }
 
 // --- helpers ---------------------------------------------------------------

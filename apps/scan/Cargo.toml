@@ -25,6 +25,12 @@ globset = "0.4"
 petgraph = "0.8"
 regex = "1"
 anyhow = "1"
+# Data-parallelism for the O(n^2) Jaccard clustering pass in mine.rs: the outer
+# loop's read-only similarity probes fan out via rayon par_iter; merge-pairs are
+# collected, sorted, then applied to union-find SERIALLY so the model stays
+# byte-identical. Uses the workspace pin (already in Cargo.lock; mustard-core sits
+# on the same line), so no new version resolves.
+rayon = { workspace = true }
 # Reads the external manifest registry (manifests.toml) at runtime — build-system
 # detection is data, not a hardcoded list of filenames. The 1.x line matches
 # mustard-core's pin; the `toml::Value` read surface is unchanged from 0.8.

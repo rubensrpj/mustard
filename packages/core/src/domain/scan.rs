@@ -389,6 +389,37 @@ struct RankOut {
     files: Vec<RankFile>,
 }
 
+/// The one-shot `feature-bundle` payload — the digest, the full domain-term
+/// index (the non-strong vocabulary menu) and the personalized-PageRank pool,
+/// all from ONE `scan` spawn / ONE model parse. Replaces the digest_query +
+/// digest + rank + rank_detail spawn fan-out `feature` used to do (each of which
+/// re-parsed the whole model).
+#[derive(Debug, Clone)]
+pub struct FeatureBundle {
+    /// The per-query digest (the shape [`Scan::digest_query`] returns).
+    pub digest: DigestQuery,
+    /// The FULL domain-term index (same as [`Scan::digest`]'s `terms`) — the
+    /// non-strong `vocabulary` menu.
+    pub terms: Vec<DigestTerm>,
+    /// The personalized-PageRank pool at the requested depth WITH per-file term
+    /// evidence (the rows [`Scan::rank_detail`] returns); its top-10 file prefix
+    /// is the insumos list [`Scan::rank`] returned. Empty when the dictionary is
+    /// absent (the fail-open gate).
+    pub rank: Vec<RankFile>,
+}
+
+/// Wire shape of the `feature-bundle` stdout (`{digest, terms, rank}`). Mustard
+/// owns its own view and normalises the rank file separators on the way in — the
+/// same fold [`parse_rank_detail`] applies.
+#[derive(Deserialize)]
+struct FeatureBundleWire {
+    digest: DigestQuery,
+    #[serde(default)]
+    terms: Vec<DigestTerm>,
+    #[serde(default)]
+    rank: Vec<RankFile>,
+}
+
 /// Project a `scan rank` stdout into the ordered file list, tolerating any
 /// non-JSON preamble (parse from the first `{`, the same rule the benchmark
 /// harness used) and normalising separators to `/` for stable fusion keys.
@@ -510,6 +541,27 @@ impl Scan {
         parse_rank_detail(&out)
     }
 
+    /// Fetch the one-shot [`FeatureBundle`] (`scan feature-bundle`): the digest,
+    /// the full term index and the rank pool from ONE spawn / ONE model parse —
+    /// the collapse of the digest_query + digest + rank + rank_detail fan-out.
+    /// `query_terms` are the digest terms, `rank_query` the expanded rank query,
+    /// `dict` the dictionary sidecar (the rank pool is empty when it is absent).
+    /// `top` is the pool depth (the insumos list is its top-10 prefix). Rank file
+    /// separators are normalised to `/` on the way in.
+    ///
+    /// # Errors
+    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
+    /// [`Error::Parse`] if the output is not the expected JSON.
+    pub fn feature_bundle(&self, model: &Path, dict: &Path, query_terms: &[String], rank_query: &str, top: usize, direct_base: u64) -> Result<FeatureBundle> {
+        let out = self.run(&feature_bundle_args(model, dict, query_terms, rank_query, top, direct_base))?;
+        let json = out.find('{').map_or(out.as_str(), |i| &out[i..]);
+        let mut wire: FeatureBundleWire = serde_json::from_str(json)?;
+        for r in &mut wire.rank {
+            r.file = r.file.replace('\\', "/");
+        }
+        Ok(FeatureBundle { digest: wire.digest, terms: wire.terms, rank: wire.rank })
+    }
+
     /// Compile the deterministic spec draft for `req` (`grain spec`). Returns the
     /// Markdown verbatim (English — the lapidation step localizes per mustard.json).
     ///
@@ -567,6 +619,23 @@ fn rank_args(model: &Path, dict: &Path, query: &str, top: usize, direct_base: u6
         dict.to_string_lossy().into_owned(),
         "--query".to_string(),
         query.to_string(),
+        "--top".to_string(),
+        top.to_string(),
+        "--direct-base".to_string(),
+        direct_base.to_string(),
+    ]
+}
+
+fn feature_bundle_args(model: &Path, dict: &Path, query_terms: &[String], rank_query: &str, top: usize, direct_base: u64) -> Vec<String> {
+    vec![
+        "feature-bundle".to_string(),
+        model.to_string_lossy().into_owned(),
+        "--dict".to_string(),
+        dict.to_string_lossy().into_owned(),
+        "--query".to_string(),
+        query_terms.join(","),
+        "--rank-query".to_string(),
+        rank_query.to_string(),
         "--top".to_string(),
         top.to_string(),
         "--direct-base".to_string(),
@@ -637,6 +706,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn feature_bundle_args_shape() {
+        let a = feature_bundle_args(
+            &PathBuf::from("m.json"),
+            &PathBuf::from("d.json"),
+            &["spec".into(), "pipeline".into()],
+            "spec pipeline reconciliation",
+            25,
+            100_000,
+        );
+        assert_eq!(
+            a,
+            vec![
+                "feature-bundle", "m.json", "--dict", "d.json", "--query", "spec,pipeline",
+                "--rank-query", "spec pipeline reconciliation", "--top", "25",
+                "--direct-base", "100000",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_bundle_wire_deserializes_all_three_parts() {
+        // The bundle collapses digest_query + digest + rank_detail into one
+        // `{digest, terms, rank}` payload. The wire view deserializes each part
+        // into Mustard's own mirror; the rank rows keep {file, terms} and ignore
+        // the tool score field. Separator normalisation happens in the method.
+        let json = r#"{
+            "digest":{"query":["spec"],"files":["src/a.rs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"strong","terms":[]}},
+            "terms":[{"term":"spec","count":9,"specificity_x1024":100,"samples":["src/a.rs"]}],
+            "rank":[{"file":"src/a.rs","score_x1024":42,"terms":["spec"]},
+                    {"file":"src/b.rs","score_x1024":7}]
+        }"#;
+        let wire: FeatureBundleWire = serde_json::from_str(json).expect("bundle json");
+        assert_eq!(wire.digest.report.reason, "strong");
+        assert_eq!(wire.digest.files, vec!["src/a.rs"]);
+        assert_eq!(wire.terms.len(), 1);
+        assert_eq!(wire.terms[0].term, "spec");
+        assert_eq!(wire.terms[0].count, 9);
+        assert_eq!(wire.rank.len(), 2);
+        assert_eq!(wire.rank[0].file, "src/a.rs");
+        assert_eq!(wire.rank[0].terms, vec!["spec"]);
+        assert!(wire.rank[1].terms.is_empty(), "older/absent terms default empty");
+    }
     #[test]
     fn parse_rank_files_tolerates_preamble_and_normalises_separators() {
         // The benchmark-harness rule: parse from the first `{` (a tool warning

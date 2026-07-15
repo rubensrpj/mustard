@@ -245,7 +245,7 @@ impl Check for WorkBranchGate {
 
         // VCS binary policy: default `git`; an explicit `""` opt-out (or a
         // non-git tree) means we cannot branch and there is nothing to guard.
-        let config = ProjectConfig::load(Path::new(&project));
+        let config = crate::shared::context::project_config_cached(Path::new(&project));
         let Some(vcs) = config.vcs() else {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);

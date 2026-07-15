@@ -931,7 +931,7 @@ impl CloseGateModes {
     /// The project config is loaded once here; only `checklist` carries a
     /// `gates.*` override field today, so the other three resolve env-only.
     fn resolve(cwd: &str) -> Self {
-        let gates = mustard_core::ProjectConfig::load(Path::new(cwd)).gates;
+        let gates = crate::shared::context::project_config_cached(Path::new(cwd)).gates;
         Self {
             close: resolve_mode("MUSTARD_CLOSE_GATE_MODE", None),
             debt: resolve_mode("MUSTARD_DEBT_GATE_MODE", None),
@@ -1259,7 +1259,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
     // file is missing/unreadable). Each stage already skips on an absent command,
     // and the `stages.is_empty()` check below fail-open skips when none are set —
     // preserving the old "no mustard.json → Allow" semantics.
-    let cmds = mustard_core::ProjectConfig::load(Path::new(cwd)).commands();
+    let cmds = crate::shared::context::project_config_cached(Path::new(cwd)).commands();
     let stages: Vec<(&str, String)> = [
         ("build", cmds.build),
         ("type", cmds.type_check),

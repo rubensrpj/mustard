@@ -798,7 +798,7 @@ impl Check for SizeGate {
         // and read `gates.<field>` for the modes that support a mustard.json
         // override (spec_size, skill_size).
         let cwd = ctx.project_dir_or_cwd(input);
-        let gates = mustard_core::ProjectConfig::load(std::path::Path::new(&cwd)).gates;
+        let gates = crate::shared::context::project_config_cached(std::path::Path::new(&cwd)).gates;
 
         let mut warnings: Vec<String> = Vec::new();
 

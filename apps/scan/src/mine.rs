@@ -15,6 +15,7 @@
 
 use crate::model::{CodeExample, Convention, Decl, Exemplar, Module, RoleStat};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use rayon::prelude::*;
 
 /// An affix must pair with at least this many distinct entities to be a role.
 const MIN_ROLE_PARTNERS: usize = 2;
@@ -297,15 +298,28 @@ pub fn mine(
         .collect();
     members.sort(); // determinism: HashMap iteration order is not stable across runs
 
-    let mut uf = UnionFind::new(members.len());
-    for i in 0..members.len() {
-        for j in (i + 1)..members.len() {
-            let a = &entity_roles[&members[i]];
-            let b = &entity_roles[&members[j]];
-            if jaccard(a, b) >= JACCARD_MERGE {
-                uf.union(i, j);
-            }
-        }
+    // Merge-pair discovery is the O(n^2) hot loop: every entity pair's role-set
+    // Jaccard is probed. The probe is READ-ONLY (no shared mutation), so the outer
+    // index fans out over rayon; each `i` yields its qualifying `(i, j)` pairs. They
+    // are then SORTED and applied to union-find SERIALLY in the exact (i asc, j asc)
+    // order the sequential nested loop used — so the union sequence, the component
+    // roots and therefore the model bytes are byte-identical.
+    let n_members = members.len();
+    let roles_ref = &entity_roles;
+    let members_ref = &members;
+    let mut merge_pairs: Vec<(usize, usize)> = (0..n_members)
+        .into_par_iter()
+        .flat_map_iter(move |i| {
+            ((i + 1)..n_members).filter_map(move |j| {
+                (jaccard(&roles_ref[&members_ref[i]], &roles_ref[&members_ref[j]]) >= JACCARD_MERGE)
+                    .then_some((i, j))
+            })
+        })
+        .collect();
+    merge_pairs.sort_unstable();
+    let mut uf = UnionFind::new(n_members);
+    for (i, j) in merge_pairs {
+        uf.union(i, j);
     }
     let mut clusters: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     for (i, m) in members.iter().enumerate() {
