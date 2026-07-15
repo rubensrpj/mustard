@@ -656,9 +656,8 @@ pub type SupportedLocale = Locale;
 ///
 /// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
 /// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
-/// etc. Use [`UserLocale::to_supported`] to map to a [`SupportedLocale`] for
-/// banner rendering, falling back to the default when the locale is not in the
-/// catalogue.
+/// etc. Parse the raw tag into a [`SupportedLocale`] when a banner needs to
+/// render, falling back to the default when the locale is not in the catalogue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserLocale {
     /// The raw BCP-47 tag as supplied by the user.
@@ -672,13 +671,6 @@ impl UserLocale {
     #[must_use]
     pub fn new(raw: impl Into<String>) -> Self {
         Self { raw: raw.into() }
-    }
-
-    /// Map to the nearest [`SupportedLocale`] catalogue entry, or
-    /// `None` when the locale is not in the Mustard catalogue.
-    #[must_use]
-    pub fn to_supported(&self) -> Option<SupportedLocale> {
-        self.raw.parse::<Locale>().ok()
     }
 }
 

@@ -54,7 +54,7 @@ pub struct BudgetReport {
 
 /// Resolve the per-role char budget. Pure — unit-testable without IO.
 #[must_use]
-pub fn char_budget_for(role: &str) -> (u32, &'static str) {
+pub(crate) fn char_budget_for(role: &str) -> (u32, &'static str) {
     match role.trim().to_ascii_lowercase().as_str() {
         "explore" => (10_000, "Explore agents cap at 10k chars to keep search scope tight."),
         "review" => (12_000, "Review agents cap at 12k chars — diff is source of truth."),

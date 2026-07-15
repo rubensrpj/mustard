@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod economy_capture_baseline;
 pub mod economy_reconcile;
 pub mod economy_report;

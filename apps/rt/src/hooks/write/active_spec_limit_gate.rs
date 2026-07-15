@@ -58,7 +58,7 @@ const PIPELINE_SKILLS: &[&str] = &["mustard:feature", "mustard:bugfix", "feature
 /// Default cap on concurrently active pipelines when `mustard.json` does not
 /// pin `maxActiveSpecs`. Sized to comfortably exceed the handful of pipelines a
 /// single operator tracks at once, while still catching a runaway fan-out.
-pub const DEFAULT_MAX_ACTIVE_SPECS: usize = 10;
+pub(crate) const DEFAULT_MAX_ACTIVE_SPECS: usize = 10;
 
 /// The active-pipeline limit gate module.
 pub struct ActiveSpecLimitGate;

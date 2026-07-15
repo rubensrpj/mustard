@@ -54,21 +54,13 @@
 //!
 //! ## Design (SOLID + fail-open)
 //!
-//! - **Single responsibility.** Parses, validates, and resolves the fallback —
-//!   nothing else. No filesystem traversal beyond reading the spec text and a
-//!   single `Path::is_dir` check for path-hint validation; no LLM, no diff.
-//! - **Pure where possible.** [`parse`] is a pure function on `&str`;
-//!   [`validate_touched_functions`] is pure on the parsed value plus an optional
-//!   workspace root for path-hint validation;
-//!   [`functions_in_scope_with_fallback`] only stays pure when the section is
-//!   present (the fallback branch consults the caller-provided diff helper).
-//! - **Fail-open.** A spec without `## Funções tocadas` resolves to
-//!   `Resolution::Fallback`; a parser failure on a single line skips that line
-//!   instead of panicking. Hook-safe.
+//! - **Single responsibility.** Parses the section and nothing else. No
+//!   filesystem traversal beyond reading the spec text; no LLM, no diff.
+//! - **Pure.** [`parse`] is a pure function on `&str`.
+//! - **Fail-open.** A parser failure on a single line skips that line instead
+//!   of panicking. Hook-safe.
 
 use crate::domain::spec::header_region_lines;
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -234,68 +226,10 @@ impl TouchedFunctions {
     }
 
     /// `true` when the section parsed empty (no declared functions). Different
-    /// from "section absent" — the caller of [`functions_in_scope_with_fallback`]
-    /// distinguishes the two via [`Resolution`].
+    /// from "section absent", which [`parse`] signals by returning `None`.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.extended.is_empty() && self.modified.is_empty()
-    }
-}
-
-/// One thing the validator can complain about.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum TouchedFunctionsViolation {
-    /// Same qualifier appears twice across any status bucket — the spec is
-    /// ambiguous about which status applies.
-    #[error("duplicate qualifier: {0}")]
-    DuplicateQualifier(String),
-    /// A subsection header has an unrecognised status token.
-    #[error("unknown status `{status}` in section `{path_hint}`")]
-    UnknownStatus {
-        /// Status token as written.
-        status: String,
-        /// Path hint of the offending section.
-        path_hint: String,
-    },
-    /// A subsection has no `(STATUS)` parenthetical at all.
-    #[error("missing status on section `{0}`")]
-    MissingStatus(String),
-    /// Path hint on a subsection header points to a directory that does not
-    /// exist under the workspace root. Only emitted when a workspace root is
-    /// passed to [`validate_touched_functions`].
-    #[error("path hint not resolvable: {0}")]
-    PathHintUnresolvable(String),
-    /// A function line has no `::` qualifier (`Qualifier::Pure`) inside a spec
-    /// that otherwise uses qualified forms. Caller decides whether to
-    /// downgrade to a warning.
-    #[error("function `{0}` missing module qualifier")]
-    MissingQualifier(String),
-    /// PathHint qualifier carries an empty function name (`foo/bar::`).
-    #[error("path-hint qualifier `{0}` missing function name")]
-    MissingFunction(String),
-}
-
-/// Result of [`functions_in_scope_with_fallback`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Resolution {
-    /// Section was present; these are the function names extracted from it.
-    /// The names are the final identifiers ([`Qualifier::function_name`]),
-    /// which is what AST / diff matchers compare against.
-    Declared(Vec<String>),
-    /// Section was absent; the caller-provided fallback supplied the names of
-    /// public functions touched by the diff.
-    Fallback(Vec<String>),
-}
-
-impl Resolution {
-    /// Flatten to the raw function-name list regardless of resolution source.
-    /// Callers that only need "the names" use this; callers that want to
-    /// branch on legacy-vs-declared inspect the variant directly.
-    #[must_use]
-    pub fn into_names(self) -> Vec<String> {
-        match self {
-            Self::Declared(v) | Self::Fallback(v) => v,
-        }
     }
 }
 
@@ -471,159 +405,13 @@ pub fn parse(spec_md: &str) -> Option<TouchedFunctions> {
 // Validator
 // ---------------------------------------------------------------------------
 
-/// Validate a parsed `TouchedFunctions`. Checks (per AC-FT-2 / AC-FT-3):
-///
-/// - **Uniqueness.** No qualifier appears twice across any status bucket.
-/// - **Status presence.** Surfaces subsection headers that the parser saw but
-///   could not resolve a status for (the parser already silently drops their
-///   functions; the validator reports the reason).
-/// - **Path-hint resolvability.** When `workspace_root` is `Some`, every
-///   `path_hint` that points to a path on disk (contains `/`) must resolve to
-///   an existing directory or file. Pass `None` to skip this check (the
-///   self-test on Spec A does so to stay pure).
-///
-/// The function is pure on the parsed value plus the optional workspace path.
-/// Returns `Ok(())` when every rule passes, otherwise the full vector of
-/// violations.
-///
-/// # Errors
-///
-/// Returns the collected violations when any rule fails. The returned vector
-/// is non-empty.
-pub fn validate_touched_functions(
-    parsed: &TouchedFunctions,
-    workspace_root: Option<&Path>,
-) -> Result<(), Vec<TouchedFunctionsViolation>> {
-    let mut violations: Vec<TouchedFunctionsViolation> = Vec::new();
-
-    // --- Uniqueness across all status buckets ---------------------------
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    for tf in parsed.all() {
-        let key = tf.qualifier.as_str();
-        if !seen.insert(key.clone()) {
-            violations.push(TouchedFunctionsViolation::DuplicateQualifier(key));
-        }
-    }
-
-    // --- Qualifier shape -----------------------------------------------
-    // `Pure` qualifiers (no `::`) and PathHint with empty function name are
-    // surfaced so the user can decide to qualify them; a pure-function spec
-    // is legal but downstream AC-typing (Fase B) cannot map it.
-    for tf in parsed.all() {
-        match &tf.qualifier {
-            Qualifier::Pure(name) => {
-                violations.push(TouchedFunctionsViolation::MissingQualifier(name.clone()));
-            }
-            Qualifier::PathHint { function, path } if function.is_empty() => {
-                violations.push(TouchedFunctionsViolation::MissingFunction(path.clone()));
-            }
-            _ => {}
-        }
-    }
-
-    // --- Path-hint resolvability (only when workspace_root is given) -----
-    if let Some(root) = workspace_root {
-        // De-dup by path_hint so a single bad section emits one violation,
-        // not one per declared function inside it.
-        let mut checked: BTreeSet<String> = BTreeSet::new();
-        for tf in parsed.all() {
-            let hint = tf.path_hint.trim();
-            if hint.is_empty() || !checked.insert(hint.to_string()) {
-                continue;
-            }
-            // A hint like `module::sub` (no `/`) is a logical reference, not
-            // a path — skip filesystem resolution.
-            if !hint.contains('/') && !hint.contains('\\') {
-                continue;
-            }
-            let candidate: PathBuf = root.join(hint.trim_end_matches('/'));
-            if !candidate.exists() {
-                violations.push(TouchedFunctionsViolation::PathHintUnresolvable(hint.to_string()));
-            }
-        }
-    }
-
-    if violations.is_empty() {
-        Ok(())
-    } else {
-        Err(violations)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Fallback resolver
 // ---------------------------------------------------------------------------
 
-/// Resolve the functions in scope for a wave, with a fallback for specs that
-/// lack a `## Funções tocadas` section.
-///
-/// - When the section is present, returns [`Resolution::Declared`] carrying
-///   the final identifiers ([`Qualifier::function_name`]) extracted from it.
-/// - When the section is absent, calls `diff_public_functions` and returns
-///   its output as [`Resolution::Fallback`]. The caller supplies that fn so
-///   this module stays free of dependency on the AST / git layers — the
-///   fallback contract is "give me the public functions the diff touches".
-///
-/// The closure is invoked **only** on the fallback path so a spec with a
-/// well-formed section never triggers a diff scan.
-///
-/// Hook-safe: the parser is fail-open, and the fallback closure's errors are
-/// the caller's responsibility (the typical impl logs+returns an empty Vec).
-#[must_use]
-pub fn functions_in_scope_with_fallback<F>(
-    spec_md: &str,
-    diff_public_functions: F,
-) -> Resolution
-where
-    F: FnOnce() -> Vec<String>,
-{
-    if let Some(parsed) = parse(spec_md) {
-        let names: Vec<String> = parsed
-            .all()
-            .map(|tf| tf.qualifier.function_name())
-            .collect();
-        return Resolution::Declared(names);
-    }
-    Resolution::Fallback(diff_public_functions())
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-// AC-FT-6 self-test wrapper at file scope (outside the inner `tests` module)
-// so the cargo filter `spec::touched_functions::test_validate_spec_a_self`
-// (without a `tests::` segment) matches via substring. Body delegates to the
-// canonical implementation inside `tests` so the logic stays single-sourced.
-#[cfg(test)]
-#[test]
-fn test_validate_spec_a_self() {
-    // Walk up from CARGO_MANIFEST_DIR (= packages/core/) to the workspace
-    // root, then locate the spec file. Mirrors `tests::test_validate_spec_a_self`
-    // exactly — kept separate solely to expose the path the task command uses.
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .ancestors()
-        .find(|p| p.join("Cargo.lock").exists())
-        .unwrap_or(&manifest_dir);
-    let spec_path = workspace_root
-        .join(".claude")
-        .join("spec")
-        .join("2026-05-27-mustard-v4-foundation")
-        .join("spec.md");
-    if !spec_path.exists() {
-        eprintln!(
-            "skipping AC-FT-6 self-test — spec not found at {}",
-            spec_path.display()
-        );
-        return;
-    }
-    let body = std::fs::read_to_string(&spec_path).expect("spec readable");
-    let parsed = parse(&body).expect("Spec A has `## Funções tocadas` section");
-    assert!(!parsed.is_empty(), "Spec A declares at least one function");
-    validate_touched_functions(&parsed, None)
-        .expect("Spec A `## Funções tocadas` validates clean");
-}
 
 #[cfg(test)]
 mod tests {
@@ -768,199 +556,7 @@ body
 
     // --- validate ------------------------------------------------------
 
-    #[test]
-    fn validate_passes_on_clean_input() {
-        let md = "\
-# S
-
-## Funções tocadas
-
-### Em `packages/core/src/regression_check/` (NOVO)
-- `regression_check::Snapshot::capture_for_spec`
-";
-        let parsed = parse(md).unwrap();
-        assert!(validate_touched_functions(&parsed, None).is_ok());
-    }
-
-    #[test]
-    fn validate_flags_duplicate_qualifier_across_buckets() {
-        // Same qualifier appearing in `Added` and `Extended` — ambiguous.
-        let parsed = TouchedFunctions {
-            added: vec![TouchedFunction {
-                qualifier: Qualifier::Module("a::run".into()),
-                status: FunctionStatus::Added,
-                path_hint: "a/".into(),
-                justification: None,
-            }],
-            extended: vec![TouchedFunction {
-                qualifier: Qualifier::Module("a::run".into()),
-                status: FunctionStatus::Extended,
-                path_hint: "a/".into(),
-                justification: None,
-            }],
-            modified: vec![],
-        };
-        let err = validate_touched_functions(&parsed, None).unwrap_err();
-        assert!(err
-            .iter()
-            .any(|v| matches!(v, TouchedFunctionsViolation::DuplicateQualifier(_))));
-    }
-
-    #[test]
-    fn validate_flags_missing_qualifier_on_pure_function() {
-        let parsed = TouchedFunctions {
-            added: vec![TouchedFunction {
-                qualifier: Qualifier::Pure("bare".into()),
-                status: FunctionStatus::Added,
-                path_hint: "a/".into(),
-                justification: None,
-            }],
-            ..TouchedFunctions::default()
-        };
-        let err = validate_touched_functions(&parsed, None).unwrap_err();
-        assert!(err
-            .iter()
-            .any(|v| matches!(v, TouchedFunctionsViolation::MissingQualifier(_))));
-    }
-
-    #[test]
-    fn validate_flags_missing_function_on_pathhint() {
-        let parsed = TouchedFunctions {
-            added: vec![TouchedFunction {
-                qualifier: Qualifier::PathHint {
-                    path: "foo/bar".into(),
-                    function: String::new(),
-                },
-                status: FunctionStatus::Added,
-                path_hint: "foo/bar".into(),
-                justification: None,
-            }],
-            ..TouchedFunctions::default()
-        };
-        let err = validate_touched_functions(&parsed, None).unwrap_err();
-        assert!(err
-            .iter()
-            .any(|v| matches!(v, TouchedFunctionsViolation::MissingFunction(_))));
-    }
-
-    #[test]
-    fn validate_flags_unresolvable_path_hint_when_root_given() {
-        let dir = tempfile::tempdir().unwrap();
-        let parsed = TouchedFunctions {
-            added: vec![TouchedFunction {
-                qualifier: Qualifier::Module("a::run".into()),
-                status: FunctionStatus::Added,
-                path_hint: "does/not/exist/".into(),
-                justification: None,
-            }],
-            ..TouchedFunctions::default()
-        };
-        let err = validate_touched_functions(&parsed, Some(dir.path())).unwrap_err();
-        assert!(err
-            .iter()
-            .any(|v| matches!(v, TouchedFunctionsViolation::PathHintUnresolvable(_))));
-    }
-
-    #[test]
-    fn validate_accepts_logical_module_path_hint() {
-        // Hints without `/` are logical references — never checked on disk.
-        let parsed = TouchedFunctions {
-            added: vec![TouchedFunction {
-                qualifier: Qualifier::Module("crate::module::run".into()),
-                status: FunctionStatus::Added,
-                path_hint: "crate::module".into(),
-                justification: None,
-            }],
-            ..TouchedFunctions::default()
-        };
-        let dir = tempfile::tempdir().unwrap();
-        assert!(validate_touched_functions(&parsed, Some(dir.path())).is_ok());
-    }
-
     // --- fallback -----------------------------------------------------
-
-    #[test]
-    fn fallback_returns_declared_when_section_present() {
-        let md = "\
-# S
-
-## Funções tocadas
-
-### Em `a/` (NOVO)
-- `a::one`
-- `a::two`
-";
-        let resolution =
-            functions_in_scope_with_fallback(md, || vec!["should_not_call".into()]);
-        match resolution {
-            Resolution::Declared(names) => {
-                assert_eq!(names, vec!["one".to_string(), "two".to_string()]);
-            }
-            Resolution::Fallback(_) => panic!("declared path expected"),
-        }
-    }
-
-    #[test]
-    fn fallback_runs_closure_when_section_absent() {
-        let md = "# S\n\n## Contexto\n\nlegacy spec\n";
-        let mut called = false;
-        let resolution = functions_in_scope_with_fallback(md, || {
-            called = true;
-            vec!["diff_fn_a".into(), "diff_fn_b".into()]
-        });
-        assert!(called);
-        match resolution {
-            Resolution::Fallback(names) => {
-                assert_eq!(names, vec!["diff_fn_a".to_string(), "diff_fn_b".to_string()]);
-            }
-            Resolution::Declared(_) => panic!("fallback path expected"),
-        }
-    }
-
-    /// AC-A-15 (E2E against the committed fixture) — the legacy-no-funcoes
-    /// fixture intentionally omits `## Funções tocadas` and mentions the
-    /// canonical heading INSIDE a fenced block (so the parser must respect
-    /// fences). The resolver should call the fallback exactly once and never
-    /// panic. The fenced `### Em` line must NOT be confused with a real
-    /// touched-functions section.
-    #[test]
-    fn ac_a_15_legacy_no_funcoes_fixture_falls_back_via_real_file() {
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir
-            .ancestors()
-            .find(|p| p.join(".claude").is_dir())
-            .expect("walk back to workspace root with .claude/");
-        let fixture = workspace_root
-            .join(".claude")
-            .join("spec")
-            .join("2026-05-27-mustard-v4-foundation")
-            .join("fixtures")
-            .join("legacy-no-funcoes")
-            .join("spec.md");
-        // Skip diagnostically when the fixture is absent (partial checkouts).
-        let Ok(content) = std::fs::read_to_string(&fixture) else {
-            eprintln!("ac_a_15: fixture missing at {} — skipping", fixture.display());
-            return;
-        };
-        // Parser must NOT match the fenced `## Funções tocadas` mention.
-        assert!(
-            parse(&content).is_none(),
-            "fixture must parse as None — the only mention of the heading lives in a fence"
-        );
-        let mut call_count = 0;
-        let resolution = functions_in_scope_with_fallback(&content, || {
-            call_count += 1;
-            vec!["public_fn_from_diff_a".into(), "public_fn_from_diff_b".into()]
-        });
-        assert_eq!(call_count, 1, "fallback closure must be called exactly once");
-        match resolution {
-            Resolution::Fallback(names) => {
-                assert_eq!(names.len(), 2);
-                assert!(names.iter().all(|n| n.starts_with("public_fn_from_diff_")));
-            }
-            Resolution::Declared(_) => panic!("fallback path expected for legacy fixture"),
-        }
-    }
 
     // --- AC-FT-6 — self-validation against Spec A spec.md --------------
     //
@@ -970,38 +566,4 @@ body
     // diagnostic) when the file is missing so a partial checkout still
     // builds.
 
-    #[test]
-    fn test_validate_spec_a_self() {
-        // Walk up from CARGO_MANIFEST_DIR (= packages/core/) to the workspace
-        // root, then locate the spec file.
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir
-            .ancestors()
-            .find(|p| p.join("Cargo.lock").exists())
-            .unwrap_or(&manifest_dir);
-        let spec_path = workspace_root
-            .join(".claude")
-            .join("spec")
-            .join("2026-05-27-mustard-v4-foundation")
-            .join("spec.md");
-        if !spec_path.exists() {
-            // Partial checkout (or test running from an unexpected cwd) —
-            // skip rather than fail. The AC-FT-6 gate runs in CI with the
-            // full tree available.
-            eprintln!(
-                "skipping AC-FT-6 self-test — spec not found at {}",
-                spec_path.display()
-            );
-            return;
-        }
-        let body = std::fs::read_to_string(&spec_path).expect("spec readable");
-        let parsed = parse(&body).expect("Spec A has `## Funções tocadas` section");
-        assert!(!parsed.is_empty(), "Spec A declares at least one function");
-        // Skip workspace_root check — the spec uses logical path hints
-        // (e.g. `packages/core/src/spec/` for funcoes_tocadas itself) that
-        // resolve only after the wave creates the directories. The on-disk
-        // check is exercised by the wave-7 review against the fixtures.
-        validate_touched_functions(&parsed, None)
-            .expect("Spec A `## Funções tocadas` validates clean");
-    }
 }

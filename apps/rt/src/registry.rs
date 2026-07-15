@@ -53,16 +53,9 @@ use mustard_core::domain::model::contract::{Check, Observer, Trigger};
 /// The JS `settings.json` matchers are one of: a literal tool name (`"Bash"`,
 /// `"Task"`), an alternation (`"Task|Agent"` — expressed as two entries here),
 /// the wildcard `".*"` (every tool), or absent (a non-tool lifecycle event
-/// like `SubagentStart`). [`ToolMatch`] models exactly those three cases.
+/// like `SubagentStart`). [`ToolMatch`] models the two cases a module can register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolMatch {
-    /// A non-tool lifecycle event — the harness invocation has no `tool_name`.
-    ///
-    /// No Wave-3 module needs this exact case (lifecycle modules use
-    /// [`ToolMatch::Any`], which already matches a `None` tool); it is kept as
-    /// API surface for a later wave that registers a `None`-tool-only module.
-    #[allow(dead_code)]
-    None,
+pub(crate) enum ToolMatch {
     /// Every tool (the `".*"` matcher), and also non-tool events: the JS `.*`
     /// `PreToolUse` matcher fires for any invocation.
     Any,
@@ -75,7 +68,6 @@ impl ToolMatch {
     #[must_use]
     fn matches(self, tool: Option<&str>) -> bool {
         match self {
-            Self::None => tool.is_none(),
             Self::Any => true,
             Self::Named(name) => tool == Some(name),
         }

@@ -29,7 +29,7 @@ pub struct ReconcileOpts {
 
 /// One reconciled baseline entry.
 #[derive(Debug, Serialize)]
-pub struct ReconcileRecord {
+pub(crate) struct ReconcileRecord {
     pub key: String,
     pub operation: String,
     pub wave: u32,
@@ -40,7 +40,7 @@ pub struct ReconcileRecord {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct ReconcileReport {
+pub(crate) struct ReconcileReport {
     pub wave: u32,
     pub records: Vec<ReconcileRecord>,
 }

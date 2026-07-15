@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod pipeline_summary;
 pub mod verify_pipeline;
 pub mod close_orchestrate;

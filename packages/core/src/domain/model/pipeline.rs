@@ -12,7 +12,6 @@
 //! does not break deserialization.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// A canonical pipeline phase.
 ///
@@ -77,102 +76,4 @@ pub struct Task {
     /// Ordered steps that make up the task.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<String>,
-}
-
-/// The full state of one in-flight pipeline.
-///
-/// Lenient: unmodelled fields land in [`PipelineState::raw`]. The JSON uses
-/// camelCase keys (`specName`, `phaseName`, …); `#[serde(rename)]` maps them.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PipelineState {
-    /// The spec this pipeline implements, e.g.
-    /// `"2026-05-18-b2-mustard-core-crate"`.
-    #[serde(default, rename = "specName", skip_serializing_if = "Option::is_none")]
-    pub spec_name: Option<String>,
-
-    /// Free-form pipeline status, e.g. `"implementing"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-
-    /// The current canonical phase.
-    #[serde(default, rename = "phaseName", skip_serializing_if = "Option::is_none")]
-    pub phase: Option<Phase>,
-
-    /// The pipeline scope.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<Scope>,
-
-    /// Model in use for this pipeline, e.g. `"opus"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-
-    /// Whether the pipeline is organised as a multi-wave plan.
-    #[serde(default, rename = "isWavePlan")]
-    pub is_wave_plan: bool,
-
-    /// The wave currently in progress (`0` outside a wave plan).
-    #[serde(default, rename = "currentWave")]
-    pub current_wave: u32,
-
-    /// Total number of planned waves.
-    #[serde(default, rename = "totalWaves")]
-    pub total_waves: u32,
-
-    /// Waves already finished. Some pipeline-states record this as a count,
-    /// so it stays an untyped [`Value`] rather than guessing a shape.
-    #[serde(default, rename = "completedWaves", skip_serializing_if = "Value::is_null")]
-    pub completed_waves: Value,
-
-    /// The task / wave breakdown.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tasks: Vec<Task>,
-
-    /// ISO-8601 timestamp of the last update.
-    #[serde(default, rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<String>,
-
-    /// Every field of the original JSON, including unmodelled ones.
-    #[serde(flatten)]
-    pub raw: Value,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The real b2 pipeline-state file must round-trip into [`PipelineState`].
-    #[test]
-    fn deserializes_real_pipeline_state() {
-        let raw = r#"{
-            "specName": "2026-05-18-b2-mustard-core-crate",
-            "status": "implementing",
-            "phaseName": "EXECUTE",
-            "currentWave": 1,
-            "totalWaves": 4,
-            "scope": "full",
-            "model": "opus",
-            "isWavePlan": false,
-            "tasks": [
-                {"name": "Wave 1 — model", "agent": "core", "status": "pending", "steps": ["a", "b"]}
-            ],
-            "updatedAt": "2026-05-19T01:17:00Z"
-        }"#;
-        let state: PipelineState = serde_json::from_str(raw).expect("parse pipeline-state");
-        assert_eq!(state.phase, Some(Phase::Execute));
-        assert_eq!(state.scope, Some(Scope::Full));
-        assert_eq!(state.current_wave, 1);
-        assert_eq!(state.total_waves, 4);
-        assert_eq!(state.tasks.len(), 1);
-        assert_eq!(state.tasks[0].agent.as_deref(), Some("core"));
-    }
-
-    /// An unmodelled field (`type`, read by `model-routing-gate.js`) must be
-    /// reachable through `raw` without breaking the parse.
-    #[test]
-    fn pipeline_state_keeps_unknown_fields_in_raw() {
-        let raw = r#"{"specName":"s","type":"feature","phaseName":"PLAN"}"#;
-        let state: PipelineState = serde_json::from_str(raw).expect("lenient parse");
-        assert_eq!(state.phase, Some(Phase::Plan));
-        assert_eq!(state.raw["type"], serde_json::json!("feature"));
-    }
 }

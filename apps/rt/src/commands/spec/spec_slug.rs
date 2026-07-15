@@ -19,23 +19,8 @@
 //! `mustard-rt run spec-lang resolve` is listed in the W4 spec but was
 //! explicitly deferred to W6. It lives next to this module.
 
-// W6: the public helpers below are the entry point the `spec-lang resolve`
-// subcommand calls. They stay `#[allow(dead_code)]` so the public surface
-// stays stable even when a helper is momentarily uncalled.
-#![allow(dead_code)]
-
 use mustard_core::{slugify, LocaleError, SupportedLocale as Locale};
 use std::str::FromStr;
-
-/// Slugify `title` for `lang`. PT strips accents, EN does not.
-///
-/// This is the typed-locale variant of the legacy ascii-only slug helper;
-/// callers that already hold a [`Locale`] should prefer this entry point so
-/// the choice is explicit.
-#[must_use]
-pub fn for_locale(title: &str, lang: Locale) -> String {
-    slugify(title, lang)
-}
 
 /// Slugify `title` using a BCP-47 locale string. A missing / malformed code
 /// degrades to [`Locale::default`] (`pt-BR`) — fail-open so the slug never
@@ -64,22 +49,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn for_locale_strips_pt_accents() {
-        assert_eq!(
-            for_locale("Configuração de Idioma e Tom", Locale::PtBr),
-            "configuracao-idioma-tom"
-        );
-    }
-
-    #[test]
-    fn for_locale_keeps_en_intact() {
-        assert_eq!(
-            for_locale("Language and Tone Settings", Locale::EnUs),
-            "language-tone-settings"
-        );
-    }
-
-    #[test]
     fn for_lang_accepts_bcp47_and_short_forms() {
         // BCP-47 canonical.
         assert_eq!(for_lang("Olá Mundo", "pt-BR"), "ola-mundo");
@@ -91,7 +60,7 @@ mod tests {
 
     #[test]
     fn empty_input_degrades_to_x() {
-        assert_eq!(for_locale("", Locale::PtBr), "x");
-        assert_eq!(for_locale("///", Locale::EnUs), "x");
+        assert_eq!(for_lang("", "pt-BR"), "x");
+        assert_eq!(for_lang("///", "en-US"), "x");
     }
 }

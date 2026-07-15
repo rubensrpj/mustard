@@ -13,9 +13,15 @@
 //! requires a Nerd Font). Users without Nerd Font set
 //! `MUSTARD_STATUSLINE_THEME=default`.
 
+pub mod cli;
+
 pub mod preview;
 pub mod segment;
-pub mod theme;
+// `theme` stays crate-internal: the module became `pub` when the `run` CLI
+// split moved `StatuslineCmd` into `statusline::cli`, and its public items
+// (`ThemeId::theme`, `render_line`, `DEFAULT`) hand out the crate-private
+// `Theme` type - capping the module keeps that honest without leaking it.
+pub(crate) mod theme;
 
 use segment::{
     context_segment, cost_segment, diff_segment, duration_segment, git_segment,

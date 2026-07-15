@@ -45,7 +45,7 @@ use super::model::{
     SessionCost, SpecCost, WaveCost, PHASE_UNATTRIBUTED,
 };
 use super::multi_project::MultiProjectReader;
-use super::scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
+use super::scope::{AgentId, EconomyScope, SpecId, WaveId};
 
 // ===========================================================================
 // Internal event-name helpers
@@ -1305,14 +1305,6 @@ fn payload_agent_id(payload: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-// Suppress the unused-import lint when `payload_agent_id` is the only thing
-// using `ProjectPath` (it isn't today, but the marker keeps the import path
-// stable as readers evolve).
-#[allow(dead_code)]
-fn _project_path_alive(p: &ProjectPath) -> &Path {
-    p.as_path()
-}
-
 // ===========================================================================
 // Tests — inline fixtures, no SQLite, no external test crate
 // ===========================================================================
@@ -1320,6 +1312,7 @@ fn _project_path_alive(p: &ProjectPath) -> &Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::economy::scope::ProjectPath;
     use std::fs;
     use tempfile::tempdir;
 

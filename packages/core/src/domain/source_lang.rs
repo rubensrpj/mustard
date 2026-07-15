@@ -93,14 +93,14 @@ const EXT_LANG: &[(&str, &str)] = &[
 /// for — the precheck's JSX/import extractor and export grep, and the role
 /// vocabulary the wave-size audit leans on. A target with at least one of these
 /// is "understood"; a target with only foreign languages is not.
-pub const JS_TS_FAMILY: &[&str] = &["typescript", "javascript", "vue", "svelte"];
+pub(crate) const JS_TS_FAMILY: &[&str] = &["typescript", "javascript", "vue", "svelte"];
 
 /// The lowercase language for `path` by its extension, or `None` when the path
 /// has no extension or an extension outside [`EXT_LANG`]. Tolerates both `/` and
 /// `\` separators (tool targets arrive in both shapes on Windows) and any
 /// trailing backtick left by a markdown bullet.
 #[must_use]
-pub fn language_of_path(path: &str) -> Option<&'static str> {
+pub(crate) fn language_of_path(path: &str) -> Option<&'static str> {
     let name = path
         .rsplit(['/', '\\'])
         .next()
@@ -121,7 +121,7 @@ pub fn language_of_path(path: &str) -> Option<&'static str> {
 /// The distinct source languages a path set involves, by extension. Non-source
 /// / unknown extensions contribute nothing.
 #[must_use]
-pub fn languages_of_paths(paths: &[String]) -> BTreeSet<String> {
+pub(crate) fn languages_of_paths(paths: &[String]) -> BTreeSet<String> {
     paths
         .iter()
         .filter_map(|p| language_of_path(p))
@@ -135,7 +135,7 @@ pub fn languages_of_paths(paths: &[String]) -> BTreeSet<String> {
 /// (override-aware). Fail-open: a missing model, no detection, or a registry
 /// error yields an empty set (the extension signal then stands alone).
 #[must_use]
-pub fn detected_languages(paths: &[String], model_path: &Path, project_root: &Path) -> BTreeSet<String> {
+pub(crate) fn detected_languages(paths: &[String], model_path: &Path, project_root: &Path) -> BTreeSet<String> {
     if paths.is_empty() {
         return BTreeSet::new();
     }

@@ -17,10 +17,10 @@
 pub const SCALE: u64 = 1024;
 
 /// Classic BM25 `k1 = 1.2` ×1024 — term-frequency saturation.
-pub const DEFAULT_K1_X1024: u64 = 1229; // round(1.2 * 1024)
+pub(crate) const DEFAULT_K1_X1024: u64 = 1229; // round(1.2 * 1024)
 
 /// Classic BM25 `b = 0.75` ×1024 — length-normalization strength.
-pub const DEFAULT_B_X1024: u64 = 768; // round(0.75 * 1024)
+pub(crate) const DEFAULT_B_X1024: u64 = 768; // round(0.75 * 1024)
 
 /// Average document length ×1024 over a corpus of `docs` documents totalling
 /// `total_len` tokens. Floored at 1 so it can always divide.

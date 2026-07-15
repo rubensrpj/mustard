@@ -17,7 +17,7 @@
 //!   event schema, the hook contract, pipeline-state, and the SDD `ViewModels`
 //!   under [`model::view`].
 //! - [`fs`] — the single canonical filesystem seam: the [`fs::Fs`] port,
-//!   [`fs::real::RealFs`], an in-memory [`fs::memory::FakeFs`], and module-level
+//!   [`fs::real::RealFs`], and module-level
 //!   free functions that are the drop-in replacement for `std::fs`. Every other
 //!   `std::fs` call in the workspace migrates onto this.
 //! - [`events`] — NDJSON event primitives ([`Event`] / [`EventReader`]) plus
@@ -111,9 +111,8 @@ pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta, MetaFlags};
 //   `project_locale_codes`.
 // - `UserLocale` — the open user-declared locale parsed out of
 //   `mustard.json#specLang` and `### Lang:` headers. Accepts any
-//   BCP-47-shaped code (`fr-FR`, `de-DE`, `en-GB`, ...). Bridges to
-//   `SupportedLocale` via `user.to_supported().unwrap_or_default()` when a
-//   banner needs to render.
+//   BCP-47-shaped code (`fr-FR`, `de-DE`, `en-GB`, ...). Parsed into a
+//   `SupportedLocale` when a banner needs to render.
 //
 // W7 — every callsite now uses `SupportedLocale` (catalogue) or `UserLocale`
 // (user-declared). The deprecated `Locale` alias was removed.

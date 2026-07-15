@@ -34,7 +34,7 @@ const Q_MAX_TOUCHPOINTS: usize = 10;
 const Q_MAX_FILES: usize = 12;
 
 #[derive(Serialize)]
-pub struct CapabilityDigest {
+pub(crate) struct CapabilityDigest {
     pub root: String,
     pub languages: Vec<LangD>,
     pub frameworks: Vec<String>,
@@ -59,14 +59,14 @@ pub struct CapabilityDigest {
 }
 
 #[derive(Serialize)]
-pub struct LangD {
+pub(crate) struct LangD {
     pub language: String,
     pub files: usize,
     pub loc: usize,
 }
 
 #[derive(Serialize)]
-pub struct ProjD {
+pub(crate) struct ProjD {
     pub name: String,
     pub dir: String,
     pub kind: String,
@@ -84,7 +84,7 @@ pub struct RoleD {
 }
 
 #[derive(Serialize)]
-pub struct SliceD {
+pub(crate) struct SliceD {
     /// Core role affixes joined with '+', e.g. "Handler+Validator".
     pub label: String,
     pub recurrence: usize,
@@ -99,13 +99,13 @@ pub struct SliceD {
 }
 
 #[derive(Serialize)]
-pub struct ContractD {
+pub(crate) struct ContractD {
     pub name: String,
     pub implementors: usize,
 }
 
 #[derive(Serialize)]
-pub struct GraphD {
+pub(crate) struct GraphD {
     pub nodes: usize,
     pub edges: usize,
     pub cyclic: bool,
@@ -118,26 +118,26 @@ pub struct GraphD {
 }
 
 #[derive(Serialize)]
-pub struct LayerD {
+pub(crate) struct LayerD {
     pub name: String,
     pub modules: usize,
 }
 
 #[derive(Serialize)]
-pub struct TouchD {
+pub(crate) struct TouchD {
     pub module: String,
     pub fan_out: usize,
     pub breadth: usize,
 }
 
 #[derive(Serialize)]
-pub struct HubD {
+pub(crate) struct HubD {
     pub module: String,
     pub degree: usize,
 }
 
 #[derive(Serialize)]
-pub struct TermD {
+pub(crate) struct TermD {
     pub term: String,
     pub count: usize,
     /// Domain specificity ×1024: the term's TF·IDF over the corpus
@@ -166,7 +166,7 @@ pub struct TermD {
 /// compatibility, but a `miss=false` answer can still be `weak` — consumers
 /// must read the report, never just the flag.
 #[derive(Serialize)]
-pub struct QueryResult {
+pub(crate) struct QueryResult {
     pub query: Vec<String>,
     /// Stacks the model carries (same shape as the full digest) — copied
     /// verbatim from the model, so a per-query consumer never has to fetch the
@@ -230,7 +230,7 @@ pub struct QueryResult {
 /// concern's concepts only. The `label` joins the concern's concept tokens
 /// (asc) with '+', so a reader names it without re-deriving the grouping.
 #[derive(Serialize)]
-pub struct ConcernD {
+pub(crate) struct ConcernD {
     /// The concern's concept tokens (sorted asc), joined with '+'.
     pub label: String,
     /// The query concepts in this concern (sorted asc — the grouping is set
@@ -259,7 +259,7 @@ pub struct ConcernD {
 /// precedent). Pure serde data, mirrored by the consumer contract in
 /// mustard-core (`domain::scan::DigestQuery`).
 #[derive(Serialize)]
-pub struct MatchReport {
+pub(crate) struct MatchReport {
     pub matched: usize,
     pub total: usize,
     pub reason: String,

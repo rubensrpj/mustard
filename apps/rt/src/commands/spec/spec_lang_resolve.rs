@@ -43,7 +43,7 @@ pub enum LangSource {
 
 /// JSON report shape.
 #[derive(Debug, Serialize)]
-pub struct SpecLangReport {
+pub(crate) struct SpecLangReport {
     pub spec: String,
     pub lang: String,
     pub source: LangSource,

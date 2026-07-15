@@ -13,7 +13,7 @@ use crate::io::fs;
 use super::SpecSummaryDoc;
 
 /// File name of the summary artefact inside the spec directory.
-pub const SUMMARY_FILENAME: &str = ".summary.json";
+pub(crate) const SUMMARY_FILENAME: &str = ".summary.json";
 
 /// Serialise `doc` and write it atomically to `{spec_dir}/.summary.json`.
 ///

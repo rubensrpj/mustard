@@ -376,18 +376,6 @@ impl ProjectConfig {
         }
     }
 
-    /// Additional source extensions, each normalised to dotted form.
-    #[must_use]
-    pub fn source_extensions(&self) -> Vec<String> {
-        self.source_extensions.iter().filter_map(|e| normalize_ext(e)).collect()
-    }
-
-    /// Explicit primary extension override, dotted; `None` when absent/blank.
-    #[must_use]
-    pub fn primary_ext(&self) -> Option<String> {
-        self.primary_ext.as_deref().and_then(normalize_ext)
-    }
-
     /// Architecture-style override, trimmed + lowercased; `None` when blank.
     #[must_use]
     pub fn architecture(&self) -> Option<String> {
@@ -423,16 +411,6 @@ impl ProjectConfig {
             .collect()
     }
 
-    /// `(exclude, include)` subproject path overrides, normalised to forward
-    /// slashes with surrounding slashes trimmed.
-    #[must_use]
-    pub fn subproject_overrides(&self) -> (Vec<String>, Vec<String>) {
-        let norm = |v: &[String]| -> Vec<String> {
-            v.iter().map(|p| p.replace('\\', "/").trim_matches('/').to_string()).collect()
-        };
-        (norm(&self.subprojects.exclude), norm(&self.subprojects.include))
-    }
-
     /// `amend.drift_threshold` as a `u32`; `None` when absent or out of range.
     #[must_use]
     pub fn drift_threshold(&self) -> Option<u32> {
@@ -465,16 +443,6 @@ fn non_blank(raw: Option<&str>) -> Option<String> {
     } else {
         Some(t.to_string())
     }
-}
-
-/// Normalise an extension token to dotted form (`rb` → `.rb`, `.rb` → `.rb`).
-/// Empty / whitespace-only tokens yield `None`.
-fn normalize_ext(raw: &str) -> Option<String> {
-    let t = raw.trim();
-    if t.is_empty() {
-        return None;
-    }
-    Some(if t.starts_with('.') { t.to_string() } else { format!(".{t}") })
 }
 
 /// Test whether `pattern` (lowercased) matches `haystack` (lowercased). `*` is a
@@ -604,13 +572,6 @@ mod tests {
     }
 
     #[test]
-    fn source_extensions_normalised() {
-        let mut cfg = ProjectConfig::default();
-        cfg.source_extensions = vec!["rb".into(), ".zig".into(), "  ".into()];
-        assert_eq!(cfg.source_extensions(), vec![".rb".to_string(), ".zig".to_string()]);
-    }
-
-    #[test]
     fn role_patterns_lowercased_and_filtered() {
         let mut cfg = ProjectConfig::default();
         cfg.role_patterns = vec![
@@ -628,14 +589,6 @@ mod tests {
         assert!(!glob_matches("controller", "src/user.rb"));
         assert!(glob_matches("src/*.rb", "src/foo.rb"));
         assert!(!glob_matches("*.rb", "x.rs"));
-    }
-
-    #[test]
-    fn subproject_overrides_normalised() {
-        let mut cfg = ProjectConfig::default();
-        cfg.subprojects.exclude = vec!["/apps\\web/".into()];
-        let (excl, _) = cfg.subproject_overrides();
-        assert_eq!(excl, vec!["apps/web".to_string()]);
     }
 
     #[test]

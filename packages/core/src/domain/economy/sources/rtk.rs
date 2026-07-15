@@ -73,7 +73,7 @@ use crate::platform::time::now_iso8601;
 /// The single method returns the raw stdout as bytes (the same shape as
 /// `std::process::Output::stdout`) so the adapter logic that decodes the JSON
 /// stays in one place — both real and faked paths share it.
-pub trait RtkCommand {
+pub(crate) trait RtkCommand {
     /// Run the rtk subcommand and return its stdout, or an [`Err`] if the
     /// command could not be spawned / exited non-zero.
     ///
@@ -90,7 +90,7 @@ pub trait RtkCommand {
 /// match the current rtk CLI; the older `--json` shorthand exits 2 on
 /// current builds.
 #[derive(Debug, Default)]
-pub struct RealRtkCommand;
+pub(crate) struct RealRtkCommand;
 
 impl RtkCommand for RealRtkCommand {
     fn run(&self) -> Result<Vec<u8>> {
@@ -131,7 +131,7 @@ pub fn ingest(ctx: &IngestContext) -> Result<Vec<SavingsRecord>> {
 /// Returns `Ok(vec![])` (never `Err`) on the binary-missing / spawn-fail
 /// path. Returns `Ok` with parsed records on success. The only `Err` shape
 /// is reserved for future variants that need to escalate.
-pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<SavingsRecord>> {
+pub(crate) fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<SavingsRecord>> {
     let stdout = match runner.run() {
         Ok(s) => s,
         Err(e) => {

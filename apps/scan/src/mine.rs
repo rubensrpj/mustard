@@ -41,7 +41,7 @@ struct Symbol {
     supertypes: Vec<String>,
 }
 
-pub struct Mined {
+pub(crate) struct Mined {
     pub roles: Vec<RoleStat>,
     pub conventions: Vec<Convention>,
     pub shared_contracts: Vec<crate::model::SharedContract>,

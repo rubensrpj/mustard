@@ -5,30 +5,18 @@
 //! (W2-W7) of the no-sqlite refactor. It intentionally has **no trait** — the
 //! struct is concrete per the project directive "no abstraction by hypothesis".
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::Path;
 
 use crate::io::events::types::Event;
 
-/// Process-lifetime, mtime-invalidated cache key.
-type CacheKey = (PathBuf, SystemTime);
-
 /// Concrete NDJSON event reader.
 ///
-/// Provides three access patterns:
-///
-/// 1. [`EventReader::stream`] — streaming iterator, never loads the full file.
-/// 2. [`EventReader::cached_for_session`] — in-process cache keyed on
-///    `(path, mtime)`; re-reads only when the file changes.
-/// 3. [`EventReader::filter_kind`] — zero-allocation adapter over any
-///    `Iterator<Item = Event>`.
+/// Exposes one access pattern: [`EventReader::stream`], a streaming iterator
+/// that never loads the full file.
 #[derive(Default)]
-pub struct EventReader {
-    cache: HashMap<CacheKey, Vec<Event>>,
-}
+pub struct EventReader;
 
 impl EventReader {
     /// Create a new, empty reader.
@@ -64,43 +52,6 @@ impl EventReader {
         itertools_either::Either::Right(iter)
     }
 
-    /// Return a cached slice of all events for `spec_path`.
-    ///
-    /// The cache entry is invalidated whenever `fs::metadata(path)?.modified()`
-    /// changes. On any IO error (missing file, unsupported mtime) the method
-    /// returns an empty slice rather than propagating the error (fail-open).
-    pub fn cached_for_session(&mut self, spec_path: &Path) -> &[Event] {
-        let mtime = fs::metadata(spec_path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
-        let key: CacheKey = (spec_path.to_path_buf(), mtime);
-
-        // Only insert if the key is absent (avoids a redundant clone on hit).
-        if !self.cache.contains_key(&key) {
-            let events: Vec<Event> = Self::stream(spec_path).collect();
-            self.cache.insert(key.clone(), events);
-        }
-
-        // Evict stale entries for the same path with a different mtime.
-        // Keep the cache bounded: one entry per logical file.
-        let path_buf = spec_path.to_path_buf();
-        self.cache
-            .retain(|k, _| k.0 != path_buf || k.1 == mtime);
-
-        self.cache.get(&key).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    /// Zero-allocation adapter that filters an event iterator by `kind`.
-    ///
-    /// Returns only events whose `kind` field equals `kind` exactly.
-    /// No intermediate `Vec` is allocated.
-    pub fn filter_kind<'a>(
-        iter: impl Iterator<Item = Event> + 'a,
-        kind: &'a str,
-    ) -> impl Iterator<Item = Event> + 'a {
-        iter.filter(move |e| e.kind == kind)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +59,7 @@ impl EventReader {
 // concrete iterator types without boxing. Only used inside this module.
 // ---------------------------------------------------------------------------
 mod itertools_either {
-    pub enum Either<L, R> {
+    pub(crate) enum Either<L, R> {
         Left(L),
         Right(R),
     }
@@ -213,23 +164,4 @@ mod tests {
         assert_eq!(events.len(), 2);
     }
 
-    #[test]
-    fn filter_kind_returns_matching_events_only() {
-        let f = make_ndjson(10);
-        let iter = EventReader::stream(f.path());
-        let tool_uses: Vec<Event> = EventReader::filter_kind(iter, "tool.use").collect();
-        // Lines 0,2,4,6,8 → kind == "tool.use"
-        assert_eq!(tool_uses.len(), 5);
-        assert!(tool_uses.iter().all(|e| e.kind == "tool.use"));
-    }
-
-    #[test]
-    fn cached_for_session_returns_same_slice_on_second_call() {
-        let f = make_ndjson(5);
-        let mut reader = EventReader::new();
-        let first = reader.cached_for_session(f.path()).len();
-        let second = reader.cached_for_session(f.path()).len();
-        assert_eq!(first, second);
-        assert_eq!(first, 5);
-    }
 }

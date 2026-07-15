@@ -42,8 +42,7 @@ pub(super) struct KeyedHit<K> {
 }
 
 /// The shared `aho-corasick` engine, generic over the *key* each term is
-/// tagged with. The regression matcher instantiates `K = Layer`; the
-/// framework detector instantiates `K = FrameworkCategory`. Construction
+/// tagged with. The regression matcher instantiates `K = Layer`. Construction
 /// deduplicates terms within a key and across keys (first key wins), then
 /// builds a single leftmost-first DFA over the surviving terms.
 ///

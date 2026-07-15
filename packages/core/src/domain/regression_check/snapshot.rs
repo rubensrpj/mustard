@@ -34,7 +34,7 @@
 
 use super::{CaptureMode, FunctionCapture, Snapshot, TextSpan};
 use crate::domain::ast::{AstError, GrammarLoader, TreeSitterParser, extract_function_signatures};
-use crate::domain::spec::touched_functions::{self, Qualifier, TouchedFunction, TouchedFunctions};
+use crate::domain::spec::touched_functions::{self, Qualifier, TouchedFunction};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -136,29 +136,6 @@ impl Snapshot {
             warnings,
         })
     }
-}
-
-/// Helper bridging [`Snapshot::capture_for_spec`] for callers that already
-/// hold a [`TouchedFunctions`] (rare — kept for symmetry with the W0 API).
-pub fn capture_for_parsed(
-    loader: &GrammarLoader,
-    declared: &TouchedFunctions,
-    codebase_root: &Path,
-    spec_path: PathBuf,
-) -> Result<CaptureReport, RegressionError> {
-    let now = crate::platform::time::now_iso8601();
-    let mut snapshot = Snapshot::empty(spec_path, now);
-    let mut warnings: Vec<CaptureWarning> = Vec::new();
-
-    for tf in declared.all() {
-        let capture = capture_one_function(loader, codebase_root, tf, &mut warnings)?;
-        snapshot.insert(capture);
-    }
-
-    Ok(CaptureReport {
-        snapshot,
-        warnings,
-    })
 }
 
 // ---------------------------------------------------------------------------

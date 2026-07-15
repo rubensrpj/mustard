@@ -27,7 +27,7 @@ pub struct RehookOpts {
 }
 
 #[derive(Serialize)]
-pub struct RestoredEntry {
+pub(crate) struct RestoredEntry {
     pub settings_path: String,
     /// Path that was restored from (`Some` only when state == "restored").
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,7 +39,7 @@ pub struct RestoredEntry {
 }
 
 #[derive(Serialize)]
-pub struct RehookReport {
+pub(crate) struct RehookReport {
     pub scope: String,
     pub timestamp: String,
     pub entries: Vec<RestoredEntry>,

@@ -180,7 +180,7 @@ fn sync_state(view: &mut SpecView) {
 /// here, not a misuse.
 #[must_use]
 #[allow(deprecated)]
-pub fn fold_legacy_status(view: &SpecView) -> SpecStatus {
+pub(crate) fn fold_legacy_status(view: &SpecView) -> SpecStatus {
     view.status
 }
 

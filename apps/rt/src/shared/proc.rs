@@ -100,7 +100,7 @@ pub fn free_port(port: u16) -> Vec<u32> {
 
 /// PIDs listening on `127.0.0.1:<port>`, parsed from a platform query. Empty
 /// on any failure (no tool on PATH, nothing listening, unparseable output).
-pub fn listening_pids(port: u16) -> Vec<u32> {
+pub(crate) fn listening_pids(port: u16) -> Vec<u32> {
     #[cfg(windows)]
     {
         // `netstat -ano` rows look like:

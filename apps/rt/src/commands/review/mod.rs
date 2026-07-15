@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod review_dispatch;
 pub mod review_prefetch;
 pub mod review_result;

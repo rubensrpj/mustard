@@ -56,7 +56,7 @@ pub struct BackupSpecsOpts {
 
 /// Per-entry record in the JSON report.
 #[derive(Debug, Serialize)]
-pub struct CopyRecord {
+pub(crate) struct CopyRecord {
     pub source: String,
     pub target: String,
     pub action: &'static str,
@@ -96,7 +96,7 @@ pub struct Manifest {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct BackupReport {
+pub(crate) struct BackupReport {
     pub target: String,
     pub filter: String,
     pub dry_run: bool,

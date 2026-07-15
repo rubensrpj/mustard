@@ -105,12 +105,6 @@ impl Tree {
     pub fn as_tree_sitter(&self) -> &tree_sitter::Tree {
         &self.inner
     }
-
-    /// Take ownership of the inner `tree_sitter::Tree`.
-    #[must_use]
-    pub fn into_tree_sitter(self) -> tree_sitter::Tree {
-        self.inner
-    }
 }
 
 /// Public function signature extracted from a source file.

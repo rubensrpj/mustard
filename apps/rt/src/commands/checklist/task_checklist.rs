@@ -32,7 +32,7 @@ pub struct TaskChecklistOpts {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct ChecklistReport {
+pub(crate) struct ChecklistReport {
     pub domain: String,
     pub items: Vec<String>,
     pub fallback_to_consistency: bool,
@@ -40,7 +40,7 @@ pub struct ChecklistReport {
 
 /// Pure resolver — returns the canonical bullet list for `domain`.
 #[must_use]
-pub fn checklist_for(domain: &str) -> (Vec<&'static str>, bool) {
+pub(crate) fn checklist_for(domain: &str) -> (Vec<&'static str>, bool) {
     let lc = domain.trim().to_ascii_lowercase();
     match lc.as_str() {
         "copy" => (

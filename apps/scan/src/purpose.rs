@@ -50,7 +50,7 @@ const MAX_FILES: usize = 12;
 /// One file the purpose index answered, with the query tokens its declarations'
 /// purpose summaries bridged. `matched_terms` is sorted (byte-stable).
 #[derive(Serialize)]
-pub struct PurposeHit {
+pub(crate) struct PurposeHit {
     pub file: String,
     #[serde(rename = "matchedTerms")]
     pub matched_terms: Vec<String>,

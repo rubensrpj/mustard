@@ -82,7 +82,7 @@ impl Candidate {
     /// Drives idempotency: the same (parent, description, scope) always hashes
     /// to the same id, so a re-detect proposes it at most once.
     #[must_use]
-    pub fn candidate_id(&self, parent: &str) -> String {
+    pub(crate) fn candidate_id(&self, parent: &str) -> String {
         let material = format!("{parent}|{}|{}", self.description, self.scope);
         let mut h = crate::util::sha256::Sha256::new();
         h.update(material.as_bytes());
@@ -127,7 +127,7 @@ fn candidates_from_payload(payload: &Value, source: &str) -> Vec<Candidate> {
 /// candidate carried by a `review.result` / `qa.result` event. Deterministic:
 /// events are scanned in chronological order. Fail-open to an empty vec.
 #[must_use]
-pub fn detect_candidates(cwd: &Path, spec: &str) -> Vec<Candidate> {
+pub(crate) fn detect_candidates(cwd: &Path, spec: &str) -> Vec<Candidate> {
     let events_dir = ClaudePaths::for_project(cwd)
         .and_then(|p| p.for_spec(spec))
         .ok()
@@ -202,7 +202,7 @@ fn emit_proposal(cwd: &Path, spec: &str, candidate: &Candidate, candidate_id: &s
 /// description)` pairs. Idempotent: candidates already proposed are skipped.
 /// Pure orchestration over the helpers above — no printing.
 #[must_use]
-pub fn propose(cwd: &Path, spec: &str) -> Vec<(String, String)> {
+pub(crate) fn propose(cwd: &Path, spec: &str) -> Vec<(String, String)> {
     let candidates = detect_candidates(cwd, spec);
     let already = already_proposed_ids(cwd, spec);
     let mut emitted_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

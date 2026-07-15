@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod emit_event;
 pub mod emit_phase;
 pub mod emit_pipeline;

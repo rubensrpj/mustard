@@ -106,7 +106,8 @@ impl KnowledgeStore {
 
     /// The canonical on-disk path for `k`: `<root>/<legacy-subdir>/<slug>.md`.
     #[must_use]
-    pub fn path_for(&self, k: &Knowledge) -> PathBuf {
+    #[cfg(test)]
+    pub(crate) fn path_for(&self, k: &Knowledge) -> PathBuf {
         self.dir_for(k).join(format!("{}.md", k.slug()))
     }
 
@@ -218,46 +219,6 @@ impl KnowledgeStore {
         Ok(parse_text(&text))
     }
 
-    /// Stamp `last_used: <now_iso>` on each of `records` — the **surfacing**
-    /// write-back that closes the feedback loop: a record actually *injected* into
-    /// an agent's prompt is touched so its decay clock resets and `prune` knows it
-    /// is alive. Only the records passed in are touched (bounded to the top-K the
-    /// recall returned), and the call is **fail-open**: a record whose file is
-    /// missing or unwritable is skipped, never fatal — the recall/render must not
-    /// break because a touch failed.
-    ///
-    /// The on-disk path is the content-addressed [`path_for`](Self::path_for), so
-    /// the touch lands on the exact file the record came from. Only the
-    /// `last_used` frontmatter key is changed; every other key and the body are
-    /// preserved byte-for-byte (the file is re-parsed and re-rendered through the
-    /// store's own frontmatter writer). Returns the count actually touched (for
-    /// diagnostics / tests).
-    pub fn touch_last_used(&self, records: &[Knowledge], now_iso: &str) -> usize {
-        let mut touched = 0;
-        for k in records {
-            if self.touch_one_last_used(&self.path_for(k), now_iso).is_some() {
-                touched += 1;
-            }
-        }
-        touched
-    }
-
-    /// Update the `last_used` frontmatter key of the file at `path` to `now_iso`,
-    /// preserving every other key and the body. `None` on any IO/parse failure
-    /// (fail-open). Private helper for [`touch_last_used`](Self::touch_last_used).
-    fn touch_one_last_used(&self, path: &Path, now_iso: &str) -> Option<()> {
-        let text = fs::read_to_string(path).ok()?;
-        let (fm, body) = frontmatter::parse(&text);
-        let mut map = fm
-            .as_ref()
-            .and_then(frontmatter::Frontmatter::as_object)
-            .cloned()
-            .unwrap_or_default();
-        map.insert("last_used".into(), Value::String(now_iso.to_string()));
-        let rendered = render_markdown(&map, body);
-        fs::write_atomic(path, rendered.as_bytes()).ok()?;
-        Some(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +232,7 @@ impl KnowledgeStore {
 /// re-listing the dirs. The fifth, name-addressed `spec/{spec}/memory` store is
 /// deliberately **not** here: it is globbed at read time and never swept by
 /// prune, so it stays out of the fixed set.
-pub const STORE_DIRS: [&[&str]; 4] = [
+pub(crate) const STORE_DIRS: [&[&str]; 4] = [
     &["memory", "agent"],
     &["memory", "decisions"],
     &["memory", "lessons"],
@@ -813,41 +774,6 @@ mod tests {
         let predicted = store.path_for(&k);
         let written = write_ok(&store, &k);
         assert_eq!(predicted, written);
-    }
-
-    #[test]
-    fn touch_last_used_stamps_only_the_passed_records() {
-        let dir = tempdir().unwrap();
-        let store = KnowledgeStore::new(dir.path());
-        let injected = sample(Kind::Decision, Scope::Global, "injected", "this record was surfaced");
-        let untouched = sample(Kind::Lesson, Scope::Global, "untouched", "this one was not surfaced");
-        let p_injected = write_ok(&store, &injected);
-        let p_untouched = write_ok(&store, &untouched);
-
-        // Touch ONLY the injected record.
-        let touched = store.touch_last_used(&[injected.clone()], "2026-07-01T00:00:00.000Z");
-        assert_eq!(touched, 1, "exactly the one passed record is touched");
-
-        // The injected file now carries the new last_used; the untouched one does not.
-        let inj_text = std::fs::read_to_string(&p_injected).unwrap();
-        assert!(inj_text.contains("last_used: 2026-07-01T00:00:00.000Z"), "{inj_text}");
-        let unt_text = std::fs::read_to_string(&p_untouched).unwrap();
-        assert!(!unt_text.contains("last_used: 2026-07-01"), "untouched must keep its old stamp: {unt_text}");
-
-        // Touch preserves every other key + the body (record still round-trips).
-        let back = store.read(&p_injected).unwrap();
-        assert_eq!(back.label, "injected");
-        assert_eq!(back.content, "this record was surfaced");
-    }
-
-    #[test]
-    fn touch_last_used_is_fail_open_on_missing_file() {
-        let dir = tempdir().unwrap();
-        let store = KnowledgeStore::new(dir.path());
-        // A record that was never written — its path does not exist. Touch must
-        // not panic and must report zero touched (skipped), never fatal.
-        let ghost = sample(Kind::Decision, Scope::Global, "ghost", "never written to disk");
-        assert_eq!(store.touch_last_used(&[ghost], "2026-07-01T00:00:00.000Z"), 0);
     }
 
     #[test]

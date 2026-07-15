@@ -49,7 +49,7 @@ pub struct BaselineEntry {
 
 /// On-disk baseline file.
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct BaselineFile {
+pub(crate) struct BaselineFile {
     pub entries: BTreeMap<String, BaselineEntry>,
 }
 

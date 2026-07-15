@@ -1,8 +1,8 @@
 //! Crate-level error type and fail-open helpers.
 //!
 //! [`model`](crate::domain::model) is pure and error-free; the moment a layer touches
-//! the filesystem ([`fs`](crate::io::fs)), the environment ([`env`](crate::platform::env)),
-//! or parses config ([`config`](crate::platform::config)) it needs a typed error. This
+//! the filesystem ([`fs`](crate::io::fs)) or parses config
+//! ([`config`](crate::platform::config)) it needs a typed error. This
 //! is that type.
 //!
 //! **Fail-open is the rule.** No function in the crate panics on these
@@ -12,8 +12,8 @@
 //! treat an absent file as "empty" (the common fail-open case) while still
 //! surfacing a genuine I/O failure.
 //!
-//! The [`fail_open`] / [`fail_open_with`] helpers make that pattern explicit:
-//! collapse a `Result` to a fallback value without ever propagating the error.
+//! The [`fail_open`] helper makes that pattern explicit: collapse a `Result`
+//! to a fallback value without ever propagating the error.
 //!
 //! This enum is `#[non_exhaustive]`; later waves can add variants without
 //! breaking a downstream `match` (consumers keep a wildcard arm).
@@ -79,11 +79,6 @@ impl Error {
         Self::Env(msg.into())
     }
 
-    /// Construct an [`Error::InvalidInput`] from anything string-like.
-    pub fn invalid_input(msg: impl Into<String>) -> Self {
-        Self::InvalidInput(msg.into())
-    }
-
     /// Construct an [`Error::CheckFailed`] from anything string-like.
     pub fn check_failed(msg: impl Into<String>) -> Self {
         Self::CheckFailed(msg.into())
@@ -107,14 +102,6 @@ pub fn fail_open<T>(result: Result<T>, fallback: T) -> T {
     result.unwrap_or(fallback)
 }
 
-/// Like [`fail_open`], but the fallback is produced lazily by a closure.
-///
-/// Prefer this when constructing the fallback is non-trivial (allocates,
-/// reads further state) so the cost is only paid on the error path.
-pub fn fail_open_with<T>(result: Result<T>, fallback: impl FnOnce() -> T) -> T {
-    result.unwrap_or_else(|_| fallback())
-}
-
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
         Self::Parse(err.to_string())
@@ -135,14 +122,6 @@ mod tests {
     fn fail_open_returns_fallback_on_err() {
         let r: Result<u8> = Err(Error::config("bad mode"));
         assert_eq!(fail_open(r, 7), 7);
-    }
-
-    #[test]
-    fn fail_open_with_is_lazy() {
-        let r: Result<String> = Ok("present".into());
-        // The closure must not run on the Ok path.
-        let value = fail_open_with(r, || panic!("fallback evaluated on Ok"));
-        assert_eq!(value, "present");
     }
 
     #[test]

@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod active_specs;
 pub mod approve_spec;
 pub mod complete_spec;

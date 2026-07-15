@@ -866,7 +866,6 @@ fn run_rtk_rewrite_subprocess(cmd: &str) -> Option<String> {
 /// Inner implementation of [`run_rtk_rewrite_subprocess`], accepting an
 /// explicit binary name. Extracted so tests can inject a fake binary name
 /// without mutating process environment (which is `unsafe` in edition 2024).
-#[cfg_attr(not(test), allow(dead_code))]
 fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String> {
     let mut command = Command::new(binary);
     command

@@ -7,8 +7,8 @@ members = ["apps/cli", "apps/mcp", "apps/rt", "apps/scan", "packages/core"]
 # `pnpm dashboard:dev` / `pnpm dashboard:build`).
 # Also excluded: the mustard-translate sidecar (apps/translate) — candle +
 # lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the
-# deterministic scanner; it builds standalone, same precedent as apps/embed.
-exclude = ["apps/dashboard/src-tauri", "apps/translate", "apps/embed"]
+# deterministic scanner; it builds standalone, as its own workspace.
+exclude = ["apps/dashboard/src-tauri", "apps/translate"]
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own

@@ -131,7 +131,7 @@ pub fn rewrite_hooks_value(root: &mut Value, mustard_rt_abs: &str) -> usize {
 /// `mustard-rt` token is absolutised (and a stray `rtk` dropped); the
 /// `run statusline` tail is preserved verbatim. A non-Mustard or absent
 /// `statusLine` is left untouched.
-pub fn rewrite_statusline_value(root: &mut Value, mustard_rt_abs: &str) -> usize {
+pub(crate) fn rewrite_statusline_value(root: &mut Value, mustard_rt_abs: &str) -> usize {
     // Copy the command out first so the immutable borrow of `root` ends before
     // the in-place write below.
     let Some(command) = root

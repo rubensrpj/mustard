@@ -47,7 +47,7 @@ use std::path::Path;
 /// can fold over the same canonical event slice without duplicating the
 /// converter.
 #[must_use]
-pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
+pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
     harness_from_raw(&e.raw, e.payload)
 }
 
@@ -61,7 +61,7 @@ pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// remains the entry point for records streamed off disk via [`EventReader`].
 /// Both share one field-extraction body so the two paths can never drift.
 #[must_use]
-pub fn value_to_harness(record: &Value) -> HarnessEvent {
+pub(crate) fn value_to_harness(record: &Value) -> HarnessEvent {
     let payload = record.get("payload").cloned().unwrap_or(Value::Null);
     harness_from_raw(record, payload)
 }

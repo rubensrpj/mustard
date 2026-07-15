@@ -37,7 +37,7 @@ pub fn collect(cwd: &Path) -> EconomyReport {
 
 /// Pure loader scoped to a specific spec name (W2 path catalog).
 #[must_use]
-pub fn collect_for_spec(cwd: &Path, spec: Option<&str>) -> EconomyReport {
+pub(crate) fn collect_for_spec(cwd: &Path, spec: Option<&str>) -> EconomyReport {
     let file = load(cwd, spec);
     let mut entries: Vec<BaselineEntry> = file.entries.into_values().collect();
     entries.sort_by(|a, b| {

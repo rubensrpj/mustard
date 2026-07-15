@@ -22,23 +22,6 @@ pub enum TimeWindow {
     All,
 }
 
-impl TimeWindow {
-    /// SQL fragment that selects this window on the `events` table. Used by
-    /// the `SQLite` reader. Returns the empty string for `All`.
-    ///
-    /// The boundary expressions match `datetime('now', '-X')` so they work on
-    /// ISO-8601 timestamps stored as TEXT.
-    #[must_use]
-    pub fn sql_filter(self) -> &'static str {
-        match self {
-            Self::Today => "ts >= datetime('now', 'start of day')",
-            Self::SevenDays => "ts >= datetime('now', '-7 days')",
-            Self::ThirtyDays => "ts >= datetime('now', '-30 days')",
-            Self::All => "1=1",
-        }
-    }
-}
-
 /// Filter on a list of specs.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SpecStatusFilter {
@@ -70,14 +53,6 @@ mod tests {
     #[test]
     fn time_window_default_is_today() {
         assert_eq!(TimeWindow::default(), TimeWindow::Today);
-    }
-
-    #[test]
-    fn time_window_sql_fragments_are_distinct() {
-        assert_ne!(TimeWindow::Today.sql_filter(), TimeWindow::All.sql_filter());
-        assert!(TimeWindow::All.sql_filter().contains("1=1"));
-        assert!(TimeWindow::SevenDays.sql_filter().contains("-7 days"));
-        assert!(TimeWindow::ThirtyDays.sql_filter().contains("-30 days"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-pub struct Ingested {
+pub(crate) struct Ingested {
     pub root: PathBuf,
     pub source_files: Vec<SourceFile>,
     pub manifests: Vec<Manifest>,

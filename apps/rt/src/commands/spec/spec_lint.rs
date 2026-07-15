@@ -53,17 +53,11 @@ use std::path::{Path, PathBuf};
 // Issue — one lint finding
 // ---------------------------------------------------------------------------
 
-/// Severity of a lint [`Issue`]. `Error` participates in the `ok` verdict;
-/// `Warn` is advisory only. Serialised as the lowercase strings `"error"` /
-/// `"warn"` for a stable JSON contract.
+/// Severity of a lint [`Issue`]. `Error` participates in the `ok` verdict.
+/// Serialised as the lowercase string `"error"` for a stable JSON contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Level {
     Error,
-    /// Advisory severity. Part of the public JSON contract (`"level":"warn"`),
-    /// reserved for future non-blocking rules; no current rule emits it (every
-    /// rule today is an `Error` per the linter's scope), hence the allow.
-    #[allow(dead_code)]
-    Warn,
 }
 
 impl Level {
@@ -71,7 +65,6 @@ impl Level {
     fn as_str(self) -> &'static str {
         match self {
             Level::Error => "error",
-            Level::Warn => "warn",
         }
     }
 }
