@@ -1,10 +1,10 @@
 # Merge Protocol Reference
 
-> Detail for auto-stash, ff-only merge, forbidden operations, and final status report.
+> Detail for auto-stash, forbidden operations, and final status report.
 
 ## Auto-stash Protocol
 
-EVERY checkout (sync, merge feature→dev, merge main step 1+2, `checkout $ORIGIN`) MUST be wrapped.
+EVERY checkout a sub-flow performs (sync, or any branch switch inside an action) MUST be wrapped.
 
 ### Sentinel
 
@@ -55,59 +55,6 @@ Irreversible at filesystem or history level — **BANNED**.
 
 Rationale: all state transitions must be recoverable via `rtk git reflog` / `rtk git stash list`. Filesystem-destructive shortcuts silently lose user work.
 
-## merge — Fast-Forward Protocol
-
-Promote current branch into its parent via **local ff-merge** — no PRs, no merge commits, 100% linear history. Single hop only — always merges into `dev`. Never cascades.
-
-### Procedure (submodules parallel first, then parent)
-
-`$SOURCE` = current branch, `$TARGET` = `$PARENT` (always `dev` for feature/fix).
-
-1. **Sync** (mandatory) — execute `sync` action to rebase from `dev`. Conflicts → STOP.
-2. **Ensure pushed** — if local is ahead of remote, run `push` first.
-3. Generate `SENTINEL="mustard-git-autostash-merge-$(date +%s%N)"`.
-4. **Ensure-excluded** (ephemerals).
-5. Auto-stash push (`-u`).
-6. Checkout chain with retry: `rtk git fetch origin && rtk git checkout "$SOURCE" && rtk git pull origin "$SOURCE" && rtk git checkout "$TARGET" && rtk git pull origin "$TARGET"`.
-7. Compact ff-merge + push: `rtk git merge --ff-only -q "$SOURCE" && rtk git --no-pager diff --stat HEAD@{1} HEAD | tail -3 && rtk git push origin "$TARGET"`.
-8. Return to `$SOURCE`: `rtk git checkout "$SOURCE"`.
-9. Safe stash pop by sentinel index.
-
-Skip submodules with no commits ahead.
-
-### Fast-forward failure
-
-`--ff-only` fails (branches diverged) → STOP and report. **NEVER** fall back to `rtk git reset --hard` or `rtk git checkout -f`.
-
-### Example: `/git merge` from `feature/login`
-
-```
-feature/login → dev
-  ├── SubprojectA: ff-merged + pushed
-  ├── SubprojectB: ff-merged + pushed
-  └── Parent:      ff-merged + pushed
-```
-
-## merge main — Full Promotion
-
-Full promotion to `main` — cascades through the entire flow chain, then returns to the original branch. Branch check: on `main` → refuse (terminal branch).
-
-`$ORIGIN` = current branch (saved). If not on `dev`: execute `merge` first (current → dev; failure → STOP). Then promote `dev → main` (Step 2 below). Return to `$ORIGIN`.
-
-### Step 2 — Merge dev into main
-
-`$SOURCE` = `dev`, `$TARGET` = `main`. Per-repo (submodules parallel first, then parent): SENTINEL `mustard-git-autostash-merge-main-$(date +%s%N)` → ensure-excluded → auto-stash push (`-u`) → checkout chain with retry (`fetch && checkout dev && pull dev && checkout main && pull main`) → compact ff-merge + push (`merge --ff-only -q dev && push origin main`) → return to `$ORIGIN` (parent uses `$ORIGIN`; submodules return to `dev`) → safe stash pop.
-
-### Example output
-
-```
-| Step                    | Status             |
-|-------------------------|--------------------|
-| feature/login → dev     | ff-merged + pushed |
-| dev → main              | ff-merged + pushed |
-| Return to feature/login | done               |
-```
-
 ## sync — Per-repo Procedure
 
 1. Ensure-excluded (ephemerals) — silent, idempotent.
@@ -128,7 +75,7 @@ Submodules in parallel (one Bash call each). Parent runs after.
 
 ## Final Status Report
 
-**MANDATORY** at the end of every write action (`commit`, `push`, `merge`, `merge main`). Categorizes `rtk git status --short` per repo.
+**MANDATORY** at the end of every write action (`commit`, `push`). Categorizes `rtk git status --short` per repo.
 
 ```bash
 echo "=== $(basename "$PWD") (branch: $(rtk git rev-parse --abbrev-ref HEAD)) ==="

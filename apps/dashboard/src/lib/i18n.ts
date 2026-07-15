@@ -100,7 +100,6 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["sidebar.economy", { pt: "Economia", en: "Economy" }],
   ["sidebar.knowledge", { pt: "Conhecimento", en: "Knowledge" }],
   ["sidebar.commands", { pt: "Comandos", en: "Commands" }],
-  ["sidebar.preferences", { pt: "Preferências", en: "Preferences" }],
   ["sidebar.settings", { pt: "Configurações", en: "Settings" }],
   ["sidebar.sessions", { pt: "Sessões", en: "Sessions" }],
   ["sidebar.activity", { pt: "Atividade", en: "Activity" }],

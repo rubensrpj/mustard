@@ -30,7 +30,6 @@ import {
   Terminal,
   Activity as ActivityIcon,
   FolderPlus,
-  Cog,
   ChevronRight,
   ChevronDown,
   MoreHorizontal,
@@ -543,7 +542,7 @@ function RailButton({
 export function Sidebar() {
   const { t } = useTranslation();
   // `tLib` powers W2-audit keys (`sidebar.add_project`, `sidebar.tools`,
-  // `sidebar.commands`, `sidebar.preferences`). The i18next
+  // `sidebar.commands`). The i18next
   // `t` still drives project-detection toasts, empty states, and the
   // `projects.addDialogTitle` Tauri dialog title (keys not duplicated here).
   const tLib = useT();
@@ -658,14 +657,6 @@ export function Sidebar() {
               />
             ))}
 
-            <div className="mt-auto" />
-            <Separator className="my-2" />
-            <RailButton
-              icon={Cog}
-              label={tLib("sidebar.preferences")}
-              active={location.pathname.startsWith("/preferences")}
-              onClick={() => navigate("/preferences")}
-            />
           </div>
         </TooltipProvider>
       </aside>
@@ -754,9 +745,6 @@ export function Sidebar() {
         {/* W10.T10.8 — installation health badge. Renders against the active
             workspace path; falls back to silent null when none is selected. */}
         <DoctorBadge projectPath={activeProjectsRoot ?? null} />
-        <NavLink to="/preferences" className={toolNavItemClass}>
-          <Cog className="h-3.5 w-3.5" /> {tLib("sidebar.preferences")}
-        </NavLink>
       </div>
     </aside>
   );

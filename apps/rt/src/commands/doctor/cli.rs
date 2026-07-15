@@ -24,7 +24,7 @@ pub enum DoctorCmd {
     /// category is FAIL, 0 otherwise.
     ///
     /// Pass `--json` as a shortcut for `--format json` (W10.T10.6).
-    #[command(display_order = 52)]
+    #[command(display_order = 43)]
     Doctor {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
@@ -48,7 +48,7 @@ pub enum DoctorCmd {
     /// `MUSTARD_DOCS_AUDIT_MODE=strict` set by the caller), exits `1` when any
     /// hit is found — the close gate uses this to block CLOSE on narrative
     /// drift after an architectural spec lands.
-    #[command(display_order = 58)]
+    #[command(display_order = 48)]
     DocsStaleCheck {
         /// Limit the audit to a single spec (`from_spec` field). Defaults to
         /// running every audit declared in the registry.
@@ -66,7 +66,7 @@ pub enum DoctorCmd {
     },
     /// Audit source files for pt-BR prose in EN-only files (diacritic-seed
     /// heuristic). Warn-only by default; `--strict` exits `1` on any hit.
-    #[command(display_order = 59)]
+    #[command(display_order = 49)]
     LanguageAudit {
         /// Output format: `text` (default) or `json`.
         #[arg(long, default_value = "text")]

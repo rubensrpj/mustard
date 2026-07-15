@@ -1072,7 +1072,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                     ),
                     "an incomplete checklist means the spec is not done",
                     &format!(
-                        "mark each via `bun .claude/scripts/mark-checklist-item.js \
+                        "mark each via `mustard-rt run mark-checklist-item \
                          --spec {} --item \"<text>\"`, or set \
                          MUSTARD_CHECKLIST_GATE_MODE=warn",
                         spec_ref.unwrap_or("")
@@ -1114,7 +1114,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                         .to_string(),
                     |s| {
                         format!(
-                            "run /mustard:qa or bun .claude/scripts/qa-run.js --spec {s}, \
+                            "run /mustard:qa or `mustard-rt run qa-run --spec {s}`, \
                              or set MUSTARD_QA_GATE_MODE=warn"
                         )
                     },

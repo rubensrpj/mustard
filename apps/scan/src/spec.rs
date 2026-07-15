@@ -79,51 +79,6 @@ pub fn compile(model: &ProjectModel, entity: &str, like: &str, ops: &[String], i
     render(model, conv, entity, like, like_matched, &lines, &wanted_ops, &roles_meta, invariants, novel)
 }
 
-/// One acceptance criterion: the role(s) and the target folder (entity already
-/// substituted). Same selection + target-dedup as `compile`, so `grain verify`
-/// checks exactly what the spec promised.
-pub(crate) struct Accept {
-    pub roles: String,
-    pub folder: String,
-    pub optional: bool,
-}
-
-pub fn acceptance(model: &ProjectModel, entity: &str, like: &str, ops: &[String]) -> Vec<Accept> {
-    let conv = match pick_slice(model, like) {
-        Some((c, _)) => c,
-        None => return Vec::new(),
-    };
-    let roles_meta: HashMap<&str, &RoleStat> = model.roles.iter().map(|r| (r.affix.as_str(), r)).collect();
-    let wanted_ops: Vec<String> = ops.iter().map(|o| o.trim().to_lowercase()).filter(|o| !o.is_empty()).collect();
-    let mut out: Vec<(String, Accept)> = Vec::new(); // (target key, item)
-    for step in &conv.steps {
-        let p = parse_step(step);
-        let selected = !p.optional || wanted_ops.iter().any(|op| p.role.to_lowercase().starts_with(op));
-        if !selected {
-            continue;
-        }
-        let folder = if p.folder.is_empty() {
-            roles_meta.get(p.role.as_str()).map(|r| r.common_dir.clone()).filter(|d| !d.is_empty()).unwrap_or_default()
-        } else {
-            p.folder.clone()
-        };
-        if folder.is_empty() {
-            continue;
-        }
-        let target = subst(&format!("{folder}{}", p.example), entity);
-        let folder_sub = subst(&folder, entity);
-        if let Some((_, a)) = out.iter_mut().find(|(t, _)| *t == target) {
-            if !a.roles.split('+').any(|r| r == p.role) {
-                a.roles = format!("{}+{}", a.roles, p.role);
-            }
-            a.optional = a.optional && p.optional;
-        } else {
-            out.push((target, Accept { roles: p.role.clone(), folder: folder_sub, optional: p.optional }));
-        }
-    }
-    out.into_iter().map(|(_, a)| a).collect()
-}
-
 struct SpecLine {
     roles: Vec<String>,
     target: String,
@@ -394,12 +349,6 @@ fn render(
         let tag = if l.optional { " _(optional)_" } else { "" };
         let loc = if l.folder.is_empty() { "(define location)".to_string() } else { subst(&l.folder, entity) };
         o.push_str(&format!("- [ ] **{}**{tag} for {entity} in `{loc}`\n", l.roles.join("+")));
-    }
-    if !invariants.is_empty() {
-        o.push_str(&format!(
-            "\n> **`scan verify` checks ONLY file presence, NOT the invariants ({}).** A slice can be 100% and still ignore the invariant — needs review (human/AI) reading the invariant anchors above.\n",
-            invariants.join(", ")
-        ));
     }
     o.push('\n');
     o.push_str("> This spec is both the subagent's input AND the reviewer's checklist: the same document generates and verifies. ");

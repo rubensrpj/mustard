@@ -59,7 +59,7 @@ A wave is considered **failed** when:
 4. **Prompt the user via AskUserQuestion:**
    - **"Corrigir wave {N} manualmente e retomar"** → user fixes by hand; next `/mustard:spec` (pick this spec's letter) clears `failedWaves` entry and restarts wave N from EXECUTE.
    - **"Reescrever wave {N} (re-PLAN dessa onda)"** → delete `wave-{N}-{role}/spec.md`, re-enter PLAN for wave N only (run PLAN sub-flow scoped to wave N's files). User then re-approves via `/mustard:spec` (pick the letter for this spec) for wave N.
-   - **"Abortar pipeline"** → set `status: "aborted"`, move spec to `.claude/spec/aborted/{specName}/` (create dir if needed), keep waves 1..N-1 commits. Inform user: `Pipeline aborted. Waves 1..{N-1} commits preserved. Waves {N}..{totalWaves} discarded.`
+   - **"Abortar pipeline"** → no filesystem move (the spec dir NEVER moves; lifecycle lives in `meta.json` + the event log): record the outcome via `mustard-rt run emit-pipeline --kind pipeline.status --spec {specName} --payload '{"to":"abandoned"}'` (use `"wave-failed"` when only this wave died), keep waves 1..N-1 commits. Inform user: `Pipeline aborted. Waves 1..{N-1} commits preserved. Waves {N}..{totalWaves} discarded.`
 
 **Risco residual documentado:** wave N-1 commits podem estar incompletos semanticamente sem wave N (ex.: schema criado mas API não). O usuário foi avisado disso no `/mustard:spec` (aprovação) da wave plan. O log `failure.md` explicita qual superfície ficou exposta.
 

@@ -210,8 +210,8 @@ Substitui `/approve` (PLAN) e `/resume` (EXEC). Um único *picker*: a letra apro
 | | |
 |---|---|
 | **Trigger** | `/mustard:spec [letra[r]]` |
-| **Backend** | `active-specs` (render) · `resume-bootstrap` (rota) · `dispatch-plan` (ordem de despacho) |
-| **Regra** | A ordem das ondas é decidida pelo Rust (`dispatch-plan`), nunca pela AI |
+| **Backend** | `active-specs` (render) · `resume-bootstrap` (rota) · `wave-advance` (despacho renderizado) |
+| **Regra** | A ordem das ondas é decidida pelo Rust (`wave-advance`), nunca pela AI |
 
 ```mermaid
 flowchart TD
@@ -226,8 +226,8 @@ flowchart TD
     stage -->|"Execute / Analyze / QaReview / Close"| resume["resume-flow (continua; ignora r)"]
 
     approveResume --> dp
-    resume --> dp["mustard-rt run dispatch-plan --spec<br/>(array ordenado de despacho)"]
-    dp --> loop["por item {wave, role, subproject, level, prompt_cmd}:<br/>roda prompt_cmd → Task(prompt verbatim)"]
+    resume --> dp["mustard-rt run wave-advance --spec<br/>(nível pendente, prompts já renderizados)"]
+    dp --> loop["por item {wave, role, subproject, subagent_type, prompt}:<br/>relay do prompt → Task(prompt verbatim)"]
     loop --> note["mesma 'level' → despacha em 1 msg<br/>pós-dispatch → resume-flow"]
     note --> done(["pronto"])
     approveOnly --> done
@@ -303,7 +303,7 @@ flowchart TD
     stamp --> know["memory knowledge + decision (máx 3 cada)"]
     know --> metrics["arquiva métricas → .claude/metrics/{spec}.json"]
     metrics --> banner["pipeline-summary → wave-tree → banner PIPELINE COMPLETE"]
-    banner --> epic["epic-fold --detect → fold por épico"]
+    banner --> epic["fold por épico (in-process no close-orchestrate)"]
     epic --> done(["pronto"])
 ```
 
@@ -530,15 +530,15 @@ flowchart TD
 
 ---
 
-# Skills e PRD
+# Skills
 
 ## `/skill` — Gerenciador de skills
 
 | Ação | Backend |
 |---|---|
-| `install <source>` | `skill-fetch` (path local, github sparse, repo completo) |
+| `install <name>` | manual — `mustard add skill:<name>` (extras empacotados) ou cópia para `.claude/skills/<name>/` (sem fetch embutido) |
 | `create <name>` | skill `skill-creator` (interativo) |
-| `list` | `skills list --format table` |
+| `list` | listagem manual de `.claude/skills/` (sem comando dedicado) |
 | `remove <name>` | apaga `.claude/skills/{name}/` (avisa se `source: scan`) |
 | `optimize / eval` | loops do `skill-creator` (requer Python 3 + `claude` CLI) |
 | `update skill-creator` | sparse-clone `anthropics/skills` |
@@ -546,35 +546,14 @@ flowchart TD
 ```mermaid
 flowchart TD
     start(["/skill &lt;action&gt;"]) --> action{"action?"}
-    action -->|install| inst["mustard-rt run skill-fetch &lt;source&gt;<br/>(sparse-clone · copy · valida frontmatter)<br/>→ source: manual"]
+    action -->|install| inst["manual: mustard add skill:&lt;name&gt; (extras)<br/>ou copiar para .claude/skills/&lt;name&gt;/<br/>→ source: manual"]
     action -->|create| create["skill-creator (interativo) → source: manual"]
-    action -->|list| list["skills list --format table"]
+    action -->|list| list["listagem manual de .claude/skills/"]
     action -->|remove| remove{"source: manual?"}
     remove -->|sim| confirm["pede confirmação"]
     remove -->|scan| warn["avisa que é gerado por /scan"]
     action -->|"optimize/eval"| opt["skill-creator (Python 3 + claude CLI)"]
     action -->|update| upd["sparse-clone anthropics/skills"]
-```
-
----
-
-## `/prd` — Intent → PRD JSON
-
-Lapida um texto livre em um PRD JSON estruturado para a página PRD Builder do dashboard. **Saída JSON pura** — sem spec, sem leitura de fonte.
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:prd <intent>` |
-| **Backend** | `mustard-rt run prd-build --intent` |
-| **Regra** | Nunca `Task`/`Read`; nunca escreve em `.claude/spec/`; nunca mistura logs com o JSON |
-
-```mermaid
-flowchart TD
-    start(["/mustard:prd &lt;intent&gt;"]) --> build["mustard-rt run prd-build --intent"]
-    build --> rust["rust: extrai tokens (PascalCase)<br/>confronta entidades vs grain.model.json<br/>confronta paths (Glob) · infere escopo · slug"]
-    rust --> json["monta JSON (camelCase, shape do PrdForm)"]
-    json --> print["print VERBATIM (JSON puro, sem fence)"]
-    print --> done(["consumido pelo dashboard"])
 ```
 
 ---
@@ -641,7 +620,7 @@ flowchart TD
 | `/scan` | core | `scan` | **produz** |
 | `/feature` | core | `feature`, `scan spec`, `spec-draft`, `wave-scaffold` | consome (digest) |
 | `/bugfix` | core | `feature`, `qa-run`, `scan` | consome (digest) + refresca |
-| `/spec` | core | `active-specs`, `resume-bootstrap`, `dispatch-plan` | indireto |
+| `/spec` | core | `active-specs`, `resume-bootstrap`, `wave-advance` | indireto |
 | `/qa` | core | `qa-run`, `tactical-fix-detect` | não |
 | `/close` | core | `close-orchestrate` (+ `scan`) | refresca se mudou |
 | `/tactical-fix` | core | `tactical-fix-create` | não |
@@ -652,8 +631,7 @@ flowchart TD
 | `/status` | observabilidade | `status` | não |
 | `/stats` | observabilidade | `metrics collect/report`, `event-projections` | não |
 | `/knowledge` | conhecimento | `memory list/search/knowledge` | não |
-| `/skill` | skills | `skill-fetch`, `skills list` | não |
-| `/prd` | skills | `prd-build` | consome (read_entity_names) |
+| `/skill` | skills | manual (`mustard add skill:<name>` p/ extras; sem backend `run`) | não |
 | `/unhook` | harness | `unhook` | não |
 | `/rehook` | harness | `rehook` | não |
 

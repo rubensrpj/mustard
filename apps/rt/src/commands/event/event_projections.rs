@@ -36,8 +36,6 @@ use std::path::{Path, PathBuf};
 
 /// `agent.stop` summary truncation, matching `DEFAULT_AGENT_SUMMARY_CHARS`.
 const AGENT_SUMMARY_CHARS: usize = 800;
-/// Finding-confidence floor, matching `DEFAULT_FINDING_CONFIDENCE`.
-const FINDING_CONFIDENCE: f64 = 0.7;
 /// Per-wave event cap, matching `DEFAULT_AGENT_EVENT_LIMIT`.
 const AGENT_EVENT_LIMIT: usize = 40;
 
@@ -52,54 +50,24 @@ pub(crate) fn read_workspace_events(cwd: &Path) -> Vec<HarnessEvent> {
     core_read_workspace_events(cwd)
 }
 
-/// `buildAgentVisibility` — recent events of a wave plus high-confidence
-/// findings. If `wave` is `None`, the max wave seen is used.
+/// `buildAgentVisibility` — recent events of a wave. The `findings` key stays
+/// in the shape as an always-empty array — the `finding` event lost its last
+/// producer (phantom-reader sweep).
+/// If `wave` is `None`, the max wave seen is used.
 fn build_agent_visibility(events: &[HarnessEvent], wave: Option<u32>) -> Value {
     let wave = wave.unwrap_or_else(|| events.iter().map(|e| e.wave).max().unwrap_or(0));
 
     let mut wave_events: Vec<Value> = Vec::new();
-    let mut findings: Vec<&HarnessEvent> = Vec::new();
     for ev in events {
         if ev.wave == wave {
             wave_events.push(truncate_summary(ev));
-        }
-        if ev.event == "finding" {
-            let conf = ev.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
-            if conf >= FINDING_CONFIDENCE {
-                findings.push(ev);
-            }
-        }
-    }
-    // Sort findings: confidence desc, then ts desc.
-    findings.sort_by(|a, b| {
-        let ca = a.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
-        let cb = b.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
-        cb.partial_cmp(&ca)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.ts.cmp(&a.ts))
-    });
-    // Dedup findings by the first 60 chars of normalised content.
-    let mut seen = std::collections::HashSet::new();
-    let mut deduped: Vec<Value> = Vec::new();
-    for f in findings {
-        let content = f.payload.get("content").and_then(Value::as_str).unwrap_or("");
-        let key: String = content
-            .to_lowercase()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(60)
-            .collect();
-        if seen.insert(key) {
-            deduped.push(serde_json::to_value(f).unwrap_or(Value::Null));
         }
     }
     // Keep the most recent events within the limit.
     if wave_events.len() > AGENT_EVENT_LIMIT {
         wave_events.drain(..wave_events.len() - AGENT_EVENT_LIMIT);
     }
-    json!({ "wave": wave, "events": wave_events, "findings": deduped })
+    json!({ "wave": wave, "events": wave_events, "findings": [] })
 }
 
 /// Truncate an `agent.stop` event's `payload.summary`, leaving others as-is.
@@ -123,13 +91,13 @@ fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) -> Value {
     let mut phase: Option<String> = None;
     let mut last_event_at: Option<String> = None;
     let mut started_at: Option<String> = None;
-    let mut dispatch_failures: Vec<Value> = Vec::new();
+    let dispatch_failures: Vec<Value> = Vec::new();
     let mut decisions: Vec<Value> = Vec::new();
     let mut lessons: Vec<Value> = Vec::new();
     let mut api_calls = 0i64;
     let mut tool_breakdown: serde_json::Map<String, Value> = serde_json::Map::new();
     let mut agent_count = 0i64;
-    let mut failures_by_phase: serde_json::Map<String, Value> = serde_json::Map::new();
+    let failures_by_phase: serde_json::Map<String, Value> = serde_json::Map::new();
 
     for ev in events {
         if let Some(s) = spec {
@@ -150,17 +118,6 @@ fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) -> Value {
                 } else if let Some(from) = ev.payload.get("from").and_then(Value::as_str) {
                     phase = Some(from.to_string());
                 }
-            }
-            "dispatch.failure" => {
-                dispatch_failures.push(serde_json::to_value(ev).unwrap_or(Value::Null));
-                let ph = ev
-                    .payload
-                    .get("phase")
-                    .and_then(Value::as_str)
-                    .unwrap_or("UNKNOWN")
-                    .to_string();
-                let n = failures_by_phase.get(&ph).and_then(Value::as_i64).unwrap_or(0);
-                failures_by_phase.insert(ph, json!(n + 1));
             }
             "decision" => decisions.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "lesson" => lessons.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
@@ -202,7 +159,6 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
     let mut ended_at: Option<String> = None;
     let mut agent_count = 0i64;
     let mut tool_count = 0i64;
-    let mut findings: Vec<Value> = Vec::new();
     let mut decisions: Vec<Value> = Vec::new();
     let mut lessons: Vec<Value> = Vec::new();
     let mut hygiene: Vec<Value> = Vec::new();
@@ -224,7 +180,6 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
         match ev.event.as_str() {
             "agent.start" => agent_count += 1,
             "tool.use" => tool_count += 1,
-            "finding" => findings.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "decision" => decisions.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "lesson" => lessons.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             // hygiene.detected / hygiene.autoclose / hygiene.skipped — surfaced so
@@ -242,7 +197,7 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
         "agentCount": agent_count,
         "toolCount": tool_count,
         "specs": specs.into_iter().collect::<Vec<_>>(),
-        "findings": findings,
+        "findings": [],
         "decisions": decisions,
         "lessons": lessons,
         "hygiene": hygiene,
@@ -271,7 +226,7 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> Option<String> {
 /// Children are reconstructed from `spec.link` events (`{ parent, child }`) —
 /// the single source of truth post-W4C. The legacy
 /// `.pipeline-states/{epic}.json` `children_specs` array is no longer written
-/// ([`crate::commands::spec::spec_link`] emits only the NDJSON event), so this
+/// (the retired `spec-link` command emitted only the NDJSON event), so this
 /// derives the edge from the stream like [`build_spec_tree`] does.
 fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value {
     let _ = cwd;
@@ -306,7 +261,6 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
     let mut spec_set: std::collections::BTreeSet<&str> = children.iter().map(String::as_str).collect();
     spec_set.insert(epic);
 
-    let mut findings: Vec<Value> = Vec::new();
     let mut decisions: Vec<Value> = Vec::new();
     let mut lessons: Vec<Value> = Vec::new();
     let (mut tool_calls, mut agents) = (0i64, 0i64);
@@ -332,7 +286,6 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
             }
         }
         match ev.event.as_str() {
-            "finding" => findings.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "decision" => decisions.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "lesson" => lessons.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "tool.use" => tool_calls += 1,
@@ -350,7 +303,7 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
     json!({
         "epic": epic,
         "children": children_info,
-        "findings": findings,
+        "findings": [],
         "decisions": decisions,
         "lessons": lessons,
         "metrics": {
@@ -1285,7 +1238,7 @@ mod tests {
     fn session_summary_collects_specs_and_counts() {
         let events = vec![
             ev("agent.start", Some("a"), json!({})),
-            ev("finding", Some("b"), json!({ "content": "x" })),
+            ev("tool.use", Some("b"), json!({ "tool": "Edit" })),
         ];
         let v = build_session_summary(&events);
         assert_eq!(v["agentCount"], json!(1));

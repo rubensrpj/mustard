@@ -29,7 +29,7 @@ pub enum GitCmd {
     /// it verifies + updates and answers `exit-and-rerun` — leave, then
     /// finish with `--unit <branch>` from the main checkout.
     #[command(name = "git-settle")]
-    #[command(display_order = 2)]
+    #[command(display_order = 1)]
     GitSettle {
         /// The work branch to settle. Omitted: read from the invocation
         /// directory's HEAD (which must NOT be an integration base).

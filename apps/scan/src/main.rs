@@ -18,7 +18,6 @@ mod matching;
 mod mine;
 mod model;
 mod pagerank;
-mod purpose;
 mod rank;
 mod spec;
 mod stemmers;
@@ -93,23 +92,6 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Find the files whose declarations' `purpose` summaries answer a free-text
-    /// intent — the recall path for a method whose NAME diverges from the request
-    /// vocabulary (e.g. PT "efetivar" vs `EffectivateAsync`). UNCAPPED over the
-    /// model's purposed declarations and matched through the SAME ladder
-    /// `digest --query` uses (with the trigram rescue rung ON). Deterministic, no
-    /// LLM (the purposes are already in the model). `path` is a project dir to
-    /// scan, or a model.json. Emits byte-stable JSON `{intent, files:[{file,
-    /// matchedTerms}]}`; an empty `files` means nothing bridged.
-    PurposeSearch {
-        path: PathBuf,
-        /// Comma/space-separated intent terms to search the purpose index for
-        /// (OR across terms; terms <3 chars ignored), e.g. "approve,settle".
-        #[arg(long, default_value = "")]
-        query: String,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
     /// Rank the model's files for a raw (e.g. Portuguese) request via personalized
     /// PageRank over the dependency graph, SEEDED by the distinctive-vocabulary
     /// dictionary — the localization layer over the dictionary's PT→term bridge.
@@ -165,39 +147,15 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Verify an implementation against the spec's acceptance criteria: for each
-    /// required location, check the project has a file for the entity. `path` is
-    /// the (implemented) project dir, or a grain.model.json (+ its root).
-    Verify {
-        path: PathBuf,
-        #[arg(long)]
-        entity: String,
-        #[arg(long, default_value = "")]
-        like: String,
-        #[arg(long, default_value = "create")]
-        ops: String,
-    },
 }
 
-/// Count files under `dir` that belong to the entity. If the folder itself is
-/// the entity's (its path contains the entity), any file counts; in a SHARED
-/// folder, only files whose name contains the entity token count.
-fn count_entity_files(dir: &Path, entity_lower: &str, owned: bool) -> usize {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_file())
-        .filter(|e| owned || e.file_name().to_string_lossy().to_lowercase().contains(entity_lower))
-        .count()
-}
 
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
 fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
-        // Projections (digest/facts/spec/purpose) want only the model; the
+        // Projections (digest/facts/spec) want only the model; the
         // dictionary sidecar is a scan-write concern, discarded here — so the
         // EN normalization (a sidecar spawn) is skipped too.
         Ok(analyze(path)?.0)
@@ -265,25 +223,6 @@ fn main() -> Result<()> {
                 None => println!("{spec_md}"),
             }
         }
-        Command::PurposeSearch { path, query, out } => {
-            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            // Fail-open: an unreadable / unparseable model yields an empty result
-            // (the orchestrator calls this on a miss; a degraded model must never
-            // turn the recall attempt into a hard error). On a load failure the
-            // empty intent stands.
-            let result = match load_model(&path) {
-                Ok(model) => purpose::search(&model, &terms),
-                Err(_) => purpose::PurposeResult { intent: terms.join(" "), files: Vec::new() },
-            };
-            let json = serde_json::to_string_pretty(&result)?;
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &json)?;
-                    println!("purpose-search written to {} ({} bytes)", p.display(), json.len());
-                }
-                None => println!("{json}"),
-            }
-        }
         Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, no_direct_seed, direct_base, top, out } => {
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let cfg = pagerank::RankConfig {
@@ -298,7 +237,7 @@ fn main() -> Result<()> {
                 direct_seed: !no_direct_seed,
                 direct_base_x1024: direct_base,
             };
-            // Fail-open like purpose-search: a degraded/unreadable model or
+            // Fail-open: a degraded/unreadable model or
             // dictionary yields an empty ranked list, never a hard error.
             let dictionary: dictionary::Dictionary =
                 std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -313,47 +252,6 @@ fn main() -> Result<()> {
                     println!("rank written to {} ({} bytes)", p.display(), json.len());
                 }
                 None => println!("{json}"),
-            }
-        }
-        Command::Verify { path, entity, like, ops } => {
-            let model = load_model(&path)?;
-            // Where to check files: the project dir given, or the model's own root.
-            let root = if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                PathBuf::from(&model.root)
-            } else {
-                path.clone()
-            };
-            let ops_vec: Vec<String> = ops.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let items = spec::acceptance(&model, &entity, &like, &ops_vec);
-            let elc = entity.to_lowercase();
-
-            println!("== verify: {entity} — {} criterion(s) (is there a file for the entity in the folder?) ==", items.len());
-            let (mut done, mut req_total, mut req_done) = (0usize, 0usize, 0usize);
-            for it in &items {
-                // A folder whose path already names the entity is "owned" by it
-                // (e.g. `.../<Entity>s/Services/`) — any file there counts.
-                let owned = it.folder.to_lowercase().contains(&elc);
-                let count = count_entity_files(&root.join(&it.folder), &elc, owned);
-                let ok = count > 0;
-                if ok {
-                    done += 1;
-                }
-                if !it.optional {
-                    req_total += 1;
-                    if ok {
-                        req_done += 1;
-                    }
-                }
-                let mark = if ok { "[x]" } else { "[ ]" };
-                let tag = if it.optional { " (optional)" } else { "" };
-                println!("  {mark} {}{tag} — {} ({count} file(s) for {entity})", it.roles, it.folder);
-            }
-            let pct = if req_total > 0 { req_done * 100 / req_total } else { 100 };
-            println!("\nrequired: {req_done}/{req_total} ({pct}%) · total (with optionals): {done}/{}", items.len());
-            if req_done < req_total {
-                println!("INCOMPLETE — required locations above are missing.");
-            } else {
-                println!("All required locations have a file for the entity.");
             }
         }
     }

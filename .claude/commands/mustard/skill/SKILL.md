@@ -12,25 +12,24 @@ source: manual
 
 | Action | Usage | Backend |
 |--------|-------|---------|
-| `install` | `/skill install <source>` | `mustard-rt run skill-fetch <source>` |
+| `install` | `/skill install <name-or-path>` | MANUAL — bundled extras via `mustard add skill:<name>`; anything else: copy into `.claude/skills/<name>/` (no built-in fetch) |
 | `create` | `/skill create <name>` | `skill-creator` (NOT bundled — see note) |
-| `list` | `/skill list` | `mustard-rt run skills list --format table` |
+| `list` | `/skill list` | list `.claude/skills/*/SKILL.md` and read each frontmatter (no dedicated command) |
 | `remove` | `/skill remove <name>` | Delete `.claude/skills/{name}/` (warn if `source: scan`) |
 | `optimize` | `/skill optimize <name>` | `skill-creator` description-optimization (NOT bundled — see note) |
 | `eval` | `/skill eval <name>` | `skill-creator` eval methodology (NOT bundled — see note) |
 | `update` | `/skill update skill-creator` | re-install `skill-creator` MANUALLY from `anthropics/skills` (see note) |
 
-> **`skill-creator` is NOT bundled** (a ~250 KB Python authoring tool; removed — the project is shell-native, no Python). `create`/`optimize`/`eval`/`update` depend on it and are **inert until you install it manually**: clone the `skills/skill-creator` subdir of `github.com/anthropics/skills` into `.claude/skills/skill-creator/` (needs Python 3 + `claude` CLI). There is **no built-in fetch** — `mustard-rt run skill-fetch` is not implemented.
+> **`skill-creator` is NOT bundled** (a ~250 KB Python authoring tool; removed — the project is shell-native, no Python). `create`/`optimize`/`eval`/`update` depend on it and are **inert until you install it manually**: clone the `skills/skill-creator` subdir of `github.com/anthropics/skills` into `.claude/skills/skill-creator/` (needs Python 3 + `claude` CLI). There is **no built-in fetch**.
 
-## install — source formats
+## install — manual only (no fetch backend)
 
-| Format | Example |
-|--------|---------|
-| Local path | `/skill install ./my-skills/api-caching/` |
-| GitHub (sparse) | `/skill install github:anthropics/skills/skills/pdf` |
-| GitHub (full repo) | `/skill install github:owner/repo` |
+| Source | How |
+|--------|-----|
+| Bundled extra | `mustard add skill:<name>` — copies from `templates-extras/skills/<name>/` shipped next to the templates payload; a non-bundled name errors with manual-install guidance |
+| Local path / GitHub | copy the skill folder into `.claude/skills/<name>/` yourself (clone or sparse checkout, then copy) |
 
-`skill-fetch` handles sparse-clone, copy, frontmatter validation, and the install report. Print stdout verbatim.
+After copying, validate the frontmatter (rules below) and confirm the skill loads.
 
 ## INVIOLABLE RULES
 

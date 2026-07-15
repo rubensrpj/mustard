@@ -16,14 +16,7 @@
 //! Consolidation **regroups, it does not re-decide** — every verdict is a 1:1
 //! port of the JS decision logic. The parity tests at the bottom mirror
 //! `__tests__/hooks.test.js` ("file-guard.js").
-//!
-//! ## CONCERN — boundary-gate event telemetry
-//!
-//! `boundary-gate.js` emits a `boundary.expansion` harness event tagged with
-//! `session_id` / `wave` resolved from the pipeline-state. The `mustard-core`
-//! `Ctx` carries neither, so this port emits the event with `session_id`
-//! falling back to `input.session_id` (often absent → `"unknown"`) and `wave`
-//! as `0` — exactly the JS fallback. Recorded in the spec `## Concerns`.
+
 //!
 //! ## W3C migration
 //!
@@ -42,14 +35,12 @@ use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
-use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use crate::commands::{PipelineStateView, pipeline_state_from_events};
-use mustard_core::time::now_iso8601;
 
 /// The consolidated Write/Edit path-boundary module.
 pub struct PathGate;
@@ -543,46 +534,6 @@ fn is_absolute(p: &str) -> bool {
             && p.as_bytes()[2] == b'/')
 }
 
-/// Emit the `boundary.expansion` harness event. Best-effort telemetry.
-fn emit_boundary_event(
-    project_dir: &str,
-    session_id: Option<&str>,
-    rel: &str,
-    spec: &str,
-    mode: BoundaryMode,
-    sample_patterns: &[String],
-) {
-    let mode_str = match mode {
-        BoundaryMode::Off => "off",
-        BoundaryMode::Warn => "warn",
-        BoundaryMode::Strict => "strict",
-    };
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        // CONCERN: `Ctx` carries no wave; emit 0 (the JS `getCurrentWave`
-        // fallback). `session_id` falls back to "unknown".
-        session_id: session_id.unwrap_or("unknown").to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("boundary-gate".to_string()),
-            actor_type: None,
-        },
-        event: "boundary.expansion".to_string(),
-        payload: json!({
-            "file": rel,
-            "spec": spec,
-            "wave": serde_json::Value::Null,
-            "mode": mode_str,
-            "sample_patterns": sample_patterns.iter().take(6).collect::<Vec<_>>(),
-        }),
-        spec: Some(spec.to_string()),
-    };
-    // `boundary.expansion` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::shared::events::route::emit(project_dir, &event);
-}
-
 /// Collect harness events for `spec_name` from the per-spec NDJSON event log.
 ///
 /// W3C: replaces the broad `store.replay()` (all events from SQLite) with a
@@ -709,8 +660,7 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if patterns.iter().any(|p| pattern_matches(&rel, p)) {
         return None;
     }
-    // Mismatch — emit the telemetry event, then decide the verdict.
-    emit_boundary_event(cwd, input.session_id.as_deref(), &rel, spec_name, mode, &patterns);
+    // Mismatch — decide the verdict.
     match mode {
         BoundaryMode::Strict => Some(Verdict::Deny {
             reason: format!(

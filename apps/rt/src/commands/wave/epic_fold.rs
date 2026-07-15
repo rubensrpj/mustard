@@ -78,7 +78,7 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> String {
 /// (`{ parent, child }` payloads), deduplicated and sorted ascending. This is
 /// the **single source of truth** for parent→child edges post-W4C: the
 /// `.pipeline-states/{epic}.json` `children_specs` array is no longer written
-/// ([`crate::commands::spec::spec_link`] emits only the NDJSON event + the
+/// (the retired `spec-link` command emitted only the NDJSON event + the
 /// `### Parent:` header), so every consumer derives the edge from the stream.
 fn children_from_events(events: &[HarnessEvent], epic: &str) -> Vec<String> {
     let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -243,14 +243,12 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
     let spec_set: std::collections::BTreeSet<&str> = std::iter::once(epic)
         .chain(children.iter().map(String::as_str))
         .collect();
-    let mut findings_count = 0usize;
     let mut decisions_count = 0usize;
     let mut lessons_count = 0usize;
     let mut tool_calls_total = 0usize;
     let mut agents_total = 0usize;
     let mut min_ts: Option<String> = None;
     let mut max_ts: Option<String> = None;
-    let mut finding_events: Vec<&HarnessEvent> = Vec::new();
 
     for ev in &all_events {
         let Some(spec) = ev.spec.as_deref() else {
@@ -268,10 +266,6 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
             }
         }
         match ev.event.as_str() {
-            "finding" => {
-                findings_count += 1;
-                finding_events.push(ev);
-            }
             "decision" => decisions_count += 1,
             "lesson" => lessons_count += 1,
             "tool.use" => tool_calls_total += 1,
@@ -290,20 +284,13 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
         _ => 0,
     };
 
-    finding_events.sort_by(|a, b| {
-        let ca = a.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
-        let cb = b.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
-        cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let top3: Vec<&&HarnessEvent> = finding_events.iter().take(3).collect();
-
     emit_event(
         cwd.to_string_lossy().as_ref(),
         "epic.complete",
         json!({
             "epic": epic,
             "children": children,
-            "findings_count": findings_count,
+            "findings_count": 0,
             "decisions_count": decisions_count,
             "lessons_count": lessons_count,
             "tool_calls_total": tool_calls_total,
@@ -315,23 +302,7 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
         epic,
     );
 
-    let finding_lines: Vec<String> = top3
-        .iter()
-        .enumerate()
-        .map(|(i, fev)| {
-            let content = fev.payload.get("content").and_then(Value::as_str).unwrap_or("");
-            let conf = fev
-                .payload
-                .get("confidence")
-                .and_then(Value::as_f64)
-                .map_or_else(|| "?".to_string(), |c| format!("{c:.2}"));
-            format!("{}. [conf={conf}] {content}", i + 1)
-        })
-        .collect();
     let mut content_parts: Vec<String> = Vec::new();
-    if !finding_lines.is_empty() {
-        content_parts.push(format!("Top findings:\n{}", finding_lines.join("\n")));
-    }
     content_parts.push(format!("Decisions: {decisions_count}"));
     content_parts.push(format!("Lessons: {lessons_count}"));
 
@@ -371,25 +342,6 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
     true
 }
 
-/// Dispatch `mustard-rt run epic-fold`.
-pub fn run(detect: bool, epic: Option<&str>) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    if detect {
-        let epics = detect_completed_epics(&cwd);
-        let out = json!({ "epics_ready": epics });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
-        return;
-    }
-    if let Some(epic) = epic {
-        let ok = fold_epic(&cwd, epic);
-        println!("{}", json!({ "ok": ok, "epic": epic }));
-        return;
-    }
-    eprintln!("Usage:");
-    eprintln!("  epic-fold --detect");
-    eprintln!("  epic-fold --epic <name>");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,7 +349,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// Emit a `spec.link` event (parent→child) into the **child's** NDJSON sink
-    /// — matching production attribution in `spec_link::emit_link_event`.
+    /// — matching the retired `spec-link` command's production attribution.
     fn link(project: &Path, parent: &str, child: &str) {
         let payload = json!({ "parent": parent, "child": child, "reason": "test" });
         let _ = write_event(

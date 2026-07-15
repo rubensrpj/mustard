@@ -4,10 +4,9 @@
 // surface. Components MUST NOT call `invoke()` directly — they import from
 // here.
 //
-// `mustard_install` and `mustard_update` are existing Tauri commands wired in
-// `src-tauri/src/lib.rs` (B5 Wave 3); they call `mustard_cli::init`/`update`
-// natively, no sidecar process. We re-wrap them under the projects/ surface
-// so the registry UI has one import.
+// `mustard_update` is an existing Tauri command wired in `src-tauri/src/lib.rs`
+// (B5 Wave 3); it calls `mustard_cli::update` natively, no sidecar process. We
+// re-wrap it under the projects/ surface so the registry UI has one import.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -21,10 +20,6 @@ export interface ProjectDetection {
 
 export function detectProjectMustard(path: string): Promise<ProjectDetection> {
   return invoke<ProjectDetection>("detect_project_mustard", { path });
-}
-
-export function installMustard(path: string): Promise<void> {
-  return invoke<void>("mustard_install", { path });
 }
 
 export function updateMustard(path: string): Promise<void> {

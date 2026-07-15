@@ -18,18 +18,8 @@ use crate::commands::{wave};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum WaveCmd {
-    /// Detect or fold a completed epic.
-    #[command(display_order = 17)]
-    EpicFold {
-        /// List epics whose children are all in `CLOSE`.
-        #[arg(long)]
-        detect: bool,
-        /// Fold the named epic.
-        #[arg(long)]
-        epic: Option<String>,
-    },
     /// Render a spec's wave structure as an ASCII or JSON tree.
-    #[command(display_order = 24)]
+    #[command(display_order = 19)]
     WaveTree {
         /// Path to the spec directory.
         #[arg(long = "spec-dir")]
@@ -44,7 +34,7 @@ pub enum WaveCmd {
     /// stdin (legacy). Both transports accept BOTH shapes: the derivation form
     /// `{files, projectRoot}` and the rich plan JSON (`{waves: [{files}]}`,
     /// per-wave censuses unioned) that `plan-materialize --plan` consumes.
-    #[command(display_order = 25)]
+    #[command(display_order = 20)]
     WaveDependency {
         /// Path to a JSON file: `{files, projectRoot}` or a `--plan`-style
         /// `{waves: [...]}` document. Omit to read the same JSON from stdin.
@@ -56,7 +46,7 @@ pub enum WaveCmd {
     /// dashboard "Ondas" tab to show the canon `## Arquivos` count and pop
     /// open a drawer with the wave markdown. Fail-open: missing files →
     /// `{"count":0,"markdown":"","path":null}`.
-    #[command(display_order = 26)]
+    #[command(display_order = 21)]
     WaveFiles {
         /// Parent spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -66,14 +56,14 @@ pub enum WaveCmd {
         wave: Option<u32>,
     },
     /// Check whether a spec should be decomposed at EXECUTE entry.
-    #[command(display_order = 30)]
+    #[command(display_order = 25)]
     ExecRewaveCheck {
         /// Path to the spec file.
         #[arg(long)]
         spec: Option<String>,
     },
     /// Audit per-wave file/layer counts inside a wave-plan.
-    #[command(display_order = 32)]
+    #[command(display_order = 27)]
     WaveSizeCheck {
         /// Path to the spec directory.
         #[arg(long = "spec-dir")]
@@ -121,12 +111,10 @@ pub enum WaveCmd {
     /// (`mustard.json#specLang` root-wins, plan `lang` as fallback). A wave with
     /// no `tasks` emits a stderr WARN (visible signal), not a bare heading.
     ///
-    /// `plan-from-spec` is the canonical producer of the plan skeleton (it
-    /// emits every required + body field); inside the pipeline prefer
-    /// `plan-materialize`, which composes this scaffold with validation and
-    /// the PLAN-phase events.
+    /// Inside the pipeline prefer `plan-materialize`, which composes this
+    /// scaffold with validation and the PLAN-phase events.
     #[command(verbatim_doc_comment)]
-    #[command(display_order = 55)]
+    #[command(display_order = 46)]
     WaveScaffold {
         /// Target spec directory.
         #[arg(long = "spec-dir")]
@@ -150,7 +138,7 @@ pub enum WaveCmd {
     /// BEFORE any dir is deleted. Reuses `is_heading` / `write_atomic` /
     /// the wave-scaffold renderers.
     #[command(name = "wave-collapse")]
-    #[command(display_order = 56)]
+    #[command(display_order = 47)]
     WaveCollapse {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -164,7 +152,6 @@ pub enum WaveCmd {
 /// Dispatch one `wave`-family `run` subcommand.
 pub fn dispatch(cmd: WaveCmd) {
     match cmd {
-        WaveCmd::EpicFold { detect, epic } => wave::epic_fold::run(detect, epic.as_deref()),
         WaveCmd::WaveTree { spec_dir, format } => wave::wave_tree::run(&spec_dir, &format),
         WaveCmd::WaveDependency { plan } => wave::wave_dependency::run(plan.as_deref()),
         WaveCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),

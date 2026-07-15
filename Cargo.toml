@@ -21,7 +21,6 @@ thiserror = "2.0.18"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 jiff = "0.2.24"
-insta = "1.47.2"
 tempfile = "3.27.0"
 # Interactive terminal prompts for the CLI port (`mustard init` git-flow wizard).
 # Replaces the JS `inquirer` dependency. Pure-Rust, no async runtime.

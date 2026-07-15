@@ -38,21 +38,6 @@ pub enum ScanCmd {
         #[arg(long)]
         full: bool,
     },
-    /// Project the scan dictionary's non-English terms through the local
-    /// `mustard-translate` sidecar into `.claude/grain.equivalences.json` —
-    /// the PT→EN query-expansion table `run feature` feeds to `scan rank`.
-    /// ONE batch spawn over the whole dictionary; byte-stable output (keys
-    /// accent-folded + sorted). Runs automatically at the end of `run scan`;
-    /// this is the standalone (re)generation face. Fail-open: a missing
-    /// dictionary or absent translator prints `{ok:false, reason}`, exit 0.
-    #[command(name = "scan-equivalences")]
-    #[command(display_order = 1)]
-    ScanEquivalences {
-        /// Workspace root (holds `.claude/grain.dictionary.json`). Defaults
-        /// to the current directory.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
 
     /// Persist a CONFIRMED vocabulary bridge into the learned-equivalences
     /// overlay (`.claude/grain.equivalences.learned.json`) — the write-back of
@@ -61,7 +46,7 @@ pub enum ScanCmd {
     /// The generated `grain.equivalences.json` is never touched, so re-scans
     /// never wipe what was learned. Explicit write only — never automatic.
     #[command(name = "equivalence-learn")]
-    #[command(display_order = 3)]
+    #[command(display_order = 2)]
     EquivalenceLearn {
         /// The request-language concept that went uncovered (accent-folded to
         /// the lookup key, e.g. `abas`).
@@ -81,7 +66,7 @@ pub enum ScanCmd {
     /// block's facts comment. Excludes the workspace-root unit. Fail-open: any
     /// IO error degrades to `[]` and exit 0.
     #[command(name = "scan-guards-list")]
-    #[command(display_order = 72)]
+    #[command(display_order = 61)]
     ScanGuardsList {
         /// Workspace root to walk. Defaults to the current directory.
         #[arg(long, default_value = ".")]
@@ -93,7 +78,7 @@ pub enum ScanCmd {
     /// flips to its non-pending form so a re-run of `scan-guards-list` skips
     /// it). Refuses the workspace-root `CLAUDE.md`.
     #[command(name = "scan-guards-apply")]
-    #[command(display_order = 73)]
+    #[command(display_order = 62)]
     ScanGuardsApply {
         /// Path to the subproject `CLAUDE.md` to enrich.
         #[arg(long)]
@@ -116,7 +101,7 @@ pub enum ScanCmd {
     /// `[{subproject, label, slug, moldPath, affix, exemplars, ...}]`. The mold
     /// twin of `scan-guards-list`. Fail-open: a missing/unparseable model → `[]`.
     #[command(name = "scan-patterns-list")]
-    #[command(display_order = 74)]
+    #[command(display_order = 63)]
     ScanPatternsList {
         /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
@@ -128,7 +113,7 @@ pub enum ScanCmd {
     /// `scan-guards-apply`; being a `run` command it sidesteps the
     /// background-isolation gate that blocks the orchestrator's own Write.
     #[command(name = "scan-patterns-apply")]
-    #[command(display_order = 75)]
+    #[command(display_order = 64)]
     ScanPatternsApply {
         /// Path to the mold `SKILL.md` to create.
         #[arg(long)]
@@ -144,7 +129,6 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
-        ScanCmd::ScanEquivalences { root } => scan_equivalences::run(&root),
         ScanCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
         ScanCmd::ScanGuardsList { root } => scan_guards::list::run(&root),
         ScanCmd::ScanGuardsApply { path, root, guards } => {

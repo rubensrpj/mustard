@@ -16,7 +16,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 101 declared variants + `help`, which clap generates at build time.
+/// 79 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "adapt-cursor",
@@ -25,27 +25,21 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "analyze-validation",
     "approve-spec",
     "artifact-update",
-    "backup-specs",
-    "bugfix-cache",
     "capability",
     "claude-dir-prune",
     "close-orchestrate",
     "close-pipeline",
     "complete-spec",
-    "context-budget",
     "context-slice",
     "dependency-precheck",
     "diagnose-otel",
     "diff-context",
     "digest-adherence-finalize",
-    "dispatch-plan",
     "docs-stale-check",
     "doctor",
-    "economy",
     "emit-event",
     "emit-phase",
     "emit-pipeline",
-    "epic-fold",
     "equivalence-learn",
     "event-projections",
     "exec-rewave-check",
@@ -54,7 +48,6 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "git-settle",
     "glossary-coverage",
     "grill-capture",
-    "hardcode-gate",
     "help",
     "language-audit",
     "maint-deps",
@@ -66,13 +59,10 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "orient",
     "otel-collector",
     "otel-stop",
-    "pipeline-state-ingest",
     "pipeline-summary",
-    "plan-from-spec",
     "plan-materialize",
     "plan-prepare",
     "qa-run",
-    "qa-run-all",
     "rebuild-specs",
     "refresh-claude",
     "rehook",
@@ -80,9 +70,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "review-dispatch",
     "review-prefetch",
     "review-result",
-    "rtk-gain",
     "scan",
-    "scan-equivalences",
     "scan-guards-apply",
     "scan-guards-list",
     "scan-patterns-apply",
@@ -93,23 +81,13 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "security-scan",
     "spec-children",
     "spec-children-tree",
-    "spec-clear",
     "spec-draft",
-    "spec-extract",
-    "spec-lang",
-    "spec-link",
-    "spec-lint",
-    "spec-memory",
-    "spec-status-backfill",
-    "spec-validate",
     "status",
     "statusline",
     "tactical-fix-create",
     "tactical-fix-detect",
-    "task-checklist",
     "transcript-watcher",
     "unhook",
-    "verify-emit",
     "verify-pipeline",
     "wave-advance",
     "wave-collapse",
@@ -150,8 +128,8 @@ fn every_declared_command_keeps_its_help_slot() {
     // clap orders the flat `run --help` listing by `(display_order, name)`.
     // The families are split across `commands/<family>/cli.rs`, so each variant
     // pins its historical slot explicitly. A duplicate or a gap would reshuffle
-    // the published listing — assert the 101 declared commands still carry the
-    // exact permutation 0..=100 (`help` is clap's own, appended last).
+    // the published listing — assert the 79 declared commands still carry the
+    // exact permutation 0..=78 (`help` is clap's own, appended last).
     let cmd = run_command_tree();
     let mut orders: Vec<usize> = cmd
         .get_subcommands()

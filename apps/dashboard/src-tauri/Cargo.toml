@@ -10,6 +10,12 @@ rust-version = "1.85"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# This crate is deliberately its own workspace root: the repo-root Cargo.toml
+# `exclude`s it, and without this empty table cargo keeps walking up and lets
+# an outer workspace claim the package (which breaks builds from git
+# worktrees, where the root `exclude` paths no longer match).
+[workspace]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
@@ -47,32 +53,12 @@ mustard-cli = { path = "../../cli" }
 mustard-core = { path = "../../../packages/core" }
 
 [[test]]
-name = "db_test"
-path = "tests/db_test.rs"
-
-[[test]]
 name = "telemetry_test"
 path = "tests/telemetry_test.rs"
 
 [[test]]
 name = "mustard_cli_test"
 path = "tests/mustard_cli_test.rs"
-
-[[test]]
-name = "specs_phase_from_events_test"
-path = "tests/specs_phase_from_events_test.rs"
-
-[[test]]
-name = "pipelines_from_db_test"
-path = "tests/pipelines_from_db_test.rs"
-
-[[test]]
-name = "telemetry_aggregations_test"
-path = "tests/telemetry_aggregations_test.rs"
-
-[[test]]
-name = "top_files_today_test"
-path = "tests/top_files_today_test.rs"
 
 # Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
 [dev-dependencies]

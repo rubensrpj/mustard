@@ -13,7 +13,7 @@
 //!
 //! `--format json` (default) prints the `{ event, payload }` JSON the pipeline
 //! consumes. `--format html` additionally writes a standalone HTML report to
-//! `.claude/.qa-reports/{spec}.html` and prints its path on stderr; JSON is
+//! `.claude/spec/{spec}/qa-report.html` and prints its path on stderr; JSON is
 //! still emitted on stdout — HTML is an artifact, never a replacement.
 
 use crate::report::{table, Report};
@@ -80,20 +80,6 @@ fn ac_timeout_secs_with_override(command: &str, env_override: Option<&str>) -> u
 pub(crate) struct AcItem {
     id: String,
     command: String,
-}
-
-impl AcItem {
-    /// The parsed AC id (`AC-1`, `AC-G1`, `AC-W4-3`, …). Read-only accessor so
-    /// other `run` modules (e.g. `spec-lint`) can inspect the parsed items
-    /// without a parallel parser — the fields stay private.
-    pub(crate) fn id(&self) -> &str {
-        &self.id
-    }
-
-    /// The parsed runnable command for this AC.
-    pub(crate) fn command(&self) -> &str {
-        &self.command
-    }
 }
 
 /// One AC execution outcome.
@@ -723,16 +709,14 @@ pub(crate) struct QaResult {
     pub(crate) criteria: Vec<AcResult>,
 }
 
-/// Public outcome type returned by [`run_for_spec`].
+/// Public outcome type returned by [`run_for_spec_with_options`].
 ///
-/// Callers that do not want process::exit (e.g. `complete_spec`, `qa_run_all`)
+/// Callers that do not want process::exit (e.g. `complete_spec`)
 /// use this instead of the stdout-emitting [`run`] entry point.
 pub struct QaSpecOutcome {
     pub spec: String,
     pub overall: String,
     pub passed: u32,
-    pub failed: u32,
-    pub skipped: u32,
     pub total: u32,
 }
 
@@ -762,13 +746,8 @@ pub struct QaRunOptions {
 ///
 /// Designed for callers that need the result (e.g. `complete_spec`) without
 /// taking over the process. Errors are fail-open: a missing spec returns an
-/// outcome with `overall = "skip"`.
-pub fn run_for_spec(spec: &str) -> QaSpecOutcome {
-    run_for_spec_with_options(spec, QaRunOptions::default())
-}
-
-/// Like [`run_for_spec`] but lets the caller flip [`QaRunOptions::self_invoked`]
-/// to enable the cargo-self-build rewrite.
+/// outcome with `overall = "skip"`. `opts` lets the caller flip
+/// [`QaRunOptions::self_invoked`] to enable the cargo-self-build rewrite.
 pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
     let cwd = std::env::current_dir()
         .ok()
@@ -788,8 +767,6 @@ pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcom
         spec: spec.to_string(),
         overall: result.overall,
         passed,
-        failed,
-        skipped,
         total,
     }
 }

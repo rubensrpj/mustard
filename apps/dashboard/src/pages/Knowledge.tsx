@@ -124,9 +124,8 @@ export function Knowledge() {
   const trimmed = debouncedQuery.trim();
   const hasQuery = trimmed.length >= 2;
 
-  // Browse: all knowledge rows for the active workspace.
-  // Wave 3 (2026-05-22): DB-backed via knowledge_patterns. Now event-driven —
-  // the FS watcher invalidates ["knowledge-browse"] on every mustard.db write
+  // Browse: all knowledge rows for the active workspace. Event-driven — the
+  // FS watcher invalidates ["knowledge-browse"] on NDJSON event-shard writes
   // (kind "events") and on knowledge-file writes (kind "knowledge"), so the
   // 10s poll is gone. staleTime + window-focus refetch remain as a safety net.
   const { data: browseRows, isLoading: browseLoading } = useQuery({

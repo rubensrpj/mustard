@@ -26,7 +26,7 @@ pub enum KnowledgeCmd {
     /// `write` (`agent_memory` insert + `--verify` round-trip), `search`
     /// (FTS5 + scope filter on `agent_memory`), and `feedback`
     /// (`memory_feedback` append for `deprecate|bump|supersede|use`).
-    #[command(display_order = 15)]
+    #[command(display_order = 14)]
     Memory {
         /// Subcommand: `agent`, `decision`, `knowledge`, `list`,
         /// `write`, `search`, or `feedback`.

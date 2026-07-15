@@ -2,24 +2,6 @@
   "schemaVersion": 1,
   "artifacts": [
     {
-      "id": "skill:design-craft",
-      "category": "skill",
-      "source": { "kind": "manual" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "skills/design-craft",
-      "checksum": null
-    },
-    {
-      "id": "skill:senior-architect",
-      "category": "skill",
-      "source": { "kind": "manual" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "skills/senior-architect",
-      "checksum": null
-    },
-    {
       "id": "skill:karpathy-guidelines",
       "category": "skill",
       "source": { "kind": "git", "repo": "https://github.com/forrestchang/andrej-karpathy-skills", "subdir": "skills/karpathy-guidelines", "ref": "2c606141936f1eeef17fa3043a72095b4765b9c2" },
@@ -35,24 +17,6 @@
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "skills/karpathy-guidelines-detail",
-      "checksum": null
-    },
-    {
-      "id": "skill:commit-workflow",
-      "category": "skill",
-      "source": { "kind": "manual" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "skills/commit-workflow",
-      "checksum": null
-    },
-    {
-      "id": "skill:grill-me",
-      "category": "skill",
-      "source": { "kind": "git", "repo": "https://github.com/mattpocock/skills", "subdir": "skills/productivity/grill-me", "ref": "d54c497aa94400a496d3f2c38be10fa5f284c5a9" },
-      "version": "d54c497aa94400a496d3f2c38be10fa5f284c5a9",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/grill-me",
       "checksum": null
     },
     {
@@ -92,30 +56,12 @@
       "checksum": null
     },
     {
-      "id": "skill:hallmark",
-      "category": "skill",
-      "source": { "kind": "skills-directory", "slug": "nutlope/hallmark" },
-      "version": "1.0.0",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/hallmark",
-      "checksum": null
-    },
-    {
       "id": "ref:agent-prompt",
       "category": "ref",
       "source": { "kind": "first-party" },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/agent-prompt",
-      "checksum": null
-    },
-    {
-      "id": "ref:bugfix",
-      "category": "ref",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "refs/bugfix",
       "checksum": null
     },
     {
@@ -164,30 +110,12 @@
       "checksum": null
     },
     {
-      "id": "ref:scan",
-      "category": "ref",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "refs/scan",
-      "checksum": null
-    },
-    {
       "id": "ref:task",
       "category": "ref",
       "source": { "kind": "first-party" },
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/task",
-      "checksum": null
-    },
-    {
-      "id": "command:approve",
-      "category": "command",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/mustard/approve",
       "checksum": null
     },
     {
@@ -254,15 +182,6 @@
       "checksum": null
     },
     {
-      "id": "command:resume",
-      "category": "command",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/mustard/resume",
-      "checksum": null
-    },
-    {
       "id": "command:review",
       "category": "command",
       "source": { "kind": "first-party" },
@@ -314,24 +233,6 @@
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/mustard/task",
-      "checksum": null
-    },
-    {
-      "id": "hook:enforcement",
-      "category": "hook",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "scripts",
-      "checksum": null
-    },
-    {
-      "id": "hook:docs-audit",
-      "category": "hook",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": ".claude/.docs-audit.json",
       "checksum": null
     },
     {

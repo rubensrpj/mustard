@@ -16,7 +16,7 @@ source: manual
 rtk mustard-rt run status --format table
 ```
 
-Print stdout verbatim. The binary covers: git (branch, modified files, last commit), active and orphaned pipeline specs (SQLite event log), last build state, entity registry summary.
+Print stdout verbatim. The binary covers: git (branch, modified files, last commit), active and orphaned pipeline specs (NDJSON event log — per-spec `.events/`), last build state, entity registry summary.
 
 ## --harness View
 

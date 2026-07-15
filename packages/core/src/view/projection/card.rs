@@ -6,13 +6,13 @@
 //! replaces that path with a deterministic projection over typed events:
 //!
 //! - `pipeline.scope` populates `scope`, `lang`, `model`, `is_wave_plan`,
-//!   `total_waves`. It also transitions `status` away from `NoEvents`.
-//! - `pipeline.status` transitions `status` (parsed via [`SpecStatus::parse`]).
+//!   `total_waves`.
+//! - `pipeline.status` transitions `state` (the legacy status vocabulary is
+//!   folded straight into a [`SpecState`] via `state_from_status_word`).
 //! - `pipeline.phase` updates `phase`.
 //! - `pipeline.task.complete` accumulates `files_touched` (deduplicated).
 //! - `pipeline.wave.complete` extends `completed_waves` and recomputes
 //!   `current_wave`.
-//! - `pipeline.complete` flips the status to `Completed`.
 //! - `qa.result` overwrites `ac_passed`/`ac_total`/`ac_failed` from the
 //!   latest event (newer wins; folds in chronological order).
 //! - `tool.use` bumps `tools_used`.
@@ -37,8 +37,6 @@
 //! `None` because the header alone cannot prove when work started or last
 //! happened.
 
-#[allow(deprecated)] // the fold still computes the legacy SpecStatus, then derives SpecState from it.
-use crate::domain::model::view::SpecStatus;
 use crate::domain::model::view::{Flags, Outcome, Phase, Scope, SpecState, SpecView, Stage};
 use crate::domain::model::event::{
     HarnessEvent, PipelineScopePayload, PipelineTaskCompletePayload, PipelineWaveCompletePayload,
@@ -150,43 +148,54 @@ fn project_from_events(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
         view.current_wave = Some((max_completed + 1).min(total));
     }
 
-    // Derive the canonical SpecState from the legacy fold. Wave 1 keeps the
-    // event fold expressed in the legacy `SpecStatus` vocabulary (see
-    // `fold_legacy_status`) and lifts it into `SpecState` as a final step, so
-    // both fields stay consistent for every projection branch.
-    sync_state(&mut view);
-
     view
 }
 
-/// Keep [`SpecView::state`] in sync with the legacy [`SpecView::status`] fold.
-///
-/// The Wave 1 projection still folds the event stream in the flat
-/// [`SpecStatus`] vocabulary — that fold is now named [`fold_legacy_status`]
-/// for clarity — and derives the canonical [`SpecState`] from it here. Later
-/// waves can flip the relationship (fold straight into `SpecState`) without
-/// touching every per-event helper.
-#[allow(deprecated)] // bridges the deprecated `status` field into `state`.
-fn sync_state(view: &mut SpecView) {
-    view.state = SpecState::from(fold_legacy_status(view));
+/// Map a legacy `pipeline.status` word (`"implementing"`, `"draft"`,
+/// `"closed-followup"`, …) straight onto the canonical [`SpecState`] — the
+/// same vocabulary the retired flat `SpecStatus::parse` accepted, folded into
+/// `(stage, outcome, flags)` in one step. Returns `None` for unknown words so
+/// the fold leaves the state unchanged (fail-open).
+fn state_from_status_word(raw: &str) -> Option<SpecState> {
+    let (stage, outcome, flags) = match raw.trim().to_ascii_lowercase().as_str() {
+        "no-events" | "planning" | "draft" | "approved" => {
+            (Stage::Plan, Outcome::Active, Flags::default())
+        }
+        "implementing" | "in-progress" | "in_progress" => {
+            (Stage::Execute, Outcome::Active, Flags::default())
+        }
+        "reviewing" | "qa" => (Stage::QaReview, Outcome::Active, Flags::default()),
+        "closed-followup" | "closed_followup" => (
+            Stage::Close,
+            Outcome::Active,
+            Flags { followup_open: true, ..Flags::default() },
+        ),
+        "completed" | "closed" => (Stage::Close, Outcome::Completed, Flags::default()),
+        "cancelled" | "canceled" | "superseded" => {
+            (Stage::Close, Outcome::Cancelled, Flags::default())
+        }
+        "abandoned" | "orphan" => (Stage::Close, Outcome::Abandoned, Flags::default()),
+        "blocked" | "paused" => (
+            Stage::Plan,
+            Outcome::Active,
+            Flags { blocked: true, ..Flags::default() },
+        ),
+        "wave-failed" | "wave_failed" => (
+            Stage::Execute,
+            Outcome::Active,
+            Flags { wave_failed: true, ..Flags::default() },
+        ),
+        _ => return None,
+    };
+    Some(SpecState::new(stage, outcome, flags).unwrap_or(SpecState {
+        stage: Stage::Plan,
+        outcome: Outcome::Active,
+        flags: Flags::default(),
+    }))
 }
 
-/// The legacy event fold expressed in [`SpecStatus`] terms.
-///
-/// Retained as a named, documented entry point for the bridge in
-/// [`sync_state`]: the per-event helpers (`apply_status`, `apply_scope`, …)
-/// mutate `view.status`, and this is the value that fold produces. Marked
-/// `#[allow(deprecated)]` because reading the deprecated field is intentional
-/// here, not a misuse.
-#[must_use]
-#[allow(deprecated)]
-pub(crate) fn fold_legacy_status(view: &SpecView) -> SpecStatus {
-    view.status
-}
-
-/// `pipeline.scope` — first observation of a spec's metadata. Promotes the
-/// view from `NoEvents` to `Planning` and records scope/lang/model.
-#[allow(deprecated)] // mutates the legacy `status` fold; `state` is derived later.
+/// `pipeline.scope` — first observation of a spec's metadata. Records
+/// scope/lang/model/waves; state transitions happen via `pipeline.status`.
 fn apply_scope(view: &mut SpecView, ev: &HarnessEvent) {
     if let Ok(payload) = serde_json::from_value::<PipelineScopePayload>(ev.payload.clone()) {
         view.scope = Scope::parse(&payload.scope);
@@ -194,23 +203,17 @@ fn apply_scope(view: &mut SpecView, ev: &HarnessEvent) {
         view.model = payload.model;
         view.is_wave_plan = payload.is_wave_plan.unwrap_or(false);
         view.total_waves = payload.total_waves;
-        // First scope event → leaves NoEvents behind. Status transitions
-        // beyond Planning happen via `pipeline.status`.
-        if view.status == SpecStatus::NoEvents {
-            view.status = SpecStatus::Planning;
-        }
     }
 }
 
-/// `pipeline.status` — typed transitions. Unknown strings leave status
-/// unchanged rather than dropping back to `NoEvents`.
-#[allow(deprecated)] // mutates the legacy `status` fold; `state` is derived later.
+/// `pipeline.status` — typed transitions. Unknown strings leave the state
+/// unchanged rather than dropping back to the empty default.
 fn apply_status(view: &mut SpecView, ev: &HarnessEvent) {
     let Some(to) = ev.payload.get("to").and_then(serde_json::Value::as_str) else {
         return;
     };
-    if let Some(parsed) = SpecStatus::parse(to) {
-        view.status = parsed;
+    if let Some(state) = state_from_status_word(to) {
+        view.state = state;
     }
 }
 
@@ -247,7 +250,6 @@ fn apply_wave_complete(view: &mut SpecView, ev: &HarnessEvent) {
 
 /// `pipeline.wave.failed` — track failed waves. The event has no typed
 /// payload struct in `mustard-core` yet, so we read the `wave` field directly.
-#[allow(deprecated)] // mutates the legacy `status` fold; `state` is derived later.
 fn apply_wave_failed(view: &mut SpecView, ev: &HarnessEvent) {
     let Some(wave) = ev
         .payload
@@ -261,7 +263,13 @@ fn apply_wave_failed(view: &mut SpecView, ev: &HarnessEvent) {
         view.failed_waves.push(wave);
         view.failed_waves.sort_unstable();
     }
-    view.status = SpecStatus::WaveFailed;
+    if let Ok(state) = SpecState::new(
+        Stage::Execute,
+        Outcome::Active,
+        Flags { wave_failed: true, ..Flags::default() },
+    ) {
+        view.state = state;
+    }
 }
 
 /// `qa.result` — overwrite the AC counts with the latest event's numbers.
@@ -328,7 +336,6 @@ fn apply_qa_result(view: &mut SpecView, ev: &HarnessEvent) {
 /// sidecar is absent / unparseable or carries no usable `stage` (so the caller
 /// falls back to the legacy `.md` header). `started_at` / `last_event_at` stay
 /// `None` — the sidecar is not evidence of *when* work happened.
-#[allow(deprecated)] // seeds the legacy `status` field; `state` is canonical.
 fn view_from_meta(spec_name: &str, path: &Path) -> Option<SpecView> {
     let meta = crate::domain::meta::read_meta_beside(path)?;
     let stage = Stage::parse(meta.stage.as_deref()?)?;
@@ -348,10 +355,7 @@ fn view_from_meta(spec_name: &str, path: &Path) -> Option<SpecView> {
         .ok()?;
 
     let mut view = SpecView::empty(spec_name);
-    view.state = state.clone();
-    if let Ok(status) = SpecStatus::try_from(state) {
-        view.status = status;
-    }
+    view.state = state;
     if let Some(phase) = meta.phase.as_deref().and_then(Phase::parse) {
         view.phase = Some(phase);
     }
@@ -364,7 +368,6 @@ fn view_from_meta(spec_name: &str, path: &Path) -> Option<SpecView> {
     Some(view)
 }
 
-#[allow(deprecated)] // seeds the legacy `status` field from the header; `state` derived after.
 fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
     // `meta.json` is the single source of truth. Prefer the sidecar beside the
     // spec; fall back to the legacy in-`.md` header only for un-migrated specs.
@@ -382,14 +385,9 @@ fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
     // New canonical header (`### Stage:` / `### Outcome:` / `### Flags:`) takes
     // precedence when a `### Stage:` line is present. The legacy `### Status:`
     // / `### Phase:` block remains the fallback for specs not yet rewritten
-    // (rewrite is Wave 7). When the new header parses into a legal SpecState we
-    // seed both `state` (canonical) and `status` (derived, for the synthetic
-    // emit and back-compat readers).
+    // (rewrite is Wave 7).
     if let Some(state) = state_from_new_header(&header) {
-        view.state = state.clone();
-        if let Ok(status) = SpecStatus::try_from(state) {
-            view.status = status;
-        }
+        view.state = state;
         if let Some(phase_raw) = header.get("phase") {
             if let Some(phase) = Phase::parse(phase_raw) {
                 view.phase = Some(phase);
@@ -400,8 +398,8 @@ fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
     }
 
     if let Some(status_raw) = header.get("status") {
-        if let Some(status) = SpecStatus::parse(status_raw) {
-            view.status = status;
+        if let Some(state) = state_from_status_word(status_raw) {
+            view.state = state;
         }
     }
     if let Some(phase_raw) = header.get("phase") {
@@ -410,9 +408,6 @@ fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
         }
     }
     seed_header_metadata(&mut view, &header);
-
-    // Derive the canonical state from the legacy `status` the header seeded.
-    sync_state(&mut view);
 
     Some(view)
 }
@@ -504,7 +499,6 @@ fn parse_header_fields(raw: &str) -> std::collections::BTreeMap<String, String> 
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // these tests intentionally assert against the legacy SpecStatus path.
 mod tests {
     use super::*;
     use crate::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
@@ -529,7 +523,9 @@ mod tests {
     fn empty_events_yield_empty_view() {
         let view = project_spec_view("feature-a", &[]);
         assert_eq!(view.spec, "feature-a");
-        assert_eq!(view.status, SpecStatus::NoEvents);
+        assert_eq!(view.state.stage, Stage::Plan);
+        assert_eq!(view.state.outcome, Outcome::Active);
+        assert_eq!(view.state.flags, Flags::default());
         assert_eq!(view.tools_used, 0);
         assert!(view.started_at.is_none());
     }
@@ -546,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_event_transitions_status_and_records_metadata() {
+    fn scope_event_records_metadata() {
         let events = vec![event(
             "feature-a",
             "2026-05-20T10:00:00Z",
@@ -560,7 +556,8 @@ mod tests {
             }),
         )];
         let view = project_spec_view("feature-a", &events);
-        assert_eq!(view.status, SpecStatus::Planning);
+        assert_eq!(view.state.stage, Stage::Plan);
+        assert_eq!(view.state.outcome, Outcome::Active);
         assert_eq!(view.scope, Some(Scope::Full));
         assert_eq!(view.lang.as_deref(), Some("pt"));
         assert_eq!(view.model.as_deref(), Some("opus"));
@@ -591,7 +588,8 @@ mod tests {
             ),
         ];
         let view = project_spec_view("auth", &events);
-        assert_eq!(view.status, SpecStatus::Completed);
+        assert_eq!(view.state.stage, Stage::Close);
+        assert_eq!(view.state.outcome, Outcome::Completed);
     }
 
     #[test]
@@ -716,8 +714,8 @@ mod tests {
     #[test]
     fn pipeline_complete_does_not_clobber_explicit_status() {
         // `pipeline.complete` is a temporal audit marker, not a status
-        // transition. With only this event the status stays at NoEvents —
-        // the authoritative source is `pipeline.status`.
+        // transition. With only this event the state stays at the Plan+Active
+        // default — the authoritative source is `pipeline.status`.
         let events = vec![event(
             "auth",
             "2026-05-20T10:00:00Z",
@@ -725,7 +723,9 @@ mod tests {
             json!({ "closedAt": "2026-05-20T10:00:00Z" }),
         )];
         let view = project_spec_view("auth", &events);
-        assert_eq!(view.status, SpecStatus::NoEvents);
+        assert_eq!(view.state.stage, Stage::Plan);
+        assert_eq!(view.state.outcome, Outcome::Active);
+        assert_eq!(view.state.flags, Flags::default());
     }
 
     #[test]
@@ -748,7 +748,9 @@ mod tests {
             ),
         ];
         let view = project_spec_view("feature-x", &events);
-        assert_eq!(view.status, SpecStatus::ClosedFollowup);
+        assert_eq!(view.state.stage, Stage::Close);
+        assert_eq!(view.state.outcome, Outcome::Active);
+        assert!(view.state.flags.followup_open);
     }
 
     #[test]
@@ -777,7 +779,8 @@ mod tests {
             ),
         ];
         let view = project_spec_view("feature-x", &events);
-        assert_eq!(view.status, SpecStatus::Completed);
+        assert_eq!(view.state.stage, Stage::Close);
+        assert_eq!(view.state.outcome, Outcome::Completed);
     }
 
     #[test]
@@ -789,7 +792,8 @@ mod tests {
             json!({ "wave": 3, "reason": "build-broken" }),
         )];
         let view = project_spec_view("auth", &events);
-        assert_eq!(view.status, SpecStatus::WaveFailed);
+        assert_eq!(view.state.stage, Stage::Execute);
+        assert!(view.state.flags.wave_failed);
         assert_eq!(view.failed_waves, vec![3]);
     }
 
@@ -820,7 +824,8 @@ mod tests {
         );
         let view = project_spec_view_with_header("flatten", &[], Some(path.as_path()));
         assert_eq!(view.spec, "flatten");
-        assert_eq!(view.status, SpecStatus::Completed);
+        assert_eq!(view.state.stage, Stage::Close);
+        assert_eq!(view.state.outcome, Outcome::Completed);
         assert_eq!(view.phase, Some(Phase::Close));
         assert_eq!(view.scope, Some(Scope::Full));
         assert_eq!(view.lang.as_deref(), Some("pt"));
@@ -841,7 +846,8 @@ mod tests {
         )
         .unwrap();
         let view = project_spec_view_with_header("flatten", &[], Some(path.as_path()));
-        assert_eq!(view.status, SpecStatus::Completed);
+        assert_eq!(view.state.stage, Stage::Close);
+        assert_eq!(view.state.outcome, Outcome::Completed);
         assert_eq!(view.phase, Some(Phase::Close));
         assert_eq!(view.scope, Some(Scope::Full));
         assert_eq!(view.lang.as_deref(), Some("pt-BR"));
@@ -862,7 +868,8 @@ mod tests {
         )
         .unwrap();
         let view = project_spec_view_with_header("auth", &[], Some(path.as_path()));
-        assert_eq!(view.status, SpecStatus::Implementing);
+        assert_eq!(view.state.stage, Stage::Execute);
+        assert_eq!(view.state.outcome, Outcome::Active);
     }
 
     #[test]
@@ -881,7 +888,8 @@ mod tests {
             json!({ "to": "implementing" }),
         )];
         let view = project_spec_view_with_header("auth", &events, Some(path.as_path()));
-        assert_eq!(view.status, SpecStatus::Implementing);
+        assert_eq!(view.state.stage, Stage::Execute);
+        assert_eq!(view.state.outcome, Outcome::Active);
         // Timestamps come from the event row, not the header.
         assert_eq!(view.started_at.as_deref(), Some("2026-05-20T10:00:00Z"));
     }
@@ -895,7 +903,9 @@ mod tests {
         let view =
             project_spec_view_with_header("ghost", &[], Some(missing.as_path()));
         assert_eq!(view.spec, "ghost");
-        assert_eq!(view.status, SpecStatus::NoEvents);
+        assert_eq!(view.state.stage, Stage::Plan);
+        assert_eq!(view.state.outcome, Outcome::Active);
+        assert_eq!(view.state.flags, Flags::default());
         assert!(view.phase.is_none());
     }
 
@@ -903,6 +913,8 @@ mod tests {
     fn header_fallback_returns_empty_when_path_is_none() {
         // The opt-in shape: without a path the fallback is fully disabled.
         let view = project_spec_view_with_header("nobody", &[], None);
-        assert_eq!(view.status, SpecStatus::NoEvents);
+        assert_eq!(view.state.stage, Stage::Plan);
+        assert_eq!(view.state.outcome, Outcome::Active);
+        assert_eq!(view.state.flags, Flags::default());
     }
 }

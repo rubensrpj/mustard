@@ -227,7 +227,7 @@ impl Analyzer {
                     .get(&key)
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
-                Decl { kind, name, line, supertypes, purpose: None, body_hash: None }
+                Decl { kind, name, line, supertypes }
             })
             .collect();
 

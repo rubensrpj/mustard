@@ -149,13 +149,6 @@ pub(crate) struct TermD {
     /// the kind-weighted rank, never this field.
     pub specificity_x1024: u64,
     pub samples: Vec<String>,
-    /// One-sentence business-action description written by `enrich-purpose
-    /// --apply`. Absent on freshly-scanned models (serde default = None);
-    /// additive — old readers skip the field. Display metadata for the published
-    /// catalog; recall over purpose text is the standalone `purpose-search`
-    /// command (an uncapped purpose→file index), never this `query` pipeline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
 }
 
 /// A focused slice of the digest matching some domain terms — the cheap
@@ -797,7 +790,7 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
         top_fan_in,
     };
 
-    let terms = build_terms(c, model);
+    let terms = build_terms(c);
 
     CapabilityDigest { root: model.root.clone(), languages, frameworks, detected_stacks, projects, roles, roles_omitted, slices, shared_contracts, graph, terms }
 }
@@ -939,39 +932,13 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
 /// therefore who survives the MAX_TERMS cap) follows the kind-class-weighted
 /// rank — type-name vocabulary outranks a member flood — while `count` stays
 /// the demoted occurrence count.
-fn build_terms(c: &Corpus, model: &ProjectModel) -> Vec<TermD> {
+fn build_terms(c: &Corpus) -> Vec<TermD> {
     let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
     let (no_tokens, no_imports) = (BTreeSet::new(), BTreeSet::new());
     // Corpus size for the specificity IDF: the total number of indexed modules,
     // the same denominator the anchor ranking uses (`query`'s `n_docs`).
     let n_docs = c.doc_len.len();
 
-    // Attach each declaration's `purpose` to its name-token terms for the
-    // PUBLISHED catalog view (`TermD.purpose`) — display metadata so a consumer
-    // browsing the digest sees what a term's declarations do. The FIRST non-empty
-    // purpose for each term wins (BTreeMap over modules is deterministic).
-    //
-    // NOTE: this is display metadata, NOT a search path. The `query` anchor
-    // pipeline never reads `purpose`; recall over purpose text is the dedicated
-    // `purpose_search` command (an UNCAPPED purpose→file index over the model,
-    // so a rare method name truncated out of the term cap is still found).
-    let mut term_purpose: BTreeMap<String, String> = BTreeMap::new();
-    for m in &model.modules {
-        for d in &m.declarations {
-            let Some(ref p) = d.purpose else { continue };
-            if p.is_empty() { continue }
-            // Map each token of the declaration name → the purpose string.
-            // First non-empty purpose for that token wins.
-            for tok in tokenize(&d.name) {
-                term_purpose.entry(tok).or_insert_with(|| p.clone());
-            }
-            // Also index the concatenated ident (mirrors the `ident` bump in corpus()).
-            let ident: String = d.name.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>().to_lowercase();
-            if ident.len() >= 3 {
-                term_purpose.entry(ident).or_insert_with(|| p.clone());
-            }
-        }
-    }
 
     let mut terms: Vec<(u64, TermD)> = c
         .postings
@@ -1007,8 +974,7 @@ fn build_terms(c: &Corpus, model: &ProjectModel) -> Vec<TermD> {
                 })
                 .collect();
             let samples = crate::rank::select_samples(&cands, MAX_TERM_SAMPLES);
-            let purpose = term_purpose.get(term.as_str()).cloned();
-            (rank_key, TermD { term: term.clone(), count, specificity_x1024, samples, purpose })
+            (rank_key, TermD { term: term.clone(), count, specificity_x1024, samples })
         })
         .collect();
     terms.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.count.cmp(&a.1.count)).then(a.1.term.cmp(&b.1.term)));

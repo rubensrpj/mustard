@@ -80,5 +80,5 @@ Returns the **current round** — an array of `{wave, role, subproject, subagent
 - Main context **IS** the runner — never wrap it in a single Task.
 - Never implement code directly — all via Task (1 per subproject per wave).
 - One `wave-advance` round = one message (several `<invoke>` blocks); never one wave at a time when the round holds several, never a later level by hand.
-- Never hand-craft prompts / pick agents / read `wave-plan.md`. `wave-advance` IS the render; the LLM only relays. (`dispatch-plan` = inspection fallback for the DAG, not the dispatch path.)
+- Never hand-craft prompts / pick agents / read `wave-plan.md`. `wave-advance` IS the render; the LLM only relays.
 - CLOSE only when `wave-advance` returns `[]` AND `nextAction` says so → via `close-pipeline`, never the manual `qa-run → complete-spec → pipeline-summary` sequence. Do not gate on the scalar `currentWave`.

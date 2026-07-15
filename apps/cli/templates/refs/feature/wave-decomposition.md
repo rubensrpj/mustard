@@ -73,7 +73,7 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    ```
    `tasks` / `files` / `acceptance` are optional per wave (a summary-only entry still scaffolds); a wave with no `tasks` emits a stderr WARN so the gap is visible.
 
-   **`depends_on` must use the `wave-N-role` form** (identical to the wave's own `Spec` wikilink — e.g. `["wave-1-backend"]`), NOT the bare role name (`["backend"]`). Dependencies are resolved by **wave number**, and the `wave-N-role` link is unambiguous even when two waves share a role. (`dispatch-plan` also accepts a bare role as a best-effort fallback, but it resolves to the *first* wave carrying that role — wrong when a role repeats — so do not rely on it.) An unresolved dependency is dropped silently, which flattens the wave DAG to a single parallel level (every wave dispatched at once, ordering lost).
+   **`depends_on` must use the `wave-N-role` form** (identical to the wave's own `Spec` wikilink — e.g. `["wave-1-backend"]`), NOT the bare role name (`["backend"]`). Dependencies are resolved by **wave number**, and the `wave-N-role` link is unambiguous even when two waves share a role. (the dispatch planner also accepts a bare role as a best-effort fallback, but it resolves to the *first* wave carrying that role — wrong when a role repeats — so do not rely on it.) An unresolved dependency is dropped silently, which flattens the wave DAG to a single parallel level (every wave dispatched at once, ordering lost).
 
    Materialise it — ONE call that composes `wave-scaffold` + `analyze-validation` (incl. the AC-format WARN) + the `pipeline.scope` emit + emit-phase PLAN, returning `{events, scaffold, validation}`; do not run those as separate manual steps:
    ```bash

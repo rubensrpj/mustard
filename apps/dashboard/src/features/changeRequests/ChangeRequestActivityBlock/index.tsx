@@ -2,8 +2,9 @@
  * ChangeRequestActivityBlock — inline sub-block showing pipeline.change.request
  * events (mid-spec change requests) for a specific spec inside the drill-down.
  *
- * Mirrors AmendActivityBlock (spec 2026-05-20-session-bound-amendments, AC-15):
- * same query-key reuse, same chronological sort, same null-when-empty contract.
+ * Follows the drill-down activity-block pattern (spec
+ * 2026-05-20-session-bound-amendments, AC-15): query-key reuse,
+ * chronological sort, null-when-empty contract.
  * Each request already arrives with a readable `summary` (built by the Rust
  * `event_summary()` case for "pipeline.change.request"), so this block renders
  * `e.summary` verbatim with no per-suffix label/icon map.

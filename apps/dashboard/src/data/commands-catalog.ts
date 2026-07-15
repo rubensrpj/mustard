@@ -223,7 +223,7 @@ export const COMMANDS: CommandEntry[] = [
     category: 'Git',
     short: 'Operações git com mensagens padronizadas e RTK',
     simples: 'Faz commit, push e operações git seguindo o padrão de mensagem do projeto e com output compacto.',
-    tecnico: 'Carrega skill commit-workflow (mensagem estruturada: tipo(escopo): título + body + refs). Executa via rtk git para output compacto (59-80% token reduction). Valida staged files antes de commitar. Nunca usa --no-verify ou --force sem confirmação explícita.',
+    tecnico: 'Ações sync/commit/push/pr/pr close com mensagem estruturada (tipo(escopo): título + body + refs). Sempre git add -A — nunca escopo parcial silencioso. Executa via rtk git para output compacto (59-80% token reduction). Integração só via PR; nunca usa --no-verify ou --force sem confirmação explícita.',
     when: 'Commit após EXECUTE. Push de branch. Qualquer operação git que precisa seguir convenção do projeto.',
     notWhen: 'Git interativo (rebase -i, add -i) — não suportado.',
     examples: ['/mustard:git'],

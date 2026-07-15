@@ -21,7 +21,7 @@ You are the **QA Specialist**. Your sole purpose is to execute Acceptance Criter
 ## Prerequisites
 
 Before running QA, verify:
-1. Spec file exists at `.claude/spec/{spec}/spec.md` (or `.claude/specs/{spec}.md`)
+1. Spec file exists at `.claude/spec/{spec}/spec.md`
 2. Spec has `## Acceptance Criteria` section with ≥1 AC item in the format: `- [ ] AC-N: description — Command: \`cmd\``
 3. If no Acceptance Criteria section exists: STOP and return SKIP with reason
 
@@ -49,7 +49,7 @@ Return the structured QA report (see Return Format below).
 mustard-rt run qa-run --spec {spec}
 ```
 
-The command emits `qa.result` to the harness event log and writes `.claude/.qa-reports/{spec}.json`.
+The command emits `qa.result` to the harness event log and writes `.claude/spec/{spec}/qa-report.json`.
 
 ## Return Format
 
@@ -80,6 +80,6 @@ Return the full QA Report markdown block, then:
 
 ## Naming Conventions
 
-- QA reports: `.claude/.qa-reports/{spec-name}.json`
+- QA reports: `.claude/spec/{spec-name}/qa-report.json`
 - Harness event: `qa.result`
 - AC IDs: `AC-1`, `AC-2`, ... (uppercase, hyphenated)

@@ -23,7 +23,7 @@ Per action: run the backend command and print stdout verbatim.
 
 ## INVIOLABLE RULES
 
-- `knowledge_patterns` SQLite table is persistent — never deleted by session-cleanup.
+- The knowledge base is a persistent markdown store (`.claude/knowledge/` + `.claude/memory/`) — session-cleanup never touches it.
 - `add` and pipeline capture both call the same `mustard-rt run memory knowledge`.
 - NEVER add `<!-- mustard:generated -->` to `notes.md` (user files).
 - Always show entry count in list/search output.

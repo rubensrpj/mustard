@@ -42,7 +42,7 @@ Law: code lands in the layer's existing shape — the subproject's `## Guards` a
 
 - Full: spec at `.claude/spec/{date}-{name}/spec.md` with Summary, Entity Info, Files, Tasks (by wave), Dependencies. Each wave's PLAN declares its target files — `wave-scaffold` seeds that wave's checklist from them into the wave's `meta.json` (`{label, path, done:false}` per file). The wave-plan parent is coordination only, no checklist.
 - Light: Summary (1-2 lines) + Checklist (tasks by agent, no waves). Light + user approval → EXECUTE inline in the same session, no PLAN phase.
-- Lifecycle state (stage/phase/scope/checkpoint) lives ONLY in `meta.json` — never `Status:`/`Phase:`/`Scope:` headers in the markdown. Create `.claude/.pipeline-states/{spec-name}.json`.
+- Lifecycle state (stage/phase/scope/checkpoint) lives ONLY in `meta.json` — never `Status:`/`Phase:`/`Scope:` headers in the markdown.
 
 ### EXECUTE
 

@@ -71,7 +71,6 @@ pub fn classify_kind(event_name: &str) -> &'static str {
         "qa"
     } else if event_name.starts_with("knowledge.")
         || event_name == "decision"
-        || event_name == "finding"
         || event_name == "lesson"
     {
         "knowledge"
@@ -254,9 +253,7 @@ mod tests {
         assert_eq!(classify_kind("capability.update"), "capability");
         assert_eq!(classify_kind("capability.drift"), "capability");
         assert_eq!(classify_kind("hygiene.spec.archived"), "hygiene");
-        assert_eq!(classify_kind("boundary.expansion"), "boundary");
         assert_eq!(classify_kind("spec.link"), "scope");
-        assert_eq!(classify_kind("worktree.gc.run"), "scope");
         assert_eq!(classify_kind("totally.unknown"), "other");
     }
 

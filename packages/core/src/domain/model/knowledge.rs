@@ -11,7 +11,7 @@
 //! | `.claude/memory/agent/*.md`           | *(none — an agent summary)*| `agent_summary_observer` |
 //! | `.claude/memory/decisions/*.md`       | `decision`                 | `memory` + `memory_promote_observer` |
 //! | `.claude/memory/lessons/*.md`         | `lesson`                   | `memory` + `memory_promote_observer` |
-//! | `.claude/spec/{spec}/memory/*.md`     | `principle` / `process` / `reference` | `spec_memory` |
+//! | `.claude/spec/{spec}/memory/*.md`     | `principle` / `process` / `reference` | *(retired `spec-memory` command)* |
 //!
 //! [`Knowledge`] is the one `serde` type that **subsumes all five without
 //! information loss**: the union of every frontmatter field, normalised onto a

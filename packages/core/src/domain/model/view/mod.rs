@@ -15,8 +15,6 @@ mod workspace;
 
 pub use filter::{SpecFilter, SpecStatusFilter, TimeWindow};
 pub use quality::{AcStatus, AcceptanceCriterion, QualityRollup};
-#[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
-pub use spec::SpecStatus;
 pub use spec::{Flags, Outcome, SpecChild, SpecState, SpecSummary, SpecView, Stage, StateError};
 pub use timeline::{TimelineKind, TimelineNode};
 pub use wave::{WaveStatus, WaveView};

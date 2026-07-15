@@ -1,10 +1,10 @@
 //! Smoke test for the B5 Wave 3 Tauri integration.
 //!
-//! The `mustard_install` / `mustard_update` Tauri commands are private wrappers
-//! around `mustard_cli::init` / `mustard_cli::update`. This test exercises that
-//! same library API from the dashboard crate's test context — proving the
-//! `mustard-cli` path dependency is linked and the non-interactive install
-//! path runs to completion without a terminal.
+//! The `mustard_update` Tauri command is a private wrapper around
+//! `mustard_cli::update`. This test exercises that same library API from the
+//! dashboard crate's test context — proving the `mustard-cli` path dependency
+//! is linked and the non-interactive install path runs to completion without
+//! a terminal.
 
 use std::fs;
 
@@ -32,7 +32,7 @@ fn install_then_update_runs_non_interactively() {
     let project = work.path().join("project");
     fs::create_dir_all(&project).unwrap();
 
-    // What `mustard_install` does under the hood: non-interactive init.
+    // Non-interactive init: seed a project the update path can refresh.
     init_with_templates(
         &project,
         &templates,

@@ -11,10 +11,10 @@
 | `{guards_summary}` | `## Guards` section of `{subproject}/CLAUDE.md` | Extracted via regex. |
 | `{context_md}` | `mustard-rt run context-slice` cached at `.claude/.pipeline-states/{spec}.context-md.md` | PREFIX-STABLE — the slice is stable across the whole pipeline, refreshed only on a wave transition. Empty when no `CONTEXT.md` domain glossary has been authored (opt-in via `grill-with-docs`) — blank by design, not a failure. |
 | `{reference_files}` | scan-derived neighbour files | 2-3 file references. |
-| `{role_block}` | flag `--role` | The role cue **plus a per-role delivery contract** (what to produce + how to deliver: return text vs. edit, return-cap, read-only vs. write). The `subagent_type` is picked per role by the dispatch planner (`wave-advance` items carry it; `dispatch-plan` exposes it as `recommended_subagent_type`): read-only roles run tool-restricted (`explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`); writing roles → `general-purpose`. The `## ENTITY` / `## SKILLS` sections (and the dead `{entity_info}` / `{recommended_skills}` placeholders) were removed from the template. |
+| `{role_block}` | flag `--role` | The role cue **plus a per-role delivery contract** (what to produce + how to deliver: return text vs. edit, return-cap, read-only vs. write). The `subagent_type` is picked per role by the dispatch planner (`wave-advance` items carry it): read-only roles run tool-restricted (`explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`); writing roles → `general-purpose`. The `## ENTITY` / `## SKILLS` sections (and the dead `{entity_info}` / `{recommended_skills}` placeholders) were removed from the template. |
 | `{task_steps}` (spec-less) | flag `--task-text` | When there is no spec `## Tasks` to read (`/scan` guards, `/task`), `--task-text` fills `## TASK` so the prompt stays self-contained — the orchestrator never hand-appends the task. |
 | `{task_steps}` | `## Tasks` of the current wave (`mustard-rt` internal) | VARIABLE — changes per wave. |
-| `{cross_wave_memory}` | `mustard-rt run memory cross-wave --spec X --wave N` | VARIABLE — empty for wave 1 or single-spec runs. |
+| `{cross_wave_memory}` | filled internally by the renderer (capability blocks + spec-memory + vocabulary regression) — not a CLI call | VARIABLE — empty when none apply. |
 | `{retry_context}` | flag `--mode` + optional `--retry-context-file` | Empty in `first`; filled in `granular`/`fix-loop` (see Retry Modes). |
 
 ## Retry Modes

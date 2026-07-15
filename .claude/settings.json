@@ -135,18 +135,6 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "matcher": "auto|manual",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreCompact",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "matcher": "prompt_input_exit|clear|other",
@@ -202,17 +190,6 @@
           {
             "type": "command",
             "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Stop",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Notification",
             "timeout": 5
           }
         ]

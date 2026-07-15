@@ -28,8 +28,8 @@
 //! It is a Model Context Protocol server speaking JSON-RPC over stdio. It is
 //! **read-only by design**: writes happen in the hooks, where session / wave /
 //! spec attribution is authentic; the MCP face exposes queries only. It
-//! exposes six tools (the same five as the TypeScript original plus one new
-//! retrieval tool), with the same input schemas and output shapes:
+//! exposes five tools (the same five as the TypeScript original), with the
+//! same input schemas and output shapes:
 //!
 //! - `search_knowledge`   — substring search over `.claude/knowledge/*.md`.
 //! - `query_events`       — filter the per-spec NDJSON event log by spec /
@@ -38,8 +38,6 @@
 //! - `get_spec_metrics`   — projected metrics for a spec from NDJSON events.
 //! - `get_run_summary`    — aggregated token/duration totals from
 //!   `pipeline.telemetry.run` events.
-//! - `find_by_intent`     — intent→file retrieval over `purpose` summaries;
-//!   the recall path for domain vocabulary that the name index misses.
 //!
 //! ## Persistence (post-W5B)
 //!
@@ -199,21 +197,6 @@ struct GetRunSummaryArgs {
     phase: Option<String>,
 }
 
-/// Input for `find_by_intent`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct FindByIntentArgs {
-    /// English domain-term intent — matched INTRA-LANGUAGE against the code's
-    /// own English `purpose` summaries; this tool does not translate, so pass the
-    /// English domain words. Tokenised the same way as `mustard-rt run
-    /// purpose-search --intent`: lowercase, minimum 3 chars, deduplicated, capped
-    /// at 32 terms.
-    intent: String,
-    /// Optional project root to override the server's cwd-derived default.
-    /// When absent, the server uses its resolved `project_dir` (same as every
-    /// other tool in this crate).
-    #[serde(default)]
-    root: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
 // Output shapes — serialized to JSON text exactly like the TS `jsonResult`
@@ -424,9 +407,6 @@ impl MustardMemory {
 
         let rows: Vec<EventOut> = events
             .into_iter()
-            // Internal meta-telemetry emitted by the NDJSON writer for the
-            // `/economia` dashboard — filter it out at the boundary.
-            .filter(|ev| event_name(ev) != "pipeline.economy.event.written")
             .filter_map(|ev| {
                 let out = event_to_out(ev)?;
                 if let Some(s) = args.spec.as_deref() {
@@ -538,50 +518,6 @@ impl MustardMemory {
         json_result(&metrics)
     }
 
-    /// Tool 6 — intent→file retrieval over the `purpose` summaries written by
-    /// `mustard-rt run scan` (enrich step). Searches the purpose index for files
-    /// whose method/type summaries answer an ENGLISH domain-term intent. Matching
-    /// is intra-language (the summaries are English too); this tool does not
-    /// translate, so the caller passes the English domain words.
-    ///
-    /// Thin adapter over [`mustard_core::Scan::purpose_search`]. Tokenises
-    /// `intent` identically to `purpose-search` (`mustard-rt run`) — lowercase,
-    /// length ≥ 3, deduplicated, capped at 32 terms — then delegates matching
-    /// to the scan binary and relays its byte-stable JSON verbatim:
-    ///
-    /// ```json
-    /// { "intent": "<joined terms>", "files": [{ "file": "…", "matchedTerms": ["…"] }] }
-    /// ```
-    ///
-    /// Fail-open: a missing model, an absent scan binary, or any read error
-    /// degrades to `{ "intent": "…", "files": [] }` — never an MCP error.
-    #[tool(
-        description = "Return files whose purpose summaries answer an English domain-term intent (intent→file recall; finds methods invisible to the name index). Intra-language: pass English domain words — this tool does not translate"
-    )]
-    fn find_by_intent(
-        &self,
-        Parameters(args): Parameters<FindByIntentArgs>,
-    ) -> CallToolResult {
-        let project_dir = args
-            .root
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.project_dir.clone());
-        let model = project_dir.join(".claude").join("grain.model.json");
-        let terms = intent_to_terms(&args.intent);
-        let result: Value = if terms.is_empty() {
-            json!({ "intent": "", "files": [] })
-        } else {
-            match mustard_core::Scan::locate().purpose_search(&model, &terms) {
-                Ok(json_str) if !json_str.trim().is_empty() => {
-                    serde_json::from_str(&json_str)
-                        .unwrap_or_else(|_| json!({ "intent": terms.join(" "), "files": [] }))
-                }
-                Ok(_) | Err(_) => json!({ "intent": terms.join(" "), "files": [] }),
-            }
-        };
-        json_result(&result)
-    }
 
     /// Tool 5 — aggregated token summary from the MEASURED OTEL token channel,
     /// grouped by model.
@@ -839,32 +775,6 @@ fn missing_metrics(spec: &str) -> Value {
     json!({ "error": "no metrics for spec", "spec": spec })
 }
 
-/// Tokenise an intent string for `find_by_intent`, mirroring the
-/// `domain_terms` function in `mustard-rt` (which is `pub(crate)` there and
-/// cannot be imported here).
-///
-/// Rules (byte-stable, deterministic):
-/// - Split on non-alphanumeric characters.
-/// - Lowercase each token.
-/// - Keep only tokens with length ≥ 3 AND at least one alphabetic character
-///   (rejects pure numbers such as "123").
-/// - Deduplicate in first-occurrence order (BTreeSet tracks seen lowercased
-///   forms).
-/// - Cap at 32 terms (the same cap as in `domain_terms`).
-fn intent_to_terms(intent: &str) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out: Vec<String> = Vec::new();
-    for raw in intent.split(|c: char| !c.is_alphanumeric()) {
-        let t = raw.to_lowercase();
-        if t.len() >= 3 && t.chars().any(|c| c.is_alphabetic()) && seen.insert(t.clone()) {
-            out.push(t);
-        }
-        if out.len() >= 32 {
-            break;
-        }
-    }
-    out
-}
 
 // ---------------------------------------------------------------------------
 // Tests — `get_run_summary` consolidation onto the core economy reader
@@ -1003,67 +913,5 @@ mod tests {
         assert!(out.by_model.is_empty());
     }
 
-    // -------------------------------------------------------------------------
-    // `find_by_intent` / `intent_to_terms` tests
-    // -------------------------------------------------------------------------
-
-    /// The tokeniser must lowercase, drop tokens shorter than 3 chars, reject
-    /// pure-numeric tokens, deduplicate in first-occurrence order, and cap at 32.
-    #[test]
-    fn intent_to_terms_basic_tokenization() {
-        let terms = intent_to_terms("Add a Refund to the Order — refund the ORDER");
-        // "a" and "to" are < 3 chars, dropped.
-        // "Add" → "add", "Refund" → "refund", "the" → "the", "Order" → "order"
-        // second "refund" and "ORDER" are deduped.
-        assert!(terms.contains(&"add".to_string()));
-        assert!(terms.contains(&"refund".to_string()));
-        assert!(terms.contains(&"order".to_string()));
-        // Exactly one occurrence of "refund" despite appearing twice.
-        assert_eq!(terms.iter().filter(|t| t.as_str() == "refund").count(), 1);
-        // "a" dropped (too short).
-        assert!(!terms.contains(&"a".to_string()));
-    }
-
-    /// `find_by_intent` must fail-open: an absent model produces
-    /// `{ "intent": "…", "files": [] }` wrapped in a `CallToolResult`, never
-    /// an MCP-level error.
-    #[test]
-    fn find_by_intent_fails_open_on_missing_model() {
-        let dir = tempfile::tempdir().unwrap();
-        // No grain.model.json written → `purpose_search` will error.
-        let server = MustardMemory::new(dir.path().to_path_buf());
-        let result = server.find_by_intent(Parameters(FindByIntentArgs {
-            intent: "efetivar a previsão de pagamento".to_string(),
-            root: None,
-        }));
-        // Must be a success result (no MCP error).
-        assert!(!result.is_error.unwrap_or(false));
-        // The text content must parse as JSON with a `files` array (possibly empty).
-        // `Content = Annotated<RawContent>`, which Derefs to `RawContent`;
-        // `RawContent::as_text()` returns `Option<&RawTextContent>` whose `.text`
-        // field holds the serialised JSON string.
-        let text = result
-            .content
-            .first()
-            .and_then(|c| c.as_text())
-            .map(|t| t.text.as_str())
-            .unwrap_or("")
-            .to_string();
-        let v: Value = serde_json::from_str(&text).expect("result must be valid JSON");
-        assert!(
-            v.get("files").and_then(Value::as_array).is_some(),
-            "expected a `files` array in {v}"
-        );
-    }
-
-    /// Empty intent → `files: []` immediately, without calling the scan binary.
-    #[test]
-    fn find_by_intent_empty_intent_returns_empty_files() {
-        let terms = intent_to_terms("");
-        assert!(terms.is_empty());
-        // Verify the shape `find_by_intent` would produce via `intent_to_terms`.
-        let fallback: Value = json!({ "intent": "", "files": [] });
-        assert_eq!(fallback["files"].as_array().map(Vec::len), Some(0));
-    }
 }
 

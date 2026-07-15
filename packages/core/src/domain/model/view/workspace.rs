@@ -6,8 +6,6 @@
 //! distinguishes "no data" from "zero" — a literal `0` would mislead.
 
 use super::Phase;
-#[allow(deprecated)] // SpecTrack still surfaces the legacy SpecStatus alongside the canonical state.
-use super::SpecStatus;
 use super::SpecState;
 use serde::{Deserialize, Serialize};
 
@@ -45,15 +43,10 @@ pub struct PhaseSegment {
 
 /// One row of the "Sala de Operações multi-track" — one spec, one trajectory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(deprecated)] // carries the legacy `status` field until Wave 3 migrates SpecTrack to SpecState.
 pub struct SpecTrack {
     /// Spec name.
     pub spec: String,
-    /// Current status.
-    #[deprecated(note = "Use the canonical `state` field; this legacy projection is kept for back-compat.")]
-    pub status: SpecStatus,
     /// Canonical lifecycle state (Stage/Outcome/Flags) — the source of truth.
-    /// Consumers should read this; `status` above is a derived legacy alias.
     pub state: SpecState,
     /// Phase the spec is currently in.
     pub current_phase: Option<Phase>,

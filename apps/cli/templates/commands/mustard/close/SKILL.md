@@ -48,22 +48,13 @@ mustard-rt run close-orchestrate --spec {spec}
    A close lands straight on `completed` — there is no follow-up grace window. Any follow-up work goes into a separate linked sub-spec (`/mustard:tactical-fix`), not a flag on this spec.
 
 5. Knowledge: one `mustard-rt run memory knowledge` per significant pattern; one `mustard-rt run memory decision` per lesson (max 3 each, skip trivial).
-6. Metrics archive: read pipeline-state projection → save to `.claude/metrics/{spec}.json` (omit missing fields).
+6. Metrics archive: read pipeline-state projection → save to `.claude/.metrics/{spec}.json` (omit missing fields).
 7. Print: `pipeline-summary` → `wave-tree` → banner `PIPELINE COMPLETE — {spec}` with agents/files/registry + optional `rtk gain` token line. All fail-open.
-8. Epic auto-fold (Wave 8): `epic-fold --detect` (reads the NDJSON event stream — `spec.link` + `pipeline.phase`, not the legacy `.pipeline-states` sidecar) → if non-empty, `epic-fold --epic <name>` per entry.
+8. Epic auto-fold (Wave 8): handled in-process by `close-orchestrate` — it detects epics whose children are all closed (NDJSON event stream — `spec.link` + `pipeline.phase`) and folds each one. Nothing to run by hand.
 
-## Lexicon feedback — feed the self-learning dictionary (every close)
+## Lexicon feedback
 
-Before finalizing, fold what THIS spec taught the cross-language dictionary, so the next query lands deterministically **without an LLM**. Pure data + gated; fail-open (no `pt-en` pair, or no candidates → skip silently).
-
-```bash
-mustard-rt run lexicon-suggest   # lists `candidates` (re-query bridges) + `locationCandidates` (found OUTSIDE the digest)
-```
-
-- **`candidates` `{missed, bridged}`** — a CONFIRMED bridge (a re-query in the code's own words landed). Accept each: `mustard-rt run lexicon-suggest --accept {missed}={bridged}` (gated: the code term must be a real mined term; idempotent if already covered).
-- **`locationCandidates` `{missed, files}`** — a term the digest MISSED whose answer you found by other means (Glob/Grep/exploration). Open the file(s), pick the code term that names the concept, and accept it: `--accept {missed}={codeTerm}`. Accept **only** when the mapping is clear — skip the unsure ones (a wrong bridge poisons future queries).
-
-This is what makes the dictionary self-feed: the exact cases where the digest failed and you solved it by hand become the bridges that make it succeed next time. Runs on every close (feature + bugfix). Fail-open: skip the whole step on any error.
+Nothing to run at close: a confirmed vocabulary bridge is persisted the moment it is confirmed, at ANALYZE time — `mustard-rt run equivalence-learn --term <missed> --tokens <code-terms>` (see `/feature` §1: the digest-contract row and the absence radar). There is no close-time suggestion pass.
 
 ## Cancellation
 

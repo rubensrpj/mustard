@@ -35,8 +35,6 @@ pub use knowledge::{Knowledge, Kind as KnowledgeKind, Origin, Scope as Knowledge
 // directly. Consumers that need the SDD Phase/Scope should import from
 // `mustard_core::domain::model::view::{Phase, Scope}` to avoid ambiguity with
 // `mustard_core::domain::model::pipeline::{Phase, Scope}`.
-#[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
-pub use view::SpecStatus;
 pub use view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, PhaseSegment, QualityRollup,
     SegmentState, SpecFilter, SpecState, SpecStatusFilter, SpecSummary, SpecTrack, SpecView, Stage,

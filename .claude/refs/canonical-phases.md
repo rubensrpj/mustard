@@ -14,7 +14,7 @@ Canonical sequence: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 | `EXECUTE` | Implement the change across delegated agents. | `/approve` accepted, or Light scope after ANALYZE — pipeline-state `phase=EXECUTE`. |
 | `REVIEW` | Inspect produced code for correctness, conventions, regressions before QA. | `/review` invoked or review agents dispatched — emits `review.*` events. |
 | `QA` | Run the spec's Acceptance Criteria commands and record pass/fail (Wave 10). | `/mustard:qa` runs — emits `qa.result`. |
-| `CLOSE` | Finalize: sync registry, move spec to done, commit. | pipeline-state `phase=CLOSE`; gated by `close-gate.js`. |
+| `CLOSE` | Finalize: verify gates, mark the spec completed, commit — archival is event-only, the spec directory never moves. | pipeline-state `phase=CLOSE`; gated by the `close_gate` hook (Rust, in `mustard-rt`). |
 | `COORDINATE` | Parent-level orchestration of a roadmap with multiple child specs. | A spec with `children[]` enters coordination — pipeline-state `phase=COORDINATE`. |
 
 ## Notes

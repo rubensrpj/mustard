@@ -90,7 +90,7 @@ for (const [id, grammar] of Object.entries(GRAMMARS)) {
 
 /**
  * Legacy id union — kept exported so existing callers (`ToolEventRow`,
- * `SpecTimelineTab`, Economia) that import `CodeLang` keep compiling. New code
+ * Economia) that import `CodeLang` keep compiling. New code
  * may pass any string (extension / alias / Prism id); see `LANG_ALIASES`.
  */
 export type CodeLang = "rust" | "ts" | "tsx" | "json" | "sql" | "plain";

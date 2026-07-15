@@ -20,7 +20,7 @@ use crate::commands::{review};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ReviewCmd {
     /// Validate a spec's structure (WARN-level — never blocks).
-    #[command(display_order = 22)]
+    #[command(display_order = 17)]
     AnalyzeValidation {
         /// Path to the spec file.
         #[arg(long)]
@@ -31,7 +31,7 @@ pub enum ReviewCmd {
     /// `export` is missing. Self-created paths (declared in `## Files`) are
     /// excluded. Output is single-line JSON; exit code is always 0
     /// (fail-open) — the orchestrator decides whether to block dispatch.
-    #[command(display_order = 31)]
+    #[command(display_order = 26)]
     DependencyPrecheck {
         /// Path to the spec file or its containing directory (resolves
         /// `<dir>/spec.md`).
@@ -47,11 +47,11 @@ pub enum ReviewCmd {
     /// Reads the spec's `plan.txt` (or `spec.md` body) as the Moment-1 plan
     /// text and dispatches to `review::gate_regression_check::run`. Moments 2 and 3
     /// require external `diff` + snapshots that the bare CLI does not
-    /// collect today — those moments are exercised via the
-    /// `pre_edit_intent_gate` hook and the W5 span-level integration.
+    /// collect today — those moments are exercised via the W5 span-level
+    /// integration.
     /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
     #[command(name = "gate-regression-check")]
-    #[command(display_order = 33)]
+    #[command(display_order = 28)]
     GateRegressionCheck {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -69,7 +69,7 @@ pub enum ReviewCmd {
         wave_dir: Option<String>,
     },
     /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
-    #[command(display_order = 34)]
+    #[command(display_order = 29)]
     QaRun {
         /// Spec name (resolved under `.claude/specs` or `.claude/spec` — flat layout).
         #[arg(long)]
@@ -78,15 +78,8 @@ pub enum ReviewCmd {
         #[arg(long, default_value = "json")]
         format: String,
     },
-    /// Run QA for every active spec and aggregate the results.
-    ///
-    /// Iterates active specs via `SqliteSpecReader`, calls `qa-run` for each,
-    /// and emits a JSON batch report `{ ran, failed, skipped, errors }`.
-    /// Fail-open per spec — individual failures land in `errors[]`.
-    #[command(display_order = 35)]
-    QaRunAll,
     /// Record a REVIEW-phase verdict (emits a `review.result` event + metric).
-    #[command(display_order = 42)]
+    #[command(display_order = 36)]
     ReviewResult {
         /// Spec name.
         #[arg(long)]
@@ -102,7 +95,7 @@ pub enum ReviewCmd {
         subproject: Option<String>,
     },
     /// Scan a project tree for committed secrets + misconfigurations.
-    #[command(display_order = 44)]
+    #[command(display_order = 38)]
     SecurityScan {
         /// Directory to scan. Defaults to the current directory.
         dir: Option<String>,
@@ -110,20 +103,13 @@ pub enum ReviewCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Advisory gate: scan the git diff (working tree + staged, `git diff
-    /// HEAD`) for stack-registry literals added to the agnostic surfaces
-    /// (`apps/scan/src` / `packages/core/src` `.rs` files). Always exits 0;
-    /// the verdict is the `ok` field of the JSON report.
-    #[command(name = "hardcode-gate")]
-    #[command(display_order = 45)]
-    HardcodeGate,
     /// Prefetch a GitHub Pull Request into a structured JSON document.
     ///
     /// Shell-outs to `gh pr view --json ...` and re-emits a clean structure
     /// ready for the LLM to consume. `--format table` prints a compact
     /// executive summary (title, author, scope, comments, review states).
     /// Fail-open: if `gh` is not in the PATH, emits `{"error":"gh-not-found"}`.
-    #[command(display_order = 63)]
+    #[command(display_order = 53)]
     ReviewPrefetch {
         /// PR reference: a number (`123`) or GitHub URL.
         pr_ref: Option<String>,
@@ -136,7 +122,7 @@ pub enum ReviewCmd {
     },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
-    #[command(display_order = 83)]
+    #[command(display_order = 68)]
     ReviewDispatch {
         /// PR number.
         #[arg(long)]
@@ -147,31 +133,6 @@ pub enum ReviewCmd {
         /// Subproject to scope the diff to.
         #[arg(long)]
         subproject: Option<String>,
-    },
-    /// W5.T5.9 — Read or write the bugfix root-cause cache for retry reuse.
-    ///
-    /// The cache key (`rootCauseHash`) is computed **deterministically in Rust**
-    /// from the affected files + the error message (`--files` + `--error`); the
-    /// `/bugfix` ANALYZE step no longer has to hand a hash to the binary. An
-    /// explicit `--hash` still works (override / legacy-key compat) and takes
-    /// priority when supplied.
-    #[command(name = "bugfix-cache")]
-    #[command(display_order = 92)]
-    BugfixCache {
-        /// Cache signature hash — explicit override. When omitted, the hash is
-        /// computed deterministically from `--error` + `--files`.
-        #[arg(long)]
-        hash: Option<String>,
-        /// Error message / failure signature — drives the deterministic hash
-        /// when `--hash` is not supplied.
-        #[arg(long)]
-        error: Option<String>,
-        /// Write mode — record a new entry with the supplied summary.
-        #[arg(long)]
-        summary: Option<String>,
-        /// Files affected — comma-separated list (write mode AND hash input).
-        #[arg(long)]
-        files: Option<String>,
     },
 }
 
@@ -225,7 +186,6 @@ pub fn dispatch(cmd: ReviewCmd) {
             }
         }
         ReviewCmd::QaRun { spec, format } => review::qa_run::run(&spec, &format),
-        ReviewCmd::QaRunAll => review::qa_run_all::run(),
         ReviewCmd::ReviewResult {
             spec,
             verdict,
@@ -233,7 +193,6 @@ pub fn dispatch(cmd: ReviewCmd) {
             subproject,
         } => review::review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
         ReviewCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
-        ReviewCmd::HardcodeGate => review::hardcode_gate::run(),
         ReviewCmd::ReviewPrefetch { pr_ref, format, root: _ } => {
             let pr_ref = pr_ref.unwrap_or_default();
             if pr_ref.is_empty() {
@@ -247,9 +206,6 @@ pub fn dispatch(cmd: ReviewCmd) {
         }
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
-        }
-        ReviewCmd::BugfixCache { hash, error, summary, files } => {
-            review::bugfix_cache::run(review::bugfix_cache::BugfixCacheOpts { hash, error, summary, files });
         }
     }
 }

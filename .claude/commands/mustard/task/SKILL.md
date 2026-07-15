@@ -40,7 +40,7 @@ Parent NEVER reads source, NEVER implements. All work inside Task contexts. The 
 
 ## Research + Prompt rendering (mandatory)
 
-`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first — **triage by what the scope hands you (→ `../../../refs/locating-code.md`): a LITERAL token (exact symbol, error string, file glob) → `grep`/`glob` it directly and skip the digest; a CONCEPT whose vocabulary may diverge → the scan digest** (the same step `/feature` and `/bugfix` run). Then render each action's prompt with `agent-prompt-render`. **Dispatching without locating sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
+`/task` is spec-less, so there is no wave plan and no dispatch round — but spec-less is **not** context-less. LOCATE first — **triage by what the scope hands you (→ `../../../refs/locating-code.md`): a LITERAL token (exact symbol, error string, file glob) → `grep`/`glob` it directly and skip the digest; a CONCEPT whose vocabulary may diverge → the scan digest** (the same step `/feature` and `/bugfix` run). Then render each action's prompt with `agent-prompt-render`. **Dispatching without locating sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
 
 ```bash
 # 1. LOCATE via the scan digest — NEVER dispatch blind. Returns anchors (~12 real files),
@@ -53,7 +53,7 @@ mustard-rt run feature --intent "<lapidated code-shaped terms + the user's conte
 #    Prune, then read ONLY the surviving anchors: anchorsDetail shows each anchor's matched terms —
 #    drop the tangential (a seeder on `pagos`), keep the central (route/form/datatable). On weak/none
 #    the digest returns a `candidates` array (the REAL code vocabulary) — sharpen your translation and
-#    re-call, or fall back to Glob+Grep. Each query feeds lexicon-suggest (bridge → deterministic).
+#    re-call, or fall back to Glob+Grep. Persist a confirmed bridge via equivalence-learn (see end of run).
 
 # 2. Render the dispatch prompt — fold the located anchor paths into --task-text so the agent
 #    starts from them instead of searching the repo from zero.
@@ -103,10 +103,10 @@ After `audit`/`compare`: parse severity, map each CRITICAL/WARNING to `/task ref
 
 ## Lexicon feedback (end of run)
 
-`/task` has no close, so feed the self-learning dictionary HERE — especially when the digest came back `weak`/`none` and you located the files by **other means** (Glob/Grep). Pure data + gated; fail-open (no `pt-en` pair / no candidates → skip).
+`/task` has no close, so persist confirmed bridges HERE — especially when the digest came back `weak`/`none` and you located the files by **other means** (Glob/Grep). Explicit write, never automatic; nothing confirmed → skip.
 
 ```bash
-mustard-rt run lexicon-suggest   # `candidates` (re-query bridges) + `locationCandidates` (found OUTSIDE the digest)
+mustard-rt run equivalence-learn --term <missed-concept> --tokens <code-terms>
 ```
 
-For each `candidates` `{missed, bridged}` accept the confirmed bridge: `--accept {missed}={bridged}`. For each `locationCandidates` `{missed, files}` open the file, pick the code term, and `--accept {missed}={codeTerm}` — only when the mapping is clear (a wrong bridge poisons future queries). Gated (the code term must be a real mined term), idempotent. This makes the next `/task`, `/feature` or `/bugfix` find it deterministically, no LLM.
+`--term` is the request-language concept the digest missed; `--tokens` the code-vocabulary tokens it maps to (comma/space separated). Persist ONLY when the mapping is clear — you opened the file and the code term names the concept (a wrong bridge poisons future queries). Writes the learned overlay (`.claude/grain.equivalences.learned.json`), which re-scans never wipe — the next `/task`, `/feature` or `/bugfix` finds it deterministically, no LLM.

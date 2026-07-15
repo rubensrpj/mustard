@@ -461,9 +461,8 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
                     "skipped": [],
                     "error": summary,
                     "hint": "every waves[] entry requires \"n\" (1-based wave number) and \
-                             \"role\"; generate the skeleton with `mustard-rt run \
-                             plan-from-spec` and prefer `mustard-rt run plan-materialize` \
-                             as the pipeline entry",
+                             \"role\"; generate the plan with `mustard-rt run \
+                             plan-materialize` (the pipeline entry)",
                 })
             } else {
                 json!({

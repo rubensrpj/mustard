@@ -19,7 +19,7 @@ use crate::commands::{checklist};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ChecklistCmd {
     /// Mark a `## Checklist` item done in a spec.
-    #[command(display_order = 23)]
+    #[command(display_order = 18)]
     MarkChecklistItem {
         /// Spec name or absolute `spec.md` path.
         #[arg(long)]
@@ -34,15 +34,6 @@ pub enum ChecklistCmd {
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// W5.T5.8 — Return the canonical audit checklist for a domain.
-    #[command(name = "task-checklist")]
-    #[command(display_order = 91)]
-    TaskChecklist {
-        /// Domain token (e.g. `copy`, `design`, `a11y`, `i18n`, `consistency`,
-        /// `api-contract`).
-        #[arg(long)]
-        domain: String,
-    },
 }
 
 /// Dispatch one `checklist`-family `run` subcommand.
@@ -54,8 +45,5 @@ pub fn dispatch(cmd: ChecklistCmd) {
             line,
             cwd,
         } => checklist::mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
-        ChecklistCmd::TaskChecklist { domain } => {
-            checklist::task_checklist::run(checklist::task_checklist::TaskChecklistOpts { domain });
-        }
     }
 }

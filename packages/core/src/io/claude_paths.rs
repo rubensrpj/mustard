@@ -53,7 +53,6 @@
 //!         ├── wave-plan.md
 //!         ├── qa-report.json
 //!         ├── qa-report.html
-//!         ├── economy-baselines.json
 //!         ├── adr/
 //!         ├── .events/
 //!         ├── .blobs/
@@ -311,11 +310,10 @@ impl ClaudePaths {
     /// directory.
     ///
     /// **Note:** the per-wave / per-spec artefacts (`diff.md`, `prompt.md`,
-    /// `warnings.txt`, `qa-report.{json,html}`, `economy-baselines.json`) have
+    /// `warnings.txt`, `qa-report.{json,html}`) have
     /// moved into the per-spec / per-wave directories under [`Self::spec_dir`].
     /// This accessor remains for the *pipeline-state JSON files themselves*
-    /// (`{spec}.json` markers) and the legacy retroactive ingester
-    /// (`pipeline-state-ingest`) which scans the directory for back-compat.
+    /// (`{spec}.json` markers).
     /// Active pipeline-state tracking writes here today; future work may move
     /// these to a per-spec destination, but that migration is out of scope
     /// for W2 of `2026-05-26-claude-paths-single-source`.
@@ -536,13 +534,6 @@ impl SpecPaths {
     #[must_use]
     pub fn qa_report_html_path(&self) -> PathBuf {
         self.spec_dir.join("qa-report.html")
-    }
-
-    /// `<spec>/economy-baselines.json` — token / wall-time baselines used by
-    /// `/economia`.
-    #[must_use]
-    pub fn economy_baselines_path(&self) -> PathBuf {
-        self.spec_dir.join("economy-baselines.json")
     }
 
     /// Build a [`WavePaths`] for `<spec>/<wave-slug>/`.

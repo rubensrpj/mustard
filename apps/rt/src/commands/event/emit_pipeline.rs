@@ -45,10 +45,6 @@ const EVENT_PIPELINE_STAGE: &str = "pipeline.stage";
 /// `pipeline.outcome` — a terminal [`Outcome`] transition (replaces the
 /// terminal half of the legacy `pipeline.status`).
 const EVENT_PIPELINE_OUTCOME: &str = "pipeline.outcome";
-/// `pipeline.flag.set` — a [`Flags`](mustard_core::Flags) qualifier was raised.
-const EVENT_PIPELINE_FLAG_SET: &str = "pipeline.flag.set";
-/// `pipeline.flag.clear` — a [`Flags`](mustard_core::Flags) qualifier was cleared.
-const EVENT_PIPELINE_FLAG_CLEAR: &str = "pipeline.flag.clear";
 
 /// `pipeline.phase` — the legacy phase-transition event. Accepted here only so
 /// `emit-pipeline --kind pipeline.phase` can fan out the `pipeline.stage`
@@ -99,8 +95,6 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_PHASE,
     EVENT_PIPELINE_STAGE,
     EVENT_PIPELINE_OUTCOME,
-    EVENT_PIPELINE_FLAG_SET,
-    EVENT_PIPELINE_FLAG_CLEAR,
     EVENT_HYGIENE_DETECTED,
     EVENT_HYGIENE_AUTOCLOSE,
     EVENT_HYGIENE_SKIPPED,
@@ -280,6 +274,12 @@ pub fn run(opts: EmitPipelineOpts) {
         if let Some(to) = payload_for_header.get("to").and_then(Value::as_str) {
             let cwd = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+            // Fix-loop exhaustion twin (F1 G): a `to: wave-failed` status is
+            // the deterministic signal that a wave exhausted its fix-loops
+            // (refs/resume/fix-loop-wave.md). Fan out the wave-scoped
+            // `pipeline.wave.failed` the dashboard pairs with
+            // `pipeline.wave.complete`. Same ts + session; fail-open.
+            emit_wave_failed_twin(&cwd, &spec_name, &payload_for_header, &ts, &sid);
             let state = state_from_status_word(to);
             // Determine target path: wave-level transitions carry a `wave` field
             // and sync the wave's spec.md; top-level transitions sync the parent.
@@ -472,6 +472,80 @@ fn is_terminal_event(kind: &str, payload: &Value) -> bool {
         );
     }
     false
+}
+
+/// Fan out the `pipeline.wave.failed` twin for a `pipeline.status
+/// {to: wave-failed}` transition — the deterministic signal that a wave
+/// exhausted its fix-loops (`refs/resume/fix-loop-wave.md`). The dashboard's
+/// wave projection pairs `pipeline.wave.failed` with `pipeline.wave.complete`
+/// per wave number, so the twin carries the failing wave — see
+/// [`failed_wave_number`] for the derivation. A spec with no wave evidence
+/// emits nothing. Fail-open; same `ts` + `session_id` as the status event so
+/// the projection correlates the pair as one transition.
+fn emit_wave_failed_twin(project: &Path, spec: &str, payload: &Value, ts: &str, sid: &str) {
+    let is_wave_failed = payload
+        .get("to")
+        .and_then(Value::as_str)
+        .is_some_and(|to| Flags::parse(&to.trim().to_ascii_lowercase()).wave_failed);
+    if !is_wave_failed {
+        return;
+    }
+    let Some(wave) = failed_wave_number(project, spec, payload) else {
+        return;
+    };
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.to_string(),
+        session_id: sid.to_string(),
+        wave: u32::try_from(wave).unwrap_or(0),
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("emit-pipeline".to_string()),
+            actor_type: None,
+        },
+        event: "pipeline.wave.failed".to_string(),
+        payload: json!({ "spec": spec, "wave": wave }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+}
+
+/// The failing wave for the `pipeline.wave.failed` twin: the payload's own
+/// `wave` when the caller named it, else the LAST STARTED wave (the wave in
+/// flight when the fix-loops ran out), else max completed + 1 (the
+/// `current_wave` derivation the spec-view projection uses). `None` when the
+/// spec carries no wave evidence at all — a wave-less spec emits no twin.
+fn failed_wave_number(project: &Path, spec: &str, payload: &Value) -> Option<u64> {
+    if let Some(w) = payload.get("wave").and_then(Value::as_u64) {
+        return Some(w);
+    }
+    let events_dir = ClaudePaths::for_project(project)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map_or_else(
+            || {
+                ClaudePaths::compose_unchecked(project)
+                    .spec_dir()
+                    .join(spec)
+                    .join(".events")
+            },
+            |sp| sp.dir().join(".events"),
+        );
+    let events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+    let started_max = events
+        .iter()
+        .filter(|e| e.event == EVENT_PIPELINE_WAVE_START)
+        .filter_map(|e| e.payload.get("wave").and_then(Value::as_u64))
+        .max();
+    if started_max.is_some() {
+        return started_max;
+    }
+    events
+        .iter()
+        .filter(|e| e.event == EVENT_PIPELINE_WAVE_COMPLETE)
+        .filter_map(|e| e.payload.get("wave").and_then(Value::as_u64))
+        .max()
+        .map(|m| m + 1)
 }
 
 /// Resolve the `wave-{N}-*` directory path for a spec. Returns `None` when
@@ -1206,10 +1280,10 @@ mod tests {
 
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
-        // 9 legacy + 1 legacy phase (alias-only) + 1 wave.start + 4 new
+        // 9 legacy + 1 legacy phase (alias-only) + 1 wave.start + 2 new
         // canonical + 3 hygiene + 1 economy (W2 mustard-unification) + 1
         // pipeline.kind (porta-unica work-type signal).
-        assert_eq!(KNOWN_KINDS.len(), 20);
+        assert_eq!(KNOWN_KINDS.len(), 18);
         // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
@@ -1228,8 +1302,6 @@ mod tests {
         // New canonical state-model kinds.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STAGE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_OUTCOME));
-        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_FLAG_SET));
-        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_FLAG_CLEAR));
         // W5 hygiene kinds.
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_DETECTED));
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_AUTOCLOSE));
@@ -1408,6 +1480,75 @@ mod tests {
     }
 
     #[test]
+    fn status_wave_failed_emits_the_wave_failed_twin() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let spec = "twin-spec";
+        // Wave evidence: wave 1 completed, wave 2 started (the wave in flight).
+        emit_routed(project, EVENT_PIPELINE_WAVE_COMPLETE, spec, json!({"wave": 1}));
+        emit_routed(project, EVENT_PIPELINE_WAVE_START, spec, json!({"wave": 2}));
+
+        super::emit_wave_failed_twin(
+            project,
+            spec,
+            &json!({"to": "wave-failed"}),
+            "2026-06-04T00:00:01.000Z",
+            "sid",
+        );
+
+        let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
+        let events =
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        let failed: Vec<_> = events
+            .iter()
+            .filter(|e| e.event == "pipeline.wave.failed")
+            .collect();
+        assert_eq!(failed.len(), 1, "exactly one twin: {events:?}");
+        assert_eq!(failed[0].payload["wave"], json!(2), "last started wave fails");
+        assert_eq!(failed[0].payload["spec"], json!(spec), "payload is self-contained");
+        assert_eq!(failed[0].spec.as_deref(), Some(spec), "envelope carries the spec");
+        // The spec-view fold picks the failure up as a failed wave.
+        let view = mustard_core::view::projection::project_spec_view(spec, &events);
+        assert_eq!(view.failed_waves, vec![2], "projection folds the twin: {view:?}");
+        assert!(view.state.flags.wave_failed, "state carries the qualifier: {view:?}");
+    }
+
+    #[test]
+    fn wave_failed_twin_prefers_payload_wave_and_skips_non_failures() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let spec = "twin-payload";
+        // A non-failure word never emits.
+        super::emit_wave_failed_twin(project, spec, &json!({"to": "implementing"}), "t", "s");
+        // An explicit payload wave wins without any event evidence.
+        super::emit_wave_failed_twin(
+            project,
+            spec,
+            &json!({"to": "wave-failed", "wave": 3}),
+            "t",
+            "s",
+        );
+        // A wave-less spec with no payload wave emits nothing.
+        super::emit_wave_failed_twin(project, "no-waves", &json!({"to": "wave-failed"}), "t", "s");
+
+        let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
+        let events =
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        let failed: Vec<_> = events
+            .iter()
+            .filter(|e| e.event == "pipeline.wave.failed")
+            .collect();
+        assert_eq!(failed.len(), 1, "only the explicit failure emitted: {events:?}");
+        assert_eq!(failed[0].payload["wave"], json!(3), "payload wave wins");
+        let none_dir = project
+            .join(".claude")
+            .join("spec")
+            .join("no-waves")
+            .join(".events");
+        assert!(!none_dir.exists(), "wave-less spec emits no twin");
+    }
+
+    #[test]
     fn each_kind_appended_once_with_correct_event_name() {
         let dir = tempdir().unwrap();
         let project = dir.path();
@@ -1419,10 +1560,7 @@ mod tests {
 
         // All events land in the per-spec NDJSON `.events/` directory.
         let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
-        let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
-        // Filter the auto-emitted economy.event.written sidecars (T5.8) — they
-        // are not first-class kinds, just per-write breadcrumbs.
-        events.retain(|e| e.event != "pipeline.economy.event.written");
+        let events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
 
         let counts: std::collections::BTreeMap<&str, usize> = KNOWN_KINDS
             .iter()

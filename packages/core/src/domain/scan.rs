@@ -10,7 +10,6 @@
 //! - `grain spec <model> --entity … [--like …] [--ops …] [--invariant …]` — the
 //!   deterministic implementation-spec DRAFT (English; localized to the
 //!   project's `mustard.json` language/tone only at the lapidation step).
-//! - `grain verify <root> --entity … …` — the file-presence acceptance gate.
 //!
 //! The boundary is a TOOL (process + JSON/MD), not a library link: no shared
 //! build, no tree-sitter version coupling, grain stays standalone. This module
@@ -520,18 +519,6 @@ impl Scan {
         self.run(&spec_args(model, req))
     }
 
-    /// Search the model's declaration `purpose` summaries for `terms`
-    /// (`scan purpose-search --query`) — the recall path for a method whose NAME
-    /// diverges from the request vocabulary. Returns the byte-stable JSON
-    /// verbatim (the consumer relays it); the matching lives in the scan binary
-    /// (the single owner of the match ladder).
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure.
-    pub fn purpose_search(&self, model: &Path, terms: &[String]) -> Result<String> {
-        self.run(&purpose_search_args(model, terms))
-    }
-
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
     /// stderr) to [`Error::CheckFailed`].
     fn run(&self, args: &[String]) -> Result<String> {
@@ -557,15 +544,6 @@ fn scan_args(root: &Path, out: &Path) -> Vec<String> {
 
 fn digest_args(model: &Path) -> Vec<String> {
     vec!["digest".to_string(), model.to_string_lossy().into_owned()]
-}
-
-fn purpose_search_args(model: &Path, terms: &[String]) -> Vec<String> {
-    vec![
-        "purpose-search".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--query".to_string(),
-        terms.join(","),
-    ]
 }
 
 fn digest_query_args(model: &Path, terms: &[String]) -> Vec<String> {
@@ -632,12 +610,6 @@ mod tests {
     fn digest_query_joins_terms() {
         let a = digest_query_args(&PathBuf::from("m.json"), &["tenant".into(), "charge".into()]);
         assert_eq!(a, vec!["digest", "m.json", "--query", "tenant,charge"]);
-    }
-
-    #[test]
-    fn purpose_search_args_join_terms() {
-        let a = purpose_search_args(&PathBuf::from("m.json"), &["efetivar".into(), "baixa".into()]);
-        assert_eq!(a, vec!["purpose-search", "m.json", "--query", "efetivar,baixa"]);
     }
 
     #[test]

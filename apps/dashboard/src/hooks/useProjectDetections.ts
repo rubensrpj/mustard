@@ -4,7 +4,7 @@
 // cache identity follows the project, not the array index. Returns a 1:1
 // aligned array with `projects` so callers can `projects.forEach((p, i) =>
 // detections[i])` without re-zipping. Follows the dashboard's canonical
-// `useQueries` fan-out convention (see `useAggregate.ts`).
+// `useQueries` fan-out convention.
 
 import { useQueries } from "@tanstack/react-query";
 import { detectProjectMustard, type ProjectDetection } from "@/lib/projects";

@@ -759,7 +759,7 @@ fn skill_validate_verdict(content: &str, mode: GateMode) -> Verdict {
         .join("\n");
     let reason = format!(
         "[skill-validate-gate] SKILL.md fails structural validation:\n{error_list}\n\
-         Run `bun .claude/scripts/skills.js validate` for details."
+         Fix the listed frontmatter/structure issues and retry."
     );
     if mode == GateMode::Strict {
         Verdict::Deny { reason }

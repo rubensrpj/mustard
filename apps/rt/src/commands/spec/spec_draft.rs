@@ -222,9 +222,8 @@ pub fn run(opts: SpecDraftOpts) {
 
     // D6: the `memory/_index.md` is NOT born at draft time. A fresh spec used to
     // ship an empty stub (and, before the i18n keys existed, a `<missing-key>`
-    // line). The index is now born on the FIRST knowledge capture via
-    // `spec-memory create` (see `spec_memory::ensure_index`), so an unused spec
-    // carries no orphan index file.
+    // line). The index is now born on the FIRST knowledge capture, so an unused
+    // spec carries no orphan index file.
 
     // Full-scope wave decomposition is owned by `wave-scaffold` (plan-driven:
     // per-wave roles/summaries/deps + review/qa scaffolds). `spec-draft` only
@@ -681,8 +680,7 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
 
 // D6: the `memory/_index.md` is no longer materialised at draft time (the old
 // `write_memory_stub` shipped an empty stub on every spec). The index is now
-// created/updated on the first `spec-memory create`, in
-// `spec_memory::ensure_index`, using the `memory.index.intro` / `.empty` keys.
+// created/updated on the first knowledge capture.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1183,8 +1181,7 @@ mod tests {
         let root = dir.path().join("specs").join("demo");
         assert!(root.join("spec.md").exists());
         assert!(root.join("meta.json").exists());
-        // D6: a fresh draft no longer ships a `memory/_index.md` stub — the
-        // index is born on the first `spec-memory create`.
+        // D6: a fresh draft no longer ships a `memory/_index.md` stub.
         assert!(!root.join("memory").join("_index.md").exists());
         // Wave dirs are NOT created by spec-draft — that is wave-scaffold's job.
         assert!(!root.join("wave-plan.md").exists());

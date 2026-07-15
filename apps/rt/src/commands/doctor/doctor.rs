@@ -103,48 +103,14 @@ const KNOWN_EVENTS: &[&str] = &[
     "UserPromptSubmit",
 ];
 
-/// All `mustard-rt run <subcommand>` names recognized by the binary.
-/// Derived from the `RunCmd` enum variants in `run/mod.rs` (kebab-case).
-const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
-    "diff-context",
-    "emit-event",
-    "emit-phase",
-    "complete-spec",
-    "context-slice",
-    "memory",
-    "epic-fold",
-    "spec-extract",
-    "spec-link",
-    "analyze-validation",
-    "mark-checklist-item",
-    "wave-tree",
-    "wave-dependency",
-    "scope-decompose",
-    "scope-classify",
-    "exec-rewave-check",
-    "wave-size-check",
-    "qa-run",
-    "metrics",
-    "event-projections",
-    "verify-pipeline",
-    "pipeline-summary",
-    "review-result",
-    "statusline",
-    "skills",
-    "security-scan",
-    "verify-emit",
-    "rtk-gain",
-    "scan-orchestrate",
-    "scan-finalize",
-    "otel-collector",
-    "diagnose-otel",
-    "doctor",
-    "db-maintain",
-    "unhook",
-    "rehook",
-    "plan-from-spec",
-    "spec-status-backfill",
-];
+/// All `mustard-rt run <subcommand>` names recognized by the binary — derived
+/// from the live clap tree, so the set can never drift from `RunCmd` again.
+fn known_run_subcommands() -> std::collections::BTreeSet<String> {
+    <crate::commands::RunCmd as clap::Subcommand>::augment_subcommands(clap::Command::new("run"))
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect()
+}
 
 /// The Mustard-owned folders that `mustard-cli update` regenerates.
 /// Derived from the `CORE_FOLDERS` constant in `apps/cli/src/commands/update.rs`.
@@ -225,7 +191,7 @@ fn validate_command_string(cmd: &str, broken: &mut Vec<String>) {
         }
         "run" => {
             let subcommand = parts[2];
-            if !KNOWN_RUN_SUBCOMMANDS.contains(&subcommand) {
+            if !known_run_subcommands().contains(subcommand) {
                 broken.push(format!("unknown run subcommand: '{subcommand}' in command '{cmd}'"));
             }
         }

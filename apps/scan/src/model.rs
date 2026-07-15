@@ -168,16 +168,6 @@ pub struct Decl {
     /// generic to mine: a base name shared by many entities is a shared contract.
     #[serde(default)]
     pub supertypes: Vec<String>,
-    /// One-sentence business-action summary written by `enrich-purpose --apply`
-    /// (T3). Absent on freshly-scanned models; additive with `#[serde(default)]`
-    /// so older payloads deserialise unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
-    /// SHA-256 hex digest of the declaration's sliced body at the time `purpose`
-    /// was written — used by `enrich-purpose --apply` for incremental skipping
-    /// (skip when body hasn't changed). Additive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body_hash: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -185,14 +175,9 @@ pub struct GraphStats {
     pub nodes: usize,
     pub edges: usize,
     pub cyclic: bool,
-    pub cycles: Vec<Vec<String>>,
     pub top_fan_in: Vec<NodeDegree>,
     pub top_fan_out: Vec<NodeDegree>,
     pub layers: Vec<LayerInfo>,
-    /// Dependency edges that close a cycle — the only direction-violation the
-    /// graph can prove without a hardcoded layer vocabulary.
-    pub cyclic_edges: usize,
-    pub total_edges: usize,
     /// High fan-out hubs that import across many directories — the registration
     /// points (DI container, menu, barrels) you EDIT when adding an entity, not
     /// the per-entity files you create. Frequency-derived; tests excluded.
@@ -248,10 +233,6 @@ pub struct RoleStat {
     /// supertypes; populated when AST parsing is available). The role's contract.
     #[serde(default)]
     pub implements: Option<String>,
-    /// Other dominant supertypes for this affix — a signal the name covers more
-    /// than one kind of thing (e.g. a notification Channel vs a domain Channel).
-    #[serde(default)]
-    pub also_implements: Vec<String>,
     /// Namespaces/modules files of this role commonly pull in — its collaborators.
     #[serde(default)]
     pub collaborators: Vec<String>,

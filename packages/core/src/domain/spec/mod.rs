@@ -54,8 +54,7 @@
 //! `migrate-spec-headers` run command, which then depended on this module —
 //! proving the single-source-of-truth property.
 
-#[allow(deprecated)] // SpecStatus is the legacy projection target `status_word` delegates to.
-use crate::domain::model::view::{Flags, Outcome, SpecState, SpecStatus, Stage};
+use crate::domain::model::view::{Flags, Outcome, SpecState, Stage};
 use std::path::Path;
 
 // Byte-stable spec layout contract — Wave 1, `2026-05-25-mustard-deep-refactor`.
@@ -465,11 +464,32 @@ pub fn serialize_header(state: &SpecState) -> [String; 3] {
 ///
 /// The active-stage spellings (`implementing`, `qa`) match the legacy
 /// `### Status:` vocabulary the old icon maps keyed off, so the rendered output
-/// is byte-identical to pre-migration behaviour.
+/// is byte-identical to pre-migration behaviour. `Superseded` / `Absorbed`
+/// project to `"completed"` — the retired flat vocabulary had no dedicated
+/// words for either, and both are "work that survives elsewhere".
 #[must_use]
-#[allow(deprecated)] // delegates through the legacy SpecStatus to share ONE mapping table.
 pub fn status_word(state: &SpecState) -> &'static str {
-    SpecStatus::try_from(state.clone()).map_or("no-events", SpecStatus::as_kebab)
+    match state.outcome {
+        Outcome::Completed | Outcome::Superseded | Outcome::Absorbed => "completed",
+        Outcome::Cancelled => "cancelled",
+        Outcome::Abandoned => "abandoned",
+        Outcome::Active => {
+            if state.flags.blocked {
+                "blocked"
+            } else if state.flags.wave_failed {
+                "wave-failed"
+            } else if state.flags.followup_open {
+                "closed-followup"
+            } else {
+                match state.stage {
+                    Stage::Analyze | Stage::Plan => "planning",
+                    Stage::Execute => "implementing",
+                    Stage::QaReview => "qa",
+                    Stage::Close => "closed-followup",
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

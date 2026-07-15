@@ -234,26 +234,6 @@ pub fn mine(
             .filter(|(_, c)| **c >= 2)
             .map(|(name, _)| name.clone())
     };
-    // Other dominant supertypes (beyond the top) → the name spans >1 kind of thing.
-    // Other dominant supertypes (beyond the top) → the name spans >1 kind of thing.
-    let other_supertypes = |r: &str, top: &Option<String>| -> Vec<String> {
-        let m = match role_supertypes.get(r) {
-            Some(m) => m,
-            None => return Vec::new(),
-        };
-        let role_n = role_entities.get(r).map(|e| e.len()).unwrap_or(0).max(1);
-        let mut v: Vec<(String, usize)> = m
-            .iter()
-            .filter(|(name, c)| {
-                !entity_keys.contains(&canonical_key(name))
-                    && Some(*name) != top.as_ref()
-                    && **c as f32 >= 0.30 * role_n as f32
-            })
-            .map(|(name, c)| (name.clone(), *c))
-            .collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        v.into_iter().take(2).map(|(n, _)| n).collect()
-    };
     // Collaborators: namespaces this role pulls in across many of its entities,
     // excluding ones imported by most *roles* (framework/base noise like System).
     let num_roles = role_entities.keys().filter(|r| r.as_str() != "(core)").count().max(1);
@@ -296,7 +276,6 @@ pub fn mine(
             common_dir: top_key(role_dirs.get(r)),
             decl_kind: top_key(role_kinds.get(r)),
             implements: top_supertype(r),
-            also_implements: other_supertypes(r, &top_supertype(r)),
             collaborators: collaborators_for(r),
         })
         .collect();

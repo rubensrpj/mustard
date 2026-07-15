@@ -9,17 +9,18 @@
 //!   the just-written file. Fire-and-forget — no verdict.
 //! - `checklist-auto-mark.js` — an **`Observer`**: silently marks Checklist
 //!   items in the active spec when the edited file matches an item. No verdict.
-//! - `guard-verify.js` — a **`Check`**: verifies a production file edit against
-//!   critical architectural rules; a critical violation `block`s, a boundary
-//!   mismatch is an advisory.
+//! - `guard-verify.js` — a **`Check`**: flags an edit that falls outside the
+//!   active spec.s declared `## Boundaries` (advisory). The legacy
+//!   critical-rule block (stack-specific DbContext/DIP/int-id rules) was
+//!   removed — subproject Guards + review own that judgement.
 //!
 //! `PostEdit` therefore implements **both** [`Check`] (guard-verify) and
 //! [`Observer`] (auto-format + checklist-auto-mark) — the same dual shape
 //! `budget` and `bash_guard` use.
 //!
 //! Consolidation **regroups, it does not re-decide** — every verdict is a 1:1
-//! port of the JS decision logic. Parity tests mirror `__tests__/hooks.test.js`
-//! ("guard-verify.js") and `__tests__/checklist-mark.test.js`.
+//! port of the JS decision logic. Parity tests mirror
+//! `__tests__/checklist-mark.test.js`.
 //!
 //! ## Migration note (dashboard-phase-from-sqlite)
 //!
@@ -33,12 +34,8 @@
 //!
 //! ## Verdict note (guard-verify)
 //!
-//! `guard-verify.js` is a `PostToolUse` hook that writes the `decision:
-//! "block"/"approve"` protocol. The `mustard-core` contract has one blocking
-//! [`Verdict::Deny`] and the dispatcher encodes it as `permissionDecision`.
-//! The **verdict** (block on a critical violation) is preserved exactly; only
-//! the wire encoding normalises. A boundary mismatch — advisory in the JS — is
-//! an [`Verdict::Inject`].
+//! The boundary mismatch — advisory in the JS — is an [`Verdict::Inject`];
+//! the module never blocks.
 
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
@@ -105,316 +102,21 @@ fn new_content_of(input: &HookInput) -> String {
         .to_string()
 }
 
-/// The module name from a `.NET` module path: `Modules/v{N}/{Module}`.
-fn module_of(rel: &str) -> Option<String> {
-    let p = rel.replace('\\', "/");
-    let idx = p.find("Modules/")?;
-    let after = &p[idx + "Modules/".len()..];
-    // Expect `v<digits>/<Module>`.
-    let mut segs = after.split('/');
-    let v = segs.next()?;
-    if !v.starts_with('v') || !v[1..].chars().all(|c| c.is_ascii_digit()) || v.len() < 2 {
-        return None;
-    }
-    let module = segs.next()?;
-    // The module token: `\w+` — alphanumeric/underscore.
-    let module: String = module
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    if module.is_empty() { None } else { Some(module) }
-}
 
-/// Check the new content against the critical architectural rules. Returns the
-/// list of violation messages. Port of `checkCriticalRules`.
-fn check_critical_rules(content: &str, rel: &str) -> Vec<String> {
-    let mut violations: Vec<String> = Vec::new();
-    let p = rel.replace('\\', "/");
-    let in_services = scope_services(&p);
-    let in_repository = p.to_ascii_lowercase().contains("repositor");
 
-    // Rule: `\bDbContext\b` in a Service that is not a Repository.
-    if in_services && !in_repository && contains_word_ci(content, "dbcontext") {
-        violations.push(format!(
-            "L7: DbContext proibido em Services — use Repository (in {rel})"
-        ));
-    }
-    // Rule: a `\w+Repository` referenced from a Service, cross-module.
-    if in_services && content_has_repository_ref(content) {
-        if let Some(module) = module_of(rel) {
-            let module_base = module.to_ascii_lowercase();
-            let module_base = module_base.strip_suffix('s').unwrap_or(&module_base);
-            if has_cross_module_repository(content, module_base) {
-                violations.push(format!(
-                    "L8: cross-module SEMPRE via Service, NUNCA Repository (in {rel})"
-                ));
-            }
-        }
-    }
-    // Rule: `new \w+(Service|Repository)(` in a `.cs` file.
-    if std::path::Path::new(&p)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cs")) && content_has_new_service_or_repository(content) {
-        violations.push(format!(
-            "DIP: inject interface, NEVER concrete class (in {rel})"
-        ));
-    }
-    // Rule: `\b(uint|int)\s+\w*[Ii]d\b` in a `.cs` file.
-    if std::path::Path::new(&p)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cs")) && content_has_int_id(content) {
-        violations.push(format!(
-            "IDs must be Guid (UUIDv7), never int/uint (in {rel})"
-        ));
-    }
-    // Rule: `directClient` in an `app/api/` route.
-    if (p.contains("app/api/") || p.contains("app\\api\\")) && content.contains("directClient") {
-        violations.push(format!(
-            "API routes NUNCA usam directClient — use backend-client.ts (in {rel})"
-        ));
-    }
-    violations
-}
 
-/// `true` if a path is scoped under a `Services/` or `Service/` directory.
-fn scope_services(p: &str) -> bool {
-    p.contains("Services/") || p.contains("Service/")
-}
 
-/// `true` if `content` contains `\b\w+Repository\b`.
-fn content_has_repository_ref(content: &str) -> bool {
-    word_followed_by(content, "Repository")
-}
 
-/// `true` if `content` references a cross-module `I?<Module>Repository`.
-/// `module_base` is the lowercased, de-pluralised owning module.
-fn has_cross_module_repository(content: &str, module_base: &str) -> bool {
-    // The JS regex is `\bI?([A-Z]\w+)Repository\b`.
-    let bytes = content.as_bytes();
-    let mut i = 0;
-    while let Some(rel) = content[i..].find("Repository") {
-        let end_rel = i + rel;
-        let suffix_end = end_rel + "Repository".len();
-        // Right boundary: `\b` after `Repository`.
-        let right_ok = bytes
-            .get(suffix_end)
-            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'));
-        if right_ok {
-            // Walk backwards over `[A-Z]\w+` then an optional leading `I`.
-            let mut start = end_rel;
-            while start > 0 {
-                let b = bytes[start - 1];
-                if b.is_ascii_alphanumeric() || b == b'_' {
-                    start -= 1;
-                } else {
-                    break;
-                }
-            }
-            // `start..end_rel` is the type name preceding `Repository`.
-            let type_name = &content[start..end_rel];
-            // Must start with an uppercase letter (`[A-Z]\w+`), at least 2 chars.
-            if type_name.len() >= 2 && type_name.starts_with(|c: char| c.is_ascii_uppercase()) {
-                // Strip a leading `I` (interface convention) for the name test.
-                let repo_name = type_name
-                    .strip_prefix('I')
-                    .filter(|r| r.starts_with(|c: char| c.is_ascii_uppercase()))
-                    .unwrap_or(type_name);
-                let repo_lower = repo_name.to_ascii_lowercase();
-                // Same-module if the repo name shares the module base.
-                let same_module =
-                    repo_lower.contains(module_base) || module_base.contains(repo_lower.as_str());
-                if !same_module {
-                    return true;
-                }
-            }
-        }
-        i = suffix_end;
-    }
-    false
-}
 
-/// `true` if `content` matches `new \w+(Service|Repository)\(`.
-fn content_has_new_service_or_repository(content: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = content[from..].find("new ") {
-        let start = from + rel;
-        let after = &content[start + 4..];
-        let after = after.trim_start();
-        // `\w+` then `(Service|Repository)` then `(`.
-        let name: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if !name.is_empty() {
-            for suffix in ["Service", "Repository"] {
-                if name.ends_with(suffix) {
-                    let rest = &after[name.len()..];
-                    if rest.starts_with('(') {
-                        return true;
-                    }
-                }
-            }
-        }
-        from = start + 4;
-    }
-    false
-}
 
-/// `true` if `content` matches `\b(uint|int)\s+\w*[Ii]d\b`.
-fn content_has_int_id(content: &str) -> bool {
-    for keyword in ["int", "uint"] {
-        let mut from = 0;
-        while let Some(rel) = content[from..].find(keyword) {
-            let start = from + rel;
-            let end = start + keyword.len();
-            let bytes = content.as_bytes();
-            let left_ok = start == 0 || !is_word_byte(bytes[start - 1]);
-            let rest = &content[end..];
-            let trimmed = rest.trim_start();
-            let had_ws = trimmed.len() < rest.len();
-            if left_ok && had_ws {
-                // `\w*[Ii]d\b` — an identifier ending in `Id`/`id`.
-                let ident: String = trimmed
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
-                if ident.len() >= 2 {
-                    let tail = &ident[ident.len() - 2..];
-                    if (tail == "Id" || tail == "id")
-                        && trimmed
-                            .as_bytes()
-                            .get(ident.len())
-                            .is_none_or(|&b| !is_word_byte(b))
-                    {
-                        return true;
-                    }
-                }
-            }
-            from = end;
-        }
-    }
-    false
-}
 
-/// `true` if `content` contains `word` followed by an identifier char (a
-/// `\bword\w` shape, used for `\b\w+Repository`-style probes).
-fn word_followed_by(content: &str, word: &str) -> bool {
-    let mut from = 0;
-    let bytes = content.as_bytes();
-    while let Some(rel) = content[from..].find(word) {
-        let start = from + rel;
-        let left_ok = start == 0 || is_word_byte(bytes[start - 1]);
-        // `\b\w+Repository\b`: at least one word char must precede `Repository`.
-        let end = start + word.len();
-        let right_ok = bytes
-            .get(end)
-            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'));
-        if left_ok && right_ok {
-            return true;
-        }
-        from = end;
-    }
-    false
-}
-
-/// `true` if `content` contains `word` (case-insensitive) with word
-/// boundaries — the `\bword\b` shape.
-fn contains_word_ci(content: &str, word_lower: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let mut from = 0;
-    while let Some(rel) = lower[from..].find(word_lower) {
-        let start = from + rel;
-        let end = start + word_lower.len();
-        let left_ok = start == 0 || !is_word_byte(bytes[start - 1]);
-        let right_ok = bytes.get(end).is_none_or(|&b| !is_word_byte(b));
-        if left_ok && right_ok {
-            return true;
-        }
-        from = end;
-    }
-    false
-}
 
 /// `true` for an ASCII word byte (alphanumeric or `_`).
 fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Scan `.cs` import statements for cross-module Repository / `DbContext`
-/// imports. Port of `analyzeImports`.
-fn analyze_imports(rel: &str, content: &str) -> Vec<String> {
-    let p = rel.replace('\\', "/");
-    if !std::path::Path::new(&p)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cs")) {
-        return Vec::new();
-    }
-    let Some(current_module) = module_of(rel) else {
-        return Vec::new();
-    };
-    let is_service = scope_services(&p);
-    let is_repository = {
-        let lower = p.to_ascii_lowercase();
-        lower.contains("repository/") || lower.contains("repositories/")
-    };
-    let mut violations: Vec<String> = Vec::new();
-    // `using\s+[\w.]+\.Modules\.v\d+\.(\w+)\.([\w.]*)`.
-    for line in content.split('\n') {
-        let Some((import_module, import_path)) = parse_module_using(line) else {
-            continue;
-        };
-        if is_service
-            && import_module != current_module
-            && import_path.to_ascii_lowercase().contains("repositor")
-        {
-            violations.push(format!(
-                "L8: importing {import_module}.{import_path} from {current_module} \
-                 Service — use Service instead"
-            ));
-        }
-        if !is_repository && import_path.to_ascii_lowercase().contains("dbcontext") {
-            violations.push(format!(
-                "L7: DbContext import in non-Repository file ({rel})"
-            ));
-        }
-    }
-    violations
-}
 
-/// Parse a `using X.Modules.v<N>.<Module>.<Path>` line into `(Module, Path)`.
-fn parse_module_using(line: &str) -> Option<(String, String)> {
-    let t = line.trim_start();
-    let rest = t.strip_prefix("using")?;
-    if !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let rest = rest.trim_start();
-    let idx = rest.find(".Modules.v")?;
-    let after = &rest[idx + ".Modules.v".len()..];
-    // Skip the version digits then a `.`.
-    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    let after = after[digits.len()..].strip_prefix('.')?;
-    // `(\w+)` — the module.
-    let module: String = after
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    if module.is_empty() {
-        return None;
-    }
-    let after = &after[module.len()..];
-    let after = after.strip_prefix('.').unwrap_or(after);
-    // `([\w.]*)` — the import path, up to a `;` / whitespace.
-    let import_path: String = after
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
-        .collect();
-    Some((module, import_path))
-}
 
 /// Scan specs for a `## Boundaries` section the edited file violates.
 /// Advisory only — returns the warning message or `None`. Port of
@@ -734,21 +436,6 @@ fn guard_verify(input: &HookInput, cwd: &str) -> Verdict {
     let content = new_content_of(input);
     if content.is_empty() {
         return Verdict::Allow;
-    }
-    let mut violations = check_critical_rules(&content, &rel);
-    violations.extend(analyze_imports(&rel, &content));
-    if !violations.is_empty() {
-        let msgs = violations
-            .iter()
-            .map(|v| format!("CRITICAL: {v}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Verdict::Deny {
-            reason: format!(
-                "Guard Enforcement BLOCKED:\n{msgs}\n\nFix these violations before \
-                 proceeding."
-            ),
-        };
     }
     // Advisory: a boundary mismatch — surfaced ONCE per (spec, session) so it
     // does not re-inject the same warning on every subsequent out-of-scope edit.
@@ -1229,9 +916,9 @@ fn same_path(a: &str, b: &str) -> bool {
 // ===========================================================================
 
 impl Check for PostEdit {
-    /// `guard-verify`: gate a `PostToolUse(Write|Edit)` against the critical
-    /// architectural rules. A critical violation `Deny`s; a boundary mismatch
-    /// is an `Inject` advisory; everything else `Allow`s.
+    /// `guard-verify`: surface the boundary advisory for a
+    /// `PostToolUse(Write|Edit)`. A mismatch with the active spec.s declared
+    /// `## Boundaries` is an `Inject` advisory; everything else `Allow`s.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return Ok(Verdict::Allow);
@@ -1289,50 +976,9 @@ mod tests {
 
     // --- guard-verify parity (hooks.test.js "guard-verify.js") -------------
 
-    #[test]
-    fn guard_blocks_dbcontext_in_services() {
-        let input = edit_input(
-            "/proj/src/Modules/v1/Users/Services/UserService.cs",
-            "var ctx = new DbContext();",
-        );
-        let verdict = guard_verify(&input, "/proj");
-        assert!(verdict.is_blocking(), "DbContext in Services must block");
-    }
 
-    #[test]
-    fn guard_allows_dbcontext_in_repositories() {
-        let input = edit_input(
-            "/proj/src/Modules/v1/Users/Repositories/UserRepository.cs",
-            "var ctx = new DbContext();",
-        );
-        // `new UserRepository(` would trip the DIP rule — use a plain field.
-        let input = HookInput {
-            tool_input: json!({
-                "file_path": "/proj/src/Modules/v1/Users/Repositories/UserRepository.cs",
-                "new_string": "private readonly DbContext _ctx;",
-            }),
-            ..input
-        };
-        assert_eq!(guard_verify(&input, "/proj"), Verdict::Allow);
-    }
 
-    #[test]
-    fn guard_blocks_cross_module_repository_in_service() {
-        let input = edit_input(
-            "/proj/src/Modules/v1/Users/Services/UserService.cs",
-            "private readonly ContractRepository _repo;",
-        );
-        assert!(guard_verify(&input, "/proj").is_blocking());
-    }
 
-    #[test]
-    fn guard_allows_same_module_repository() {
-        let input = edit_input(
-            "/proj/src/Modules/v1/Users/Services/UserService.cs",
-            "private readonly UserRepository _repo;",
-        );
-        assert_eq!(guard_verify(&input, "/proj"), Verdict::Allow);
-    }
 
     #[test]
     fn guard_skips_claude_files() {
@@ -1343,14 +989,6 @@ mod tests {
         assert_eq!(guard_verify(&input, "/proj"), Verdict::Allow);
     }
 
-    #[test]
-    fn guard_blocks_int_id_in_cs() {
-        let input = edit_input(
-            "/proj/src/Models/User.cs",
-            "public int UserId { get; set; }",
-        );
-        assert!(guard_verify(&input, "/proj").is_blocking());
-    }
 
     #[test]
     fn guard_skip_patterns_recognised() {
@@ -1373,12 +1011,11 @@ mod tests {
             PostEdit.evaluate(&input, &pre_ctx).expect("no error"),
             Verdict::Allow
         );
-        // PostToolUse → blocks.
-        assert!(
-            PostEdit
-                .evaluate(&input, &ctx("/proj"))
-                .expect("no error")
-                .is_blocking()
+        // PostToolUse → still allows: the legacy critical-rule block is gone
+        // and no active spec under `/proj` declares boundaries.
+        assert_eq!(
+            PostEdit.evaluate(&input, &ctx("/proj")).expect("no error"),
+            Verdict::Allow
         );
     }
 

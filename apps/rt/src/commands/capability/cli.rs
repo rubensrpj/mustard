@@ -34,7 +34,7 @@ pub enum CapabilityCmd {
     /// grain registry, so the EXISTING wikilink resolver dereferences the cover
     /// link; an unknown / typo'd cover is skipped (stays `⚠ unresolved`).
     /// All reuse the core type + the single `[[ ]]` scanner; fail-open.
-    #[command(display_order = 78)]
+    #[command(display_order = 65)]
     Capability {
         /// Verb: `create` (default), `show`, or `sync-nodes`.
         subcommand: Option<String>,

@@ -10,7 +10,6 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub db_path: Option<String>,
     pub last_activity_ms: Option<u64>,
 }
 
@@ -35,11 +34,8 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
     queue.push_back((root.to_path_buf(), 0));
 
     while let Some((dir, depth)) = queue.pop_front() {
-        let db_path = dir.join(".claude").join(".harness").join("mustard.db");
         let json_path = dir.join("mustard.json");
-        let has_db = db_path.is_file();
-        let has_json = json_path.is_file();
-        if has_db || has_json {
+        if json_path.is_file() {
             let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             let canonical_str = canonical.to_string_lossy().to_string();
             let id = fnv1a_hex(canonical_str.as_bytes());
@@ -47,23 +43,16 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| canonical_str.clone());
-            // last_activity_ms: prefer mustard.db mtime (canonical store);
-            // fall back to mustard.json mtime when only the JSON config exists.
-            let last_activity_ms = if has_db {
-                mtime_ms(&db_path)
-            } else {
-                mtime_ms(&json_path)
-            };
-            let db_path_value = if has_db {
-                Some(db_path.to_string_lossy().to_string())
-            } else {
-                None
-            };
+            // last_activity_ms: newest NDJSON event-shard mtime under
+            // `.claude/spec/*/.events/` — the canonical activity signal after
+            // the SQLite→NDJSON migration. Falls back to the mustard.json
+            // mtime for a project with no event shards yet.
+            let last_activity_ms =
+                newest_events_mtime_ms(&dir).or_else(|| mtime_ms(&json_path));
             results.push(Project {
                 id,
                 name,
                 path: dir.to_string_lossy().to_string(),
-                db_path: db_path_value,
                 last_activity_ms,
             });
             continue;
@@ -105,4 +94,36 @@ fn mtime_ms(p: &Path) -> Option<u64> {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
+}
+
+/// Newest mtime (epoch-ms) across `.claude/spec/*/.events/*.ndjson`. `None`
+/// when the project has no parseable event shard yet — callers fall back to
+/// the `mustard.json` mtime.
+fn newest_events_mtime_ms(project: &Path) -> Option<u64> {
+    let spec_root = project.join(".claude").join("spec");
+    let specs = fs::read_dir(&spec_root).ok()?;
+    let mut newest: Option<u64> = None;
+    for spec in specs {
+        if !spec.is_dir {
+            continue;
+        }
+        let events_dir = spec.path.join(".events");
+        let Ok(shards) = fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for shard in shards {
+            if shard.is_dir {
+                continue;
+            }
+            if shard.path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+                continue;
+            }
+            if let Some(ms) = mtime_ms(&shard.path) {
+                if newest.is_none_or(|cur| ms > cur) {
+                    newest = Some(ms);
+                }
+            }
+        }
+    }
+    newest
 }

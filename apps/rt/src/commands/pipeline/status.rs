@@ -48,7 +48,6 @@ fn hook_description(name: &str) -> &'static str {
         "session_knowledge_observer" => "Extracts non-obvious decisions to memory_decisions SQLite; friction telemetry",
         "session_start_inject" => "Bootstraps event bus; runs spec-hygiene; injects top-N knowledge patterns",
         "session_cleanup_observer" => "Removes terminal pipeline-states and stale state files",
-        "pre_compact_inject" => "Injects working-state snapshot before compaction",
         "prompt_submit_inject" => "Archives pending closed-followup specs on a new pipeline command",
         _ => "(no description)",
     }
@@ -156,7 +155,6 @@ fn event_to_module(event: &str) -> &'static str {
         "PostToolUse" => "post_edit + session_knowledge_observer",
         "SessionStart" => "spec_hygiene_observer + session_start_inject",
         "SessionEnd" => "session_cleanup_observer + session_knowledge_observer",
-        "PreCompact" => "pre_compact_inject",
         "SubagentStart" => "tool_use_counter + main_context_counter",
         "SubagentStop" => "tool_use_counter + main_context_counter",
         "UserPromptSubmit" => "prompt_submit_inject",

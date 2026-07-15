@@ -716,7 +716,7 @@ fn install_ripgrep() -> bool {
 ///
 /// Lists the opt-in extras shipped under `templates-extras/skills/` (W6 deep
 /// refactor): foundation skills the user can install on demand via
-/// `mustard add skill:<name>` (routed through `mustard-rt run skill-fetch`).
+/// `mustard add skill:<name>` (copied from the bundled extras — no remote fetch).
 fn print_next_steps() {
     println!("\nDone!\n");
     println!("Next: open Claude Code and run /scan to analyze your codebase.\n");

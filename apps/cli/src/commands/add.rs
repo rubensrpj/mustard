@@ -74,11 +74,10 @@ fn default_timeout() -> u64 {
 ///
 /// - `"template:<name>"` — fetch a community template from GitHub or npm and
 ///   copy it into `.claude/` (the legacy behavior).
-/// - `"skill:<name>"` — install a skill. If the name matches one of the
-///   bundled extras under `templates-extras/skills/<name>/`, install from
-///   there. Otherwise delegate to `mustard-rt run skill-fetch <name>` (W5
-///   subcommand) which handles local paths, GitHub sparse-clone, and tarball
-///   fetch. Either path lands the skill in `.claude/skills/<name>/`.
+/// - `"skill:<name>"` — install a skill from the bundled extras under
+///   `templates-extras/skills/<name>/` into `.claude/skills/<name>/`. There is
+///   no remote skill fetch: a name outside the bundle is an error that points
+///   to the manual install path (copy the folder into `.claude/skills/`).
 /// - `"<name>"` (no prefix) — treated as `template:<name>` for backwards
 ///   compatibility.
 pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> {
@@ -88,7 +87,7 @@ pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> 
     }
 
     if let Some(name) = template_spec.strip_prefix("skill:") {
-        return install_skill(cwd, name, &claude_dir, options);
+        return install_skill(name, &claude_dir, options);
     }
 
     let name = template_spec.strip_prefix("template:").unwrap_or(template_spec);
@@ -115,21 +114,15 @@ pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> 
     Ok(())
 }
 
-/// Install a skill from the bundled extras, or via `mustard-rt run skill-fetch`.
+/// Install a skill from the bundled extras.
 ///
-/// Resolution: (1) check `templates-extras/skills/<name>/` next to the bundled
-/// `templates/` payload — copy it into `.claude/skills/<name>/` and we are done;
-/// (2) otherwise shell out to `mustard-rt run skill-fetch <name>` (W5 subcommand)
-/// which understands local paths, GitHub sparse-clone, and tarball fetch.
+/// Resolution: check `templates-extras/skills/<name>/` next to the bundled
+/// `templates/` payload and copy it into `.claude/skills/<name>/`. There is no
+/// other source — mustard ships no remote skill fetch — so any other name is
+/// an error telling the user to copy the skill into `.claude/skills/` manually.
 ///
-/// Existing skills are preserved unless `--force`. Fail-open: if `mustard-rt` is
-/// not on PATH, surface that to the user with installation guidance.
-fn install_skill(
-    cwd: &Path,
-    name: &str,
-    claude_dir: &Path,
-    options: &AddOptions,
-) -> Result<()> {
+/// Existing skills are preserved unless `--force`.
+fn install_skill(name: &str, claude_dir: &Path, options: &AddOptions) -> Result<()> {
     validate_name(name)?;
     println!("Installing skill: {name}");
 
@@ -152,34 +145,19 @@ fn install_skill(
         }
     }
 
-    // Otherwise hand off to mustard-rt's skill-fetch subcommand.
-    let output = Command::new("mustard-rt")
-        .args(["run", "skill-fetch", name])
-        .current_dir(cwd)
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {
-            print!("{}", String::from_utf8_lossy(&out.stdout));
-            Ok(())
-        }
-        Ok(out) => bail!(
-            "`mustard-rt run skill-fetch {name}` exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ),
-        Err(err) => bail!(
-            "could not invoke `mustard-rt run skill-fetch {name}` ({err}). \
-             Install mustard-rt or install the skill manually into {}.",
-            dest.display()
-        ),
-    }
+    // Not bundled — and there is no remote skill fetch. Fail with the manual path.
+    bail!(
+        "skill \"{name}\" is not bundled with mustard (no skill source ships a \
+         remote fetch). Install it manually: copy the skill folder into {}.",
+        dest.display()
+    )
 }
 
 /// Locate `templates-extras/` next to the bundled `templates/` payload.
 ///
 /// Mirrors `init::resolve_templates_dir`'s resolution order: env override →
 /// next to the executable → in-repo Cargo manifest. Returns `None` when no
-/// extras directory is found (callers fall back to `mustard-rt run skill-fetch`).
+/// extras directory is found (the caller then fails with manual-install guidance).
 fn locate_bundled_extras() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("MUSTARD_TEMPLATES_DIR") {
         let extras = Path::new(&dir).with_file_name("templates-extras");

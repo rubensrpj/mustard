@@ -36,11 +36,6 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
     // `.events/`) falls through to the spec branch unchanged.
     if is_events_log(&s) {
         Some("events")
-    } else if s.contains("telemetry.db") {
-        // The OTEL collector still writes `telemetry.db` (run_usage /
-        // usage_totals) and its WAL/SHM companions; those writes refresh the
-        // economy/telemetry views via the same `events` channel.
-        Some("events")
     } else if s.contains(".pipeline-states") {
         Some("pipeline-state")
     } else if (s.contains("/spec/") || s.contains("\\spec\\")) && !s.contains(".pipeline-states") {
@@ -120,9 +115,7 @@ struct BatchEmissions {
 /// skip an invalidation along with the emit:
 ///
 ///   * `events` — mark exactly the changed `.ndjson` shard dirty; the next
-///     read re-parses ONLY that file (the incremental contract). Non-ndjson
-///     `events` writes (telemetry.db + WAL/SHM) never feed the parsed
-///     snapshot and are ignored inside `invalidate_events_cache_path`.
+///     read re-parses ONLY that file (the incremental contract).
 ///   * `spec` — drop the cached spec list (spec.md / wave-plan.md / meta.json
 ///     back it). A spec path that no longer exists means a deletion the
 ///     per-path marking can't see (the shards under it vanished without their
@@ -148,12 +141,9 @@ fn process_batch(
         match kind {
             "events" => {
                 crate::telemetry::invalidate_events_cache_path(repo, path);
-                // Only parsed `.ndjson` shards feed the aggregated snapshot;
-                // telemetry.db (+ WAL/SHM) classifies as `events` but never
-                // changes the spec list / active-pipeline projections.
-                if path.extension().and_then(|s| s.to_str()) == Some("ndjson") {
-                    snapshot_dirty = true;
-                }
+                // `events` only classifies `.ndjson` shards — every one feeds
+                // the aggregated snapshot.
+                snapshot_dirty = true;
             }
             "spec" => {
                 crate::invalidate_specs_cache(repo);
@@ -345,18 +335,14 @@ mod tests {
 
     #[test]
     fn non_snapshot_kinds_do_not_schedule_a_rebuild() {
-        // knowledge files and telemetry.db (classifies `events` but is not a
-        // parsed shard) keep their fs-change channel without ever scheduling
-        // the aggregated snapshot rebuild.
+        // knowledge files keep their fs-change channel without ever
+        // scheduling the aggregated snapshot rebuild.
         let tmp = TempDir::new().unwrap();
         let repo = tmp.path().to_string_lossy().into_owned();
         let state = Mutex::new(WatcherState::default());
-        let paths = vec![
-            tmp.path().join(".claude").join("knowledge.json"),
-            tmp.path().join(".claude").join(".harness").join("telemetry.db"),
-        ];
+        let paths = vec![tmp.path().join(".claude").join("knowledge.json")];
         let out = process_batch(&state, &repo, &paths, Instant::now());
-        assert_eq!(out.fs_change_kinds, vec!["knowledge", "events"]);
+        assert_eq!(out.fs_change_kinds, vec!["knowledge"]);
         assert!(!out.rebuild_snapshot);
     }
 
@@ -539,19 +525,6 @@ mod tests {
         assert_eq!(
             kind("/repo/.claude/spec/my-feature/wave-1-impl/spec.md"),
             Some("spec"),
-        );
-    }
-
-    #[test]
-    fn telemetry_db_classifies_as_events() {
-        // The OTEL collector still writes telemetry.db (+ WAL/SHM companions).
-        assert_eq!(
-            kind(r"C:\repo\.claude\.harness\telemetry.db"),
-            Some("events"),
-        );
-        assert_eq!(
-            kind("/repo/.claude/.harness/telemetry.db-wal"),
-            Some("events"),
         );
     }
 

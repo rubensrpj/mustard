@@ -57,30 +57,8 @@ pub struct GrammarLoader {
     /// build a [`super::QuerySet`] for the same root without threading the
     /// path back through every call.
     project_root: PathBuf,
-    /// WASM-acquisition state — only present under the optional `wasm-grammars`
-    /// feature. The loader owns one shared `wasmtime::Engine`; a `Language`
-    /// loaded through any `WasmStore` built from this engine can be set on any
-    /// `Parser` whose store shares it (the tree-sitter cross-store contract).
-    /// Lazily-acquired WASM `Language` handles are memoised by `lang_id` so a
-    /// blob is downloaded/loaded at most once per loader. Interior mutability
-    /// keeps the acquisition path on `&self`, matching the infallible native
-    /// `language()` accessor.
-    #[cfg(feature = "wasm-grammars")]
-    wasm: WasmState,
 }
 
-/// Interior-mutable WASM acquisition state for [`GrammarLoader`]. Behind the
-/// `wasm-grammars` feature only.
-#[cfg(feature = "wasm-grammars")]
-struct WasmState {
-    /// Shared engine — every `WasmStore` (for loading a `Language` and for the
-    /// per-parser store) is created from this one engine.
-    engine: tree_sitter::wasmtime::Engine,
-    /// Memoised `lang_id → Option<Language>` acquisition results. `None` is
-    /// cached too, so a lang that has no WASM grammar is not re-probed (and the
-    /// network is not re-hit) on every parse.
-    cache: std::sync::Mutex<HashMap<String, Option<Language>>>,
-}
 
 impl std::fmt::Debug for GrammarLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -121,8 +99,6 @@ impl GrammarLoader {
             languages,
             extensions,
             project_root: project_root.to_path_buf(),
-            #[cfg(feature = "wasm-grammars")]
-            wasm: WasmState::new(),
         })
     }
 
@@ -179,8 +155,6 @@ impl GrammarLoader {
             languages,
             extensions,
             project_root: project_root.to_path_buf(),
-            #[cfg(feature = "wasm-grammars")]
-            wasm: WasmState::new(),
         }
     }
 
@@ -280,8 +254,6 @@ impl GrammarLoader {
             languages: HashMap::new(),
             extensions: HashMap::new(),
             project_root: project_root.to_path_buf(),
-            #[cfg(feature = "wasm-grammars")]
-            wasm: WasmState::new(),
         }
     }
 
@@ -294,46 +266,7 @@ impl GrammarLoader {
         self.languages.get(lang_id).cloned()
     }
 
-    /// Resolve a **WASM** grammar `Language` for `lang_id`, acquiring it on
-    /// demand (download → cache → load) the first time and memoising the
-    /// result (including `None`). Behind the optional `wasm-grammars` feature.
-    ///
-    /// This is the *complement* of [`language`](Self::language): callers try
-    /// the native handle first and only fall here when it misses. The returned
-    /// `Language` is loaded through a `WasmStore` built from this loader's
-    /// shared engine, so it can be set on any `Parser` whose store shares that
-    /// engine — see [`Self::wasm_engine`] and
-    /// [`super::TreeSitterParser::for_language`].
-    ///
-    /// Fail-open: any failure (unknown lang, no home dir, network/sha/io,
-    /// ABI mismatch) is `None`; the caller falls through to the textual floor.
-    #[cfg(feature = "wasm-grammars")]
-    #[must_use]
-    pub fn acquire_wasm_language(&self, lang_id: &str) -> Option<Language> {
-        // A lock poisoned by a panicking sibling acquisition is recovered
-        // rather than propagated — fail-open trumps lock hygiene here.
-        let mut cache = self
-            .wasm
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cached) = cache.get(lang_id) {
-            return cached.clone();
-        }
-        let acquired = super::wasm_acquire::acquire_language(&self.wasm.engine, lang_id);
-        cache.insert(lang_id.to_string(), acquired.clone());
-        acquired
-    }
 
-    /// Borrow the loader's shared `wasmtime::Engine`. A `WasmStore` set on a
-    /// `Parser` must be built from this engine for a `Language` returned by
-    /// [`Self::acquire_wasm_language`] to be usable on that parser. Behind the
-    /// optional `wasm-grammars` feature.
-    #[cfg(feature = "wasm-grammars")]
-    #[must_use]
-    pub fn wasm_engine(&self) -> &tree_sitter::wasmtime::Engine {
-        &self.wasm.engine
-    }
 
     /// Map a filesystem path to a language id via the discovered
     /// `file_types` glob list. Returns `None` when the extension is not
@@ -409,18 +342,6 @@ impl GrammarLoader {
     }
 }
 
-#[cfg(feature = "wasm-grammars")]
-impl WasmState {
-    /// Fresh WASM state: a default `wasmtime::Engine` and an empty acquisition
-    /// cache. The engine is cheap to hold and is only exercised when a WASM
-    /// grammar is actually requested.
-    fn new() -> Self {
-        Self {
-            engine: tree_sitter::wasmtime::Engine::default(),
-            cache: std::sync::Mutex::new(HashMap::new()),
-        }
-    }
-}
 
 /// The common grammars compiled directly into the binary.
 ///

@@ -1,18 +1,18 @@
 //! [`SpecView`] — the rich per-spec `ViewModel` rendered in drill-down UIs, and
 //! [`SpecSummary`] — the lean sibling used in list views.
 //!
-//! Both share [`SpecStatus`]. Notice the absence of an `Unknown` variant:
-//! when an event stream cannot produce a status (a spec with zero events, or
-//! one whose only events are the `__orphan__` backfill bucket), we resolve to
-//! the explicit [`SpecStatus::NoEvents`] variant. UIs render the variant
-//! deliberately; they don't paint a grey "UNKNOWN" badge by accident.
+//! Both carry the canonical [`SpecState`]. Notice the absence of an `Unknown`
+//! variant: a spec with zero events (or one whose only events are the
+//! `__orphan__` backfill bucket) resolves to the earliest meaningful state
+//! (`Plan` + `Active`). UIs render the state deliberately; they don't paint
+//! a grey "UNKNOWN" badge by accident.
 
 use super::{Phase, Scope};
 use serde::{Deserialize, Serialize};
 
 /// The canonical lifecycle position of a spec.
 ///
-/// Replaces the flat [`SpecStatus`] enum: where `SpecStatus` conflated *where*
+/// Replaces the retired flat `SpecStatus` enum: where it conflated *where*
 /// a spec is in the pipeline with *how* it ended and *what qualifier* applies,
 /// [`SpecState`] factors those three concerns apart into [`Stage`] (position),
 /// [`Outcome`] (terminal disposition) and [`Flags`] (orthogonal qualifiers).
@@ -112,7 +112,7 @@ impl Outcome {
 
 /// Orthogonal qualifiers that can apply to a spec at any stage.
 ///
-/// Where the legacy [`SpecStatus`] crammed `blocked`, `wave-failed` and
+/// Where the retired legacy `SpecStatus` enum crammed `blocked`, `wave-failed` and
 /// `closed-followup` into the same flat enum as the lifecycle position, these
 /// become independent booleans. A spec can be `Execute` *and* `blocked`, which
 /// the old enum could not express without losing the stage.
@@ -229,8 +229,8 @@ impl SpecState {
     }
 
     /// Whether this state counts as "active" for workspace and Specs filters —
-    /// any non-terminal outcome. Mirrors the legacy
-    /// [`SpecStatus::is_active`](SpecStatus::is_active) classification.
+    /// any non-terminal outcome. Mirrors the retired legacy
+    /// `SpecStatus::is_active` classification.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.outcome == Outcome::Active
@@ -242,8 +242,8 @@ impl SpecState {
         self.outcome != Outcome::Active
     }
 
-    /// Canonical kebab-case string for the SQLite `specs.status` column the
-    /// dashboard reads. Mirrors the legacy [`SpecStatus::as_kebab`] mapping
+    /// Canonical kebab-case string for the status column the dashboard
+    /// reads. Mirrors the retired legacy `SpecStatus::as_kebab` mapping
     /// exactly — qualifier flags win over the stage so the dashboard keeps the
     /// `blocked` / `wave-failed` / `closed-followup` signals.
     #[must_use]
@@ -274,176 +274,9 @@ impl SpecState {
     }
 }
 
-#[allow(deprecated)] // bridge over the deprecated SpecStatus during W1→W7 migration.
-impl From<SpecStatus> for SpecState {
-    /// Lift a legacy [`SpecStatus`] into the canonical [`SpecState`].
-    fn from(status: SpecStatus) -> Self {
-        let (stage, outcome, flags) = match status {
-            SpecStatus::NoEvents | SpecStatus::Planning => {
-                (Stage::Plan, Outcome::Active, Flags::default())
-            }
-            SpecStatus::Implementing => (Stage::Execute, Outcome::Active, Flags::default()),
-            SpecStatus::Reviewing | SpecStatus::Qa => {
-                (Stage::QaReview, Outcome::Active, Flags::default())
-            }
-            SpecStatus::ClosedFollowup => (
-                Stage::Close,
-                Outcome::Active,
-                Flags { followup_open: true, ..Flags::default() },
-            ),
-            SpecStatus::Completed => (Stage::Close, Outcome::Completed, Flags::default()),
-            SpecStatus::Cancelled => (Stage::Close, Outcome::Cancelled, Flags::default()),
-            SpecStatus::Abandoned => (Stage::Close, Outcome::Abandoned, Flags::default()),
-            SpecStatus::Blocked => (
-                Stage::Plan,
-                Outcome::Active,
-                Flags { blocked: true, ..Flags::default() },
-            ),
-            SpecStatus::WaveFailed => (
-                Stage::Execute,
-                Outcome::Active,
-                Flags { wave_failed: true, ..Flags::default() },
-            ),
-        };
-        Self::new(stage, outcome, flags).unwrap_or(Self {
-            stage: Stage::Plan,
-            outcome: Outcome::Active,
-            flags: Flags::default(),
-        })
-    }
-}
 
-#[allow(deprecated)] // bridge over the deprecated SpecStatus during W1→W7 migration.
-impl TryFrom<SpecState> for SpecStatus {
-    type Error = StateError;
 
-    /// Project a [`SpecState`] back to the closest legacy [`SpecStatus`].
-    fn try_from(state: SpecState) -> Result<Self, Self::Error> {
-        let status = match state.outcome {
-            Outcome::Completed => Self::Completed,
-            Outcome::Cancelled => Self::Cancelled,
-            Outcome::Abandoned => Self::Abandoned,
-            // Legacy projections: the deprecated `SpecStatus` enum has no
-            // dedicated `Superseded` / `Absorbed` variants. Map both to the
-            // closest terminal sense (cancelled-ish vs. completed-ish) so the
-            // legacy bridge keeps emitting a coherent flat status during the
-            // W1→W7 migration window.
-            // Both map to `Completed`: superseded work is "work redirected,
-            // not dropped" (see `Outcome` doc-comment) and absorbed work was
-            // merged into another spec. The legacy `SpecStatus` enum has no
-            // dedicated variants for either, and both `status_word` helpers
-            // (this one + `meta.rs`) agree on "completed" for these outcomes.
-            Outcome::Superseded => Self::Completed,
-            Outcome::Absorbed => Self::Completed,
-            Outcome::Active => {
-                if state.flags.blocked {
-                    Self::Blocked
-                } else if state.flags.wave_failed {
-                    Self::WaveFailed
-                } else if state.flags.followup_open {
-                    Self::ClosedFollowup
-                } else {
-                    match state.stage {
-                        Stage::Analyze | Stage::Plan => Self::Planning,
-                        Stage::Execute => Self::Implementing,
-                        Stage::QaReview => Self::Qa,
-                        Stage::Close => Self::ClosedFollowup,
-                    }
-                }
-            }
-        };
-        Ok(status)
-    }
-}
 
-/// The lifecycle status of a single spec.
-///
-/// Legacy projection target — superseded by [`SpecState`] but kept on the wire
-/// for the dashboard reader during the W1→W7 migration window. The serialized
-/// form is kebab-case so it round-trips with `### Status: closed-followup`.
-#[deprecated(note = "Use SpecState. Removed in spec-lifecycle-unification W7.")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SpecStatus {
-    /// Spec exists on disk but no harness events have arrived yet.
-    NoEvents,
-    /// Spec is in the PLAN phase but EXECUTE has not started.
-    Planning,
-    /// Pipeline is actively running waves.
-    Implementing,
-    /// Pipeline finished EXECUTE; REVIEW agents are running.
-    Reviewing,
-    /// Pipeline finished REVIEW; QA agents are running.
-    Qa,
-    /// Pipeline finished, dir still under the follow-up window.
-    ClosedFollowup,
-    /// Pipeline finished and archived.
-    Completed,
-    /// Pipeline was cancelled before completing.
-    Cancelled,
-    /// Spec was abandoned without a real pipeline ever running.
-    Abandoned,
-    /// Pipeline is paused — explicit user intervention required.
-    Blocked,
-    /// Wave plan reached a wave that failed twice in a row.
-    WaveFailed,
-}
-
-#[allow(deprecated)] // SpecStatus is itself deprecated; its own impl is not a misuse.
-impl SpecStatus {
-    /// Whether this status counts as "active" for workspace and Specs filters.
-    #[must_use]
-    pub const fn is_active(self) -> bool {
-        matches!(
-            self,
-            Self::Planning | Self::Implementing | Self::Reviewing | Self::Qa
-                | Self::ClosedFollowup | Self::Blocked | Self::WaveFailed
-        )
-    }
-
-    /// Whether this status is terminal (the pipeline is done, success or not).
-    #[must_use]
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Abandoned)
-    }
-
-    /// Parse the on-disk header string.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "no-events" => Some(Self::NoEvents),
-            "planning" | "draft" | "approved" => Some(Self::Planning),
-            "implementing" | "in-progress" | "in_progress" => Some(Self::Implementing),
-            "reviewing" => Some(Self::Reviewing),
-            "qa" => Some(Self::Qa),
-            "closed-followup" | "closed_followup" => Some(Self::ClosedFollowup),
-            "completed" | "closed" => Some(Self::Completed),
-            "cancelled" | "canceled" | "superseded" => Some(Self::Cancelled),
-            "abandoned" | "orphan" => Some(Self::Abandoned),
-            "blocked" | "paused" => Some(Self::Blocked),
-            "wave-failed" | "wave_failed" => Some(Self::WaveFailed),
-            _ => None,
-        }
-    }
-
-    /// The canonical kebab-case wire string.
-    #[must_use]
-    pub const fn as_kebab(self) -> &'static str {
-        match self {
-            Self::NoEvents => "no-events",
-            Self::Planning => "planning",
-            Self::Implementing => "implementing",
-            Self::Reviewing => "reviewing",
-            Self::Qa => "qa",
-            Self::ClosedFollowup => "closed-followup",
-            Self::Completed => "completed",
-            Self::Cancelled => "cancelled",
-            Self::Abandoned => "abandoned",
-            Self::Blocked => "blocked",
-            Self::WaveFailed => "wave-failed",
-        }
-    }
-}
 
 /// Rich per-spec view — the shape the dashboard drill-down renders.
 ///
@@ -452,17 +285,12 @@ impl SpecStatus {
 /// empty event stream produces a coherent zeroed view rather than panicking
 /// or returning an error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(deprecated)] // carries the derived legacy `status` field during the W1→W7 migration.
 pub struct SpecView {
     /// Spec name — the directory name under `.claude/spec/`.
     pub spec: String,
     /// Canonical lifecycle state, projected from `pipeline.scope` +
-    /// `pipeline.status`. The source of truth — `status` is derived from it.
+    /// `pipeline.status`. The source of truth.
     pub state: SpecState,
-    /// Legacy flat status, derived from [`Self::state`] for readers not yet
-    /// migrated off [`SpecStatus`].
-    #[deprecated(note = "Use SpecState (field `state`). Removed in spec-lifecycle-unification W7.")]
-    pub status: SpecStatus,
     /// Latest phase from `pipeline.phase` events.
     pub phase: Option<Phase>,
     /// Scope from `pipeline.scope.payload.scope`.
@@ -509,10 +337,8 @@ pub struct SpecView {
 impl SpecView {
     /// Construct an empty view for `spec` — the starting point for any fold
     /// over the event stream. State defaults to the earliest meaningful
-    /// position (`Plan` + `Active`) and `status` to the legacy
-    /// [`SpecStatus::NoEvents`] sentinel until evidence to the contrary lands.
+    /// position (`Plan` + `Active`) until evidence to the contrary lands.
     #[must_use]
-    #[allow(deprecated)] // seeds the derived legacy `status` field.
     pub fn empty(spec: impl Into<String>) -> Self {
         Self {
             spec: spec.into(),
@@ -521,7 +347,6 @@ impl SpecView {
                 outcome: Outcome::Active,
                 flags: Flags::default(),
             },
-            status: SpecStatus::NoEvents,
             phase: None,
             scope: None,
             lang: None,
@@ -559,15 +384,11 @@ impl SpecView {
 /// `spec_tracks`, and the Topbar dropdown. Drops the heavy collections
 /// (`completed_waves`, etc.) so a list of 100 specs stays light.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(deprecated)] // carries the derived legacy `status` field during the W1→W7 migration.
 pub struct SpecSummary {
     /// Spec name.
     pub spec: String,
     /// Canonical lifecycle state — the source of truth.
     pub state: SpecState,
-    /// Legacy flat status, derived from [`Self::state`].
-    #[deprecated(note = "Use SpecState (field `state`). Removed in spec-lifecycle-unification W7.")]
-    pub status: SpecStatus,
     /// Latest phase.
     pub phase: Option<Phase>,
     /// Scope tag.
@@ -602,12 +423,10 @@ impl From<&SpecView> for SpecSummary {
     /// `children_count` defaults to `0` — the rich view does not carry that
     /// information; callers that want it must populate it explicitly by
     /// folding the workspace event slice on `spec.link` payloads.
-    #[allow(deprecated)] // copies the derived legacy `status` field.
     fn from(view: &SpecView) -> Self {
         Self {
             spec: view.spec.clone(),
             state: view.state.clone(),
-            status: view.status,
             phase: view.phase,
             scope: view.scope,
             last_event_at: view.last_event_at.clone(),
@@ -631,16 +450,12 @@ impl From<&SpecView> for SpecSummary {
 /// row (name, status, started/completed timestamps, free-form reason) without
 /// forcing the consumer to fan out an extra `spec_summary` call per row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(deprecated)] // carries the derived legacy `status` field during the W1→W7 migration.
 pub struct SpecChild {
     /// Child spec name — the slug under `.claude/spec/`.
     pub spec: String,
     /// Canonical lifecycle state of the child, resolved from its own event
     /// stream.
     pub state: SpecState,
-    /// Legacy flat status of the child, derived from [`Self::state`].
-    #[deprecated(note = "Use SpecState (field `state`). Removed in spec-lifecycle-unification W7.")]
-    pub status: SpecStatus,
     /// ISO-8601 timestamp of the child's first event, when known.
     pub started_at: Option<String>,
     /// ISO-8601 timestamp of the child's most recent terminal event, when known.
@@ -652,7 +467,6 @@ pub struct SpecChild {
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // these tests intentionally exercise the deprecated SpecStatus path.
 mod tests {
     use super::*;
 
@@ -660,7 +474,6 @@ mod tests {
     fn empty_view_starts_at_no_events_with_zero_counters() {
         let view = SpecView::empty("feature-x");
         assert_eq!(view.spec, "feature-x");
-        assert_eq!(view.status, SpecStatus::NoEvents);
         assert_eq!(view.state.stage, Stage::Plan);
         assert_eq!(view.state.outcome, Outcome::Active);
         assert_eq!(view.ac_total, 0);
@@ -669,45 +482,21 @@ mod tests {
         assert!(!view.is_wave_plan);
     }
 
-    #[test]
-    fn status_parse_accepts_canonical_and_synonyms() {
-        assert_eq!(SpecStatus::parse("draft"), Some(SpecStatus::Planning));
-        assert_eq!(SpecStatus::parse("approved"), Some(SpecStatus::Planning));
-        assert_eq!(SpecStatus::parse("in_progress"), Some(SpecStatus::Implementing));
-        assert_eq!(SpecStatus::parse("CLOSED-FOLLOWUP"), Some(SpecStatus::ClosedFollowup));
-        assert_eq!(SpecStatus::parse("done"), None); // explicitly NOT "completed"
-    }
 
-    #[test]
-    fn status_classification_buckets_match_pipeline_lifecycle() {
-        assert!(SpecStatus::Implementing.is_active());
-        assert!(SpecStatus::ClosedFollowup.is_active());
-        assert!(!SpecStatus::Completed.is_active());
-        assert!(SpecStatus::Completed.is_terminal());
-        assert!(SpecStatus::Cancelled.is_terminal());
-        assert!(SpecStatus::Abandoned.is_terminal());
-        assert!(!SpecStatus::Abandoned.is_active());
-        assert!(!SpecStatus::Implementing.is_terminal());
-    }
 
-    #[test]
-    fn parse_recognises_abandoned_and_its_orphan_synonym() {
-        assert_eq!(SpecStatus::parse("abandoned"), Some(SpecStatus::Abandoned));
-        assert_eq!(SpecStatus::parse("ORPHAN"), Some(SpecStatus::Abandoned));
-        assert_ne!(SpecStatus::parse("abandoned"), Some(SpecStatus::Cancelled));
-    }
 
     #[test]
     fn spec_summary_from_view_preserves_identity_fields() {
         let mut view = SpecView::empty("auth");
-        view.status = SpecStatus::Implementing;
+        view.state = SpecState::new(Stage::Execute, Outcome::Active, Flags::default())
+            .expect("legal state");
         view.ac_passed = 3;
         view.ac_total = 5;
         view.current_wave = Some(2);
 
         let summary: SpecSummary = (&view).into();
         assert_eq!(summary.spec, "auth");
-        assert_eq!(summary.status, SpecStatus::Implementing);
+        assert_eq!(summary.state.stage, Stage::Execute);
         assert_eq!(summary.ac_passed, 3);
         assert_eq!(summary.current_wave, Some(2));
     }
@@ -772,43 +561,4 @@ mod tests {
         assert!(multi.blocked && multi.wave_failed);
     }
 
-    #[test]
-    fn spec_status_round_trips_through_spec_state() {
-        // Every legacy status lifts into SpecState and projects back to a
-        // legacy status. The round-trip is not the identity (NoEvents and
-        // Reviewing collapse), but the active/terminal classification holds.
-        for status in [
-            SpecStatus::Planning,
-            SpecStatus::Implementing,
-            SpecStatus::Qa,
-            SpecStatus::ClosedFollowup,
-            SpecStatus::Completed,
-            SpecStatus::Cancelled,
-            SpecStatus::Abandoned,
-            SpecStatus::Blocked,
-            SpecStatus::WaveFailed,
-        ] {
-            let state: SpecState = status.into();
-            assert_eq!(state.is_active(), status.is_active(), "active parity for {status:?}");
-            assert_eq!(
-                state.is_terminal(),
-                status.is_terminal(),
-                "terminal parity for {status:?}"
-            );
-            let back = SpecStatus::try_from(state).unwrap();
-            // Qualifier-bearing and terminal statuses round-trip exactly.
-            if matches!(
-                status,
-                SpecStatus::Implementing
-                    | SpecStatus::ClosedFollowup
-                    | SpecStatus::Completed
-                    | SpecStatus::Cancelled
-                    | SpecStatus::Abandoned
-                    | SpecStatus::Blocked
-                    | SpecStatus::WaveFailed
-            ) {
-                assert_eq!(back, status, "exact round-trip for {status:?}");
-            }
-        }
-    }
 }
