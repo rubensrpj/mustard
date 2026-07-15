@@ -19,8 +19,5 @@ Canonical sequence: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 
 ## Notes
 
-- `REVIEW` is a recognized phase: it already emits real events but was invisible
-  because earlier vocabularies omitted it.
-- The pipeline-phase hook records phases descriptively; it does not reject
-  unknown values. This list defines the names every emitter should use.
+- The pipeline-phase hook records phases descriptively; it does not reject unknown values — this list defines the names every emitter uses.
 - Light scope sequence: `ANALYZE → EXECUTE → REVIEW → QA → CLOSE` (PLAN skipped).

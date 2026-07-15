@@ -30,7 +30,7 @@ Layout: `PreToolUse (mustard-rt on PreToolUse)` followed by per-module rows (Mod
 
 ## INVIOLABLE RULES
 
-- Always delegate to `mustard-rt run status` — never parse `.pipeline-states/` or `.last-build.json` directly. Keeps `/status` and `/stats` consistent.
+- Always delegate to `mustard-rt run status` — never parse the per-spec `.events/` NDJSON or state files by hand. Keeps `/status` and `/stats` consistent.
 - Orphaned pipelines → suggest `/mustard:close {spec}` or `/mustard:maint` for bulk cleanup.
 - No `.claude/` → suggest `mustard init`.
 - `--harness` is strictly read-only.

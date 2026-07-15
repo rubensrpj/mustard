@@ -51,4 +51,4 @@ mustard-rt run diagnose-otel       # OTEL telemetry pipeline health
 
 Print all three as one consolidated report. Categories: `wiring`, `drift`, `state-health`, `residue` (`--residue`) — each OK / WARN / FAIL.
 
-Run periodically, after `mustard update`, after telemetry looks wrong, or when hooks appear to skip silently.
+Run periodically, after a plugin update, after telemetry looks wrong, or when hooks appear to skip silently.

@@ -1,6 +1,7 @@
 ---
 name: rehook
 description: Use when the user runs /rehook or asks to re-enable the harness, restore the hooks, turn Mustard back on, or undo the unhook. Delegates to mustard-rt run rehook.
+disable-model-invocation: true
 source: manual
 ---
 <!-- mustard:generated -->

@@ -1,6 +1,7 @@
 ---
 name: unhook
 description: Use when the user runs /unhook or asks to disable the harness, kill the hooks, turn off Mustard, or uninstall the hooks temporarily. Delegates to mustard-rt run unhook.
+disable-model-invocation: true
 source: manual
 ---
 <!-- mustard:generated -->

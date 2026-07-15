@@ -79,7 +79,7 @@ Agents inherit the session model — no routing table. Pinned: Haiku for the spe
 | Anchors | files the digest points to | the ~12 files read — never the repo |
 | Shared language | `CONTEXT.md` | relevance-sliced via `context-slice` as `{context_md}` |
 
-`CONTEXT.md` is never injected whole: sliced by the spec's entities/files/tokens, snapshotted per wave to `.pipeline-states/{spec}.context-md.md`. No glossary → blank slice by design; a named-but-missing `--context` path reports on stderr.
+`CONTEXT.md` is never injected whole: sliced by the spec's entities/files/tokens, snapshotted per wave. No glossary → blank slice by design; a named-but-missing `--context` path reports on stderr.
 
 ## Token Budget per Agent
 

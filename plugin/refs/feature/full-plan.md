@@ -1,46 +1,88 @@
 # /feature — Full-scope DECOMPOSE + PLAN
 
-> **You are here because `scope=full`.** The thin SKILL routed you here after scope detection. Everything below loads ONLY for Full scope — a Light/Extended-Light run never reads it.
->
-> **PLAN is the terminal phase of `/feature` for Full.** You materialise the plan, present it, and STOP — EXECUTE happens only after the user approves via `/spec` (the `scope_guard` hard-gate blocks any production Edit/Write until then). Never emit `pipeline.stage: Execute` here.
+> You are here because `scope=full`. PLAN is the TERMINAL phase of /feature: materialise the plan, present it, STOP. EXECUTE unlocks ONLY after the user approves via `/spec` (the `scope_guard` hard-gate blocks every production Edit/Write until then) — NEVER emit `pipeline.stage: Execute` here. A Light run never reads this file.
+
+## Contents
+
+- DECOMPOSE — three natures
+- Wave decision — 1-vs-N (Full always has ≥1)
+- PLAN — fixed materialisation order
+- Plan JSON schema + outputs
+- Present + approve (STOP)
+- COORDINATE — parent/epic specs
+- Inviolable rules
 
 ## DECOMPOSE
 
-From the insumos + anchors, split the request into three natures (this is the judgement grain cannot make):
+From the insumos + anchors, split the request into three natures (the judgement grain cannot make):
 
-- **Units with precedent** → each maps to a matched slice. Only a **net-new** unit (it CREATES an entity that does not exist yet) gets a `scan spec` compile (with `--like <sibling>` when one exists) — the compiler emits a *create* mold. An **enhancement** unit (modifies an existing entity/behavior) skips `scan spec` and consumes the feature digest's anchors instead (the `context_enrichment` that `spec-draft` pre-fills into the scaffold's `context` section).
-- **Cross-cutting invariants to obey** → contracts/hubs the repo already enforces (e.g. an injected `ICurrentTenant`); pass each via `scan spec --invariant <Name>` so the draft anchors the real wiring. NEVER invent the mechanism — mirror the anchored consumers.
-- **Net-new gaps** (no precedent; `miss` after a repo-vocabulary re-query) → surface as a design decision; do not let a `scan spec` draft's "deterministic" framing imply a unit that has no precedent is safe to clone.
+- Units with precedent → each maps to a matched slice. Only a net-new unit (CREATES an entity that does not yet exist) gets a `mustard-rt run scan spec` compile (`--like <sibling>` when one exists) — a create mold. An enhancement unit (modifies an existing entity) SKIPS `scan spec` and consumes the digest anchors (`context_enrichment`, pre-filled by `spec-draft` into the scaffold `context`).
+- Cross-cutting invariants → contracts/hubs the repo already enforces (e.g. an injected `ICurrentTenant`); pass each via `scan spec --invariant <Name>` so the draft anchors the real wiring. NEVER invent the mechanism — mirror the anchored consumers.
+- Net-new gaps (no precedent; `miss` after a repo-vocabulary re-query) → surface as a design decision; a `scan spec` draft never implies a precedent-less unit is safe to clone.
 
-**Concerns come from the digest — deterministic, no judge.** When the scan's deterministic `concerns` show ≥2, each concern is one unit in the three-natures split above, and maps to its own wave. Use that partition directly; a single concern needs no partition at all.
+Concerns come from the digest — deterministic, no judge. `concerns` ≥2 → each is one unit above and maps to its own wave; a single concern needs no partition.
 
-## PLAN
+## Wave decision — 1-vs-N
 
-→ `./spec-language.md` (header translation, narrative rules, Component Contract). → `./wave-decomposition.md` (the `--plan` schema).
+Invariant: Full ⇒ ≥1 wave (parent = coordination doc, wave = executing subagent). This decides 1-vs-N, never zero — `decompose:false` still yields a single-wave plan (`totalWaves:1`), never a non-wave Full spec.
 
-Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUserQuestion once) — hold the resolved value for `spec-draft --lang` (step 2 persists it to `meta.json`).
+Reuse the `decompose`/`waves` `plan-prepare` returned in ANALYZE (multi-wave on `fileCount` / `layerCount≥2` / `newEntityCount`, else one) — no separate call needed. To recompute: `mustard-rt run scope-decompose --from-spec .claude/spec/{slug}/spec.md` (signals from the census; never pipe stdin — the `run` face never receives it). Optionally weight history via `mustard-rt run event-projections --view knowledge-list` (ids starting `heavy-pipeline` / `high-hook-retry`).
 
-PLAN materialises the spec in a **fixed order** — every artifact exists before the next step consumes it:
+Validate/derive `depends_on` from the import DAG:
+```bash
+mustard-rt run wave-dependency --plan plan.json
+```
+`--plan` reads a FILE — the only reliable transport (the `run` face gets no harness stdin; a pipe dies under `rtk`). Either shape works: `{"files":[...all ANALYZE paths...],"projectRoot":"."}` or the rich plan JSON below (`{waves:[...]}`, per-wave `files` unioned) — so the SAME plan.json handed to `plan-materialize` validates here first. Cases: `cyclic-dependency` → warn (pre-existing) + single-wave fallback + note in `## Concerns`; any other `error` → fail-open to single wave; `{waves}` with 1 → genuine single layer (net-new with no edges is auto-split by role via `mustard.json#waveLayerOrder`); `{waves}` with 2+ → emit the rich `--plan` JSON and scaffold.
 
-1. **Lapidate the body (no file yet).** Per **net-new** unit (creation): `mustard-rt run scan spec --entity {Unit} [--like {Sibling}] [--invariant {Contract}] [--ops create,...]` → a draft carrying the auto-chosen pattern menu, per-project sections, the anchors, and acceptance criteria. An **enhancement** unit skips `scan spec` (the compiler only emits a *create* mold) — lapidate it from the feature digest's anchors (the `context_enrichment` `spec-draft` folds into the scaffold's `context` section). Read the draft + its anchors + the client request; resolve the bifurcation, prune, add domain rules, mark assumptions — **in the project's language/tone** (`mustard.json#specLang`/`tone`). The draft's project-unit sections ARE the wave/agent decomposition. Hold the lapidated body in context; do **not** write a file here.
-2. **Materialise the scaffold.** `mustard-rt run spec-draft --intent "<request>" --scope full --lang <bcp47> [--waves N] [--query-terms "<repo-vocabulary terms>"]` writes `.claude/spec/{slug}/spec.md` + `meta.json` (slug born from `--intent`; `meta.json` is the single lifecycle source; the `context` section is pre-filled with the scan anchors/slices). **When the user's raw words alone came back `weak`/`none` in ANALYZE** (so it was your code-vocabulary translation that carried the strong match), pass `--query-terms` with the comma-separated code-terms that produced the strong report — without it the draft re-tokenises the raw intent, repeats the weak query, and the enrichment withholds itself (a weak answer never materialises anchors into the scaffold). This is the **only** writer of the spec scaffold — never hand-write `spec.md` with the Write tool. **Routing gate (the machine enforces the economy):** `spec-draft` re-classifies the spec.md it wrote and AUTO-REBAIXA a `--scope full` the deterministic signals do not justify (single-layer, ≤5 files, no net-new) down to light — it rewrites `meta.json#scope` (the source of truth) and reports `scopeDowngraded:{from,to}`; trust that over the `--scope` you passed (and if it downgrades, return to the thin SKILL's Light EXECUTE path). `--force-scope` honours the requested full anyway (recorded as an auditable `pipeline.scope.override` event). The gate is a no-op when the census is still a placeholder (`filesSectionEmpty`) — fill `## Files` BEFORE the draft for it to act.
-   Right after the scaffold exists, run `mustard-rt run digest-adherence-finalize --spec {slug}` (the slug just born from `spec-draft`). Fire-and-forget telemetry: it folds the session's events into one `analyze.digest.summary` attributed to the new spec; it never blocks and its output requires no action — continue to step 3 immediately.
-3. **Fold the body in — into the plan JSON, not by hand after the scaffold.** `Edit` the lapidated bodies from step 1 into the scaffold's parent Plan-layer sections (`entities`, `files`, optional `component-contract` UI-only, `tasks`, `dependencies`, `boundaries`). Edit — never overwrite — so the digest-enriched `context` section survives. **Full scope sempre tem ≥1 wave** (`>= 1 wave`): the parent spec is the orchestrator/coordination doc (no own `tasks`/checklist), the wave is the executing subagent. `scope_decompose` decides **1-vs-N** waves — never 0-vs-≥1; "reject decomposition" collapses to a single wave for Full, never to zero (see `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md` §A). Use the `decompose`/`waves` that **`plan-prepare`** already returned in ANALYZE (multi-wave on its signals; otherwise one wave) — no separate `scope-decompose` call. The lapidated `scan spec` project-unit decomposition becomes the **per-wave body of the plan JSON** — each wave carries `tasks` (checklist), `files` (census), and `acceptance` (AC) arrays. **Before materialising**, validate/derive the plan's `depends_on` with `mustard-rt run wave-dependency --plan <plan.json>` (file-based input — it accepts the plan JSON's `{waves:[...]}` shape, unioning per-wave `files`; never pipe stdin, it does not survive `rtk`). Then materialise with **ONE call**: `mustard-rt run plan-materialize --spec-dir <dir> --plan <plan.json>` — it composes `wave-scaffold` (each `wave-N-{role}/spec.md` gets `## Tasks`/`## Files` in the project language, plus the AC union into `wave-plan.md`) + `analyze-validation` (incl. the AC-format WARN) + the `pipeline.scope` emit + emit-phase PLAN, returning `{events, scaffold, validation}`. Do NOT run those as separate manual steps. NEVER hand-author a wave's `spec.md` body after the scaffold — emit it in the plan JSON. See `./wave-decomposition.md` for the `--plan` schema.
-4. **Act on the validation result.** `plan-materialize` (step 3) already ran `analyze-validation` — read its `validation` output and append `issues[]` to `## Concerns` on `ok: false` (non-blocking, WARN-level).
-5. **Concern Coverage Audit.** Every concrete user critique must map to covered by wave/task | non-goal justified | surfaced for decision. Orphaned items block the AskUserQuestion.
+## PLAN — fixed materialisation order
 
-Spec layout — **canonical section keys** (EN, language-agnostic); the rendered heading localises per `mustard.json#specLang` (e.g. `context` → `## Context` / `## Contexto`): **PRD layer** — `context`, `users`, `metric`, `non-goals`, `acceptance-criteria`; **Plan layer** — `entities`, `files`, optional `component-contract` (UI only), `tasks`, `dependencies`, `boundaries`.
+Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUserQuestion once); hold it for `spec-draft --lang`. Headings, narrative rules, Component Contract: `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-language.md`. Each artifact exists before the next step consumes it:
 
-`plan-materialize` already emitted `pipeline.scope` + the PLAN phase — do not re-emit them. Print spec verbatim + `wave-tree`. **NEVER ask about a plan the user has not seen.** Primary: in plan mode the plan (wave-plan + spec body) IS the plan file; approval via `ExitPlanMode` mints `<spec>/.approved-by-user`, the marker `approve-spec` requires. Fallback (no plan mode): print the spec, attach it as the AskUserQuestion `preview`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"** — the answer mints the same marker.
+1. Lapidate the body (no file yet). Per net-new unit: `mustard-rt run scan spec --entity {Unit} [--like {Sibling}] [--invariant {Contract}] [--ops create,...]` → a draft with the pattern menu, per-project sections, anchors, AC. An enhancement unit skips it and lapidates from the digest anchors. Read draft + anchors + client request; resolve the bifurcation, prune, add domain rules, mark assumptions — in the project language/tone (`mustard.json#specLang` / `tone`). The draft project-unit sections ARE the wave/agent decomposition. Hold it in context.
+2. Materialise the scaffold. `mustard-rt run spec-draft --intent "<request>" --scope full --lang <bcp47> [--waves N] [--query-terms "<repo terms>"]` writes `.claude/spec/{slug}/spec.md` + `meta.json` (slug from `--intent`; `meta.json` is the single lifecycle source; `context` pre-filled with scan anchors). When the raw words came back `weak`/`none` in ANALYZE, pass `--query-terms` with the code-terms that produced the strong report — without it the draft repeats the weak query and withholds the enrichment. This is the ONLY scaffold writer. Routing gate: `spec-draft` re-classifies what it wrote and AUTO-DOWNGRADES a `--scope full` the signals do not justify (single-layer, ≤5 files, no net-new) to light, rewriting `meta.json#scope` and reporting `scopeDowngraded:{from,to}` — trust it and return to the Light EXECUTE path; `--force-scope` honours full (audited as `pipeline.scope.override`). No-op on a placeholder census (`filesSectionEmpty`) — fill `## Files` first. Then fire-and-forget `mustard-rt run digest-adherence-finalize --spec {slug}` (telemetry; never blocks — continue).
+3. Fold the body into the plan JSON (never by hand after the scaffold). `Edit` the lapidated bodies into the scaffold Plan-layer sections — Edit, never overwrite, so the enriched `context` survives. Each wave carries `tasks`, `files`, `acceptance`. Validate `depends_on` (above), then ONE call: `mustard-rt run plan-materialize --spec-dir <dir> --plan plan.json` — it composes `mustard-rt run wave-scaffold` (each `wave-N-{role}/spec.md` gets `## Tasks`/`## Files`, plus the AC union into `wave-plan.md`) + `analyze-validation` (incl. AC-format WARN) + the `pipeline.scope` emit + emit-phase PLAN, returning `{events,scaffold,validation}`. Never run those separately; never hand-author a wave body.
+4. Act on validation. Read the `plan-materialize` `validation`; on `ok:false` append `issues[]` to `## Concerns` (non-blocking WARN).
+5. Concern Coverage Audit. Every concrete user critique maps to covered by wave/task | non-goal justified | surfaced for decision. Orphans block the approval question.
 
-> **Full scope STOPS here.** PLAN is the terminal phase of `/feature` — never proceed to EXECUTE inline, regardless of the user's answer. Approval is granted **only** by running `/spec` (which emits the canonical approval event the hard-gate checks); the `scope_guard` hook denies any production-file Edit/Write until then. On "Approve and implement?", direct the user to `/spec` to approve and dispatch — do **not** emit `pipeline.stage: Execute` yourself.
+Spec layout — canonical section keys (EN, language-agnostic; heading localises per `specLang`): PRD layer `context`, `users`, `metric`, `non-goals`, `acceptance-criteria`; Plan layer `entities`, `files`, optional `component-contract` (UI only), `tasks`, `dependencies`, `boundaries`. Materialisation split: `spec-draft` writes ONLY `spec.md` + `meta.json`; `wave-scaffold` (via `plan-materialize`) owns `wave-plan.md` + per-wave specs. State lives in `meta.json` — never a hand-written `pipeline-state.json`.
 
-> **Materialisation split (no overlap).** `spec-draft` writes ONLY the top-level `spec.md` + `meta.json` (scope/totalWaves/isWavePlan); `wave-scaffold` is the sole owner of the wave breakdown (`wave-plan.md` + per-wave specs + review/qa, plan-driven). Full scope = `spec-draft` (step 2) then `plan-materialize` (step 3 — the single call that runs `wave-scaffold`).
+## Plan JSON schema
 
-## INVIOLABLE RULES (Full scope)
+`plan-materialize --plan` consumes this (feeding `wave-scaffold`):
+```json
+{
+  "waves": [
+    { "n": 1, "role": "backend", "summary": "one line",
+      "depends_on": [],
+      "tasks": ["wire the contract"], "files": ["src/api/handler.rs"],
+      "acceptance": ["AC-1 — handler returns 200. Command: `curl -sf ...`"] },
+    { "n": 2, "role": "frontend", "summary": "...",
+      "depends_on": ["wave-1-backend"],
+      "tasks": ["render the page"], "files": ["src/ui/page.tsx"],
+      "acceptance": ["AC-2 — page renders. Command: `...`"] }
+  ],
+  "total_waves": 2, "lang": "pt-BR"
+}
+```
+`tasks` / `files` / `acceptance` are optional (a summary-only entry still scaffolds; no `tasks` emits a stderr WARN). `depends_on` MUST use the `wave-N-role` form (e.g. `["wave-1-backend"]`), never the bare role — an unresolved dep is dropped silently, flattening the DAG to one parallel level. `plan-materialize` writes `wave-plan.md` (table + the localised AC union under `## Acceptance Criteria`, where QA reads) and each `wave-N-{role}/spec.md` (`## Summary` + `## Network` + materialised `## Tasks`/`## Files`); `agent-prompt-render --spec <wave-dir>` reads those back as the agent `## TASK` + `{reference_files}`. Headings render in the project language — do not hand-localise.
 
-- **Full scope STOPS at PLAN and REQUIRES `/spec` to approve before any EXECUTE.** `/feature` must NEVER emit `pipeline.stage: Execute` — nor dispatch, Edit, or Write production code — for a `scope=full` spec. The only approval that unlocks EXECUTE is the canonical event emitted by `/spec`; the `scope_guard` hard-gate enforces this.
-- The spec scaffold (`spec.md` + `meta.json`) is materialised ONLY by `mustard-rt run spec-draft`; fold lapidated `scan spec` bodies in with `Edit`. NEVER hand-write `spec.md` with the Write tool.
-- NEVER hand-author a wave's body after `wave-scaffold` — emit it in the plan JSON's per-wave body (`tasks` / `files` / `acceptance`). `wave-scaffold` materialises `## Tasks`/`## Files` into each wave spec and the AC union into `wave-plan.md`; editing a wave's `spec.md` body by hand is PLAN work leaking into the scaffold step.
-- ALWAYS compile each **net-new** unit's draft with `mustard-rt run scan spec` (its mold is create-only); an enhancement unit skips `scan spec` and consumes the feature digest's anchors (`context_enrichment`). Then lapidate in the project's language (`mustard.json#specLang`/`tone`).
-- The **locator is 100% deterministic** — the digest (and `scan spec` for net-new units) is the whole research step; there is NO judge layer above it. NEVER dispatch a model to re-rank, partition, or validate the digest's answer — work from the flat deterministic anchors (pruned by provenance) and the digest's own `concerns` when ≥2.
+## Present + approve — STOP at PLAN
+
+`plan-materialize` already emitted `pipeline.scope` + PLAN — do not re-emit. Print the spec verbatim + `wave-tree`. NEVER ask about a plan the user cannot see. Primary — plan mode: the wave-plan (+ spec body) IS the plan file; `ExitPlanMode` acceptance mints `<spec>/.approved-by-user` (the marker `approve-spec` requires). Fallback (no plan mode): print the spec, attach `wave-plan.md` as the AskUserQuestion `preview`:
+
+- "Approve wave plan for later" → STOP; user runs `/mustard:spec {letter}` (new session) or `{letter}r` (approve + resume inline).
+- "Edit decomposition (hint PLAN)" → user gives a hint (e.g. merge waves 2 and 3); re-decompose once.
+- "Reject decomposition" → `mustard-rt run wave-collapse --spec {spec} --mode full` (the reject path — `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § A`). NEVER a non-wave Full spec.
+
+PLAN is terminal — never EXECUTE inline regardless of the answer. The only approval that unlocks EXECUTE is the event `/spec` emits; `scope_guard` denies production Edit/Write until then. On "Approve and implement?", direct the user to `/spec` — do NOT emit `pipeline.stage: Execute`.
+
+## COORDINATE — parent/epic specs
+
+A spec with `children_specs.length > 0` may enter COORDINATE: the orchestrator tracks children, it does NOT implement. `mustard-rt run emit-phase --spec {epic} --to COORDINATE` after linking; when all children reach CLOSE, `mustard-rt run emit-phase --spec {epic} --to CLOSE`.
+
+## Inviolable rules (Full)
+
+- Full STOPS at PLAN and REQUIRES `/spec` before any EXECUTE. /feature must NEVER emit `pipeline.stage: Execute`, dispatch, Edit, or Write production code for a `scope=full` spec — `scope_guard` enforces it.
+- The scaffold is materialised ONLY by `mustard-rt run spec-draft`; fold `scan spec` bodies in with `Edit`. NEVER hand-write `spec.md`, NEVER hand-author a wave body after `wave-scaffold` — emit it in the plan JSON.
+- ALWAYS compile each net-new unit with `mustard-rt run scan spec` (create-only mold); an enhancement unit consumes the digest anchors. Lapidate in the project language.
+- The locator is 100% deterministic — the digest (and `scan spec` for net-new) is the whole research step; there is NO judge layer. NEVER dispatch a model to re-rank, partition, or validate it — work from the flat anchors (pruned by provenance) and `concerns` when ≥2.
