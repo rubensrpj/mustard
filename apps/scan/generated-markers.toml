@@ -129,6 +129,14 @@ class = "generated"
 glob = "**/*.freezed.dart"
 
 [[path]]
+class = "generated"
+# Timestamp-scaffolded migration files (EF Core `20260422034143_AddFoo.cs`,
+# Rails `20240101010101_add_foo.rb`): the 14-digit clock prefix is machine-
+# stamped and the body is scaffolded — a filename convention no human wrote,
+# so it must never teach one (nor anchor the digest).
+glob = "**/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*"
+
+[[path]]
 class = "vendored"
 # Vendored third-party trees committed into the repo. (`vendor/` itself is
 # usually pruned by manifests.toml skip_dirs; this covers the rest.)

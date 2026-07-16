@@ -119,5 +119,16 @@
     "type": "command",
     "command": "mustard-rt run statusline",
     "padding": 1
+  },
+  "extraKnownMarketplaces": {
+    "mustard": {
+      "source": {
+        "source": "git",
+        "url": "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "mustard@mustard": true
   }
 }

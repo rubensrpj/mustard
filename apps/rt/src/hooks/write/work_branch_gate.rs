@@ -238,8 +238,16 @@ impl Check for WorkBranchGate {
         // temp dirs, …) is not repo work: never block it, never cut a branch
         // for it, and keep the pending marker for the first IN-repo edit.
         if let Some(fp) = super::boundary_gate::file_path_of(input) {
-            if super::boundary_gate::relative_to_cwd(&project, &fp).is_none() {
-                return Ok(Verdict::Allow);
+            match super::boundary_gate::relative_to_cwd(&project, &fp) {
+                None => return Ok(Verdict::Allow),
+                // Plan-mode artifacts (`.claude/plans/…`) are harness state,
+                // not repo work — planning happens BEFORE the work unit, so
+                // blocking them deadlocks native plan mode on a protected
+                // branch (the session cannot even write the plan it needs
+                // approved). Same contract as out-of-repo: allow, cut
+                // nothing, keep the marker.
+                Some(rel) if rel.starts_with(".claude/plans/") => return Ok(Verdict::Allow),
+                Some(_) => {}
             }
         }
 
@@ -794,6 +802,37 @@ mod tests {
         assert!(
             matches!(verdict, Verdict::Allow),
             "an out-of-repo write is not repo work — never blocked: {verdict:?}",
+        );
+    }
+
+    /// A Write targeting the native plan-mode artifact (`.claude/plans/…`) on a
+    /// bare protected branch: Allow, no branch cut, marker kept — planning
+    /// precedes the work unit, and blocking it deadlocks plan mode (the session
+    /// cannot even write the plan it needs approved).
+    #[test]
+    fn allows_plan_file_write_on_protected_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        // Even with a pending work unit, a plan write must not consume it.
+        let sid = "sess-plan-file";
+        context::set_pending_branch(root_s, sid, "dev_planned-thing");
+
+        let (input, ctx) = pre_edit_input_for(root_s, sid, ".claude/plans/my-plan.md");
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "plan file writes freely: {verdict:?}");
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev"),
+            "no branch is cut for a plan-file mutation",
+        );
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("dev_planned-thing"),
+            "the marker survives for the first code edit",
         );
     }
 

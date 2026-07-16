@@ -93,13 +93,16 @@ pub enum ScanCmd {
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         guards: String,
     },
-    /// Derive the missing pattern-skill *mold* worklist from `grain.model.json`:
-    /// for each mined role cluster (≥3 members, not under a test/fixture path)
-    /// attributed to its subproject, propose a `{subproject}-{role}-pattern` mold
-    /// with real hand-written exemplars — skipping any cluster whose mold already
-    /// exists, capped at 4 per subproject. Emits a JSON array
-    /// `[{subproject, label, slug, moldPath, affix, exemplars, ...}]`. The mold
-    /// twin of `scan-guards-list`. Fail-open: a missing/unparseable model → `[]`.
+    /// Derive the pattern-skill *mold* worklist from `grain.model.json`: for
+    /// each mined role cluster (≥3 members, not under a test/fixture path)
+    /// attributed to its subproject, propose a `{subproject}-{role}-pattern`
+    /// mold with real hand-written exemplars — `mode: "create"` when no mold
+    /// exists, `mode: "refresh"` when a machine-pristine mold exists (its
+    /// provenance marker verifies; re-authored fresh every scan). Hand-edited
+    /// or unmarked molds and slugs recorded in `.claude/scan-declined.json`
+    /// are never re-proposed. Uncapped. Emits a JSON array `[{subproject,
+    /// label, slug, mode, moldPath, affix, exemplars, ...}]`. The mold twin of
+    /// `scan-guards-list`. Fail-open: a missing/unparseable model → `[]`.
     #[command(name = "scan-patterns-list")]
     #[command(display_order = 61)]
     ScanPatternsList {
@@ -108,20 +111,44 @@ pub enum ScanCmd {
         root: PathBuf,
     },
     /// Write one enrich-agent-authored pattern mold to its
-    /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, CREATE-ONLY (an
-    /// existing mold is left untouched) and path-shape-guarded. The mold twin of
+    /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, path-shape-guarded
+    /// and stamped with a provenance marker. Without `--refresh` an existing
+    /// mold is left untouched; with it, ONLY a machine-pristine mold (marker
+    /// verifies) is overwritten — hand edits always survive. The mold twin of
     /// `scan-guards-apply`; being a `run` command it sidesteps the
     /// background-isolation gate that blocks the orchestrator's own Write.
     #[command(name = "scan-patterns-apply")]
     #[command(display_order = 62)]
     ScanPatternsApply {
-        /// Path to the mold `SKILL.md` to create.
+        /// Path to the mold `SKILL.md` to write.
         #[arg(long)]
         path: PathBuf,
         /// Authored SKILL.md body, or `-` to read it from stdin. `allow_hyphen_values`
         /// so a body starting with `-`/`---` frontmatter is not mistaken for a flag.
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
+        /// Overwrite an existing mold — only when its provenance marker
+        /// verifies as machine-pristine (worklist `mode: "refresh"`).
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Record the enrich agent's justified refusal of a mold candidate so
+    /// `scan-patterns-list` stops re-proposing it. Store:
+    /// `.claude/scan-declined.json` (slug → reason); re-auditing a refusal =
+    /// deleting its entry (or the file) and rescanning.
+    #[command(name = "scan-patterns-decline")]
+    #[command(display_order = 77)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
+    ScanPatternsDecline {
+        /// Workspace root (holds `.claude/scan-declined.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// The worklist `slug` being declined.
+        #[arg(long)]
+        slug: String,
+        /// One-line justification. `allow_hyphen_values` so a reason starting
+        /// with `-` is not mistaken for a flag.
+        #[arg(long, allow_hyphen_values = true)]
+        reason: String,
     },
 }
 
@@ -135,8 +162,11 @@ pub fn dispatch(cmd: ScanCmd) {
             scan_guards::apply::run(&path, &root, &guards)
         }
         ScanCmd::ScanPatternsList { root } => scan_patterns::list::run(&root),
-        ScanCmd::ScanPatternsApply { path, content } => {
-            scan_patterns::apply::run(&path, &content)
+        ScanCmd::ScanPatternsApply { path, content, refresh } => {
+            scan_patterns::apply::run(&path, &content, refresh)
+        }
+        ScanCmd::ScanPatternsDecline { root, slug, reason } => {
+            scan_patterns::decline::run(&root, &slug, &reason)
         }
     }
 }
