@@ -108,6 +108,9 @@ packages/cli/templates/.claude/.metrics/
 # Python bytecode (skill-creator scripts)
 **/__pycache__/
 
+# Per-machine Claude Code settings (installer-written overrides, e.g. statusLine binary path)
+**/.claude/settings.local.json
+
 # Runtime knowledge store + local session/editor data (per-project, regenerable — not code)
 **/.claude/knowledge/
 **/.claude/memory/

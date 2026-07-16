@@ -6,6 +6,9 @@
 //! set of files a plugin cannot ship, then enables the plugin. The flow:
 //!
 //! 1. probe RTK — a hard gate (the harness prefixes every Bash call with `rtk`);
+//!    then guard the location: init refuses a directory that sits inside a git
+//!    repository without being its root (the workspace resolver anchors on git
+//!    roots — see [`guard_init_location`]);
 //! 2. handle an already-present `.claude/` (force-overwrite, merge, or
 //!    backup-then-overwrite — interactively prompted when no flag decides it);
 //! 3. seed the harness into `.claude/`:
@@ -122,6 +125,10 @@ pub fn init_with_templates(
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
     let claude_path = project_path.join(".claude");
 
+    // Location guard — runs in dry-run too: the honest "intended action" for a
+    // subdirectory of a git repository is a refusal, not a simulated install.
+    guard_init_location(&project_path)?;
+
     println!("\nMustard\n");
 
     let runtime = Runtime::detect();
@@ -188,6 +195,51 @@ pub fn init_with_templates(
 
     print_next_steps();
     Ok(())
+}
+
+/// Pre-flight location guard: refuse to init a directory that sits INSIDE a
+/// git repository without being that repository's root.
+///
+/// Why: the workspace resolver (`mustard_core::io::workspace`) anchors on git
+/// repository roots. A `mustard.json` + `.claude/` planted in a non-root
+/// subdirectory would never win the resolution — it would only sit there as a
+/// confusing phantom (the historical monorepo defect this guard closes).
+///
+/// Rules (filesystem probes only — fail-open, no `git` subprocess):
+/// - the target IS a git repository root (`.git` as a directory, or as a file
+///   for a submodule / linked worktree) → allow;
+/// - the target lies inside a git repository but is not its root → refuse,
+///   naming the repository root as the right place to init;
+/// - no `.git` anywhere up the tree → allow with a note (projects without git
+///   are supported through the resolver's loose fallback).
+fn guard_init_location(project_path: &Path) -> Result<()> {
+    use mustard_core::io::workspace::is_git_repo_root;
+
+    if is_git_repo_root(project_path) {
+        return Ok(());
+    }
+    let enclosing_root = project_path
+        .ancestors()
+        .skip(1)
+        .find(|dir| is_git_repo_root(dir));
+    let Some(repo_root) = enclosing_root else {
+        println!(
+            "  note: no git repository found here or above - proceeding (projects without git are supported)"
+        );
+        return Ok(());
+    };
+    anyhow::bail!(
+        "this folder is inside a git repository, but it is not the repository's root.\n\
+         Mustard anchors its workspace at the root of a git repository, so initializing here\n\
+         would leave the harness state in the wrong place.\n\
+         \n\
+           repository root: {}\n\
+         \n\
+         Either run `mustard init` from that repository root, or - if this subfolder is meant\n\
+         to be its own Mustard project - make it its own git repository (or a git submodule)\n\
+         first, then re-run `mustard init` here.",
+        repo_root.display()
+    )
 }
 
 /// Seed `.claude/settings.json`: copy the reduced template SEED, then merge in
@@ -941,6 +993,95 @@ mod tests {
             Some(true),
             "merge still enables the mustard plugin"
         );
+    }
+
+    #[test]
+    fn init_refuses_inside_git_repo_when_not_at_its_root() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        // `work` is a git repository root; the init target is a subdirectory.
+        fs::create_dir_all(work.path().join(".git")).unwrap();
+        let project = work.path().join("apps").join("dashboard");
+        fs::create_dir_all(&project).unwrap();
+
+        let err = init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not the repository's root"),
+            "refusal must be didactic, got: {msg}"
+        );
+        assert!(
+            msg.contains("repository root:"),
+            "refusal must name the repository root, got: {msg}"
+        );
+        // Refusal happens before any disk write.
+        assert!(!project.join(".claude").exists(), "refusal wrote .claude/");
+        assert!(!project.join("mustard.json").exists(), "refusal wrote mustard.json");
+    }
+
+    #[test]
+    fn init_allows_at_git_repo_root() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap(); // project IS a repo root
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        assert!(project.join(".claude").join("settings.json").exists());
+        assert!(project.join("mustard.json").exists());
+    }
+
+    #[test]
+    fn init_allows_at_submodule_root_with_git_file() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        // Outer repository root…
+        fs::create_dir_all(work.path().join(".git")).unwrap();
+        // …and a submodule below it: `.git` is a FILE with a `gitdir:` pointer.
+        let sub = work.path().join("backend").join("service");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join(".git"), "gitdir: ../../.git/modules/service\n").unwrap();
+
+        init_with_templates(
+            &sub,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        assert!(
+            sub.join(".claude").join("settings.json").exists(),
+            "a submodule root (.git file) is a legitimate init target"
+        );
+    }
+
+    #[test]
+    fn init_allows_in_git_less_tree() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("plain");
+        fs::create_dir_all(&project).unwrap(); // no .git anywhere up the tempdir
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        assert!(project.join(".claude").join("settings.json").exists());
     }
 
     #[test]

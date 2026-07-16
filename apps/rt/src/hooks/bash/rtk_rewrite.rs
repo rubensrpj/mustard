@@ -6,6 +6,17 @@
 //! missing, non-zero exit, timeout, empty or identical output — falls through
 //! to the blanket-prefix fallback (prepend `rtk `), or returns `None`
 //! (silent allow, fail-open) when the command cannot be wrapped at all.
+//!
+//! **Invariant — guard and prefixer inspect the same slice.** The eligibility
+//! guard [`should_blanket_prefix`] and the prefixer [`blanket_prefix`] both
+//! operate on the FIRST command segment only (the masked-separator view via
+//! `mask_quoted_operators` + `is_cmd_separator`); `rtk` is never inserted past
+//! a command separator. When the first segment strips down to no executable
+//! at all (pure `VAR=value` assignments, e.g. `VAR=x; for …`), the command is
+//! ineligible in every mode — prefixing would land in a segment the guard
+//! never inspected (regression 2026-07-16: `SCRATCH=…; for sp in …` was
+//! rewritten to `SCRATCH=…; rtk for …`, a bash syntax error). Fail-open: the
+//! command passes untouched.
 
 use mustard_core::platform::config::Mode;
 use serde_json::json;
@@ -358,6 +369,10 @@ fn strip_env_prefix(s: &str) -> &str {
 /// - The first segment (after any `VAR=value` env assignments) is a real
 ///   subshell `(…)` or backtick exec `` `…` `` — those forms have no head
 ///   binary, so `rtk` has nothing to wrap.
+/// - The first segment has NO executable token at all (pure env assignments,
+///   e.g. `VAR=x; …`) — there is nothing in the guarded slice to prefix, and
+///   inserting `rtk` anywhere else would land in a segment this guard never
+///   inspected (see the module-doc invariant).
 /// - The first executable token is a shell builtin or keyword (RTK would
 ///   exit 127 trying to exec it).
 ///
@@ -383,8 +398,13 @@ fn should_blanket_prefix(cmd: &str) -> bool {
     if after_env.starts_with('(') || after_env.starts_with('`') {
         return false;
     }
-    // The executable token: a shell builtin/keyword cannot be exec'd by `rtk`.
-    let executable = after_env.split_whitespace().next().unwrap_or("");
+    // The executable token of the first segment. Empty means the segment is
+    // pure env assignments (`VAR=x; …`) — nothing to prefix in the slice this
+    // guard inspected, so the command is ineligible (fail-open, all modes).
+    let Some(executable) = after_env.split_whitespace().next() else {
+        return false;
+    };
+    // A shell builtin/keyword cannot be exec'd by `rtk`.
     if SHELL_BUILTINS.contains(&executable) {
         return false;
     }
@@ -402,23 +422,37 @@ fn should_blanket_prefix(cmd: &str) -> bool {
 /// `rtk`, which then execs the real program.
 ///
 /// Returns `None` when [`should_blanket_prefix`] rejects the command.
+///
+/// Module-doc invariant: this function inspects the exact same slice as the
+/// guard — env assignments are stripped within the FIRST segment only (same
+/// masked-separator view), so `rtk` can never be inserted past a command
+/// separator. Calling [`strip_env_prefix`] on the whole string instead would
+/// let it swallow a separator glued to an assignment token (`VAR=x;`) and
+/// drop `rtk` onto the head of a segment the guard never checked.
 fn blanket_prefix(cmd: &str) -> Option<String> {
     if !should_blanket_prefix(cmd) {
         return None;
     }
     let trimmed = cmd.trim();
-    // Detect how many leading env-assignment tokens precede the executable.
-    let after_env = strip_env_prefix(trimmed);
-    if after_env.len() == trimmed.len() {
+    // Bound env-stripping to the first segment — the same slice the guard
+    // inspected. Masking is length-preserving, so `seg_end` indexes `trimmed`.
+    let masked = mask_quoted_operators(trimmed);
+    let seg_end = masked.find(is_cmd_separator).unwrap_or(masked.len());
+    let first_segment = &trimmed[..seg_end];
+    // `strip_env_prefix` returns a suffix of its input, so the insertion
+    // offset of the executable within `trimmed` is derived by length.
+    let after_env = strip_env_prefix(first_segment);
+    let insert_at = seg_end.saturating_sub(after_env.len());
+    if insert_at == 0 {
         // No env prefix — simple case.
         Some(format!("rtk {trimmed}"))
     } else {
-        // There are env assignments. Insert `rtk` between them and the rest.
-        // env_part_len is derived from pointer arithmetic below; no separate var needed.
-        // env_part includes the trailing space(s) stripped by strip_env_prefix,
-        // so we re-take the original slice up to the start of after_env.
-        let env_part = trimmed[..trimmed.len() - after_env.len()].trim_end();
-        Some(format!("{env_part} rtk {after_env}"))
+        // There are env assignments. Insert `rtk` between them and the rest
+        // (the rest carries any `&& …` / `| …` tail along unchanged — the
+        // parent shell handles the separators after `rtk` exits).
+        let env_part = trimmed[..insert_at].trim_end();
+        let rest = &trimmed[insert_at..];
+        Some(format!("{env_part} rtk {rest}"))
     }
 }
 
@@ -811,6 +845,70 @@ mod tests {
         assert!(
             result.is_none(),
             "expected None for already-prefixed command; got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug-fix regression (2026-07-16): guard and prefixer must inspect the
+    // SAME slice (the first segment). An assignment-only first segment used to
+    // pass the guard (empty executable is not a builtin) while the prefixer
+    // env-stripped the WHOLE string and inserted `rtk` before the head of the
+    // second segment — `SCRATCH="…"; rtk for sp in …` is a bash syntax error.
+    // -----------------------------------------------------------------------
+
+    // BL-11: Assignment-only first segment followed by a loop keyword → None.
+    //        Must not rewrite in Warn and must not deny in Strict — the skip
+    //        is an eligibility rule, exactly like the builtin skip (BL-4).
+    #[test]
+    fn rtk_rewrite_skips_assignment_only_first_segment_before_loop() {
+        let cmd = "VAR=x; for sp in a b; do echo $sp; done";
+        let warn = rtk_rewrite_with(cmd, |_| None, Mode::Warn);
+        assert!(
+            warn.is_none(),
+            "assignment-only first segment must not be rewritten in Warn; got {warn:?}"
+        );
+        let strict = rtk_rewrite_with(cmd, |_| panic!("rewriter must not be called"), Mode::Strict);
+        assert!(
+            strict.is_none(),
+            "assignment-only first segment must not be denied in Strict; got {strict:?}"
+        );
+    }
+
+    // BL-12: Assignment-only first segment followed by a plain command → None.
+    //        Conservative: the first segment has no executable, so the guarded
+    //        slice has nothing to prefix; the command passes untouched.
+    #[test]
+    fn rtk_rewrite_skips_assignment_only_first_segment_before_command() {
+        let result = rtk_rewrite_with("VAR=x; git status", |_| None, Mode::Warn);
+        assert!(
+            result.is_none(),
+            "expected None when the first segment is a pure assignment; got {result:?}"
+        );
+    }
+
+    // BL-13: Env assignment WITHOUT a separator is the BL-3 shape — the
+    //        executable lives in the same (only) segment, so blanket still
+    //        wraps it after the assignment.
+    #[test]
+    fn rtk_rewrite_blanket_env_prefix_without_separator_still_wraps() {
+        let result = rtk_rewrite_with("VAR=x git status", |_| None, Mode::Warn);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "VAR=x rtk git status");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // BL-14: Bare loop — `for` heads the first segment and is a shell keyword
+    //        (SHELL_BUILTINS), so the builtin skip already covers it. Assert it.
+    #[test]
+    fn rtk_rewrite_skips_bare_for_loop() {
+        let result = rtk_rewrite_with("for i in 1 2; do echo $i; done", |_| None, Mode::Warn);
+        assert!(
+            result.is_none(),
+            "expected None for a bare `for` loop; got {result:?}"
         );
     }
 

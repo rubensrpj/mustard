@@ -91,30 +91,32 @@ struct Proj {
 }
 
 /// One mold-candidate worklist entry, serialised to the JSON the orchestrator
-/// hands (per subproject) to the `mustard-patterns` agent.
+/// hands (per subproject) to the `mustard-patterns` agent. Crate-visible so
+/// `agent-prompt-render --role patterns` can materialise the SAME worklist
+/// into the dispatched `## TASK` (single source — never a re-derivation).
 #[derive(Serialize)]
-struct Candidate {
+pub(crate) struct Candidate {
     /// Subproject directory (forward-slashed, relative to root).
-    subproject: String,
+    pub(crate) subproject: String,
     /// Cluster label — the `appliesTo`/`cluster.label` the mold carries (the
     /// role, e.g. `service`).
-    label: String,
+    pub(crate) label: String,
     /// Mold slug — `{subproject-basename}-{label}`; the skill folder is
     /// `{slug}-pattern`. Matches the existing convention (`scan-stage`,
     /// `rt-inject`).
-    slug: String,
+    pub(crate) slug: String,
     /// Where the agent's SKILL.md is written (`scan-patterns-apply --path`).
     #[serde(rename = "moldPath")]
-    mold_path: String,
-    affix: String,
+    pub(crate) mold_path: String,
+    pub(crate) affix: String,
     #[serde(rename = "affixKind")]
-    affix_kind: String,
+    pub(crate) affix_kind: String,
     #[serde(rename = "declKind")]
-    decl_kind: String,
-    implements: Option<String>,
-    count: usize,
+    pub(crate) decl_kind: String,
+    pub(crate) implements: Option<String>,
+    pub(crate) count: usize,
     /// 1-3 real hand-written files of the cluster the agent must read.
-    exemplars: Vec<String>,
+    pub(crate) exemplars: Vec<String>,
 }
 
 /// Run `scan-patterns-list`. Prints a JSON array to stdout; exit 0 always.
@@ -126,7 +128,9 @@ pub fn run(root: &Path) {
 
 /// The testable core of [`run`]: read the model and derive the capped, sorted
 /// mold worklist. Fail-open — any load/parse failure yields an empty worklist.
-fn collect(root: &Path) -> Vec<Candidate> {
+/// Crate-visible because `agent-prompt-render --role patterns` reuses it
+/// in-process to embed the per-subproject worklist in the dispatch prompt.
+pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
     let model_path = root.join(".claude").join("grain.model.json");
     let Ok(text) = std::fs::read_to_string(&model_path) else {
         return Vec::new();
