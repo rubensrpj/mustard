@@ -294,10 +294,14 @@ jobs:
         env:
           V: ${{ needs.version.outputs.version }}
         run: |
-          # tutoriais (o de Linux já vem do .deb; os de Win/Mac são estáticos)
+          # Tutoriais Win/Mac são estáticos; o de Linux vem DENTRO do artefato
+          # linux-deb (gerado pelo build do .deb) — copiá-lo aqui também criava
+          # dois arquivos de mesmo nome sob artifacts/, e o uploader do release
+          # (action-gh-release) racha com 404 em nome duplicado: o v0.1.1 saiu
+          # draft e SEM o tutorial de Linux por isso. NUNCA reintroduzir o
+          # TUTORIAL-LINUX.md neste cp.
           cp packaging/installer/TUTORIAL-WINDOWS.md \
-             packaging/installer/TUTORIAL-MACOS.md \
-             packaging/installer/TUTORIAL-LINUX.md artifacts/ || true
+             packaging/installer/TUTORIAL-MACOS.md artifacts/ || true
           # corpo do release: seção de instalação (com a versão) no topo
           sed "s/{{VERSION}}/$V/g" packaging/installer/RELEASE-BODY.md > artifacts/_body.md
 
