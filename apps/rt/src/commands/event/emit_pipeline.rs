@@ -10,6 +10,9 @@
 //!
 //! - **Unknown kind** → prints an error on stderr and exits with code 1.
 //! - **Invalid JSON payload** → prints an error on stderr and exits with code 1.
+//! - **Unknown `--base` on `pipeline.kind`** → prints an error on stderr and
+//!   exits with code 1, BEFORE any event is written (an explicit base that
+//!   names no integration base is a user/config error, never silently coerced).
 //! - **Write error** → prints a warning on stderr and exits with code 0 (fail-open).
 //!
 //! This matches the pattern used by `emit_phase` and every other harness
@@ -118,10 +121,11 @@ pub struct EmitPipelineOpts {
     /// slug (`{base}_{slug}`) when no `--spec` is present. Ignored otherwise.
     pub intent: Option<String>,
     /// Integration base branch the work branch is cut from. On
-    /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}` when this
-    /// names one of the project's `git.flow` integration bases; otherwise the
-    /// project's primary base is used. Agnostic — the base set is derived from
-    /// `git.flow`, never hardcoded. Ignored for other kinds.
+    /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}`. When
+    /// explicitly set, it MUST name one of the project's `git.flow`
+    /// integration bases (unknown → error, exit 1, before any emit); when
+    /// omitted, the project's primary base is used. Agnostic — the base set is
+    /// derived from `git.flow`, never hardcoded. Ignored for other kinds.
     pub base: Option<String>,
 }
 
@@ -171,6 +175,26 @@ pub fn run(opts: EmitPipelineOpts) {
         );
         std::process::exit(1);
     }
+
+    // --- Strict base validation (pipeline.kind only) ---
+    //
+    // An EXPLICIT `--base` that names no integration base is a user/config
+    // error — fail loudly BEFORE anything is emitted (a late error would leave
+    // the event half-recorded). Silent coercion to the primary base once sent
+    // `--base dev` work onto a `main_*` branch in the field.
+    let kind_base: Option<String> = if opts.kind == EVENT_PIPELINE_KIND {
+        let project = project_dir();
+        let config = mustard_core::ProjectConfig::load(Path::new(&project));
+        match super::work_branch::resolve_base(opts.base.as_deref(), &config) {
+            Ok(b) => Some(b),
+            Err(msg) => {
+                eprintln!("emit-pipeline: {msg}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
 
     // --- REVIEW/QA gate: pipeline.complete requires qa.result(overall=pass). ---
     //
@@ -353,12 +377,12 @@ pub fn run(opts: EmitPipelineOpts) {
     // it back on the first Write/Edit. A read-only request never edits, so the
     // marker is simply never consumed. Fail-open — the emit already succeeded.
     if kind_str == EVENT_PIPELINE_KIND {
-        let project = project_dir();
-        let config = mustard_core::ProjectConfig::load(Path::new(&project));
-        let base = super::work_branch::resolve_base(opts.base.as_deref(), &config);
-        let branch =
-            super::work_branch::compute_work_branch(&base, &spec_name, opts.intent.as_deref(), &sid, &ts, &project);
-        crate::shared::context::set_pending_branch(&project, &sid, &branch);
+        if let Some(base) = kind_base.as_deref() {
+            let project = project_dir();
+            let branch =
+                super::work_branch::compute_work_branch(base, &spec_name, opts.intent.as_deref(), &sid, &ts, &project);
+            crate::shared::context::set_pending_branch(&project, &sid, &branch);
+        }
     }
 
     // `pipeline.stage` / `pipeline.outcome`: patch the spec's `meta.json` so the

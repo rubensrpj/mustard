@@ -5,6 +5,9 @@
 .agent-state/
 .pipeline-states/
 
+# Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
+worktrees/
+
 # Per-spec event log + blob spill.
 spec/*/.events/
 spec/*/.blobs/

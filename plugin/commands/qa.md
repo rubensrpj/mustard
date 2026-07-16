@@ -1,5 +1,4 @@
 ---
-name: qa
 description: Use when the user runs /qa or asks to run QA, validate AC, or check acceptance criteria. Executes the QA phase (Wave 10) — runs each AC and reports pass/fail. Blocks CLOSE on failure.
 source: manual
 ---

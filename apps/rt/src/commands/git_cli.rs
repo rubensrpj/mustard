@@ -13,7 +13,7 @@
 use clap::Subcommand;
 use std::path::PathBuf;
 
-use crate::commands::{git_settle};
+use crate::commands::{git_settle, work_unit_open};
 
 /// The `run` subcommands owned by the git work-unit ritual (`git_settle`).
 #[derive(Debug, Subcommand)]
@@ -40,11 +40,43 @@ pub enum GitCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// The ENTRY RITUAL of a work unit: idempotently create its isolated
+    /// worktree at `.claude/worktrees/{base}_{slug}`, cut from a fresh
+    /// `origin/{base}` (offline degrades to the local base ref), so the
+    /// orchestrator can switch the session into it via
+    /// `EnterWorktree path=<returned path>`. An explicit `--base` MUST name a
+    /// declared `git.flow` integration base; the branch name matches what
+    /// `emit-pipeline` stored in the `pending-work-branch` marker. Cleanup is
+    /// `git-settle`'s job (`/git pr close`), never this command's.
+    #[command(name = "work-unit-open")]
+    #[command(display_order = 76)]
+    WorkUnitOpen {
+        /// Full work-branch name (e.g. `dev_my-spec`); its `{base}_` prefix
+        /// must name a declared integration base. Alternative to --spec/--intent.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Spec slug — used verbatim as the branch slug.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Free-form intent, slugified when --spec is absent.
+        #[arg(long)]
+        intent: Option<String>,
+        /// Integration base; must name a declared `git.flow` base. Omitted →
+        /// the project's primary base.
+        #[arg(long)]
+        base: Option<String>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `git`-family `run` subcommand.
 pub fn dispatch(cmd: GitCmd) {
     match cmd {
         GitCmd::GitSettle { unit, root } => git_settle::run(&root, unit.as_deref()),
+        GitCmd::WorkUnitOpen { branch, spec, intent, base, root } => {
+            work_unit_open::run(work_unit_open::WorkUnitOpenOpts { root, branch, spec, intent, base });
+        }
     }
 }

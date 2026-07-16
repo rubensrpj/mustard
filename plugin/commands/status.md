@@ -1,5 +1,4 @@
 ---
-name: status
 description: Use when the user runs /status or asks about project status, pipeline state, entity registry, or the harness enforcement layer. Delegates to mustard-rt run status and prints output verbatim.
 source: manual
 ---

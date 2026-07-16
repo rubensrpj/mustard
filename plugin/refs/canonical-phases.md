@@ -11,7 +11,7 @@ Canonical sequence: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 |-------|--------------------|---------------|
 | `ANALYZE` | Research the codebase: locate entities, read relevant files, map the change surface. | Pipeline starts (`/feature`, `/bugfix`) — pipeline-state created with `phase=ANALYZE`. |
 | `PLAN` | Write the spec: scope, waves, Acceptance Criteria. Full scope only; Light scope skips it. | Spec PLAN file written / pipeline-state `phase=PLAN`. |
-| `EXECUTE` | Implement the change across delegated agents. | `/approve` accepted, or Light scope after ANALYZE — pipeline-state `phase=EXECUTE`. |
+| `EXECUTE` | Implement the change across delegated agents. | `/mustard:spec` approval accepted, or Light scope after ANALYZE — pipeline-state `phase=EXECUTE`. |
 | `REVIEW` | Inspect produced code for correctness, conventions, regressions before QA. | `/review` invoked or review agents dispatched — emits `review.*` events. |
 | `QA` | Run the spec's Acceptance Criteria commands and record pass/fail (Wave 10). | `/mustard:qa` runs — emits `qa.result`. |
 | `CLOSE` | Finalize: verify gates, mark the spec completed, commit — archival is event-only, the spec directory never moves. | pipeline-state `phase=CLOSE`; gated by the `close_gate` hook (Rust, in `mustard-rt`). |
