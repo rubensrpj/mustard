@@ -141,14 +141,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
 
     // Cycles via SCC.
     let sccs = petgraph::algo::tarjan_scc(&g);
-    let mut cycles: Vec<Vec<String>> = Vec::new();
-    for scc in &sccs {
-        if scc.len() > 1 {
-            cycles.push(scc.iter().map(|n| g[*n].clone()).collect());
-        }
-    }
+    let has_multi_node_scc = sccs.iter().any(|scc| scc.len() > 1);
     let self_loop = edge_set.iter().any(|(a, b)| a == b);
-    let cyclic = !cycles.is_empty() || self_loop;
+    let cyclic = has_multi_node_scc || self_loop;
 
     // Fan-in / fan-out — specificity-weighted (see `edge_w`): the published
     // degree is the rounded sum of edge weights, i.e. "specific-import
@@ -203,13 +198,10 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
         }
     }
     let mut succ: Vec<HashSet<usize>> = vec![HashSet::new(); sccs.len()];
-    let mut cyclic_edges = 0usize;
     for (a, b) in &edge_set {
         let (ca, cb) = (scc_of[a.index()], scc_of[b.index()]);
         if ca != cb {
             succ[ca].insert(cb);
-        } else if sccs[ca].len() > 1 || a == b {
-            cyclic_edges += 1; // a dependency that closes a cycle
         }
     }
     let mut memo = vec![None; sccs.len()];
@@ -248,12 +240,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
         nodes: g.node_count(),
         edges: edge_set.len(),
         cyclic,
-        cycles,
         top_fan_in: fan_in,
         top_fan_out: fan_out,
         layers,
-        cyclic_edges,
-        total_edges: edge_set.len(),
         touchpoints,
     };
     (stats, degree_map, depth_by_path)

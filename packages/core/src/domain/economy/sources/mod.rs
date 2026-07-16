@@ -1,16 +1,15 @@
 //! External cost adapters — populated in W3.
 //!
-//! Three submodules translate external telemetry formats into the W1 record
+//! Two submodules translate external telemetry formats into the W1 record
 //! types defined in [`super::model`]. Each adapter is a *pure translator*: it
 //! returns a `Vec<...>` and never touches `SQLite` directly. The caller (a hook
 //! or `run` subcommand in `apps/rt`) opens a connection via
 //! [`super::store::open_for`] and loops the appropriate writer function:
 //!
 //! ```ignore
-//! let frames = transcript::ingest(&path, &ctx)?;
-//! let conn = store::open_for(&ctx.project_path)?;
-//! for f in frames {
-//!     writer::record_api_cost(&conn, f)?;
+//! let records = rtk::ingest(&ctx)?;
+//! for r in records {
+//!     // route one NDJSON economy event per record
 //! }
 //! ```
 //!
@@ -21,18 +20,14 @@
 //! ## Submodules
 //!
 //! - [`otel`] — parses OTLP/JSON `traces` payloads into [`SpanRecord`]s.
-//! - [`transcript`] — parses the Claude Code session JSONL into
-//!   [`ApiCostFrame`]s.
 //! - [`rtk`] — invokes the local `rtk` binary and maps `rtk gain --json` into
 //!   [`SavingsRecord`]s.
 //!
 //! [`SpanRecord`]: super::model::SpanRecord
-//! [`ApiCostFrame`]: super::model::ApiCostFrame
 //! [`SavingsRecord`]: super::model::SavingsRecord
 
 pub mod otel;
 pub mod rtk;
-pub mod transcript;
 
 /// Per-call context every adapter needs to attribute its records.
 ///

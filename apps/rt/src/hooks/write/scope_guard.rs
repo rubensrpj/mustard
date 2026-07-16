@@ -13,7 +13,17 @@
 //!
 //! A `PreToolUse(Write|Edit)` of a **production file** when the active spec is
 //! `scope = full`, `stage = Plan`, and carries **no approval event**. That is
-//! the exact window where code must not be touched yet.
+//! the exact window where code must not be touched yet. (Clarify is enforced one
+//! step earlier, at the `/spec` approval boundary: `approve-spec` refuses an
+//! unclarified Full plan, where the spec is known explicitly via `--spec`.)
+//!
+//! ## Resolving the active spec
+//!
+//! The spec is resolved the SAME way `boundary_gate` does — the session-to-spec
+//! `active-spec` marker (`spec_for_session`) first, then `current_spec`. That
+//! marker is the only binding that survives into the shipped plugin (no
+//! `MUSTARD_ACTIVE_SPEC`, no `.pipeline-states` there), so keying on it is what
+//! makes the gate fire in production at all.
 //!
 //! ## What it ALWAYS allows (false-positive guards — Concern, high)
 //!
@@ -31,7 +41,8 @@
 //!
 //! Any sensor error — no active spec, unreadable `meta.json`, unreadable events
 //! dir — degrades to [`Verdict::Allow`]. Only a clear, positive signal (full +
-//! Plan + no approval + a production file) denies. A hook bug must never block.
+//! Plan + a production file, not yet approved) denies. A
+//! hook bug must never block.
 
 use mustard_core::platform::error::Error;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
@@ -40,14 +51,14 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use serde_json::Value;
 use std::path::Path;
 
-use crate::shared::context::current_spec;
+use crate::shared::context::{current_spec, spec_for_session};
 
 /// The Full-scope approval hard-gate module.
 pub struct ScopeGuard;
 
 /// Path prefixes that are spec artifacts / infrastructure — NEVER production
 /// code. An edit under any of these during PLAN is legitimate (the spec.md, the
-/// wave plan, the harness config). Mirrors `path_gate::META_PREFIXES` plus the
+/// wave plan, the harness config). Mirrors `boundary_gate::META_PREFIXES` plus the
 /// forward-slash-normalised spec dir.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
 
@@ -130,8 +141,8 @@ fn approval_event_present(cwd: &Path, spec: &str) -> bool {
 }
 
 /// The core decision for a Write/Edit. Returns `Verdict::Deny` ONLY when every
-/// positive condition holds: an active Full spec, in stage Plan, with no
-/// approval event, editing a production file. Anything else allows.
+/// positive condition holds: an active Full spec, in stage Plan, editing a
+/// production file, with no `/spec` approval event. Anything else allows.
 fn evaluate_write(input: &HookInput, cwd: &str) -> Verdict {
     // Resolve the production-file path; a missing/`../`/escaping path is not
     // attributable to production code → allow (fail-open).
@@ -146,8 +157,19 @@ fn evaluate_write(input: &HookInput, cwd: &str) -> Verdict {
         return Verdict::Allow;
     }
 
-    // Resolve the active spec; without one there is no gate to apply.
-    let Some(spec) = current_spec(cwd) else {
+    // Resolve the active spec the SAME way `boundary_gate` does: the session->spec
+    // `active-spec` marker first (the only binding that survives into the shipped
+    // plugin — `current_spec`'s env / `.pipeline-states` sources are not written
+    // there), falling back to `current_spec` for flows with no session binding.
+    // Without a spec there is no gate to apply (fail-open).
+    let session = input
+        .session_id
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != "unknown");
+    let Some(spec) = session
+        .and_then(|sid| spec_for_session(cwd, sid))
+        .or_else(|| current_spec(cwd))
+    else {
         return Verdict::Allow;
     };
     let cwd_path = Path::new(cwd);
@@ -169,7 +191,10 @@ fn evaluate_write(input: &HookInput, cwd: &str) -> Verdict {
         return Verdict::Allow; // Resume-after-approve path.
     }
 
-    // Full + Plan + no approval + a production file → the exact deny window.
+    // Full + Plan + no approval + a production file → the exact approval deny
+    // window. Clarify is enforced one step earlier, at the `/spec` approval
+    // boundary (`approve-spec` refuses an unclarified Full plan), where the spec
+    // is known explicitly — not here.
     Verdict::Deny {
         reason: format!(
             "[scope-guard] spec '{spec}' is Full scope still in PLAN with no \
@@ -257,14 +282,21 @@ mod tests {
         }
     }
 
-    /// DENY: Full + Plan + no approval + a production file.
+    /// DENY: Full + Plan + no approval → the approval deny branch (the gate
+    /// points at `/spec` approval).
     #[test]
     fn denies_production_edit_for_unapproved_full_plan() {
         let dir = tempdir().unwrap();
         seed_spec(dir.path(), "epic", "full (wave plan)", "Plan");
         let input = write_input(dir.path(), "src/main.rs");
         match ScopeGuard.evaluate(&input, &ctx_for(dir.path())).unwrap() {
-            Verdict::Deny { reason } => assert!(reason.contains("scope-guard")),
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("scope-guard"));
+                assert!(
+                    reason.contains("approve the plan"),
+                    "expected the approval deny, got: {reason}"
+                );
+            }
             other => panic!("expected Deny, got {other:?}"),
         }
     }
@@ -361,5 +393,54 @@ mod tests {
             ScopeGuard.evaluate(&input, &ctx_for(dir.path())).unwrap(),
             Verdict::Allow
         );
+    }
+
+    /// DENY via the session->spec marker (F6 plugin-path resolution): with NO
+    /// `.pipeline-states` and NO env override, the spec resolves ONLY through the
+    /// `active-spec` marker `bind_session_spec` writes (the same source
+    /// `boundary_gate` uses). A Full + Plan + unapproved spec resolved this way
+    /// still denies the production edit — proving the gate fires in the shipped
+    /// plugin, where `current_spec` (env / `.pipeline-states`) resolves nothing.
+    #[test]
+    fn denies_via_session_marker_resolution() {
+        let dir = tempdir().unwrap();
+        // Seed the spec's meta.json WITHOUT a `.pipeline-states` file, so
+        // `current_spec` cannot resolve it — only the session marker can.
+        let sp = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .for_spec("epic")
+            .unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            json!({ "scope": "full", "stage": "Plan", "outcome": "Active" }).to_string(),
+        )
+        .unwrap();
+        // Bind THIS session to the spec (the marker the router writes on a
+        // spec-carrying pipeline event). Checked FIRST, so it wins even if the
+        // ambient env pins a different `MUSTARD_ACTIVE_SPEC`.
+        crate::shared::context::bind_session_spec(
+            dir.path().to_str().unwrap(),
+            "sess-1",
+            "epic",
+        );
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": "src/main.rs", "content": "x" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            session_id: Some("sess-1".to_string()),
+            ..HookInput::default()
+        };
+        match ScopeGuard.evaluate(&input, &ctx_for(dir.path())).unwrap() {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("scope-guard"));
+                assert!(
+                    reason.contains("approve the plan"),
+                    "expected the approval deny via the session marker, got: {reason}"
+                );
+            }
+            other => panic!("expected Deny via session marker, got {other:?}"),
+        }
     }
 }

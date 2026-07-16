@@ -1,6 +1,7 @@
+pub mod cli;
+
 pub mod maint_deps;
 pub mod maint_validate;
-pub mod refresh_claude;
 pub mod artifact_update;
 pub mod claude_dir_prune;
 pub mod worktree_gc;

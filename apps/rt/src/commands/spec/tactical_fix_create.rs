@@ -3,8 +3,8 @@
 //! Replaces the steps in `tactical-fix/SKILL.md`. Builds `.claude/spec/<slug>/`
 //! containing a `spec.md` body skeleton (pure narrative — no lifecycle header)
 //! and the matching `meta.json` sidecar that carries every machine-parseable
-//! field (stage/outcome/scope/lang/checkpoint/parent); finally invokes
-//! `spec-link` to record the parent → child edge in the harness event store.
+//! field (stage/outcome/scope/lang/checkpoint/parent); finally emits the
+//! `spec.link` parent → child edge in-process into the harness event store.
 //!
 //! Pure-Rust slug derivation: lowercase, strip diacritics (PT), kebab-case,
 //! ≤6 words, prefixed by `YYYY-MM-DD` (local). Idempotent on the sidecar — a
@@ -12,7 +12,7 @@
 //! in the JSON rather than overwriting work in flight.
 
 use serde_json::json;
-use mustard_core::domain::model::event::ActorKind;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use crate::shared::context;
 use crate::shared::events::economy;
 use crate::commands::spec::spec_scaffold;
@@ -20,7 +20,6 @@ use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs::write_atomic;
 use mustard_core::platform::i18n::{slugify, Locale};
-use mustard_core::platform::process::rtk_command;
 use mustard_core::{read_meta, Meta};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -35,7 +34,7 @@ pub struct TacticalFixOpts {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct TacticalFixReport {
+pub(crate) struct TacticalFixReport {
     pub parent: String,
     pub slug: String,
     pub spec_dir: String,
@@ -166,30 +165,30 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         report.error = Some(format!("write meta.json failed: {e}"));
         return report;
     }
-    // Emit the spec.link event via our own subcommand. Best-effort.
-    //
-    // Pin the spawned child to the caller's `cwd` + `MUSTARD_WORKSPACE_ROOT`
-    // so it writes to the same workspace as the parent — without this,
-    // unit tests running under `cargo test -p mustard-rt` would inherit the
-    // crate's own `apps/rt/` cwd and leak `apps/rt/.claude/.pipeline-states/`
-    // (umbrella AC-G2 regression).
-    let link_out = rtk_command(
-        "mustard-rt",
-        &[
-            "run",
-            "spec-link",
-            "--parent",
-            &opts.parent,
-            "--child",
-            &slug,
-            "--reason",
-            "tactical-fix",
-        ],
-    )
-    .current_dir(cwd)
-    .env("MUSTARD_WORKSPACE_ROOT", cwd)
-    .output();
-    report.link_emitted = matches!(link_out, Ok(ref o) if o.status.success());
+    // Emit the `spec.link` parent → child edge in-process — the retired
+    // `spec-link` face used to do this via a child process. Routed with the
+    // caller's `cwd`, so unit tests under `cargo test -p mustard-rt` write to
+    // their own workspace (umbrella AC-G2 regression).
+    let link_ev = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.clone(),
+        session_id: context::session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("tactical-fix-create".to_string()),
+            actor_type: None,
+        },
+        event: "spec.link".to_string(),
+        payload: json!({
+            "parent": opts.parent,
+            "child": slug,
+            "reason": "tactical-fix",
+        }),
+        spec: Some(slug.clone()),
+    };
+    report.link_emitted =
+        crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &link_ev);
     report
 }
 

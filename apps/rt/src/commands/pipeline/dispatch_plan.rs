@@ -48,7 +48,6 @@
 
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::wave::wave_lib::parse_files_section;
-use crate::shared::context::project_dir;
 use mustard_core::io::atomic_md::find_outgoing_links;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
@@ -92,21 +91,6 @@ struct WaveRow {
     wave: u32,
     role: String,
     depends_on: Vec<u32>,
-}
-
-/// Run `mustard-rt run dispatch-plan --spec <slug> [--wave N]`.
-///
-/// `wave_filter` (the `--wave` flag) restricts the emitted array to that single
-/// wave (still carrying its real `depends_on` / `level`), so the orchestrator
-/// can re-render one wave's dispatch without recomputing the whole plan.
-pub fn run(spec: &str, wave_filter: Option<u32>) {
-    let project = PathBuf::from(project_dir());
-    let spec_dir = resolve_spec_dir(&project, spec);
-
-    let items = build_plan(&project, &spec_dir, spec, wave_filter);
-
-    let body = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string());
-    println!("{body}");
 }
 
 /// Resolve the spec directory through the canonical accessor, fail-open to the

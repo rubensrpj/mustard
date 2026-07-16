@@ -15,6 +15,7 @@
 
 use crate::model::{CodeExample, Convention, Decl, Exemplar, Module, RoleStat};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use rayon::prelude::*;
 
 /// An affix must pair with at least this many distinct entities to be a role.
 const MIN_ROLE_PARTNERS: usize = 2;
@@ -41,7 +42,7 @@ struct Symbol {
     supertypes: Vec<String>,
 }
 
-pub struct Mined {
+pub(crate) struct Mined {
     pub roles: Vec<RoleStat>,
     pub conventions: Vec<Convention>,
     pub shared_contracts: Vec<crate::model::SharedContract>,
@@ -234,26 +235,6 @@ pub fn mine(
             .filter(|(_, c)| **c >= 2)
             .map(|(name, _)| name.clone())
     };
-    // Other dominant supertypes (beyond the top) → the name spans >1 kind of thing.
-    // Other dominant supertypes (beyond the top) → the name spans >1 kind of thing.
-    let other_supertypes = |r: &str, top: &Option<String>| -> Vec<String> {
-        let m = match role_supertypes.get(r) {
-            Some(m) => m,
-            None => return Vec::new(),
-        };
-        let role_n = role_entities.get(r).map(|e| e.len()).unwrap_or(0).max(1);
-        let mut v: Vec<(String, usize)> = m
-            .iter()
-            .filter(|(name, c)| {
-                !entity_keys.contains(&canonical_key(name))
-                    && Some(*name) != top.as_ref()
-                    && **c as f32 >= 0.30 * role_n as f32
-            })
-            .map(|(name, c)| (name.clone(), *c))
-            .collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        v.into_iter().take(2).map(|(n, _)| n).collect()
-    };
     // Collaborators: namespaces this role pulls in across many of its entities,
     // excluding ones imported by most *roles* (framework/base noise like System).
     let num_roles = role_entities.keys().filter(|r| r.as_str() != "(core)").count().max(1);
@@ -296,7 +277,6 @@ pub fn mine(
             common_dir: top_key(role_dirs.get(r)),
             decl_kind: top_key(role_kinds.get(r)),
             implements: top_supertype(r),
-            also_implements: other_supertypes(r, &top_supertype(r)),
             collaborators: collaborators_for(r),
         })
         .collect();
@@ -318,15 +298,28 @@ pub fn mine(
         .collect();
     members.sort(); // determinism: HashMap iteration order is not stable across runs
 
-    let mut uf = UnionFind::new(members.len());
-    for i in 0..members.len() {
-        for j in (i + 1)..members.len() {
-            let a = &entity_roles[&members[i]];
-            let b = &entity_roles[&members[j]];
-            if jaccard(a, b) >= JACCARD_MERGE {
-                uf.union(i, j);
-            }
-        }
+    // Merge-pair discovery is the O(n^2) hot loop: every entity pair's role-set
+    // Jaccard is probed. The probe is READ-ONLY (no shared mutation), so the outer
+    // index fans out over rayon; each `i` yields its qualifying `(i, j)` pairs. They
+    // are then SORTED and applied to union-find SERIALLY in the exact (i asc, j asc)
+    // order the sequential nested loop used — so the union sequence, the component
+    // roots and therefore the model bytes are byte-identical.
+    let n_members = members.len();
+    let roles_ref = &entity_roles;
+    let members_ref = &members;
+    let mut merge_pairs: Vec<(usize, usize)> = (0..n_members)
+        .into_par_iter()
+        .flat_map_iter(move |i| {
+            ((i + 1)..n_members).filter_map(move |j| {
+                (jaccard(&roles_ref[&members_ref[i]], &roles_ref[&members_ref[j]]) >= JACCARD_MERGE)
+                    .then_some((i, j))
+            })
+        })
+        .collect();
+    merge_pairs.sort_unstable();
+    let mut uf = UnionFind::new(n_members);
+    for (i, j) in merge_pairs {
+        uf.union(i, j);
     }
     let mut clusters: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     for (i, m) in members.iter().enumerate() {

@@ -304,7 +304,7 @@ pub fn wave_floor_for_full(decompose: bool) -> u32 {
 ///   exact key lookup) — see [`count_new_entities`].
 /// - `text` = the full spec body, so [`detect_roadmap_signal`] runs unchanged.
 #[must_use]
-pub fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value {
+pub(crate) fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value {
     let role_patterns = load_role_patterns(project_root);
 
     let file_paths = parse_files_section(spec_text).unwrap_or_default();
@@ -789,7 +789,7 @@ pub fn run_classify(from_spec: &str, slice_match_count: i64) {
 /// [`decide`]. Fail-open — an unreadable spec yields the `error-fallback`
 /// verdict.
 #[must_use]
-pub fn decide_from_spec(spec_file: &Path) -> Value {
+pub(crate) fn decide_from_spec(spec_file: &Path) -> Value {
     let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
         return json!({ "decompose": false, "reason": "error-fallback" });
     };
@@ -820,7 +820,7 @@ pub fn decide_from_spec(spec_file: &Path) -> Value {
 /// DIAGNOSABLE `spec-unreadable: <path> (cwd: <cwd>)` reason (not a silent
 /// `full`), mirroring [`classify_from_spec`] and the two commands it replaces.
 #[must_use]
-pub fn prepare_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
+pub(crate) fn prepare_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
     let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
         // Same diagnosable-unreadable contract as `classify_from_spec`: keep the
         // routing-safe `full` / single-wave shape, but name the failing path +

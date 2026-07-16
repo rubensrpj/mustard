@@ -6,9 +6,8 @@
 //! window, picks the top files of the day, and emits one `SpecTrack` per
 //! active spec.
 
-#[allow(deprecated)] // SpecTrack still carries the legacy SpecStatus this wave.
-use crate::domain::model::view::SpecStatus;
 use crate::domain::model::view::{
+    SpecState,
     FileCount, Phase, PhaseSegment, SegmentState, SpecTrack, WorkspaceAlert, WorkspaceAlertKind,
     WorkspaceSummary,
 };
@@ -27,7 +26,7 @@ const TOP_FILES_CAP: usize = 10;
 /// a fixed value for deterministic output; the `SQLite` reader path passes
 /// `SystemTime::now()`.
 #[must_use]
-#[allow(deprecated, clippy::too_many_lines)] // SpecTrack still keys off the legacy SpecStatus this wave.
+#[allow(clippy::too_many_lines)]
 pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSummary {
     if events.is_empty() {
         return WorkspaceSummary::empty();
@@ -154,22 +153,30 @@ pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSumma
         }
     }
 
-    // SpecTrack list — one per spec, computed from the per-spec view.
-    let mut tracks: Vec<SpecTrack> = spec_events
+    // SpecTrack list — one per spec, computed from the per-spec view. A spec
+    // whose slice carries no lifecycle transition (heartbeats only) must not
+    // surface as active work — the legacy `NoEvents` semantics the removed
+    // `SpecStatus` used to encode.
+    let mut tracks: Vec<(SpecTrack, bool)> = spec_events
         .iter()
         .filter(|(name, _)| name.as_str() != "__orphan__")
-        .map(|(name, evs)| build_track(name, evs))
+        .map(|(name, evs)| (build_track(name, evs), has_lifecycle_signal(evs)))
         .collect();
     // Sort: active first, then by last_event_at desc.
     tracks.sort_by(|a, b| {
-        a.status
-            .is_active()
-            .cmp(&b.status.is_active())
+        (a.1 && a.0.state.is_active())
+            .cmp(&(b.1 && b.0.state.is_active()))
             .reverse()
-            .then(b.last_event_at.cmp(&a.last_event_at))
+            .then(b.0.last_event_at.cmp(&a.0.last_event_at))
     });
-    let specs_active_count =
-        u32::try_from(tracks.iter().filter(|t| t.status.is_active()).count()).unwrap_or(u32::MAX);
+    let specs_active_count = u32::try_from(
+        tracks
+            .iter()
+            .filter(|(t, signal)| *signal && t.state.is_active())
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let tracks: Vec<SpecTrack> = tracks.into_iter().map(|(t, _)| t).collect();
 
     // Deduplicate alerts — keep the latest one per (spec, kind).
     let mut alert_dedup: BTreeMap<(String, WorkspaceAlertKind), WorkspaceAlert> = BTreeMap::new();
@@ -208,13 +215,23 @@ pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSumma
     }
 }
 
+/// True when the slice carries at least one lifecycle transition. Bare
+/// heartbeat slices (tool.use / agent.* only) never count as active work.
+fn has_lifecycle_signal(events: &[HarnessEvent]) -> bool {
+    events.iter().any(|e| {
+        matches!(
+            e.event.as_str(),
+            "pipeline.status" | "pipeline.stage" | "pipeline.scope" | "pipeline.complete"
+        )
+    })
+}
+
 /// Build a single [`SpecTrack`] for one spec from its slice of events.
-#[allow(deprecated)] // SpecTrack still keys off the legacy SpecStatus this wave.
 fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
     let view = project_spec_view(spec, events);
-    let segments = build_segments(view.phase, view.status);
+    let segments = build_segments(view.phase, &view.state);
     let agents_active = count_active_agents(events);
-    let blocked_reason = if view.status == SpecStatus::Blocked {
+    let blocked_reason = if view.state.is_active() && view.state.flags.blocked {
         events
             .iter()
             .rev()
@@ -226,7 +243,6 @@ fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
     };
     SpecTrack {
         spec: spec.to_string(),
-        status: view.status,
         state: view.state.clone(),
         current_phase: view.phase,
         current_wave: view.current_wave,
@@ -239,14 +255,22 @@ fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
 }
 
 /// Build the five phase segments for a `SpecTrack`.
-#[allow(deprecated)] // segment colouring still keys off the legacy SpecStatus this wave.
-fn build_segments(current: Option<Phase>, status: SpecStatus) -> Vec<PhaseSegment> {
+///
+/// A "completed-word" state (outcome `Completed` / `Superseded` / `Absorbed`
+/// — the preimage of the retired legacy `SpecStatus::Completed`) paints every
+/// segment Completed; otherwise the current phase splits past/present/future.
+fn build_segments(current: Option<Phase>, spec_state: &SpecState) -> Vec<PhaseSegment> {
+    use crate::domain::model::view::Outcome;
+    let completed = matches!(
+        spec_state.outcome,
+        Outcome::Completed | Outcome::Superseded | Outcome::Absorbed
+    );
     let target_idx = current.map(Phase::index);
     Phase::all()
         .into_iter()
         .map(|phase| {
-            let state = match (status, target_idx) {
-                (SpecStatus::Completed, _) => SegmentState::Completed,
+            let state = match (completed, target_idx) {
+                (true, _) => SegmentState::Completed,
                 (_, Some(idx)) if phase.index() < idx => SegmentState::Completed,
                 (_, Some(idx)) if phase.index() == idx => SegmentState::Active,
                 _ => SegmentState::Future,
@@ -445,5 +469,29 @@ mod tests {
                 (Phase::Close, SegmentState::Future),
             ]
         );
+    }
+
+    #[test]
+    fn heartbeat_only_slice_has_no_lifecycle_signal() {
+        let hb = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-07-15T00:00:00.000Z".to_string(),
+            session_id: "s1".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Cli,
+                id: None,
+                actor_type: None,
+            },
+            event: "tool.use".to_string(),
+            payload: serde_json::json!({}),
+            spec: Some("hb-spec".to_string()),
+        };
+        assert!(!has_lifecycle_signal(std::slice::from_ref(&hb)));
+        let st = HarnessEvent {
+            event: "pipeline.status".to_string(),
+            ..hb
+        };
+        assert!(has_lifecycle_signal(std::slice::from_ref(&st)));
     }
 }

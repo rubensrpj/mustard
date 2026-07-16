@@ -75,7 +75,7 @@ pub struct GateReport {
 
 /// Aggregate report.
 #[derive(Debug, Serialize)]
-pub struct CloseReport {
+pub(crate) struct CloseReport {
     pub spec: String,
     pub overall: &'static str,
     pub gates: Vec<GateReport>,

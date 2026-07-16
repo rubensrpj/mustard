@@ -34,7 +34,7 @@ const Q_MAX_TOUCHPOINTS: usize = 10;
 const Q_MAX_FILES: usize = 12;
 
 #[derive(Serialize)]
-pub struct CapabilityDigest {
+pub(crate) struct CapabilityDigest {
     pub root: String,
     pub languages: Vec<LangD>,
     pub frameworks: Vec<String>,
@@ -59,14 +59,14 @@ pub struct CapabilityDigest {
 }
 
 #[derive(Serialize)]
-pub struct LangD {
+pub(crate) struct LangD {
     pub language: String,
     pub files: usize,
     pub loc: usize,
 }
 
 #[derive(Serialize)]
-pub struct ProjD {
+pub(crate) struct ProjD {
     pub name: String,
     pub dir: String,
     pub kind: String,
@@ -84,7 +84,7 @@ pub struct RoleD {
 }
 
 #[derive(Serialize)]
-pub struct SliceD {
+pub(crate) struct SliceD {
     /// Core role affixes joined with '+', e.g. "Handler+Validator".
     pub label: String,
     pub recurrence: usize,
@@ -99,13 +99,13 @@ pub struct SliceD {
 }
 
 #[derive(Serialize)]
-pub struct ContractD {
+pub(crate) struct ContractD {
     pub name: String,
     pub implementors: usize,
 }
 
 #[derive(Serialize)]
-pub struct GraphD {
+pub(crate) struct GraphD {
     pub nodes: usize,
     pub edges: usize,
     pub cyclic: bool,
@@ -118,26 +118,26 @@ pub struct GraphD {
 }
 
 #[derive(Serialize)]
-pub struct LayerD {
+pub(crate) struct LayerD {
     pub name: String,
     pub modules: usize,
 }
 
 #[derive(Serialize)]
-pub struct TouchD {
+pub(crate) struct TouchD {
     pub module: String,
     pub fan_out: usize,
     pub breadth: usize,
 }
 
 #[derive(Serialize)]
-pub struct HubD {
+pub(crate) struct HubD {
     pub module: String,
     pub degree: usize,
 }
 
 #[derive(Serialize)]
-pub struct TermD {
+pub(crate) struct TermD {
     pub term: String,
     pub count: usize,
     /// Domain specificity ×1024: the term's TF·IDF over the corpus
@@ -149,13 +149,6 @@ pub struct TermD {
     /// the kind-weighted rank, never this field.
     pub specificity_x1024: u64,
     pub samples: Vec<String>,
-    /// One-sentence business-action description written by `enrich-purpose
-    /// --apply`. Absent on freshly-scanned models (serde default = None);
-    /// additive — old readers skip the field. Display metadata for the published
-    /// catalog; recall over purpose text is the standalone `purpose-search`
-    /// command (an uncapped purpose→file index), never this `query` pipeline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
 }
 
 /// A focused slice of the digest matching some domain terms — the cheap
@@ -166,7 +159,7 @@ pub struct TermD {
 /// compatibility, but a `miss=false` answer can still be `weak` — consumers
 /// must read the report, never just the flag.
 #[derive(Serialize)]
-pub struct QueryResult {
+pub(crate) struct QueryResult {
     pub query: Vec<String>,
     /// Stacks the model carries (same shape as the full digest) — copied
     /// verbatim from the model, so a per-query consumer never has to fetch the
@@ -230,7 +223,7 @@ pub struct QueryResult {
 /// concern's concepts only. The `label` joins the concern's concept tokens
 /// (asc) with '+', so a reader names it without re-deriving the grouping.
 #[derive(Serialize)]
-pub struct ConcernD {
+pub(crate) struct ConcernD {
     /// The concern's concept tokens (sorted asc), joined with '+'.
     pub label: String,
     /// The query concepts in this concern (sorted asc — the grouping is set
@@ -259,7 +252,7 @@ pub struct ConcernD {
 /// precedent). Pure serde data, mirrored by the consumer contract in
 /// mustard-core (`domain::scan::DigestQuery`).
 #[derive(Serialize)]
-pub struct MatchReport {
+pub(crate) struct MatchReport {
     pub matched: usize,
     pub total: usize,
     pub reason: String,
@@ -797,7 +790,7 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
         top_fan_in,
     };
 
-    let terms = build_terms(c, model);
+    let terms = build_terms(c);
 
     CapabilityDigest { root: model.root.clone(), languages, frameworks, detected_stacks, projects, roles, roles_omitted, slices, shared_contracts, graph, terms }
 }
@@ -939,39 +932,13 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
 /// therefore who survives the MAX_TERMS cap) follows the kind-class-weighted
 /// rank — type-name vocabulary outranks a member flood — while `count` stays
 /// the demoted occurrence count.
-fn build_terms(c: &Corpus, model: &ProjectModel) -> Vec<TermD> {
+fn build_terms(c: &Corpus) -> Vec<TermD> {
     let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
     let (no_tokens, no_imports) = (BTreeSet::new(), BTreeSet::new());
     // Corpus size for the specificity IDF: the total number of indexed modules,
     // the same denominator the anchor ranking uses (`query`'s `n_docs`).
     let n_docs = c.doc_len.len();
 
-    // Attach each declaration's `purpose` to its name-token terms for the
-    // PUBLISHED catalog view (`TermD.purpose`) — display metadata so a consumer
-    // browsing the digest sees what a term's declarations do. The FIRST non-empty
-    // purpose for each term wins (BTreeMap over modules is deterministic).
-    //
-    // NOTE: this is display metadata, NOT a search path. The `query` anchor
-    // pipeline never reads `purpose`; recall over purpose text is the dedicated
-    // `purpose_search` command (an UNCAPPED purpose→file index over the model,
-    // so a rare method name truncated out of the term cap is still found).
-    let mut term_purpose: BTreeMap<String, String> = BTreeMap::new();
-    for m in &model.modules {
-        for d in &m.declarations {
-            let Some(ref p) = d.purpose else { continue };
-            if p.is_empty() { continue }
-            // Map each token of the declaration name → the purpose string.
-            // First non-empty purpose for that token wins.
-            for tok in tokenize(&d.name) {
-                term_purpose.entry(tok).or_insert_with(|| p.clone());
-            }
-            // Also index the concatenated ident (mirrors the `ident` bump in corpus()).
-            let ident: String = d.name.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>().to_lowercase();
-            if ident.len() >= 3 {
-                term_purpose.entry(ident).or_insert_with(|| p.clone());
-            }
-        }
-    }
 
     let mut terms: Vec<(u64, TermD)> = c
         .postings
@@ -1007,8 +974,7 @@ fn build_terms(c: &Corpus, model: &ProjectModel) -> Vec<TermD> {
                 })
                 .collect();
             let samples = crate::rank::select_samples(&cands, MAX_TERM_SAMPLES);
-            let purpose = term_purpose.get(term.as_str()).cloned();
-            (rank_key, TermD { term: term.clone(), count, specificity_x1024, samples, purpose })
+            (rank_key, TermD { term: term.clone(), count, specificity_x1024, samples })
         })
         .collect();
     terms.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.count.cmp(&a.1.count)).then(a.1.term.cmp(&b.1.term)));

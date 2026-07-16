@@ -78,7 +78,7 @@ pub struct MemoryMatch {
 /// semantic precision pass (the Haiku judge) runs one layer up, over this
 /// ranked shortlist — never in this LLM-free, deterministic core.
 #[must_use]
-pub fn match_spec_memory(
+pub(crate) fn match_spec_memory(
     memory_dir: &Path,
     intent: &str,
     max: usize,
@@ -277,7 +277,7 @@ fn description_stems(text: &str) -> Vec<String> {
 /// - `Some(vec)` — the gate ran and approved exactly these (possibly **zero**)
 ///   names. `Some(empty)` is "none relevant" → inject NO memory, NOT a fallback.
 #[must_use]
-pub fn read_approved_memory_names(spec_dir: &Path) -> Option<Vec<String>> {
+pub(crate) fn read_approved_memory_names(spec_dir: &Path) -> Option<Vec<String>> {
     let text = fs::read_to_string(spec_dir.join(".memory-approved")).ok()?;
     let mut out: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -301,7 +301,7 @@ pub fn read_approved_memory_names(spec_dir: &Path) -> Option<Vec<String>> {
 /// whitespace, and an `_`-prefix are tolerated/skipped; an unknown or unreadable
 /// name is silently dropped (fail-open — a stale approved name never blocks).
 #[must_use]
-pub fn select_spec_memory_by_names(
+pub(crate) fn select_spec_memory_by_names(
     memory_dir: &Path,
     names: &[String],
     with_summary: bool,
@@ -367,7 +367,7 @@ pub fn resolve_spec_memory(spec_dir: &Path, intent: &str, with_summary: bool) ->
 /// Stems shorter than 3 chars are dropped (they match too broadly). The result
 /// is deduplicated.
 #[must_use]
-pub fn name_stems(name: &str) -> Vec<String> {
+pub(crate) fn name_stems(name: &str) -> Vec<String> {
     let mut stems: Vec<String> = Vec::new();
     let push = |s: String, stems: &mut Vec<String>| {
         if s.len() >= 3 && !stems.contains(&s) {
@@ -406,7 +406,7 @@ pub fn name_stems(name: &str) -> Vec<String> {
 /// chars — the inline summary for a memory entry. Shared so both call sites
 /// render identical summaries.
 #[must_use]
-pub fn extract_memory_summary(text: &str) -> String {
+pub(crate) fn extract_memory_summary(text: &str) -> String {
     let mut in_fm = false;
     for line in text.lines() {
         let trimmed = line.trim();
@@ -449,7 +449,7 @@ pub fn render_spec_memory_block(matches: &[MemoryMatch]) -> String {
 /// Single owner of the `regression.toml` walk that `agent_prompt_render` and
 /// `subagent_inject` previously duplicated verbatim.
 #[must_use]
-pub fn vocab_layer_terms(project: &Path) -> (Vec<String>, Vec<String>) {
+pub(crate) fn vocab_layer_terms(project: &Path) -> (Vec<String>, Vec<String>) {
     use mustard_core::domain::vocabulary::{Layer as VLayer, VocabularyDoc};
     let toml_path = project.join(".claude").join("vocab").join("regression.toml");
     let (mut semantic, mut pattern) = match VocabularyDoc::load_from_file(&toml_path) {

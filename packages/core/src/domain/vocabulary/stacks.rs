@@ -1,7 +1,6 @@
 //! `stacks` — registry of stack definitions + the public detection contract.
 //!
-//! Where [`super::frameworks`] answers *"which framework signals does this
-//! file contain?"*, this module owns both the data the stack-inference engine
+//! This module owns both the data the stack-inference engine
 //! consumes — a TOML registry of stack definitions ([`StackDef`]) and the
 //! serde contract a detection produces ([`StackDetection`]) — and the engine
 //! itself ([`infer_stacks`] / [`StackRegistry::infer`]).
@@ -22,16 +21,15 @@
 //!    Aho-Corasick wiring).
 //!
 //! Confidence is a deterministic function of how many signal *classes*
-//! converged (see [`CONFIDENCE_SCORING_VERSION`]), and every detection carries
-//! the concrete signals that fired, so the output is explainable.
+//! converged (see [`confidence_for`]), and every detection carries the
+//! concrete signals that fired, so the output is explainable.
 //!
 //! ## Built-in base + on-disk override
 //!
 //! The base registry is embedded via [`include_str!`] from `stacks.toml`, so
 //! inference works offline. A project may override it by dropping
 //! `.claude/vocab/stacks.toml`; when that file exists it **replaces** the
-//! built-in base wholesale — see [`StackRegistry::load`]. This mirrors the
-//! built-in-plus-override policy of [`super::frameworks::FrameworkVocabulary`].
+//! built-in base wholesale — see [`StackRegistry::load`].
 //!
 //! No stack name is hardcoded in logic: stacks are pure DATA, declared in the
 //! TOML (`[[stack]]` table array) and extended without recompiling.
@@ -165,7 +163,7 @@ impl StackRegistry {
     /// Load a *named* stack registry, preferring an on-disk override over the
     /// built-in base.
     ///
-    /// Resolution (mirrors [`super::frameworks::FrameworkVocabulary::load`]):
+    /// Resolution:
     /// 1. If `{project_root}/.claude/vocab/{name}.toml` exists and parses, it
     ///    **replaces** the built-in base wholesale and is used as-is.
     /// 2. Otherwise (file absent) the embedded built-in base is used — but
@@ -244,7 +242,7 @@ impl StackRegistry {
     ///
     /// The engine never reads stack names: `name` is copied verbatim from the
     /// registry into the detection. Confidence is a pure function of how many
-    /// classes converged — see [`CONFIDENCE_SCORING_VERSION`]. A stack with
+    /// classes converged — see [`confidence_for`]. A stack with
     /// zero matched classes is **not** reported (no invented detections).
     ///
     /// Output ordering is deterministic: confidence descending, registry
@@ -252,7 +250,7 @@ impl StackRegistry {
     /// carries the concrete signals that fired (`dep:`/`path:`/`code:`
     /// prefixed), in declaration order within each class.
     #[must_use]
-    pub fn infer(&self, deps: &[String], paths: &[String], contents: &[String]) -> Vec<StackDetection> {
+    pub(crate) fn infer(&self, deps: &[String], paths: &[String], contents: &[String]) -> Vec<StackDetection> {
         // One automaton across every stack's code signatures, keyed by the
         // stack's registry index. `NoTerms` (no stack declares signatures)
         // simply means the code class never fires — not an error.
@@ -345,12 +343,8 @@ impl StackRegistry {
 // Confidence scoring (versioned)
 // ---------------------------------------------------------------------------
 
-/// Version of the convergence-scoring table below. Bump when the thresholds
-/// change so downstream consumers can tell scores from different rules apart.
-pub const CONFIDENCE_SCORING_VERSION: u32 = 1;
-
 /// Confidence when exactly one signal class matched (low).
-pub const CONFIDENCE_ONE_CLASS: f32 = 0.35;
+pub(crate) const CONFIDENCE_ONE_CLASS: f32 = 0.35;
 /// Confidence when two signal classes converged (medium).
 pub const CONFIDENCE_TWO_CLASSES: f32 = 0.65;
 /// Confidence when all three signal classes converged (high).
@@ -414,28 +408,6 @@ fn marker_present(paths: &[String], marker: &str) -> bool {
 #[must_use]
 pub fn infer_stacks(deps: &[String], paths: &[String], contents: &[String]) -> Vec<StackDetection> {
     match StackRegistry::builtin() {
-        Ok(reg) => reg.infer(deps, paths, contents),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// Infer stacks honouring a project-local registry override. Resolves the
-/// registry via [`StackRegistry::load`]`(`[`DEFAULT_STACKS_NAME`]`, root)` so
-/// a `.claude/vocab/stacks.toml` under `root` **replaces** the built-in base,
-/// while a project with no override falls back to it.
-///
-/// The override-aware sibling of [`infer_stacks`], mirroring
-/// [`super::frameworks::detect_framework_signals_with`]. A registry that is
-/// absent (non-default resolution) or fails to parse degrades to an empty
-/// detection list — never panics, never invents a detection.
-#[must_use]
-pub fn infer_stacks_with(
-    root: &Path,
-    deps: &[String],
-    paths: &[String],
-    contents: &[String],
-) -> Vec<StackDetection> {
-    match StackRegistry::load(DEFAULT_STACKS_NAME, root) {
         Ok(reg) => reg.infer(deps, paths, contents),
         Err(_) => Vec::new(),
     }
@@ -731,41 +703,6 @@ code_signatures = ["use BetaFacade"]
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "laravel");
         assert_eq!(out[0].confidence, CONFIDENCE_ONE_CLASS);
-    }
-
-    #[test]
-    fn infer_stacks_with_degrades_to_empty_on_malformed_registry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".claude").join("vocab");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("stacks.toml"), "this is = = not toml").unwrap();
-        // A registry that cannot be built yields no detections — and no panic.
-        let out = infer_stacks_with(
-            tmp.path(),
-            &strings(&["laravel/framework"]),
-            &strings(&["artisan"]),
-            &strings(&["Schema::create("]),
-        );
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn infer_stacks_with_honours_on_disk_override() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".claude").join("vocab");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("stacks.toml"),
-            "[[stack]]\nname = \"bespoke\"\nmanifest_deps = [\"bespoke-runtime\"]\n",
-        )
-        .unwrap();
-        // The override IS respected: its stack detects...
-        let custom = infer_stacks_with(tmp.path(), &strings(&["bespoke-runtime"]), &[], &[]);
-        assert_eq!(custom.len(), 1);
-        assert_eq!(custom[0].name, "bespoke");
-        // ...and the built-in base is fully replaced: seed deps no longer match.
-        let builtin = infer_stacks_with(tmp.path(), &strings(&["laravel/framework"]), &[], &[]);
-        assert!(builtin.is_empty());
     }
 
     #[test]

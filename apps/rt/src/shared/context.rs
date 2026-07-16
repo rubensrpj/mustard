@@ -8,7 +8,81 @@
 use mustard_core::io::fs;
 use mustard_core::io::workspace::{workspace_root, WorkspaceError};
 use mustard_core::ClaudePaths;
+use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
+
+/// A cheap fingerprint of `<root>/mustard.json` — `(mtime, len)`, or `None` when
+/// the file is absent / unstat-able. A `stat` is far cheaper than the open + read
+/// + JSON parse it lets a cache hit skip.
+fn mustard_json_fingerprint(root: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(root.join("mustard.json")).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Process-wide cache of [`ProjectConfig`] keyed by `(root, mustard.json
+/// fingerprint)`.
+///
+/// Every gate in one `PreToolUse(Write|Edit)` dispatch independently needs the
+/// project config (size / close / boundary / work-branch), so before this seam a
+/// single dispatch re-read and re-parsed `mustard.json` 3-4 times. This collapses
+/// them to ONE read+parse per file version: the first caller loads and stores, the
+/// rest clone the cached value. Mirrors the process-wide, path-keyed memo
+/// [`mustard_core::io::workspace::workspace_root`] already uses — the same
+/// one-shot-process lifetime, so "process-wide" is "per dispatch" in production.
+/// The `(mtime, len)` fingerprint re-loads a rewritten config, so an in-place
+/// edit is never served stale (matters only to tests that mutate `mustard.json`).
+fn config_cache() -> &'static Mutex<HashMap<(PathBuf, Option<(SystemTime, u64)>), ProjectConfig>> {
+    static CACHE: OnceLock<Mutex<HashMap<(PathBuf, Option<(SystemTime, u64)>), ProjectConfig>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Load `<root>/mustard.json` through the process-wide [`config_cache`], returning
+/// an owned [`ProjectConfig`] — a drop-in for [`ProjectConfig::load`] that skips
+/// the disk read+parse when the same file version was already loaded this process.
+/// Fail-open (defaults on any IO/parse error), inherited from the underlying load.
+#[must_use]
+pub fn project_config_cached(root: &Path) -> ProjectConfig {
+    let key = (root.to_path_buf(), mustard_json_fingerprint(root));
+    if let Ok(cache) = config_cache().lock() {
+        if let Some(hit) = cache.get(&key) {
+            return hit.clone();
+        }
+    }
+    let config = ProjectConfig::load(root);
+    if let Ok(mut cache) = config_cache().lock() {
+        cache.insert(key, config.clone());
+    }
+    config
+}
+
+/// Per-`project` memo of [`current_spec`] for the life of the process (one hook
+/// dispatch). Its sources (`MUSTARD_ACTIVE_SPEC`, the legacy `.pipeline-states/`
+/// scan) do not change mid-process, so no invalidation is needed.
+fn active_spec_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Per-`(project, session)` memo of [`spec_for_session`]; evicted by
+/// [`invalidate_session_spec`] whenever the `active-spec` marker is (re)written or
+/// removed, so a resolve after a binding change reflects disk.
+fn session_spec_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop the memoised [`spec_for_session`] answer for one `(project, session)`
+/// after its marker changes, so the next resolve re-reads disk. Only the affected
+/// key is evicted; a poisoned lock is skipped (fail-open).
+fn invalidate_session_spec(project_dir_path: &str, session_id: &str) {
+    if let Ok(mut cache) = session_spec_cache().lock() {
+        cache.remove(&(project_dir_path.to_string(), session_id.to_string()));
+    }
+}
 
 /// Resolve the Mustard workspace root by ancestor walk, **failing strictly**
 /// on missing anchor.
@@ -162,6 +236,23 @@ fn newest_session_dir(session_dir: &Path) -> Option<String> {
 /// next strategy instead of erroring.
 #[must_use]
 pub fn current_spec(project_dir_path: &str) -> Option<String> {
+    // Per-dispatch memo (process-wide == one hook invocation): the env override
+    // and legacy scan cannot change mid-process, so a cache hit is authoritative.
+    if let Ok(cache) = active_spec_cache().lock() {
+        if let Some(hit) = cache.get(project_dir_path) {
+            return hit.clone();
+        }
+    }
+    let resolved = current_spec_uncached(project_dir_path);
+    if let Ok(mut cache) = active_spec_cache().lock() {
+        cache.insert(project_dir_path.to_string(), resolved.clone());
+    }
+    resolved
+}
+
+/// Uncached body behind [`current_spec`]'s per-process memo — the real
+/// env-then-`.pipeline-states/` resolution described on the wrapper above.
+fn current_spec_uncached(project_dir_path: &str) -> Option<String> {
     // 1. Explicit env override.
     if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC") {
         if !s.is_empty() {
@@ -209,6 +300,23 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 /// empty/`"unknown"` session id, or any IO error) — never panics.
 #[must_use]
 pub fn spec_for_session(project_dir_path: &str, session_id: &str) -> Option<String> {
+    // Per-dispatch memo of the marker read; evicted on any binding change via
+    // `invalidate_session_spec` (see `bind_session_spec` / `unbind_session_spec`).
+    let cache_key = (project_dir_path.to_string(), session_id.to_string());
+    if let Ok(cache) = session_spec_cache().lock() {
+        if let Some(hit) = cache.get(&cache_key) {
+            return hit.clone();
+        }
+    }
+    let resolved = spec_for_session_uncached(project_dir_path, session_id);
+    if let Ok(mut cache) = session_spec_cache().lock() {
+        cache.insert(cache_key, resolved.clone());
+    }
+    resolved
+}
+
+/// Uncached body behind [`spec_for_session`]'s per-process memo.
+fn spec_for_session_uncached(project_dir_path: &str, session_id: &str) -> Option<String> {
     if session_id.is_empty() || session_id == "unknown" {
         return None;
     }
@@ -291,6 +399,9 @@ pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
     };
     let _ = fs::create_dir_all(parent);
     let _ = fs::write_atomic(&marker, spec.as_bytes());
+    // The marker changed — evict the stale spec_for_session memo so the next
+    // resolve reflects the new binding.
+    invalidate_session_spec(project_dir_path, session_id);
 }
 
 /// Remove the session→spec binding, best-effort.
@@ -308,6 +419,7 @@ pub fn unbind_session_spec(project_dir: &str, session_id: &str) {
         return;
     };
     let _ = fs::remove_file(&marker);
+    invalidate_session_spec(project_dir, session_id);
 }
 
 /// Compose the `active-spec` marker path:
@@ -416,7 +528,7 @@ fn pending_branch_marker(project_dir_path: &str, session_id: &str) -> Option<Pat
 
 /// Filename of the per-spec **user-approval** marker (see
 /// [`approval_marker_path`]).
-pub const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";
+pub(crate) const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";
 
 /// Compose the per-spec user-approval marker path:
 /// `<project>/.claude/spec/<spec>/.approved-by-user`.
@@ -439,6 +551,31 @@ pub fn approval_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBu
     )
 }
 
+/// Filename of the per-spec **clarification** marker (see
+/// [`clarified_marker_path`]).
+pub(crate) const CLARIFIED_MARKER: &str = ".clarified";
+
+/// Compose the per-spec clarification marker path:
+/// `<project>/.claude/spec/<spec>/.clarified`.
+///
+/// The clarify-gate sibling of [`approval_marker_path`], with the same
+/// single-home discipline so its producer and consumer cannot drift: the
+/// glossary grill (`grill-capture`, which WRITES it when a Full spec's ANALYZE
+/// clarification loop completes) and `scope_guard` (which REQUIRES it before an
+/// unapproved Full spec still in PLAN may touch production code — clarify
+/// precedes approval). `None` on an I1 guard rejection of the project root or an
+/// invalid spec name.
+#[must_use]
+pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .and_then(|p| p.for_spec(spec))
+            .ok()?
+            .dir()
+            .join(CLARIFIED_MARKER),
+    )
+}
+
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the
 /// harness sets on every wave dispatch and that `route` already stamps on each
 /// emitted event. Co-located with [`current_spec`] so a hook (e.g. the
@@ -456,6 +593,29 @@ pub fn current_wave() -> Option<i64> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // -----------------------------------------------------------------------
+    // clarified_marker_path — shape (F6 clarify gate)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clarified_marker_path_has_expected_shape() {
+        let dir = tempdir().unwrap();
+        let p = clarified_marker_path(dir.path().to_str().unwrap(), "my-spec")
+            .expect("a valid project + spec name resolves a marker path");
+        // Ends in the marker filename and lives under the spec's own dir —
+        // beside where `approval_marker_path` drops `.approved-by-user`.
+        assert!(p.ends_with(CLARIFIED_MARKER));
+        let shown = p.to_string_lossy().replace('\\', "/");
+        assert!(
+            shown.contains("/.claude/spec/my-spec/"),
+            "marker must live under the spec dir, got {shown}"
+        );
+        // Sibling of the approval marker in the SAME directory.
+        let approval =
+            approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
+        assert_eq!(p.parent(), approval.parent());
+    }
 
     // -----------------------------------------------------------------------
     // current_spec — filesystem branch (no env mutation needed)

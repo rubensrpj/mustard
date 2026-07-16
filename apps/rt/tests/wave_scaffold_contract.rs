@@ -10,7 +10,7 @@
 //!
 //! Contract under test:
 //! - long help declares the REQUIRED per-wave `n`/`role` fields, carries the
-//!   minimal plan example, and routes to `plan-from-spec` / `plan-materialize`;
+//!   minimal plan example, and routes to `plan-materialize`;
 //! - an unreadable/unparseable plan exits 2 with an `error` field on stdout
 //!   (+ an actionable `hint` for the missing-field case), aligned with the
 //!   pre-existing EmptyPlan arm;
@@ -68,7 +68,6 @@ fn wave_scaffold_long_help_declares_required_n_and_role_with_example() {
     assert!(help.contains("\"total_waves\": 2"), "example total missing:\n{help}");
 
     // Canonical producers are routed.
-    assert!(help.contains("plan-from-spec"), "skeleton producer missing:\n{help}");
     assert!(help.contains("plan-materialize"), "pipeline entry missing:\n{help}");
 
     // The misleading claim that EVERY field is defaulted is gone; only the
@@ -117,7 +116,7 @@ fn wave_scaffold_plan_missing_n_reports_error_hint_and_exits_2() {
     let hint = json["hint"].as_str().expect("hint field for missing-field errors");
     assert!(hint.contains("\"n\""), "hint names n: {hint}");
     assert!(hint.contains("\"role\""), "hint names role: {hint}");
-    assert!(hint.contains("plan-from-spec"), "hint routes to the producer: {hint}");
+    assert!(hint.contains("plan-materialize"), "hint routes to the producer: {hint}");
     assert!(json["created_files"].as_array().expect("array").is_empty());
     // stderr keeps the full prefixed message.
     let stderr = String::from_utf8_lossy(&out.stderr);

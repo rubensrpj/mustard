@@ -341,6 +341,26 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("checklist.first_task", Locale::PtBr) => "T1 — primeira tarefa rastreável.",
         ("checklist.first_task", Locale::EnUs) => "T1 — first trackable task.",
 
+        // EARS acceptance-criteria SKELETONS seeded by `spec_draft::build_input`.
+        // The `<…>` angle-bracket markers are deliberate placeholders the
+        // orchestrator MUST replace with the concrete behaviour — a draft is born
+        // demanding specificity, never a lone `cargo build` rubber stamp. The
+        // `when`/`then` glue is added by `capability::scenario_statement`.
+        ("ac.skeleton.when_primary", Locale::PtBr) => "<o novo comportamento é acionado>",
+        ("ac.skeleton.when_primary", Locale::EnUs) => "<the new behaviour is invoked>",
+        ("ac.skeleton.then_primary", Locale::PtBr) => "<o resultado observável esperado se mantém>",
+        ("ac.skeleton.then_primary", Locale::EnUs) => "<the expected observable outcome holds>",
+        ("ac.skeleton.when_secondary", Locale::PtBr) => "<um caminho de erro ou de borda ocorre>",
+        ("ac.skeleton.when_secondary", Locale::EnUs) => "<an error or edge path occurs>",
+        ("ac.skeleton.then_secondary", Locale::PtBr) => "<o sistema responde conforme especificado>",
+        ("ac.skeleton.then_secondary", Locale::EnUs) => "<the system responds as specified>",
+        ("ac.skeleton.command", Locale::PtBr) => "<comando executável que verifica este critério>",
+        ("ac.skeleton.command", Locale::EnUs) => "<runnable command that verifies this criterion>",
+        // Trailing build-green SAFETY criterion — the ONE tautology the linter
+        // tolerates (last AC), the compile-floor beneath the behaviour ACs above.
+        ("ac.safety.build_green", Locale::PtBr) => "o build e os testes do projeto passam verdes",
+        ("ac.safety.build_green", Locale::EnUs) => "the project build and tests pass green",
+
         // Scan-digest enrichment block injected into the Context section by
         // `spec_draft::context_enrichment` — the anchors/precedent the digest
         // already found, so the drafted Context is not an empty placeholder.
@@ -656,9 +676,8 @@ pub type SupportedLocale = Locale;
 ///
 /// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
 /// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
-/// etc. Use [`UserLocale::to_supported`] to map to a [`SupportedLocale`] for
-/// banner rendering, falling back to the default when the locale is not in the
-/// catalogue.
+/// etc. Parse the raw tag into a [`SupportedLocale`] when a banner needs to
+/// render, falling back to the default when the locale is not in the catalogue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserLocale {
     /// The raw BCP-47 tag as supplied by the user.
@@ -672,13 +691,6 @@ impl UserLocale {
     #[must_use]
     pub fn new(raw: impl Into<String>) -> Self {
         Self { raw: raw.into() }
-    }
-
-    /// Map to the nearest [`SupportedLocale`] catalogue entry, or
-    /// `None` when the locale is not in the Mustard catalogue.
-    #[must_use]
-    pub fn to_supported(&self) -> Option<SupportedLocale> {
-        self.raw.parse::<Locale>().ok()
     }
 }
 

@@ -25,7 +25,7 @@
 //! always serialisable. Callers can therefore use the result without a Result
 //! wrapper.
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 use super::model::{ContextCostFrame, SavingsRecord, SavingsSource, SpanRecord};
 
@@ -172,12 +172,6 @@ fn savings_source_string(source: SavingsSource) -> &'static str {
     source.as_str()
 }
 
-
-// Avoid the `unused` lint when callers pull only some of the helpers.
-#[allow(dead_code)]
-fn _ensure_map_constructor() -> Map<String, Value> {
-    Map::new()
-}
 
 #[cfg(test)]
 mod tests {

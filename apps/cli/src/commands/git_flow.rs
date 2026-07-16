@@ -19,7 +19,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use dialoguer::theme::ColorfulTheme;
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Input, Select};
 use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale, Tone};
 
 /// Facts probed from the repository, all fail-open.
@@ -259,33 +259,6 @@ pub fn configure(project_path: &Path, interactive: bool) -> Result<()> {
     config.write(project_path)?;
     println!("  created mustard.json");
     Ok(())
-}
-
-/// Interactively review + optionally reconfigure an existing config — the
-/// `Reconfigure git flow?` confirm used by the `config` subcommand.
-///
-/// # Errors
-/// Propagates the confirmation read failure.
-pub fn confirm_reconfigure(existing: &ProjectConfig) -> Result<bool> {
-    println!("\n  Current git flow:");
-    if existing.git.flow.is_empty() {
-        println!("    (no flow configured)");
-    } else {
-        for (from, to) in &existing.git.flow {
-            println!("    {from} -> {to}");
-        }
-    }
-    println!("    provider: {}", existing.git.provider);
-    println!("    submodules: {}", existing.git.submodules);
-
-    if !console_is_tty() {
-        return Ok(false);
-    }
-    Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Reconfigure git flow?")
-        .default(false)
-        .interact()
-        .context("reading reconfigure confirmation")
 }
 
 #[cfg(test)]

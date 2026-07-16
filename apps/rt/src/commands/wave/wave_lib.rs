@@ -105,7 +105,7 @@ pub fn load_role_patterns(project_root: &Path) -> Vec<RolePattern> {
 /// bucket scheduled first (shared foundations others build on). This is an
 /// opinionated DEFAULT, not a universal law — `mustard.json#waveLayerOrder`
 /// overrides it so a project's own architecture defines the layer direction.
-pub const DEFAULT_WAVE_LAYER_ORDER: &[&str] = &["lib", "schema", "api", "ui", "test"];
+pub(crate) const DEFAULT_WAVE_LAYER_ORDER: &[&str] = &["lib", "schema", "api", "ui", "test"];
 
 /// Load `mustard.json#waveLayerOrder`, falling back to
 /// [`DEFAULT_WAVE_LAYER_ORDER`]. Blank entries are trimmed out; an empty/absent

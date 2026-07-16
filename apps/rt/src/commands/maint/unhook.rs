@@ -39,7 +39,7 @@ pub struct UnhookOpts {
 
 /// One per `.claude/` directory the sweep touched.
 #[derive(Serialize)]
-pub struct DisabledEntry {
+pub(crate) struct DisabledEntry {
     /// The settings.json path we targeted.
     pub settings_path: String,
     /// The disabled path (`Some` only when state == "disabled").
@@ -55,7 +55,7 @@ pub struct DisabledEntry {
 
 /// The full machine-readable report.
 #[derive(Serialize)]
-pub struct UnhookReport {
+pub(crate) struct UnhookReport {
     pub scope: String,
     pub timestamp: String,
     pub entries: Vec<DisabledEntry>,
@@ -264,6 +264,14 @@ pub fn run(opts: UnhookOpts) {
         "{}",
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
     );
+
+    // Mustard 2.0 ships as a Claude Code plugin; the native toggle is the real
+    // kill-switch now. This settings.json rename stays as the legacy fallback
+    // (it also wipes volatile state). Guidance on stderr keeps stdout pure JSON.
+    eprintln!();
+    eprintln!("Mustard now ships as a Claude Code plugin. Primary way to turn it OFF: claude plugin disable mustard");
+    eprintln!("The settings.json rename above is the legacy fallback; it also wiped volatile state (.agent-state/, .cluster-cache.json, .worktrees/).");
+    eprintln!("Re-enable with: claude plugin enable mustard   (or restore this snapshot: mustard-rt run rehook).");
 }
 
 // ---------------------------------------------------------------------------

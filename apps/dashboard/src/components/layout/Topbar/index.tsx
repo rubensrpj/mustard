@@ -18,7 +18,6 @@ function pathLabel(pathname: string, t: (key: string, fallback?: string) => stri
   if (pathname === "/economy") return t("sidebar.economy");
   if (pathname === "/knowledge") return t("sidebar.knowledge");
   if (pathname === "/settings") return t("sidebar.settings");
-  if (pathname === "/preferences") return t("sidebar.preferences");
   if (pathname === "/activity") return t("sidebar.activity");
   if (pathname === "/telemetry") return t("sidebar.telemetry");
   if (pathname === "/quality") return t("sidebar.quality");

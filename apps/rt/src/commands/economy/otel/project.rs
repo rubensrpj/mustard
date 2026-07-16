@@ -12,7 +12,7 @@ use serde_json::Value;
 /// its containing minute, in ms epoch. Falls back to `now_ms` floored when the
 /// value is missing or non-finite — matching the JS `bucketMs`.
 #[must_use]
-pub fn bucket_ms(time_unix_nano: Option<&Value>, now_ms: i64) -> i64 {
+pub(crate) fn bucket_ms(time_unix_nano: Option<&Value>, now_ms: i64) -> i64 {
     let nanos = time_unix_nano.and_then(|v| match v {
         Value::Number(n) => n.as_f64(),
         // protobuf JSON encodes 64-bit ints as strings.
@@ -47,7 +47,7 @@ fn attr_value(value: &Value) -> Option<String> {
 
 /// Flatten an OTLP `attributes[]` array into a `{key: stringValue}` map.
 #[must_use]
-pub fn flatten_attrs(attrs: Option<&Value>) -> serde_json::Map<String, Value> {
+pub(crate) fn flatten_attrs(attrs: Option<&Value>) -> serde_json::Map<String, Value> {
     let mut out = serde_json::Map::new();
     let Some(Value::Array(list)) = attrs else {
         return out;
@@ -66,7 +66,7 @@ pub fn flatten_attrs(attrs: Option<&Value>) -> serde_json::Map<String, Value> {
 
 /// Extract the numeric value from an OTLP datapoint (`asDouble` or `asInt`).
 #[must_use]
-pub fn point_value(dp: &Value) -> f64 {
+pub(crate) fn point_value(dp: &Value) -> f64 {
     if let Some(d) = dp.get("asDouble").and_then(Value::as_f64) {
         return d;
     }

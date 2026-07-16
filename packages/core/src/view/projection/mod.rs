@@ -33,7 +33,10 @@ use crate::io::events::{Event, EventReader};
 use crate::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use crate::domain::model::view::Phase;
 use serde_json::Value;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// Convert one NDJSON [`Event`] to a [`HarnessEvent`] for use by projections.
 ///
@@ -47,7 +50,7 @@ use std::path::Path;
 /// can fold over the same canonical event slice without duplicating the
 /// converter.
 #[must_use]
-pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
+pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
     harness_from_raw(&e.raw, e.payload)
 }
 
@@ -61,7 +64,7 @@ pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// remains the entry point for records streamed off disk via [`EventReader`].
 /// Both share one field-extraction body so the two paths can never drift.
 #[must_use]
-pub fn value_to_harness(record: &Value) -> HarnessEvent {
+pub(crate) fn value_to_harness(record: &Value) -> HarnessEvent {
     let payload = record.get("payload").cloned().unwrap_or(Value::Null);
     harness_from_raw(record, payload)
 }
@@ -127,7 +130,33 @@ pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {
         return Vec::new();
     };
     let spec_root = paths.spec_dir();
-    let Ok(spec_entries) = std::fs::read_dir(&spec_root) else {
+    let freshness = workspace_events_freshness(&spec_root);
+    let key = project_root.to_path_buf();
+
+    // Fast path - a prior view in this process already parsed this exact shard
+    // set; reuse its slice instead of re-walking + re-parsing every NDJSON file.
+    if let Ok(cache) = workspace_events_cache().lock() {
+        if let Some((cached, events)) = cache.get(&key) {
+            if *cached == freshness {
+                return events.clone();
+            }
+        }
+    }
+
+    let events = walk_workspace_events(&spec_root);
+
+    if let Ok(mut cache) = workspace_events_cache().lock() {
+        cache.insert(key, (freshness, events.clone()));
+    }
+    events
+}
+
+/// The disk walk backing [`read_workspace_events`]: fold every
+/// `<spec>/.events/*.ndjson` shard into one slice, in `read_dir` order. Split out
+/// so the public entry point can serve it from [`workspace_events_cache`] while
+/// the shard set is unchanged. Fail-open: unreadable dirs / files are skipped.
+fn walk_workspace_events(spec_root: &Path) -> Vec<HarnessEvent> {
+    let Ok(spec_entries) = std::fs::read_dir(spec_root) else {
         return Vec::new();
     };
 
@@ -154,6 +183,59 @@ pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {
     }
 
     events
+}
+
+/// Freshness fingerprint of the workspace event shards: the newest mtime across
+/// every `<spec>/.events/*.ndjson` plus their total byte length. A pure stat walk
+/// - no shard is opened or parsed - so the many projection views rendered in one
+/// process pay the walk + parse ONCE and reuse the cached slice. `total_len`
+/// catches a shard truncated or removed without advancing the max mtime.
+fn workspace_events_freshness(spec_root: &Path) -> WorkspaceEventsFreshness {
+    let Ok(spec_entries) = std::fs::read_dir(spec_root) else {
+        return (None, 0);
+    };
+    let mut newest: Option<SystemTime> = None;
+    let mut total_len: u64 = 0;
+    for spec_entry in spec_entries.flatten() {
+        let events_dir = spec_entry.path().join(".events");
+        let Ok(ndjson_entries) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for ndjson_entry in ndjson_entries.flatten() {
+            let p = ndjson_entry.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
+                continue;
+            }
+            let Ok(meta) = std::fs::metadata(&p) else {
+                continue;
+            };
+            total_len = total_len.saturating_add(meta.len());
+            if let Ok(m) = meta.modified() {
+                if newest.is_none_or(|n| m > n) {
+                    newest = Some(m);
+                }
+            }
+        }
+    }
+    (newest, total_len)
+}
+
+/// `(newest mtime, total byte length)` - the discriminator
+/// [`workspace_events_freshness`] returns and [`workspace_events_cache`] validates
+/// its cached slice against.
+type WorkspaceEventsFreshness = (Option<SystemTime>, u64);
+
+/// Process-wide memo of [`read_workspace_events`] keyed by project root, valid
+/// while the shard [`WorkspaceEventsFreshness`] is unchanged. `read_workspace_events`
+/// is the O(views x events) hot spot of the one-shot `apps/rt` view renderers
+/// (`event_projections` folds several views per invocation); the dashboard feeds
+/// the projections from its own parsed-events cache and never reaches this walker,
+/// so a process-lived cache here is bounded by the CLI's short life.
+fn workspace_events_cache(
+) -> &'static Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Tiny helper used by multiple projections — extract the canonical "to" phase

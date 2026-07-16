@@ -31,14 +31,6 @@
 //!   (`pipeline_events`) is a separate concern handled by the event router for
 //!   `pipeline.*` prefixed events only.
 //!
-//! ## Economy emission (T5.8)
-//!
-//! After every successful write the sink emits a
-//! `pipeline.economy.event.written { duration_ns, bytes_written }` event into
-//! the same NDJSON file, so the dashboard
-//! `/economia` page can prove the new hot path beats the SQLite baseline in
-//! real numbers (~30k ns measured vs ~100k-500k ns).
-//!
 //! ## Fail-open
 //!
 //! Every IO error degrades to a silent no-op — the caller's tool execution
@@ -53,11 +45,10 @@ use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Instant;
 
 /// Detect whether `project` resolves to the `mustard-rt` crate's own source
 /// directory — set by `cargo test` via `CARGO_MANIFEST_DIR`. Treating that
@@ -80,7 +71,7 @@ fn project_is_own_crate(project: &Path) -> bool {
 /// Falls back to `.claude/.session/{slug}/.events/` when `spec` is empty — the
 /// W5.T5.4 sessions sidebar consumes that directory.
 #[must_use]
-pub fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
+pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
     if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
         // Prefer the typed ClaudePaths accessor for the canonical
         // `<project>/.claude/spec/<name>/[<wave>/].events/` layout. On I1
@@ -179,13 +170,11 @@ struct NdjsonRecord<'a> {
     duration_ms: Option<u64>,
 }
 
-/// Write one event to the NDJSON sink. The sink owns blob spill, the per-process
-/// file handle (re-opened with `O_APPEND`), and emits the economy event after
-/// the main write succeeds.
+/// Write one event to the NDJSON sink. The sink owns the per-process file
+/// handle (re-opened with `O_APPEND`).
 ///
-/// Returns `Ok(bytes_written)` on success — the caller is free to ignore it.
-/// Every error is converted to a `Ok(0)` via fail-open at the boundary in
-/// [`write_event`].
+/// Every error is converted to a silent no-op via fail-open at the boundary
+/// in [`write_event_with_ts`].
 ///
 /// `ts_override` lets the router preserve a pre-constructed event's `ts`
 /// (W6 follow-up: the SQLite-vs-NDJSON cascade revealed that
@@ -207,14 +196,9 @@ fn write_event_inner(
     parent_id: Option<i64>,
     payload: &Value,
     ts_override: Option<&str>,
-) -> std::io::Result<WriteOutcome> {
-    let start = Instant::now();
+) -> std::io::Result<()> {
     if project_is_own_crate(project) {
-        return Ok(WriteOutcome {
-            bytes_written: 0,
-            duration_ns: 0,
-            path: PathBuf::new(),
-        });
+        return Ok(());
     }
     let dir = event_dir(project, spec, wave_role, session_slug);
     fs::create_dir_all(&dir).map_err(std::io::Error::other)?;
@@ -256,7 +240,6 @@ fn write_event_inner(
 
     let mut line = serde_json::to_vec(&record)?;
     line.push(b'\n');
-    let bytes_written = line.len();
 
     {
         let mut f = std::fs::OpenOptions::new()
@@ -266,46 +249,17 @@ fn write_event_inner(
         f.write_all(&line)?;
     }
 
-    let duration_ns = start.elapsed().as_nanos() as u64;
-    Ok(WriteOutcome {
-        bytes_written,
-        duration_ns,
-        path,
-    })
-}
-
-/// Outcome of one successful event write. Returned for tests + the economy
-/// emitter; the hot path ignores it via `let _ =`.
-#[derive(Debug)]
-pub struct WriteOutcome {
-    /// Bytes appended to the NDJSON file (including the trailing `\n`).
-    pub bytes_written: usize,
-    /// Wall-clock duration of the write, in nanoseconds. The economy event
-    /// reports this for the `/economia` baseline-vs-post chart.
-    pub duration_ns: u64,
-    /// Absolute path of the NDJSON file that was appended to. Returned for
-    /// tests + future ad-hoc inspection (the production routing layer ignores
-    /// it — Clippy's `dead_code` linter still flags struct fields with no
-    /// read site so the field is annotated locally).
-    #[allow(dead_code)]
-    pub path: PathBuf,
+    Ok(())
 }
 
 /// Fail-open wrapper around [`write_event_inner`]. Any IO error degrades to a
 /// silent no-op — the caller's tool execution must never be blocked by a
 /// telemetry failure.
-///
-/// On success, an economy event `pipeline.economy.event.written` is appended
-/// to the same file (T5.8) — best-effort, never recursing. The economy event
-/// is always stamped with the wall-clock time of the write (it measures the
-/// write itself), regardless of `ts_override`.
-// Kept `pub` + `#[allow(dead_code)]` because the production callsite
-// (`route::emit`) routes through [`write_event_with_ts`] for the W6
-// ts-preservation fix, while the in-crate unit tests still call this
-// historical entry point directly. Clippy in `--bin` mode (the gate that
-// blocks PRs) doesn't see test code and would otherwise flag this as
-// unused.
-#[allow(dead_code, clippy::too_many_arguments)]
+// Test-only entry point: the production callsite (`route::emit`) routes
+// through [`write_event_with_ts`] for the W6 ts-preservation fix, so this
+// historical signature survives solely for the in-crate unit tests.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub fn write_event(
     project: &Path,
     spec: Option<&str>,
@@ -318,7 +272,7 @@ pub fn write_event(
     actor: Option<&str>,
     parent_id: Option<i64>,
     payload: &Value,
-) -> Option<WriteOutcome> {
+) -> Option<()> {
     write_event_with_ts(
         project, spec, wave_role, session_slug, event_name, kind, wave, session_id,
         actor, parent_id, payload, None,
@@ -345,31 +299,12 @@ pub fn write_event_with_ts(
     parent_id: Option<i64>,
     payload: &Value,
     ts_override: Option<&str>,
-) -> Option<WriteOutcome> {
-    let outcome = write_event_inner(
+) -> Option<()> {
+    write_event_inner(
         project, spec, wave_role, session_slug, event_name, kind, wave, session_id,
         actor, parent_id, payload, ts_override,
     )
-    .ok()?;
-
-    // T5.8: emit the economy event in-line. Skip recursion guard — the
-    // economy event payload is fixed-size + does not itself emit another.
-    // Always stamp the economy line with wall-clock time (`None` -> now): it
-    // measures the write event itself, not the original tool/agent call.
-    if event_name != "pipeline.economy.event.written" {
-        let economy_payload = json!({
-            "duration_ns": outcome.duration_ns,
-            "bytes_written": outcome.bytes_written,
-            "for_event": event_name,
-        });
-        let _ = write_event_inner(
-            project, spec, wave_role, session_slug,
-            "pipeline.economy.event.written", "other",
-            wave, session_id, actor, None, &economy_payload, None,
-        );
-    }
-
-    Some(outcome)
+    .ok()
 }
 
 
@@ -378,6 +313,8 @@ pub fn write_event_with_ts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::time::Instant;
     use tempfile::tempdir;
 
     #[test]
@@ -404,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn write_event_creates_ndjson_file_and_emits_economy() {
+    fn write_event_creates_ndjson_file() {
         let dir = tempdir().unwrap();
         let payload = json!({"tool": "Bash", "cmd": "ls"});
         let outcome = write_event(
@@ -414,20 +351,17 @@ mod tests {
         );
         assert!(outcome.is_some());
 
-        // Two lines should be present: the original + the economy event.
+        // Exactly one line: the event itself (the per-write economy echo was
+        // removed — it doubled every NDJSON file for a reader that never
+        // materialised).
         let events_dir = event_dir(dir.path(), Some("test-spec"), None, "s-1");
         let files: Vec<_> = std::fs::read_dir(&events_dir).unwrap().collect();
         assert_eq!(files.len(), 1, "exactly one NDJSON file");
         let path = files[0].as_ref().unwrap().path();
         let body = std::fs::read_to_string(&path).unwrap();
-        let line_count = body.lines().count();
-        assert_eq!(line_count, 2, "tool.use + economy event");
-
-        // Economy event must reference the original event.
-        let last: Value = serde_json::from_str(body.lines().last().unwrap()).unwrap();
-        assert_eq!(last["event"], "pipeline.economy.event.written");
-        assert_eq!(last["payload"]["for_event"], "tool.use");
-        assert!(last["payload"]["duration_ns"].as_u64().is_some());
+        assert_eq!(body.lines().count(), 1, "one line per write");
+        let first: Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(first["event"], "tool.use");
     }
 
     #[test]
@@ -497,9 +431,7 @@ mod tests {
     /// AC-W5-8 — hot-path latency smoke. Real benchmark target is < 50 µs on
     /// the SSD path the user dev'd against. CI / Windows file IO under
     /// virus-scan contention can spike to tens of ms per write, so the assert
-    /// bound here is a sanity ceiling (the order of magnitude). For the actual
-    /// economy comparison the dashboard reads the `pipeline.economy.event.written`
-    /// stream — see T5.8 wiring.
+    /// bound here is a sanity ceiling (the order of magnitude).
     #[test]
     fn event_writer_ndjson_hot_path() {
         let dir = tempdir().unwrap();
@@ -523,8 +455,7 @@ mod tests {
         let avg_us = start.elapsed().as_micros() / u128::from(n as u32);
         // Sanity ceiling — anything sub-millisecond proves the write path
         // doesn't do the SQLite open/INSERT/commit dance (~100-500 µs each).
-        // Windows with realtime AV scanning can balloon to tens of ms; the
-        // economy event already records the real per-write duration_ns, so the
+        // Windows with realtime AV scanning can balloon to tens of ms, so the
         // ceiling here only guards against pathological regressions
         // (e.g. accidental fsync, lock acquisition).
         let ceiling = if cfg!(windows) { 100_000 } else { 5_000 };

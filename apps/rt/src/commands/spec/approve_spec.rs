@@ -178,10 +178,63 @@ fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
 /// Didactic refusal surfaced as the report `error` when strict mode finds no
 /// user-approval marker. The flow relays `{ok:false,error}` straight to the user.
 const APPROVAL_REQUIRED_MSG: &str = "approval must come from the user — present \
-the plan and ask via AskUserQuestion; the user's own answer records the \
-.approved-by-user marker. approve-spec will not self-approve a Full plan (that \
-is what the field incident did). To temporarily relax, set \
+the plan in plan mode and let the user accept it (ExitPlanMode), which records \
+the .approved-by-user marker; when plan mode is unavailable, ask via \
+AskUserQuestion (fallback — the user's own answer records the same marker). \
+approve-spec will not self-approve a Full plan (that is what the field \
+incident did). To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off.";
+
+/// Didactic refusal surfaced as the report `error` when a Full plan is not yet
+/// clarified. Mirrors [`APPROVAL_REQUIRED_MSG`] — clarify precedes approval (F6).
+const CLARIFY_REQUIRED_MSG: &str = "a Full plan must be CLARIFIED before approval \
+— run the clarification finalize (`mustard-rt run grill-capture --finalize --spec \
+<spec>`) after the ANALYZE glossary grill to record the `<spec>/.clarified` \
+marker. The glossary grill is optional; finalize marks clarification complete \
+even with zero terms, so a complete-glossary spec is never deadlocked. \
+approve-spec will not approve an unclarified Full plan. To temporarily relax, set \
 MUSTARD_APPROVAL_MODE=warn or off.";
+
+/// `true` when `spec`'s `meta.json#scope` declares a Full-scope spec (starts with
+/// `full` after a case-insensitive trim — `"full"` or `"full (wave plan)"`). Only
+/// a Full plan carries the clarify gate; Light / task specs are never gated.
+/// Fail-open: an unreadable `meta.json` / absent scope returns `false` (not
+/// gated), the safe direction — the user-approval gate still applies to all.
+fn spec_is_full(root: &str, spec: &str) -> bool {
+    let Some(sp) = mustard_core::ClaudePaths::for_project(std::path::Path::new(root))
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+    else {
+        return false;
+    };
+    mustard_core::read_meta(&sp.meta_json_path())
+        .and_then(|m| m.scope)
+        .map(|s| s.trim().to_ascii_lowercase().starts_with("full"))
+        .unwrap_or(false)
+}
+
+/// Act on a resolved [`ApprovalGate`] for one precondition: `Block` prints the
+/// didactic `error` report and exits 1 (a gate the gated cannot open by running
+/// this very command); `Warn` emits the nudge to stderr and proceeds; `Proceed`
+/// is a no-op. Shared by the clarify (F6) and user-approval (T5) preconditions so
+/// both refuse identically.
+fn enforce_approval_gate(gate: ApprovalGate, block_error: &str, warn_msg: &str) {
+    match gate {
+        ApprovalGate::Block => {
+            let err = ApproveError {
+                ok: false,
+                error: block_error.to_string(),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&err).unwrap_or_else(|_| "{\"ok\":false}".to_string())
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            std::process::exit(1);
+        }
+        ApprovalGate::Warn => eprintln!("{warn_msg}"),
+        ApprovalGate::Proceed => {}
+    }
+}
 
 /// CLI entry — `mustard-rt run approve-spec --spec <name> [--wave-plan] [--resume]`.
 ///
@@ -210,32 +263,45 @@ pub fn run(opts: ApproveSpecOpts) {
     let mode = resolve_approval_mode();
     if mode != ApprovalMode::Off {
         let cwd = crate::shared::context::cwd();
+
+        // Clarify precedes approval (F6). A Full plan must be CLARIFIED before it
+        // may be approved: `<spec>/.clarified` is minted by the deliberate
+        // clarification finalize (`grill-capture --finalize`). Only Full specs
+        // carry this gate — Light / task specs skip it. This is the natural gate
+        // boundary: the spec is known explicitly here via `--spec`, so there is
+        // no resolution problem (unlike the write-time `scope_guard`).
+        if spec_is_full(&cwd, &opts.spec) {
+            let clarified = crate::shared::context::clarified_marker_path(&cwd, &opts.spec)
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            enforce_approval_gate(
+                approval_gate(mode, clarified),
+                CLARIFY_REQUIRED_MSG,
+                &format!(
+                    "[clarify] proceeding without a `.clarified` marker for Full spec '{}' \
+                     (MUSTARD_APPROVAL_MODE=warn) — the plan was not clarified; strict mode \
+                     would refuse this.",
+                    opts.spec
+                ),
+            );
+        }
+
+        // User-approval gate (T5): the plan must have been accepted by a human —
+        // the `.approved-by-user` marker the observer writes from the real
+        // AskUserQuestion / ExitPlanMode answer, which the model cannot forge.
         let marker_present = crate::shared::context::approval_marker_path(&cwd, &opts.spec)
             .map(|p| p.exists())
             .unwrap_or(false);
-        match approval_gate(mode, marker_present) {
-            ApprovalGate::Block => {
-                let err = ApproveError {
-                    ok: false,
-                    error: APPROVAL_REQUIRED_MSG.to_string(),
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string(&err).unwrap_or_else(|_| "{\"ok\":false}".to_string())
-                );
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-                std::process::exit(1);
-            }
-            ApprovalGate::Warn => {
-                eprintln!(
-                    "[approval] proceeding without a user-approval marker for spec '{}' \
-                     (MUSTARD_APPROVAL_MODE=warn) — the plan was not confirmed by the user; \
-                     strict mode would refuse this.",
-                    opts.spec
-                );
-            }
-            ApprovalGate::Proceed => {}
-        }
+        enforce_approval_gate(
+            approval_gate(mode, marker_present),
+            APPROVAL_REQUIRED_MSG,
+            &format!(
+                "[approval] proceeding without a user-approval marker for spec '{}' \
+                 (MUSTARD_APPROVAL_MODE=warn) — the plan was not confirmed by the user; \
+                 strict mode would refuse this.",
+                opts.spec
+            ),
+        );
     }
 
     for (kind, payload) in approval_sequence(opts.wave_plan, opts.resume) {
@@ -504,5 +570,80 @@ mod tests {
         std::fs::write(&marker, b"spec=epic\n").unwrap();
         assert!(marker.exists(), "marker present after the observer writes it");
         assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Proceed);
+    }
+
+    // -----------------------------------------------------------------------
+    // F6 — the clarify gate (clarify precedes approval)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn spec_is_full_reads_meta_scope() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        for (spec, scope, want) in [
+            ("epic", "full (wave plan)", true),
+            ("epic2", "full", true),
+            ("small", "light", false),
+        ] {
+            let sp = mustard_core::ClaudePaths::for_project(root)
+                .unwrap()
+                .for_spec(spec)
+                .unwrap();
+            std::fs::create_dir_all(sp.dir()).unwrap();
+            std::fs::write(
+                sp.meta_json_path(),
+                format!(r#"{{"scope":"{scope}","stage":"Plan","outcome":"Active"}}"#),
+            )
+            .unwrap();
+            assert_eq!(spec_is_full(root_str, spec), want, "scope={scope}");
+        }
+        // No meta.json → not full (fail-open: the clarify gate does not apply).
+        assert!(!spec_is_full(root_str, "ghost"));
+    }
+
+    #[test]
+    fn clarify_gate_blocks_full_without_marker_and_proceeds_with_it() {
+        // Mirrors the user-approval gate, for the F6 clarify precondition: strict
+        // + no `.clarified` → Block; strict + the marker → Proceed. The pure
+        // decision reuses `approval_gate`; the path it gates on is the one the
+        // finalize writes (`<spec>/.clarified`).
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = "epic";
+        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
+        let marker = crate::shared::context::clarified_marker_path(root.to_str().unwrap(), spec)
+            .expect("clarified marker path resolves");
+        assert!(marker.ends_with(".clarified"));
+
+        assert!(!marker.exists(), "no clarify marker yet");
+        assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Block);
+
+        std::fs::write(&marker, b"spec=epic\nvia=grill-finalize\n").unwrap();
+        assert!(marker.exists(), "marker present after the finalize writes it");
+        assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Proceed);
+    }
+
+    #[test]
+    fn light_spec_is_not_clarify_gated() {
+        // A Light spec: `spec_is_full` is false, so `run` skips the clarify gate
+        // entirely — approval never requires `.clarified` for a Light / task spec.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        let sp = mustard_core::ClaudePaths::for_project(root)
+            .unwrap()
+            .for_spec("small")
+            .unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(
+            sp.meta_json_path(),
+            r#"{"scope":"light","stage":"Plan","outcome":"Active"}"#,
+        )
+        .unwrap();
+        assert!(
+            !spec_is_full(root_str, "small"),
+            "a Light spec is not full → the clarify gate is skipped"
+        );
     }
 }

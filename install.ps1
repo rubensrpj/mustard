@@ -23,7 +23,7 @@
 #
 # Usage:
 #   .\install.ps1                  # prompt for the target (default CWD), then `mustard init`
-#   .\install.ps1 -Target ..\app   # scaffold (new) OR refresh templates (existing, via `update --force`)
+#   .\install.ps1 -Target ..\app   # scaffold (new) OR refresh templates (existing); `mustard init` is idempotent
 #   .\install.ps1 -Force           # overwrite an existing .claude/ (no backup)
 #   .\install.ps1 -DryRun          # show init actions without writing
 #   .\install.ps1 -SkipBuild       # skip cargo install (binaries already installed)
@@ -170,29 +170,20 @@ if (-not $DryRun -and -not (Get-Command rtk -ErrorAction SilentlyContinue)) {
     Write-Warning '  Windows: scoop install rtk   (or)   cargo install --git https://github.com/rtk-ai/rtk'
 }
 
-# Choose init vs update by whether .claude/ already exists. `init` MERGES and
-# SKIPS existing files, so re-running it on an installed project leaves stale
-# SKILLs/refs (the silent trap: new files land, existing ones never refresh).
-# For an existing .claude/ (and no -Force) use `update --force`: it MIRRORS the
-# entire templates payload (every top-level entry — no allowlist), pruning +
-# recopying Mustard-owned folders and overwriting Mustard-owned files (INCLUDING
-# the orchestrator .claude/CLAUDE.md), while PRESERVING only the user/runtime
-# files (mustard.json, grain.model.json, spec/, memory/, docs/) and merging
-# agents/. -Force still does a full init overwrite; -DryRun stays on init
-# (update has no dry-run).
-$claudeExists = Test-Path (Join-Path $Target '.claude')
-if ($claudeExists -and -not $Force -and -not $DryRun) {
-    $cmdArgs  = @('update', '--force')
-    $cmdLabel = 'mustard update'
-} else {
-    $cmdArgs = @('init', '--yes')
-    if ($Force)  { $cmdArgs += '--force' }
-    if ($DryRun) { $cmdArgs += '--dry-run' }
-    $cmdLabel = 'mustard init'
+# `mustard init` is idempotent (Mustard 2.0): the content payload ships in the
+# plugin, so init only seeds the small harness files (settings.json seed +
+# plugin-enable, CLAUDE.md, .gitignore) and re-stamps the version. Re-running it
+# on an installed project is the safe refresh -- the job the retired
+# `mustard update` used to do. So init handles both the fresh and existing case.
+# -Force overwrites .claude/ without a backup; -DryRun previews.
+$cmdArgs = @('init', '--yes')
+if ($Force)  { $cmdArgs += '--force' }
+if ($DryRun) { $cmdArgs += '--dry-run' }
+$cmdLabel = 'mustard init'
 }
 
-# Point the command at this repo's templates/ payload (init AND update both
-# resolve it via MUSTARD_TEMPLATES_DIR). Scope the env var to the child process
+# Point the command at this repo's templates/ payload (init resolves it
+# via MUSTARD_TEMPLATES_DIR). Scope the env var to the child process
 # and restore it afterwards so the script is safe to dot-source.
 $prevTemplates = $env:MUSTARD_TEMPLATES_DIR
 $env:MUSTARD_TEMPLATES_DIR = $TemplatesDir

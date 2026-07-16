@@ -8,9 +8,8 @@
 
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
-use crate::hooks::observe::feature_outcome_observer::FeatureOutcomeObserver;
-use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
+use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::task::delegation_advisory::DelegationAdvisory;
@@ -18,26 +17,21 @@ use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::scope_guard::ScopeGuard;
+use crate::hooks::write::secret_files::SecretFiles;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
-use crate::hooks::observe::notification_observer::NotificationObserver;
 use crate::hooks::observe::prompt_observer::PromptObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
 use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
 use crate::hooks::observe::wave_start_observer::WaveStartObserver;
-use crate::hooks::write::path_gate::PathGate;
+use crate::hooks::write::boundary_gate::BoundaryGate;
 use crate::hooks::write::post_edit::PostEdit;
-use crate::hooks::session::pre_compact_inject::PreCompactInject;
-use crate::hooks::write::pre_edit_intent_gate::PreEditIntentGate;
 use crate::hooks::write::work_branch_gate::WorkBranchGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
 use crate::hooks::write::size_gate::SizeGate;
-use crate::hooks::task::skills_advisory::SkillsAdvisory;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
 use crate::hooks::observe::session_stop_observer::SessionStopObserver;
-use crate::hooks::observe::subagent_stop_observer::SubagentStopObserver;
-use crate::hooks::observe::memory_promote_observer::MemoryPromoteObserver;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
@@ -53,16 +47,9 @@ use mustard_core::domain::model::contract::{Check, Observer, Trigger};
 /// The JS `settings.json` matchers are one of: a literal tool name (`"Bash"`,
 /// `"Task"`), an alternation (`"Task|Agent"` — expressed as two entries here),
 /// the wildcard `".*"` (every tool), or absent (a non-tool lifecycle event
-/// like `SubagentStart`). [`ToolMatch`] models exactly those three cases.
+/// like `SubagentStart`). [`ToolMatch`] models the two cases a module can register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolMatch {
-    /// A non-tool lifecycle event — the harness invocation has no `tool_name`.
-    ///
-    /// No Wave-3 module needs this exact case (lifecycle modules use
-    /// [`ToolMatch::Any`], which already matches a `None` tool); it is kept as
-    /// API surface for a later wave that registers a `None`-tool-only module.
-    #[allow(dead_code)]
-    None,
+pub(crate) enum ToolMatch {
     /// Every tool (the `".*"` matcher), and also non-tool events: the JS `.*`
     /// `PreToolUse` matcher fires for any invocation.
     Any,
@@ -75,7 +62,6 @@ impl ToolMatch {
     #[must_use]
     fn matches(self, tool: Option<&str>) -> bool {
         match self {
-            Self::None => tool.is_none(),
             Self::Any => true,
             Self::Named(name) => tool == Some(name),
         }
@@ -233,16 +219,6 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ToolResultObserver)),
             },
-            Module {
-                id: "skills_advisory",
-                // `recommended-skills-audit` — advisory count on PreToolUse(Task).
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: Some(Box::new(SkillsAdvisory)),
-                observer: None,
-            },
             // ── Wave 4: Write/Edit family ────────────────────────────────────
             Module {
                 id: "size_gate",
@@ -256,16 +232,31 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "path_gate",
-                // `file-guard` (PreToolUse(Read|Write|Edit) sensitive-file
-                // gate) + `boundary-gate` (PreToolUse(Write|Edit) spec-boundary
-                // gate). Registered on Read too so `file-guard` covers reads.
+                id: "secret_files",
+                // `file-guard` — the Rust residue of the secret-file law. The
+                // 24 `permissions.deny` globs are the config-level first line;
+                // this residue restores the OLD semantics globs cannot express
+                // (case-insensitive substring over the FULL path) and is the
+                // one Write-family gate that also covers Read.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Read")),
                     (Trigger::PreToolUse, ToolMatch::Named("Write")),
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
                 ],
-                check: Some(Box::new(PathGate)),
+                check: Some(Box::new(SecretFiles)),
+                observer: None,
+            },
+            Module {
+                id: "boundary_gate",
+                // `boundary-gate` — PreToolUse(Write|Edit) spec-boundary gate.
+                // The sensitive-file law lives in `permissions.deny` (first
+                // line) + the `secret_files` residue above; boundary itself
+                // never inspects Read.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(BoundaryGate)),
                 observer: None,
             },
             Module {
@@ -317,18 +308,6 @@ impl Registry {
                 check: Some(Box::new(WorkBranchGate)),
                 observer: None,
             },
-            // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the
-            // regression gate). Gated by `MUSTARD_V4_GATE_ENABLED=1` inside
-            // the module so the v3 harness keeps its semantics by default.
-            Module {
-                id: "pre_edit_intent_gate",
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: Some(Box::new(PreEditIntentGate)),
-                observer: None,
-            },
             // Full-scope approval hard-gate (D5 — spec-scaffold-lifecycle-gate).
             // Denies a PreToolUse(Write|Edit) of a PRODUCTION file when the
             // active spec is `scope=full`, `stage=Plan`, and has no `/spec`
@@ -347,21 +326,6 @@ impl Registry {
                 ],
                 check: Some(Box::new(ScopeGuard)),
                 observer: None,
-            },
-            // The digest-outcome SIGNAL — fires on EVERY PostToolUse so it can
-            // discipline the research window: while the `active-research.json`
-            // marker (dropped by `feature::run`) is open, a Read/Edit/Write
-            // correlates the touched file with the digest's anchors and emits
-            // `feature.outcome {file, wasAnchor, terms}`; the FIRST tool that is
-            // NOT Read/Edit/Write CLOSES the window (removes the marker) so the
-            // implementation phase's reads/edits do not leak in. Pure Observer —
-            // telemetry only, never a verdict (a tool always proceeds),
-            // fail-open.
-            Module {
-                id: "feature_outcome_observer",
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(FeatureOutcomeObserver)),
             },
             Module {
                 id: "delegation_advisory",
@@ -407,8 +371,8 @@ impl Registry {
             },
             Module {
                 id: "session_start_inject",
-                // `harness-init` + `session-memory` + `spec-hygiene` — the
-                // SessionStart bootstrap. A `Check` (the memory-injection
+                // `harness-init` + `spec-hygiene` + terrain census — the
+                // SessionStart bootstrap. A `Check` (the terrain-census
                 // payload is its `Inject` verdict).
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
                 check: Some(Box::new(SessionStartInject)),
@@ -416,7 +380,7 @@ impl Registry {
             },
             Module {
                 id: "session_knowledge_observer",
-                // `session-knowledge` + `memory-auto-extract` on SessionEnd,
+                // `session-knowledge` (friction telemetry) on SessionEnd,
                 // `session-knowledge-inc` on PostToolUse(Task). Pure telemetry
                 // — an `Observer`.
                 applies_to: &[
@@ -434,14 +398,6 @@ impl Registry {
                 applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(SessionCleanupObserver)),
-            },
-            Module {
-                id: "pre_compact_inject",
-                // `pre-compact` — the PreCompact snapshot. A `Check` (the
-                // snapshot is its `Inject` verdict).
-                applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
-                check: Some(Box::new(PreCompactInject)),
-                observer: None,
             },
             Module {
                 id: "prompt_submit_inject",
@@ -472,17 +428,6 @@ impl Registry {
                 check: Some(Box::new(SubagentInject)),
                 observer: None,
             },
-            Module {
-                id: "agent_summary_observer",
-                // T8.4 — on Task return, parse `<MEMORY>` or `Resumo:` and
-                // persist to `agent_memory`.
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: None,
-                observer: Some(Box::new(AgentSummaryObserver)),
-            },
             // T5 (forgeable-approval gate) — on the user's answer to the PLAN
             // approval `AskUserQuestion`, record `<spec>/.approved-by-user` when
             // it is a genuine approval of the active Full spec still awaiting
@@ -496,42 +441,28 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ApprovalMarkerObserver)),
             },
+            // Plan-mode approval recorder — the primary source of the same
+            // `<spec>/.approved-by-user` marker. When the user ACCEPTS the
+            // plan-mode plan (`ExitPlanMode` succeeds with the plan payload)
+            // for an unapproved Full spec in PLAN, the marker is minted from
+            // the harness `tool_response` (which the model does not author).
+            // AskUserQuestion above stays as the fallback source. Pure
+            // Observer, fail-closed, never blocks.
             Module {
-                id: "subagent_stop_observer",
-                // T8.5 — SubagentStop reinforcement: bump `last_used` on any
-                // agent_memory row whose summary appeared in the output.
-                applies_to: &[(Trigger::SubagentStop, ToolMatch::Any)],
+                id: "plan_approval_observer",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("ExitPlanMode"))],
                 check: None,
-                observer: Some(Box::new(SubagentStopObserver)),
+                observer: Some(Box::new(PlanApprovalObserver)),
             },
-            Module {
-                id: "memory_promote_observer",
-                // T8.6 — SessionEnd promotion of high-confidence agent_memory
-                // rows to permanent memory_decisions / memory_lessons rows.
-                applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(MemoryPromoteObserver)),
-            },
-            // ── W9 deep-refactor: Stop + Notification triggers ───────────────
+            // ── W9 deep-refactor: Stop trigger ───────────────────────────────
             Module {
                 id: "session_stop_observer",
                 // `Stop` lifecycle observer — touches the 5-minute anti-spam
-                // marker AND captures the orchestrator's own `<MEMORY>…</MEMORY>`
-                // blocks from its final output as Knowledge (the capture point
-                // for light, direct `/task`/bugfix work that dispatches no
-                // subagent). Main session only — never SubagentStop.
+                // marker the Stop-adjacent bookkeeping relies on. Main session
+                // only — never SubagentStop.
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(SessionStopObserver)),
-            },
-            Module {
-                id: "notification_observer",
-                // `Notification` lifecycle observer — appends a single
-                // `notification.received` event to the per-spec NDJSON log;
-                // observe-only, no auto-resolution.
-                applies_to: &[(Trigger::Notification, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(NotificationObserver)),
             },
             Module {
                 id: "user_prompt_observer",
@@ -698,7 +629,7 @@ mod tests {
     fn task_family_applies_on_pre_tool_use_task() {
         let registry = Registry::new();
         let ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Task"));
-        for want in ["context_budget_gate", "subagent_observer", "skills_advisory"] {
+        for want in ["context_budget_gate", "subagent_observer"] {
             assert!(ids.contains(&want), "missing {want}");
         }
     }
@@ -718,6 +649,25 @@ mod tests {
         let registry = Registry::new();
         let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("Skill"));
         assert!(ids.contains(&"skill_usage_observer"));
+    }
+
+    #[test]
+    fn exit_plan_mode_post_tool_use_runs_plan_approval_observer() {
+        let registry = Registry::new();
+        // The plan-mode approval recorder fires only on PostToolUse(ExitPlanMode).
+        assert!(
+            applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode"))
+                .contains(&"plan_approval_observer")
+        );
+        // Never on the Pre side, nor on an unrelated tool.
+        assert!(
+            !applicable_ids(&registry, Trigger::PreToolUse, Some("ExitPlanMode"))
+                .contains(&"plan_approval_observer")
+        );
+        assert!(
+            !applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
+                .contains(&"plan_approval_observer")
+        );
     }
 
     #[test]
@@ -751,23 +701,22 @@ mod tests {
             "metrics_observer",
             "skill_usage_observer",
             "tool_result_observer",
-            "skills_advisory",
             "approval_marker_observer",
+            "plan_approval_observer",
             "size_gate",
-            "path_gate",
+            "secret_files",
+            "boundary_gate",
             "close_gate",
             "scan_gate",
             "scope_guard",
             "work_branch_gate",
             "active_spec_limit_gate",
             "delegation_advisory",
-            "feature_outcome_observer",
             "post_edit",
             "spec_hygiene_observer",
             "session_start_inject",
             "session_knowledge_observer",
             "session_cleanup_observer",
-            "pre_compact_inject",
             "prompt_submit_inject",
             "user_prompt_observer",
             "amend_window_inject",
@@ -824,9 +773,6 @@ mod tests {
         let end = applicable_ids(&registry, Trigger::SessionEnd, None);
         assert!(end.contains(&"session_cleanup_observer"));
         assert!(end.contains(&"session_knowledge_observer"));
-        // `pre_compact_inject` on PreCompact.
-        assert!(applicable_ids(&registry, Trigger::PreCompact, None)
-            .contains(&"pre_compact_inject"));
         // `prompt_submit_inject` on UserPromptSubmit.
         assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
             .contains(&"prompt_submit_inject"));
@@ -844,7 +790,7 @@ mod tests {
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "path_gate", "close_gate", "scope_guard"] {
+            for want in ["size_gate", "secret_files", "boundary_gate", "close_gate", "scope_guard"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }
@@ -855,10 +801,11 @@ mod tests {
                 "scope_guard missing for {tool}"
             );
         }
-        // `path_gate` (file-guard) also covers Read.
-        assert!(
-            applicable_ids(&registry, Trigger::PreToolUse, Some("Read")).contains(&"path_gate")
-        );
+        // The secret-file residue is the ONE Write-family gate that also
+        // covers Read; `boundary_gate` itself stays Write/Edit-only.
+        let read_ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Read"));
+        assert!(read_ids.contains(&"secret_files"));
+        assert!(!read_ids.contains(&"boundary_gate"));
         // `post_edit` runs on PostToolUse(Write|Edit).
         for tool in ["Write", "Edit"] {
             assert!(
@@ -878,18 +825,6 @@ mod tests {
             .contains(&"delegation_advisory"));
         assert!(!applicable_ids(&registry, Trigger::PostToolUse, Some("Read"))
             .contains(&"delegation_advisory"));
-        // `feature_outcome_observer` (the digest-outcome SIGNAL) now fires on
-        // EVERY PostToolUse tool — Read/Edit/Write emit outcomes, any OTHER
-        // tool closes the research window — and never on the Pre side.
-        for tool in ["Read", "Edit", "Write", "Bash", "Task", "Grep"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PostToolUse, Some(tool))
-                    .contains(&"feature_outcome_observer"),
-                "feature_outcome_observer missing for PostToolUse({tool})"
-            );
-        }
-        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Read"))
-            .contains(&"feature_outcome_observer"));
         // `scan_gate` + `active_spec_limit_gate` run on
         // PreToolUse(Skill) — the two pipeline-entry gates.
         for want in ["scan_gate", "active_spec_limit_gate"] {

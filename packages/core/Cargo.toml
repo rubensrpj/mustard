@@ -37,12 +37,11 @@ aho-corasick = "1.1"
 # `toml::from_str` (deserialize), which is unchanged across the 0.8 -> 1.0
 # transition. The dep is crate-local because `vocabulary` is the only consumer.
 toml = "1"
-# Tree-sitter: agnostic AST extraction. Three-tier grammar acquisition
+# Tree-sitter: agnostic AST extraction. Two-tier grammar acquisition
 # (functional refactor 2026-05): (1) common grammars compiled IN-CRATE below
-# (offline, no `cc`); (2) WASM grammars acquired on demand via `WasmStore` for
-# any other language (added with the `wasm` feature in a later step); (3) the
-# textual floor (Aho-Corasick) when neither is available — so the layer stays
-# agnostic without ever failing on an unknown stack. `tree-sitter-loader` still
+# (offline, no `cc`); (2) the textual floor (Aho-Corasick) when no grammar is
+# available — so the layer stays agnostic without ever failing on an unknown
+# stack. `tree-sitter-loader` still
 # discovers user-installed grammars from `~/.config/tree-sitter/` for
 # extensibility. Pinning a closed in-crate set is NOT an agnostic violation:
 # it is a precision optimisation; the textual floor remains the universal path.
@@ -63,25 +62,7 @@ tree-sitter-dart-orchard = "0.3"
 # the same `TextDiff::from_lines` / `iter_all_changes` / `ChangeTag` surface
 # this crate relies on. Spec A Wave 2 pins this major explicitly.
 similar = "3"
-# HTTP client for the OPTIONAL `wasm-grammars` feature only: it downloads
-# pinned `tree-sitter-<lang>.wasm` blobs on demand into `~/.mustard/grammars/`.
-# `optional = true` + `dep:ureq` in the feature means the DEFAULT build never
-# compiles it; the WASM-acquisition path is the sole consumer. Pulled through
-# the workspace table (same `3.3` the CLI/rt faces already use).
-ureq = { workspace = true, optional = true }
-
-# Optional, OFF by default. `wasm-grammars` turns on `tree-sitter/wasm`, which
-# pulls `wasmtime` (heavy build, needs a C/LLVM toolchain on some hosts), plus
-# the `ureq` HTTP client used to fetch pinned grammar blobs. The default gate
-# (build/test) never pays this cost; with the feature off, the native
-# (in-crate + tree-sitter-loader) path is byte-for-byte identical and the
-# textual floor still covers every other language. See
-# `domain::ast::wasm_acquire`.
-[features]
-wasm-grammars = ["tree-sitter/wasm", "dep:ureq"]
-
 [dev-dependencies]
-insta = { workspace = true }
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.
 tempfile = { workspace = true }

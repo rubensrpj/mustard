@@ -12,8 +12,8 @@
 //! - **residue** (`--residue` only) — scan `settings.json`, SKILL.md files,
 //!   and refs for mentions of paths/commands that no longer exist (dead `.js`
 //!   names, `scripts/` entries with no resolvable target). WARN per hit.
-//! - **drift** — compare by hash the folders that `mustard-cli update`
-//!   regenerates (`CORE_FOLDERS`) between the installed `.claude/` and the
+//! - **drift** — compare by hash the folders a fresh payload owns
+//!   (`CORE_FOLDERS`) between the installed `.claude/` and the
 //!   `templates/` source. Degrades to `skip` when `templates/` is not
 //!   reachable from cwd (consumer project).
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
@@ -103,51 +103,19 @@ const KNOWN_EVENTS: &[&str] = &[
     "UserPromptSubmit",
 ];
 
-/// All `mustard-rt run <subcommand>` names recognized by the binary.
-/// Derived from the `RunCmd` enum variants in `run/mod.rs` (kebab-case).
-const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
-    "diff-context",
-    "emit-event",
-    "emit-phase",
-    "complete-spec",
-    "context-slice",
-    "memory",
-    "epic-fold",
-    "spec-extract",
-    "spec-link",
-    "analyze-validation",
-    "mark-checklist-item",
-    "wave-tree",
-    "wave-dependency",
-    "scope-decompose",
-    "scope-classify",
-    "exec-rewave-check",
-    "wave-size-check",
-    "qa-run",
-    "metrics",
-    "event-projections",
-    "verify-pipeline",
-    "pipeline-summary",
-    "review-result",
-    "statusline",
-    "skills",
-    "security-scan",
-    "verify-emit",
-    "rtk-gain",
-    "scan-orchestrate",
-    "scan-finalize",
-    "otel-collector",
-    "diagnose-otel",
-    "doctor",
-    "db-maintain",
-    "unhook",
-    "rehook",
-    "plan-from-spec",
-    "spec-status-backfill",
-];
+/// All `mustard-rt run <subcommand>` names recognized by the binary — derived
+/// from the live clap tree, so the set can never drift from `RunCmd` again.
+fn known_run_subcommands() -> std::collections::BTreeSet<String> {
+    <crate::commands::RunCmd as clap::Subcommand>::augment_subcommands(clap::Command::new("run"))
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect()
+}
 
-/// The Mustard-owned folders that `mustard-cli update` regenerates.
-/// Derived from the `CORE_FOLDERS` constant in `apps/cli/src/commands/update.rs`.
+/// The Mustard-owned folders the drift check compares against `templates/`.
+/// They historically shipped in the payload; in Mustard 2.0 they move to the
+/// plugin, so the check degrades to a no-op where they are absent. Re-seed the
+/// harness with `mustard init` (idempotent).
 const CORE_FOLDERS: &[&str] = &["commands/mustard", "hooks", "skills", "scripts", "refs"];
 
 // ---------------------------------------------------------------------------
@@ -225,7 +193,7 @@ fn validate_command_string(cmd: &str, broken: &mut Vec<String>) {
         }
         "run" => {
             let subcommand = parts[2];
-            if !KNOWN_RUN_SUBCOMMANDS.contains(&subcommand) {
+            if !known_run_subcommands().contains(subcommand) {
                 broken.push(format!("unknown run subcommand: '{subcommand}' in command '{cmd}'"));
             }
         }
@@ -365,7 +333,7 @@ fn check_drift(claude_dir: &Path) -> CheckResult {
         let source_hash = hash_directory(&source);
 
         if installed_hash != source_hash {
-            drifted.push(format!("{folder}: differs from templates/ (run `mustard update`)"));
+            drifted.push(format!("{folder}: differs from templates/ (run `mustard init`)"));
         }
     }
 

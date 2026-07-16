@@ -55,10 +55,10 @@ pub const VERDICT_RED: &str = "red";
 /// Cap on the rendered line length. Bounded so the OS-level append stays
 /// atomic on every supported platform (POSIX guarantees atomicity up to
 /// `PIPE_BUF`; we stay well below it).
-pub const LINE_MAX_CHARS: usize = 1024;
+pub(crate) const LINE_MAX_CHARS: usize = 1024;
 
 /// Name of the on-disk ledger file (resolved relative to the wave directory).
-pub const LEDGER_FILE_NAME: &str = "_review-spans.md";
+pub(crate) const LEDGER_FILE_NAME: &str = "_review-spans.md";
 
 /// One row of the ledger as written.
 ///
@@ -109,7 +109,7 @@ impl VerdictEntry {
 /// [`append_verdict`] and [`check_consolidation`] so a single source of truth
 /// drives the location.
 #[must_use]
-pub fn ledger_path(wave_dir: &Path) -> PathBuf {
+pub(crate) fn ledger_path(wave_dir: &Path) -> PathBuf {
     wave_dir.join(LEDGER_FILE_NAME)
 }
 

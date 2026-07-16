@@ -8,30 +8,24 @@
     clippy::uninlined_format_args
 )]
 
-//! Integration tests for `pipeline-state-ingest` + the
-//! `pipeline_state_from_events` projection.
+//! Integration test for the `pipeline_state_from_events` projection.
 //!
 //! ## History
 //!
-//! - Wave 1 (no-sqlite migration, W2A): the `pipeline-state-ingest`
-//!   subcommand was reduced to a no-op stub once pipeline state moved to
-//!   NDJSON events. The original integration tests verified the
-//!   `.pipeline-states/*.json` → SQLite ingest path, which no longer exists.
+//! - Wave 1 (no-sqlite migration, W2A): pipeline state moved to NDJSON
+//!   events; the old `.pipeline-states/*.json` → SQLite ingest path no
+//!   longer exists.
 //! - W8A-3 (no-sqlite Wave 8): the production-shape projection assertions
 //!   were preserved by feeding NDJSON events directly into
 //!   `pipeline_state_from_events` via
-//!   [`mustard_core::view::projection::read_workspace_events`]. Two contract
-//!   assertions stay in this file:
-//!     - the ingest subcommand emits the canonical empty-run JSON shape;
-//!     - `pipeline_state_from_events` over an NDJSON-seeded workspace
-//!       returns `Some(view)` for a known spec, exercising the same fold
-//!       the resume/active-spec readers consume.
+//!   [`mustard_core::view::projection::read_workspace_events`]: the fold
+//!   over an NDJSON-seeded workspace returns `Some(view)` for a known spec,
+//!   exercising the same path the resume/active-spec readers consume.
 
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_rt::commands::event::event_projections::pipeline_state_from_events;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::process::Command;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -42,22 +36,6 @@ fn project_dir() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(dir.path().join(".claude").join(".harness")).expect("harness dir");
     dir
-}
-
-/// Run `mustard-rt run pipeline-state-ingest [--delete]` against `dir` and
-/// return the parsed JSON output.
-fn run_ingest(dir: &Path, delete: bool) -> Value {
-    let bin = env!("CARGO_BIN_EXE_mustard-rt");
-    let mut cmd = Command::new(bin);
-    cmd.args(["run", "pipeline-state-ingest"]);
-    if delete {
-        cmd.arg("--delete");
-    }
-    cmd.env("CLAUDE_PROJECT_DIR", dir.to_string_lossy().as_ref());
-    let out = cmd.output().expect("run mustard-rt");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| json!({ "parse_error": e.to_string(), "raw": stdout.as_ref() }))
 }
 
 /// Append one NDJSON event under `<dir>/.claude/spec/<spec>/.events/seed.ndjson`.
@@ -83,35 +61,7 @@ fn append_event(dir: &Path, spec: &str, event_name: &str, ts: &str, payload: Val
 }
 
 // ---------------------------------------------------------------------------
-// Test 1 — ingest stub returns the canonical empty-run JSON shape
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ingest_subcommand_emits_canonical_noop_shape() {
-    let tmp = project_dir();
-    let dir = tmp.path();
-    let result = run_ingest(dir, false);
-    assert!(
-        result.get("parse_error").is_none(),
-        "ingest stub must emit parseable JSON: {result}"
-    );
-    assert_eq!(result["ingested"], json!(0), "no-op ingest reports zero: {result}");
-    assert_eq!(result["deleted"], json!(0), "no-op ingest deletes nothing: {result}");
-    let errors = result["errors"].as_array().expect("errors array");
-    assert!(errors.is_empty(), "no errors expected for no-op ingest: {errors:?}");
-}
-
-#[test]
-fn ingest_subcommand_with_delete_still_noop() {
-    let tmp = project_dir();
-    let dir = tmp.path();
-    let result = run_ingest(dir, true);
-    assert_eq!(result["ingested"], json!(0));
-    assert_eq!(result["deleted"], json!(0));
-}
-
-// ---------------------------------------------------------------------------
-// Test 2 — pipeline_state_from_events folds NDJSON events into a view
+// pipeline_state_from_events folds NDJSON events into a view
 // ---------------------------------------------------------------------------
 
 #[test]

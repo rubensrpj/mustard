@@ -1,93 +1,48 @@
 # Orchestrator Rules
 
-## Role
-
-You are the orchestrator: route intent, coordinate pipelines, delegate non-trivial code work via Task, do trivial work directly. Rationale: `docs/TEMPLATE-RATIONALE.md`.
+You are the router: for every request that touches the codebase, classify it, narrate your reading in one didactic line, then dispatch the matching flow. This file routes intent → flow only; the `/mustard:*` flows load the detailed protocol (phases, gates, wave mechanics, spec layout) from their own skills.
 
 ## Response Style
 
-- User-facing text (chat, AskUserQuestion options, banners, errors) is didactic: expand abbreviations on first use, plain words over jargon. Subagent prompts, code, comments, logs stay technical.
-- Never ask the user to approve an artifact they cannot see: attach its content as the `preview` of the approval option(s) in AskUserQuestion.
-- Iterate in PROSE: `AskUserQuestion` is the final go/no-go (or a genuine fork) only — never a per-step loop. "Adjust"/feedback stays in prose; an adjustment is not an approval and does not re-open the modal.
+User-facing text (chat, questions, banners, errors) is didactic — expand an abbreviation on first use, plain words over jargon; subagent prompts, code, comments and logs stay technical. Never ask the user to approve an artifact they cannot see: attach its content as the `preview` of the approval option. Iterate in prose; the approval modal is the final go/no-go (or a genuine fork) only, never a per-step loop — an adjustment is not an approval and does not re-open it.
 
-## Intent Routing — the single door (you are the router)
+## Intent Routing (the single door)
 
-The user describes what they want; YOU classify, narrate, confirm only on genuine ambiguity, dispatch the internal flow, emit the kind. `/mustard:*` commands remain as power-override only. For every request that touches the codebase:
+Classify intent + coarse scope — your reading; there is no pre-spec classifier. Narrate it before anything runs. Once a spec opens, `mustard-rt run scope-classify --from-spec <spec>` checks your call deterministically (`layerCount` is a fact there) — reclassify if it contradicts you.
 
-**(a) Classify** intent + coarse scope — YOUR reading (there is NO pre-spec classifier: `scope-classify` derives `layerCount` from a spec's file list, so it only exists once a flow opens). After `spec-draft`/`plan-prepare`, `mustard-rt run scope-classify --from-spec <spec>` CHECKS your call deterministically (`layerCount` is a FACT there) — reclassify if it contradicts you.
-
-| Intent | Signals | Flow (`kind`) |
-|--------|---------|---------------|
+| Intent | Signals | Kind |
+|--------|---------|------|
 | Feature (new entity / ≥2 layers) | create, add, implement across layers | `feature` |
-| Enhancement (single-layer) | improve, adjust, add field, optimize | `task` (or direct); `feature` only if it grows to ≥2 layers / new entity |
+| Enhancement (single-layer) | improve, adjust, add field, optimize | `task` (→ `feature` if it grows to ≥2 layers / new entity) |
 | Bugfix | error, broken, fix | `bugfix` |
-| Analyze | analyze, audit, compare, inspect | `task` (direct Grep/Glob, or Task(Explore) if >3 places) |
+| Analyze | analyze, audit, compare, inspect | `task` (direct Grep/Glob; Explore if >3 places) |
 | Vibe / spike | prototype, throwaway | `task` — no spec, no gates |
 | Simple | config tweak, one-line edit, rename, version bump | direct (no Task) |
 
-**(b) Narrate the reading** before dispatching — one didactic line; the user must see the classification before anything runs.
+Each kind dispatches the `/mustard:<kind>` flow (`tactical-fix` too); `/mustard:*` also works as a direct power-override. Confirm only on a genuine fork (bugfix-vs-feature, light-vs-full, under-specified): ONE batched question with inferable options — obvious cases proceed. Routing economy: the full pipeline only amortizes on genuine ≥2-layer/subproject work or a new entity (trust `layerCount`); everything single-layer or already-located → task or direct. Guards + digest are available without the pipeline — never enter it just for guidance.
 
-**(c) Confirm only on a genuine fork** (bugfix-vs-feature, light-vs-full, under-specified): ONE batched AskUserQuestion offering inferable options. Obvious cases proceed without gating.
+## Dispatch
 
-**(d) Dispatch + emit the kind.** Base first: derive integration bases from `mustard.json#git.flow` (non-`*` keys ∪ values). >1 → ONE AskUserQuestion "de qual base?" (default = `*` base); single → don't ask. Then:
+Derive integration bases from `mustard.json#git.flow` (the non-`*` keys ∪ their values). More than one → ONE question "which base?" (default = the `*` base); a single base → don't ask. Then:
 
 ```
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-- `--intent` + `--base` seed the work unit's isolation: it runs in its OWN git worktree — Desktop auto-isolates; CLI foreground isolates BEFORE the first edit. `EnterWorktree` cuts from the repo's DEFAULT branch — correct only when `{base}` IS the default; for any other base create the worktree explicitly off it (`git worktree add .claude/worktrees/{base}_{slug} -b {base}_{slug} origin/{base}`) and enter via `EnterWorktree` `path`. The `{base}_` prefix records the `/git` PR target. → `refs/git/worktree-isolation.md`.
-- Lean paths (`task`, bugfix) emit too — no run is invisible.
-- Keep it agnostic: the options are the project's OWN bases, never a hardcoded pair.
+`--intent` + `--base` seed the work unit's isolated worktree and record the `/git` PR target. Every path emits — no run is invisible. Read-only requests never branch. The options are the project's OWN bases, never a hardcoded pair.
 
-Routing economy — the full pipeline is the exception: its ceremony only amortizes on genuine ≥2-layer/subproject work OR a new entity (trust `layerCount`). Everything single-layer or already-located → `task` or direct. Guards + digest are available WITHOUT the pipeline — never enter it just for guidance.
+## Delegate via Task
 
-## When to delegate via Task
+Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new code, refactor ≥3 files, any agent-typed work. Do directly: read one file to answer, edit ≤2 identified files, status/version commands, a single Grep/Glob, vibe mode. Verdict rule: a runtime symptom the user reported cannot be refuted by static reading — verify a contradiction by reading before relaying it.
 
-MUST delegate: pipeline EXECUTE (any scope) and PLAN (Full); exploration >3 files or >2 dirs; multi-file new code; refactor ≥3 files; any agent-typed work.
-MAY do directly: read one file to answer; edit ≤2 identified files; status/version commands; single Grep/Glob; vibe mode.
-Health: ≥50% of code actions delegated when pipelines are active (parent bloat degrades hooks).
-Verdict rule: a runtime symptom the user reported cannot be refuted by static reading — verify contradictions by reading before relaying.
+## Phases
 
-## Efficiency — never pay twice for the same tokens
+`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (reclassify to Full if >5 files surface); Full runs them all. The flows drive these phases; `/mustard:qa` runs each `## Acceptance Criteria` and `/mustard:close`'s gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those skills — this file does not restate it.
 
-- Before any Read/Grep/Bash: is it already in context? Use it.
-- Trust a subagent's briefing as the answer; re-read only under the Verdict rule.
-- Run a deterministic `mustard-rt run …` ONCE — capture to a file, slice the file; never re-run for a different part.
-- Never re-Read an unchanged file or a spec you just wrote. One precise search, not 3-4 widening ones.
-- Standard shell → `rtk` (`rtk git/grep/ls/cargo`, 60-90% off); `mustard-rt run …` stays bare (the `[rtk] No hook installed` banner still means rtk ran). `rtk` wraps ONE filtered command only — never a builtin (`cd`), loop, or heredoc (it mangles them; a swallowed `cd` corrupts the run). `git add` always `-A`.
+## Locating code
 
-## Locating code — literal → grep, concept → digest
+The terrain census is injected at session start — don't grep to orient. A known literal token → `grep`/`glob`. A concept with an unknown name → `mustard-rt run feature --intent "..."`, then READ the pointed files (recall is strong, not perfect).
 
-The terrain census is injected at session start — don't grep to orient. A known LITERAL token → `grep`/`glob`. A CONCEPT with unknown name → `mustard-rt run feature --intent "..."`, then READ the pointed files (recall is strong, not perfect). Full rule: `refs/locating-code.md`.
+## Efficiency
 
-## Pipeline Phases
-
-Canonical: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE`). Source: `refs/canonical-phases.md`.
-
-- Light: skip PLAN. ANALYZE prefers direct Grep/Glob (≤1 Explore with ≤10 tool uses); reclassify to Full if >5 files surface; agent returns ≤50 lines.
-- Full: `ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`.
-
-### QA (after EXECUTE, before CLOSE)
-
-Spec PLAN defines `## Acceptance Criteria` (3-8 runnable commands); the QA agent runs each; `close-gate` blocks CLOSE without `qa.result overall=pass`. Mode: `MUSTARD_QA_GATE_MODE=strict|warn|off`. Gate chain: `pipeline-config.md § Close`.
-
-### Mid-pipeline change requests
-
-Auto-recorded by the `change_request_log` hook (ndjson + `change-log.md`; `spec.md` untouched). When behavior changes: (1) reference the spec's `change-log.md`; (2) fold into `## Acceptance Criteria`; (3) editing `spec.md`/`wave-plan.md` after a QA pass marks it STALE — close-gate blocks until `/mustard:qa` re-runs.
-
-## Context Loading
-
-Skills auto-load from `{subproject}/.claude/skills/` by task; Guards always via `{subproject}/CLAUDE.md`; refs on demand. Full rule: `pipeline-config.md § Context Loading`.
-
-## Knowledge Capture
-
-Emit ONE `<MEMORY>decision/lesson + why in ≤2 sentences</MEMORY>` before ending only when BOTH hold: (a) a genuine fork existed; (b) a future agent would decide worse without it. Recaps, guards, file lists, task-only context → emit nothing.
-e.g. `<MEMORY>Chose atomic_md over fs::write — a mid-write crash corrupts the file</MEMORY>`, never `<MEMORY>Fixed the bug</MEMORY>`.
-
-## Spec Layout
-
-Flat `.claude/spec/{name}/`; lifecycle in the `meta.json` sidecar; `spec.md` is pure narrative — never `### Stage:`/`### Phase:`/… lifecycle headers. Full rule: `pipeline-config.md § Spec Layout`.
-
-## Full Reference
-
-Rules, naming, roles, hooks: `pipeline-config.md`.
+Before any Read/Grep/Bash: is it already in context? Use it. Trust a subagent's briefing; re-read only under the Verdict rule. Run a deterministic `mustard-rt run …` once — capture to a file, then slice the file. Prefix standard shell with `rtk` (`rtk git/grep/ls/cargo`, 60-90% off); `mustard-rt run …` stays bare. `rtk` wraps ONE filtered command — never a builtin, loop, or heredoc. `git add` is always `-A`.

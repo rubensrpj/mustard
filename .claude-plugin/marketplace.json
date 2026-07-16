@@ -1,0 +1,13 @@
+{
+  "name": "mustard-local",
+  "owner": {
+    "name": "Atiz"
+  },
+  "plugins": [
+    {
+      "name": "mustard",
+      "source": "./plugin",
+      "description": "Mustard — harness SDD (build local de validação)"
+    }
+  ]
+}

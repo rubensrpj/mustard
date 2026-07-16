@@ -1,22 +1,38 @@
-//! `mustard init` — scaffold the `.claude/` folder into a project.
+//! `mustard init` — thin bootstrap for a Claude Code project (Mustard 2.0).
 //!
-//! Ported from `commands/init.ts`. The flow:
+//! The heavy `.claude/` payload — commands, skills, agents, refs, hooks — now
+//! ships in the **`mustard` plugin**, distributed through a private git
+//! marketplace. `init` no longer copies that payload; it lays down the small
+//! set of files a plugin cannot ship, then enables the plugin. The flow:
 //!
-//! 1. resolve the bundled `templates/` directory;
+//! 1. probe RTK — a hard gate (the harness prefixes every Bash call with `rtk`);
 //! 2. handle an already-present `.claude/` (force-overwrite, merge, or
 //!    backup-then-overwrite — interactively prompted when no flag decides it);
-//! 3. recursively copy `templates/` → `.claude/`;
-//! 4. copy `templates/.github/` → project-root `.github/` when a GitHub
-//!    remote is detected;
-//! 5. ensure global Claude Code permissions in `~/.claude/settings.json`;
-//! 6. install RTK (token economy) if missing — fail-open;
+//! 3. seed the harness into `.claude/`:
+//!    - `settings.json` — the reduced SEED (env / permissions / statusLine /
+//!      plansDirectory …) copied from the bundled template, then the
+//!      `enabledPlugins` + `extraKnownMarketplaces` keys that enable the
+//!      `mustard` plugin merged in;
+//!    - `CLAUDE.md` — the orchestrator rules (a plugin cannot ship the project
+//!      orchestrator);
+//!    - `.gitignore` — covers the ephemeral harness state;
+//! 4. copy `templates/.github/` → project-root `.github/` when a GitHub remote
+//!    is detected (project-level scaffolding, not part of the plugin);
+//! 5. ensure global Claude Code permissions in `~/.claude/settings.json` (opt-in);
+//! 6. install RTK + ripgrep (token economy) if missing — fail-open;
 //! 7. write the single project-root `mustard.json`: git-flow + agnostically
 //!    detected build/test/lint/type-check commands + spec language + tone +
 //!    the `runtime`/`version` stamp.
 //!
 //! There is **one** config file, at the **project root** (the workspace anchor
 //! `workspace_root` keys on) — never `.claude/mustard.json`. The `version`
-//! stamp lets the dashboard (B6) read the installed Mustard version.
+//! stamp lets the dashboard read the installed Mustard version; because `init`
+//! is idempotent, **re-running it re-stamps that version** — the job the retired
+//! `mustard update` used to do.
+//!
+//! `.mcp.json` is deliberately **not** written: the `mustard` plugin ships its
+//! own `.mcp.json`, so a project-level copy is redundant once the plugin is
+//! enabled.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -26,11 +42,27 @@ use anyhow::{Context, Result};
 use dialoguer::Select;
 use dialoguer::theme::ColorfulTheme;
 use mustard_core::io::fs as mfs;
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use crate::commands::git_flow;
 use crate::fs_ops::copy_dir;
 use mustard_core::{ProjectConfig, Runtime};
+
+/// Marketplace name the `mustard` plugin is published under (the key in
+/// `settings.json#extraKnownMarketplaces` and the `@`-suffix of the plugin id).
+const PLUGIN_MARKETPLACE: &str = "mustard";
+
+/// `settings.json#enabledPlugins` key that turns the harness on: `<plugin>@<marketplace>`.
+const PLUGIN_ID: &str = "mustard@mustard";
+
+/// Git URL of the private marketplace that distributes the `mustard` plugin.
+///
+/// **Placeholder** — a real deploy replaces this constant with the actual repo
+/// URL (or a future flag overrides it). It is intentionally obvious so it is
+/// never mistaken for a live endpoint: an `init` run against an unconfigured
+/// build writes this literal into `settings.json#extraKnownMarketplaces`, where
+/// it is inert until swapped for the real URL.
+const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
 
 /// Flags accepted by `mustard init`.
 #[derive(Debug, Default, Clone)]
@@ -39,8 +71,6 @@ pub struct InitOptions {
     pub force: bool,
     /// Accept defaults without prompting.
     pub yes: bool,
-    /// Install the experimental Cursor IDE adapter.
-    pub cursor: bool,
     /// Print intended actions without touching disk.
     pub dry_run: bool,
 }
@@ -50,7 +80,8 @@ enum ExistingAction {
     /// Overwrite (the `--force` path, or the interactive "backup" choice once
     /// the backup has been taken).
     Overwrite,
-    /// Copy only new files, leaving user edits in place.
+    /// Keep user edits: seed only the files that are absent, but still merge the
+    /// plugin-enable keys into `settings.json`.
     Merge,
     /// Abort without writing.
     Cancel,
@@ -58,10 +89,10 @@ enum ExistingAction {
 
 /// Run `mustard init` against `project_path`.
 ///
-/// This is the library entry point the Tauri backend (Wave 3) will call. The
-/// binary passes the process working directory; a caller may pass any folder.
-/// The bundled `templates/` directory is located via [`resolve_templates_dir`];
-/// callers that already know its location use [`init_with_templates`].
+/// This is the library entry point the Tauri backend calls. The binary passes
+/// the process working directory; a caller may pass any folder. The bundled
+/// `templates/` directory is located via [`resolve_templates_dir`]; callers
+/// that already know its location use [`init_with_templates`].
 pub fn init(project_path: &Path, options: &InitOptions) -> Result<()> {
     let templates_dir = resolve_templates_dir()?;
     init_with_templates(project_path, &templates_dir, options)
@@ -71,19 +102,17 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<()> {
 ///
 /// Splitting this out keeps template resolution (an environment concern) out
 /// of the install logic, so tests can drive a fixture tree and the Tauri
-/// backend can point at its own bundled payload — no process-global env var,
-/// no `unsafe` env mutation.
+/// backend can point at its own bundled payload — no process-global env var.
 pub fn init_with_templates(
     project_path: &Path,
     templates_dir: &Path,
     options: &InitOptions,
 ) -> Result<()> {
     // RTK is a mandatory dependency of Mustard — the harness's Golden Rule
-    // prefixes every Bash invocation with `rtk`, and the generated
-    // `settings.json` wires every hook through `rtk mustard-rt on <Event>`.
-    // Probe before touching disk: if `rtk` is missing the install would
-    // produce a `.claude/` that cannot run, so we exit hard with install
-    // instructions instead. Skipped in dry-run mode (no disk writes either).
+    // prefixes every Bash invocation with `rtk`. Probe before touching disk: if
+    // `rtk` is missing the install would produce a `.claude/` that cannot run,
+    // so we exit hard with install instructions instead. Skipped in dry-run
+    // mode (no disk writes either).
     if !options.dry_run {
         probe_rtk();
     }
@@ -99,43 +128,52 @@ pub fn init_with_templates(
     println!("[mustard] runtime: {} {}/{}", runtime.kind, runtime.os, runtime.arch);
 
     if options.dry_run {
-        println!("  (dry-run) would copy templates -> {}", claude_path.display());
+        println!("  (dry-run) would seed the harness into {}:", claude_path.display());
+        println!("    settings.json  — reduced seed + enable the `mustard` plugin (enabledPlugins + extraKnownMarketplaces)");
+        println!("    CLAUDE.md      — orchestrator rules");
+        println!("    .gitignore     — ephemeral harness state");
         println!(
             "  (dry-run) would write git-flow + commands + runtime/version to {}",
             project_path.join("mustard.json").display()
         );
+        println!("  (dry-run) content payload (commands/skills/agents/refs) + .mcp.json now ship in the `mustard` plugin — not written");
         return Ok(());
     }
 
-    if claude_path.exists() {
+    // Decide how to treat an existing `.claude/`. A fresh project is a plain
+    // overwrite of an empty tree.
+    let overwrite = if claude_path.exists() {
         match decide_existing_action(&claude_path, options)? {
             ExistingAction::Cancel => {
                 println!("\n  Cancelled.\n");
                 return Ok(());
             }
-            ExistingAction::Merge => {
-                let count = copy_dir(templates_dir, &claude_path, false, &[".github", ".claude"])?;
-                let gh = install_github_templates(templates_dir, &project_path)?;
-                report_copy(count, gh, false);
-            }
-            ExistingAction::Overwrite => {
-                let count = copy_dir(templates_dir, &claude_path, true, &[".github", ".claude"])?;
-                let gh = install_github_templates(templates_dir, &project_path)?;
-                report_copy(count, gh, true);
-            }
+            ExistingAction::Merge => false,
+            ExistingAction::Overwrite => true,
         }
     } else {
-        let count = copy_dir(templates_dir, &claude_path, true, &[".github", ".claude"])?;
-        let gh = install_github_templates(templates_dir, &project_path)?;
-        report_copy(count, gh, true);
-    }
+        true
+    };
 
-    // Make the copied hook commands PATH-independent: the template ships every
-    // hook as the bare `rtk mustard-rt on <Event>`, which fails silently when
-    // the launcher's PATH omits the install dir (background/headless sessions).
-    // We resolve the absolute `mustard-rt` path here, at install time — the only
-    // place that knows the machine — and never bake a path into the template.
-    rewrite_hooks_to_absolute(&claude_path);
+    mfs::create_dir_all(&claude_path)
+        .with_context(|| format!("creating {}", claude_path.display()))?;
+
+    // (a)+(e) settings.json: the reduced seed + the plugin-enable keys.
+    write_settings_seed(&claude_path, templates_dir, overwrite)?;
+    // (b) orchestrator rules — a plugin cannot ship the project orchestrator.
+    seed_file(templates_dir, &claude_path, "CLAUDE.md", overwrite)?;
+    // (c) ephemeral-state .gitignore.
+    seed_file(templates_dir, &claude_path, ".gitignore", overwrite)?;
+
+    // (d) `.mcp.json` is intentionally NOT written — the `mustard` plugin ships
+    // its own, so a project-level copy is redundant once the plugin is enabled.
+
+    // Project-root `.github/` scaffolding (PR template) — not part of the
+    // plugin, seeded only when the project has a GitHub remote. Never overwrites.
+    let gh = install_github_templates(templates_dir, &project_path)?;
+    if gh > 0 {
+        println!("  wrote {gh} GitHub template(s) at .github/");
+    }
 
     ensure_global_permissions().unwrap_or_else(|err| {
         eprintln!("[mustard] warning: could not update global permissions: {err}");
@@ -143,23 +181,94 @@ pub fn init_with_templates(
     ensure_rtk();
     ensure_ripgrep();
 
-    if options.cursor {
-        // The Cursor adapter shipped as `templates/adapters/cursor/adapter.js`
-        // in earlier releases; the deep-refactor W5 replaced it with the
-        // `mustard-rt run adapt-cursor` subcommand. Surface that to the user
-        // instead of copying a no-longer-bundled file.
-        println!("  --cursor flag is now served by `mustard-rt run adapt-cursor` (run it after init)");
-    }
-
     // Write the single project-root mustard.json: git-flow + detected commands
-    // + language/tone + runtime/version stamp. One file, one write.
+    // + language/tone + runtime/version stamp. One file, one write. A re-run
+    // re-stamps `version` — the idempotent replacement for `mustard update`.
     write_project_config(&project_path, &runtime, !options.yes)?;
 
-    // MCP servers live in <root>/.mcp.json — Claude Code does not read
-    // `mcpServers` from settings.json. Merge-in the mustard-memory server.
-    install_mcp_json(&project_path)?;
-
     print_next_steps();
+    Ok(())
+}
+
+/// Seed `.claude/settings.json`: copy the reduced template SEED, then merge in
+/// the keys that enable the `mustard` plugin.
+///
+/// - Fresh / overwrite (a backup was taken): the seed is the base.
+/// - Merge: the user's existing `settings.json` is the base and any seed key it
+///   lacks is backfilled — user edits are never clobbered.
+///
+/// In every case the `enabledPlugins` + `extraKnownMarketplaces` keys are merged
+/// in (never clobbering another marketplace / plugin the user declared), so the
+/// harness is enabled even when merging into an existing project. The seed's
+/// byte content is not depended on — whatever keys the template ships are copied
+/// verbatim through the JSON round-trip.
+fn write_settings_seed(claude_path: &Path, templates_dir: &Path, overwrite: bool) -> Result<()> {
+    let dest = claude_path.join("settings.json");
+    let seed = crate::fs_ops::read_json_object(&templates_dir.join("settings.json"));
+
+    let mut settings = if overwrite {
+        seed
+    } else {
+        let mut existing = crate::fs_ops::read_json_object(&dest);
+        for (key, value) in seed {
+            existing.entry(key).or_insert(value);
+        }
+        existing
+    };
+
+    enable_mustard_plugin(&mut settings);
+
+    let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))
+        .context("serializing .claude/settings.json")?;
+    serialized.push('\n');
+    mfs::write_atomic(&dest, serialized.as_bytes())
+        .with_context(|| format!("writing {}", dest.display()))?;
+    println!("  wrote .claude/settings.json (mustard plugin enabled)");
+    Ok(())
+}
+
+/// Merge the `mustard` plugin enablement into a `settings.json` object.
+///
+/// Adds `extraKnownMarketplaces.mustard = { source: { source: "git", url } }`
+/// (only when absent — a user-declared mustard marketplace is preserved) and
+/// sets `enabledPlugins."mustard@mustard" = true`. Other marketplaces and
+/// plugins in those objects are left untouched.
+fn enable_mustard_plugin(settings: &mut Map<String, Value>) {
+    let marketplaces = settings
+        .entry("extraKnownMarketplaces")
+        .or_insert_with(|| json!({}));
+    if let Some(obj) = marketplaces.as_object_mut() {
+        obj.entry(PLUGIN_MARKETPLACE).or_insert_with(|| {
+            json!({ "source": { "source": "git", "url": MARKETPLACE_REPO_URL } })
+        });
+    }
+
+    let plugins = settings
+        .entry("enabledPlugins")
+        .or_insert_with(|| json!({}));
+    if let Some(obj) = plugins.as_object_mut() {
+        obj.insert(PLUGIN_ID.to_string(), json!(true));
+    }
+}
+
+/// Copy a single seed file (`CLAUDE.md`, `.gitignore`) from `templates_dir` into
+/// `.claude/`. On merge (`overwrite == false`) an existing file is preserved —
+/// a user-edited orchestrator survives. Fail-open: a seed missing from the
+/// template is skipped with a warning, never an abort.
+fn seed_file(templates_dir: &Path, claude_path: &Path, name: &str, overwrite: bool) -> Result<()> {
+    let src = templates_dir.join(name);
+    if !src.is_file() {
+        eprintln!("  warning: seed {} missing from templates — skipped", src.display());
+        return Ok(());
+    }
+    let dest = claude_path.join(name);
+    if !overwrite && dest.exists() {
+        return Ok(());
+    }
+    let bytes = mfs::read(&src).with_context(|| format!("reading seed {}", src.display()))?;
+    mfs::write_atomic(&dest, &bytes)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    println!("  wrote .claude/{name}");
     Ok(())
 }
 
@@ -168,12 +277,9 @@ pub fn init_with_templates(
 /// Resolution order:
 /// 1. the `MUSTARD_TEMPLATES_DIR` environment variable (explicit override —
 ///    used by tests and by the Tauri backend, which knows its own layout);
-/// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout —
-///    the binary shipped next to its payload);
+/// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout);
 /// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout, for `cargo run`).
-///
-/// Shared with `update`, which copies from the same payload.
-pub(crate) fn resolve_templates_dir() -> Result<PathBuf> {
+fn resolve_templates_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("MUSTARD_TEMPLATES_DIR") {
         let path = PathBuf::from(dir);
         if path.is_dir() {
@@ -220,7 +326,7 @@ fn decide_existing_action(claude_path: &Path, options: &InitOptions) -> Result<E
         return Ok(ExistingAction::Merge);
     }
 
-    let choices = ["Backup and overwrite", "Merge (skip existing files)", "Cancel"];
+    let choices = ["Backup and overwrite", "Merge (keep my files)", "Cancel"];
     let choice = Select::with_theme(&ColorfulTheme::default())
         .with_prompt(".claude/ already exists")
         .items(choices)
@@ -252,28 +358,6 @@ fn backup_claude_dir(claude_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A filesystem-safe UTC timestamp slug (`YYYY-MM-DDTHH-MM-SS`).
-///
-/// Built from the wall clock without a date crate: seconds since the Unix
-/// epoch are decomposed by hand. Used only for backup directory names, where
-/// monotonic uniqueness — not calendar exactness — is what matters.
-///
-/// Shared with `update`, which names its backup the same way.
-
-/// Print the post-copy summary line.
-fn report_copy(count: usize, github_count: usize, fresh: bool) {
-    let gh = if github_count > 0 {
-        format!(" (+ {github_count} GitHub template(s) at .github/)")
-    } else {
-        String::new()
-    };
-    if fresh {
-        println!("  Copied {count} files to .claude/{gh}");
-    } else {
-        println!("  Copied {count} new files (existing files preserved){gh}");
-    }
-}
-
 /// Copy `templates/.github/` → `<project>/.github/` when the project has a
 /// GitHub remote. Never overwrites — user customisations win. Returns the
 /// number of files copied (0 when there is no `.github` payload or no remote).
@@ -283,29 +367,6 @@ fn install_github_templates(templates_dir: &Path, project_path: &Path) -> Result
         return Ok(0);
     }
     copy_dir(&src, &project_path.join(".github"), false, &[])
-}
-
-/// Rewrite the copied `.claude/settings.json` hook commands to invoke
-/// `mustard-rt` by absolute path (and drop the `rtk` prefix), so the harness
-/// hooks fire even when the launcher's `PATH` omits the install directory.
-///
-/// Best-effort and fail-open: it prints what it did on success and a warning on
-/// failure, but a rewrite error never aborts `init`/`update` — the worst case
-/// is the pre-fix behavior (a PATH-dependent bare `mustard-rt` token). Shared by
-/// `init` and `update`; `rehook` re-asserts it after restoring a snapshot.
-pub(crate) fn rewrite_hooks_to_absolute(claude_path: &Path) {
-    let Some(exe) = mustard_core::resolve_mustard_rt() else {
-        eprintln!("  warning: could not resolve mustard-rt path; hooks left PATH-dependent");
-        return;
-    };
-    match mustard_core::rewrite_settings_hooks(claude_path, &exe) {
-        Ok(0) => {}
-        Ok(n) => println!(
-            "  Hooks: resolved {n} command(s) to {} (PATH-independent)",
-            exe.display()
-        ),
-        Err(err) => eprintln!("  warning: could not absolutize hook commands: {err}"),
-    }
 }
 
 /// Whether `origin`'s URL points at github.com.
@@ -346,78 +407,16 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     println!("  wrote mustard.json");
     Ok(())
 }
-
-/// Ensure `<project>/.mcp.json` declares the `mustard-memory` MCP server.
-///
-/// MCP servers belong in `.mcp.json` at the project root — Claude Code does not
-/// read `mcpServers` from `settings.json`. The entry is **merged in** (an
-/// existing `.mcp.json` and any user-declared servers are preserved). The
-/// server is the standalone `mustard-mcp` binary (`{ "command": "mustard-mcp",
-/// "args": [] }`) — split out of `mustard-rt` so the long-lived MCP process no
-/// longer holds `mustard-rt.exe` open across a reinstall. It carries no env:
-/// the server reads NDJSON from the filesystem (no SQLite, no `MUSTARD_DB_PATH`).
-///
-/// Added when absent; the **legacy** mustard-managed entry (`mustard-rt mcp`,
-/// the only shape this ever wrote pre-split) is migrated to `mustard-mcp`, but
-/// a hand-edited `mustard-memory` (any other command/args) is left untouched.
-/// Shared with `update`, which re-asserts it — and because `install.ps1`
-/// installs `mustard-mcp` before running init, that migration never opens a
-/// broken-binary window.
-pub(crate) fn install_mcp_json(project_path: &Path) -> Result<()> {
-    let path = project_path.join(".mcp.json");
-    let mut root = crate::fs_ops::read_json_object(&path);
-    let servers = root.entry("mcpServers").or_insert_with(|| json!({}));
-    if let Some(servers) = servers.as_object_mut() {
-        // Write the standalone-binary entry when absent, or when the existing
-        // entry is the legacy `mustard-rt mcp` default we used to write (so a
-        // reinstall migrates it). A hand-edited entry is preserved. Computed as
-        // a bool first so the immutable `get` borrow ends before the `insert`.
-        let write_default = match servers.get("mustard-memory") {
-            None => true,
-            Some(existing) => is_legacy_memory_entry(existing),
-        };
-        if write_default {
-            servers.insert(
-                "mustard-memory".to_string(),
-                json!({ "command": "mustard-mcp", "args": [] }),
-            );
-        }
-    }
-    let mut serialized = serde_json::to_string_pretty(&serde_json::Value::Object(root))
-        .context("serializing .mcp.json")?;
-    serialized.push('\n');
-    mfs::write_atomic(&path, serialized.as_bytes())
-        .with_context(|| format!("writing {}", path.display()))?;
-    println!("  wrote .mcp.json (mustard-memory)");
-    Ok(())
-}
-
-/// `true` when `entry` is exactly the legacy mustard-managed `mustard-memory`
-/// server (`{ "command": "mustard-rt", "args": ["mcp"] }`) — the only shape
-/// [`install_mcp_json`] ever wrote before the `mustard-mcp` split. Only that
-/// entry is migrated to the standalone binary; any other (hand-edited) shape is
-/// left untouched.
-fn is_legacy_memory_entry(entry: &serde_json::Value) -> bool {
-    entry.get("command").and_then(|c| c.as_str()) == Some("mustard-rt")
-        && entry
-            .get("args")
-            .and_then(|a| a.as_array())
-            .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("mcp"))
-}
-
 /// Ensure `~/.claude/settings.json` grants `Read`/`Write`/`Edit` and sets the
 /// `CLAUDE_CODE_NO_FLICKER` env var. Non-destructive: only adds what is
-/// missing, preserves everything else. Ported from `ensureGlobalPermissions`.
+/// missing, preserves everything else.
 ///
-/// **Opt-in (eliminate-bun Wave 4).** Mutating the user's *global*
-/// `~/.claude/settings.json` is off by default — user policy is to never
-/// touch global settings unprompted. The write only runs when
-/// `MUSTARD_GLOBAL_PERMISSIONS` is set to `1`/`true`; otherwise this is a
-/// no-op and the project-local `.claude/settings.json` is the only thing
-/// `init`/`update` write.
-///
-/// Shared with `update`, which re-runs the same global-settings guarantee.
-pub(crate) fn ensure_global_permissions() -> Result<()> {
+/// **Opt-in.** Mutating the user's *global* `~/.claude/settings.json` is off by
+/// default — user policy is to never touch global settings unprompted. The
+/// write only runs when `MUSTARD_GLOBAL_PERMISSIONS` is set to `1`/`true`;
+/// otherwise this is a no-op and the project-local `.claude/settings.json` is
+/// the only thing `init` writes.
+fn ensure_global_permissions() -> Result<()> {
     if !global_permissions_opt_in() {
         println!(
             "  Global settings: skipped (set MUSTARD_GLOBAL_PERMISSIONS=1 to update ~/.claude/settings.json)"
@@ -490,7 +489,7 @@ pub(crate) fn ensure_global_permissions() -> Result<()> {
     Ok(())
 }
 
-/// Whether the user opted in to having `init`/`update` mutate the *global*
+/// Whether the user opted in to having `init` mutate the *global*
 /// `~/.claude/settings.json`. Off by default; enabled by setting
 /// `MUSTARD_GLOBAL_PERMISSIONS` to `1` or `true` (case-insensitive).
 fn global_permissions_opt_in() -> bool {
@@ -509,15 +508,12 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// Ensure RTK (Rust Token Killer) is installed. Best-effort and fail-open: a
-/// missing RTK — and a *failed* install — never blocks `init`. Ported from
-/// `ensureRtk` and completed in eliminate-bun Wave 4.
+/// missing RTK — and a *failed* install — never blocks `init`.
 ///
 /// Flow: if `rtk` is already on PATH, run `rtk init -g --no-patch` and return.
 /// Otherwise attempt an auto-install (see [`install_rtk`]); on success re-run
 /// the `rtk init`, on failure print the manual instructions and carry on.
-///
-/// Shared with `update`, which re-runs the same RTK guarantee.
-pub(crate) fn ensure_rtk() {
+fn ensure_rtk() {
     // No external-tool side effects under unit tests: on a clean CI runner this
     // would shell out to `cargo install --git …rtk` (slow / network-bound).
     if cfg!(test) {
@@ -553,21 +549,17 @@ fn rtk_on_path() -> bool {
 }
 
 /// Probe `rtk --version` and exit hard with install instructions when it
-/// fails. RTK is a mandatory dependency: the generated `settings.json` wires
-/// every hook through `rtk mustard-rt on <Event>`, and the `bash_guard` hook
-/// denies un-prefixed Bash commands in strict mode. A Mustard install without
-/// `rtk` on `PATH` would produce a `.claude/` that cannot run, so we abort
-/// before touching disk rather than failing later in a confusing way.
+/// fails. RTK is a mandatory dependency: the harness prefixes Bash commands
+/// with `rtk`, so a Mustard install without `rtk` on `PATH` would produce a
+/// `.claude/` that cannot run. We abort before touching disk rather than
+/// failing later in a confusing way.
 ///
 /// This is **not** fail-open — unlike [`ensure_rtk`], which is best-effort
 /// during the install phase. The exit code is `1` so CI/Tauri callers can
 /// detect the failure and surface it to the user.
 fn probe_rtk() {
     // Skip the hard gate under unit tests: a clean CI runner has no `rtk`, and a
-    // `process::exit` here would kill the whole test process (no `rtk` ->
-    // exit 1 before any test could report). Production (the `mustard` bin and
-    // the Tauri backend) compiles with `cfg!(test) == false`, so the gate still
-    // exits 1 for real installs — the documented invariant is preserved.
+    // `process::exit` here would kill the whole test process.
     if cfg!(test) || rtk_on_path() {
         return;
     }
@@ -586,8 +578,7 @@ fn probe_rtk() {
 ///
 /// Fail-open: a missing / unreadable / unparseable manifest, an absent
 /// `tool:rtk` record, or a null version all yield `None`, leaving the caller
-/// on the current unpinned-install behavior. Never errors or panics — the
-/// manifest is a maintainer-side artifact and `init` must not depend on it.
+/// on the current unpinned-install behavior. Never errors or panics.
 ///
 /// A branch name (e.g. `develop`) is treated as "unpinned": only a concrete
 /// rev is usable as `cargo install --rev`, so callers receive `None` for it.
@@ -614,10 +605,6 @@ fn rtk_pinned_rev() -> Option<String> {
 /// `pinned_rev` is the RTK commit SHA from the manifest (`rtk_pinned_rev`);
 /// when present it pins the `cargo install --git` to that rev, when `None` the
 /// install runs unpinned.
-///
-/// - Unix: pipe the official `install.sh` through `sh` (`curl … | sh`).
-/// - Windows: try `scoop install rtk` first (fast, if Scoop is present), then
-///   fall back to `cargo install --git`.
 fn install_rtk(pinned_rev: Option<&str>) -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
         cmd.output().is_ok_and(|o| o.status.success())
@@ -644,19 +631,13 @@ fn install_rtk(pinned_rev: Option<&str>) -> bool {
 /// `rg` — and a *failed* install — never blocks `init`.
 ///
 /// Why: RTK's `grep`/`find` filters use `rg` as their search engine. When `rg`
-/// is missing (the default state on a fresh Windows install — `mustard init`
-/// installs `rtk` but Scoop's `rtk` manifest does not depend on `ripgrep`),
-/// RTK prints `Failed to resolve 'rg' via PATH, falling back to direct exec`
-/// on every invocation and falls back to system `grep`. The warning is
-/// harmless but pollutes every Bash tool output with ~50 input+output tokens.
+/// is missing, RTK prints a fallback warning on every invocation that pollutes
+/// every Bash tool output with ~50 tokens.
 ///
 /// Flow: if `rg` is already on PATH, return silently. Otherwise attempt
 /// auto-install via Scoop (Windows) or `cargo install ripgrep`; on Unix only
-/// print manual instructions (the package manager varies — apt/brew/pacman —
-/// and `rg` ships pre-installed on most modern dev distros).
-///
-/// Shared with `update`, which re-runs the same ripgrep guarantee.
-pub fn ensure_ripgrep() {
+/// print manual instructions (the package manager varies).
+fn ensure_ripgrep() {
     // No external-tool side effects under unit tests (would `cargo install
     // ripgrep` on a clean CI runner). Production keeps `cfg!(test) == false`.
     if cfg!(test) {
@@ -695,9 +676,7 @@ fn rg_on_path() -> bool {
 /// command exited successfully. Every spawn failure is swallowed.
 ///
 /// - Windows: try `scoop install ripgrep` first, then `cargo install ripgrep`.
-/// - Unix: return `false` so the caller prints manual instructions (no single
-///   default package manager to invoke; `cargo install ripgrep` would compile
-///   from source and take minutes, which is hostile in an installer flow).
+/// - Unix: return `false` so the caller prints manual instructions.
 fn install_ripgrep() -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
         cmd.output().is_ok_and(|o| o.status.success())
@@ -713,18 +692,9 @@ fn install_ripgrep() -> bool {
 }
 
 /// Print the closing "next steps" block.
-///
-/// Lists the opt-in extras shipped under `templates-extras/skills/` (W6 deep
-/// refactor): foundation skills the user can install on demand via
-/// `mustard add skill:<name>` (routed through `mustard-rt run skill-fetch`).
 fn print_next_steps() {
     println!("\nDone!\n");
     println!("Next: open Claude Code and run /scan to analyze your codebase.\n");
-    println!("Optional extras (install with `mustard add skill:<name>`):");
-    println!("  hallmark             — anti-AI-slop landing pages / design audits");
-    println!("  design-craft         — broad design-system generation");
-    println!("  react-best-practices — React/Next.js performance + rendering rules");
-    println!("  grill-me             — relentless plan-grilling interview\n");
 }
 
 #[cfg(test)]
@@ -734,28 +704,28 @@ mod tests {
     use tempfile::tempdir;
 
     /// Build a minimal fake `templates/` tree and return its path. Tests point
-    /// `MUSTARD_TEMPLATES_DIR` at this so they never touch the real payload.
+    /// `init_with_templates` at this so they never touch the real payload. The
+    /// `commands/` dir is a decoy: the thin init must NOT copy it into `.claude/`.
     fn fake_templates(root: &Path) -> PathBuf {
         let templates = root.join("templates");
         fs::create_dir_all(templates.join("commands")).unwrap();
-        fs::write(templates.join("CLAUDE.md"), "# rules").unwrap();
-        fs::write(templates.join("settings.json"), "{}").unwrap();
+        fs::write(templates.join("CLAUDE.md"), "# orchestrator").unwrap();
+        // A reduced seed with an env + a permission the init must copy verbatim.
+        fs::write(
+            templates.join("settings.json"),
+            r#"{"env":{"MUSTARD_TEST":"1"},"permissions":{"allow":["Read"]}}"#,
+        )
+        .unwrap();
         fs::write(templates.join("commands/feature.md"), "feature").unwrap();
-        // A top-level dotfile must ride along into `.claude/` — `copy_dir`
-        // skips only the `skip_top_level` names, never hidden files. This
-        // mirrors the real `templates/.gitignore` (Frente 5 / D7).
-        fs::write(templates.join(".gitignore"), ".events/\n").unwrap();
+        fs::write(templates.join(".gitignore"), "spec/*/.events/\n").unwrap();
         templates
     }
 
     /// Regression guard (2026-06-03): the legacy per-subproject guards file
     /// `.claude/commands/guards.md` (and its `patterns.md` companion) is
-    /// OBSOLETE — `scan` now writes guards into the CLAUDE.md `## Guards`
-    /// sentinel block, and no generator emits a standalone `guards.md`. No
-    /// shipped template may point an agent at those non-existent paths: doing so
-    /// makes every scanned project emit a "File does not exist" read error
-    /// during REVIEW. Walks the REAL bundled `templates/` payload and fails if
-    /// the obsolete path is reintroduced.
+    /// OBSOLETE. No shipped template may point an agent at those non-existent
+    /// paths. Walks the REAL bundled `templates/` payload and fails if the
+    /// obsolete path is reintroduced.
     #[test]
     fn templates_never_reference_obsolete_guards_file() {
         let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
@@ -794,8 +764,7 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "templates must not reference the obsolete standalone guards file \
-             (guards now live in the CLAUDE.md `## Guards` section):\n{}",
+            "templates must not reference the obsolete standalone guards file:\n{}",
             offenders.join("\n")
         );
     }
@@ -810,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_claude_tree_with_version_stamp() {
+    fn init_seeds_harness_and_enables_plugin() {
         let work = tempdir().unwrap();
         let templates = fake_templates(work.path());
         let project = work.path().join("project");
@@ -824,22 +793,57 @@ mod tests {
         .unwrap();
 
         let claude = project.join(".claude");
-        assert!(claude.join("CLAUDE.md").exists(), ".claude/CLAUDE.md copied");
-        assert!(claude.join("commands/feature.md").exists(), "nested file copied");
+        // The three seed files are laid down.
+        assert!(claude.join("settings.json").exists(), ".claude/settings.json seeded");
+        assert!(claude.join("CLAUDE.md").exists(), ".claude/CLAUDE.md seeded");
+        assert!(claude.join(".gitignore").exists(), ".claude/.gitignore seeded");
 
-        // The template `.gitignore` rides along into `.claude/.gitignore`,
-        // covering the ephemeral harness state (`.events/` et al.) so a fresh
-        // project never versions it (Frente 5 / D7).
-        let gitignore = claude.join(".gitignore");
-        assert!(gitignore.exists(), ".claude/.gitignore provisioned by init");
+        // The content payload is the plugin's now — init must NOT copy it.
         assert!(
-            fs::read_to_string(&gitignore).unwrap().contains(".events/"),
+            !claude.join("commands").exists(),
+            "commands/skills/agents/refs ship in the mustard plugin, never .claude/"
+        );
+        // The plugin ships `.mcp.json`; init writes no project-level copy.
+        assert!(
+            !project.join(".mcp.json").exists(),
+            "init must not write .mcp.json — the plugin ships it"
+        );
+
+        // settings.json carries the reduced seed keys AND the plugin enablement.
+        let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
+        assert_eq!(
+            settings
+                .get("env")
+                .and_then(|e| e.get("MUSTARD_TEST"))
+                .and_then(|v| v.as_str()),
+            Some("1"),
+            "the reduced seed's env is copied verbatim"
+        );
+        assert_eq!(
+            settings
+                .get("enabledPlugins")
+                .and_then(|p| p.get("mustard@mustard"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "the mustard plugin is enabled"
+        );
+        let url = settings
+            .get("extraKnownMarketplaces")
+            .and_then(|m| m.get("mustard"))
+            .and_then(|e| e.get("source"))
+            .and_then(|s| s.get("url"))
+            .and_then(|v| v.as_str());
+        assert!(url.is_some(), "the marketplace source url is seeded");
+
+        // .gitignore covers the ephemeral harness state.
+        assert!(
+            fs::read_to_string(claude.join(".gitignore")).unwrap().contains(".events/"),
             ".gitignore covers the ephemeral .events/ dir"
         );
 
         // The SINGLE project-root mustard.json carries git-flow, the version
         // stamp, runtime, and the language/tone defaults — and there is NO
-        // .claude/mustard.json (one file, at the root, the workspace anchor).
+        // .claude/mustard.json.
         let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
         assert_eq!(cfg.get("version").and_then(|v| v.as_str()), Some(crate::VERSION));
         assert!(cfg.get("runtime").is_some(), "runtime block written");
@@ -851,69 +855,9 @@ mod tests {
             "no .claude/mustard.json — config lives only at the project root"
         );
 
-        // MCP servers live in <root>/.mcp.json (Claude Code does not read
-        // mcpServers from settings.json) — and never carry MUSTARD_DB_PATH.
-        let mcp = crate::fs_ops::read_json_object(&project.join(".mcp.json"));
-        let memory = mcp
-            .get("mcpServers")
-            .and_then(|s| s.get("mustard-memory"))
-            .expect(".mcp.json declares the mustard-memory server");
-        assert_eq!(memory.get("command").and_then(|c| c.as_str()), Some("mustard-mcp"));
-        assert!(memory.get("env").is_none(), "no MUSTARD_DB_PATH / SQLite env");
-
-        // init no longer seeds any entity-registry — the repo model is grain's
+        // init seeds no entity-registry — the repo model is grain's
         // `.claude/grain.model.json`, produced on demand by `mustard-rt run scan`.
         assert!(!claude.join("entity-registry.json").exists());
-    }
-
-    #[test]
-    fn install_mcp_json_seeds_and_migrates_but_preserves_handedits() {
-        // (1) Absent → seeds the standalone `mustard-mcp` entry (no env, empty args).
-        let fresh = tempdir().unwrap();
-        super::install_mcp_json(fresh.path()).unwrap();
-        let m = crate::fs_ops::read_json_object(&fresh.path().join(".mcp.json"));
-        let e = m.get("mcpServers").and_then(|s| s.get("mustard-memory")).unwrap();
-        assert_eq!(e.get("command").and_then(|c| c.as_str()), Some("mustard-mcp"));
-        assert_eq!(e.get("args").and_then(|a| a.as_array()).map(Vec::len), Some(0));
-        assert!(e.get("env").is_none());
-
-        // (2) Legacy `mustard-rt mcp` default → migrated to `mustard-mcp`.
-        let legacy = tempdir().unwrap();
-        std::fs::write(
-            legacy.path().join(".mcp.json"),
-            serde_json::json!({ "mcpServers": { "mustard-memory": {
-                "command": "mustard-rt", "args": ["mcp"]
-            } } })
-            .to_string(),
-        )
-        .unwrap();
-        super::install_mcp_json(legacy.path()).unwrap();
-        let m = crate::fs_ops::read_json_object(&legacy.path().join(".mcp.json"));
-        let e = m.get("mcpServers").and_then(|s| s.get("mustard-memory")).unwrap();
-        assert_eq!(
-            e.get("command").and_then(|c| c.as_str()),
-            Some("mustard-mcp"),
-            "legacy mustard-rt mcp entry must migrate"
-        );
-
-        // (3) A hand-edited entry (different command) is left untouched.
-        let custom = tempdir().unwrap();
-        std::fs::write(
-            custom.path().join(".mcp.json"),
-            serde_json::json!({ "mcpServers": { "mustard-memory": {
-                "command": "my-wrapper", "args": ["x"]
-            } } })
-            .to_string(),
-        )
-        .unwrap();
-        super::install_mcp_json(custom.path()).unwrap();
-        let m = crate::fs_ops::read_json_object(&custom.path().join(".mcp.json"));
-        let e = m.get("mcpServers").and_then(|s| s.get("mustard-memory")).unwrap();
-        assert_eq!(
-            e.get("command").and_then(|c| c.as_str()),
-            Some("my-wrapper"),
-            "hand-edited entry must be preserved"
-        );
     }
 
     #[test]
@@ -933,25 +877,18 @@ mod tests {
         assert!(!dry.join(".claude").exists(), "dry-run wrote nothing");
     }
 
-    /// Regression guard for the `.claude/.claude/` nesting bug (I1 rule).
-    ///
-    /// When `templates/` contains a `.claude/` sub-directory (e.g. a subproject
-    /// guard added during development), a naive recursive copy propagates it into
-    /// the target, producing `<project>/.claude/.claude/` — which violates the
-    /// workspace model. This test fails before the fix (`.claude` missing from
-    /// the exclude list) and passes after it.
+    /// Regression guard for the `.claude/.claude/` nesting bug (I1 rule): even
+    /// if `templates/` carries a stray `.claude/` sub-directory, the thin init —
+    /// which reads only the three named seed files — must never propagate it.
     #[test]
     fn init_does_not_create_nested_claude_dir() {
         let work = tempdir().unwrap();
 
-        // Use a real templates dir that mirrors the bug: templates/ has a .claude/
-        // subdir with a file in it.
         let templates = work.path().join("templates");
-        // Build the normal payload.
         fs::create_dir_all(templates.join("commands")).unwrap();
-        fs::write(templates.join("CLAUDE.md"), "# rules").unwrap();
+        fs::write(templates.join("CLAUDE.md"), "# orchestrator").unwrap();
         fs::write(templates.join("settings.json"), "{}").unwrap();
-        fs::write(templates.join("commands/feature.md"), "feature").unwrap();
+        fs::write(templates.join(".gitignore"), ".events/\n").unwrap();
         // Inject the offending .claude/ inside templates/.
         fs::create_dir_all(templates.join(".claude/commands")).unwrap();
         fs::write(templates.join(".claude/commands/notes.md"), "boilerplate").unwrap();
@@ -967,20 +904,17 @@ mod tests {
         .unwrap();
 
         let nested = project.join(".claude").join(".claude");
-        assert!(
-            !nested.exists(),
-            ".claude/.claude/ must not be created — I1 rule violated"
-        );
+        assert!(!nested.exists(), ".claude/.claude/ must not be created — I1 rule");
     }
 
     #[test]
-    fn init_merge_preserves_user_files() {
+    fn init_merge_preserves_user_orchestrator_and_enables_plugin() {
         let work = tempdir().unwrap();
         let templates = fake_templates(work.path());
         let project = work.path().join("project");
         let claude = project.join(".claude");
         fs::create_dir_all(&claude).unwrap();
-        // A user-edited file already present in .claude/.
+        // A user-edited orchestrator already present in .claude/.
         fs::write(claude.join("CLAUDE.md"), "USER EDIT").unwrap();
 
         // Non-interactive existing-dir path resolves to a merge.
@@ -991,12 +925,41 @@ mod tests {
         )
         .unwrap();
 
+        // The user's orchestrator survives the merge untouched.
         assert_eq!(
             fs::read_to_string(claude.join("CLAUDE.md")).unwrap(),
             "USER EDIT",
-            "merge must not overwrite a user-edited file"
+            "merge must not overwrite a user-edited orchestrator"
         );
-        // …but new template files still arrive.
-        assert!(claude.join("commands/feature.md").exists());
+        // …but the plugin is still enabled (settings.json is seeded on merge too).
+        let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
+        assert_eq!(
+            settings
+                .get("enabledPlugins")
+                .and_then(|p| p.get("mustard@mustard"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "merge still enables the mustard plugin"
+        );
+    }
+
+    #[test]
+    fn enable_mustard_plugin_preserves_other_marketplaces() {
+        // A user with their own marketplace + plugin: init adds mustard without
+        // clobbering theirs.
+        let mut settings: Map<String, Value> = serde_json::from_str(
+            r#"{"extraKnownMarketplaces":{"acme":{"source":{"source":"git","url":"x"}}},
+                "enabledPlugins":{"acme@acme":true}}"#,
+        )
+        .unwrap();
+
+        enable_mustard_plugin(&mut settings);
+
+        // Theirs survive.
+        assert!(settings["extraKnownMarketplaces"].get("acme").is_some());
+        assert_eq!(settings["enabledPlugins"]["acme@acme"], json!(true));
+        // Ours are added.
+        assert!(settings["extraKnownMarketplaces"].get("mustard").is_some());
+        assert_eq!(settings["enabledPlugins"]["mustard@mustard"], json!(true));
     }
 }

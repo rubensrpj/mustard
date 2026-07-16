@@ -10,10 +10,10 @@
 //! ## Why this is a SCAN STAGE, not a projection from the finished model
 //!
 //! Comments live ONLY in the in-memory `content` map during a scan; the model's
-//! [`Decl`](crate::model::Decl) keeps `kind/name/line/supertypes/purpose/
-//! body_hash` and NEVER the comment text. So the "everything, including
+//! [`Decl`](crate::model::Decl) keeps `kind/name/line/supertypes` and NEVER
+//! the comment text. So the "everything, including
 //! comments" requirement forces this to run INSIDE `analyze` — alongside `mine`,
-//! over `modules` + `content` — not as a `digest`/`purpose`-style projection
+//! over `modules` + `content` — not as a `digest`-style projection
 //! that reads only the finished `ProjectModel`.
 //!
 //! ## Two sources, one corpus
@@ -25,8 +25,7 @@
 //!   SEGMENT per comment, split on non-alphanumerics with the same 3-char
 //!   floor — RAW, in the author's language (see below: that IS the bridge).
 //!
-//! The corpus is the modules (hand-written, non-test — the same eligibility
-//! [`crate::purpose`] uses). Per candidate term: total `count`, document
+//! The corpus is the modules (hand-written, non-test). Per candidate term: total `count`, document
 //! frequency `df` (distinct modules), and
 //! [`domain_specificity_x1024`](mustard_core::domain::ranking::domain_specificity_x1024)
 //! — TF·IDF that PEAKS mid-frequency. A term in more than half the corpus is
@@ -150,9 +149,8 @@ pub fn build(modules: &[Module], content: &HashMap<String, String>, roles: &[Rol
     let en_stop = stoplist_words("en");
     let pt_stop = stoplist_words("pt");
 
-    // Pass 1 — per eligible module (the same gate as the purpose index: a
-    // machine-written or test module is never domain vocabulary you would
-    // anchor a query on), harvest the comment segments and flag the
+    // Pass 1 — per eligible module (a machine-written or test module is
+    // never domain vocabulary you would anchor a query on), harvest the comment segments and flag the
     // non-English ones (detection only — the raw tokens are the bridge keys).
     let mut per_module: Vec<(&Module, Vec<(String, bool)>)> = Vec::new();
     for m in modules {

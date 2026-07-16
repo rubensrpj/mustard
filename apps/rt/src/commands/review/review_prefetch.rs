@@ -13,7 +13,6 @@
 //! - JSON parse failures → `{"error":"parse-error"}`, exit 0.
 
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -24,9 +23,6 @@ pub struct ReviewPrefetchOpts {
     /// PR reference: a number like `"123"` or a full GitHub URL.
     pub pr_ref: String,
     pub format: String,
-    /// Optional project root (currently unused but kept for future remote resolution).
-    #[allow(dead_code)] // kept for API consistency with sibling opts structs
-    pub root: PathBuf,
 }
 
 // ---------------------------------------------------------------------------

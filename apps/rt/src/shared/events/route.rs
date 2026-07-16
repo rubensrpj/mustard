@@ -46,7 +46,7 @@
 //! - **wave**: `HarnessEvent.wave` → `MUSTARD_ACTIVE_WAVE`.
 
 use crate::shared::context::{
-    bind_session_spec, current_spec, project_dir, session_id, spec_for_session,
+    bind_session_spec, current_spec, session_id, spec_for_session,
 };
 use crate::shared::events::writer_ndjson;
 use mustard_core::domain::model::event::HarnessEvent;
@@ -71,7 +71,6 @@ pub fn classify_kind(event_name: &str) -> &'static str {
         "qa"
     } else if event_name.starts_with("knowledge.")
         || event_name == "decision"
-        || event_name == "finding"
         || event_name == "lesson"
     {
         "knowledge"
@@ -104,7 +103,7 @@ pub fn classify_kind(event_name: &str) -> &'static str {
 /// `MUSTARD_ACTIVE_WAVE_ROLE` are set; `None` otherwise (the event then lands
 /// directly under `<spec>/events/` instead of inside a wave subdir).
 #[must_use]
-pub fn current_wave_role() -> Option<String> {
+pub(crate) fn current_wave_role() -> Option<String> {
     let wave = std::env::var("MUSTARD_ACTIVE_WAVE")
         .ok()
         .filter(|s| !s.is_empty())?;
@@ -211,18 +210,6 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     .is_some()
 }
 
-/// Convenience wrapper that resolves the project dir for the caller.
-///
-/// The vast majority of run-face emitters already call
-/// [`crate::shared::context::project_dir`] before routing through [`emit`]; this
-/// helper packages the common pattern. Marked `allow(dead_code)` until the
-/// first short-form callsite picks it up — the explicit form
-/// [`emit`]`(&project_dir, ev)` covers every site today.
-#[allow(dead_code)]
-pub fn emit_default(event: &HarnessEvent) -> bool {
-    emit(&project_dir(), event)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,9 +253,7 @@ mod tests {
         assert_eq!(classify_kind("capability.update"), "capability");
         assert_eq!(classify_kind("capability.drift"), "capability");
         assert_eq!(classify_kind("hygiene.spec.archived"), "hygiene");
-        assert_eq!(classify_kind("boundary.expansion"), "boundary");
         assert_eq!(classify_kind("spec.link"), "scope");
-        assert_eq!(classify_kind("worktree.gc.run"), "scope");
         assert_eq!(classify_kind("totally.unknown"), "other");
     }
 

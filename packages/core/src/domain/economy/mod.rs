@@ -28,7 +28,7 @@ pub use estimator::{
     estimate_input_tokens, estimate_output_tokens, model_pricing_usd_micros_per_million,
 };
 pub use model::{
-    AgentCost, ApiCostFrame, ContextCostFrame, ContextRoutingMetrics, EconomySummary,
+    AgentCost, ContextCostFrame, ContextRoutingMetrics, EconomySummary,
     MetricTokenModelBucket, MetricTokenSummary, PerPhaseTokenSummary, PhaseTokenBucket,
     SavingsBreakdown, SavingsBySource, SavingsRecord, SavingsSource, SessionCost, SpanRecord,
     SpecCost, WaveCost, PHASE_UNATTRIBUTED,

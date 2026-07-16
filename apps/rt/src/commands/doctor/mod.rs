@@ -1,3 +1,5 @@
+pub mod cli;
+
 pub mod doctor;
 pub mod doctor_claude_paths;
 pub mod doctor_i1;

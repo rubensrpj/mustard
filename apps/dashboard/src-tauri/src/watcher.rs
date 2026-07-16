@@ -36,11 +36,6 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
     // `.events/`) falls through to the spec branch unchanged.
     if is_events_log(&s) {
         Some("events")
-    } else if s.contains("telemetry.db") {
-        // The OTEL collector still writes `telemetry.db` (run_usage /
-        // usage_totals) and its WAL/SHM companions; those writes refresh the
-        // economy/telemetry views via the same `events` channel.
-        Some("events")
     } else if s.contains(".pipeline-states") {
         Some("pipeline-state")
     } else if (s.contains("/spec/") || s.contains("\\spec\\")) && !s.contains(".pipeline-states") {
@@ -48,16 +43,11 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
         // inside the spec directory (regardless of bucket) is a spec-change
         // event (event-log writes were already captured above).
         Some("spec")
-    } else if is_knowledge_path(&s) {
-        // Wave 3 (2026-05-22): event-driven knowledge refresh. The knowledge
-        // base now derives from the per-spec/.session NDJSON event log (the
-        // `events` branch above invalidates the knowledge query keys for that
-        // reason). This branch additionally classifies any legacy/file-based
-        // knowledge or memory path (`knowledge.json`, `memory/decisions.json`,
-        // `memory/lessons.json`) as `knowledge` so a file writer is covered too,
-        // letting the Knowledge page stop relying on a 10s `refetchInterval`.
-        Some("knowledge")
     } else {
+        // Knowledge derives exclusively from the per-spec/.session NDJSON
+        // event log now (`decision` / `lesson` events) — the `events` branch
+        // above already invalidates the knowledge query keys, so no dedicated
+        // file-store channel remains.
         None
     }
 }
@@ -81,16 +71,6 @@ fn is_events_log(s: &str) -> bool {
     s.contains(".events")
         || s.contains("/events/")
         || s.contains("\\events\\")
-}
-
-/// Recognise file paths that back the knowledge base (file-based variants).
-/// NDJSON-backed knowledge changes arrive via the `is_events_log` → `events`
-/// branch; this covers the JSON fallbacks that some installs still write.
-fn is_knowledge_path(s: &str) -> bool {
-    let has_knowledge_json = s.contains("knowledge.json");
-    let has_memory_doc = (s.contains("/memory/") || s.contains("\\memory\\"))
-        && (s.contains("decisions.json") || s.contains("lessons.json"));
-    has_knowledge_json || has_memory_doc
 }
 
 /// Emission throttle window: at most one push per `last_emit` key inside this
@@ -120,15 +100,13 @@ struct BatchEmissions {
 /// skip an invalidation along with the emit:
 ///
 ///   * `events` — mark exactly the changed `.ndjson` shard dirty; the next
-///     read re-parses ONLY that file (the incremental contract). Non-ndjson
-///     `events` writes (telemetry.db + WAL/SHM) never feed the parsed
-///     snapshot and are ignored inside `invalidate_events_cache_path`.
+///     read re-parses ONLY that file (the incremental contract).
 ///   * `spec` — drop the cached spec list (spec.md / wave-plan.md / meta.json
 ///     back it). A spec path that no longer exists means a deletion the
 ///     per-path marking can't see (the shards under it vanished without their
 ///     own events) — fall back to a full sweep of the events cache.
-///   * `knowledge` / `pipeline-state` — read on-disk files, not the cached
-///     event vec; no cache work needed.
+///   * `pipeline-state` — reads on-disk files, not the cached event vec; no
+///     cache work needed.
 ///
 /// Emission decisions are batch-level: `dashboard:fs-change` keeps its
 /// per-kind throttle (compatibility channel for every non-specs page), and the
@@ -148,12 +126,9 @@ fn process_batch(
         match kind {
             "events" => {
                 crate::telemetry::invalidate_events_cache_path(repo, path);
-                // Only parsed `.ndjson` shards feed the aggregated snapshot;
-                // telemetry.db (+ WAL/SHM) classifies as `events` but never
-                // changes the spec list / active-pipeline projections.
-                if path.extension().and_then(|s| s.to_str()) == Some("ndjson") {
-                    snapshot_dirty = true;
-                }
+                // `events` only classifies `.ndjson` shards — every one feeds
+                // the aggregated snapshot.
+                snapshot_dirty = true;
             }
             "spec" => {
                 crate::invalidate_specs_cache(repo);
@@ -232,7 +207,7 @@ pub fn ensure_watching(
             let paths: Vec<PathBuf> = events.into_iter().map(|ev| ev.path).collect();
             let emissions = process_batch(&state_clone, &repo_clone, &paths, Instant::now());
             // `dashboard:fs-change` stays the compatibility channel for every
-            // page keyed off a kind (events / spec / knowledge / pipeline-state)
+            // page keyed off a kind (events / spec / pipeline-state)
             // — the snapshot push below only covers the specs views.
             for kind in emissions.fs_change_kinds {
                 let _ = app_clone.emit(
@@ -345,18 +320,18 @@ mod tests {
 
     #[test]
     fn non_snapshot_kinds_do_not_schedule_a_rebuild() {
-        // knowledge files and telemetry.db (classifies `events` but is not a
-        // parsed shard) keep their fs-change channel without ever scheduling
-        // the aggregated snapshot rebuild.
+        // pipeline-state files keep their fs-change channel without ever
+        // scheduling the aggregated snapshot rebuild.
         let tmp = TempDir::new().unwrap();
         let repo = tmp.path().to_string_lossy().into_owned();
         let state = Mutex::new(WatcherState::default());
-        let paths = vec![
-            tmp.path().join(".claude").join("knowledge.json"),
-            tmp.path().join(".claude").join(".harness").join("telemetry.db"),
-        ];
+        let paths = vec![tmp
+            .path()
+            .join(".claude")
+            .join(".pipeline-states")
+            .join("abc.json")];
         let out = process_batch(&state, &repo, &paths, Instant::now());
-        assert_eq!(out.fs_change_kinds, vec!["knowledge", "events"]);
+        assert_eq!(out.fs_change_kinds, vec!["pipeline-state"]);
         assert!(!out.rebuild_snapshot);
     }
 
@@ -543,19 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_db_classifies_as_events() {
-        // The OTEL collector still writes telemetry.db (+ WAL/SHM companions).
-        assert_eq!(
-            kind(r"C:\repo\.claude\.harness\telemetry.db"),
-            Some("events"),
-        );
-        assert_eq!(
-            kind("/repo/.claude/.harness/telemetry.db-wal"),
-            Some("events"),
-        );
-    }
-
-    #[test]
     fn pipeline_states_classifies_as_pipeline_state() {
         assert_eq!(
             kind("/repo/.claude/.pipeline-states/abc.json"),
@@ -564,19 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn knowledge_json_classifies_as_knowledge() {
-        assert_eq!(
-            kind("/repo/.claude/knowledge.json"),
-            Some("knowledge"),
-        );
-        assert_eq!(
-            kind("/repo/.claude/memory/decisions.json"),
-            Some("knowledge"),
-        );
-    }
-
-    #[test]
     fn unrelated_path_classifies_as_none() {
         assert_eq!(kind("/repo/src/main.rs"), None);
+        // The legacy file-based memory store is gone: its old JSON paths no
+        // longer map to any fs-change kind (decision/lesson knowledge arrives
+        // through the `events` channel).
+        assert_eq!(kind("/repo/.claude/legacy-store.json"), None);
     }
 }

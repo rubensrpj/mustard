@@ -67,7 +67,6 @@ pub struct WaveCollapseOpts {
 #[derive(Debug, Clone)]
 struct WaveDir {
     n: u32,
-    #[allow(dead_code)] // retained for clarity / future use; folder name carries it
     role: String,
     path: PathBuf,
 }
@@ -446,6 +445,7 @@ fn patch_wave_plan_single(spec_dir: &Path, wave1: &WaveDir) {
             tasks: Vec::new(),
             files: Vec::new(),
             acceptance: Vec::new(),
+            satisfies: Vec::new(),
         }],
         total_waves: Some(1),
         lang: None,

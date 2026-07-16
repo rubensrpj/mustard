@@ -14,7 +14,7 @@ import type { EconomyScope, EconomySummary } from "@/lib/types/economy";
 /**
  * Fetch the economy summary for `scope`. Pass `null` to disable the query
  * (e.g. while the workspace is still being resolved). Polls at the same 30s
- * cadence as `usePromptEconomy` / `useTelemetryPhases` so the Economia page
+ * cadence as `usePromptEconomy` so the Economia page
  * refreshes coherently across panels.
  */
 export function useEconomySummary(

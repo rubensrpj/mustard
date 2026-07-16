@@ -30,7 +30,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 #[derive(Default)]
-pub struct Extracted {
+pub(crate) struct Extracted {
     pub imports: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
@@ -110,7 +110,7 @@ fn classify(cap: &str) -> CapKind {
     }
 }
 
-pub struct Analyzer {
+pub(crate) struct Analyzer {
     name: String,
     language: Language,
     query: Query,
@@ -227,7 +227,7 @@ impl Analyzer {
                     .get(&key)
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
-                Decl { kind, name, line, supertypes, purpose: None, body_hash: None }
+                Decl { kind, name, line, supertypes }
             })
             .collect();
 

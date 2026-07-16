@@ -352,27 +352,6 @@ pub fn validate(
     }
 }
 
-/// Strict-mode key-presence check that needs the raw YAML text (the parser
-/// folds missing → empty for collection fields, so we can't see omission
-/// from the typed value).
-///
-/// Returns the list of keys that strict mode requires but are missing from
-/// the raw YAML body. Used by `--strict-frontmatter` in addition to
-/// [`validate`].
-#[must_use]
-pub fn missing_strict_keys(raw_frontmatter: &str) -> Vec<String> {
-    let mut missing: Vec<String> = Vec::new();
-    for key in ["tags", "appliesTo", "scope"] {
-        if !contains_top_level_key(raw_frontmatter, key) {
-            missing.push(key.to_string());
-        }
-    }
-    if !contains_top_level_key(raw_frontmatter, "metadata") {
-        missing.push("metadata".to_string());
-    }
-    missing
-}
-
 /// Extract the YAML body between leading `---\n` and the next `\n---` fence.
 /// Tolerates CRLF.
 #[must_use]
@@ -387,25 +366,13 @@ pub fn extract_frontmatter(raw: &str) -> Option<String> {
 // Internals
 // ---------------------------------------------------------------------------
 
-/// Whether a YAML body contains a top-level key (`key:` at column 0 outside
-/// any nested block).
-fn contains_top_level_key(yaml: &str, key: &str) -> bool {
-    let needle = format!("{key}:");
-    for line in yaml.lines() {
-        if line.starts_with(&needle) {
-            return true;
-        }
-    }
-    false
-}
-
 /// kebab-case check (`[a-z][a-z0-9-]+`). Canonical home — `apps/rt`'s
 /// `skills::validate_skill` calls this directly instead of keeping a local copy.
 ///
 /// Uses `chars().count()` for the length guard so a single multi-byte unicode
 /// character (e.g. `"é"`, 2 bytes but 1 char) does not falsely pass as a
 /// two-character name.
-pub fn is_kebab(s: &str) -> bool {
+pub(crate) fn is_kebab(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && s.chars().count() >= 2
@@ -707,14 +674,6 @@ metadata:
 ";
         let fm = parse(raw).unwrap();
         assert!(validate(&fm, true).is_ok());
-    }
-
-    #[test]
-    fn missing_strict_keys_flags_omissions() {
-        let yaml = "name: x\ndescription: y\ntags: [add]\nscope: [review]\n";
-        let missing = missing_strict_keys(yaml);
-        assert!(missing.contains(&"appliesTo".to_string()));
-        assert!(missing.contains(&"metadata".to_string()));
     }
 
     #[test]

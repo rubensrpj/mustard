@@ -151,29 +151,6 @@ pub enum EconomyScope {
 }
 
 impl EconomyScope {
-    /// The project paths this scope covers.
-    ///
-    /// Returns a single-element slice for the single-project variants and the
-    /// full list for [`EconomyScope::AllProjects`]. Useful for the read-only
-    /// fan-out loop in [`MultiProjectReader`](super::multi_project::MultiProjectReader).
-    #[must_use]
-    pub fn project_paths(&self) -> Vec<&ProjectPath> {
-        match self {
-            Self::Project(p) | Self::Spec { project: p, .. } | Self::Wave { project: p, .. } => {
-                vec![p]
-            }
-            Self::AllProjects(list) => list.iter().collect(),
-        }
-    }
-
-    /// The spec slug this scope is filtered to, if any.
-    #[must_use]
-    pub fn spec_filter(&self) -> Option<&SpecId> {
-        match self {
-            Self::Spec { spec, .. } | Self::Wave { spec, .. } => Some(spec),
-            Self::Project(_) | Self::AllProjects(_) => None,
-        }
-    }
 
     /// The wave slug this scope is filtered to, if any.
     #[must_use]
@@ -188,43 +165,6 @@ impl EconomyScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_paths_singleton_for_project_variant() {
-        let scope = EconomyScope::Project(ProjectPath::new("/tmp/a"));
-        let paths = scope.project_paths();
-        assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0].as_path(), std::path::Path::new("/tmp/a"));
-    }
-
-    #[test]
-    fn project_paths_fans_out_for_all_projects() {
-        let scope = EconomyScope::AllProjects(vec![
-            ProjectPath::new("/tmp/a"),
-            ProjectPath::new("/tmp/b"),
-        ]);
-        assert_eq!(scope.project_paths().len(), 2);
-    }
-
-    #[test]
-    fn spec_filter_is_set_for_spec_and_wave_variants() {
-        let project = ProjectPath::new("/tmp/a");
-        let spec = SpecId::new("feature-x");
-        let scope = EconomyScope::Spec {
-            project: project.clone(),
-            spec: spec.clone(),
-        };
-        assert_eq!(scope.spec_filter(), Some(&spec));
-        assert!(scope.wave_filter().is_none());
-
-        let scope_wave = EconomyScope::Wave {
-            project,
-            spec: spec.clone(),
-            wave: WaveId::new("w1"),
-        };
-        assert_eq!(scope_wave.spec_filter(), Some(&spec));
-        assert_eq!(scope_wave.wave_filter().map(WaveId::as_str), Some("w1"));
-    }
 
     #[test]
     fn newtypes_serialize_transparently() {

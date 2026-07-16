@@ -152,52 +152,6 @@ fn has_list_item(block: &str) -> bool {
         .any(|l| l.trim_start().starts_with("- "))
 }
 
-/// Extracts the parent spec slug from a `### Parent: <slug>` header line.
-///
-/// Case-insensitive on the `Parent` key; trims surrounding whitespace from
-/// the slug. Returns the first match's slug, or `None` when the marker is
-/// absent. The line must start with `###` followed by at least one
-/// whitespace character — leading whitespace on the line itself is also
-/// permitted (the scan trims each line before testing the prefix).
-///
-/// String-only implementation: the crate carries no regex dependency and
-/// this function is not worth adding one.
-#[allow(dead_code)] // kept for API consistency with sibling spec-section helpers
-#[must_use]
-pub fn extract_parent(markdown: &str) -> Option<String> {
-    const KEY: &str = "parent";
-    for line in markdown.lines() {
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix("###") else {
-            continue;
-        };
-        // `\s+` — require at least one whitespace char after `###`.
-        let after_hashes = rest.trim_start_matches([' ', '\t']);
-        if after_hashes.len() == rest.len() {
-            continue;
-        }
-        // Case-insensitive match on the literal key `Parent` (ASCII only).
-        if after_hashes.len() < KEY.len() {
-            continue;
-        }
-        let (key_slice, mut tail) = after_hashes.split_at(KEY.len());
-        if !key_slice.eq_ignore_ascii_case(KEY) {
-            continue;
-        }
-        // Optional whitespace between the key and the colon.
-        tail = tail.trim_start_matches([' ', '\t']);
-        let Some(after_colon) = tail.strip_prefix(':') else {
-            continue;
-        };
-        let slug = after_colon.trim();
-        if slug.is_empty() {
-            continue;
-        }
-        return Some(slug.to_string());
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,54 +206,4 @@ mod tests {
         assert!(!block.contains("second"));
     }
 
-    #[test]
-    fn extract_parent_basic() {
-        assert_eq!(
-            extract_parent("### Parent: feature-x\n"),
-            Some("feature-x".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_parent_absent() {
-        assert_eq!(extract_parent("# Title\n\nSome body\n"), None);
-        assert_eq!(extract_parent(""), None);
-    }
-
-    #[test]
-    fn extract_parent_whitespace() {
-        assert_eq!(
-            extract_parent("###    Parent:   feature-x   \n"),
-            Some("feature-x".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_parent_lowercase_key() {
-        assert_eq!(
-            extract_parent("### parent: feature-x\n"),
-            Some("feature-x".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_parent_after_other_h3() {
-        assert_eq!(
-            extract_parent("### Status: draft\n### Parent: parent-y\n"),
-            Some("parent-y".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_parent_ignores_other_h3_without_match() {
-        // `### Parents:` (note trailing `s`) is not the marker.
-        assert_eq!(extract_parent("### Parents: a, b\n"), None);
-        // `### Parent` with no colon is not the marker either.
-        assert_eq!(extract_parent("### Parent feature-x\n"), None);
-    }
-
-    #[test]
-    fn extract_parent_empty_slug_is_none() {
-        assert_eq!(extract_parent("### Parent:   \n"), None);
-    }
 }

@@ -1,12 +1,13 @@
 //! Argument parsing and subcommand dispatch.
 //!
-//! Mirrors the JavaScript `cli.ts`, which used Commander: the same five
-//! subcommands (`init`, `update`, `config`, `add`, `review`)
-//! with the same flags. `clap`'s derive API builds the parser from the types
-//! below.
+//! The `mustard` binary exposes a small set of subcommands: `init` (the thin
+//! 2.0 bootstrap), `config` (git-flow), `add` (third-party community template),
+//! and the opt-in `install-nerd-font` / `install-grammars` helpers. `clap`'s
+//! derive API builds the parser from the types below.
 //!
-//! Every subcommand has a real body — Wave 1 ported `init`, Wave 2 ported the
-//! rest. Each dispatch arm forwards to a module under [`crate::commands`].
+//! Retired: `update` (versioned refreshes come from the plugin marketplace; a
+//! re-run of `init` re-stamps `mustard.json#version`) and `review` (the
+//! /mustard:review SKILL drives the native code-review skill).
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -16,8 +17,6 @@ use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
 use crate::commands::install_grammars::{self, InstallGrammarsArgs};
 use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
-use crate::commands::review::{self, ReviewOptions};
-use crate::commands::update::{self, UpdateOptions};
 
 /// Framework-agnostic CLI for Claude Code project setup.
 #[derive(Debug, Parser)]
@@ -30,7 +29,7 @@ pub struct Cli {
 /// The subcommands `mustard` accepts.
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Copy the `.claude/` structure into the current project.
+    /// Seed the thin `.claude/` bootstrap and enable the `mustard` plugin.
     Init {
         /// Overwrite an existing `.claude/` directory without a backup.
         #[arg(short, long)]
@@ -38,18 +37,9 @@ enum Commands {
         /// Skip confirmation prompts (accept sensible defaults).
         #[arg(short = 'y', long)]
         yes: bool,
-        /// Install the experimental Cursor IDE adapter.
-        #[arg(long)]
-        cursor: bool,
         /// Print intended actions without writing to disk.
         #[arg(long = "dry-run")]
         dry_run: bool,
-    },
-    /// Update Mustard core files, preserving user customisations.
-    Update {
-        /// Skip the confirmation prompt (never skips the backup).
-        #[arg(short, long)]
-        force: bool,
     },
     /// Configure or reconfigure `mustard.json` (git flow).
     Config {
@@ -57,22 +47,13 @@ enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
-    /// Install a community template.
+    /// Install a third-party community template into `.claude/`.
     Add {
         /// Template identifier (e.g. `template:dotnet-clean-arch`).
         template: String,
         /// Overwrite existing files.
         #[arg(short, long)]
         force: bool,
-    },
-    /// Review a pull request (local or CI mode).
-    Review {
-        /// CI mode: post the review as a PR comment, exit non-zero on critical issues.
-        #[arg(long)]
-        ci: bool,
-        /// PR number to review.
-        #[arg(long)]
-        pr: Option<u64>,
     },
     /// Install a Nerd Font on the host (required for powerline statusline themes).
     #[command(name = "install-nerd-font")]
@@ -116,38 +97,19 @@ pub fn run() -> Result<()> {
 fn dispatch(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     match cli.command {
-        Commands::Init {
-            force,
-            yes,
-            cursor,
-            dry_run,
-        } => init::init(
-            &cwd,
-            &InitOptions {
-                force,
-                yes,
-                cursor,
-                dry_run,
-            },
-        ),
-        Commands::Update { force } => update::update(&cwd, &UpdateOptions { force }),
+        Commands::Init { force, yes, dry_run } => {
+            init::init(&cwd, &InitOptions { force, yes, dry_run })
+        }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
         Commands::Add { template, force } => {
             add::add(&cwd, &template, &AddOptions { force })
         }
-        Commands::Review { ci, pr } => review::review(&cwd, &ReviewOptions { ci, pr }),
-        Commands::InstallNerdFont {
-            font,
-            force,
-            dry_run,
-        } => install_nerd_font::install_nerd_font(
-            &cwd,
-            &InstallNerdFontOptions {
-                font,
-                force,
-                dry_run,
-            },
-        ),
+        Commands::InstallNerdFont { font, force, dry_run } => {
+            install_nerd_font::install_nerd_font(
+                &cwd,
+                &InstallNerdFontOptions { font, force, dry_run },
+            )
+        }
         Commands::InstallGrammars { project_root } => {
             install_grammars::run(InstallGrammarsArgs { project_root })
         }
@@ -176,27 +138,6 @@ mod tests {
         match cli.command {
             Commands::Add { template, .. } => assert_eq!(template, "template:foo"),
             other => panic!("expected Add, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_update_force() {
-        let cli = Cli::try_parse_from(["mustard", "update", "--force"]).unwrap();
-        match cli.command {
-            Commands::Update { force } => assert!(force),
-            other => panic!("expected Update, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_review_pr_number() {
-        let cli = Cli::try_parse_from(["mustard", "review", "--pr", "42", "--ci"]).unwrap();
-        match cli.command {
-            Commands::Review { pr, ci } => {
-                assert_eq!(pr, Some(42));
-                assert!(ci);
-            }
-            other => panic!("expected Review, got {other:?}"),
         }
     }
 }

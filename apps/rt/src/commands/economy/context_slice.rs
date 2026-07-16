@@ -38,13 +38,8 @@ impl TermBlock {
 
 /// Result of slicing — mirrors the JS `sliceContext` return object.
 #[derive(Debug)]
-pub struct SliceResult {
+pub(crate) struct SliceResult {
     pub slice: String,
-    /// Line count of the emitted slice. Part of the JS return shape; kept for
-    /// parity even though the CLI path prints only `slice`.
-    #[allow(dead_code)]
-    pub line_count: usize,
-    pub block_count: usize,
 }
 
 /// Read a file, returning `None` on any error (fail-graceful).
@@ -412,11 +407,7 @@ fn map_context_refs(map_text: &str) -> Vec<String> {
 
 /// Slice one or more `CONTEXT.md` files against a spec.
 fn slice_context(context_paths: &[String], spec_path: &str) -> SliceResult {
-    let empty = || SliceResult {
-        slice: String::new(),
-        line_count: 0,
-        block_count: 0,
-    };
+    let empty = || SliceResult { slice: String::new() };
 
     let Some(spec_text) = read_file_safe(Path::new(spec_path)) else {
         return empty();
@@ -454,9 +445,7 @@ fn slice_context(context_paths: &[String], spec_path: &str) -> SliceResult {
     // matched block is emitted in full.
     let joined = matched.join("\n\n");
     SliceResult {
-        line_count: joined.split('\n').count(),
         slice: joined,
-        block_count: matched.len(),
     }
 }
 
@@ -663,7 +652,6 @@ mod tests {
             &[ctx.to_string_lossy().to_string()],
             &spec.to_string_lossy(),
         );
-        assert_eq!(result.block_count, 1);
         assert!(result.slice.contains("Widget"));
         assert!(!result.slice.contains("Gadget"));
     }
@@ -671,7 +659,6 @@ mod tests {
     #[test]
     fn slice_context_missing_spec_is_empty() {
         let result = slice_context(&["nope.md".to_string()], "missing-spec.md");
-        assert_eq!(result.block_count, 0);
         assert!(result.slice.is_empty());
     }
 }

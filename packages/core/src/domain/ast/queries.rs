@@ -39,11 +39,10 @@
 //! - The directory not existing is **not** an error — [`QuerySet::load_for`]
 //!   returns a set carrying only the built-in queries (if any).
 //! - An individual `.scm` file that fails to compile is dropped from the
-//!   set with a `Vec<PathBuf>` of failures recorded in [`QuerySet::failures`].
+//!   set with a `Vec<PathBuf>` of failures recorded in the `failures` field.
 //!   The caller may surface those failures in telemetry but the set is still
 //!   usable for whichever queries did compile.
 
-use super::AstError;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Query};
@@ -182,7 +181,7 @@ impl QuerySet {
     /// for resolving the grammar before calling this.
     ///
     /// Never returns an error: a missing directory yields a built-in-only
-    /// set, and individual compile failures land in [`QuerySet::failures`].
+    /// set, and individual compile failures land in the `failures` field.
     /// This is intentional — the caller decides whether to surface the
     /// failures or fail open silently.
     #[must_use]
@@ -285,7 +284,8 @@ impl QuerySet {
 
     /// Files that existed but failed to read or compile.
     #[must_use]
-    pub fn failures(&self) -> &[(PathBuf, String)] {
+    #[cfg(test)]
+    pub(crate) fn failures(&self) -> &[(PathBuf, String)] {
         &self.failures
     }
 
@@ -326,21 +326,6 @@ impl QuerySet {
     #[must_use]
     pub fn import_edges(&self) -> Option<&Query> {
         self.get("import_edges")
-    }
-}
-
-impl QuerySet {
-    /// Surface a [`QuerySet`] load error as an [`AstError`]. Today
-    /// [`load_for`] never returns errors directly; this helper exists so
-    /// future strict callers can promote a `failures` entry to a typed
-    /// error without re-implementing the formatting.
-    ///
-    /// [`load_for`]: Self::load_for
-    #[must_use]
-    pub fn first_failure_as_error(&self) -> Option<AstError> {
-        self.failures
-            .first()
-            .map(|(path, _)| AstError::QueryLoadFailed(path.clone()))
     }
 }
 

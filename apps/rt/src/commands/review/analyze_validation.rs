@@ -173,6 +173,90 @@ fn ref_resolves(r: &str, spec_dir: &Path, project_roots: &[PathBuf]) -> bool {
         || project_roots.iter().any(|root| fs::exists(root.join(r)))
 }
 
+/// Whether an AC `command` is a TAUTOLOGY — it exits 0 whether or not the
+/// feature was actually built, so it verifies nothing. These are the rubber
+/// stamps F6 kills: a bare `cargo build`/`cargo check`, a `cargo test` with no
+/// test-name filter (it just re-runs the pre-existing suite), `npm test`/
+/// `npm run build`, or a source `grep`/`rg` (asserts textual presence, not
+/// runtime behaviour).
+///
+/// Deliberately conservative to avoid false positives: a COMPOUND command
+/// (`&&` / `||` / `;` / `|`) is never weak (the author combined steps on
+/// purpose), and any positional test-name / assertion target makes it strong.
+/// A leading `rtk ` wrapper is transparent. Pure, total, never panics.
+fn is_weak_ac_command(command: &str) -> bool {
+    let cmd = command.trim();
+    if cmd.is_empty()
+        || cmd.contains("&&")
+        || cmd.contains("||")
+        || cmd.contains(';')
+        || cmd.contains('|')
+    {
+        return false;
+    }
+    // `rtk` is a transparent RTK passthrough — the weakness (if any) lives in
+    // the wrapped command.
+    let cmd = cmd.strip_prefix("rtk ").map_or(cmd, str::trim_start);
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let Some(&first) = tokens.first() else {
+        return false;
+    };
+    match first {
+        // A pure source search asserts textual presence, not behaviour.
+        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" => true,
+        // A bare build word / whole-project type-check with no target.
+        "build" | "tsc" | "make" if tokens.len() == 1 => true,
+        "cargo" => match tokens.get(1).copied() {
+            Some("build" | "b" | "check" | "c") => true,
+            Some("test" | "t" | "nextest") => !cargo_test_has_filter(&tokens),
+            _ => false,
+        },
+        "npm" | "pnpm" | "yarn" | "bun" => match tokens.get(1).copied() {
+            Some("test" | "t" | "build") => true,
+            Some("run") => matches!(
+                tokens.get(2).copied(),
+                Some("build" | "test" | "lint" | "typecheck" | "check")
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether a `cargo test …` invocation carries a positional test-name filter
+/// (which makes it a STRONG assertion). `tokens[0..2]` are `cargo test`; a
+/// filter is any positional token after `test` that is neither a flag nor the
+/// value consumed by a value-taking flag (`-p`, `--features`, …). A `--`
+/// forwards the rest to libtest, where a non-flag is a filter.
+fn cargo_test_has_filter(tokens: &[&str]) -> bool {
+    const VALUE_FLAGS: &[&str] = &[
+        "-p", "--package", "--test", "--bench", "--example", "--bin", "--features",
+        "-F", "--manifest-path", "-j", "--jobs", "--target", "--profile",
+        "--target-dir", "--color",
+    ];
+    let mut i = 2;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if t == "--" {
+            return tokens[i + 1..].iter().any(|a| !a.starts_with('-'));
+        }
+        if t.contains('=') {
+            i += 1; // self-contained `--flag=value`
+            continue;
+        }
+        if VALUE_FLAGS.contains(&t) {
+            i += 2; // skip the flag and its separate value
+            continue;
+        }
+        if t.starts_with('-') {
+            i += 1; // boolean flag (--workspace, --all-targets, --release, …)
+            continue;
+        }
+        return true; // a bare positional after `test` ⇒ a test-name filter
+    }
+    false
+}
+
 /// Run the validation. Returns the issues list.
 ///
 /// `pub(crate)` so `plan-materialize` composes the same checks in-process
@@ -278,14 +362,82 @@ pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     // format problem is surfaced here, at ANALYZE time. An absent section is
     // deliberately NOT flagged: behaviour stays unchanged for specs that carry
     // no ACs at this stage.
-    if let Some(section) = crate::commands::review::qa_run::extract_ac_section(content) {
-        if crate::commands::review::qa_run::parse_ac_items(&section).is_empty() {
+    let ac_section = crate::commands::review::qa_run::extract_ac_section(content);
+    let ac_items = ac_section
+        .as_deref()
+        .map(crate::commands::review::qa_run::parse_ac_items)
+        .unwrap_or_default();
+    if ac_section.is_some() && ac_items.is_empty() {
+        issues.push(json!({
+            "severity": "WARN",
+            "type": "unparseable-ac",
+            "message": "Acceptance Criteria section found but no parseable AC items. \
+                        Expected format: `**AC-N** — title` followed by a line \
+                        `Command: `<runnable command>``.",
+        }));
+    }
+
+    // Validation 6: AC TAUTOLOGY linter. A criterion "verified" by a bare
+    // `cargo build` / `cargo test` (no filter) / `npm test` / source `grep`
+    // passes whether or not the feature exists — the rubber stamp F6 kills. Flag
+    // each such WEAK AC by id (WARN — analyze-validation never blocks). Two
+    // exemptions: the LAST AC is the trailing build-green SAFETY net (kept on
+    // purpose), and an unfilled `<…>` skeleton command is not yet a real
+    // command. Reuses the exposed `AcItem` `id` + `command`.
+    if ac_items.len() > 1 {
+        let last = ac_items.len() - 1;
+        let weak: Vec<String> = ac_items
+            .iter()
+            .enumerate()
+            .filter(|(i, item)| {
+                *i != last && !item.command.contains('<') && is_weak_ac_command(&item.command)
+            })
+            .map(|(_, item)| item.id.clone())
+            .collect();
+        if !weak.is_empty() {
             issues.push(json!({
                 "severity": "WARN",
-                "type": "unparseable-ac",
-                "message": "Acceptance Criteria section found but no parseable AC items. \
-                            Expected format: `**AC-N** — title` followed by a line \
-                            `Command: `<runnable command>``.",
+                "type": "weak-ac",
+                "message": format!(
+                    "Acceptance criteria verified by a tautological build/test/search command \
+                     that passes whether or not the feature exists: {}. Replace with a command \
+                     that asserts the new behaviour.",
+                    weak.join(", ")
+                ),
+            }));
+        }
+    }
+
+    // Validation 7: cross-artifact coherence (AC × task × file). Mirrors V5 — it
+    // only runs once an AC section EXISTS (a spec whose ACs are not authored yet
+    // is left alone, behaviour unchanged) and only when the plan carries
+    // `### {Role} Agent` task blocks (a virgin draft has none). A present-but-
+    // unparseable AC section with agent work, or ACs+tasks that point at no
+    // files, is a gap. The wave↔AC COVERAGE itself is enforced deterministically
+    // in `wave-scaffold` (the `satisfies`/`acceptance` traceability). Reuses the
+    // folded agent-block + file-ref lists.
+    let agents_with_tasks: Vec<String> = agent_blocks(content)
+        .into_iter()
+        .filter(|(_, body)| count_tasks(body) > 0)
+        .map(|(name, _)| name)
+        .collect();
+    if ac_section.is_some() && !agents_with_tasks.is_empty() {
+        if ac_items.is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "ac-task-gap",
+                "message": format!(
+                    "{} agent task block(s) but no acceptance criteria to verify them — \
+                     every wave must satisfy an AC.",
+                    agents_with_tasks.len()
+                ),
+            }));
+        } else if backtick_file_refs(&files_text).is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "ac-file-gap",
+                "message": "Acceptance criteria and agent tasks present but the Files section \
+                            lists no files to implement them.",
             }));
         }
     }
@@ -321,11 +473,79 @@ mod tests {
     fn clean_spec_has_no_issues() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("spec.md");
-        let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        // A coherent spec now also carries ACs that trace to the agent's work
+        // (a behaviour AC + a trailing build-green safety AC).
+        let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n\n\
+                    ## Acceptance Criteria\n\
+                    - **AC-1** — when a.rs runs, then it returns ok.\n  Command: `curl -sf localhost`\n\
+                    - **AC-2** — build green.\n  Command: `cargo build`\n";
         std::fs::write(&path, body).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         let issues = validate(&path, &content);
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// V6: a bare `cargo build` AC (not the trailing safety net) is flagged
+    /// WEAK; the LAST AC (the build-green safety criterion) is exempt, and a
+    /// behaviour AC with a real assertion command is never flagged.
+    #[test]
+    fn flags_weak_tautological_ac_command() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — feature works.\n  Command: `cargo build`\n\
+                    - **AC-2** — endpoint responds.\n  Command: `curl -sf localhost/health`\n\
+                    - **AC-3** — build green.\n  Command: `rtk cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        let weak = issues
+            .iter()
+            .find(|i| i["type"] == json!("weak-ac"))
+            .unwrap_or_else(|| panic!("expected weak-ac WARN: {issues:?}"));
+        assert_eq!(weak["severity"], json!("WARN"));
+        let msg = weak["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("AC-1"), "the planted cargo-build AC is named: {msg}");
+        // AC-2 (real assertion) and AC-3 (trailing safety) are NOT flagged.
+        assert!(!msg.contains("AC-2"), "a real behaviour AC is strong: {msg}");
+        assert!(!msg.contains("AC-3"), "the trailing safety AC is exempt: {msg}");
+    }
+
+    /// V6: a `grep -q` "verification" is weak (asserts textual presence, not
+    /// behaviour); a `cargo test` WITH a test-name filter is strong.
+    #[test]
+    fn weak_ac_flags_grep_but_not_filtered_cargo_test() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — doc mentions it.\n  Command: `grep -q Modelo SKILL.md`\n\
+                    - **AC-2** — the new unit passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n\
+                    - **AC-3** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        let msg = issues
+            .iter()
+            .find(|i| i["type"] == json!("weak-ac"))
+            .and_then(|i| i["message"].as_str())
+            .unwrap_or_default();
+        assert!(msg.contains("AC-1"), "grep -q AC is weak: {issues:?}");
+        assert!(!msg.contains("AC-2"), "filtered cargo test is strong: {issues:?}");
+    }
+
+    /// V7: a PRESENT-but-unparseable AC section with agent task blocks →
+    /// `ac-task-gap` WARN. (An ABSENT AC section is left alone, like V5 — proven
+    /// by `ac_format_validation_absent_section_unchanged`.)
+    #[test]
+    fn flags_ac_task_gap_when_agent_has_tasks_but_no_parseable_ac() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n\n\
+                    ## Acceptance Criteria\nfree prose, no parseable AC line here\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            issues.iter().any(|i| i["type"] == json!("ac-task-gap")),
+            "agent tasks with a broken AC section must warn: {issues:?}"
+        );
     }
 
     #[test]

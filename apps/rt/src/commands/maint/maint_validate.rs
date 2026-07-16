@@ -23,7 +23,7 @@ pub struct MaintValidateOpts {
 
 /// One subproject validation result.
 #[derive(Debug, Serialize)]
-pub struct ValidateRecord {
+pub(crate) struct ValidateRecord {
     pub subproject: String,
     pub command: String,
     pub ok: bool,
@@ -32,7 +32,7 @@ pub struct ValidateRecord {
 
 /// JSON report.
 #[derive(Debug, Serialize)]
-pub struct MaintValidateReport {
+pub(crate) struct MaintValidateReport {
     pub dry_run: bool,
     pub overall: &'static str,
     pub validates: Vec<ValidateRecord>,
@@ -41,7 +41,7 @@ pub struct MaintValidateReport {
 /// Pick the canonical validate command for a project kind (grain's manifest
 /// `kind`: npm/cargo/dotnet/go/pub/maven; common stack aliases also accepted).
 #[must_use]
-pub fn validate_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)> {
+pub(crate) fn validate_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)> {
     match kind.to_ascii_lowercase().as_str() {
         "npm" | "node" | "typescript" | "javascript" | "react" | "nextjs" | "next" => {
             Some(("pnpm", vec!["typecheck"]))

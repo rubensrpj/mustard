@@ -30,7 +30,6 @@ import {
   Terminal,
   Activity as ActivityIcon,
   FolderPlus,
-  Cog,
   ChevronRight,
   ChevronDown,
   MoreHorizontal,
@@ -67,7 +66,6 @@ import {
 import { useProjectDetections } from "@/hooks/useProjectDetections";
 import { useArtifactDrift } from "@/hooks/useArtifactDrift";
 import {
-  updateMustard,
   uninstallMustard,
   artifactUpdateApply,
   type ProjectDetection,
@@ -191,7 +189,7 @@ function ProjectTreeNode({
   const isMustardRepo = useIsMustardRepo(project.path);
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionPending, setActionPending] = useState<
-    "update" | "uninstall" | "artifacts" | null
+    "uninstall" | "artifacts" | null
   >(null);
 
   const staleCount = driftReport?.stale ?? 0;
@@ -204,7 +202,6 @@ function ProjectTreeNode({
 
   const kind = statusKind(isLoading, detection);
   const updateAvailable = kind === "updateAvailable";
-  const showUpdate = updateAvailable;
   const showUninstall = detection?.installed === true;
 
   const statusLabel =
@@ -238,22 +235,6 @@ function ProjectTreeNode({
 
   async function ensureActive() {
     if (!isActive) await activateProject(project.path);
-  }
-
-  async function runUpdate() {
-    setActionPending("update");
-    try {
-      await updateMustard(project.path);
-      toast.success(t("projects.toastUpdated", { name: project.name }));
-      await queryClient.invalidateQueries({
-        queryKey: ["project-detection", project.path],
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(t("projects.toastActionFailed", { msg }));
-    } finally {
-      setActionPending(null);
-    }
   }
 
   async function runUninstall() {
@@ -411,16 +392,6 @@ function ProjectTreeNode({
                 {t("artifact.updateAction")}
               </DropdownMenuItem>
             )}
-            {showUpdate && (
-              <DropdownMenuItem
-                onSelect={() => {
-                  setMenuOpen(false);
-                  void runUpdate();
-                }}
-              >
-                {t("sidebar.projectMenu.update")}
-              </DropdownMenuItem>
-            )}
             {showUninstall && (
               <DropdownMenuItem
                 onSelect={() => {
@@ -431,7 +402,7 @@ function ProjectTreeNode({
                 {t("sidebar.projectMenu.uninstall")}
               </DropdownMenuItem>
             )}
-            {(showArtifactUpdate || showUpdate || showUninstall) && (
+            {(showArtifactUpdate || showUninstall) && (
               <DropdownMenuSeparator />
             )}
             <DropdownMenuItem
@@ -543,7 +514,7 @@ function RailButton({
 export function Sidebar() {
   const { t } = useTranslation();
   // `tLib` powers W2-audit keys (`sidebar.add_project`, `sidebar.tools`,
-  // `sidebar.commands`, `sidebar.preferences`). The i18next
+  // `sidebar.commands`). The i18next
   // `t` still drives project-detection toasts, empty states, and the
   // `projects.addDialogTitle` Tauri dialog title (keys not duplicated here).
   const tLib = useT();
@@ -658,14 +629,6 @@ export function Sidebar() {
               />
             ))}
 
-            <div className="mt-auto" />
-            <Separator className="my-2" />
-            <RailButton
-              icon={Cog}
-              label={tLib("sidebar.preferences")}
-              active={location.pathname.startsWith("/preferences")}
-              onClick={() => navigate("/preferences")}
-            />
           </div>
         </TooltipProvider>
       </aside>
@@ -754,9 +717,6 @@ export function Sidebar() {
         {/* W10.T10.8 — installation health badge. Renders against the active
             workspace path; falls back to silent null when none is selected. */}
         <DoctorBadge projectPath={activeProjectsRoot ?? null} />
-        <NavLink to="/preferences" className={toolNavItemClass}>
-          <Cog className="h-3.5 w-3.5" /> {tLib("sidebar.preferences")}
-        </NavLink>
       </div>
     </aside>
   );

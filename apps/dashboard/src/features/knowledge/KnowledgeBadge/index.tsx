@@ -8,8 +8,8 @@ import { cn } from "@/lib/utils";
  */
 export type KnowledgeKind = "pattern" | "decision" | "lesson" | "friction";
 
-/** Centralised colour lookup. Pages key into this by `row.type` (mapped) or
- *  by a hardcoded kind for legacy sources. */
+/** Centralised colour lookup. Pages key into this by `row.kind` (mapped) or
+ *  by a hardcoded kind for non-knowledge sources (friction). */
 export const KIND_BADGE: Record<KnowledgeKind, string> = {
   pattern: "bg-muted text-muted-foreground border border-border/60",
   decision:
@@ -47,7 +47,7 @@ export function KnowledgeBadge({ kind, label, className }: KnowledgeBadgeProps) 
   );
 }
 
-/** Maps a `KnowledgeBrowseRow.type` (free-form backend string) into one of the
+/** Maps a knowledge row `kind` (free-form backend string) into one of the
  *  four canonical kinds. Anything unknown falls back to "pattern" (neutral).
  *  Centralised so callers don't re-derive the mapping. */
 export function kindFromType(type: string): KnowledgeKind {
@@ -56,11 +56,6 @@ export function kindFromType(type: string): KnowledgeKind {
       return "decision";
     case "lesson":
       return "lesson";
-    case "pattern":
-    case "naming-pattern":
-    case "entity-cluster":
-    case "convention":
-      return "pattern";
     default:
       return "pattern";
   }

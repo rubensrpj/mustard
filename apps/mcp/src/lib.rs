@@ -28,24 +28,35 @@
 //! It is a Model Context Protocol server speaking JSON-RPC over stdio. It is
 //! **read-only by design**: writes happen in the hooks, where session / wave /
 //! spec attribution is authentic; the MCP face exposes queries only. It
-//! exposes six tools (the same five as the TypeScript original plus one new
-//! retrieval tool), with the same input schemas and output shapes:
+//! exposes seven tools (five from the TypeScript original, plus `find_anchors` / `rank_files`), with the
+//! same input schemas and output shapes (except `search_knowledge`, re-pointed
+//! at the event log when the markdown knowledge store was retired):
 //!
-//! - `search_knowledge`   — substring search over `.claude/knowledge/*.md`.
+//! - `search_knowledge`   — substring search over the `decision` / `lesson`
+//!   events in the per-spec NDJSON log; rows are `{ts, kind, title, body?,
+//!   spec?}` — the same shape the dashboard knowledge surface renders.
 //! - `query_events`       — filter the per-spec NDJSON event log by spec /
 //!   event / since.
 //! - `find_similar_specs` — rank specs by token overlap on a description.
 //! - `get_spec_metrics`   — projected metrics for a spec from NDJSON events.
 //! - `get_run_summary`    — aggregated token/duration totals from
 //!   `pipeline.telemetry.run` events.
-//! - `find_by_intent`     — intent→file retrieval over `purpose` summaries;
-//!   the recall path for domain vocabulary that the name index misses.
+//! - `find_anchors`       — the scan census DIGEST query: tokenizes a free-text
+//!   intent and returns the ranked anchor files (plus per-file score / carrying
+//!   terms) and the matched-term report. Fail-empty on a missing model / scan
+//!   error. Promotes the retrieval that was locked in `mustard-rt run feature`.
+//! - `rank_files`         — the scan census file ranker (personalized
+//!   PageRank): returns the files ranked for a raw query (plus per-file order /
+//!   terms). Degrades to an empty ranking WITH a `note` when the
+//!   `grain.dictionary.json` sidecar is absent (the rank pool needs it).
 //!
 //! ## Persistence (post-W5B)
 //!
 //! No SQLite. Every read is filesystem-backed:
 //!
-//! - knowledge → `.claude/knowledge/*.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
+//! - knowledge → `decision` / `lesson` events in the per-spec NDJSON log
+//!   (emitted at CLOSE via `run emit-event`; durable prose knowledge lives in
+//!   Claude Code native auto-memory, outside this server).
 //! - events    → `.claude/spec/<spec>/.events/*.ndjson` via [`mustard_core::EventReader`].
 //! - specs     → `.claude/spec/<spec>/spec.md` header walk (name + body).
 //! - metrics   → projected from events via the same NDJSON channel.
@@ -64,7 +75,6 @@
 //! Every tool degrades a read failure to an empty result, matching the rest
 //! of the `mustard-rt` codebase: telemetry is never load-bearing.
 
-use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
@@ -76,10 +86,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
-use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::{Event, EventReader};
+use mustard_core::domain::scan::{DigestQuery, RankFile, Scan};
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -87,7 +97,7 @@ use mustard_core::{Event, EventReader};
 
 /// Run the `mcp` face: serve the `mustard-memory` MCP server over stdio.
 ///
-/// Builds a local `current_thread` `tokio` runtime, registers the five tools,
+/// Builds a local `current_thread` `tokio` runtime, registers the seven tools,
 /// and serves JSON-RPC over stdin/stdout until the transport closes. Diagnostics
 /// go to **stderr only** — stdout is reserved for the MCP protocol channel.
 pub fn run() {
@@ -138,7 +148,7 @@ fn resolve_project_dir() -> PathBuf {
 struct SearchKnowledgeArgs {
     /// Free-text query (non-empty). Substring match, case-insensitive.
     query: String,
-    /// Optional knowledge-kind filter: `pattern`, `convention`, or `entity`.
+    /// Optional kind filter: `decision` or `lesson`.
     #[serde(default)]
     r#type: Option<String>,
     /// Maximum rows to return (`1..=50`, default `10`).
@@ -187,8 +197,8 @@ struct GetSpecMetricsArgs {
 /// metric channel against the `pipeline.phase` transition timeline and returns
 /// only the requested phase's input/output token totals (per-model breakdown is
 /// not available at phase granularity, so `byModel` is empty under a phase
-/// filter). `limit` stays inert — the reader aggregates the full datapoint set
-/// rather than capping rows.
+/// filter). The reader aggregates the full datapoint set rather than capping
+/// rows.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GetRunSummaryArgs {
     /// Optional spec filter.
@@ -198,41 +208,53 @@ struct GetRunSummaryArgs {
     /// are narrowed to tokens attributed to that phase by timestamp correlation.
     #[serde(default)]
     phase: Option<String>,
-    /// Maximum runs to aggregate (accepted for compatibility; the core reader
-    /// aggregates the full datapoint set).
-    #[serde(default)]
-    #[allow(dead_code)]
-    limit: Option<u32>,
 }
 
-/// Input for `find_by_intent`.
+/// Input for `find_anchors` — the scan census DIGEST query wrapper (F6).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct FindByIntentArgs {
-    /// English domain-term intent — matched INTRA-LANGUAGE against the code's
-    /// own English `purpose` summaries; this tool does not translate, so pass the
-    /// English domain words. Tokenised the same way as `mustard-rt run
-    /// purpose-search --intent`: lowercase, minimum 3 chars, deduplicated, capped
-    /// at 32 terms.
+struct FindAnchorsArgs {
+    /// Free-text intent. Tokenized (lowercased alphanumeric runs of >= 3 chars,
+    /// deduped, capped at 32) into the digest query terms.
     intent: String,
-    /// Optional project root to override the server's cwd-derived default.
-    /// When absent, the server uses its resolved `project_dir` (same as every
-    /// other tool in this crate).
+    /// Maximum anchor files to return (`1..=50`, default `10`).
     #[serde(default)]
-    root: Option<String>,
+    limit: Option<usize>,
 }
+
+/// Input for `rank_files` — the scan census personalized-PageRank wrapper (F6).
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RankFilesArgs {
+    /// Free-text (any language) query the ranker matches against the
+    /// dictionary-seeded model.
+    query: String,
+    /// Pool depth — how many ranked files to return (`1..=100`, default `10`).
+    #[serde(default)]
+    top: Option<usize>,
+}
+
 
 // ---------------------------------------------------------------------------
 // Output shapes — serialized to JSON text exactly like the TS `jsonResult`
 // ---------------------------------------------------------------------------
 
-/// One knowledge row in `search_knowledge` output.
+/// One knowledge row in `search_knowledge` output — a `decision` / `lesson`
+/// event projected to its salient fields.
 #[derive(Debug, Serialize)]
 struct KnowledgeOut {
-    id: String,
-    r#type: Option<String>,
-    name: Option<String>,
-    description: Option<String>,
-    confidence: Option<f64>,
+    /// Event timestamp (ISO-8601).
+    ts: String,
+    /// `decision` or `lesson`.
+    kind: String,
+    /// `payload.title` (decision) / `payload.takeaway` (lesson).
+    title: String,
+    /// `payload.rationale` (decision) / `payload.trigger` (lesson). Named
+    /// `body` so the MCP row and the dashboard knowledge surface stop
+    /// drifting on the same concept: `{ts, kind, title, body?, spec?}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    /// Owning spec, when the event was spec-attributed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spec: Option<String>,
 }
 
 /// One event row in `query_events` output. Mirrors the TS `EventRecord`.
@@ -324,14 +346,6 @@ struct RunSummary {
 struct MustardMemory {
     /// Project root; resolved to `.claude/` on each open.
     project_dir: PathBuf,
-    /// The `rmcp` tool dispatch table, generated by `#[tool_router]`.
-    ///
-    /// `#[allow(dead_code)]`: the field *is* consumed — by the `call_tool`
-    /// dispatch the `#[tool_handler]` macro generates — but that use sits in
-    /// macro-expanded code the dead-code pass does not attribute back here.
-    /// The router is generated by `#[tool_router]` and registers all six tools.
-    #[allow(dead_code)]
-    tool_router: ToolRouter<Self>,
 }
 
 /// Wrap a value as the MCP `CallToolResult` carrying its pretty JSON text.
@@ -350,7 +364,6 @@ impl MustardMemory {
     fn new(project_dir: PathBuf) -> Self {
         Self {
             project_dir,
-            tool_router: Self::tool_router(),
         }
     }
 
@@ -359,13 +372,14 @@ impl MustardMemory {
         ClaudePaths::for_project(&self.project_dir).ok()
     }
 
-    /// Tool 1 — substring search past learnings / decisions / patterns.
+    /// Tool 1 — substring search over the recorded decisions / lessons.
     ///
-    /// Reads `.claude/knowledge/*.md` via `MarkdownStore::scan_dir`. The
-    /// optional `type` filter narrows by the frontmatter `kind` field. The
-    /// substring match is case-insensitive over `name + description + body`.
+    /// Reads the `decision` / `lesson` events from every per-spec NDJSON log
+    /// (the same channel `query_events` reads). The optional `type` filter
+    /// narrows to one kind; the substring match is case-insensitive over
+    /// `title + body`. Rows rank by match count, newest first on ties.
     #[tool(
-        description = "Substring search past learnings/decisions/patterns from .claude/knowledge/*.md"
+        description = "Substring search recorded decisions/lessons from the per-spec NDJSON event log"
     )]
     fn search_knowledge(
         &self,
@@ -375,35 +389,17 @@ impl MustardMemory {
         let Some(paths) = self.claude_paths() else {
             return json_result(&Vec::<KnowledgeOut>::new());
         };
-        let knowledge_dir = paths.claude_dir().join("knowledge");
-        let docs = MarkdownStore::scan_dir(&knowledge_dir);
-        let needle = args.query.to_lowercase();
-        let type_filter = args.r#type.as_deref();
-        let mut hits: Vec<(usize, KnowledgeOut)> = docs
-            .into_iter()
-            .filter_map(|doc| {
-                let row = doc_to_knowledge_out(&doc);
-                if let Some(t) = type_filter {
-                    if row.r#type.as_deref() != Some(t) {
-                        return None;
-                    }
+        let specs_root = paths.spec_dir();
+        let mut events: Vec<Event> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&specs_root) {
+            for entry in entries {
+                if !entry.path.is_dir() {
+                    continue;
                 }
-                let hay = format!(
-                    "{} {} {}",
-                    row.name.as_deref().unwrap_or(""),
-                    row.description.as_deref().unwrap_or(""),
-                    doc.body,
-                )
-                .to_lowercase();
-                if !hay.contains(&needle) {
-                    return None;
-                }
-                let score = hay.matches(&needle).count();
-                Some((score, row))
-            })
-            .collect();
-        hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-        let rows: Vec<KnowledgeOut> = hits.into_iter().take(limit).map(|(_, r)| r).collect();
+                collect_ndjson_under(&entry.path.join(".events"), &mut events);
+            }
+        }
+        let rows = knowledge_rows(events, &args.query, args.r#type.as_deref(), limit);
         json_result(&rows)
     }
 
@@ -439,9 +435,6 @@ impl MustardMemory {
 
         let rows: Vec<EventOut> = events
             .into_iter()
-            // Internal meta-telemetry emitted by the NDJSON writer for the
-            // `/economia` dashboard — filter it out at the boundary.
-            .filter(|ev| event_name(ev) != "pipeline.economy.event.written")
             .filter_map(|ev| {
                 let out = event_to_out(ev)?;
                 if let Some(s) = args.spec.as_deref() {
@@ -553,50 +546,6 @@ impl MustardMemory {
         json_result(&metrics)
     }
 
-    /// Tool 6 — intent→file retrieval over the `purpose` summaries written by
-    /// `mustard-rt run scan` (enrich step). Searches the purpose index for files
-    /// whose method/type summaries answer an ENGLISH domain-term intent. Matching
-    /// is intra-language (the summaries are English too); this tool does not
-    /// translate, so the caller passes the English domain words.
-    ///
-    /// Thin adapter over [`mustard_core::Scan::purpose_search`]. Tokenises
-    /// `intent` identically to `purpose-search` (`mustard-rt run`) — lowercase,
-    /// length ≥ 3, deduplicated, capped at 32 terms — then delegates matching
-    /// to the scan binary and relays its byte-stable JSON verbatim:
-    ///
-    /// ```json
-    /// { "intent": "<joined terms>", "files": [{ "file": "…", "matchedTerms": ["…"] }] }
-    /// ```
-    ///
-    /// Fail-open: a missing model, an absent scan binary, or any read error
-    /// degrades to `{ "intent": "…", "files": [] }` — never an MCP error.
-    #[tool(
-        description = "Return files whose purpose summaries answer an English domain-term intent (intent→file recall; finds methods invisible to the name index). Intra-language: pass English domain words — this tool does not translate"
-    )]
-    fn find_by_intent(
-        &self,
-        Parameters(args): Parameters<FindByIntentArgs>,
-    ) -> CallToolResult {
-        let project_dir = args
-            .root
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.project_dir.clone());
-        let model = project_dir.join(".claude").join("grain.model.json");
-        let terms = intent_to_terms(&args.intent);
-        let result: Value = if terms.is_empty() {
-            json!({ "intent": "", "files": [] })
-        } else {
-            match mustard_core::Scan::locate().purpose_search(&model, &terms) {
-                Ok(json_str) if !json_str.trim().is_empty() => {
-                    serde_json::from_str(&json_str)
-                        .unwrap_or_else(|_| json!({ "intent": terms.join(" "), "files": [] }))
-                }
-                Ok(_) | Err(_) => json!({ "intent": terms.join(" "), "files": [] }),
-            }
-        };
-        json_result(&result)
-    }
 
     /// Tool 5 — aggregated token summary from the MEASURED OTEL token channel,
     /// grouped by model.
@@ -632,6 +581,95 @@ impl MustardMemory {
         )
         .unwrap_or_default();
         json_result(&run_summary_from_metrics(&summary))
+    }
+
+    /// Tool 6 — promote the scan census DIGEST query into the MCP: tokenize a
+    /// free-text `intent`, load `.claude/grain.model.json`, and return the
+    /// ranked anchor files (plus each anchor's fixed-point score and carrying
+    /// terms) with the matched-term report. READ-ONLY / fail-empty: a missing
+    /// model, an empty tokenization, or any scan spawn/parse error degrades to
+    /// an empty `{ files: [], ... }` result carrying an explanatory `note` —
+    /// never a panic, never a tool error.
+    #[tool(
+        description = "Query the scan census DIGEST for an intent: returns the ranked anchor files (with score/terms) plus the matched-term report. Fail-empty when the scan model is missing."
+    )]
+    fn find_anchors(
+        &self,
+        Parameters(args): Parameters<FindAnchorsArgs>,
+    ) -> CallToolResult {
+        json_result(&self.find_anchors_value(&args.intent, args.limit))
+    }
+
+    /// Tool 7 — promote the scan census file ranker (personalized PageRank)
+    /// into the MCP: load `.claude/grain.model.json` plus the
+    /// `grain.dictionary.json` sidecar and return the files ranked for a raw
+    /// `query`, each with its 1-based order and carrying terms. READ-ONLY /
+    /// fail-empty: a missing model or scan error degrades to an empty ranking;
+    /// a missing dictionary sidecar (the rank pool needs it to seed the walk)
+    /// degrades to an empty ranking WITH a clear `note`, never a tool error.
+    #[tool(
+        description = "Rank the scan census files for a query via personalized PageRank: returns the ranked files (with order/terms). Empty ranking plus a note when the grain.dictionary.json sidecar is absent."
+    )]
+    fn rank_files(
+        &self,
+        Parameters(args): Parameters<RankFilesArgs>,
+    ) -> CallToolResult {
+        json_result(&self.rank_files_value(&args.query, args.top))
+    }
+}
+
+/// The scan-census retrieval bodies (F6), split from the `#[tool]` methods so
+/// the IO / spawn is separate from the pure shaping and both are testable
+/// without the MCP transport — mirroring `search_knowledge` over
+/// `knowledge_rows`. Every step is fail-open: a degraded read returns an empty
+/// structured result with a `note`, never a panic or a tool error.
+impl MustardMemory {
+    /// The `find_anchors` body as a plain `Value`.
+    fn find_anchors_value(&self, intent: &str, limit: Option<usize>) -> Value {
+        let limit = limit.unwrap_or(10).clamp(1, 50);
+        let terms = intent_terms(intent);
+        let Some(paths) = self.claude_paths() else {
+            return anchors_empty(intent, &terms, NOTE_NO_PATHS);
+        };
+        let model = paths.claude_dir().join("grain.model.json");
+        if !model.is_file() {
+            return anchors_empty(intent, &terms, NOTE_NO_MODEL);
+        }
+        if terms.is_empty() {
+            return anchors_empty(intent, &terms, NOTE_NO_TERMS);
+        }
+        // The scan digest is deterministic for a given model + terms, so the
+        // shaped output is byte-stable. Any spawn / parse failure degrades to an
+        // empty result (read-only, fail-open) rather than being surfaced.
+        match Scan::locate().digest_query(&model, &terms) {
+            Ok(q) => anchors_payload(intent, &terms, &q, limit),
+            Err(_) => anchors_empty(intent, &terms, NOTE_SCAN_ERR),
+        }
+    }
+
+    /// The `rank_files` body as a plain `Value`. The dictionary-absent branch is
+    /// a first-class, tested outcome — the caller learns WHY the ranking is
+    /// empty (sidecar not built) instead of mistaking it for "nothing matched".
+    fn rank_files_value(&self, query: &str, top: Option<usize>) -> Value {
+        let top = top.unwrap_or(RANK_TOP_DEFAULT).clamp(1, 100);
+        let Some(paths) = self.claude_paths() else {
+            return rank_empty(query, top, NOTE_NO_PATHS);
+        };
+        let claude = paths.claude_dir();
+        let model = claude.join("grain.model.json");
+        let dict = claude.join("grain.dictionary.json");
+        if !model.is_file() {
+            return rank_empty(query, top, NOTE_NO_MODEL);
+        }
+        if !dict.is_file() {
+            // scan seeds the personalized PageRank from the dictionary sidecar;
+            // without it the rank pool is empty. Report WHY, do not error.
+            return rank_empty(query, top, NOTE_DICT_ABSENT);
+        }
+        match Scan::locate().rank_detail(&model, &dict, query, top, RANK_DIRECT_BASE) {
+            Ok(rows) => rank_payload(query, &rows, top),
+            Err(_) => rank_empty(query, top, NOTE_SCAN_ERR),
+        }
     }
 }
 
@@ -720,7 +758,7 @@ impl ServerHandler for MustardMemory {
         info.server_info = server_info;
         info.instructions = Some(
             "Read-only query access to the Mustard harness state \
-             (events, knowledge, specs, metrics, runs) backed by .claude/."
+             (events, knowledge, specs, metrics, runs), plus the deterministic scan census (find_anchors / rank_files), backed by .claude/."
                 .to_string(),
         );
         info
@@ -731,32 +769,69 @@ impl ServerHandler for MustardMemory {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a `MarkdownDoc` to a `KnowledgeOut` row.
-fn doc_to_knowledge_out(doc: &MarkdownDoc) -> KnowledgeOut {
-    let fm = doc.frontmatter.as_ref();
-    let id = doc
-        .path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    KnowledgeOut {
-        id,
-        r#type: fm
-            .and_then(|f| f.get("kind"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        name: fm
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        description: fm
-            .and_then(|f| f.get("description"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        confidence: fm
-            .and_then(|f| f.get("confidence"))
-            .and_then(Value::as_f64),
+/// Project a `decision` / `lesson` event to a `KnowledgeOut` row. `None` for
+/// any other event kind or a row with no usable title.
+fn event_to_knowledge_out(ev: &Event) -> Option<KnowledgeOut> {
+    let kind = event_name(ev);
+    if kind != "decision" && kind != "lesson" {
+        return None;
     }
+    let (title_key, body_key) = if kind == "decision" {
+        ("title", "rationale")
+    } else {
+        ("takeaway", "trigger")
+    };
+    let title = ev
+        .payload
+        .get(title_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let body = ev
+        .payload
+        .get(body_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(KnowledgeOut {
+        ts: event_ts(ev),
+        kind: kind.to_string(),
+        title,
+        body,
+        spec: ev.raw.get("spec").and_then(Value::as_str).map(str::to_string),
+    })
+}
+
+/// Filter + rank the `decision` / `lesson` rows for `search_knowledge`.
+///
+/// Case-insensitive substring match of `query` over `title + body`;
+/// `type_filter` narrows to one kind. Rows rank by match count, newest first
+/// on ties, capped at `limit`. Pure — unit-tested without a server.
+fn knowledge_rows(
+    events: Vec<Event>,
+    query: &str,
+    type_filter: Option<&str>,
+    limit: usize,
+) -> Vec<KnowledgeOut> {
+    let needle = query.to_lowercase();
+    let mut hits: Vec<(usize, KnowledgeOut)> = events
+        .iter()
+        .filter_map(event_to_knowledge_out)
+        .filter(|row| type_filter.is_none_or(|t| row.kind == t))
+        .filter_map(|row| {
+            let hay = format!("{} {}", row.title, row.body.as_deref().unwrap_or(""))
+                .to_lowercase();
+            if needle.is_empty() || !hay.contains(&needle) {
+                return None;
+            }
+            let score = hay.matches(&needle).count();
+            Some((score, row))
+        })
+        .collect();
+    hits.sort_by(|(sa, ra), (sb, rb)| sb.cmp(sa).then_with(|| rb.ts.cmp(&ra.ts)));
+    hits.into_iter().take(limit).map(|(_, r)| r).collect()
 }
 
 /// Recursively collect `.ndjson` files under `dir` into `out`. Fail-open: a
@@ -854,24 +929,46 @@ fn missing_metrics(spec: &str) -> Value {
     json!({ "error": "no metrics for spec", "spec": spec })
 }
 
-/// Tokenise an intent string for `find_by_intent`, mirroring the
-/// `domain_terms` function in `mustard-rt` (which is `pub(crate)` there and
-/// cannot be imported here).
-///
-/// Rules (byte-stable, deterministic):
-/// - Split on non-alphanumeric characters.
-/// - Lowercase each token.
-/// - Keep only tokens with length ≥ 3 AND at least one alphabetic character
-///   (rejects pure numbers such as "123").
-/// - Deduplicate in first-occurrence order (BTreeSet tracks seen lowercased
-///   forms).
-/// - Cap at 32 terms (the same cap as in `domain_terms`).
-fn intent_to_terms(intent: &str) -> Vec<String> {
+// ---------------------------------------------------------------------------
+// find_anchors / rank_files — the promoted scan census retrieval (F6)
+//
+// `find_anchors` wraps `mustard_core::Scan::digest_query`; `rank_files` wraps
+// `Scan::rank_detail`. Both keep the crate's read-only, fail-open contract.
+// ---------------------------------------------------------------------------
+
+/// `scan rank`'s direct identifier-match floor — the calibrated product
+/// contract, pinned to the same value `mustard-rt run feature` uses so the
+/// in-process ranking is byte-identical to the subprocess it promotes.
+const RANK_DIRECT_BASE: u64 = 100_000;
+
+/// Default `rank_files` pool depth when the caller omits `top`.
+const RANK_TOP_DEFAULT: usize = 10;
+
+/// The `note` on a degraded result names WHY the census answer is empty, so the
+/// caller can act (build a scan, build the dictionary) instead of guessing.
+const NOTE_NO_PATHS: &str =
+    "project .claude/ layout could not be resolved — returning an empty census result";
+const NOTE_NO_MODEL: &str =
+    "scan model is not built (.claude/grain.model.json is absent) — run a scan first; no census until then";
+const NOTE_NO_TERMS: &str =
+    "the intent tokenized to no query terms (need a word of >= 3 characters) — nothing to look up";
+const NOTE_SCAN_ERR: &str =
+    "the scan tool was unavailable or returned no parseable output — returning an empty census result (read-only, fail-open)";
+const NOTE_DICT_ABSENT: &str =
+    "the ranking dictionary sidecar (.claude/grain.dictionary.json) is not built — personalized PageRank needs it, so the ranking is empty until a scan enrich builds it";
+
+/// Tokenize a free-text intent into digest query terms, mirroring the scan
+/// digest path's own extraction (`feature::domain_terms`): lowercased
+/// alphanumeric runs of >= 3 chars carrying at least one letter, deduped in
+/// first-occurrence order (a `BTreeSet` keeps it deterministic), capped at 32.
+/// The digest ORs terms and drops natural-language glue query-side, so
+/// over-querying is harmless. Pure — unit-tested without the scan binary.
+fn intent_terms(intent: &str) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out: Vec<String> = Vec::new();
     for raw in intent.split(|c: char| !c.is_alphanumeric()) {
         let t = raw.to_lowercase();
-        if t.len() >= 3 && t.chars().any(|c| c.is_alphabetic()) && seen.insert(t.clone()) {
+        if t.len() >= 3 && t.chars().any(char::is_alphabetic) && seen.insert(t.clone()) {
             out.push(t);
         }
         if out.len() >= 32 {
@@ -881,8 +978,109 @@ fn intent_to_terms(intent: &str) -> Vec<String> {
     out
 }
 
+/// Build the `find_anchors` success payload from a scan `DigestQuery`. Pure (no
+/// spawn / IO) so the shape is unit-testable from a synthetic digest. `files` is
+/// the ranked anchor list (capped at `limit`); `filesDetail` carries each
+/// anchor's fixed-point `scoreX1024` plus the terms that carry it (scan's
+/// `files_detail`); `matchedTerms` names the request terms that actually matched
+/// (tier != none), falling back to the raw `matched_terms` list on an older
+/// payload with no per-term report. Deterministic: scan's order is preserved.
+fn anchors_payload(intent: &str, terms: &[String], q: &DigestQuery, limit: usize) -> Value {
+    let files: Vec<&String> = q.files.iter().take(limit).collect();
+    let files_detail: Vec<Value> = q
+        .files_detail
+        .iter()
+        .take(limit)
+        .map(|d| json!({ "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms }))
+        .collect();
+    let matched: Vec<String> = if q.report.terms.is_empty() {
+        q.matched_terms.iter().map(|t| t.term.clone()).collect()
+    } else {
+        q.report
+            .terms
+            .iter()
+            .filter(|t| !t.tier.is_empty() && t.tier != "none")
+            .map(|t| t.term.clone())
+            .collect()
+    };
+    json!({
+        "intent": intent,
+        "terms": terms,
+        "files": files,
+        "filesDetail": files_detail,
+        "matchedTerms": matched,
+        "report": {
+            "matched": q.report.matched,
+            "total": q.report.total,
+            "reason": q.report.reason,
+        },
+        "miss": q.miss,
+        "note": anchors_note(q),
+    })
+}
+
+/// The empty `find_anchors` result (the fail-empty contract): `files` is `[]`
+/// and a `note` explains why. Same key set as [`anchors_payload`] so a caller
+/// reads `files` identically on hit or miss.
+fn anchors_empty(intent: &str, terms: &[String], note: &str) -> Value {
+    json!({
+        "intent": intent,
+        "terms": terms,
+        "files": [],
+        "filesDetail": [],
+        "matchedTerms": [],
+        "report": { "matched": 0, "total": 0, "reason": "" },
+        "miss": true,
+        "note": note,
+    })
+}
+
+/// A concise, deterministic guidance note keyed on the digest's report reason,
+/// so ANY Claude session consuming the tool learns how to read the anchors
+/// (ranked evidence vs. re-query vs. net-new) without opening the scan JSON.
+fn anchors_note(q: &DigestQuery) -> &'static str {
+    match q.report.reason.as_str() {
+        "strong" => "repo precedent found — `files` is ranked by relevance (BM25F); read the top anchors that fit, then the hubs. `filesDetail` carries each anchor's score and carrying terms.",
+        "weak" => "weak precedent — under half the terms matched, or only derived hits; re-query in the code's own vocabulary or Explore before planning on top of this.",
+        "generated_only" => "matches live only in machine-written modules — regenerate or extend the generator input; never edit the matched files directly.",
+        "none" => "no repo precedent matched — treat as net-new; the term index has false negatives and no synonyms, so confirm by reading before concluding 'absent'.",
+        _ if q.miss => "no repo precedent matched — treat as net-new; confirm by reading, do not conclude 'absent' blindly.",
+        _ => "repo precedent found — `files` is ranked by relevance; read the top anchors that fit the request.",
+    }
+}
+
+/// Build the `rank_files` success payload from scan's ranked rows. Pure (no
+/// spawn / IO). Each row is `{ file, rank, terms }` where `rank` is the 1-based
+/// position: the retrieval signal is the ORDER (scan keeps the fixed-point score
+/// inside the tool — the fusion downstream is rank-based, never score-based), so
+/// the ordinal IS the exposed score. `terms` is the per-file matched-term
+/// evidence (empty on an older scan binary). Order preserved — byte-stable for
+/// a deterministic scan.
+fn rank_payload(query: &str, rows: &[RankFile], top: usize) -> Value {
+    let files: Vec<Value> = rows
+        .iter()
+        .take(top)
+        .enumerate()
+        .map(|(i, r)| json!({ "file": r.file, "rank": i + 1, "terms": r.terms }))
+        .collect();
+    json!({
+        "query": query,
+        "files": files,
+        "top": top,
+        "note": "ranked by personalized PageRank over the scan dictionary; `rank` is the 1-based order (the fixed-point score stays inside the scan tool). Read the top files that fit the request.",
+    })
+}
+
+/// The empty `rank_files` result (the fail-empty contract): `files` is `[]` and
+/// a `note` explains why — most importantly the dictionary-absent case, so the
+/// caller knows the ranking is unavailable (not that nothing matched).
+fn rank_empty(query: &str, top: usize, note: &str) -> Value {
+    json!({ "query": query, "files": [], "top": top, "note": note })
+}
+
+
 // ---------------------------------------------------------------------------
-// Tests — `get_run_summary` consolidation onto the core economy reader
+// Tests — search_knowledge (event-backed) + `get_run_summary` consolidation
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -902,6 +1100,53 @@ mod tests {
             .join(".events");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("seed.ndjson"), lines.join("\n")).unwrap();
+    }
+
+    /// Deserialize one NDJSON-shaped JSON value into an [`Event`].
+    fn event_from(value: serde_json::Value) -> Event {
+        serde_json::from_value(value).expect("valid event")
+    }
+
+    /// `search_knowledge` backend: decision/lesson events filter, rank by
+    /// match count (newest first on ties), and honor kind filter + limit.
+    #[test]
+    fn knowledge_rows_filters_and_ranks_decision_lesson_events() {
+        let events = vec![
+            event_from(json!({
+                "kind": "knowledge", "event": "decision", "ts": "2026-07-01T00:00:00.000Z",
+                "spec": "alpha",
+                "payload": { "title": "Use atomic writes for stores", "rationale": "torn writes corrupt state" },
+            })),
+            event_from(json!({
+                "kind": "knowledge", "event": "lesson", "ts": "2026-07-02T00:00:00.000Z",
+                "spec": "alpha",
+                "payload": { "trigger": "atomic rename failed on NFS", "takeaway": "atomic atomic writes need same-volume tempfiles" },
+            })),
+            event_from(json!({
+                "kind": "tool", "event": "tool.use", "ts": "2026-07-03T00:00:00.000Z",
+                "payload": { "tool": "Bash" },
+            })),
+        ];
+
+        // Substring match over title+body, both kinds; the lesson carries
+        // "atomic" three times (2x takeaway + 1x trigger) and outranks the
+        // decision (1x title + 1x rationale = 2).
+        let rows = knowledge_rows(events.clone(), "atomic", None, 10);
+        assert_eq!(rows.len(), 2, "tool.use is never a knowledge row");
+        assert_eq!(rows[0].kind, "lesson");
+        assert_eq!(rows[1].kind, "decision");
+        assert_eq!(rows[1].title, "Use atomic writes for stores");
+        assert_eq!(rows[1].body.as_deref(), Some("torn writes corrupt state"));
+        assert_eq!(rows[1].spec.as_deref(), Some("alpha"));
+
+        // Kind filter narrows to one event kind.
+        let decisions = knowledge_rows(events.clone(), "atomic", Some("decision"), 10);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].kind, "decision");
+
+        // Limit caps the rows; an unmatched needle yields nothing.
+        assert_eq!(knowledge_rows(events.clone(), "atomic", None, 1).len(), 1);
+        assert!(knowledge_rows(events, "no-such-term", None, 10).is_empty());
     }
 
     /// A `claude_code.token.usage` metric NDJSON line for one model + type.
@@ -1018,67 +1263,177 @@ mod tests {
         assert!(out.by_model.is_empty());
     }
 
-    // -------------------------------------------------------------------------
-    // `find_by_intent` / `intent_to_terms` tests
-    // -------------------------------------------------------------------------
+    // -- F6: find_anchors / rank_files (promoted scan census retrieval) ----
 
-    /// The tokeniser must lowercase, drop tokens shorter than 3 chars, reject
-    /// pure-numeric tokens, deduplicate in first-occurrence order, and cap at 32.
     #[test]
-    fn intent_to_terms_basic_tokenization() {
-        let terms = intent_to_terms("Add a Refund to the Order — refund the ORDER");
-        // "a" and "to" are < 3 chars, dropped.
-        // "Add" → "add", "Refund" → "refund", "the" → "the", "Order" → "order"
-        // second "refund" and "ORDER" are deduped.
-        assert!(terms.contains(&"add".to_string()));
-        assert!(terms.contains(&"refund".to_string()));
-        assert!(terms.contains(&"order".to_string()));
-        // Exactly one occurrence of "refund" despite appearing twice.
-        assert_eq!(terms.iter().filter(|t| t.as_str() == "refund").count(), 1);
-        // "a" dropped (too short).
-        assert!(!terms.contains(&"a".to_string()));
+    fn intent_terms_lowercases_dedups_drops_short_and_caps() {
+        let t = intent_terms("Draft the SPEC — spec acceptance, to QA!");
+        assert!(t.contains(&"draft".to_string()));
+        assert!(t.contains(&"spec".to_string()));
+        assert!(t.contains(&"acceptance".to_string()));
+        assert!(t.contains(&"the".to_string()), ">=3 chars kept; digest filters relevance");
+        assert!(!t.contains(&"to".to_string()), "<3 chars dropped");
+        assert!(!t.contains(&"qa".to_string()), "2 chars dropped");
+        // Dedup: SPEC/spec collapse to one lowercased term.
+        assert_eq!(t.iter().filter(|x| *x == "spec").count(), 1);
+        // Cap at 32.
+        let many = (0..50).map(|i| format!("term{i}")).collect::<Vec<_>>().join(" ");
+        assert!(intent_terms(&many).len() <= 32);
+        // Punctuation-only intent yields no terms (drives the NO_TERMS note).
+        assert!(intent_terms("!! -- ??").is_empty());
     }
 
-    /// `find_by_intent` must fail-open: an absent model produces
-    /// `{ "intent": "…", "files": [] }` wrapped in a `CallToolResult`, never
-    /// an MCP-level error.
     #[test]
-    fn find_by_intent_fails_open_on_missing_model() {
+    fn anchors_payload_projects_files_detail_matched_terms_and_report() {
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["spec","draft","acceptance"],
+                "matched_terms":[{"term":"spec","count":40,"samples":["a.rs"]}],
+                "files":["a.rs","b.rs","c.rs"],
+                "files_detail":[
+                    {"file":"a.rs","score_x1024":2048,"terms":["spec"]},
+                    {"file":"b.rs","score_x1024":512,"terms":["draft"]},
+                    {"file":"c.rs","score_x1024":0,"terms":[]}],
+                "miss":false,
+                "report":{"matched":2,"total":3,"reason":"strong","terms":[
+                    {"term":"spec","tier":"exact","lang":"","files":["a.rs"]},
+                    {"term":"draft","tier":"fold","lang":"","files":["b.rs"]},
+                    {"term":"acceptance","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("digest json");
+        let terms = intent_terms("spec draft acceptance");
+        let v = anchors_payload("spec draft acceptance", &terms, &q, 2);
+        assert_eq!(v["files"], json!(["a.rs", "b.rs"]));
+        assert_eq!(v["filesDetail"].as_array().unwrap().len(), 2);
+        assert_eq!(v["filesDetail"][0]["scoreX1024"], 2048);
+        assert_eq!(v["filesDetail"][0]["terms"], json!(["spec"]));
+        assert_eq!(v["matchedTerms"], json!(["spec", "draft"]));
+        assert_eq!(v["report"]["matched"], 2);
+        assert_eq!(v["report"]["total"], 3);
+        assert_eq!(v["report"]["reason"], "strong");
+        assert_eq!(v["miss"], json!(false));
+        let a = serde_json::to_string(&anchors_payload("spec draft acceptance", &terms, &q, 2)).unwrap();
+        let b = serde_json::to_string(&anchors_payload("spec draft acceptance", &terms, &q, 2)).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn anchors_payload_falls_back_to_matched_terms_on_old_payload() {
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["spec"],"matched_terms":[{"term":"spec","count":3,"samples":["a.rs"]}],"files":["a.rs"],"miss":false}"#,
+        )
+        .expect("old digest");
+        let v = anchors_payload("spec", &["spec".to_string()], &q, 10);
+        assert_eq!(v["matchedTerms"], json!(["spec"]));
+        assert_eq!(v["report"]["reason"], "");
+    }
+
+    #[test]
+    fn anchors_empty_keeps_files_array_and_note() {
+        let v = anchors_empty("anything", &["anything".to_string()], NOTE_NO_MODEL);
+        assert_eq!(v["files"], json!([]));
+        assert_eq!(v["filesDetail"], json!([]));
+        assert_eq!(v["matchedTerms"], json!([]));
+        assert_eq!(v["miss"], json!(true));
+        assert!(v["note"].as_str().unwrap().contains("grain.model.json"));
+    }
+
+    #[test]
+    fn rank_payload_numbers_rows_carries_terms_and_truncates() {
+        let rows = vec![
+            RankFile { file: "src/a.rs".to_string(), terms: vec!["spec".to_string()] },
+            RankFile { file: "src/b.rs".to_string(), terms: vec![] },
+        ];
+        let v = rank_payload("spec pipeline", &rows, 10);
+        let files = v["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["file"], "src/a.rs");
+        assert_eq!(files[0]["rank"], 1);
+        assert_eq!(files[0]["terms"], json!(["spec"]));
+        assert_eq!(files[1]["rank"], 2);
+        assert_eq!(files[1]["terms"], json!([]));
+        assert_eq!(v["top"], 10);
+        let v2 = rank_payload("spec", &rows, 1);
+        assert_eq!(v2["files"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rank_empty_reports_dictionary_absent() {
+        let v = rank_empty("spec", 10, NOTE_DICT_ABSENT);
+        assert_eq!(v["files"], json!([]));
+        assert_eq!(v["top"], 10);
+        assert!(v["note"].as_str().unwrap().contains("grain.dictionary.json"));
+    }
+
+    #[test]
+    fn find_anchors_value_fails_empty_without_model() {
         let dir = tempfile::tempdir().unwrap();
-        // No grain.model.json written → `purpose_search` will error.
         let server = MustardMemory::new(dir.path().to_path_buf());
-        let result = server.find_by_intent(Parameters(FindByIntentArgs {
-            intent: "efetivar a previsão de pagamento".to_string(),
-            root: None,
-        }));
-        // Must be a success result (no MCP error).
-        assert!(!result.is_error.unwrap_or(false));
-        // The text content must parse as JSON with a `files` array (possibly empty).
-        // `Content = Annotated<RawContent>`, which Derefs to `RawContent`;
-        // `RawContent::as_text()` returns `Option<&RawTextContent>` whose `.text`
-        // field holds the serialised JSON string.
-        let text = result
-            .content
-            .first()
-            .and_then(|c| c.as_text())
-            .map(|t| t.text.as_str())
-            .unwrap_or("")
-            .to_string();
-        let v: Value = serde_json::from_str(&text).expect("result must be valid JSON");
-        assert!(
-            v.get("files").and_then(Value::as_array).is_some(),
-            "expected a `files` array in {v}"
-        );
+        let v = server.find_anchors_value("spec draft acceptance", None);
+        assert_eq!(v["files"], json!([]));
+        assert_eq!(v["miss"], json!(true));
+        assert!(v["note"].as_str().unwrap().contains("grain.model.json"));
+        assert!(v["terms"].as_array().unwrap().contains(&json!("spec")));
     }
 
-    /// Empty intent → `files: []` immediately, without calling the scan binary.
     #[test]
-    fn find_by_intent_empty_intent_returns_empty_files() {
-        let terms = intent_to_terms("");
-        assert!(terms.is_empty());
-        // Verify the shape `find_by_intent` would produce via `intent_to_terms`.
-        let fallback: Value = json!({ "intent": "", "files": [] });
-        assert_eq!(fallback["files"].as_array().map(Vec::len), Some(0));
+    fn rank_files_value_fails_empty_without_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = MustardMemory::new(dir.path().to_path_buf());
+        let v = server.rank_files_value("spec pipeline", None);
+        assert_eq!(v["files"], json!([]));
+        assert!(v["note"].as_str().unwrap().contains("grain.model.json"));
+    }
+
+    #[test]
+    fn rank_files_value_reports_dict_absent_when_model_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        fs::create_dir_all(&claude).unwrap();
+        fs::write(claude.join("grain.model.json"), b"{}").unwrap();
+        let server = MustardMemory::new(dir.path().to_path_buf());
+        let v = server.rank_files_value("spec pipeline", None);
+        assert_eq!(v["files"], json!([]));
+        assert!(v["note"].as_str().unwrap().contains("grain.dictionary.json"));
+    }
+
+    /// LIVE proof (ignored by default; run with `--ignored --nocapture`): drive
+    /// `find_anchors` against this repository real `.claude/grain.model.json` via
+    /// the `scan` binary. Self-skips when the model is absent so a hermetic
+    /// environment never fails on it.
+    #[test]
+    #[ignore = "live: needs the repo grain.model.json plus the scan binary"]
+    fn live_find_anchors_against_repo_model() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        if !root.join(".claude").join("grain.model.json").is_file() {
+            eprintln!("skip: grain.model.json absent under {}", root.display());
+            return;
+        }
+        let server = MustardMemory::new(root);
+        let v = server.find_anchors_value("spec draft acceptance", Some(8));
+        eprintln!("find_anchors result:\n{}", serde_json::to_string_pretty(&v).unwrap());
+        // The read-only contract holds even live: `files` is always an array.
+        assert!(v["files"].is_array());
+    }
+
+    /// LIVE proof (ignored by default): `rank_files` against this repository
+    /// model. This repository has no `grain.dictionary.json`, so it exercises the
+    /// graceful dictionary-absent degradation end-to-end.
+    #[test]
+    #[ignore = "live: needs the repo grain.model.json"]
+    fn live_rank_files_degrades_without_dictionary() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        if !root.join(".claude").join("grain.model.json").is_file() {
+            eprintln!("skip: grain.model.json absent under {}", root.display());
+            return;
+        }
+        let server = MustardMemory::new(root);
+        let v = server.rank_files_value("spec pipeline reconciliation", Some(10));
+        eprintln!("rank_files result:\n{}", serde_json::to_string_pretty(&v).unwrap());
+        assert!(v["files"].is_array());
     }
 }
 

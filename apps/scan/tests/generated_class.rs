@@ -223,14 +223,14 @@ fn hubs_and_touchpoints_exclude_machine_written_modules() {
                 module("src/real_hub.ts", &["RealWiring"], ""),
             ],
             "graph": {
-                "nodes": 3, "edges": 4, "cyclic": false, "cycles": [],
+                "nodes": 3, "edges": 4, "cyclic": false,
                 "top_fan_in": [
                     { "module": "src/gen_registry.ts", "degree": 9 },
                     { "module": "src/vendored_lib.ts", "degree": 5 },
                     { "module": "src/real_hub.ts", "degree": 3 }
                 ],
                 "top_fan_out": [],
-                "layers": [], "cyclic_edges": 0, "total_edges": 4,
+                "layers": [],
                 "touchpoints": [
                     { "module": "src/gen_registry.ts", "fan_out": 9, "breadth": 4 },
                     { "module": "src/real_hub.ts", "fan_out": 2, "breadth": 2 }

@@ -15,7 +15,7 @@ use super::segment::{Segment, SegmentKind, SEGMENT_KIND_COUNT};
 use std::fmt::Write as _;
 
 /// Env-var read by [`ThemeId::from_env`].
-pub const ENV_VAR: &str = "MUSTARD_STATUSLINE_THEME";
+pub(crate) const ENV_VAR: &str = "MUSTARD_STATUSLINE_THEME";
 
 /// Hard ANSI reset.
 const RESET: &str = "\x1b[0m";
@@ -27,7 +27,7 @@ const DIM: &str = "\x1b[2m";
 const BG_RESET: &str = "\x1b[49m";
 
 /// The right-pointing solid triangle from the powerline / Nerd Font set.
-pub const POWERLINE_RIGHT: char = '\u{E0B0}';
+pub(crate) const POWERLINE_RIGHT: char = '\u{E0B0}';
 
 // ---------------------------------------------------------------------------
 // Color
@@ -48,7 +48,7 @@ pub enum Color {
 impl Color {
     /// ANSI escape sequence that sets the foreground to this color.
     #[must_use]
-    pub fn fg_seq(self) -> String {
+    pub(crate) fn fg_seq(self) -> String {
         match self {
             Color::Ansi(n) if n < 8 => format!("\x1b[3{n}m"),
             Color::Ansi(n) if n < 16 => format!("\x1b[9{}m", n - 8),
@@ -59,7 +59,7 @@ impl Color {
 
     /// ANSI escape sequence that sets the background to this color.
     #[must_use]
-    pub fn bg_seq(self) -> String {
+    pub(crate) fn bg_seq(self) -> String {
         match self {
             Color::Ansi(n) if n < 8 => format!("\x1b[4{n}m"),
             Color::Ansi(n) if n < 16 => format!("\x1b[10{}m", n - 8),
@@ -77,7 +77,7 @@ impl Color {
 /// pipe and whitespace separators where every segment shares the terminal
 /// background.
 #[derive(Debug, Clone, Copy)]
-pub struct Style {
+pub(crate) struct Style {
     pub fg: Color,
     pub bg: Option<Color>,
     pub bold: bool,
@@ -100,7 +100,7 @@ impl Style {
 
 /// How segments are joined.
 #[derive(Debug, Clone, Copy)]
-pub enum Separator {
+pub(crate) enum Separator {
     /// `" │ "` between segments; theme fg per segment, no bg.
     Pipe,
     /// `"  "` between segments; theme fg per segment, no bg.
@@ -111,11 +111,10 @@ pub enum Separator {
 }
 
 /// A complete statusline theme.
-pub struct Theme {
-    /// Self-reference used by tests + future introspection (debug logging,
-    /// `--print-theme`, etc.). Not read in the live render path, hence the
-    /// `allow`.
-    #[allow(dead_code)]
+pub(crate) struct Theme {
+    /// Self-reference the theme-table tests assert against; the live render
+    /// path never reads it, so it exists only in test builds.
+    #[cfg(test)]
     pub id: ThemeId,
     pub separator: Separator,
     /// Styles indexed by `SegmentKind as usize`. Always `SEGMENT_KIND_COUNT`.
@@ -126,7 +125,7 @@ pub struct Theme {
 impl Theme {
     /// Style for a given segment kind.
     #[must_use]
-    pub fn style_for(&self, kind: SegmentKind) -> Style {
+    pub(crate) fn style_for(&self, kind: SegmentKind) -> Style {
         self.styles[kind as usize]
     }
 }
@@ -300,6 +299,7 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
 pub const DEFAULT: Theme = Theme {
+    #[cfg(test)]
     id: ThemeId::Default,
     separator: Separator::Pipe,
     requires_nerdfont: false,
@@ -328,7 +328,8 @@ pub const DEFAULT: Theme = Theme {
 
 /// `minimal` — same palette as `default` but separator is a double space.
 /// Cleanest visual; still no Nerd Font requirement.
-pub const MINIMAL: Theme = Theme {
+pub(crate) const MINIMAL: Theme = Theme {
+    #[cfg(test)]
     id: ThemeId::Minimal,
     separator: Separator::Whitespace,
     requires_nerdfont: false,
@@ -339,7 +340,8 @@ pub const MINIMAL: Theme = Theme {
 ///
 /// Palette: Base #1e1e2e, Crust #11111b, Mauve #cba6f7, Sapphire #74c7ec,
 /// Green #a6e3a1, Peach #fab387, Yellow #f9e2af, Pink #f5c2e7, Text #cdd6f4.
-pub const CATPPUCCIN: Theme = Theme {
+pub(crate) const CATPPUCCIN: Theme = Theme {
+    #[cfg(test)]
     id: ThemeId::Catppuccin,
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
@@ -369,7 +371,8 @@ pub const CATPPUCCIN: Theme = Theme {
 ///
 /// Palette: BG #1a1b26, BG-Storm #24283b, FG #c0caf5, Blue #7aa2f7,
 /// Cyan #7dcfff, Green #9ece6a, Magenta #bb9af7, Yellow #e0af68, Red #f7768e.
-pub const TOKYO_NIGHT: Theme = Theme {
+pub(crate) const TOKYO_NIGHT: Theme = Theme {
+    #[cfg(test)]
     id: ThemeId::TokyoNight,
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
@@ -398,7 +401,8 @@ pub const TOKYO_NIGHT: Theme = Theme {
 /// `pastel-powerline` — pastel rainbow over a dark crust background.
 ///
 /// Bg rotates through pastel hues so the whole line reads as a soft ribbon.
-pub const PASTEL_POWERLINE: Theme = Theme {
+pub(crate) const PASTEL_POWERLINE: Theme = Theme {
+    #[cfg(test)]
     id: ThemeId::PastelPowerline,
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,
@@ -428,7 +432,8 @@ pub const PASTEL_POWERLINE: Theme = Theme {
 ///
 /// Palette: BG0 #282828, Yellow #d79921, Green #98971a, Aqua #689d6a,
 /// Purple #b16286, Orange #d65d0e, Red #cc241d, FG #ebdbb2.
-pub const GRUVBOX_RAINBOW: Theme = Theme {
+pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
+    #[cfg(test)]
     id: ThemeId::GruvboxRainbow,
     separator: Separator::Powerline { glyph: POWERLINE_RIGHT },
     requires_nerdfont: true,

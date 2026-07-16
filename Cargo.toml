@@ -7,8 +7,8 @@ members = ["apps/cli", "apps/mcp", "apps/rt", "apps/scan", "packages/core"]
 # `pnpm dashboard:dev` / `pnpm dashboard:build`).
 # Also excluded: the mustard-translate sidecar (apps/translate) — candle +
 # lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the
-# deterministic scanner; it builds standalone, same precedent as apps/embed.
-exclude = ["apps/dashboard/src-tauri", "apps/translate", "apps/embed"]
+# deterministic scanner; it builds standalone, as its own workspace.
+exclude = ["apps/dashboard/src-tauri", "apps/translate"]
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
@@ -21,7 +21,6 @@ thiserror = "2.0.18"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 jiff = "0.2.24"
-insta = "1.47.2"
 tempfile = "3.27.0"
 # Interactive terminal prompts for the CLI port (`mustard init` git-flow wizard).
 # Replaces the JS `inquirer` dependency. Pure-Rust, no async runtime.
@@ -145,3 +144,24 @@ case_sensitive_file_extension_comparisons = "allow"
 # it crate-wide. Clippy already exempts `#[cfg(test)]` code from this lint, so
 # test modules may still use `.unwrap()`.
 unwrap_used = "deny"
+
+# The shipped binaries (`mustard-rt`, `scan`) run on every tool call and every
+# scan. A tuned release profile shrinks the image the OS maps per hook spawn —
+# the dominant per-invocation cost — for free. NOTE: `panic = "abort"` is
+# deliberately NOT set — `ast/loader.rs::load_config` relies on `catch_unwind`
+# to degrade when `tree-sitter-loader`'s `Config::initial()` panics on a
+# missing home dir (containers/CI); aborting there would break the fail-open
+# contract. `strip`+`lto`+`codegen-units` capture the size win without it.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+# Faster incremental link + smaller debug artifact for the dev loop. Line-table
+# debuginfo keeps backtraces useful; optimizing deps (not our crates) cuts the
+# cold-build tail without slowing our own recompiles.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 1

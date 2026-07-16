@@ -199,7 +199,7 @@ pub struct SpecInput {
     /// BCP-47 narrative locale (`pt-BR`, `en-US`, `fr-FR`, ...). Required.
     ///
     /// Stored as `String` at the boundary because the rt-side callers
-    /// (`spec_draft`, `spec_validate`) already work in BCP-47 strings; the
+    /// (`spec_draft`) already work in BCP-47 strings; the
     /// validator routes the value through [`UserLocale::new`] so any
     /// short-form / malformed input is surfaced as
     /// [`ContractViolation::InvalidLang`]. W7 promotes this to
@@ -317,8 +317,7 @@ pub fn validate(input: &SpecInput) -> Result<(), Vec<ContractViolation>> {
     // or malformed shape surfaces as `InvalidLang`. The catalogue check
     // (i.e. "does Mustard ship strings for this locale?") is *not* enforced
     // here — the user is free to write specs in any BCP-47 locale; banner
-    // rendering bridges via `to_supported().unwrap_or_default()` at the
-    // callsite.
+    // rendering falls back to the default locale at the callsite.
     match input.lang.as_deref() {
         None | Some("") => violations.push(ContractViolation::MissingField("lang".into())),
         Some(raw) => {

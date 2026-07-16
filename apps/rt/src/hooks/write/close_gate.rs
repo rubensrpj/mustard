@@ -931,7 +931,7 @@ impl CloseGateModes {
     /// The project config is loaded once here; only `checklist` carries a
     /// `gates.*` override field today, so the other three resolve env-only.
     fn resolve(cwd: &str) -> Self {
-        let gates = mustard_core::ProjectConfig::load(Path::new(cwd)).gates;
+        let gates = crate::shared::context::project_config_cached(Path::new(cwd)).gates;
         Self {
             close: resolve_mode("MUSTARD_CLOSE_GATE_MODE", None),
             debt: resolve_mode("MUSTARD_DEBT_GATE_MODE", None),
@@ -1072,7 +1072,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                     ),
                     "an incomplete checklist means the spec is not done",
                     &format!(
-                        "mark each via `bun .claude/scripts/mark-checklist-item.js \
+                        "mark each via `mustard-rt run mark-checklist-item \
                          --spec {} --item \"<text>\"`, or set \
                          MUSTARD_CHECKLIST_GATE_MODE=warn",
                         spec_ref.unwrap_or("")
@@ -1114,7 +1114,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                         .to_string(),
                     |s| {
                         format!(
-                            "run /mustard:qa or bun .claude/scripts/qa-run.js --spec {s}, \
+                            "run /mustard:qa or `mustard-rt run qa-run --spec {s}`, \
                              or set MUSTARD_QA_GATE_MODE=warn"
                         )
                     },
@@ -1259,7 +1259,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
     // file is missing/unreadable). Each stage already skips on an absent command,
     // and the `stages.is_empty()` check below fail-open skips when none are set —
     // preserving the old "no mustard.json → Allow" semantics.
-    let cmds = mustard_core::ProjectConfig::load(Path::new(cwd)).commands();
+    let cmds = crate::shared::context::project_config_cached(Path::new(cwd)).commands();
     let stages: Vec<(&str, String)> = [
         ("build", cmds.build),
         ("type", cmds.type_check),

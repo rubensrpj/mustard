@@ -17,7 +17,7 @@
 //!
 //! ## Lenient serde
 //!
-//! [`SpanRecord`] / [`SavingsRecord`] / [`ContextCostFrame`] / [`ApiCostFrame`]
+//! [`SpanRecord`] / [`SavingsRecord`] / [`ContextCostFrame`]
 //! all carry an `#[serde(flatten)] extra: Map<String, Value>` field. External
 //! adapters (OTEL in W3, JSONL in W3) frequently add fields the core domain
 //! does not know about; capturing them in `extra` lets a downstream consumer
@@ -228,14 +228,6 @@ pub struct ContextCostFrame {
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
-
-/// Alias of [`SpanRecord`] used by the writer's `record_api_cost` entry point.
-///
-/// Semantically distinguishes "this came from an external adapter (OTEL/JSONL
-/// in W3) — already priced by Anthropic" from "this is an internal estimate
-/// produced by the [`estimator`](super::estimator)". The runtime row is the
-/// same `spans` table; only the call site differs.
-pub type ApiCostFrame = SpanRecord;
 
 // ---------------------------------------------------------------------------
 // Aggregate types returned by the reader.
@@ -514,23 +506,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn api_cost_frame_is_alias_of_span_record() {
-        let frame: ApiCostFrame = SpanRecord {
-            ts: "2026-05-20T00:00:00Z".into(),
-            session_id: None,
-            span_id: "x".into(),
-            model: None,
-            spec: None,
-            phase: None,
-            input_tokens: None,
-            output_tokens: None,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            cost_usd_micros: None,
-            is_error: false,
-            extra: Map::new(),
-        };
-        assert_eq!(frame.span_id, "x");
-    }
 }
