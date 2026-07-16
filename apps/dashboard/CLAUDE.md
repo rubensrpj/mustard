@@ -16,6 +16,6 @@
 <!-- /mustard:guards -->
 
 <!-- mustard:scan-map -->
-Tipo: npm · 203 arquivos
-Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
+Tipo: npm · 145 arquivos
+O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
 <!-- /mustard:scan-map -->

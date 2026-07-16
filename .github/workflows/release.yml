@@ -43,6 +43,8 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+
       - id: v
         shell: bash
         run: |
@@ -57,6 +59,18 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Versão resolvida: $v"
+
+      # O bootstrap do plugin (plugin/bin/mustard-boot) baixa os binários dos
+      # assets deste release usando a versão do plugin.json — uma tag com o
+      # manifesto dessincronizado publicaria assets que nenhum plugin encontra.
+      - name: Confere plugin.json sincronizado com a versão
+        shell: bash
+        run: |
+          pv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' plugin/.claude-plugin/plugin.json | head -1)
+          if [ "$pv" != "${{ steps.v.outputs.version }}" ]; then
+            echo "::error::plugin/.claude-plugin/plugin.json version ($pv) difere do release (${{ steps.v.outputs.version }}). Atualize o manifesto do plugin e recrie a tag."
+            exit 1
+          fi
 
   # ------------------------------------------ Windows — instalador NSIS único ----
   windows-installer:
@@ -119,12 +133,32 @@ jobs:
       - name: Build do instalador (Dashboard + CLI embutido)
         run: pnpm --filter mustard-dashboard exec tauri build --bundles nsis --config ../../packaging/windows/tauri.windows.json
 
+      # Binários avulsos que o bootstrap do plugin baixa na primeira sessão
+      # (mustard-boot): CLI completo + rtk (se compilou) + o exe portátil do
+      # Dashboard. O instalador NSIS acima continua sendo o caminho "app".
+      - name: Empacota binários avulsos (bootstrap do plugin)
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist/bins
+          for b in scan mustard-rt mustard-mcp mustard; do
+            cp "target/release/$b.exe" dist/bins/
+          done
+          RTK="$(command -v rtk || true)"
+          if [ -n "$RTK" ]; then cp "$RTK" dist/bins/rtk.exe; else echo "rtk ausente — pacote sai sem rtk"; fi
+          DASH="$(ls apps/dashboard/src-tauri/target/release/*.exe 2>/dev/null | grep -vi 'setup' | head -1 || true)"
+          if [ -n "$DASH" ]; then cp "$DASH" dist/bins/; else echo "exe do dashboard não encontrado — pacote sai sem ele"; fi
+          (cd dist/bins && 7z a "../mustard-bins-$VERSION-windows-x64.zip" .)
+
       - name: Coleta o instalador
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
           if-no-files-found: error
-          path: apps/dashboard/src-tauri/target/release/bundle/nsis/*-setup.exe
+          path: |
+            apps/dashboard/src-tauri/target/release/bundle/nsis/*-setup.exe
+            dist/mustard-bins-*.zip
 
   # ------------------------------------------------ macOS — instalador .pkg ----
   macos-installer:
@@ -169,12 +203,28 @@ jobs:
       - name: Build do instalador .pkg (Dashboard + CLI)
         run: bash packaging/macos/build-pkg.sh
 
+      # Binários avulsos universais (lipo dos dois targets que o build-pkg.sh
+      # já compilou) — o bootstrap do plugin baixa este tar na primeira sessão.
+      # O Dashboard macOS é um .app bundle; o veículo dele é o .pkg acima.
+      - name: Empacota binários avulsos (bootstrap do plugin)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist/bins
+          for b in scan mustard-rt mustard-mcp mustard; do
+            lipo -create "target/x86_64-apple-darwin/release/$b" "target/aarch64-apple-darwin/release/$b" -output "dist/bins/$b"
+            chmod +x "dist/bins/$b"
+          done
+          tar -czf "dist/mustard-bins-$VERSION-macos-universal.tar.gz" -C dist/bins .
+
       - name: Coleta o instalador
         uses: actions/upload-artifact@v4
         with:
           name: macos-installer
           if-no-files-found: error
-          path: dist/Mustard-*-universal.pkg
+          path: |
+            dist/Mustard-*-universal.pkg
+            dist/mustard-bins-*.tar.gz
 
   # ------------------------------------------ Linux — .deb fundido (Docker) ----
   linux-deb:
@@ -194,6 +244,26 @@ jobs:
         shell: pwsh
         run: ./packaging/build-packages.ps1 -Targets linux
 
+      # Binários avulsos nativos (runner ubuntu, sem Docker) — o bootstrap do
+      # plugin baixa este tar na primeira sessão. O Dashboard Linux segue no
+      # .deb acima (precisa das libs de sistema que o apt resolve).
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Empacota binários avulsos (bootstrap do plugin)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
+          mkdir -p dist/bins
+          for b in scan mustard-rt mustard-mcp mustard; do
+            cp "target/release/$b" dist/bins/
+          done
+          tar -czf "dist/mustard-bins-$VERSION-linux-x64.tar.gz" -C dist/bins .
+
       - name: Coleta o .deb + instalador
         uses: actions/upload-artifact@v4
         with:
@@ -203,6 +273,7 @@ jobs:
             dist/mustard_*_amd64.deb
             dist/install.sh
             dist/TUTORIAL-LINUX.md
+            dist/mustard-bins-*.tar.gz
 
   # ------------------------------------------------------------- publica ----
   # Junta os instaladores num único GitHub Release. Só publica em tag; no
@@ -246,6 +317,7 @@ jobs:
             artifacts/**/*.pkg
             artifacts/**/*.deb
             artifacts/**/install.sh
+            artifacts/**/mustard-bins-*
             artifacts/**/TUTORIAL-WINDOWS.md
             artifacts/**/TUTORIAL-MACOS.md
             artifacts/**/TUTORIAL-LINUX.md

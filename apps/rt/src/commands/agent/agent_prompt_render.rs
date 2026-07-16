@@ -342,6 +342,18 @@ pub(crate) fn render_prompt_at(
             raw
         }
     };
+    // `--role patterns` (the `/scan` mold enrich) is spec-less and its work is
+    // DATA, not prose: the mold worklist `scan-patterns-list` computes. Embed
+    // that SAME worklist (single source — `scan_patterns::list::collect`),
+    // filtered to this subproject, into the TASK body so the mustard-patterns
+    // agent can work from the rendered prompt alone. An empty worklist renders
+    // an explicit "no candidates — author nothing" TASK (never the silent
+    // guards-reminder-only TASK that forced agents to demand a re-dispatch).
+    let task_steps = if role.trim().eq_ignore_ascii_case("patterns") {
+        patterns_task_block(&project, &subproject_str, &task_steps)
+    } else {
+        task_steps
+    };
     // Spec-keyed scratch lookups. With no spec there is nothing cached; pass an
     // empty key so each helper resolves to a missing path and fail-opens to "".
     let spec_key = spec.unwrap_or("");
@@ -541,6 +553,7 @@ pub const EPISTEMIC_FLOOR: &str = "Settle existence/duplication questions by Gre
 fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &str) -> String {
     match role.trim().to_ascii_lowercase().as_str() {
         "guards" => build_guards_role_block(project, subproject, spec_lang),
+        "patterns" => build_patterns_role_block(subproject),
         "explore" => {
             // The epistemic discipline lives in one place (EPISTEMIC_FLOOR) so
             // the rendered contract and the `subagent_inject` floor never drift.
@@ -619,6 +632,120 @@ fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) ->
          ONLY the lines as your final message; do NOT write any file — the caller \
          pipes your text to scan-guards-apply.{facts_line}"
     )
+}
+
+/// Build the `patterns` role block — the mold-authoring enrich instruction (the
+/// pattern twin of [`build_guards_role_block`]). The worklist itself is
+/// materialised into `## TASK` by [`patterns_task_block`]; this block carries
+/// the delivery contract: read-only, canonical mold format, one demarcated
+/// block per mold that the caller pipes to `scan-patterns-apply`. Molds are
+/// English technical prose by policy (see `mustard-patterns.md`), so no locale
+/// enters here.
+fn build_patterns_role_block(subproject: &str) -> String {
+    format!(
+        "ROLE: patterns\n\
+         You author pattern skill molds for {subproject} ONLY — one SKILL.md per cluster \
+         listed in ## TASK, and NEVER one that is not listed there (existing molds were \
+         already filtered out; never the workspace root). READ 2-3 of the cluster's \
+         exemplar files (their paths are in the worklist) BEFORE authoring its mold: the \
+         mold teaches what they share — folder, extension, naming, shape (traits, exports, \
+         error style, test placement) and what a new member must/must-not do. Read-only: \
+         deliver every mold in your final message, each inside \
+         `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
+         worklist; do NOT write any file — the caller pipes each block to \
+         scan-patterns-apply. Canonical mold format (frontmatter first): name = the \
+         worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
+         ...\" (one concrete sentence); `tags: [add, refactor]`; `appliesTo: [<label>]`; \
+         `scope: [code-editing]`; `source: scan`; `metadata.generated_by: scan` + \
+         `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` \
+         (folder / extension / file count), `## How to apply` (where a new member goes and \
+         what it follows), `## Examples` (2-3 real `Ref:` paths you read). Never cite a \
+         framework the exemplars don't use. A cluster too weak to teach (shared folder but \
+         no real shape) → SKIP it and say so in one line."
+    )
+}
+
+/// Materialise the `--role patterns` TASK body: the mold worklist behind
+/// `scan-patterns-list` ([`crate::commands::scan_patterns::list::collect`] —
+/// the SAME function, never a re-derivation), filtered to `subproject`. Any
+/// `--task-text` the caller passed rides after the worklist.
+///
+/// Empty worklist (all molds exist / nothing mineable / unknown subproject):
+/// the TASK explicitly states "no candidates — author nothing" and a WARN
+/// lands on stderr. The renderer's contract is fail-open + always exit 0 (see
+/// the module header), so a loud non-zero exit is not available here; the
+/// explicit no-op TASK makes the silent-empty dispatch impossible while
+/// keeping the contract. Deterministic: `collect` is byte-stable and the
+/// rendering below adds no clock/path noise. No `## ` heading is emitted —
+/// the worklist must stay inside the template's `## TASK` section body
+/// (`collapse_empty_sections` would otherwise drop the emptied heading).
+fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String {
+    let normalized = normalize_subproject(subproject);
+    let mine: Vec<crate::commands::scan_patterns::list::Candidate> =
+        crate::commands::scan_patterns::list::collect(project)
+            .into_iter()
+            .filter(|c| c.subproject == normalized)
+            .collect();
+    let mut out = if mine.is_empty() {
+        eprintln!(
+            "agent-prompt-render: WARN: --role patterns: empty mold worklist for \
+             '{normalized}' — rendering an explicit no-candidates TASK"
+        );
+        "NO CANDIDATES: the mold worklist for this subproject is empty — every mineable \
+         cluster already has its `-pattern` skill or nothing clears the quality bar. Do \
+         NOT author anything; reply \"no candidates\" and stop."
+            .to_string()
+    } else {
+        render_patterns_worklist(&mine)
+    };
+    if !extra.trim().is_empty() {
+        out.push_str("\n\n");
+        out.push_str(extra.trim());
+    }
+    out
+}
+
+/// Render the filtered worklist as the TASK body: one entry per candidate with
+/// slug, label, affix (+kind), declKind, count, implements (when present), the
+/// moldPath the returned block must name, and the exemplar files to read.
+/// Plain bullets only — no `## ` heading (see [`patterns_task_block`]).
+fn render_patterns_worklist(
+    candidates: &[crate::commands::scan_patterns::list::Candidate],
+) -> String {
+    let mut out = String::from(
+        "Mold worklist — author ONE mold per cluster below, ONLY these \
+         (delivery contract in ## ROLE):\n",
+    );
+    for c in candidates {
+        let decl = if c.decl_kind.is_empty() { "-" } else { c.decl_kind.as_str() };
+        let kind = if c.affix_kind.is_empty() { "-" } else { c.affix_kind.as_str() };
+        let _ = write!(
+            out,
+            "- slug: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
+            c.slug, c.label, c.affix, c.count
+        );
+        if let Some(imp) = c.implements.as_deref().filter(|s| !s.is_empty()) {
+            let _ = write!(out, " | implements: {imp}");
+        }
+        out.push('\n');
+        let _ = writeln!(out, "  moldPath: {}", c.mold_path);
+        let _ = writeln!(out, "  exemplars (read these first):");
+        for e in &c.exemplars {
+            let _ = writeln!(out, "    - {e}");
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Normalise the `--subproject` flag to the forward-slashed root-relative form
+/// `scan-patterns-list` emits in `Candidate.subproject`: backslashes folded,
+/// trailing `/` and leading `./` stripped; the root (`.`) maps to `""` (which
+/// matches no candidate — molds are never authored for the workspace root).
+fn normalize_subproject(subproject: &str) -> String {
+    let s = subproject.replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    let s = s.strip_prefix("./").unwrap_or(s);
+    if s == "." { String::new() } else { s.to_string() }
 }
 
 /// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`
@@ -1419,10 +1546,10 @@ fn strip_unfilled_template_tokens(
 /// cannot write: `explore` → the built-in `Explore` (no Edit/Write), `plan` →
 /// the built-in `Plan` (no Edit/Write), `review`/`qa` → `mustard-review`
 /// (Read/Grep/Glob/Bash — Bash for tests only), `guards` → `mustard-guards`
-/// (Read/Grep/Glob only). Writing roles (`impl` and any other) stay
-/// `general-purpose`: they need Edit/Write and rely on the per-role contract +
-/// the `scope_guard` hook instead. Emitted by `dispatch-plan` so the
-/// orchestrator never picks the agent by hand.
+/// and `patterns` → `mustard-patterns` (Read/Grep/Glob only). Writing roles
+/// (`impl` and any other) stay `general-purpose`: they need Edit/Write and
+/// rely on the per-role contract + the `scope_guard` hook instead. Emitted by
+/// `dispatch-plan` so the orchestrator never picks the agent by hand.
 #[must_use]
 pub fn recommended_subagent_type(role: &str) -> &'static str {
     match role.trim().to_ascii_lowercase().as_str() {
@@ -1430,6 +1557,7 @@ pub fn recommended_subagent_type(role: &str) -> &'static str {
         "plan" => "Plan",
         "review" | "qa" => "mustard-review",
         "guards" => "mustard-guards",
+        "patterns" => "mustard-patterns",
         _ => "general-purpose",
     }
 }
@@ -1703,8 +1831,132 @@ mod tests {
         assert_eq!(recommended_subagent_type("review"), "mustard-review");
         assert_eq!(recommended_subagent_type("qa"), "mustard-review");
         assert_eq!(recommended_subagent_type(" Guards "), "mustard-guards");
+        assert_eq!(recommended_subagent_type("patterns"), "mustard-patterns");
         assert_eq!(recommended_subagent_type("impl"), "general-purpose");
         assert_eq!(recommended_subagent_type("backend"), "general-purpose");
+    }
+
+    #[test]
+    fn patterns_role_block_carries_delivery_contract() {
+        // The patterns block must scope to the subproject, demand the exemplar
+        // reads, name the demarcated return format and forbid self-writing —
+        // the caller pipes each block to scan-patterns-apply.
+        let dir = tempdir().unwrap();
+        let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
+        assert!(block.starts_with("ROLE: patterns"), "cue missing: {block}");
+        assert!(block.contains("apps/api"), "subproject scope missing: {block}");
+        assert!(block.contains("=== FILE:"), "demarcated return format missing: {block}");
+        assert!(block.contains("scan-patterns-apply"), "delivery contract missing: {block}");
+        assert!(block.contains("do NOT write any file"), "write-restriction missing: {block}");
+        // Read-only role → no MEMORY contract (not a knowledge producer).
+        assert!(!block.contains("<MEMORY>"), "patterns must not carry MEMORY: {block}");
+    }
+
+    /// End-to-end regression for the /scan patterns dispatch defect: rendering
+    /// `--role patterns` for a subproject with candidates must embed the SAME
+    /// worklist `scan-patterns-list` computes — slug, moldPath and exemplar
+    /// paths — in the TASK body, filtered to that subproject, so the
+    /// mustard-patterns agent can work from the rendered prompt alone.
+    #[test]
+    fn patterns_render_embeds_subproject_worklist() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        std::fs::write(
+            dir.path().join(".claude").join("grain.model.json"),
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"},{"name":"web","dir":"apps/web"}],
+              "roles": [
+                {"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services","decl_kind":"class","implements":"BaseService"},
+                {"affix":"Widget","kind":"suffix","count":4,"common_dir":"apps/web/widgets"}
+              ],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"apps/web/widgets/ChartWidget.tsx"},
+                {"path":"apps/web/widgets/TableWidget.tsx"}
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let render = || {
+            render_prompt_at(
+                dir.path(),
+                None,
+                None,
+                "patterns",
+                Path::new("apps/api"),
+                RenderMode::First,
+                None,
+                None,
+                Some("Extra orchestrator note."),
+            )
+        };
+        let rendered = render();
+        // The worklist entry rides inside the ## TASK section with every field
+        // the agent needs: slug, label, affix(+kind), declKind, count,
+        // implements, moldPath and the exemplar file paths.
+        assert!(rendered.contains("ROLE: patterns"), "role block missing: {rendered}");
+        assert!(rendered.contains("slug: api-service"), "slug missing: {rendered}");
+        assert!(rendered.contains("label: service"), "label missing: {rendered}");
+        assert!(rendered.contains("affix: Service (suffix)"), "affix missing: {rendered}");
+        assert!(rendered.contains("declKind: class"), "declKind missing: {rendered}");
+        assert!(rendered.contains("implements: BaseService"), "implements missing: {rendered}");
+        assert!(rendered.contains("count: 5"), "count missing: {rendered}");
+        assert!(
+            rendered.contains("moldPath: apps/api/.claude/skills/api-service-pattern/SKILL.md"),
+            "moldPath missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("apps/api/services/UserService.ts")
+                && rendered.contains("apps/api/services/OrderService.ts"),
+            "exemplar paths missing: {rendered}"
+        );
+        // Filtered to the requested subproject — the web cluster never leaks in.
+        assert!(!rendered.contains("web-widget"), "other subproject leaked: {rendered}");
+        // The worklist lands in the ## TASK section (before the guards line).
+        let task_body = rendered
+            .split_once("## TASK")
+            .map(|(_, rest)| rest)
+            .expect("## TASK heading present");
+        assert!(task_body.contains("slug: api-service"), "worklist not in TASK: {task_body}");
+        // `--task-text` rides after the worklist instead of being swallowed.
+        assert!(rendered.contains("Extra orchestrator note."), "task-text dropped: {rendered}");
+        // Deterministic: two renders produce identical bytes.
+        assert_eq!(rendered, render(), "patterns render must be byte-stable");
+    }
+
+    /// Empty worklist (no model / all molds exist): the TASK must explicitly
+    /// state there is nothing to author — the silent guards-reminder-only TASK
+    /// (the /scan dispatch defect) must be impossible. Exit stays 0 per the
+    /// renderer's fail-open contract; the loud part is the explicit no-op TASK
+    /// plus the stderr WARN.
+    #[test]
+    fn patterns_render_empty_worklist_states_no_candidates() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path()); // no grain.model.json → collect() fail-opens to [].
+        let rendered = render_prompt_at(
+            dir.path(),
+            None,
+            None,
+            "patterns",
+            Path::new("apps/api"),
+            RenderMode::First,
+            None,
+            None,
+            None,
+        );
+        assert!(rendered.contains("NO CANDIDATES"), "explicit no-op missing: {rendered}");
+        assert!(
+            rendered.contains("Do NOT author anything"),
+            "author-nothing instruction missing: {rendered}"
+        );
+        // The TASK section survived with the explicit body (not collapsed, not blank).
+        let task_body = rendered
+            .split_once("## TASK")
+            .map(|(_, rest)| rest)
+            .expect("## TASK heading present");
+        assert!(task_body.contains("NO CANDIDATES"), "no-op not in TASK: {task_body}");
     }
 
     #[test]

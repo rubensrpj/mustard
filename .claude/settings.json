@@ -129,7 +129,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe run statusline",
+    "command": "mustard-rt run statusline",
     "padding": 1
   }
 }

@@ -16,6 +16,8 @@
 //! this branch (an unrelated stale `retrieval` test in `domain/config.rs`), so
 //! `cargo test -p mustard-rt` is the vehicle that actually runs them.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

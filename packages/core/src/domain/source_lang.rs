@@ -299,6 +299,16 @@ mod tests {
         )
         .unwrap();
         let files = vec!["backend/App/Controllers/PayableController.cs".to_string()];
+        // Diagnostic breadcrumbs: every branch of detected_languages is
+        // fail-open (empty set), so when the assert below trips on CI the
+        // failing stage is otherwise invisible. cargo only prints this output
+        // for FAILING tests, so it is free on green runs.
+        let projects = read_projects(&model);
+        eprintln!("diag read_projects: {} project(s)", projects.len());
+        match StackRegistry::load(DEFAULT_STACKS_NAME, tmp.path()) {
+            Ok(reg) => eprintln!("diag registry: ok, language_of(aspnet) = {:?}", reg.language_of("aspnet")),
+            Err(e) => eprintln!("diag registry: load failed: {e:?}"),
+        }
         let langs = detected_languages(&files, &model, tmp.path());
         assert!(langs.contains("csharp"), "aspnet stack resolves to csharp: {langs:?}");
     }

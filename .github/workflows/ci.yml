@@ -5,6 +5,9 @@ on:
     branches: [main, dev_rubens]
   pull_request:
     branches: [main]
+  # Manual runs (any branch) — lets a fix branch prove itself on all 3 OSes
+  # before reaching main: Actions -> CI -> Run workflow.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
@@ -37,14 +40,23 @@ jobs:
       # excluded: it needs per-OS system libraries (webkit2gtk on Linux, etc.)
       # that would make this matrix slow and brittle, and it is not part of the
       # CLI/runtime surface this workflow guards.
+      #
+      # `-p scan` builds the grain binary because mustard-core's stack-registry
+      # tests exercise `Scan::locate()` at runtime (spawn, fail-open): without
+      # `scan` reachable the test degrades to an empty project list and fails —
+      # green on any dev machine (installed scan on PATH), red on a bare runner.
       - name: Build
-        run: cargo build --locked -p mustard-core -p mustard-cli -p mustard-rt
+        run: cargo build --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
+
+      - name: Expose the scan binary to core's spawn-based tests
+        shell: bash
+        run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt
+        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
 
       # Plain clippy: the workspace lint table makes `unwrap_used` (and other
       # correctness lints) deny-level while keeping pedantic lints at warn, so
       # this fails the build on real problems without drowning in style noise.
       - name: Clippy
-        run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt
+        run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan

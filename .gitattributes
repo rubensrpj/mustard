@@ -1,0 +1,8 @@
+# Batch/cmd scripts break under cmd.exe with LF-only line endings (the parser
+# mis-reads labels and eats characters) — force CRLF on every checkout.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# POSIX shell scripts must stay LF everywhere (CRLF breaks the shebang).
+plugin/bin/mustard-boot text eol=lf
+*.sh text eol=lf
