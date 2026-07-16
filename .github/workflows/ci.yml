@@ -40,8 +40,17 @@ jobs:
       # excluded: it needs per-OS system libraries (webkit2gtk on Linux, etc.)
       # that would make this matrix slow and brittle, and it is not part of the
       # CLI/runtime surface this workflow guards.
+      #
+      # `-p scan` builds the grain binary because mustard-core's stack-registry
+      # tests exercise `Scan::locate()` at runtime (spawn, fail-open): without
+      # `scan` reachable the test degrades to an empty project list and fails —
+      # green on any dev machine (installed scan on PATH), red on a bare runner.
       - name: Build
-        run: cargo build --locked -p mustard-core -p mustard-cli -p mustard-rt
+        run: cargo build --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
+
+      - name: Expose the scan binary to core's spawn-based tests
+        shell: bash
+        run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       - name: Test
         run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt
