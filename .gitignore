@@ -142,6 +142,7 @@ benchmarks/*/model/
 # mustard-boot / mustard-boot.cmd SÃO commitados — não casar com eles aqui.
 plugin/bin/*.exe
 plugin/bin/*.old
+plugin/bin/*.old-*
 plugin/bin/mustard-rt
 plugin/bin/scan
 plugin/bin/mustard-mcp

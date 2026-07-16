@@ -101,6 +101,25 @@ function Install-Bin([string]$ExePath, [string]$CratePath, [string]$BinName) {
     }
 }
 
+# Mirror a freshly installed binary into plugin/bin — the Claude Code plugin
+# resolves its hooks, MCP server, and statusline from
+# ${CLAUDE_PLUGIN_ROOT}/bin, NOT from PATH, so without this sync a dev install
+# would leave the plugin running the previous binary. Same park-by-rename dance
+# as Install-Bin: a mapped image can be renamed but not overwritten on Windows.
+function Sync-PluginBin([string]$SourceExe, [string]$PluginBinDir) {
+    if (-not (Test-Path $SourceExe)) { return }
+    if (-not (Test-Path $PluginBinDir)) { return }
+    $dest = Join-Path $PluginBinDir (Split-Path -Leaf $SourceExe)
+    Get-ChildItem -LiteralPath $PluginBinDir -Filter "$(Split-Path -Leaf $SourceExe).old*" -ErrorAction SilentlyContinue |
+        ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch {} }
+    if (Test-Path $dest) {
+        $parked = "$dest.old-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        try { Move-Item -LiteralPath $dest -Destination $parked -Force -ErrorAction Stop }
+        catch { Write-Warning "plugin/bin: could not free $dest — the plugin keeps the previous binary until the next run."; return }
+    }
+    Copy-Item -LiteralPath $SourceExe -Destination $dest -Force
+}
+
 # Prerequisite: the bundled templates/ payload `mustard init` copies from.
 if (-not (Test-Path $TemplatesDir)) {
     throw "Templates payload not found at $TemplatesDir — run this script from the Mustard repo root."
@@ -147,6 +166,12 @@ if (-not $SkipBuild) {
     } finally {
         $env:MUSTARD_BUILD_NUMBER = $prevBuildNumber
     }
+    # Keep the Claude Code plugin's own bin/ in lockstep — hooks, MCP, and the
+    # statusline of a plugin-based session resolve there, not on PATH.
+    $PluginBin = Join-Path $Root 'plugin\bin'
+    Write-Host "==> Syncing plugin/bin (mustard-rt + scan) ..."
+    Sync-PluginBin $RtExe   $PluginBin
+    Sync-PluginBin $ScanExe $PluginBin
 }
 if (-not (Test-Path $MustardExe)) { $MustardExe = 'mustard' }  # fall back to PATH
 
@@ -180,7 +205,6 @@ $cmdArgs = @('init', '--yes')
 if ($Force)  { $cmdArgs += '--force' }
 if ($DryRun) { $cmdArgs += '--dry-run' }
 $cmdLabel = 'mustard init'
-}
 
 # Point the command at this repo's templates/ payload (init resolves it
 # via MUSTARD_TEMPLATES_DIR). Scope the env var to the child process
