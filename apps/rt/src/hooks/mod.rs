@@ -27,4 +27,5 @@ pub mod session;
 pub mod write;
 pub mod task;
 pub mod bash;
+pub mod worktree_create;
 // Spec A v4 / W4 — run-based alternative to Moment 1 of the regression gate.

@@ -18,7 +18,7 @@ disable-model-invocation: true
 | `commit` | Create a commit, no push. `--scope` defaults to `all`. |
 | `push` | Sync first, then commit + push ONLY the current branch (set upstream). |
 | `pr [<target>]` | Open/update a PR (idempotent) — **one per repo, submodules before parent**. Work stays live on the branch; each `push`/`pr` updates the SAME PR until `pr close`. Work branch → its prefix base; bare base `B` → `<target>` or `flow[B]` (promote `dev→main` / backport `main→dev`). |
-| `pr close [<worktree>]` | Exit ritual — run from the WORK BRANCH after its PR merges (on a bare base it refuses). Merged → return to base, pull, delete the worktree + local & remote branch. NOT merged → only warns, nothing touched. Delegates to `mustard-rt run git-settle` (verify + prune), with `ExitWorktree` between its two calls. |
+| `pr close [<worktree>]` | Exit ritual — run from the WORK BRANCH after its PR merges (on a bare base it refuses). Merged → return to base, pull, delete the worktree + local & remote branch. NOT merged → only warns, nothing touched (giving up instead? `ExitWorktree action=remove` + `rtk git push origin --delete <branch>` if pushed). Delegates to `mustard-rt run git-settle` (verify + prune), with `ExitWorktree` between its two calls. |
 
 ## Iron rules
 

@@ -14,9 +14,10 @@
 //! wrote; inside the worktree the gate then finds the branch already checked
 //! out and stays silent.
 //!
-//! On creation the main checkout's `.claude/settings.local.json` (gitignored,
-//! so never part of the checkout) is copied into the worktree — the entering
-//! session keeps its machine-local arrangements.
+//! Machine-local settings are NOT copied in: since Claude Code v2.1.211 the
+//! repo's `.claude/settings.local.json` is resolved to the MAIN checkout from
+//! inside any worktree — a per-worktree copy would only shadow it (undocumented
+//! precedence) and freeze arrangements at open time.
 //!
 //! Error posture: config/user/state errors are LOUD (`ok:false` + exit 1) —
 //! an unknown `--base` here is the same disease `resolve_base` now rejects at
@@ -184,24 +185,6 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         });
     }
 
-    // Machine-local settings (`.claude/settings.local.json`) are gitignored,
-    // so the checkout cannot carry them — copy the main checkout's file so the
-    // session that enters this worktree keeps its local arrangements
-    // (permission allowlists, statusline). Fail-open: a copy failure degrades
-    // to an honest "failed" field, never blocks the open (the committed
-    // settings.json still boots the session).
-    let local_settings = {
-        let src = main.join(".claude").join("settings.local.json");
-        if src.is_file() {
-            let dst_dir = wt_path.join(".claude");
-            let copied = std::fs::create_dir_all(&dst_dir).is_ok()
-                && std::fs::copy(&src, dst_dir.join("settings.local.json")).is_ok();
-            if copied { "copied" } else { "failed" }
-        } else {
-            "absent"
-        }
-    };
-
     json!({
         "ok": true,
         "path": wt_str,
@@ -209,8 +192,90 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         "base": base,
         "created": true,
         "fetched": fetched,
-        "localSettings": local_settings,
     })
+}
+
+/// The `WorktreeCreate` hook engine: create the worktree at the harness's
+/// REQUESTED path and return the path to echo. Naming decides the cut:
+///
+/// - `{base}_…` with a DECLARED base → work unit: fetch + cut from a fresh
+///   `origin/{base}` (attach the branch if it already exists).
+/// - `prefix_…` with an UNDECLARED prefix → `Err` (didactic — almost certainly
+///   a mistyped base; silent coercion is the disease this crate just cured).
+/// - no `_` at all (`agent-*`, desktop names) → replicate the native cut:
+///   `origin/HEAD` when resolvable, else the local `HEAD` — background
+///   isolation must never break.
+///
+/// An already-registered branch returns its registered path (idempotent).
+pub(crate) fn hook_create(requested_path: &str, cwd: &Path) -> Result<String, String> {
+    let requested = requested_path.trim();
+    if requested.is_empty() {
+        return Err("WorktreeCreate: worktree_path vazio no input do hook".to_string());
+    }
+    let Some(main) = main_checkout_root(cwd) else {
+        return Err("WorktreeCreate: não é um repositório git".to_string());
+    };
+    let wt_path = Path::new(requested);
+    let name = wt_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    if name.is_empty() {
+        return Err(format!("WorktreeCreate: path sem nome de worktree: {requested}"));
+    }
+
+    // Idempotency: a registration for this branch is the answer.
+    let entries = git_out(&main, &["worktree", "list", "--porcelain"])
+        .map(|s| parse_worktrees(&s))
+        .unwrap_or_default();
+    if let Some(e) = entries.iter().find(|e| e.branch == name) {
+        return Ok(e.path.clone());
+    }
+    if wt_path.exists() {
+        return Err(format!("WorktreeCreate: path já ocupado: {requested}"));
+    }
+
+    let wt_str = requested.replace('\\', "/");
+    let config = mustard_core::ProjectConfig::load(&main);
+    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
+    let unit_base = bases
+        .iter()
+        .filter(|c| name.starts_with(&format!("{c}_")))
+        .max_by_key(|c| c.len())
+        .cloned();
+
+    let start = if let Some(base) = unit_base {
+        // Work unit: freshness first (network is the one forgiving step).
+        git_ok(&main, &["fetch", "origin", &base]);
+        if ref_exists(&main, &format!("refs/remotes/origin/{base}")) {
+            format!("origin/{base}")
+        } else if ref_exists(&main, &format!("refs/heads/{base}")) {
+            base
+        } else {
+            return Err(format!("WorktreeCreate: base '{base}' não encontrada no repositório"));
+        }
+    } else if let Some((prefix, _)) = name.split_once('_') {
+        return Err(format!(
+            "WorktreeCreate: '{prefix}' (de '{name}') não é uma base de integração deste projeto \
+             (bases: {}). Declare-a em mustard.json#git.flow ou use um nome sem '_'.",
+            bases.join(", ")
+        ));
+    } else {
+        // Native-equivalent cut for non-unit names (agent-*, desktop).
+        git_ok(&main, &["fetch", "origin"]);
+        git_out(&main, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "HEAD".to_string())
+    };
+
+    let add = if ref_exists(&main, &format!("refs/heads/{name}")) {
+        git_try(&main, &["worktree", "add", &wt_str, &name])
+    } else {
+        git_try(&main, &["worktree", "add", "-b", &name, &wt_str, &start])
+    };
+    add.map_err(|e| format!("WorktreeCreate: git worktree add falhou: {e}"))?;
+    Ok(wt_str)
 }
 
 /// Run `work-unit-open` from `opts.root`, print the single-line JSON report,
@@ -300,7 +365,6 @@ mod tests {
         assert_eq!(v["created"], json!(true));
         let path = v["path"].as_str().expect("path");
         assert!(path.ends_with(".claude/worktrees/dev_my-unit"), "{path}");
-        assert_eq!(v["localSettings"], json!("absent"), "fixture has no local settings");
         // Cut from origin/dev (the AHEAD commit), not the stale local dev.
         let wt_head = git_out(Path::new(path), &["rev-parse", "HEAD"]).expect("wt head");
         let origin = git_out(&main, &["rev-parse", "origin/dev"]).expect("origin");
@@ -312,20 +376,6 @@ mod tests {
             "dev",
             "main checkout stays on its branch"
         );
-    }
-
-    #[test]
-    fn copies_local_settings_into_new_worktree() {
-        let (_dir, main) = fixture();
-        std::fs::create_dir_all(main.join(".claude")).expect("mkdir .claude");
-        std::fs::write(main.join(".claude").join("settings.local.json"), br#"{"x":1}"#)
-            .expect("write local settings");
-        let v = open_at(&WorkUnitOpenOpts { spec: Some("loc".into()), ..opts(&main) });
-        assert_eq!(v["ok"], json!(true), "{v}");
-        assert_eq!(v["localSettings"], json!("copied"), "{v}");
-        let path = v["path"].as_str().expect("path");
-        let copied = Path::new(path).join(".claude").join("settings.local.json");
-        assert!(copied.is_file(), "machine-local settings land inside the worktree");
     }
 
     #[test]
@@ -379,6 +429,43 @@ mod tests {
         let wt_head = git_out(Path::new(path), &["rev-parse", "HEAD"]).expect("wt head");
         let dev = git_out(&main, &["rev-parse", "dev"]).expect("dev");
         assert_eq!(wt_head, dev, "cut from the local base ref");
+    }
+
+    #[test]
+    fn hook_create_unit_name_cuts_from_fresh_origin_base() {
+        let (_dir, main) = fixture();
+        let requested = main.join(".claude").join("worktrees").join("dev_hooked");
+        let got = hook_create(requested.to_string_lossy().as_ref(), &main).expect("creates");
+        assert!(got.ends_with(".claude/worktrees/dev_hooked"), "{got}");
+        let wt_head = git_out(Path::new(&got), &["rev-parse", "HEAD"]).expect("wt head");
+        let origin = git_out(&main, &["rev-parse", "origin/dev"]).expect("origin");
+        assert_eq!(wt_head, origin, "unit name cut from fresh origin/dev, not stale local");
+        // Idempotent: second call returns the registered path, creates nothing.
+        let again = hook_create(requested.to_string_lossy().as_ref(), &main).expect("idempotent");
+        assert_eq!(again.replace('\\', "/"), got.replace('\\', "/"));
+    }
+
+    #[test]
+    fn hook_create_non_unit_name_falls_back_to_native_cut() {
+        // `agent-*` (no underscore) must never break — background isolation.
+        let (_dir, main) = fixture();
+        let requested = main.join(".claude").join("worktrees").join("agent-bg1");
+        let got = hook_create(requested.to_string_lossy().as_ref(), &main).expect("creates");
+        assert!(Path::new(&got).is_dir(), "worktree materialized");
+        assert_eq!(
+            git_out(Path::new(&got), &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
+            "agent-bg1",
+            "own branch, native-style"
+        );
+    }
+
+    #[test]
+    fn hook_create_undeclared_prefix_is_loud() {
+        let (_dir, main) = fixture();
+        let requested = main.join(".claude").join("worktrees").join("hml_x");
+        let err = hook_create(requested.to_string_lossy().as_ref(), &main).unwrap_err();
+        assert!(err.contains("hml") && err.contains("git.flow"), "didactic: {err}");
+        assert!(!requested.exists(), "nothing created on refusal");
     }
 
     #[test]

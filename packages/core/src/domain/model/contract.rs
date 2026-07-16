@@ -134,6 +134,13 @@ pub struct HookInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
+    /// Requested worktree path — present only on the `WorktreeCreate` /
+    /// `WorktreeRemove` isolation events, where a configured hook REPLACES
+    /// Claude Code's native `git worktree` handling and must create (and echo)
+    /// this path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+
     /// Session identifier (`session_id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,

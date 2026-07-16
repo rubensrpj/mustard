@@ -36,7 +36,8 @@ Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`
 Every unit runs in its OWN worktree at `.claude/worktrees/{base}_{slug}`, so concurrent sessions never share a tree. The `{base}_` prefix is load-bearing — `/git` reads it to target the PR — and the branch is cut FROM `{base}`, so the right base in yields the right PR target out.
 
 - **Desktop / background CLI** — isolated automatically. A Desktop branch has no `{base}_` prefix, so `/git` falls back to the primary base (`git.flow["*"]`); pass an explicit `<target>` for any other base.
-- **Foreground CLI** — isolate before the first edit: `mustard-rt run work-unit-open --spec {slug} --base {base}` creates the worktree idempotently (fresh `origin/{base}`, offline degrades to the local ref, existing branch is attached, never re-cut) and copies the main checkout's `.claude/settings.local.json` into it, then switch the session into the returned `path` with `EnterWorktree path={path}`. NEVER `EnterWorktree name=…` for a work unit — it cuts from the repo DEFAULT branch, wrong for any other `{base}`.
+- **Foreground CLI** — isolate before the first edit, ONE native step: `EnterWorktree name={base}_{slug}` (the `branch` echoed by `emit-pipeline`). The plugin's `WorktreeCreate` hook replaces the native cut: a `{base}_` name with a DECLARED base → fresh `origin/{base}` (idempotent; attaches an existing branch); a non-unit name (`agent-*`) → the native default cut; an UNDECLARED `{base}_` prefix → loud abort. `mustard-rt run work-unit-open --spec {slug} --base {base}` remains the manual face of the same engine (then `EnterWorktree path={path}`).
+- **Abandoning an UNMERGED unit** — `ExitWorktree action=remove` (add `discard_changes: true` when dirty) deletes the worktree and local branch natively; if the branch was pushed, `rtk git push origin --delete {branch}`. `pr close` stays the ritual for MERGED units only.
 
 ## PRs are the integration path
 
