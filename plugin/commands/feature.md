@@ -8,7 +8,7 @@ source: manual
 
 This file is the LIGHT path (most runs) plus the shared ANALYZE. Full-scope PLAN machinery lives in `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` — open it ONLY when scope detection returns `full`.
 
-Law: no code before the approved spec — `scope_guard` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research. Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
+Law: no code before the approved spec — `scope_guard` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. Full CLARIFIES before approval: after the glossary grill, the clarify-finalize records `<spec>/.clarified`, and `approve-spec` refuses a Full plan without it. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research. Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
 
 ## When
 
@@ -40,7 +40,7 @@ No stage emit here; the slug is born at §2 (`spec-draft` backfills the ANALYZE 
 1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP.
 2. `mustard-rt run spec-draft --intent "<request>" --scope <your light/full read> --lang <bcp47> [--query-terms "<repo terms when raw words were weak/none>"]` — the ONLY scaffold writer; its auto-downgrade gate is the deterministic backstop.
 3. `mustard-rt run plan-prepare --from-spec .claude/spec/{slug}/spec.md --slice-match-count <sliceMatchCount from the digest>` — the authority for `scope` (plus decompose/waves) on a populated census. On `filesSectionEmpty:true` keep the `meta.json#scope` `spec-draft` wrote (its gate abstains on an empty census); an empty-census `light` never overrides a requested `full`.
-4. `mustard-rt run analyze-validation --spec .claude/spec/{slug}/spec.md` → append `issues[]` to `## Concerns`.
+4. `mustard-rt run analyze-validation --spec .claude/spec/{slug}/spec.md` → append `issues[]` to `## Concerns`. It WARNs weak/tautological ACs (a bare `cargo build`/`grep` verifies nothing): ACs are EARS — `when/then` + a behaviour-asserting `Command:`, never a lone build-green.
 5. Emit the transitions (exact commands — there is NO `run emit`): scope → `mustard-rt run emit-pipeline --kind pipeline.scope --spec {slug} --payload <json>`; stage → `mustard-rt run emit-phase --spec {slug} --to Plan`.
 6. `scope="light"` → §3. `scope="full"` → open `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` and stop reading this file.
 7. Digest `concerns` ≥2 → each is its own unit, scoped to its anchors (Full: a wave; light/task: its own dispatch).

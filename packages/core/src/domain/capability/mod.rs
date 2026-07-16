@@ -254,7 +254,12 @@ fn update(id: &str, op: UpdateOp, requirement: Requirement) -> CapabilityUpdate 
 /// Join a scenario's when/then halves into one statement sentence. Agnostic
 /// glue (`when` / `then`) — both halves are optional, and an all-empty scenario
 /// degrades to an empty string rather than panicking.
-fn scenario_statement(when: &str, then: &str) -> String {
+///
+/// `pub` so the spec drafter can seed EARS-shaped skeleton acceptance criteria
+/// through the SAME join the capability compiler uses (`when X, then Y`),
+/// instead of reimplementing the glue — one origin for the EARS sentence shape.
+#[must_use]
+pub fn scenario_statement(when: &str, then: &str) -> String {
     match (when.trim(), then.trim()) {
         ("", "") => String::new(),
         (w, "") => format!("when {w}"),

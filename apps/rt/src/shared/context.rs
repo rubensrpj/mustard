@@ -551,6 +551,31 @@ pub fn approval_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBu
     )
 }
 
+/// Filename of the per-spec **clarification** marker (see
+/// [`clarified_marker_path`]).
+pub(crate) const CLARIFIED_MARKER: &str = ".clarified";
+
+/// Compose the per-spec clarification marker path:
+/// `<project>/.claude/spec/<spec>/.clarified`.
+///
+/// The clarify-gate sibling of [`approval_marker_path`], with the same
+/// single-home discipline so its producer and consumer cannot drift: the
+/// glossary grill (`grill-capture`, which WRITES it when a Full spec's ANALYZE
+/// clarification loop completes) and `scope_guard` (which REQUIRES it before an
+/// unapproved Full spec still in PLAN may touch production code — clarify
+/// precedes approval). `None` on an I1 guard rejection of the project root or an
+/// invalid spec name.
+#[must_use]
+pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .and_then(|p| p.for_spec(spec))
+            .ok()?
+            .dir()
+            .join(CLARIFIED_MARKER),
+    )
+}
+
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the
 /// harness sets on every wave dispatch and that `route` already stamps on each
 /// emitted event. Co-located with [`current_spec`] so a hook (e.g. the
@@ -568,6 +593,29 @@ pub fn current_wave() -> Option<i64> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // -----------------------------------------------------------------------
+    // clarified_marker_path — shape (F6 clarify gate)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clarified_marker_path_has_expected_shape() {
+        let dir = tempdir().unwrap();
+        let p = clarified_marker_path(dir.path().to_str().unwrap(), "my-spec")
+            .expect("a valid project + spec name resolves a marker path");
+        // Ends in the marker filename and lives under the spec's own dir —
+        // beside where `approval_marker_path` drops `.approved-by-user`.
+        assert!(p.ends_with(CLARIFIED_MARKER));
+        let shown = p.to_string_lossy().replace('\\', "/");
+        assert!(
+            shown.contains("/.claude/spec/my-spec/"),
+            "marker must live under the spec dir, got {shown}"
+        );
+        // Sibling of the approval marker in the SAME directory.
+        let approval =
+            approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
+        assert_eq!(p.parent(), approval.parent());
+    }
 
     // -----------------------------------------------------------------------
     // current_spec — filesystem branch (no env mutation needed)

@@ -113,6 +113,13 @@ pub(crate) struct WavePlanEntry {
     /// finds it. `#[serde(default)]` for the same retrocompat reason as `tasks`.
     #[serde(default)]
     pub(crate) acceptance: Vec<String>,
+    /// AC ids this wave is responsible for satisfying (e.g. `["AC-1", "AC-3"]`),
+    /// tracing the parent spec's criteria onto the wave that implements them.
+    /// `#[serde(default)]` retrocompat: a plan predating the field (or one that
+    /// carries only `acceptance` lines) still deserialises — the traceability
+    /// check then derives the wave's satisfied ids from its `acceptance` lines.
+    #[serde(default)]
+    pub(crate) satisfies: Vec<String>,
 }
 
 /// Top-level plan shape.
@@ -356,6 +363,72 @@ fn build_ac_block(plan: &Plan, hd: &Headings<'_>) -> Option<String> {
         return None;
     }
     Some(format!("{}\n{}", hd.acceptance, lines.join("\n")))
+}
+
+/// Compute AC↔wave traceability gaps in the plan (the caller prints each as a
+/// non-blocking stderr WARN, like the empty-tasks WARN). Two gaps:
+///
+/// 1. A wave that does work (`tasks` non-empty) but satisfies NO acceptance
+///    criterion — its work traces to no criterion.
+/// 2. An AC the plan DEFINES (in some wave's `acceptance`) that NO wave claims
+///    to satisfy — an orphan criterion.
+///
+/// A wave's satisfied set is its explicit `satisfies` ids, or — when that is
+/// empty (back-compat with pre-`satisfies` plans) — the ids parsed from its
+/// `acceptance` lines through the SAME `qa-run` parser QA executes (reusing the
+/// exposed `AcItem.id`), so the two can never drift. Gap 2 only ever fires once
+/// `satisfies` is used (with no `satisfies`, satisfied == acceptance ids), so a
+/// back-compat plan is never nagged about it.
+fn traceability_gaps(plan: &Plan) -> Vec<String> {
+    use crate::commands::review::qa_run::parse_ac_items;
+    use std::collections::BTreeSet;
+    let norm = |s: &str| s.trim().to_uppercase();
+    let mut gaps: Vec<String> = Vec::new();
+    let mut defined: BTreeSet<String> = BTreeSet::new();
+    let mut covered: BTreeSet<String> = BTreeSet::new();
+    for w in &plan.waves {
+        // The ACs this wave DEFINES, via the shared qa-run parser. Acceptance
+        // lines may arrive without a leading bullet (the plan schema example
+        // does); normalise to `- <line>` — exactly as `build_ac_block` does —
+        // so the parser (which requires a bullet) finds them.
+        let ac_text = w
+            .acceptance
+            .iter()
+            .map(|line| {
+                let t = line.trim();
+                if t.starts_with('-') { t.to_string() } else { format!("- {t}") }
+            })
+            .collect::<Vec<_>>()
+            .join("
+");
+        let ac_ids: Vec<String> = parse_ac_items(&ac_text)
+            .into_iter()
+            .map(|it| norm(&it.id))
+            .collect();
+        for id in &ac_ids {
+            defined.insert(id.clone());
+        }
+        // Satisfied set: explicit `satisfies` wins; else the acceptance ids.
+        let satisfied: Vec<String> = if w.satisfies.is_empty() {
+            ac_ids
+        } else {
+            w.satisfies.iter().map(|s| norm(s)).filter(|s| !s.is_empty()).collect()
+        };
+        for id in &satisfied {
+            covered.insert(id.clone());
+        }
+        if !w.tasks.is_empty() && satisfied.is_empty() {
+            gaps.push(format!(
+                "wave-{n}-{role} has tasks but satisfies no AC — add `satisfies` ids or an `acceptance` line so its work traces to a criterion",
+                n = w.n,
+                role = w.role,
+            ));
+        }
+    }
+    for id in defined.difference(&covered) {
+        gaps.push(format!("{id} is defined in the plan but no wave satisfies it (add it to a wave's `satisfies`)"));
+    }
+    gaps
 }
 
 /// Seed the per-wave trackable checklist from the wave's file census — one
@@ -605,6 +678,12 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         emit(&dir.join("spec.md"), render_wave_spec(&parent_name, w, &hd));
     }
 
+    // AC↔wave traceability (F6): warn on a wave that does work but satisfies no
+    // AC, and on an AC the plan defines that no wave claims. Non-blocking stderr.
+    for gap in traceability_gaps(&plan) {
+        eprintln!("[wave-scaffold] WARN: {gap}");
+    }
+
     // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
     // JSON instead of regexing the markdown. Fail-open per file.
@@ -739,6 +818,7 @@ mod tests {
                     tasks: vec![],
                     files: vec![],
                     acceptance: vec![],
+                    satisfies: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -748,6 +828,7 @@ mod tests {
                     tasks: vec![],
                     files: vec![],
                     acceptance: vec![],
+                    satisfies: Vec::new(),
                 },
             ],
             total_waves: Some(2),
@@ -1112,6 +1193,7 @@ mod tests {
             tasks: vec!["wire the handler".to_string(), "add the route".to_string()],
             files: vec!["src/api/handler.rs".to_string(), "src/api/mod.rs".to_string()],
             acceptance: vec![],
+            satisfies: Vec::new(),
         };
         let hd = headings();
         let spec = render_wave_spec("epic", &w, &hd);
@@ -1151,6 +1233,7 @@ mod tests {
                     tasks: vec!["t1".to_string()],
                     files: vec![],
                     acceptance: vec!["**AC-1** — builds. Command: `true`".to_string()],
+                    satisfies: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -1160,6 +1243,7 @@ mod tests {
                     tasks: vec!["t2".to_string()],
                     files: vec![],
                     acceptance: vec!["**AC-2** — renders. Command: `true`".to_string()],
+                    satisfies: Vec::new(),
                 },
             ],
             total_waves: Some(2),
@@ -1197,6 +1281,7 @@ mod tests {
             tasks,
             files: vec![],
             acceptance: vec![],
+            satisfies: Vec::new(),
         };
         let spec = render_wave_spec(
             "epic",
@@ -1227,6 +1312,7 @@ mod tests {
             ],
             files: vec![],
             acceptance: vec![],
+            satisfies: Vec::new(),
         };
         let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
@@ -1340,8 +1426,69 @@ mod tests {
             tasks: vec![],
             files: vec![],
             acceptance: vec![],
+            satisfies: Vec::new(),
         };
         let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
+    }
+
+    /// F6 traceability: a wave that does work (`tasks`) but satisfies no AC is a
+    /// gap; a well-traced wave (satisfies its own acceptance ids) is clean; and
+    /// an AC the plan defines that no wave's `satisfies` claims is an orphan gap.
+    #[test]
+    fn traceability_gaps_flags_untraced_work_and_orphan_acs() {
+        let wave = |tasks: Vec<&str>, acceptance: Vec<&str>, satisfies: Vec<&str>| WavePlanEntry {
+            n: 1,
+            role: "backend".to_string(),
+            summary: "s".to_string(),
+            depends_on: vec![],
+            tasks: tasks.into_iter().map(String::from).collect(),
+            files: vec![],
+            acceptance: acceptance.into_iter().map(String::from).collect(),
+            satisfies: satisfies.into_iter().map(String::from).collect(),
+        };
+        let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1), lang: None };
+
+        // (a) tasks but no AC → gap naming the wave.
+        let gaps = traceability_gaps(&plan(wave(vec!["do the thing"], vec![], vec![])));
+        assert!(
+            gaps.iter().any(|g| g.contains("wave-1-backend") && g.contains("satisfies no AC")),
+            "wave with tasks but no AC must be a gap: {gaps:?}"
+        );
+        // (b) declares AND satisfies its own AC → clean.
+        let clean = plan(wave(
+            vec!["do it"],
+            vec!["**AC-1** — works. Command: `true`"],
+            vec!["AC-1"],
+        ));
+        assert!(traceability_gaps(&clean).is_empty(), "well-traced wave is clean");
+        // (c) defines AC-1 but satisfies only AC-2 → AC-1 is an orphan gap.
+        let orphan = plan(wave(
+            vec!["do it"],
+            vec!["**AC-1** — works. Command: `true`"],
+            vec!["AC-2"],
+        ));
+        let gaps = traceability_gaps(&orphan);
+        assert!(
+            gaps.iter().any(|g| g.contains("AC-1") && g.contains("no wave satisfies it")),
+            "an AC defined but unsatisfied is an orphan gap: {gaps:?}"
+        );
+    }
+
+    /// The `satisfies` field deserialises from a hand-authored plan.json and
+    /// defaults to empty for a plan that predates it (retrocompat).
+    #[test]
+    fn satisfies_field_deserialises_and_defaults_empty() {
+        let raw = serde_json::to_string(&json!({
+            "waves": [
+                { "n": 1, "role": "backend", "summary": "s", "satisfies": ["AC-1", "AC-3"] },
+                { "n": 2, "role": "frontend", "summary": "s" }
+            ],
+            "total_waves": 2
+        }))
+        .unwrap();
+        let plan: Plan = serde_json::from_str(&raw).expect("plan with satisfies deserialises");
+        assert_eq!(plan.waves[0].satisfies, vec!["AC-1".to_string(), "AC-3".to_string()]);
+        assert!(plan.waves[1].satisfies.is_empty(), "absent satisfies defaults to empty");
     }
 }

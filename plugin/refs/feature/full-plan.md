@@ -1,6 +1,6 @@
 # /feature — Full-scope DECOMPOSE + PLAN
 
-> You are here because `scope=full`. PLAN is the TERMINAL phase of /feature: materialise the plan, present it, STOP. EXECUTE unlocks ONLY after the user approves via `/spec` (the `scope_guard` hard-gate blocks every production Edit/Write until then) — NEVER emit `pipeline.stage: Execute` here. A Light run never reads this file.
+> You are here because `scope=full`. PLAN is the TERMINAL phase of /feature: materialise the plan, present it, STOP. EXECUTE unlocks ONLY after the user approves via `/spec` — NEVER emit `pipeline.stage: Execute` here. A Light run never reads this file. Approval also requires a prior CLARIFY (step 6): `approve-spec` refuses a Full plan until `<spec>/.clarified` exists.
 
 ## Contents
 
@@ -26,7 +26,7 @@ Concerns come from the digest — deterministic, no judge. `concerns` ≥2 → e
 
 Invariant: Full ⇒ ≥1 wave (parent = coordination doc, wave = executing subagent). This decides 1-vs-N, never zero — `decompose:false` still yields a single-wave plan (`totalWaves:1`), never a non-wave Full spec.
 
-Reuse the `decompose`/`waves` `plan-prepare` returned in ANALYZE (multi-wave on `fileCount` / `layerCount≥2` / `newEntityCount`, else one) — no separate call needed. To recompute: `mustard-rt run scope-decompose --from-spec .claude/spec/{slug}/spec.md` (signals from the census; never pipe stdin — the `run` face never receives it). Optionally weight history via `mustard-rt run event-projections --view knowledge-list` (ids starting `heavy-pipeline` / `high-hook-retry`).
+Reuse the `decompose`/`waves` `plan-prepare` returned in ANALYZE (multi-wave on `fileCount` / `layerCount≥2` / `newEntityCount`, else one) — no separate call needed. To recompute: `mustard-rt run scope-decompose --from-spec .claude/spec/{slug}/spec.md` (signals from the census; never pipe stdin — the `run` face never receives it).
 
 Validate/derive `depends_on` from the import DAG:
 ```bash
@@ -43,6 +43,7 @@ Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUs
 3. Fold the body into the plan JSON (never by hand after the scaffold). `Edit` the lapidated bodies into the scaffold Plan-layer sections — Edit, never overwrite, so the enriched `context` survives. Each wave carries `tasks`, `files`, `acceptance`. Validate `depends_on` (above), then ONE call: `mustard-rt run plan-materialize --spec-dir <dir> --plan plan.json` — it composes `mustard-rt run wave-scaffold` (each `wave-N-{role}/spec.md` gets `## Tasks`/`## Files`, plus the AC union into `wave-plan.md`) + `analyze-validation` (incl. AC-format WARN) + the `pipeline.scope` emit + emit-phase PLAN, returning `{events,scaffold,validation}`. Never run those separately; never hand-author a wave body.
 4. Act on validation. Read the `plan-materialize` `validation`; on `ok:false` append `issues[]` to `## Concerns` (non-blocking WARN).
 5. Concern Coverage Audit. Every concrete user critique maps to covered by wave/task | non-goal justified | surfaced for decision. Orphans block the approval question.
+6. Clarify-finalize (F6). `mustard-rt run grill-capture --finalize --spec {slug}` mints `<spec>/.clarified`, the marker `approve-spec` requires — no term needed, so a complete-glossary spec still finalizes.
 
 Spec layout — canonical section keys (EN, language-agnostic; heading localises per `specLang`): PRD layer `context`, `users`, `metric`, `non-goals`, `acceptance-criteria`; Plan layer `entities`, `files`, optional `component-contract` (UI only), `tasks`, `dependencies`, `boundaries`. Materialisation split: `spec-draft` writes ONLY `spec.md` + `meta.json`; `wave-scaffold` (via `plan-materialize`) owns `wave-plan.md` + per-wave specs. State lives in `meta.json` — never a hand-written `pipeline-state.json`.
 
@@ -64,7 +65,7 @@ Spec layout — canonical section keys (EN, language-agnostic; heading localises
   "total_waves": 2, "lang": "pt-BR"
 }
 ```
-`tasks` / `files` / `acceptance` are optional (a summary-only entry still scaffolds; no `tasks` emits a stderr WARN). `depends_on` MUST use the `wave-N-role` form (e.g. `["wave-1-backend"]`), never the bare role — an unresolved dep is dropped silently, flattening the DAG to one parallel level. `plan-materialize` writes `wave-plan.md` (table + the localised AC union under `## Acceptance Criteria`, where QA reads) and each `wave-N-{role}/spec.md` (`## Summary` + `## Network` + materialised `## Tasks`/`## Files`); `agent-prompt-render --spec <wave-dir>` reads those back as the agent `## TASK` + `{reference_files}`. Headings render in the project language — do not hand-localise.
+`tasks` / `files` / `acceptance` are optional (a summary-only entry still scaffolds; no `tasks` emits a stderr WARN). ACs are EARS (`when/then` + a behaviour-asserting `Command:`), never a lone build-green; `analyze-validation` (in `plan-materialize`) WARNs on tautological build/test/grep ACs and AC↔wave/file gaps. Trace waves to criteria with `satisfies` (AC ids), else `acceptance` lines. `depends_on` MUST use the `wave-N-role` form (e.g. `["wave-1-backend"]`), never the bare role — an unresolved dep is dropped silently, flattening the DAG to one parallel level. `plan-materialize` writes `wave-plan.md` (table + the localised AC union under `## Acceptance Criteria`, where QA reads) and each `wave-N-{role}/spec.md` (`## Summary` + `## Network` + materialised `## Tasks`/`## Files`); `agent-prompt-render --spec <wave-dir>` reads those back as the agent `## TASK` + `{reference_files}`. Headings render in the project language — do not hand-localise.
 
 ## Present + approve — STOP at PLAN
 
@@ -74,7 +75,7 @@ Spec layout — canonical section keys (EN, language-agnostic; heading localises
 - "Edit decomposition (hint PLAN)" → user gives a hint (e.g. merge waves 2 and 3); re-decompose once.
 - "Reject decomposition" → `mustard-rt run wave-collapse --spec {spec} --mode full` (the reject path — `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § A`). NEVER a non-wave Full spec.
 
-PLAN is terminal — never EXECUTE inline regardless of the answer. The only approval that unlocks EXECUTE is the event `/spec` emits; `scope_guard` denies production Edit/Write until then. On "Approve and implement?", direct the user to `/spec` — do NOT emit `pipeline.stage: Execute`.
+PLAN is terminal — never EXECUTE inline regardless of the answer. The only approval that unlocks EXECUTE is the event `/spec` emits. On "Approve and implement?", direct the user to `/spec` — do NOT emit `pipeline.stage: Execute`.
 
 ## COORDINATE — parent/epic specs
 

@@ -468,13 +468,47 @@ fn build_input(
         } else {
             Vec::new()
         },
-        acceptance_criteria: vec![AcceptanceCriterion {
-            id: "AC-1".to_string(),
-            statement: "Pipeline build green".to_string(),
-            command: build_command.to_string(),
-        }],
+        acceptance_criteria: seed_acceptance_criteria(lang_locale, build_command),
         checklist: build_checklist(lang_locale),
     }
+}
+
+/// Seed the EARS-shaped skeleton `## Acceptance Criteria` for a fresh draft.
+///
+/// A draft is born spec-DRIVEN, not rubber-stamped: two behaviour ACs in
+/// `when X, then Y` form (the join reused from
+/// [`mustard_core::domain::capability::scenario_statement`]) whose `<…>` markers
+/// DEMAND the orchestrator fill in the concrete trigger, outcome, and verifying
+/// command — plus ONE trailing build-green SAFETY criterion (the compile floor,
+/// the single tautology `analyze-validation`'s weak-AC linter tolerates). The
+/// old lone "Pipeline build green" AC passed whether or not the feature existed;
+/// it survives only as the LAST safety net here, never as the only criterion.
+fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<AcceptanceCriterion> {
+    use mustard_core::domain::capability::scenario_statement;
+    let skeleton_command = translate("ac.skeleton.command", lang).to_string();
+    vec![
+        AcceptanceCriterion {
+            id: "AC-1".to_string(),
+            statement: scenario_statement(
+                translate("ac.skeleton.when_primary", lang),
+                translate("ac.skeleton.then_primary", lang),
+            ),
+            command: skeleton_command.clone(),
+        },
+        AcceptanceCriterion {
+            id: "AC-2".to_string(),
+            statement: scenario_statement(
+                translate("ac.skeleton.when_secondary", lang),
+                translate("ac.skeleton.then_secondary", lang),
+            ),
+            command: skeleton_command,
+        },
+        AcceptanceCriterion {
+            id: "AC-3".to_string(),
+            statement: translate("ac.safety.build_green", lang).to_string(),
+            command: build_command.to_string(),
+        },
+    ]
 }
 
 /// Build the trackable `## Checklist` for a fresh draft: a single hand-trackable
@@ -996,10 +1030,20 @@ mod tests {
     }
 
     #[test]
-    fn build_input_ac_uses_build_command_not_hardcoded() {
-        // AC command comes from the resolved build command, not `rtk cargo build`.
+    fn build_input_ac_seed_is_ears_with_trailing_build_safety() {
+        // The build command flows into the trailing build-green SAFETY AC (the
+        // LAST criterion), not `rtk cargo build` as the only AC; the leading ACs
+        // are EARS behaviour skeletons, never a lone build tautology.
         let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build", None);
-        assert_eq!(input.acceptance_criteria[0].command, "pnpm build");
+        let acs = &input.acceptance_criteria;
+        assert!(acs.len() >= 2, "seed carries behaviour ACs + a safety AC, got {}", acs.len());
+        assert_eq!(acs.last().unwrap().command, "pnpm build", "build command is the trailing safety AC");
+        // AC-1/AC-2 are EARS skeletons: `when <…>, then <…>` markers that DEMAND
+        // filling, verified by a placeholder command (never a build tautology).
+        assert!(acs[0].statement.contains("when <"), "AC-1 is an EARS skeleton: {}", acs[0].statement);
+        assert!(acs[0].statement.contains("then <"), "AC-1 carries a then-clause: {}", acs[0].statement);
+        assert_ne!(acs[0].command, "pnpm build", "skeleton AC command is not the build");
+        assert!(acs[0].command.contains('<'), "skeleton AC command is a fill-me placeholder: {}", acs[0].command);
         // Neutral fallback flows through verbatim when no buildCommand is set.
         let input2 = build_input(
             "demo",
@@ -1012,7 +1056,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            input2.acceptance_criteria[0].command,
+            input2.acceptance_criteria.last().unwrap().command,
             mustard_core::BUILD_COMMAND_FALLBACK
         );
     }

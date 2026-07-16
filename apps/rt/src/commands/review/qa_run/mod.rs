@@ -30,8 +30,13 @@ mod runner;
 /// qa-run parser to flag AC sections that would later degrade to
 /// `overall: skip` — single parser source, no drift.
 pub(crate) struct AcItem {
-    id: String,
-    command: String,
+    pub(crate) id: String,
+    /// The AC description — the EARS `when X, then Y` statement, with any inline
+    /// `Command:` tail stripped. Exposed so `analyze_validation`'s tautology
+    /// linter and the close-time capability synthesis read it without a second
+    /// parser (single parser source, no drift).
+    pub(crate) statement: String,
+    pub(crate) command: String,
 }
 
 /// One AC execution outcome.
@@ -97,7 +102,7 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
         };
         // Prefer a same-line `Command:` marker (historical one-line form).
         if let Some(command) = extract_command(after_sep) {
-            items.push(AcItem { id, command });
+            items.push(AcItem { id, statement: statement_of(after_sep), command });
             i += 1;
             continue;
         }
@@ -118,7 +123,7 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
             j += 1;
         }
         if let Some(command) = command {
-            items.push(AcItem { id, command });
+            items.push(AcItem { id, statement: statement_of(after_sep), command });
         }
         // Resume after the header line; the next header (if any) is re-parsed
         // on its own iteration regardless of where the lookahead landed.
@@ -138,7 +143,7 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
 fn parse_ac_line(line: &str) -> Option<AcItem> {
     let (id, after_sep) = parse_ac_header(line)?;
     let command = extract_command(after_sep)?;
-    Some(AcItem { id, command })
+    Some(AcItem { id, statement: statement_of(after_sep), command })
 }
 
 /// Parse the AC **header** part of a line: the bullet, an OPTIONAL `[ ]`/`[x]`
@@ -275,6 +280,20 @@ fn extract_command(fragment: &str) -> Option<String> {
         return None;
     }
     Some(command)
+}
+
+/// Extract the AC **statement** (the description) from the text after the id
+/// separator: everything before an inline `Command:` marker, trimmed of a
+/// trailing separator run (`—` / `-` / space). The multi-line drafter form
+/// carries no inline command, so its whole `after_sep` — the EARS
+/// `when X, then Y` — is the statement. Pure, total, never panics.
+fn statement_of(after_sep: &str) -> String {
+    let lower = after_sep.to_lowercase();
+    let head = match lower.rfind("command:") {
+        Some(idx) => &after_sep[..idx],
+        None => after_sep,
+    };
+    head.trim().trim_end_matches(['—', '-', ' ']).trim().to_string()
 }
 
 /// The criteria array, as the JSON payload shape.
@@ -630,6 +649,19 @@ mod tests {
         assert_eq!(items[1].command, "cargo test");
         assert_eq!(items[2].id, "AC-G1");
         assert_eq!(items[2].command, "rtk x");
+    }
+
+    /// The exposed `AcItem.statement` captures the EARS description with any
+    /// inline `Command:` tail stripped — for both the multi-line drafter form
+    /// and the historical one-line form.
+    #[test]
+    fn ac_item_captures_statement() {
+        let items = parse_ac_items("- **AC-1** — when x happens, then y holds.\n  Command: `true`\n");
+        assert_eq!(items[0].statement, "when x happens, then y holds.");
+        assert_eq!(items[0].command, "true");
+        let oneline = parse_ac_line("- [ ] AC-2: builds clean — Command: `cargo build`").unwrap();
+        assert_eq!(oneline.statement, "builds clean", "inline Command tail stripped");
+        assert_eq!(oneline.command, "cargo build");
     }
 
     /// Drafter header with NO `Command:` anywhere (neither same-line nor on a

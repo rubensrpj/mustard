@@ -120,6 +120,7 @@ fn dag_wave_to_entry(w: &Value, primary_role_for: &dyn Fn(i64) -> String) -> Wav
         tasks: Vec::new(),
         files,
         acceptance: Vec::new(),
+        satisfies: Vec::new(),
     }
 }
 
@@ -442,6 +443,7 @@ mod tests {
                     tasks: vec![],
                     files: vec!["src/a.ts".to_string()],
                     acceptance: vec![],
+                    satisfies: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -451,6 +453,7 @@ mod tests {
                     tasks: vec![],
                     files: vec!["src/b.ts".to_string()],
                     acceptance: vec![],
+                    satisfies: Vec::new(),
                 },
             ],
             total_waves: Some(2),

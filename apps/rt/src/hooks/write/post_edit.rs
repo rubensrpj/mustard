@@ -10,9 +10,11 @@
 //! - `checklist-auto-mark.js` — an **`Observer`**: silently marks Checklist
 //!   items in the active spec when the edited file matches an item. No verdict.
 //! - `guard-verify.js` — a **`Check`**: flags an edit that falls outside the
-//!   active spec.s declared `## Boundaries` (advisory). The legacy
-//!   critical-rule block (stack-specific DbContext/DIP/int-id rules) was
-//!   removed — subproject Guards + review own that judgement.
+//!   active spec.s declared `## Boundaries` (advisory), AND enforces the edited
+//!   subproject's `[critical]` Guards (F6 item 9 — data-driven, replacing the
+//!   removed stack-specific DbContext/DIP/int-id block). A checkable critical
+//!   Guard the edit violates is a `Deny` in strict mode; everything else is
+//!   advisory.
 //!
 //! `PostEdit` therefore implements **both** [`Check`] (guard-verify) and
 //! [`Observer`] (auto-format + checklist-auto-mark) — the same dual shape
@@ -34,8 +36,11 @@
 //!
 //! ## Verdict note (guard-verify)
 //!
-//! The boundary mismatch — advisory in the JS — is an [`Verdict::Inject`];
-//! the module never blocks.
+//! The boundary mismatch is advisory — an [`Verdict::Inject`]. The data-driven
+//! critical-Guard gate (F6 item 9) is the one blocking path: in `strict` mode a
+//! checkable `[critical]` Guard of the edited subproject that the edit violates
+//! yields a [`Verdict::Deny`]; `warn` (the default) downgrades it to an
+//! advisory. Everything else stays [`Verdict::Inject`] / [`Verdict::Allow`].
 
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
@@ -46,6 +51,9 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
+use crate::commands::scan_guards::apply::{critical_guards, CheckableGuard, CriticalGuard};
+use crate::commands::scan_guards::list::subproject_of;
+use crate::util::format_gate_message;
 
 /// The consolidated PostToolUse(Write|Edit) module.
 pub struct PostEdit;
@@ -217,10 +225,10 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<(String, String)> {
     Some((dir_name, message))
 }
 
-/// Session-scoped marker path for the boundary advisory dedup:
-/// `.claude/.session/<id>/boundary-warned`. `None` when the session is
-/// unresolved (then the advisory is never suppressed — fail-open).
-fn boundary_marker_path(cwd: &str, session: &str) -> Option<PathBuf> {
+/// Session-scoped dedup-marker path `.claude/.session/<id>/<file_name>`. `None`
+/// when the session is unresolved (then the advisory is never suppressed —
+/// fail-open).
+fn advisory_marker_path(cwd: &str, session: &str, file_name: &str) -> Option<PathBuf> {
     if session.is_empty() || session == "unknown" {
         return None;
     }
@@ -230,30 +238,34 @@ fn boundary_marker_path(cwd: &str, session: &str) -> Option<PathBuf> {
             .claude_dir()
             .join(".session")
             .join(session)
-            .join("boundary-warned"),
+            .join(file_name),
     )
 }
 
-/// Surface the boundary advisory ONCE per (spec, session): the first
-/// out-of-scope edit for a spec alerts; later edits in the same session stay
-/// silent — re-emitting the same advisory on every edit is pure re-injected
-/// noise (it cost ~one token bill per edit before this gate). State lives in a
-/// session-scoped marker (newline-delimited spec names). Fail-open: an
+/// Surface an advisory ONCE per (key, session): the first call returns `true`
+/// and records `key`; later calls with the same key return `false`. Re-emitting
+/// the same advisory on every edit is pure re-injected noise. Fail-open: an
 /// unresolved session or any IO error returns `true` (warn), so the safety net
-/// never goes silent on a broken FS. Only the non-blocking advisory is
-/// deduped; a CRITICAL boundary violation is a separate `Deny` path, untouched.
-fn boundary_warn_once(cwd: &str, spec: &str, session: &str) -> bool {
-    let Some(marker) = boundary_marker_path(cwd, session) else {
+/// never goes silent on a broken FS.
+fn advisory_once(cwd: &str, session: &str, file_name: &str, key: &str) -> bool {
+    let Some(marker) = advisory_marker_path(cwd, session, file_name) else {
         return true;
     };
     let seen = fs::read_to_string(&marker).unwrap_or_default();
-    if seen.lines().any(|l| l.trim() == spec) {
+    if seen.lines().any(|l| l.trim() == key) {
         return false;
     }
     // `write_atomic` creates the parent dir; a failed write degrades to
     // re-warning next edit (never silent), which is the safe direction.
-    let _ = fs::write_atomic(&marker, format!("{seen}{spec}\n").as_bytes());
+    let _ = fs::write_atomic(&marker, format!("{seen}{key}\n").as_bytes());
     true
+}
+
+/// Surface the boundary advisory ONCE per (spec, session). Thin alias over
+/// [`advisory_once`] with the boundary marker file. Only the non-blocking
+/// advisory is deduped; a CRITICAL boundary violation is a separate path.
+fn boundary_warn_once(cwd: &str, spec: &str, session: &str) -> bool {
+    advisory_once(cwd, session, "boundary-warned", spec)
 }
 
 /// Resolve a spec's lifecycle [`SpecState`] from the filesystem,
@@ -420,7 +432,9 @@ fn glob_loose_at(text: &[u8], pat: &[u8]) -> bool {
     false
 }
 
-/// The `guard-verify` verdict for a `PostToolUse(Write|Edit)` invocation.
+/// The `guard-verify` verdict for a `PostToolUse(Write|Edit)`. Runs the
+/// data-driven critical-Guard gate first (it alone can `Deny`), then folds the
+/// boundary advisory. Any advisory context is injected as one message.
 fn guard_verify(input: &HookInput, cwd: &str) -> Verdict {
     if !is_write_or_edit(input) {
         return Verdict::Allow;
@@ -437,16 +451,45 @@ fn guard_verify(input: &HookInput, cwd: &str) -> Verdict {
     if content.is_empty() {
         return Verdict::Allow;
     }
-    // Advisory: a boundary mismatch — surfaced ONCE per (spec, session) so it
-    // does not re-inject the same warning on every subsequent out-of-scope edit.
-    if let Some((spec, warning)) = check_boundaries(&file_path, cwd) {
-        if boundary_warn_once(cwd, &spec, &crate::shared::context::session_id()) {
-            return Verdict::Inject {
-                context: format!("[BOUNDARY WARNING] {warning}"),
-            };
+
+    // Critical-Guard gate: a checkable critical Guard of the edited subproject
+    // that this edit violates is the only `Deny` path.
+    let GuardsReport {
+        deny,
+        violations,
+        reminders,
+    } = guards_gate(cwd, &file_path, &content, guard_gate_mode());
+    if let Some(reason) = deny {
+        return Verdict::Deny { reason };
+    }
+
+    let mut injects: Vec<String> = violations;
+    let mut session: Option<String> = None;
+
+    // Unenforceable critical Guards — a strong advisory, deduped once/session so
+    // it is not re-injected on every edit to the subproject.
+    for (key, message) in reminders {
+        let s = session.get_or_insert_with(crate::shared::context::session_id);
+        if advisory_once(cwd, s.as_str(), GUARD_ADVISORY_MARKER, &key) {
+            injects.push(message);
         }
     }
-    Verdict::Allow
+
+    // Boundary mismatch — advisory, surfaced ONCE per (spec, session).
+    if let Some((spec, warning)) = check_boundaries(&file_path, cwd) {
+        let s = session.get_or_insert_with(crate::shared::context::session_id);
+        if boundary_warn_once(cwd, &spec, s.as_str()) {
+            injects.push(format!("[BOUNDARY WARNING] {warning}"));
+        }
+    }
+
+    if injects.is_empty() {
+        Verdict::Allow
+    } else {
+        Verdict::Inject {
+            context: injects.join("\n"),
+        }
+    }
 }
 
 /// `file_path` relative to `cwd`, forward-slash normalised. When `file_path`
@@ -460,6 +503,210 @@ fn relative_to_cwd(cwd: &str, file_path: &str) -> String {
     fp_norm
         .strip_prefix(&prefix)
         .map_or(fp_norm.clone(), str::to_string)
+}
+
+// ===========================================================================
+// guards-gate — data-driven critical-Guard enforcement (F6 item 9)
+// ===========================================================================
+//
+// The `scan`-authored per-subproject Guards used to be pure advisory context.
+// This gate makes a `[critical]`-marked Guard enforceable: on a Write/Edit to a
+// production file it resolves the governing subproject, loads THAT subproject's
+// critical Guards from its `CLAUDE.md`, and — for a Guard in the checkable
+// `never <forbidden> in <glob>` form — Denies (strict mode) an edit that
+// introduces `<forbidden>` in a matching file. The rule comes entirely from the
+// subproject's data, never from hardcoded language logic (the removed .NET/Next
+// block). Critical Guards not in checkable form stay advisory (a strong Inject,
+// never a Deny). Fail-open throughout — any resolution miss is "no opinion".
+
+/// Depth cap for the walk that finds the governing subproject — a working tree
+/// this deep is pathological; the cap guarantees the walk always terminates.
+const MAX_SUBPROJECT_WALK: usize = 40;
+
+/// Session-marker file name for the once-per-session dedup of the advisory that
+/// surfaces an unenforceable critical Guard.
+const GUARD_ADVISORY_MARKER: &str = "guard-critical-warned";
+
+/// Normalise OS path separators to forward slashes — the form globs are written
+/// against. Backslash-free source: compares against `MAIN_SEPARATOR` (which is
+/// the backslash on Windows, already a slash elsewhere).
+fn fwd(s: &str) -> String {
+    s.chars()
+        .map(|c| if c == std::path::MAIN_SEPARATOR { '/' } else { c })
+        .collect()
+}
+
+/// The `MUSTARD_GUARD_GATE_MODE` mode — `off` / `warn` / `strict`, default
+/// `warn` (mirrors the other advisory gates; only `strict` turns a checkable
+/// violation into a `Deny`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardGateMode {
+    Off,
+    Warn,
+    Strict,
+}
+
+/// Resolve the gate mode from a raw env value: a non-empty `off`/`strict` wins;
+/// absent, empty, or unrecognised falls back to `warn`.
+fn parse_guard_gate_mode(raw: Option<&str>) -> GuardGateMode {
+    match raw
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" => GuardGateMode::Off,
+        "strict" => GuardGateMode::Strict,
+        _ => GuardGateMode::Warn,
+    }
+}
+
+/// Read `MUSTARD_GUARD_GATE_MODE` (default `warn`).
+fn guard_gate_mode() -> GuardGateMode {
+    parse_guard_gate_mode(std::env::var("MUSTARD_GUARD_GATE_MODE").ok().as_deref())
+}
+
+/// The Guards-gate result for one edit.
+#[derive(Debug, Default)]
+struct GuardsReport {
+    /// A strict-mode `Deny` reason (a checkable critical Guard the edit
+    /// violates). `Deny` dominates, so the first one wins.
+    deny: Option<String>,
+    /// Edit-specific advisories: warn-mode checkable violations. Always surfaced.
+    violations: Vec<String>,
+    /// Unenforceable-critical reminders as `(dedup_key, message)` — surfaced
+    /// once per (key, session) by the caller so they are not re-injected on
+    /// every edit.
+    reminders: Vec<(String, String)>,
+}
+
+/// The data-driven Guards gate: does this edit violate a critical Guard of the
+/// subproject it lands in? The rules are loaded from that subproject's
+/// `CLAUDE.md` — language-agnostic. Fail-open: `mode == Off`, no governing
+/// `CLAUDE.md`, or no critical Guards → an empty (no-opinion) report.
+fn guards_gate(cwd: &str, file_path: &str, new_content: &str, mode: GuardGateMode) -> GuardsReport {
+    let mut report = GuardsReport::default();
+    if mode == GuardGateMode::Off {
+        return report;
+    }
+    let Some((claude_md, subproject_dir)) =
+        governing_subproject(Path::new(file_path), Path::new(cwd))
+    else {
+        return report;
+    };
+    let guards = critical_guards(&subproject_dir);
+    if guards.is_empty() {
+        return report;
+    }
+    let subproject = subproject_label(&claude_md, Path::new(cwd));
+    let rel = subproject_relative(Path::new(file_path), &subproject_dir);
+    let full = fwd(file_path);
+
+    for guard in &guards {
+        match &guard.checkable {
+            Some(check) => {
+                let in_scope =
+                    glob_loose_match(&rel, &check.glob) || glob_loose_match(&full, &check.glob);
+                if in_scope && new_content.contains(&check.forbidden) {
+                    if mode == GuardGateMode::Strict {
+                        report.deny = Some(guard_deny_message(&subproject, guard, check, &rel));
+                        return report; // Deny dominates — stop.
+                    }
+                    report
+                        .violations
+                        .push(guard_warn_message(&subproject, check, &rel));
+                }
+            }
+            None => report.reminders.push((
+                format!("{subproject}::{}", guard.text),
+                guard_reminder_message(&subproject, &guard.text),
+            )),
+        }
+    }
+    report
+}
+
+/// Walk up from `edited`'s directory to `root` (inclusive) and return the first
+/// `(CLAUDE.md path, its directory)` — the subproject that governs the edit.
+/// `None` when no `CLAUDE.md` is found up to `root`. Depth-bounded so a path
+/// outside `root` can never loop.
+fn governing_subproject(edited: &Path, root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut dir = edited.parent();
+    for _ in 0..MAX_SUBPROJECT_WALK {
+        let d = dir?;
+        let candidate = d.join("CLAUDE.md");
+        if candidate.is_file() {
+            return Some((candidate, d.to_path_buf()));
+        }
+        if paths_equal(d, root) {
+            return None;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// The subproject label for reporting — its path relative to `root` via the
+/// single-sourced [`subproject_of`]; `"."` for a root-level `CLAUDE.md`.
+fn subproject_label(claude_md: &Path, root: &Path) -> String {
+    let label = subproject_of(claude_md, root);
+    if label.is_empty() {
+        ".".to_string()
+    } else {
+        label
+    }
+}
+
+/// `edited` relative to its subproject directory, forward-slashed — the scope a
+/// subproject-authored glob is written against. `subproject_dir` is an ancestor
+/// of `edited` (found by walking up from it), so the strip normally succeeds.
+fn subproject_relative(edited: &Path, subproject_dir: &Path) -> String {
+    match edited.strip_prefix(subproject_dir) {
+        Ok(rel) => fwd(&rel.to_string_lossy()),
+        Err(_) => fwd(&edited.to_string_lossy()),
+    }
+}
+
+/// Case- and separator-tolerant path equality for the upward walk's stop test.
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    fn norm(p: &Path) -> String {
+        fwd(&p.to_string_lossy()).trim_end_matches('/').to_ascii_lowercase()
+    }
+    norm(a) == norm(b)
+}
+
+/// The `Deny` reason for a checkable critical-Guard violation.
+fn guard_deny_message(
+    subproject: &str,
+    guard: &CriticalGuard,
+    check: &CheckableGuard,
+    rel: &str,
+) -> String {
+    format_gate_message(
+        "Critical Guard",
+        &format!(
+            "{rel} introduces `{}`, which subproject \"{subproject}\" forbids",
+            check.forbidden
+        ),
+        &format!("critical Guard: {}", guard.text),
+        "remove it, or relax with MUSTARD_GUARD_GATE_MODE=warn (advisory) or off",
+    )
+}
+
+/// The warn-mode advisory for a checkable critical-Guard violation.
+fn guard_warn_message(subproject: &str, check: &CheckableGuard, rel: &str) -> String {
+    format!(
+        "[CRITICAL GUARD] {rel} introduces `{}`, which subproject \"{subproject}\" forbids — advisory under MUSTARD_GUARD_GATE_MODE=warn; set =strict to block.",
+        check.forbidden
+    )
+}
+
+/// The advisory for a critical Guard that cannot be mechanically checked.
+fn guard_reminder_message(subproject: &str, guard_text: &str) -> String {
+    format!(
+        "[CRITICAL GUARD] subproject \"{subproject}\" marks a critical rule that cannot be mechanically checked — verify by hand: {guard_text}"
+    )
 }
 
 // ===========================================================================
@@ -916,9 +1163,10 @@ fn same_path(a: &str, b: &str) -> bool {
 // ===========================================================================
 
 impl Check for PostEdit {
-    /// `guard-verify`: surface the boundary advisory for a
-    /// `PostToolUse(Write|Edit)`. A mismatch with the active spec.s declared
-    /// `## Boundaries` is an `Inject` advisory; everything else `Allow`s.
+    /// `guard-verify`: run the critical-Guard gate + boundary advisory for a
+    /// `PostToolUse(Write|Edit)`. A strict-mode checkable critical-Guard
+    /// violation is a `Deny`; a boundary mismatch or an advisory-only critical
+    /// Guard is an `Inject`; everything else `Allow`s.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return Ok(Verdict::Allow);
@@ -1346,5 +1594,204 @@ mod tests {
         assert!(!boundary_warn_once(cwd, "spec-a", session), "repeat for spec-a is suppressed");
         assert!(boundary_warn_once(cwd, "spec-b", session), "a different spec warns once");
         assert!(!boundary_warn_once(cwd, "spec-b", session), "and is then suppressed too");
+    }
+
+    // --- F6 item 9: data-driven critical-Guard gate ------------------------
+
+    /// Materialise a subproject `<root>/<rel_sub>/CLAUDE.md` with a `## Guards`
+    /// body of `guards`, and return the subproject dir.
+    fn write_subproject_guards(root: &Path, rel_sub: &str, guards: &str) -> std::path::PathBuf {
+        let sub = root.join(rel_sub);
+        std::fs::create_dir_all(sub.join("src")).unwrap();
+        std::fs::write(
+            sub.join("CLAUDE.md"),
+            format!("# Sub\n\n## Guards\n\n{guards}\n"),
+        )
+        .unwrap();
+        sub
+    }
+
+    #[test]
+    fn guards_gate_blocks_critical_violation_in_cargo_subproject() {
+        // Stack 1 (cargo/Rust): the forbidden literal + glob come from the
+        // subproject's OWN CLAUDE.md — not from gate code.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub = write_subproject_guards(
+            root,
+            "apps/engine",
+            "- [critical] never `.unwrap()` in `**/*.rs`\n- always document public fns",
+        );
+        let edited = sub.join("src").join("lib.rs");
+        let cwd = root.to_str().unwrap();
+
+        let bad = guards_gate(
+            cwd,
+            &edited.to_string_lossy(),
+            "fn run() { x().unwrap(); }",
+            GuardGateMode::Strict,
+        );
+        assert!(
+            bad.deny.as_deref().is_some_and(|r| r.contains(".unwrap()")),
+            "expected Deny, got {bad:?}"
+        );
+        let good = guards_gate(
+            cwd,
+            &edited.to_string_lossy(),
+            "fn run() -> Result<(), E> { Ok(()) }",
+            GuardGateMode::Strict,
+        );
+        assert!(good.deny.is_none(), "clean edit must not Deny: {good:?}");
+        assert!(good.violations.is_empty());
+    }
+
+    #[test]
+    fn guards_gate_blocks_critical_violation_in_npm_subproject() {
+        // Stack 2 (npm/TS): a DIFFERENT literal + glob, same gate code — proving
+        // the rule is data-driven, not hardcoded per language.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub = write_subproject_guards(
+            root,
+            "apps/web",
+            "- [critical] never `console.log` in `**/*.ts`",
+        );
+        let edited = sub.join("src").join("app.ts");
+        let cwd = root.to_str().unwrap();
+
+        let bad = guards_gate(
+            cwd,
+            &edited.to_string_lossy(),
+            "export const f = () => { console.log(\"x\"); };",
+            GuardGateMode::Strict,
+        );
+        assert!(
+            bad.deny.as_deref().is_some_and(|r| r.contains("console.log")),
+            "expected Deny, got {bad:?}"
+        );
+        let good = guards_gate(
+            cwd,
+            &edited.to_string_lossy(),
+            "export const f = () => 1;",
+            GuardGateMode::Strict,
+        );
+        assert!(good.deny.is_none(), "clean edit must not Deny: {good:?}");
+    }
+
+    #[test]
+    fn guards_gate_warn_mode_advises_never_denies() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub = write_subproject_guards(root, "pkg", "- [critical] never `TODO` in `**/*.rs`");
+        let edited = sub.join("src").join("x.rs");
+        let out = guards_gate(
+            root.to_str().unwrap(),
+            &edited.to_string_lossy(),
+            "// TODO later",
+            GuardGateMode::Warn,
+        );
+        assert!(out.deny.is_none(), "warn mode must never Deny");
+        assert!(
+            out.violations.iter().any(|v| v.contains("TODO")),
+            "warn mode surfaces an advisory"
+        );
+    }
+
+    #[test]
+    fn guards_gate_off_mode_is_no_opinion() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub = write_subproject_guards(root, "pkg", "- [critical] never `TODO` in `**/*.rs`");
+        let edited = sub.join("src").join("x.rs");
+        let out = guards_gate(
+            root.to_str().unwrap(),
+            &edited.to_string_lossy(),
+            "// TODO",
+            GuardGateMode::Off,
+        );
+        assert!(out.deny.is_none() && out.violations.is_empty() && out.reminders.is_empty());
+    }
+
+    #[test]
+    fn guards_gate_unenforceable_critical_reminds_never_denies() {
+        // A `[critical]` Guard NOT in checkable form must never Deny — even in
+        // strict mode — only remind (honest limit of prose enforcement).
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub =
+            write_subproject_guards(root, "pkg", "- [critical] keep the public API backward compatible");
+        let edited = sub.join("src").join("api.rs");
+        let out = guards_gate(
+            root.to_str().unwrap(),
+            &edited.to_string_lossy(),
+            "whatever",
+            GuardGateMode::Strict,
+        );
+        assert!(out.deny.is_none(), "unenforceable prose must never Deny");
+        assert_eq!(out.reminders.len(), 1, "surfaced as a reminder");
+    }
+
+    #[test]
+    fn guards_gate_missing_claude_md_degrades_to_allow() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let edited = root.join("src").join("x.rs");
+        let out = guards_gate(
+            root.to_str().unwrap(),
+            &edited.to_string_lossy(),
+            "x.unwrap()",
+            GuardGateMode::Strict,
+        );
+        assert!(out.deny.is_none() && out.violations.is_empty() && out.reminders.is_empty());
+    }
+
+    #[test]
+    fn guards_gate_malformed_block_degrades_to_allow() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub = root.join("pkg");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("CLAUDE.md"),
+            "# Pkg\n\n## Guards\n\n<!-- mustard:guards pending -->\nnot a bullet at all\n",
+        )
+        .unwrap();
+        let edited = sub.join("x.rs");
+        let out = guards_gate(
+            root.to_str().unwrap(),
+            &edited.to_string_lossy(),
+            "x.unwrap()",
+            GuardGateMode::Strict,
+        );
+        assert!(out.deny.is_none() && out.violations.is_empty() && out.reminders.is_empty());
+    }
+
+    #[test]
+    fn parse_guard_gate_mode_defaults_to_warn() {
+        assert_eq!(parse_guard_gate_mode(None), GuardGateMode::Warn);
+        assert_eq!(parse_guard_gate_mode(Some("")), GuardGateMode::Warn);
+        assert_eq!(parse_guard_gate_mode(Some("bogus")), GuardGateMode::Warn);
+        assert_eq!(parse_guard_gate_mode(Some("strict")), GuardGateMode::Strict);
+        assert_eq!(parse_guard_gate_mode(Some("OFF")), GuardGateMode::Off);
+    }
+
+    #[test]
+    fn guards_gate_through_evaluate_warn_mode_injects_not_denies() {
+        // End-to-end via the Check trait in the DEFAULT (warn) mode: a violation
+        // surfaces as an Inject advisory, never a Deny (no env mutation).
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sub = write_subproject_guards(root, "svc", "- [critical] never `panic!` in `**/*.rs`");
+        let edited = sub.join("src").join("h.rs");
+        let input = edit_input(&edited.to_string_lossy(), "fn f() { panic!(\"no\"); }");
+        let verdict = PostEdit
+            .evaluate(&input, &ctx(root.to_str().unwrap()))
+            .expect("no error");
+        match verdict {
+            Verdict::Inject { context } => {
+                assert!(context.contains("panic!"), "advisory should cite the literal: {context}");
+            }
+            other => panic!("expected an Inject advisory in warn mode, got {other:?}"),
+        }
     }
 }
