@@ -7,9 +7,6 @@
     "commit": "assistant",
     "pr": "assistant"
   },
-  "worktree": {
-    "bgIsolation": "auto"
-  },
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",

@@ -122,6 +122,13 @@ fn main() {
             mustard_mcp::run();
             return;
         }
+        // `WorktreeCreate` is an isolation event with its OWN protocol: stdout
+        // carries the created path (not `hookSpecificOutput` JSON) and a
+        // non-zero exit aborts the creation. It reads the harness stdin like
+        // the enforcement faces, but must never flow into `emit_outcome`.
+        Command::On { ref event } if event == "WorktreeCreate" => {
+            hooks::worktree_create::run(&read_stdin_input());
+        }
         _ => {}
     }
 

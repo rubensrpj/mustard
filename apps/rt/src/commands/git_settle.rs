@@ -178,7 +178,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
                     "ok": false,
                     "reason": "on-integration-base",
                     "branch": inv_branch,
-                    "hint": "settle é o ritual de saída da unidade: rode a partir do BRANCH DE TRABALHO; numa base, só com --unit <branch>",
+                    "hint": "pr close é o ritual de saída da unidade: rode a partir do BRANCH DE TRABALHO; numa base, só com --unit <branch>",
                 });
             }
             inv_branch.clone()
