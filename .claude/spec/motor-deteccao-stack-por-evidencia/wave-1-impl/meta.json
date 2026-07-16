@@ -1,9 +1,0 @@
-{
-  "stage": "Execute",
-  "outcome": "Active",
-  "phase": "EXECUTE",
-  "scope": null,
-  "lang": "pt-BR",
-  "checkpoint": "2026-06-09T18:24:42.272Z",
-  "parent": "motor-deteccao-stack-por-evidencia"
-}

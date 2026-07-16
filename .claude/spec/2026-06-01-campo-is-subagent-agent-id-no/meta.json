@@ -1,9 +1,0 @@
-{
-  "stage": "Close",
-  "outcome": "Completed",
-  "phase": "CLOSE",
-  "scope": "light",
-  "lang": "pt-BR",
-  "checkpoint": "2026-06-01T23:34:34.489Z",
-  "parent": "mustard-pipeline-debts"
-}
