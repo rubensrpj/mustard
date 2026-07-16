@@ -18,7 +18,7 @@
 //! ## Mode
 //!
 //! The gate has **no `MUSTARD_*_MODE`** — it is always strict (like
-//! `bash-safety` / `file-guard`). The dispatcher repasses the verdict.
+//! `bash-safety`). The dispatcher repasses the verdict.
 
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};

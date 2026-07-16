@@ -241,12 +241,13 @@ mod tests {
         // The nested inner crate and the test fixture are dropped by the
         // skeleton join; rt / web / (root) survive.
         let rendered = render_terrain(&o).expect("terrain");
-        insta::assert_snapshot!(rendered, @r###"
-        [Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:
-        - web · npm · 40 arquivos — L0
-        - rt · cargo · 232 arquivos — L1
-        - (root) · npm · 12 arquivos — L2
-        "###);
+        let expected = format!(
+            "{TERRAIN_HEADER}
+- web · npm · 40 arquivos — L0
+- rt · cargo · 232 arquivos — L1
+- (root) · npm · 12 arquivos — L2"
+        );
+        assert_eq!(rendered, expected);
     }
 
     /// The aggregate-dir shape: `skeleton[]` records a parent dir
@@ -273,12 +274,13 @@ mod tests {
         let (_d, root) = seed(NESTED);
         let o = compute_orientation(&root);
         let rendered = render_terrain(&o).expect("terrain");
-        insta::assert_snapshot!(rendered, @r###"
-        [Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:
-        - web · npm · 40 arquivos — L0
-        - Big.App · dotnet · 700 arquivos — L3
-        - Big.Data · dotnet · 300 arquivos — L3
-        "###);
+        let expected = format!(
+            "{TERRAIN_HEADER}
+- web · npm · 40 arquivos — L0
+- Big.App · dotnet · 700 arquivos — L3
+- Big.Data · dotnet · 300 arquivos — L3"
+        );
+        assert_eq!(rendered, expected);
     }
 
     #[test]

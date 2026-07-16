@@ -1,29 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export interface PipelineSummary {
-  spec_name: string;
-  phase: string;
-  scope: string;
-  status: string;
-  updated_at: string | null;
-}
-
-export interface MetricsSummary {
-  total_events: number;
-  sessions_recent: number;
-  agents_dispatched: number;
-  last_event_at: string | null;
-  tokens_total: number;
-  tokens_today: number;
-}
-
-export interface KnowledgeSummary {
-  patterns_count: number;
-  conventions_count: number;
-  high_confidence_count: number;
-}
-
 export type SpecBucket = "active" | "completed" | "cancelled";
 
 export interface SpecRow {
@@ -39,25 +16,17 @@ export interface SpecRow {
   parent: string | null;
 }
 
+/**
+ * One decision/lesson record projected from the per-spec NDJSON event log
+ * (`decision` → title/rationale, `lesson` → takeaway/trigger). Rows arrive
+ * sorted `ts` desc from the backend.
+ */
 export interface KnowledgeRow {
-  id: string;
-  type: string;
-  name: string;
-  description: string;
-  confidence: number;
-  source: string | null;
-}
-
-export function fetchPipelines(repoPath: string): Promise<PipelineSummary[]> {
-  return invoke<PipelineSummary[]>("dashboard_pipelines", { repoPath });
-}
-
-export function fetchMetrics(repoPath: string): Promise<MetricsSummary> {
-  return invoke<MetricsSummary>("dashboard_metrics", { repoPath });
-}
-
-export function fetchKnowledge(repoPath: string): Promise<KnowledgeSummary> {
-  return invoke<KnowledgeSummary>("dashboard_knowledge", { repoPath });
+  kind: "decision" | "lesson";
+  title: string;
+  body: string | null;
+  spec: string | null;
+  ts: string;
 }
 
 export interface SubprojectInfo {
@@ -176,125 +145,12 @@ export function reactivateSpec(repoPath: string, specName: string): Promise<Spec
   return invoke<SpecBucket>("dashboard_spec_reactivate", { repoPath, specName });
 }
 
-export function fetchSearchEvents(
-  repoPath: string,
-  query: string,
-  limit?: number,
-): Promise<RecentEvent[]> {
-  return invoke<RecentEvent[]>("dashboard_search_events", { repoPath, query, limit });
-}
-
 export function fetchSearchKnowledge(
   repoPath: string,
   query: string,
   limit?: number,
 ): Promise<KnowledgeRow[]> {
   return invoke<KnowledgeRow[]>("dashboard_search_knowledge", { repoPath, query, limit });
-}
-
-// --- Telemetry ---
-
-export interface RtkDaily {
-  date: string;
-  commands: number;
-  input_tokens: number;
-  output_tokens: number;
-  saved_tokens: number;
-  savings_pct: number;
-}
-
-export interface RtkBlock {
-  available: boolean;
-  total_commands: number | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  tokens_saved: number | null;
-  savings_pct: number | null;
-  total_exec_time_ms: number | null;
-  daily: RtkDaily[];
-}
-
-export interface MeasuredBlock {
-  tokens_total: number;
-  tokens_today: number;
-}
-
-export interface HookFireCount {
-  hook: string;
-  fires: number;
-  tokens_saved: number;
-  most_recent_ts: string | null;
-  /** Subset of `fires` / `tokens_saved` within the current session window. */
-  session_fires: number;
-  session_tokens_saved: number;
-}
-
-export interface RoutingByIntent {
-  intent: string;
-  blocks: number;
-  allows: number;
-}
-
-export interface RoutingByNote {
-  /** "violation" | "no-model-denied" | "no-model-denied-sonnet" | "no-model-advisory" | "passed" | … */
-  note: string;
-  count: number;
-}
-
-export interface RoutingBlock {
-  blocks: number;
-  allows: number;
-  by_intent: RoutingByIntent[];
-  by_note: RoutingByNote[];
-  /** Subset of `blocks` / `allows` within the current session window. */
-  session_blocks: number;
-  session_allows: number;
-}
-
-export interface PhaseCount {
-  phase: string;
-  count: number;
-}
-
-export interface WorkflowBlock {
-  by_phase: PhaseCount[];
-}
-
-export interface ToolCount {
-  tool_name: string;
-  count: number;
-}
-
-export interface AgentActivity {
-  agent_type: string;
-  starts: number;
-  stops: number;
-  errors: number;
-  avg_duration_ms: number;
-  last_ts: string | null;
-}
-
-export interface AgentActivityBlock {
-  total_dispatches: number;
-  total_errors: number;
-  agents: AgentActivity[];
-}
-
-export interface TelemetrySummary {
-  rtk: RtkBlock;
-  measured: MeasuredBlock;
-  prevention: HookFireCount[];
-  routing: RoutingBlock;
-  workflow: WorkflowBlock;
-  tool_breakdown: ToolCount[];
-  agent_activity: AgentActivityBlock;
-  /** ISO timestamp the current session began emitting, or null. Every
-   *  `session_*` counter in this payload counts lines with `ts >=` this. */
-  session_start_ts: string | null;
-}
-
-export function fetchTelemetry(repoPath: string): Promise<TelemetrySummary> {
-  return invoke<TelemetrySummary>("dashboard_telemetry", { repoPath });
 }
 
 // --- Friction telemetry (.claude/.metrics/friction.json) ---
@@ -320,46 +176,6 @@ export interface FrictionEntry {
 export function fetchFriction(repoPath: string): Promise<FrictionEntry[]> {
   return invoke<FrictionEntry[]>("dashboard_friction", { repoPath });
 }
-
-// --- Live activity (events.jsonl tail) ---
-
-export interface PhaseActivity {
-  /** "ANALYZE" | "PLAN" | "EXECUTE" | "QA" | "CLOSE" */
-  phase: string;
-  events_today: number;
-  events_last_hour: number;
-  events_last_5min: number;
-  /** 60 minute buckets, oldest first. */
-  minute_buckets: number[];
-  last_event_ts: string | null;
-  top_tools: ToolCount[];
-  last_spec: string | null;
-}
-
-export interface LiveActivity {
-  last_event_ts: string | null;
-  events_today: number;
-  events_last_hour: number;
-  events_last_5min: number;
-  tools_today: ToolCount[];
-  /** 60 minute buckets, oldest first (aggregate across phases). */
-  minute_buckets: number[];
-  current_spec: string | null;
-  current_phase: string | null;
-  current_wave: number | null;
-  is_fresh: boolean;
-  /** Always 5 entries in canonical order: ANALYZE, PLAN, EXECUTE, QA, CLOSE. */
-  by_phase: PhaseActivity[];
-}
-
-export function fetchLiveActivity(repoPath: string): Promise<LiveActivity> {
-  return invoke<LiveActivity>("dashboard_live_activity", { repoPath });
-}
-
-// Collector health (the unified OTEL badge) lives in `src/api/promptEconomy.ts`
-// since it belongs to the economy/freshness domain. Re-exported here so the
-// dashboard surface stays the single import site for pages already on it.
-export { fetchCollectorHealth, type CollectorHealth } from "@/api/promptEconomy";
 
 // --- Active Pipelines ---
 
@@ -413,57 +229,6 @@ export function onSpecsSnapshot(
   );
 }
 
-// --- New Wave 3 commands ---
-
-export interface ActivityGroup {
-  spec: string | null;
-  wave: number | null;
-  action_kind: string | null;
-  count: number;
-  min_ts: string | null;
-  max_ts: string | null;
-  tokens_total: number;
-  files_touched: number;
-}
-
-export interface RoleQuality {
-  role: string;
-  pass_at_1: number;
-  fix_loops: number;
-  samples: number;
-}
-
-export interface SlowestWave {
-  spec: string | null;
-  wave: number | null;
-  duration_ms: number;
-}
-
-export interface PhaseTokens {
-  phase: string;
-  input_avg: number;
-  output_avg: number;
-}
-
-export interface QualityMetrics {
-  pass_at_1: number;
-  fix_loop_rate: number;
-  avg_phase_duration_ms: number;
-  by_role: RoleQuality[];
-  slowest_waves: SlowestWave[];
-  tokens_by_phase: PhaseTokens[];
-}
-
-export function fetchActivityAggregated(repoPath: string, limit = 200): Promise<ActivityGroup[]> {
-  return invoke<ActivityGroup[]>("dashboard_activity_aggregated", { repoPath, limit });
-}
-
-export function fetchQualityMetrics(repoPath: string): Promise<QualityMetrics> {
-  return invoke<QualityMetrics>("dashboard_quality_metrics", { repoPath });
-}
-
-export type KnowledgeBrowseRow = KnowledgeRow;
-
 export function fetchKnowledgeBrowse(repoPath: string, limit = 500): Promise<KnowledgeRow[]> {
   return invoke<KnowledgeRow[]>("dashboard_knowledge_browse", { repoPath, limit });
 }
@@ -516,98 +281,8 @@ export interface ConsumptionSummary {
   daily_series: DailyPoint[];
 }
 
-export interface ProjectUsage {
-  id: string;
-  name: string;
-  path: string;
-  tokens_total: number;
-  tokens_today: number;
-  cost_total_usd: number;
-  cost_today_usd: number;
-  last_activity_ms: number | null;
-}
-
-export interface GlobalConsumption {
-  tokens_total: number;
-  tokens_today: number;
-  cost_total_usd: number;
-  cost_today_usd: number;
-  by_project: ProjectUsage[];
-  by_model: ModelUsage[];
-  daily_series: DailyPoint[];
-  rtk: RtkBlock;
-}
-
 export function fetchConsumption(repoPath: string): Promise<ConsumptionSummary> {
   return invoke<ConsumptionSummary>("dashboard_consumption", { repoPath });
-}
-
-export function fetchConsumptionGlobal(projectsRoot: string): Promise<GlobalConsumption> {
-  return invoke<GlobalConsumption>("dashboard_consumption_global", { projectsRoot });
-}
-
-// --- Telemetry aggregation (Wave 7) ---
-
-export type {
-  TimeRange,
-  PhaseSummary,
-  TimelineEvent,
-  HeatmapCell,
-  HistoryEntry,
-  AcceptanceCriterion,
-  EffortBreakdown,
-  AgentDispatch,
-} from "@/lib/types/telemetry";
-
-export function dashboardTelemetryPhases(
-  repoPath: string,
-  timeRange: string,
-): Promise<import("@/lib/types/telemetry").PhaseSummary[]> {
-  return invoke("dashboard_telemetry_phases", { repoPath, timeRange });
-}
-
-export function dashboardTelemetryTimeline(
-  repoPath: string,
-  timeRange: string,
-  limit?: number,
-): Promise<import("@/lib/types/telemetry").TimelineEvent[]> {
-  return invoke("dashboard_telemetry_timeline", { repoPath, timeRange, limit });
-}
-
-export function dashboardTelemetryHeatmap(
-  repoPath: string,
-  timeRange: string,
-): Promise<import("@/lib/types/telemetry").HeatmapCell[]> {
-  return invoke("dashboard_telemetry_heatmap", { repoPath, timeRange });
-}
-
-export function dashboardTelemetryHistory(
-  repoPath: string,
-  timeRange: string,
-  limit?: number,
-): Promise<import("@/lib/types/telemetry").HistoryEntry[]> {
-  return invoke("dashboard_telemetry_history", { repoPath, timeRange, limit });
-}
-
-export function dashboardTelemetryCriteria(
-  repoPath: string,
-  timeRange: string,
-): Promise<import("@/lib/types/telemetry").AcceptanceCriterion[]> {
-  return invoke("dashboard_telemetry_criteria", { repoPath, timeRange });
-}
-
-export function dashboardTelemetryEffort(
-  repoPath: string,
-  timeRange: string,
-): Promise<import("@/lib/types/telemetry").EffortBreakdown> {
-  return invoke("dashboard_telemetry_effort", { repoPath, timeRange });
-}
-
-export function dashboardTelemetryAgents(
-  repoPath: string,
-  timeRange: string,
-): Promise<import("@/lib/types/telemetry").AgentDispatch[]> {
-  return invoke("dashboard_telemetry_agents", { repoPath, timeRange });
 }
 
 // --- Economy summary (W7 — 2026-05-20-economia-moat-unification) ---
@@ -700,28 +375,6 @@ export function useActiveProjectName(): string | null {
   return match?.name || _basename(projectsRoot) || projectsRoot;
 }
 
-// --- Amend queries (Wave 4, spec 2026-05-20-session-bound-amendments) ---
-
-/** Resolution rate: fraction of closed amend windows that ended 'archived'. */
-export function fetchAmendResolutionRate(repoPath: string): Promise<number> {
-  return invoke<number>("amend_resolution_rate", { repoPath });
-}
-
-/** Drift rate: fraction of closed amend windows that ended 'closed-amend-drift'. */
-export function fetchAmendDriftRate(repoPath: string): Promise<number> {
-  return invoke<number>("amend_drift_rate", { repoPath });
-}
-
-/** Count of windows carrying cross-session debt (status='closed-amend-pending'). */
-export function fetchCrossSessionAmendCount(repoPath: string): Promise<number> {
-  return invoke<number>("cross_session_amend_count", { repoPath });
-}
-
-/** Duration histogram input: Vec<i64> of millisecond durations for closed windows. */
-export function fetchAmendWindowDuration(repoPath: string): Promise<number[]> {
-  return invoke<number[]>("amend_window_duration", { repoPath });
-}
-
 // --- Wave-6 hygiene health ---
 
 export type { WorkspaceHealth } from "@/lib/types/specs";
@@ -744,9 +397,6 @@ export type {
   SpecSummary,
   SpecWave,
   SpecQualityItem,
-  SpecTimelineNode,
-  TimelineEvent as SpecTimelineEvent,
-  EventFilter,
   SpecActionKind,
   SpecAction,
   PhaseSegment,
@@ -790,21 +440,6 @@ export function dashboardSpecQuality(
   return invoke("dashboard_spec_quality", { repoPath, spec });
 }
 
-export function dashboardSpecTimeline(
-  repoPath: string,
-  spec: string,
-): Promise<import("@/lib/types/specs").SpecTimelineNode[]> {
-  return invoke("dashboard_spec_timeline", { repoPath, spec });
-}
-
-export function dashboardSpecEvents(
-  repoPath: string,
-  spec: string,
-  filter?: import("@/lib/types/specs").EventFilter,
-): Promise<import("@/lib/types/specs").TimelineEvent[]> {
-  return invoke("dashboard_spec_events", { repoPath, spec, filter });
-}
-
 export function dashboardSpecAction(
   repoPath: string,
   spec: string,
@@ -844,90 +479,6 @@ export function fetchSpecChildrenTree(
   projectPath: string,
 ): Promise<import("@/lib/types/specs").ChildrenTree> {
   return invoke("spec_children_tree", { spec, projectPath });
-}
-
-// --- Wave-4 metrics wave-status (spec mustard-wave-network-standard) ---
-
-/** One per-wave row returned by `mustard-rt run metrics wave-status`. */
-export interface MetricsWaveRow {
-  name: string;
-  status: string | null;
-  tokens_saved: number;
-  duration_ms: number;
-  retries: number;
-  model: string | null;
-}
-
-/** Parent → waves rollup. `parent` is null when the rt binary failed to spawn. */
-export interface MetricsWaveStatus {
-  parent: string | null;
-  waves: MetricsWaveRow[];
-}
-
-/**
- * Wave-4 wrapper for the new `dashboard_metrics_wave_status` Tauri command.
- * Shells out to `mustard-rt run metrics wave-status --spec <name>` on the
- * backend and returns the parsed JSON. Always resolves — the backend swallows
- * subprocess/parse failures into an empty `waves` vec so the UI can render
- * "sem ondas" instead of throwing.
- */
-export function dashboardMetricsWaveStatus(
-  repoPath: string,
-  specName: string,
-): Promise<MetricsWaveStatus> {
-  return invoke<MetricsWaveStatus>("dashboard_metrics_wave_status", {
-    repoPath,
-    specName,
-  });
-}
-
-// --- Wave-3 wikilink graph + cross-wave memory (spec mustard-wave-network-standard) ---
-
-/** One wikilink occurrence emitted by `mustard-rt run wikilink-extract`. */
-export interface Wikilink {
-  from: string;
-  to: string;
-  file: string;
-  line: number;
-}
-
-/**
- * Full payload of `mustard-rt run wikilink-extract`: every `[[name]]`
- * occurrence under the spec dir plus the set of orphan targets (names that
- * don't resolve to a spec file). The dashboard groups these into
- * parent/waves/dependents layers client-side.
- */
-export interface WikilinkExtract {
-  wikilinks: Wikilink[];
-  orphans: string[];
-}
-
-/**
- * Wave-3 wrapper for `dashboard_wikilink_extract`. The backend resolves the
- * spec directory under `.claude/spec/{active,completed,cancelled}/<specName>`
- * so the frontend never passes a raw filesystem path. Always resolves —
- * missing dir / unparseable JSON collapse to an empty extract.
- */
-export function dashboardWikilinkExtract(
-  repoPath: string,
-  specName: string,
-): Promise<WikilinkExtract> {
-  return invoke<WikilinkExtract>("dashboard_wikilink_extract", {
-    repoPath,
-    specName,
-  });
-}
-
-/**
- * Wave-3 wrapper for `dashboard_memory_cross_wave`. Returns the markdown
- * payload (stdout) — empty string when no prior wave has recorded memory yet.
- */
-export function dashboardMemoryCrossWave(
-  repoPath: string,
-  spec: string,
-  wave: number,
-): Promise<string> {
-  return invoke<string>("dashboard_memory_cross_wave", { repoPath, spec, wave });
 }
 
 // --- Wave-2 (spec 2026-05-21-dashboard-spec-tabs): real file count + wave markdown ---
@@ -1002,61 +553,6 @@ export function dashboardSpecChecklistProgress(
     repoPath,
     spec,
   });
-}
-
-// --- Wave-2 dashboard visual overview (spec 2026-05-20-dashboard-visual-overview) ---
-
-/** Per-pipeline token savings entry returned in `TokenSummary.top_pipelines`. */
-export interface TopPipeline {
-  spec: string;
-  saved: number;
-}
-
-/**
- * Aggregate token-savings payload for the workspace overview cards. Mirrors
- * the Rust `TokenSummary` struct (`serde(rename_all = "snake_case")`).
- */
-export interface TokenSummary {
-  total_saved: number;
-  top_pipelines: TopPipeline[];
-}
-
-/** One calendar-day bucket in the monthly activity heatmap. */
-export interface DayActivity {
-  /** YYYY-MM-DD */
-  date: string;
-  event_count: number;
-  /** Phase with the most events that day, when any phase was tagged. */
-  top_phase: string | null;
-}
-
-/** One event row in the live workspace feed. */
-export interface FeedEvent {
-  id: string;
-  /** ISO-8601 timestamp. */
-  ts: string;
-  kind: string;
-  spec: string | null;
-  payload_summary: string;
-}
-
-/** Aggregate token-savings totals + top-N pipelines for the active workspace. */
-export function dashboardTokenSummary(projectPath: string): Promise<TokenSummary> {
-  return invoke<TokenSummary>("dashboard_token_summary", { projectPath });
-}
-
-/** Per-day activity counts for the given month (1..12). */
-export function dashboardMonthActivity(
-  projectPath: string,
-  year: number,
-  month: number,
-): Promise<DayActivity[]> {
-  return invoke<DayActivity[]>("dashboard_month_activity", { projectPath, year, month });
-}
-
-/** Most-recent feed events (newest first), capped by `limit`. */
-export function dashboardEventsFeed(projectPath: string, limit: number): Promise<FeedEvent[]> {
-  return invoke<FeedEvent[]>("dashboard_events_feed", { projectPath, limit });
 }
 
 // --- Wave 4 mustard-unification — language + tone settings ----------------

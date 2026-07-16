@@ -3,10 +3,13 @@
   "respectGitignore": true,
   "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
-  "attribution": { "commit": "assistant", "pr": "assistant" },
-
-  "worktree": { "bgIsolation": "auto" },
-
+  "attribution": {
+    "commit": "assistant",
+    "pr": "assistant"
+  },
+  "worktree": {
+    "bgIsolation": "auto"
+  },
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
@@ -23,14 +26,6 @@
     "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
     "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
-
-  "mcpServers": {
-    "mustard-memory": {
-      "command": "mustard-mcp",
-      "args": []
-    }
-  },
-
   "permissions": {
     "allow": [
       "Read",
@@ -52,24 +47,59 @@
       "WebSearch",
       "Bash",
       "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)",
-      "Bash(mustard-rt run refresh-claude:*)"
+      "Bash(mustard-rt run qa-run:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(rm -Rf:*)",
+      "Bash(rm -fR:*)",
+      "Bash(rm --no-preserve-root:*)",
       "Bash(rm -r /:*)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
       "Bash(git reset --hard:*)",
-      "Bash(git clean:*)",
+      "Bash(git reset * --hard:*)",
+      "Bash(git checkout -f:*)",
+      "Bash(git checkout --force:*)",
+      "Bash(git checkout * -f:*)",
+      "Bash(git checkout * --force:*)",
       "Bash(git checkout -- .:*)",
       "Bash(git restore .:*)",
+      "Bash(git clean:*)",
+      "Bash(git branch -D main:*)",
+      "Bash(git branch -D master:*)",
+      "Bash(git branch -d main:*)",
+      "Bash(git branch -d master:*)",
       "Bash(chmod 777:*)",
-      "Bash(mkfs:*)",
-      "Bash(dd if=:*)",
+      "Bash(mkfs*)",
+      "Bash(dd if=*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",
-      "Bash(format C:*)",
+      "Read(**/*.pem)",
+      "Edit(**/*.pem)",
+      "Write(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/*.key)",
+      "Write(**/*.key)",
+      "Read(**/*.pfx)",
+      "Edit(**/*.pfx)",
+      "Write(**/*.pfx)",
+      "Read(**/*.p12)",
+      "Edit(**/*.p12)",
+      "Write(**/*.p12)",
+      "Read(**/*id_rsa*)",
+      "Edit(**/*id_rsa*)",
+      "Write(**/*id_rsa*)",
+      "Read(**/*id_ed25519*)",
+      "Edit(**/*id_ed25519*)",
+      "Write(**/*id_ed25519*)",
+      "Read(**/*credentials*)",
+      "Edit(**/*credentials*)",
+      "Write(**/*credentials*)",
+      "Read(**/.git/config)",
+      "Edit(**/.git/config)",
+      "Write(**/.git/config)",
       "Read(**/node_modules/**)",
       "Grep(**/node_modules/**)",
       "Read(**/bin/**)",
@@ -96,139 +126,6 @@
       "Grep(**/Migrations/**)"
     ]
   },
-
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on PreToolUse",
-            "timeout": 310
-          }
-        ]
-      }
-    ],
-
-    "PostToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on PostToolUse",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SessionStart",
-            "statusMessage": "Initializing harness, memory, and budgets...",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-
-    "PreCompact": [
-      {
-        "matcher": "auto|manual",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on PreCompact",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-
-    "SessionEnd": [
-      {
-        "matcher": "prompt_input_exit|clear|other",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SessionEnd",
-            "statusMessage": "Extracting knowledge and cleaning state...",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SubagentStart",
-            "statusMessage": "Registering agent...",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on SubagentStop",
-            "statusMessage": "Agent completed",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-
-    "UserPromptSubmit": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on UserPromptSubmit",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on Stop",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk mustard-rt on Notification",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
-
   "statusLine": {
     "type": "command",
     "command": "mustard-rt run statusline",

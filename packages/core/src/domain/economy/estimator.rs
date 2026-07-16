@@ -48,32 +48,46 @@ pub fn estimate_output_tokens(text: &str, _model: &str) -> u32 {
     encode_count(text)
 }
 
+/// Hardcoded **estimate-only** price table: `(model-family prefix, input, output)`
+/// in micro-USD per million tokens.
+///
+/// The MEASURED cost signal is native Claude Code OTEL telemetry
+/// (`claude_code.token.usage` / `claude_code.cost.usage` datapoints ingested by
+/// `run otel-collector`) — this table never overrides it. It only feeds the
+/// estimate paths that have no measured signal: prompt previews, the
+/// context-budget gate, and the bash-gate token nudges.
+///
+/// Source: Anthropic public pricing, snapshot 2026-05. Prefixes are matched in
+/// declaration order against the lowercased model id (families are mutually
+/// exclusive, so order only documents intent).
+const MODEL_PRICING_USD_MICROS_PER_MILLION: &[(&str, i64, i64)] = &[
+    // $15/M input, $75/M output.
+    ("claude-opus", 15_000_000, 75_000_000),
+    // $3/M input, $15/M output.
+    ("claude-3-5-sonnet", 3_000_000, 15_000_000),
+    ("claude-sonnet", 3_000_000, 15_000_000),
+    // $0.80/M input, $4/M output.
+    ("claude-3-5-haiku", 800_000, 4_000_000),
+    ("claude-haiku", 800_000, 4_000_000),
+];
+
 /// Per-million-token price for `model`, returned as `(input, output)` in
-/// micro-USD.
+/// micro-USD. Estimate-only — see [`MODEL_PRICING_USD_MICROS_PER_MILLION`].
 ///
 /// Returns `(0, 0)` for an unknown model — the dashboard renders unpriced
 /// rows as "—" rather than a fake total.
-///
-/// Source: Anthropic public pricing, snapshot 2026-05. Numbers below are in
-/// micro-USD per million tokens, i.e. `price_per_token_micros * 1_000_000`.
 #[must_use]
 pub fn model_pricing_usd_micros_per_million(model: &str) -> (i64, i64) {
     // Normalise the model id: Anthropic returns names like "claude-opus-4-7"
     // sometimes with a trailing date stamp; the pricing tier is keyed on the
-    // family prefix, so we match on the longest known prefix.
+    // family prefix.
     let m = model.to_ascii_lowercase();
-    if m.starts_with("claude-opus") {
-        // $15/M input, $75/M output → 15_000_000 / 75_000_000 micro-USD per M.
-        (15_000_000, 75_000_000)
-    } else if m.starts_with("claude-3-5-sonnet") || m.starts_with("claude-sonnet") {
-        // $3/M input, $15/M output.
-        (3_000_000, 15_000_000)
-    } else if m.starts_with("claude-3-5-haiku") || m.starts_with("claude-haiku") {
-        // $0.80/M input, $4/M output.
-        (800_000, 4_000_000)
-    } else {
-        (0, 0)
+    for (prefix, input, output) in MODEL_PRICING_USD_MICROS_PER_MILLION {
+        if m.starts_with(prefix) {
+            return (*input, *output);
+        }
     }
+    (0, 0)
 }
 
 /// Compute a frame's cost in micro-USD, splitting tokens into the four

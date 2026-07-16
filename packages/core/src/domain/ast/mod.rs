@@ -58,12 +58,6 @@ pub mod queries;
 pub mod signature;
 pub mod stub_detect;
 
-/// On-demand WASM grammar acquisition (third tier of the grammar strategy).
-/// Entire module is gated behind the optional `wasm-grammars` feature so the
-/// default build never pulls `wasmtime`/`ureq`; see [`wasm_acquire`].
-#[cfg(feature = "wasm-grammars")]
-pub mod wasm_acquire;
-
 #[cfg(test)]
 pub(crate) mod loader_test_helpers;
 

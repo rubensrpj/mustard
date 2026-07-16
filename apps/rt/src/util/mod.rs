@@ -21,8 +21,8 @@ use std::path::PathBuf;
 /// Resolve the user's home directory cross-platform without a `dirs` crate
 /// dependency: `HOME` on Unix, `USERPROFILE` on Windows.
 ///
-/// Single copy shared by `session_cleanup` and `transcript_watcher` (the two
-/// modules that resolve transcript paths under `~/.claude/projects/`).
+/// Single copy shared by the modules that resolve paths under the global
+/// `~/.claude/` tree (e.g. the OTEL collector attribution resolver).
 #[must_use]
 pub fn home_dir() -> Option<PathBuf> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
@@ -31,22 +31,6 @@ pub fn home_dir() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
-/// Encode `cwd` the same way Claude Code does for its transcript-projects
-/// layout: every path separator (`/`, `\`) and drive-letter colon collapses
-/// to `-`. E.g. `C:\Atiz\mustard` → `C--Atiz-mustard`.
-///
-/// Tolerant of mixed separators (Windows paths under WSL/Cygwin shells often
-/// arrive with both). Centralised here so the transcript-path encoding cannot
-/// drift between hook-side resolution and watcher-side discovery.
-#[must_use]
-pub fn encode_cwd(cwd: &str) -> String {
-    cwd.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' => '-',
-            other => other,
-        })
-        .collect()
-}
 
 // Timestamp helpers (`now_iso8601`, `now_unix_millis`) live in the single
 // canonical home `mustard_core::time` — call them directly, no rt-side alias.

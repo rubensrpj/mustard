@@ -24,7 +24,7 @@ pub enum MaintCmd {
     /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
     /// each external upstream. Fail-open — network errors degrade an artifact
     /// to `unknown` and never fail the command.
-    #[command(display_order = 60)]
+    #[command(display_order = 48)]
     ArtifactUpdate {
         /// Probe upstreams and emit the JSON freshness report (the default).
         #[arg(long)]
@@ -43,9 +43,9 @@ pub enum MaintCmd {
     /// `<repo>/.git/worktrees/<name>/HEAD` mtime, falling back to the dir's
     /// own mtime), and reports/removes entries older than `--age-days N`
     /// (default 7). Dry-run by default; `--apply` is required to mutate the
-    /// filesystem. Emits `worktree.gc.run` and
-    /// `pipeline.economy.operation.invoked` to the harness event store.
-    #[command(display_order = 67)]
+    /// filesystem. Emits `pipeline.economy.operation.invoked` to the harness
+    /// event store.
+    #[command(display_order = 54)]
     WorktreeGc {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -70,7 +70,7 @@ pub enum MaintCmd {
     /// `packages/*/.claude/`. `--scope all` adds the user-global
     /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
     /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 68)]
+    #[command(display_order = 55)]
     Unhook {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -87,7 +87,7 @@ pub enum MaintCmd {
     /// newest `settings.json.disabled*` snapshot back to `settings.json`.
     /// Volatile state directories that `unhook` wiped are left alone — the
     /// runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 69)]
+    #[command(display_order = 56)]
     Rehook {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -104,7 +104,7 @@ pub enum MaintCmd {
     /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
     /// every step — exit code is always 0.
     #[command(name = "claude-dir-prune")]
-    #[command(display_order = 81)]
+    #[command(display_order = 64)]
     ClaudeDirPrune {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -122,7 +122,7 @@ pub enum MaintCmd {
     },
     /// W5.T5.6 — Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
     #[command(name = "adapt-cursor")]
-    #[command(display_order = 87)]
+    #[command(display_order = 70)]
     AdaptCursor {
         /// Repo root override.
         #[arg(long)]
@@ -131,30 +131,9 @@ pub enum MaintCmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Refresh stale `.claude/` installs after edits in `apps/cli/templates/`.
-    ///
-    /// Walks `apps/cli/templates/{refs,commands/mustard,skills}/**`, SHA-256
-    /// compares each source against the consumer `.claude/<sub>/`, and copies
-    /// divergent files. Generated artefacts (`grain.model.json`, caches)
-    /// and volatile state dirs are excluded. Emits `{copied, skipped,
-    /// conflicts, errors}` JSON. Fail-open; exit code is always 0.
-    #[command(name = "refresh-claude")]
-    #[command(display_order = 88)]
-    RefreshClaude {
-        /// Target consumer directory (the project whose `.claude/` to refresh).
-        /// Defaults to the current working directory.
-        #[arg(long)]
-        target: Option<PathBuf>,
-        /// Preview only — compare and report, but do NOT write any files.
-        #[arg(long)]
-        dry_run: bool,
-        /// Override the templates source directory (defaults to auto-discovery).
-        #[arg(long = "templates-dir")]
-        templates_dir: Option<PathBuf>,
-    },
     /// W5.T5.7a — Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 89)]
+    #[command(display_order = 71)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -162,7 +141,7 @@ pub enum MaintCmd {
     },
     /// W5.T5.7b — Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 90)]
+    #[command(display_order = 72)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -217,13 +196,6 @@ pub fn dispatch(cmd: MaintCmd) {
         }
         MaintCmd::AdaptCursor { repo, dry_run } => {
             maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });
-        }
-        MaintCmd::RefreshClaude { target, dry_run, templates_dir } => {
-            maint::refresh_claude::run(maint::refresh_claude::RefreshClaudeOpts {
-                target,
-                dry_run,
-                templates_dir,
-            });
         }
         MaintCmd::MaintDeps { dry_run } => {
             maint::maint_deps::run(maint::maint_deps::MaintDepsOpts { dry_run });

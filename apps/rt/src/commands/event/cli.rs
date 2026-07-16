@@ -19,7 +19,7 @@ use crate::commands::{event};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum EventCmd {
     /// Emit an arbitrary named harness event with a key/value payload.
-    #[command(display_order = 9)]
+    #[command(display_order = 8)]
     EmitEvent {
         /// Event name, e.g. `review.start`.
         #[arg(long)]
@@ -36,7 +36,7 @@ pub enum EventCmd {
         wave: u32,
     },
     /// Record a `pipeline.phase` transition event from a SKILL.
-    #[command(display_order = 10)]
+    #[command(display_order = 9)]
     EmitPhase {
         /// Spec identifier.
         #[arg(long)]
@@ -54,7 +54,7 @@ pub enum EventCmd {
     /// exit 2 unless a `qa.result` event with `overall=pass` exists for the
     /// spec, or `--allow-no-qa` is passed (escape hatch for trusted callers
     /// like `qa-run` itself or an explicit user override).
-    #[command(display_order = 11)]
+    #[command(display_order = 10)]
     EmitPipeline {
         /// Pipeline event kind, e.g. `pipeline.scope`. Must be one of the 8 known kinds.
         #[arg(long)]
@@ -83,7 +83,7 @@ pub enum EventCmd {
         base: Option<String>,
     },
     /// Query the harness event log by view.
-    #[command(display_order = 39)]
+    #[command(display_order = 32)]
     EventProjections {
         /// View name: `agent-visibility`, `pipeline-state`, `session-summary`,
         /// `epic-summary`, `cross-session-timeline`, `spec-tree`, `pr-metrics`,
@@ -99,28 +99,6 @@ pub enum EventCmd {
         /// Output format: `json` (default) or `html`.
         #[arg(long, default_value = "json")]
         format: String,
-    },
-    /// Confirm a named harness event landed within a recent window.
-    #[command(display_order = 46)]
-    VerifyEmit {
-        /// Event name to match (required).
-        #[arg(long)]
-        event: Option<String>,
-        /// Look-back window, e.g. `30s`, `1m`, `500ms` (alias `--within`).
-        #[arg(long, alias = "within")]
-        since: Option<String>,
-        /// Also require `payload[key]` to exist.
-        #[arg(long = "payload-key")]
-        payload_key: Option<String>,
-        /// With `--payload-key`, require equality.
-        #[arg(long = "payload-value")]
-        payload_value: Option<String>,
-        /// Also filter by the `spec` field.
-        #[arg(long)]
-        spec: Option<String>,
-        /// Suppress stdout on success.
-        #[arg(long)]
-        quiet: bool,
     },
 }
 
@@ -152,20 +130,5 @@ pub fn dispatch(cmd: EventCmd) {
             wave,
             format,
         } => event::event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
-        EventCmd::VerifyEmit {
-            event,
-            since,
-            payload_key,
-            payload_value,
-            spec,
-            quiet,
-        } => event::verify_emit::run(
-            event.as_deref(),
-            since.as_deref(),
-            payload_key.as_deref(),
-            payload_value.as_deref(),
-            spec.as_deref(),
-            quiet,
-        ),
     }
 }

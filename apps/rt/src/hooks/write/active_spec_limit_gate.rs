@@ -101,7 +101,7 @@ fn skill_name(input: &HookInput) -> &str {
 /// else [`DEFAULT_MAX_ACTIVE_SPECS`]. Fail-open — an unreadable / malformed
 /// `mustard.json` reads as "no override" → the default.
 fn cap_for(cwd: &Path) -> usize {
-    mustard_core::ProjectConfig::load(cwd)
+    crate::shared::context::project_config_cached(cwd)
         .max_active_specs()
         .unwrap_or(DEFAULT_MAX_ACTIVE_SPECS)
 }

@@ -43,7 +43,7 @@
 //!   `.claude` or the path contains the sub-sequence `.claude/.claude/`. This
 //!   keeps the I1 guard close to the boundary where the path is minted.
 //! - **Memoised per process.** Repeated calls with the same
-//!   `(start_dir_canonical, override_value)` pair return the cached
+//!   `(start_dir, override_value)` pair return the cached
 //!   [`PathBuf`] without re-walking — the canonical resolver lives on the hot
 //!   path of every harness event.
 //!
@@ -95,7 +95,7 @@ pub enum WorkspaceError {
 /// The env var name that overrides the ancestor walker.
 const OVERRIDE_ENV: &str = "MUSTARD_WORKSPACE_ROOT";
 
-/// Memoisation key — the canonicalised `start_dir` plus the literal value of
+/// Memoisation key — the raw `start_dir` (NOT canonicalised) plus the literal value of
 /// `MUSTARD_WORKSPACE_ROOT` (or `None` when unset).
 type CacheKey = (PathBuf, Option<String>);
 
@@ -134,12 +134,11 @@ pub fn resolve_with_override(
     start_dir: &Path,
     override_value: Option<&str>,
 ) -> Result<PathBuf, WorkspaceError> {
-    // Build the cache key. `canonicalize()` may fail (start_dir absent or
-    // permission-denied); fall back to the path as-given so we still cache
-    // by something stable.
-    let canonical_key =
-        std::fs::canonicalize(start_dir).unwrap_or_else(|_| start_dir.to_path_buf());
-    let key: CacheKey = (canonical_key, override_value.map(str::to_string));
+    // Build the cache key from the raw `start_dir` - deliberately NOT
+    // canonicalised. Canonicalising here cost a `stat` syscall on EVERY call,
+    // cache hits included; the slow-path walker resolves correctly from any
+    // spelling, so the key only has to be stable per caller (the raw path is).
+    let key: CacheKey = (start_dir.to_path_buf(), override_value.map(str::to_string));
 
     // Fast path — already cached. Re-validate the I1 guard against the
     // cached value so a stale `.claude/.claude/` answer can never sneak

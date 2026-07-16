@@ -20,6 +20,7 @@ import {
   DataCard,
   CollapsibleGroup,
   EmptyState,
+  SectionHeader,
 } from '@/components/page';
 
 function omitKey(obj: Record<string, string>, key: string): Record<string, string> {
@@ -88,6 +89,40 @@ function EnvField({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Dashboard-wide UI language toggle — moved here from the removed
+ * `/preferences` page. Global: independent of the selected project, so it
+ * renders even when no project is picked. Backed by the zustand `language`
+ * slice, which drives both i18n surfaces (`src/i18n.ts` + `src/lib/i18n.ts`).
+ */
+function DashboardLanguageCard() {
+  const { t } = useTranslation();
+  const language = useStore((s) => s.language);
+  const setUiLanguage = useStore((s) => s.setLanguage);
+
+  return (
+    <DataCard padded>
+      <SectionHeader
+        title={t('preferences.language')}
+        description={t('preferences.description')}
+      />
+      <div className="flex items-center gap-2 pt-3">
+        {(['pt-BR', 'en-US'] as const).map((lng) => (
+          <button
+            key={lng}
+            onClick={() => setUiLanguage(lng)}
+            className={language === lng
+              ? "bg-primary text-primary-foreground px-3 py-1.5 rounded text-sm"
+              : "text-muted-foreground hover:text-foreground px-3 py-1.5 rounded text-sm border border-border"}
+          >
+            {lng === 'pt-BR' ? t('preferences.languagePt') : t('preferences.languageEn')}
+          </button>
+        ))}
+      </div>
+    </DataCard>
   );
 }
 
@@ -249,6 +284,8 @@ export function Settings() {
           </>
         }
       />
+
+      <DashboardLanguageCard />
 
       {!selectedProject ? (
         <EmptyState

@@ -1,7 +1,7 @@
 /**
  * ChangeRequestActivityBlock tests.
  *
- * Mirrors AmendActivityBlock.test.tsx (same mock style). Assertions:
+ * Uses the dashboard's standard activity-block mock style. Assertions:
  * - pipeline.change.request events for specId="X" render (with their summary)
  * - chronological order (oldest first)
  * - returns null (renders nothing) when the spec has no change requests

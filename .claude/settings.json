@@ -58,19 +58,55 @@
     ],
     "deny": [
       "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(rm -Rf:*)",
+      "Bash(rm -fR:*)",
+      "Bash(rm --no-preserve-root:*)",
       "Bash(rm -r /:*)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
       "Bash(git reset --hard:*)",
-      "Bash(git clean:*)",
+      "Bash(git reset * --hard:*)",
+      "Bash(git checkout -f:*)",
+      "Bash(git checkout --force:*)",
+      "Bash(git checkout * -f:*)",
+      "Bash(git checkout * --force:*)",
       "Bash(git checkout -- .:*)",
       "Bash(git restore .:*)",
+      "Bash(git clean:*)",
+      "Bash(git branch -D main:*)",
+      "Bash(git branch -D master:*)",
+      "Bash(git branch -d main:*)",
+      "Bash(git branch -d master:*)",
       "Bash(chmod 777:*)",
-      "Bash(mkfs:*)",
-      "Bash(dd if=:*)",
+      "Bash(mkfs*)",
+      "Bash(dd if=*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",
-      "Bash(format C:*)",
+      "Read(**/*.pem)",
+      "Edit(**/*.pem)",
+      "Write(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/*.key)",
+      "Write(**/*.key)",
+      "Read(**/*.pfx)",
+      "Edit(**/*.pfx)",
+      "Write(**/*.pfx)",
+      "Read(**/*.p12)",
+      "Edit(**/*.p12)",
+      "Write(**/*.p12)",
+      "Read(**/*id_rsa*)",
+      "Edit(**/*id_rsa*)",
+      "Write(**/*id_rsa*)",
+      "Read(**/*id_ed25519*)",
+      "Edit(**/*id_ed25519*)",
+      "Write(**/*id_ed25519*)",
+      "Read(**/*credentials*)",
+      "Edit(**/*credentials*)",
+      "Write(**/*credentials*)",
+      "Read(**/.git/config)",
+      "Edit(**/.git/config)",
+      "Write(**/.git/config)",
       "Read(**/node_modules/**)",
       "Grep(**/node_modules/**)",
       "Read(**/bin/**)",
@@ -135,18 +171,6 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "matcher": "auto|manual",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreCompact",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "matcher": "prompt_input_exit|clear|other",
@@ -202,17 +226,6 @@
           {
             "type": "command",
             "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Stop",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Notification",
             "timeout": 5
           }
         ]

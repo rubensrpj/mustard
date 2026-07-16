@@ -434,8 +434,8 @@ export function Specs() {
     }
     const slug = active.specName;
     // `["spec-card", path, slug]` — the leaf must carry the repo path, which
-    // is the key shape `useSpecCard` registers (the old `undefined` never
-    // matched).
+    // is the key shape the spec-detail card query registers (the old
+    // `undefined` never matched).
     queryClient.invalidateQueries({ queryKey: ["spec-card", path, slug] });
     queryClient.invalidateQueries({ queryKey: ["spec-cards", path] });
     queryClient.invalidateQueries({ queryKey: ["spec-waves", slug] });

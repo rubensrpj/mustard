@@ -12,8 +12,8 @@
 //! is removed, and the first [`TOP_TOKENS`] distinct tokens become the alias
 //! list. Keys are the accent-folded terms, emitted sorted (byte-stable).
 //!
-//! Runs automatically at the end of `run scan` (after model + dictionary) and
-//! stands alone as `mustard-rt run scan-equivalences`. FAIL-OPEN everywhere:
+//! Runs automatically at the end of `run scan` (after model + dictionary).
+//! FAIL-OPEN everywhere:
 //! a missing dictionary or absent translator yields `{ok:false, reason}` on
 //! exit 0 and never blocks the scan.
 
@@ -157,14 +157,6 @@ pub(crate) fn generate_at(dict_path: &Path) -> Value {
         "aliased": map.len(),
         "out": out_path.to_string_lossy(),
     })
-}
-
-/// Run the subcommand: (re)generate the equivalences artifact for the
-/// dictionary under `<root>/.claude/` and print the JSON summary.
-pub fn run(root: &Path) {
-    let dict_path = root.join(".claude").join("grain.dictionary.json");
-    let result = generate_at(&dict_path);
-    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
 // ---------------------------------------------------------------------------

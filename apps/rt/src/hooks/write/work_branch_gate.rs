@@ -1,42 +1,33 @@
-//! `work_branch_gate` — enforce per-work-unit ISOLATION on the first file
-//! mutation.
+//! `work_branch_gate` — auto-branch per work unit on the first file mutation.
 //!
-//! ## What it does
+//! ## Contract (slim)
 //!
-//! A `PreToolUse(Write|Edit|MultiEdit)` [`Check`] that fires on the FIRST file
-//! mutation of a work request. Its job is to stop concurrent sessions from
-//! colliding on ONE shared working tree.
+//! A `PreToolUse(Write|Edit|MultiEdit)` [`Check`] with exactly two behaviors:
 //!
-//! The router pre-computes a branch name (`{base}_{slug}`) for the work unit and
-//! stores it as the session's `pending-work-branch` marker via
-//! `emit-pipeline --kind pipeline.kind` (see
-//! [`crate::commands::event::emit_pipeline`]); this hook is the consumer.
+//! 1. **Pending work-unit marker** → cut `{base}_{slug}` off a freshly
+//!    fetched base and check it out (fail-open: any git failure warns, never
+//!    blocks — unless staying would leave the edit on a protected branch).
+//!    The router pre-computed the branch name and stored it as the session's
+//!    `pending-work-branch` marker via `emit-pipeline --kind pipeline.kind`
+//!    (see [`crate::commands::event::emit_pipeline`]); this hook is the
+//!    consumer. Read-only requests never Write/Edit, so the marker is never
+//!    consumed and no branch is ever created.
+//! 2. **No marker** → deny only a direct edit on a BARE integration branch
+//!    (an exact member of `git.flow`'s bases); any work branch edits freely.
 //!
-//! Read-only requests never Write/Edit, so the marker is never consumed and the
-//! gate never fires — isolation is bound to an actual mutation, not to opening a
-//! pipeline. A mutation whose target lives OUTSIDE the project root (`~/.claude`
-//! memory files, temp dirs, …) is not repo work: the gate self-allows without
-//! consuming the marker.
+//! ## Two roots: state vs. the local tree (the nested-worktree fix)
 //!
-//! ## Worktree isolation (the collision fix)
-//!
-//! The gate used to `git checkout -b {base}_{slug}` on the first edit. On a
-//! SHARED working tree that mutates state two sessions — or the desktop app's
-//! own per-session worktree — contend over. It no longer checks out anything.
-//!
-//! - When the session already runs in a LINKED git worktree (the desktop app
-//!   creates one per session, or the user ran `EnterWorktree`), the tree is
-//!   already isolated with its own branch: the gate refreshes the integration
-//!   bases (fail-open), consumes the marker, and `Allow`s. See
-//!   [`is_isolated_worktree`].
-//! - When the session runs on the SHARED main tree, the gate no longer switches
-//!   branches for it. A direct edit of a bare integration branch is still hard-
-//!   blocked (never develop on `dev`/`main`). Otherwise it steers the session to
-//!   an isolated worktree per `MUSTARD_WORKTREE_ISOLATION_MODE`
-//!   (`off` | `warn` | `strict`, default `warn`; see [`isolation_mode`] and
-//!   [`shared_tree_verdict`]): `strict` `Deny`s (run `EnterWorktree` first),
-//!   `warn` `Allow`s with an advisory, `off` is silent. The base refresh runs
-//!   regardless (fail-open).
+//! Inside a linked worktree (`.claude/worktrees/{slug}`) the workspace
+//! resolver redirects every `.claude/` path to the MAIN checkout — the
+//! worktree carries code only (see `tests/worktree_redirect.rs`). That is
+//! correct for STATE (the pending-branch marker, `mustard.json` git flow),
+//! but this gate used to read the git BRANCH from that redirected root too,
+//! so inside a linked worktree it judged the MAIN checkout's branch (`dev`)
+//! and false-blocked every edit. Branch detection and the branch cut now run
+//! against the LOCAL tree of the edit ([`local_tree_of`]: the edited file's
+//! own directory, else the process cwd), while state keeps the main-checkout
+//! resolution. A per-session worktree is its own tree, so cutting the work
+//! branch there collides with nobody.
 //!
 //! ## Agnostic base model
 //!
@@ -45,25 +36,16 @@
 //! bases** are `git.flow`'s non-`*` keys ∪ values (`{"*":"dev","dev":"main"}` →
 //! `{dev, main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`);
 //! nothing hardcodes `dev`/`main`. A work branch's base is recovered from its
-//! NAME: the LONGEST integration base `B` with `target == "{B}_…"`.
-//!
-//! ## Marker lifecycle
-//!
-//! The marker is single-use: it is cleared once the first in-repo mutation is
-//! handled (isolated `Allow`, shared `warn`/`off`, or the already-on-target
-//! shortcut). The ONE exception is shared-tree `strict`: the marker is kept so
-//! the block persists on every retry until the session actually isolates —
-//! consuming it would let a plain retry slip past a hard gate.
+//! NAME: the LONGEST integration base `B` with `target == "{B}_…"`
+//! ([`base_for`], falling back to `config.git.primary_base()`).
 //!
 //! ## Contract (apps/rt/CLAUDE.md)
 //!
 //! Never panics — no `unwrap`/`expect` outside tests; every git call is
 //! `Command::…output()` matched into a `Result`, and an `Err` from the `Check`
 //! itself folds to `Allow` in the dispatcher. It raises `Deny` ONLY to keep an
-//! edit off a bare integration branch or (in `strict`) off the shared tree;
-//! otherwise it `Allow`s or `Warn`s.
+//! edit off a bare integration branch; otherwise it `Allow`s or `Warn`s.
 
-use mustard_core::platform::config::Mode;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ProjectConfig;
@@ -86,6 +68,32 @@ fn session_id_from(input: &HookInput) -> String {
     context::session_id()
 }
 
+/// The working tree that HOSTS the edit — branch detection runs here.
+///
+/// Priority: the edited file's own directory (nearest EXISTING ancestor, so a
+/// Write that creates parent directories still resolves) → the process cwd →
+/// the state root. An absolute edit into another tree (session cwd in a
+/// worktree, target in the main checkout) is judged by the TARGET's tree.
+fn local_tree_of(input: &HookInput, state_root: &str) -> String {
+    if let Some(fp) = super::boundary_gate::file_path_of(input) {
+        let p = Path::new(&fp);
+        if p.is_absolute() {
+            let mut dir = p.parent();
+            while let Some(d) = dir {
+                if d.is_dir() {
+                    return d.to_string_lossy().into_owned();
+                }
+                dir = d.parent();
+            }
+        }
+        // Relative path → anchored at the process cwd; fall through.
+    }
+    if let Some(cwd) = input.cwd.as_deref().filter(|c| !c.is_empty()) {
+        return cwd.to_string();
+    }
+    state_root.to_string()
+}
+
 /// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None` on
 /// any failure (not a repo, detached HEAD reported as `"HEAD"`, git absent).
 fn current_branch(vcs: &str, root: &str) -> Option<String> {
@@ -103,6 +111,21 @@ fn current_branch(vcs: &str, root: &str) -> Option<String> {
     } else {
         Some(name)
     }
+}
+
+/// `true` when a local branch `refs/heads/<branch>` exists.
+fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
+    Command::new(vcs)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
@@ -126,107 +149,19 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Run `git rev-parse <flag>` in `root`, returning trimmed stdout on success.
-/// Modelled on [`current_branch`]; `None` on any failure (not a repo, git
-/// absent, empty output).
-fn capture_git(vcs: &str, root: &str, flag: &str) -> Option<String> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", flag])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+/// Check out `target`, creating it off `base` when it does not yet exist.
+/// Carries the working-tree changes along (a plain `checkout`, no stash). If
+/// `base` is absent locally, branch off the current HEAD instead. Returns the
+/// git error string on failure.
+fn checkout_work_branch(vcs: &str, root: &str, target: &str, base: &str) -> Result<(), String> {
+    if local_branch_exists(vcs, root, target) {
+        return run_git(vcs, root, &["checkout", target]);
     }
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
+    if local_branch_exists(vcs, root, base) {
+        return run_git(vcs, root, &["checkout", "-b", target, base]);
     }
-}
-
-/// Absolutise a `git rev-parse --git-*dir` reading against `root` and
-/// canonicalise it when possible, so a relative `.git` (what the main tree
-/// reports) and an absolute path to the same directory compare equal. On a
-/// canonicalisation error the absolutised (uncanonicalised) path is used as-is.
-fn resolve_git_path(root: &str, reading: &str) -> std::path::PathBuf {
-    let p = Path::new(reading.trim());
-    let abs = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        Path::new(root).join(p)
-    };
-    std::fs::canonicalize(&abs).unwrap_or(abs)
-}
-
-/// Decide worktree isolation from the two git-dir readings. The main working
-/// tree reports the SAME location for `--git-dir` and `--git-common-dir`; a
-/// LINKED worktree (what `EnterWorktree` and the desktop app create, one per
-/// session) reports a per-worktree git dir (`<common>/worktrees/<name>`)
-/// distinct from the shared common dir. So the two readings DIFFER ⇔ isolated.
-///
-/// Pure and directly testable — the caller supplies the two raw readings and
-/// the `root` they resolve against (see [`resolve_git_path`]).
-fn readings_indicate_linked(root: &str, git_dir: &str, common_dir: &str) -> bool {
-    resolve_git_path(root, git_dir) != resolve_git_path(root, common_dir)
-}
-
-/// `true` when the working tree at `root` is a LINKED git worktree — its own
-/// isolated tree with its own branch, as created by `EnterWorktree` or the
-/// desktop app per session. Compares `git rev-parse --git-dir` against
-/// `--git-common-dir` (see [`readings_indicate_linked`]).
-///
-/// Any failure to read either value (not a repo, git absent, a git too old for
-/// `--git-common-dir`) yields `false`: we only skip the shared-tree guidance
-/// when we can PROVE the session already owns a worktree; when we cannot tell,
-/// we treat the tree as shared and keep the protections.
-fn is_isolated_worktree(vcs: &str, root: &str) -> bool {
-    match (
-        capture_git(vcs, root, "--git-dir"),
-        capture_git(vcs, root, "--git-common-dir"),
-    ) {
-        (Some(git_dir), Some(common)) => readings_indicate_linked(root, &git_dir, &common),
-        _ => false,
-    }
-}
-
-/// Resolve the worktree-isolation mode from `MUSTARD_WORKTREE_ISOLATION_MODE`
-/// (`off` | `warn` | `strict`). Default [`Mode::Warn`] — nudge toward
-/// `EnterWorktree` without blocking. Mirrors the sibling gates' env-mode shape
-/// (`rtk_gate_mode`, `boundary_mode`); parse goes through [`Mode::parse`], any
-/// unrecognised value collapses to `warn`.
-fn isolation_mode() -> Mode {
-    std::env::var("MUSTARD_WORKTREE_ISOLATION_MODE")
-        .ok()
-        .and_then(|raw| Mode::parse(&raw))
-        .unwrap_or(Mode::Warn)
-}
-
-/// Verdict for a marker that asked to branch, evaluated on the SHARED main tree
-/// under the resolved isolation `mode`. Pure — the env read ([`isolation_mode`])
-/// and the base refresh happen in `evaluate`; keeping the decision here lets the
-/// three modes be exercised without mutating process-global env. `target` is the
-/// pre-computed `{base}_{slug}` branch name the session should isolate under.
-fn shared_tree_verdict(mode: Mode, target: &str) -> Verdict {
-    match mode {
-        Mode::Off => Verdict::Allow,
-        Mode::Warn => Verdict::Warn {
-            message: format!(
-                "Isolamento por unidade de trabalho: rode EnterWorktree (nome `{target}`) \
-                 antes de editar — a árvore principal é compartilhada entre sessões; \
-                 seguindo na árvore atual."
-            ),
-        },
-        Mode::Strict => Verdict::Deny {
-            reason: format!(
-                "Isolamento por unidade de trabalho: rode EnterWorktree (nome `{target}`) \
-                 antes de editar; a árvore principal é compartilhada entre sessões. Para \
-                 editar mesmo assim na árvore principal, defina \
-                 MUSTARD_WORKTREE_ISOLATION_MODE=warn."
-            ),
-        },
-    }
+    // Base branch not present locally — branch off the current HEAD.
+    run_git(vcs, root, &["checkout", "-b", target])
 }
 
 /// Refresh the project's integration bases (`git.flow`) to their `origin`
@@ -243,8 +178,8 @@ fn shared_tree_verdict(mode: Mode, target: &str) -> Verdict {
 ///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
 ///      make non-ff, so it safely fast-forwards the local ref without a
 ///      checkout.
-///    Every per-base error (no matching origin ref, a diverged base, …) is
-///    ignored — best-effort, keep going.
+///    Every per-base error (no matching origin ref, a diverged base, a base
+///    checked out in another worktree, …) is ignored — best-effort, keep going.
 fn refresh_integration_bases(vcs: &str, root: &str, config: &ProjectConfig, current: Option<&str>) {
     // Offline / no remote → nothing to refresh; the branch is cut from the
     // local base as before. Do NOT propagate the error.
@@ -261,6 +196,25 @@ fn refresh_integration_bases(vcs: &str, root: &str, config: &ProjectConfig, curr
     }
 }
 
+/// Recover the integration base a work branch was cut from, from its NAME:
+/// among the project's integration bases (`git.flow`), the LONGEST base `B`
+/// such that `target` starts with `"{B}_"`. When none match, the project's
+/// primary base (`config.git.primary_base()`).
+///
+/// Longest-match disambiguates nested bases (a `dev_release` base wins over
+/// `dev` for `dev_release_x`). Agnostic — the base set and the primary both
+/// come from `git.flow`; no branch name is hardcoded.
+fn base_for(target: &str, config: &ProjectConfig) -> String {
+    let bases = config.git.integration_bases();
+    let mut best: Option<&str> = None;
+    for b in &bases {
+        if target.starts_with(&format!("{b}_")) && best.is_none_or(|cur| b.len() > cur.len()) {
+            best = Some(b.as_str());
+        }
+    }
+    best.map_or_else(|| config.git.primary_base(), str::to_string)
+}
+
 /// `true` when `branch` is a bare integration branch that must never be edited
 /// directly — an exact member of `config.git.integration_bases()` (`dev`,
 /// `main`/`master`, `develop`, … whatever `git.flow` declares). The `{base}_*`
@@ -275,6 +229,7 @@ impl Check for WorkBranchGate {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
+        // STATE root: the main checkout (worktree redirect) — markers, config.
         let project = ctx.project_dir_or_cwd(input);
         let sid = session_id_from(input);
 
@@ -282,45 +237,34 @@ impl Check for WorkBranchGate {
         // target lives outside the project root (`~/.claude` memory files,
         // temp dirs, …) is not repo work: never block it, never cut a branch
         // for it, and keep the pending marker for the first IN-repo edit.
-        if let Some(fp) = super::path_gate::file_path_of(input) {
-            if super::path_gate::relative_to_cwd(&project, &fp).is_none() {
+        if let Some(fp) = super::boundary_gate::file_path_of(input) {
+            if super::boundary_gate::relative_to_cwd(&project, &fp).is_none() {
                 return Ok(Verdict::Allow);
             }
         }
 
         // VCS binary policy: default `git`; an explicit `""` opt-out (or a
         // non-git tree) means we cannot branch and there is nothing to guard.
-        let config = ProjectConfig::load(Path::new(&project));
+        let config = crate::shared::context::project_config_cached(Path::new(&project));
         let Some(vcs) = config.vcs() else {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         };
 
-        let current = current_branch(&vcs, &project);
-        let pending = context::pending_branch_for(&project, &sid);
+        // LOCAL tree of the edit — branch detection and the cut run HERE, not
+        // on the (possibly redirected) state root. See module doc.
+        let local = local_tree_of(input, &project);
 
-        // ISOLATED tree: a linked worktree (the desktop app's per-session tree,
-        // or a prior `EnterWorktree`) already owns its branch, so nothing another
-        // session touches collides here. Never cut a branch; just refresh the
-        // bases (fail-open), consume any marker, and let the edit proceed.
-        if is_isolated_worktree(&vcs, &project) {
-            refresh_integration_bases(&vcs, &project, &config, current.as_deref());
-            if pending.is_some() {
-                context::clear_pending_branch(&project, &sid);
-            }
-            return Ok(Verdict::Allow);
-        }
-
-        // SHARED main tree from here on — the tree concurrent sessions contend
-        // over.
+        let current = current_branch(&vcs, &local);
         let on_protected = current
             .as_deref()
             .map(|b| is_protected(b, &config))
             .unwrap_or(false);
 
-        // No marker: keep the hard block on editing a bare integration branch
-        // directly; a work branch (or non-git tree) is free to edit.
-        let Some(target) = pending else {
+        // 1. No pending work unit signalled for this session.
+        let Some(target) = context::pending_branch_for(&project, &sid) else {
+            // Hard block: never develop directly on a bare integration
+            // branch. On a work branch (or non-git tree) there is nothing to do.
             if on_protected {
                 return Ok(Verdict::Deny {
                     reason: format!(
@@ -334,26 +278,50 @@ impl Check for WorkBranchGate {
             return Ok(Verdict::Allow);
         };
 
-        // Already on the target branch (checked out by hand) → clear and allow.
+        // 2. Already on the target branch → clear and allow.
         if current.as_deref() == Some(target.as_str()) {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         }
 
-        // A marker asked for a NEW branch on the SHARED tree. We no longer
-        // `git checkout -b` here — that mutates a tree other sessions share.
-        // Refresh the bases (fail-open, unchanged) and steer the session to an
-        // isolated worktree per the configured mode (see `shared_tree_verdict`).
-        refresh_integration_bases(&vcs, &project, &config, current.as_deref());
-        let mode = isolation_mode();
-        let verdict = shared_tree_verdict(mode, &target);
-        // Single-use marker: consume it in `warn`/`off` (one-shot nudge). In
-        // `strict` keep it so the block re-fires on every retry until the
-        // session isolates — a consumed marker would let a plain retry slip past.
-        if mode != Mode::Strict {
-            context::clear_pending_branch(&project, &sid);
+        // 3. Refresh the integration bases from origin FIRST so the branch is
+        //    cut from the latest dev/main. Fail-open: offline / no remote /
+        //    non-ff never blocks the edit (see refresh_integration_bases).
+        refresh_integration_bases(&vcs, &local, &config, current.as_deref());
+
+        // 4. Recover the base from the target's `{base}_` prefix and check out
+        //    IN THE LOCAL TREE (a per-session worktree is isolated; the shared
+        //    main checkout keeps the historical single-session behavior).
+        let base = base_for(&target, &config);
+        match checkout_work_branch(&vcs, &local, &target, &base) {
+            Ok(()) => {
+                context::clear_pending_branch(&project, &sid);
+                Ok(Verdict::Allow)
+            }
+            Err(e) => {
+                // Clear anyway so we do not re-fire on every edit.
+                context::clear_pending_branch(&project, &sid);
+                if on_protected {
+                    // We could not leave the protected branch — refuse rather
+                    // than let the edit land directly on it.
+                    Ok(Verdict::Deny {
+                        reason: format!(
+                            "Não consegui sair da branch protegida '{}' para '{target}': {e}. \
+                             O Mustard não desenvolve direto na branch protegida — resolva o \
+                             git e tente de novo.",
+                            current.as_deref().unwrap_or("?")
+                        ),
+                    })
+                } else {
+                    // On a work branch already: warn and let the edit proceed.
+                    Ok(Verdict::Warn {
+                        message: format!(
+                            "não consegui criar a branch {target}: {e} — seguindo na branch atual"
+                        ),
+                    })
+                }
+            }
         }
-        Ok(verdict)
     }
 }
 
@@ -418,12 +386,10 @@ mod tests {
         git(root, &["commit", "-m", "init"]);
     }
 
-    /// Marker `dev_my-thing` on the SHARED main tree (`dev`), default mode
-    /// (`warn`): the gate no longer checks a branch out on the shared tree — it
-    /// `Warn`s (advisory, non-blocking), leaves HEAD on `dev`, and consumes the
-    /// one-shot marker. Steering to `EnterWorktree`, not switching branches.
+    /// Marker `dev_my-thing` on a repo whose base is `dev` → the gate recovers
+    /// `dev` from the `dev_` prefix and checks the work branch out off `dev`.
     #[test]
-    fn shared_tree_marker_warns_without_checkout() {
+    fn creates_work_branch_off_prefix_base_dev() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let root_s = root.to_str().unwrap();
@@ -435,112 +401,149 @@ mod tests {
         let sid = "sess-branch-test";
         context::set_pending_branch(root_s, sid, "dev_my-thing");
 
-        // First Write of the work unit fires the gate. No env override → warn.
+        // First Write of the work unit fires the gate.
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(
-            matches!(verdict, Verdict::Warn { .. }) && !verdict.is_blocking(),
-            "shared-tree marker warns, never blocks in the default mode: {verdict:?}",
-        );
+        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
 
-        // HEAD stayed on `dev` — the gate did NOT cut/switch a branch...
+        // HEAD is now on the target branch, created off `dev` (from the prefix)...
         assert_eq!(
             current_branch("git", root_s).as_deref(),
-            Some("dev"),
-            "no branch switch on the shared tree",
+            Some("dev_my-thing"),
+            "checked out the pre-computed branch off dev",
         );
-        // ...and the one-shot marker was consumed so `warn` does not re-fire.
+        // ...and the marker was cleared so subsequent edits do not re-fire.
         assert!(
             context::pending_branch_for(root_s, sid).is_none(),
-            "marker cleared after the warn nudge",
+            "marker cleared after checkout",
         );
     }
 
-    /// Detection seam (pure): the main working tree reports the SAME path for
-    /// `--git-dir` and `--git-common-dir` (not a linked worktree); a linked
-    /// worktree reports a distinct per-worktree git dir. Exercised directly so
-    /// the git-dir comparison is covered without spinning up a worktree.
+    /// Marker whose target is ALREADY checked out (by hand) → clear and allow,
+    /// no git mutation.
     #[test]
-    fn readings_indicate_linked_only_when_dirs_differ() {
+    fn already_on_target_clears_marker_and_allows() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        assert!(
-            !readings_indicate_linked(root, ".git", ".git"),
-            "identical git-dir/common-dir → shared main tree",
-        );
-        assert!(
-            readings_indicate_linked(root, ".git/worktrees/wt", ".git"),
-            "distinct per-worktree git dir → isolated linked worktree",
-        );
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+        git(root, &["checkout", "-b", "dev_manual"]);
+
+        let sid = "sess-already";
+        context::set_pending_branch(root_s, sid, "dev_manual");
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
+        assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_manual"));
+        assert!(context::pending_branch_for(root_s, sid).is_none());
     }
 
-    /// The shared-tree verdict (pure) for each isolation mode: `off` allows
-    /// silently, `warn` allows with an `EnterWorktree` advisory, `strict` denies
-    /// with the same instruction. Exercised without mutating process env.
+    /// REGRESSION (nested worktree — the bug that false-blocked every edit):
+    /// the harness state-root redirect hands the gate the MAIN checkout as
+    /// `project_dir` even though the session edits inside a linked worktree
+    /// (modelled on `tests/worktree_redirect.rs`). Branch detection must run
+    /// against the WORKTREE (a work branch → free to edit), never against the
+    /// main checkout's integration branch — while the same state root still
+    /// hard-blocks a direct edit in the main checkout itself.
     #[test]
-    fn shared_tree_verdict_per_mode() {
-        assert!(matches!(shared_tree_verdict(Mode::Off, "dev_x"), Verdict::Allow));
+    fn nested_worktree_edit_judged_by_local_tree_not_state_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        seed_flow(&main, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(&main, "dev");
+        // The harness cuts worktrees at <main>/.claude/worktrees/<slug>, on a
+        // WORK branch.
+        git(&main, &["worktree", "add", ".claude/worktrees/dev_x", "-b", "dev_x"]);
+        let wt = main.join(".claude").join("worktrees").join("dev_x");
+        let main_s = main.to_str().unwrap();
 
-        match shared_tree_verdict(Mode::Warn, "dev_x") {
-            Verdict::Warn { message } => {
-                assert!(message.contains("EnterWorktree"), "warn steers to EnterWorktree: {message}");
-                assert!(message.contains("dev_x"), "warn names the target branch: {message}");
-            }
-            other => panic!("warn mode must Warn, got {other:?}"),
-        }
-
-        match shared_tree_verdict(Mode::Strict, "dev_x") {
-            Verdict::Deny { reason } => {
-                assert!(reason.contains("EnterWorktree"), "strict instructs EnterWorktree: {reason}");
-                assert!(reason.contains("dev_x"), "strict names the target branch: {reason}");
-            }
-            other => panic!("strict mode must Deny, got {other:?}"),
-        }
-    }
-
-    /// An ISOLATED linked worktree (the desktop-app / `EnterWorktree` shape) is
-    /// already its own tree with its own branch: the gate never checks a branch
-    /// out — it consumes the marker and Allows, leaving HEAD untouched.
-    #[test]
-    fn isolated_worktree_allows_without_checkout() {
-        let main = tempfile::tempdir().unwrap();
-        let main_root = main.path();
-        seed_flow(main_root, r#"{"*":"dev","dev":"main"}"#);
-        init_repo_on(main_root, "dev");
-
-        // A linked worktree on its OWN branch (`git worktree add` requires the
-        // path to not pre-exist, so hang it under a second tempdir).
-        let parent = tempfile::tempdir().unwrap();
-        let wt_path = parent.path().join("linked");
-        let wt_s = wt_path.to_str().unwrap();
-        git(main_root, &["worktree", "add", wt_s, "-b", "dev_iso"]);
-
-        // A marker whose target DIFFERS from the worktree branch: proves the
-        // isolated path does not switch to it.
-        let sid = "sess-iso";
-        context::set_pending_branch(wt_s, sid, "dev_other");
-
-        let (input, ctx) = pre_edit_input(wt_s, sid);
+        // Edit a file INSIDE the worktree; ctx.project_dir is the MAIN
+        // checkout (what the workspace redirect resolves for state).
+        let file_in_wt = wt.join("f.txt");
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": file_in_wt.to_str().unwrap(), "content": "x" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(wt.to_str().unwrap().to_string()),
+            session_id: Some("sess-nested".to_string()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: main_s.to_string(),
+            trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
+        };
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
             matches!(verdict, Verdict::Allow),
-            "an isolated worktree edits freely: {verdict:?}",
+            "a worktree on a work branch edits freely even when state resolves \
+             to a main checkout sitting on an integration branch: {verdict:?}",
         );
+
+        // The SAME state root judged at the main checkout itself still blocks.
+        let (input2, ctx2) = pre_edit_input(main_s, "sess-nested-main");
+        let verdict2 = WorkBranchGate.evaluate(&input2, &ctx2).expect("no error");
+        assert!(
+            matches!(verdict2, Verdict::Deny { .. }),
+            "a bare-integration-branch edit in the main checkout stays blocked: {verdict2:?}",
+        );
+    }
+
+    /// A pending marker consumed INSIDE a linked worktree cuts the target
+    /// branch in the WORKTREE — the main checkout's HEAD is untouched.
+    #[test]
+    fn nested_worktree_marker_cuts_branch_locally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        seed_flow(&main, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(&main, "dev");
+        git(&main, &["worktree", "add", ".claude/worktrees/dev_x", "-b", "dev_x"]);
+        let wt = main.join(".claude").join("worktrees").join("dev_x");
+        let wt_s = wt.to_str().unwrap();
+        let main_s = main.to_str().unwrap();
+
+        // Marker lives in the STATE root (the main checkout).
+        let sid = "sess-nested-marker";
+        context::set_pending_branch(main_s, sid, "dev_other");
+
+        let file_in_wt = wt.join("f.txt");
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": file_in_wt.to_str().unwrap(), "content": "x" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(wt_s.to_string()),
+            session_id: Some(sid.to_string()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: main_s.to_string(),
+            trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
+        };
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
         assert_eq!(
             current_branch("git", wt_s).as_deref(),
-            Some("dev_iso"),
-            "no branch switch — HEAD stays on the worktree's own branch",
+            Some("dev_other"),
+            "the work branch is cut in the LOCAL worktree",
+        );
+        assert_eq!(
+            current_branch("git", main_s).as_deref(),
+            Some("dev"),
+            "the main checkout's HEAD is untouched",
         );
         assert!(
-            context::pending_branch_for(wt_s, sid).is_none(),
-            "the marker is consumed in the isolated path",
+            context::pending_branch_for(main_s, sid).is_none(),
+            "marker consumed from the state root",
         );
     }
 
     /// FAIL-OPEN: with NO `origin` remote, the base refresh's `git fetch origin`
-    /// fails — that must NOT turn the shared-tree nudge into a block or a panic.
-    /// The gate still `Warn`s (default mode) and lets the edit proceed on the
-    /// current branch.
+    /// fails — that must NOT break branch creation. The gate still checks the
+    /// work branch out off the local base and Allows the edit.
     #[test]
     fn base_refresh_is_fail_open_without_origin_remote() {
         let dir = tempfile::tempdir().unwrap();
@@ -565,27 +568,23 @@ mod tests {
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
-            !verdict.is_blocking(),
+            matches!(verdict, Verdict::Allow),
             "a failing `git fetch origin` must not block the edit: {verdict:?}",
-        );
-        assert!(
-            matches!(verdict, Verdict::Warn { .. }),
-            "shared-tree default mode warns even when offline: {verdict:?}",
         );
         assert_eq!(
             current_branch("git", root_s).as_deref(),
-            Some("dev"),
-            "no branch switch on the shared tree",
+            Some("dev_offline-thing"),
+            "the work branch is still cut from the local base when offline",
         );
         assert!(
             context::pending_branch_for(root_s, sid).is_none(),
-            "marker cleared after the warn nudge",
+            "marker cleared after checkout",
         );
     }
 
-    /// A local bare-remote fixture whose `dev` is BEHIND origin: even without a
-    /// checkout, the base refresh fast-forwards the shared `dev` IN PLACE before
-    /// the gate nudges. Proves the refresh still advances the checked-out base.
+    /// A local bare-remote fixture whose `dev` is BEHIND origin: the base refresh
+    /// fast-forwards the local `dev` before the work branch is cut, so the branch
+    /// carries the newest commit. Proves the refresh actually advances the base.
     #[test]
     fn base_refresh_fast_forwards_base_behind_origin() {
         let tmp = tempfile::tempdir().unwrap();
@@ -637,15 +636,14 @@ mod tests {
         context::set_pending_branch(proj_s, sid, "dev_new-thing");
         let (input, ctx) = pre_edit_input(proj_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(!verdict.is_blocking(), "edit proceeds (shared-tree warn): {verdict:?}");
+        assert!(matches!(verdict, Verdict::Allow), "edit proceeds: {verdict:?}");
         assert_eq!(
             current_branch("git", proj_s).as_deref(),
-            Some("dev"),
-            "no checkout — HEAD stays on the shared base",
+            Some("dev_new-thing"),
+            "the work branch is checked out",
         );
 
-        // Even without a checkout, the shared `dev` was fast-forwarded in place
-        // to the second commit by the base refresh.
+        // The work branch was cut from the fast-forwarded `dev` (second commit).
         let head = Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(&proj)
@@ -654,7 +652,31 @@ mod tests {
         let head_sha = String::from_utf8(head.stdout).unwrap().trim().to_string();
         assert_eq!(
             head_sha, ahead_sha,
-            "the shared dev is fast-forwarded to the latest origin commit in place",
+            "the work branch is based on the fast-forwarded dev (latest origin commit)",
+        );
+    }
+
+    /// Agnostic: a `develop`/`master` project cuts `develop_feature` off
+    /// `develop` — nothing in the gate assumes `dev`/`main`.
+    #[test]
+    fn creates_work_branch_off_prefix_base_develop() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+
+        seed_flow(root, r#"{"*":"develop","develop":"master"}"#);
+        init_repo_on(root, "develop");
+
+        let sid = "sess-develop";
+        context::set_pending_branch(root_s, sid, "develop_feature");
+
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("develop_feature"),
+            "checked out off develop (its prefix base)",
         );
     }
 

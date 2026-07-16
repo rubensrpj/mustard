@@ -17,10 +17,15 @@ struct ManifestDef {
     name: String, // "dir" | "stem"
     deps: Vec<String>,
     scripts: Option<String>,
-    element: Option<String>,
-    attr: Option<String>,
-    module_pattern: Option<String>,
-    dep_pattern: Option<String>,
+    /// Precompiled dependency-extraction regex (xml-attr / xml-text / gomod),
+    /// compiled ONCE at registry init instead of per manifest parsed — a repo
+    /// with many .csproj/go.mod files pays the compile a single time. `None` for
+    /// the structural formats (json/toml/yaml) or a pattern that failed to
+    /// compile: fail-open, exactly like the old per-call `Regex::new(..).ok()`.
+    dep_regex: Option<Regex>,
+    /// Precompiled module-path regex (the old `module_pattern`); `None` when the
+    /// def declares none.
+    module_regex: Option<Regex>,
 }
 
 struct Registry {
@@ -57,18 +62,17 @@ pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
     let def = find_def(filename)?;
     let deps = match def.format.as_str() {
         "json" => json_deps(content, &def.deps),
-        "xml-attr" => xml_attr(content, def.element.as_deref()?, def.attr.as_deref()?),
-        "xml-text" => xml_text(content, def.element.as_deref()?),
+        "xml-attr" | "xml-text" => def.dep_regex.as_ref().map(|re| captures_all(content, re)).unwrap_or_default(),
         "toml-sections" => toml_sections(content, &def.deps),
         "yaml-section" => yaml_sections(content, &def.deps),
-        "gomod" => def.dep_pattern.as_deref().map(|p| lines_pattern(content, p)).unwrap_or_default(),
+        "gomod" => def.dep_regex.as_ref().map(|re| captures_per_line(content, re)).unwrap_or_default(),
         _ => Vec::new(),
     };
     let scripts = match (&def.format, &def.scripts) {
         (f, Some(path)) if f == "json" => json_scripts(content, path),
         _ => Vec::new(),
     };
-    let module = def.module_pattern.as_deref().and_then(|p| first_capture(content, p));
+    let module = def.module_regex.as_ref().and_then(|re| first_line_capture(content, re));
     Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name) })
 }
 
@@ -117,20 +121,11 @@ fn json_scripts(txt: &str, path: &str) -> Vec<String> {
     out
 }
 
-fn xml_attr(txt: &str, element: &str, attr: &str) -> Vec<String> {
-    let pat = format!(r#"<{}\s+[^>]*{}="([^"]+)""#, regex::escape(element), regex::escape(attr));
-    match Regex::new(&pat) {
-        Ok(re) => re.captures_iter(txt).map(|c| c[1].to_string()).collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-fn xml_text(txt: &str, element: &str) -> Vec<String> {
-    let e = regex::escape(element);
-    match Regex::new(&format!(r#"<{e}>([^<]+)</{e}>"#)) {
-        Ok(re) => re.captures_iter(txt).map(|c| c[1].to_string()).collect(),
-        Err(_) => Vec::new(),
-    }
+/// Every first-group capture across the whole text — the xml element/attr and
+/// element/text dependency extractors. The regex is precompiled in the registry
+/// (see `ManifestDef::dep_regex`).
+fn captures_all(txt: &str, re: &Regex) -> Vec<String> {
+    re.captures_iter(txt).map(|c| c[1].to_string()).collect()
 }
 
 fn toml_sections(txt: &str, sections: &[String]) -> Vec<String> {
@@ -180,15 +175,15 @@ fn yaml_sections(txt: &str, sections: &[String]) -> Vec<String> {
     out
 }
 
-fn lines_pattern(txt: &str, pattern: &str) -> Vec<String> {
-    match Regex::new(pattern) {
-        Ok(re) => txt.lines().filter_map(|l| re.captures(l).map(|c| c[1].to_string())).collect(),
-        Err(_) => Vec::new(),
-    }
+/// First-group captures scanned per line (go.mod `require` lines). The regex is
+/// precompiled in the registry (see `ManifestDef::dep_regex`).
+fn captures_per_line(txt: &str, re: &Regex) -> Vec<String> {
+    txt.lines().filter_map(|l| re.captures(l).map(|c| c[1].to_string())).collect()
 }
 
-fn first_capture(txt: &str, pattern: &str) -> Option<String> {
-    let re = Regex::new(pattern).ok()?;
+/// The first line's first-group capture — a single module-path declaration. The
+/// regex is precompiled in the registry (see `ManifestDef::module_regex`).
+fn first_line_capture(txt: &str, re: &Regex) -> Option<String> {
     txt.lines().find_map(|l| re.captures(l).map(|c| c[1].to_string()))
 }
 
@@ -211,18 +206,36 @@ fn parse_registry(src: &str) -> Registry {
                 Some(toml::Value::Array(_)) => strs(m.get("ext")),
                 _ => Vec::new(),
             };
+            // Precompile the format-specific extraction regexes ONCE, here at
+            // registry init (the registry is itself a process-wide OnceLock), so
+            // `parse` never rebuilds them per manifest. A pattern that fails to
+            // compile stays `None` — the same fail-open as the old per-call `.ok()`.
+            let format = g("format").unwrap_or_default();
+            let dep_regex = match format.as_str() {
+                "xml-attr" => match (g("element"), g("attr")) {
+                    (Some(el), Some(at)) => {
+                        Regex::new(&format!(r#"<{}\s+[^>]*{}="([^"]+)""#, regex::escape(&el), regex::escape(&at))).ok()
+                    }
+                    _ => None,
+                },
+                "xml-text" => g("element").and_then(|el| {
+                    let e = regex::escape(&el);
+                    Regex::new(&format!(r#"<{e}>([^<]+)</{e}>"#)).ok()
+                }),
+                "gomod" => g("dep_pattern").and_then(|p| Regex::new(&p).ok()),
+                _ => None,
+            };
+            let module_regex = g("module_pattern").and_then(|p| Regex::new(&p).ok());
             manifests.push(ManifestDef {
                 kind: g("kind").unwrap_or_default(),
                 filename: g("filename"),
                 exts,
-                format: g("format").unwrap_or_default(),
+                format,
                 name: g("name").unwrap_or_else(|| "dir".to_string()),
                 deps: strs(m.get("deps")),
                 scripts: g("scripts"),
-                element: g("element"),
-                attr: g("attr"),
-                module_pattern: g("module_pattern"),
-                dep_pattern: g("dep_pattern"),
+                dep_regex,
+                module_regex,
             });
         }
     }

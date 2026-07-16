@@ -1,4 +1,4 @@
-//! `mustard-rt run verify-emit` — a port of `scripts/verify-emit.js`.
+//! `verify-emit` scan internals — a port of `scripts/verify-emit.js`.
 //!
 //! Confirms that a named event was emitted to the per-spec NDJSON `.events/`
 //! directory within a recent time window. Used by the orchestrator after an
@@ -6,10 +6,8 @@
 //! trusting the emitter's fail-open semantics blindly.
 //!
 //! Scans the replayed log backward — the most-recent match wins an early
-//! exit. Exit `0` on a match, `1` on no match within the window, `2` on bad
-//! arguments (the JS contract).
+//! exit.
 
-use crate::shared::context;
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::io::fs;
@@ -111,9 +109,8 @@ fn scan(events: &[HarnessEvent], args: &Args, now_ms: i64) -> VerifyOutcome {
 /// Read + scan the per-spec NDJSON `.events/` window for a matching event, as a
 /// reusable, non-exiting Rust entry point.
 ///
-/// Same read path and matching semantics as [`run`] (per-spec NDJSON, newest
-/// match within the window wins), but returns the [`VerifyOutcome`] instead of
-/// exiting the process — so callers like
+/// Per-spec NDJSON read path (newest match within the window wins); returns
+/// the [`VerifyOutcome`] instead of exiting the process — so callers like
 /// [`crate::commands::pipeline::close_orchestrate`] can auto-verify a freshly
 /// emitted `pipeline.complete` and fold `verified: true/false` into their own
 /// report without spawning a subprocess. Fail-open: a rejected project path
@@ -168,60 +165,6 @@ pub fn verify_event_landed(
     };
     let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
     matches!(verify_outcome(cwd, &args, now_ms), VerifyOutcome::Found { .. })
-}
-
-/// Dispatch `mustard-rt run verify-emit`.
-pub fn run(
-    event: Option<&str>,
-    since: Option<&str>,
-    payload_key: Option<&str>,
-    payload_value: Option<&str>,
-    spec: Option<&str>,
-    quiet: bool,
-) {
-    let Some(event) = event.filter(|e| !e.is_empty()) else {
-        eprintln!("error: --event required");
-        std::process::exit(2);
-    };
-    let args = Args {
-        event: event.to_string(),
-        since_ms: since.map_or(30_000, parse_duration),
-        payload_key: payload_key.map(str::to_string),
-        payload_value: payload_value.map(str::to_string),
-        spec: spec.map(str::to_string),
-        quiet,
-    };
-
-    let project = context::project_dir();
-    let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
-    match verify_outcome(std::path::Path::new(&project), &args, now_ms) {
-        VerifyOutcome::Found { age_secs } => {
-            if !args.quiet {
-                let spec_note = args
-                    .spec
-                    .as_ref()
-                    .map(|s| format!(" (spec={s})"))
-                    .unwrap_or_default();
-                println!("[verify-emit] OK: {} {age_secs}s ago{spec_note}", args.event);
-            }
-            std::process::exit(0);
-        }
-        VerifyOutcome::Miss => {
-            if !args.quiet {
-                let win_sec = args.since_ms / 1000;
-                let spec_note = args
-                    .spec
-                    .as_ref()
-                    .map(|s| format!(" (spec={s})"))
-                    .unwrap_or_default();
-                eprintln!(
-                    "[verify-emit] MISS: {} not found in last {win_sec}s{spec_note}",
-                    args.event
-                );
-            }
-            std::process::exit(1);
-        }
-    }
 }
 
 #[cfg(test)]

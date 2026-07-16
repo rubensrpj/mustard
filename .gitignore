@@ -133,3 +133,9 @@ packages/cli/templates/.claude/.metrics/
 
 # Benchmark corpus snapshots (grain model + dict regenerated via `scan.exe scan <corpus>` — heavy, regenerable)
 benchmarks/*/model/
+
+# Plugin binaries são artefato de build (release workflow popula plugin/bin/); nunca commitar
+plugin/bin/*.exe
+plugin/bin/mustard-rt
+plugin/bin/scan
+plugin/bin/*-macos

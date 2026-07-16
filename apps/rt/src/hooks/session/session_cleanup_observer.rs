@@ -32,13 +32,13 @@
 
 use mustard_core::domain::model::event::ActorKind;
 use mustard_core::domain::economy::{
-    self, sources::rtk as rtk_source, sources::transcript, sources::IngestContext,
+    self, sources::rtk as rtk_source, sources::IngestContext,
 };
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
@@ -272,88 +272,6 @@ fn spawn_kill(pid: u32) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-// ---------------------------------------------------------------------------
-// Transcript ingest — Wave 3 (economia-moat-unification)
-// ---------------------------------------------------------------------------
-
-/// Env var Claude Code uses to point hooks at the active session's transcript.
-/// When present we trust it verbatim; otherwise we fall back to the conventional
-/// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` layout.
-const CLAUDE_TRANSCRIPT_PATH_ENV: &str = "CLAUDE_TRANSCRIPT_PATH";
-
-// `home_dir` and `encode_cwd` live in `crate::util` since the post-Wave-2
-// tactical bundle (b3 Wave 5 review follow-up): both `session_cleanup` and
-// `transcript_watcher` resolved transcript paths and drift between two copies
-// of the `:`-collapsing rule would silently mismatch the path Claude Code
-// writes to. Imported here, not redefined.
-use crate::util::{encode_cwd, home_dir};
-
-/// Best-effort resolution of the session transcript path.
-///
-/// Priority:
-/// 1. `CLAUDE_TRANSCRIPT_PATH` env var when set non-empty.
-/// 2. `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` when both `home`
-///    and `session_id` are available.
-///
-/// Returns `None` when neither path is resolvable (e.g. `HOME`/`USERPROFILE`
-/// unset and the harness did not pass a session id).
-fn resolve_transcript_path(cwd: &str, session_id: Option<&str>) -> Option<PathBuf> {
-    if let Ok(p) = std::env::var(CLAUDE_TRANSCRIPT_PATH_ENV) {
-        if !p.is_empty() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    let session = session_id.filter(|s| !s.is_empty())?;
-    let home = home_dir()?;
-    let encoded = encode_cwd(cwd);
-    // NOTE: `~/.claude/projects/` is the *global* (user-scope) Claude Code
-    // transcript directory — not a per-project `.claude/` tree. `ClaudePaths`
-    // is per-project by contract, so it does not own this path; keep the
-    // explicit `home.join(".claude")` here. // ClaudePaths-exempt
-    Some(
-        home.join(".claude") // ClaudePaths-exempt: user-global ~/.claude
-            .join("projects")
-            .join(encoded)
-            .join(format!("{session}.jsonl")),
-    )
-}
-
-/// Translate the session transcript JSONL into `ApiCostFrame`s and persist via
-/// the W1 writer. Fail-open at every step.
-fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
-    let Some(path) = resolve_transcript_path(cwd, session_id) else {
-        return;
-    };
-    if !path.exists() {
-        // A fresh session may never have written a transcript — silent skip.
-        return;
-    }
-    let ctx = IngestContext {
-        project_path: cwd.to_string(),
-        session_id: session_id.map(str::to_string),
-    };
-    let frames = match transcript::ingest(&path, &ctx) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "session_cleanup: transcript::ingest failed for {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    if frames.is_empty() {
-        return;
-    }
-    // W7B: each frame becomes one `pipeline.economy.run` NDJSON event via
-    // the shared payload builder. The router stamps spec/session/wave from
-    // the harness env, fail-open per call.
-    for frame in frames {
-        let (event_name, payload) = economy::writer::run_event(&frame);
-        crate::shared::events::economy::emit(cwd, ActorKind::Hook, "session-cleanup", &event_name, None, payload);
-    }
-}
-
 /// Pull every `rtk gain --json` rewrite into the W1 `savings_records` table
 /// once per session.
 ///
@@ -485,12 +403,6 @@ impl Observer for SessionCleanupObserver {
         // run that subcommand — without this hook, RTK rewrites never land in
         // the W1 savings table. Strict side-effect, fail-open.
         ingest_rtk_savings(&cwd, input.session_id.as_deref());
-
-        // Wave 3 (economia-moat-unification): ingest the session transcript
-        // into the W1 economy writer BEFORE we wipe state. Pulls one
-        // `ApiCostFrame` per assistant turn out of the Claude Code JSONL so the
-        // `run_usage` table sees the cheapest cost signal we have.
-        ingest_session_transcript(&cwd, input.session_id.as_deref());
 
         // Telemetry retention: drop `run_usage`/`usage_totals` rows past the
         // window so telemetry.db does not grow without bound. Fail-open.

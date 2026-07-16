@@ -445,6 +445,7 @@ fn patch_wave_plan_single(spec_dir: &Path, wave1: &WaveDir) {
             tasks: Vec::new(),
             files: Vec::new(),
             acceptance: Vec::new(),
+            satisfies: Vec::new(),
         }],
         total_waves: Some(1),
         lang: None,

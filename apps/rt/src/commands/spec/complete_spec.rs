@@ -25,7 +25,8 @@ use mustard_core::io::fs;
 use mustard_core::view::projection::{read_harness_events_from_ndjson_dir, read_workspace_events};
 use mustard_core::ClaudePaths;
 use mustard_core::domain::capability::{
-    diff_requirements, CapabilityDeclared, EVENT_CAPABILITY_DECLARED, EVENT_CAPABILITY_UPDATE,
+    diff_requirements, Capability, CapabilityDeclared, Requirement, Scenario,
+    EVENT_CAPABILITY_DECLARED, EVENT_CAPABILITY_UPDATE,
 };
 use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS,
@@ -276,7 +277,10 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
 fn merge_capabilities_on_close(cwd: &Path, spec: &str, ts: &str) {
     let linked = crate::commands::capability::linked_capability_ids(cwd, spec);
     if linked.is_empty() {
-        return; // no `## Capabilities` section (or no `cap.*` links) ⇒ no-op.
+        // No `## Capabilities` links. A Full spec still leaves a living EARS
+        // capability behind, synthesized from its own ACs (F6). Fail-open.
+        synthesize_capability_from_acs(cwd, spec, ts);
+        return;
     }
 
     let Ok(paths) = ClaudePaths::for_project(cwd) else {
@@ -353,6 +357,123 @@ fn merge_capabilities_on_close(cwd: &Path, spec: &str, ts: &str) {
             .unwrap_or(Value::Null);
         emit_capability_event(cwd, spec, ts, EVENT_CAPABILITY_DECLARED, payload);
     }
+}
+
+/// When a Full spec closes with NO `## Capabilities` link, synthesize a living
+/// EARS [`Capability`] from its own acceptance criteria — the inverse of
+/// [`Capability::acceptance_criteria`]: parse each AC into a
+/// [`Scenario`]`{when, then, command}`, wrap it in a [`Requirement`], render the
+/// doc, and emit `capability.declared` so recall folds it. Every Full close
+/// therefore leaves a durable EARS record even when nothing was linked by hand.
+///
+/// Guards (all fail-open): Light specs are skipped (single-shot, no durable
+/// capability); a spec with no parseable AC section, or only skeleton ACs
+/// (unfilled `<…>`), yields nothing; an already-present `cap.{spec}.md` doc is
+/// never clobbered (idempotent on re-close). Reuses `qa-run`'s AC parser (the
+/// exposed `AcItem` statement + command) so nothing drifts from what QA runs.
+fn synthesize_capability_from_acs(cwd: &Path, spec: &str, ts: &str) {
+    if !spec_scope_is_full(cwd, spec) {
+        return;
+    }
+    let Ok(paths) = ClaudePaths::for_project(cwd) else {
+        return;
+    };
+    let doc_path = paths.capabilities_dir().join(format!("{spec}.md"));
+    if fs::exists(&doc_path) {
+        return; // never clobber an existing capability doc.
+    }
+    let Some(markdown) = read_spec_acs_markdown(cwd, spec) else {
+        return;
+    };
+    let Some(section) = crate::commands::review::qa_run::extract_ac_section(&markdown) else {
+        return;
+    };
+    let scenarios: Vec<Scenario> = crate::commands::review::qa_run::parse_ac_items(&section)
+        .into_iter()
+        // Skip unfilled skeletons — an `<…>` command/statement is not a real
+        // behaviour, so it must never enter the durable record.
+        .filter(|it| !it.command.contains('<') && !it.statement.contains('<'))
+        .map(|it| {
+            let (when, then) = split_when_then(&it.statement);
+            Scenario { name: it.id.clone(), when, then, command: Some(it.command.clone()) }
+        })
+        .collect();
+    if scenarios.is_empty() {
+        return; // nothing runnable to capture.
+    }
+    let cap = Capability {
+        id: format!("cap.{spec}"),
+        title: spec.replace('-', " "),
+        status: "active".to_string(),
+        requirements: vec![Requirement {
+            statement: format!("The system SHALL satisfy the acceptance criteria of spec {spec}."),
+            scenarios,
+        }],
+        specs: vec![format!("spec.{spec}")],
+        ..Capability::default()
+    };
+    if let Err(e) = fs::create_dir_all(paths.capabilities_dir()) {
+        eprintln!("[complete-spec] could not create capabilities dir: {e}");
+        return;
+    }
+    let body = crate::commands::capability::render(&cap);
+    if fs::write_atomic(&doc_path, body.as_bytes()).is_err() {
+        return;
+    }
+    let payload =
+        serde_json::to_value(CapabilityDeclared { capability: cap }).unwrap_or(Value::Null);
+    emit_capability_event(cwd, spec, ts, EVENT_CAPABILITY_DECLARED, payload);
+}
+
+/// Whether `spec`'s `meta.json` records a Full scope (a wave-plan parent reads
+/// `"full (wave plan)"`, a spec-draft Full reads `"full"`). Fail-open: an absent
+/// or unreadable meta reads as NOT full, so synthesis only runs for a confirmed
+/// Full spec (Light is single-shot and never synthesizes a capability).
+fn spec_scope_is_full(cwd: &Path, spec: &str) -> bool {
+    spec_dir_of(cwd, spec)
+        .and_then(|dir| mustard_core::read_meta(&dir.join("meta.json")))
+        .and_then(|m| m.scope)
+        .is_some_and(|s| s.to_lowercase().contains("full"))
+}
+
+/// Resolve `spec`'s directory under `.claude/spec/`.
+fn spec_dir_of(cwd: &Path, spec: &str) -> Option<PathBuf> {
+    ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.dir().to_path_buf())
+}
+
+/// Read the markdown that carries `spec`'s acceptance criteria: the root
+/// `spec.md`, or — for a decomposed wave-plan parent whose ACs live in the
+/// carried union — `wave-plan.md`. Returns the first that has an AC section.
+fn read_spec_acs_markdown(cwd: &Path, spec: &str) -> Option<String> {
+    let dir = spec_dir_of(cwd, spec)?;
+    for name in ["spec.md", "wave-plan.md"] {
+        if let Ok(md) = fs::read_to_string(dir.join(name)) {
+            if crate::commands::review::qa_run::extract_ac_section(&md).is_some() {
+                return Some(md);
+            }
+        }
+    }
+    None
+}
+
+/// Split an EARS statement `when X, then Y` back into `(when, then)` halves (the
+/// inverse of `capability::scenario_statement`). A non-EARS statement degrades
+/// to `("", statement)` — the whole thing as the observable outcome — rather
+/// than dropping it.
+fn split_when_then(statement: &str) -> (String, String) {
+    let s = statement.trim();
+    if let Some(rest) = s.strip_prefix("when ").or_else(|| s.strip_prefix("When ")) {
+        if let Some(pos) = rest.find(", then ") {
+            let when = rest[..pos].trim().to_string();
+            let then = rest[pos + ", then ".len()..].trim().to_string();
+            return (when, then);
+        }
+        return (rest.trim().to_string(), String::new());
+    }
+    (String::new(), s.to_string())
 }
 
 /// Route one `capability.*` event for `spec` through the canonical sink. Shared
@@ -969,5 +1090,91 @@ mod tests {
         // Other fields preserved.
         assert_eq!(meta["scope"], json!("full"), "{meta}");
         assert_eq!(meta["lang"], json!("pt-BR"), "{meta}");
+    }
+
+    /// F6: a FULL spec closing with NO `## Capabilities` link still leaves a
+    /// living EARS capability, synthesized from its own ACs — the doc is written
+    /// and `capability.declared` is emitted so the projection folds it. A
+    /// skeleton AC (unfilled `<…>`) is skipped; a filled behaviour AC round-trips
+    /// to one runnable scenario.
+    #[test]
+    fn close_synthesizes_capability_from_acs_on_full_spec() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "orders-feature";
+        let spec_dir = cwd.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Plan","outcome":"Active","scope":"full","lang":"en-US"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Orders\n\n## Acceptance Criteria\n\
+             - **AC-1** — when an order ships, then the card is charged\n  Command: `cd .`\n\
+             - **AC-2** — when <edge>, then <resp>.\n  Command: `<fill me>`\n",
+        )
+        .unwrap();
+
+        merge_capabilities_on_close(cwd, spec, "2026-07-15T00:00:00.000Z");
+
+        // The synthesized doc exists and compiles back to exactly one scenario
+        // (skeleton AC-2 skipped), with the EARS when/then recovered.
+        let doc = cwd
+            .join(".claude")
+            .join("capabilities")
+            .join(format!("{spec}.md"));
+        assert!(doc.exists(), "synthesized capability doc must be written");
+        let cap = crate::commands::capability::parse(&std::fs::read_to_string(&doc).unwrap());
+        assert_eq!(cap.id, "cap.orders-feature");
+        let acs = cap.acceptance_criteria();
+        assert_eq!(acs.len(), 1, "only the filled AC compiles to a scenario: {acs:?}");
+        assert_eq!(acs[0].statement, "when an order ships, then the card is charged");
+        assert_eq!(acs[0].command, "cd .");
+
+        // A capability.declared event landed so the projection folds it.
+        let events = read_events_for_spec(cwd, spec);
+        assert!(
+            events.iter().any(|e| e.event == EVENT_CAPABILITY_DECLARED),
+            "capability.declared emitted for the synthesized cap"
+        );
+
+        // Idempotent: a re-close does not clobber the doc.
+        let before = std::fs::read_to_string(&doc).unwrap();
+        merge_capabilities_on_close(cwd, spec, "2026-07-15T00:00:01.000Z");
+        assert_eq!(before, std::fs::read_to_string(&doc).unwrap(), "re-close is byte-stable");
+    }
+
+    /// A LIGHT spec closing with no `## Capabilities` link synthesizes NOTHING —
+    /// synthesis is Full-only (Light is single-shot).
+    #[test]
+    fn close_does_not_synthesize_capability_for_light_spec() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "light-feature";
+        let spec_dir = cwd.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Plan","outcome":"Active","scope":"light","lang":"en-US"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Light\n\n## Acceptance Criteria\n- **AC-1** — when x, then y.\n  Command: `cd .`\n",
+        )
+        .unwrap();
+
+        merge_capabilities_on_close(cwd, spec, "2026-07-15T00:00:00.000Z");
+
+        assert!(
+            !cwd.join(".claude").join("capabilities").join(format!("{spec}.md")).exists(),
+            "a Light spec must not synthesize a capability doc"
+        );
+        assert!(
+            !read_events_for_spec(cwd, spec).iter().any(|e| e.event.starts_with("capability.")),
+            "no capability.* events for a Light close"
+        );
     }
 }

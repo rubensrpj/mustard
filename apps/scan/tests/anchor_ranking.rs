@@ -338,10 +338,10 @@ fn path_only_hub_never_anchors_only_declaration_matches_do() {
         "root": dir.to_string_lossy(),
         "modules": modules,
         "graph": {
-            "nodes": 3, "edges": 0, "cyclic": false, "cycles": [],
+            "nodes": 3, "edges": 0, "cyclic": false,
             "top_fan_in": [ { "module": "m/core/billing_hub.rs", "degree": 2 } ],
             "top_fan_out": [],
-            "layers": [], "cyclic_edges": 0, "total_edges": 0
+            "layers": []
         }
     });
     std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();

@@ -33,8 +33,7 @@
 //! ├── .cache/
 //! │   ├── detect.json
 //! │   ├── scan-dispatch.json
-//! │   ├── knowledge-seen.json
-//! │   └── memory-seen.json
+//! │   └── knowledge-seen.json
 //! ├── .harness/
 //! ├── .metrics/
 //! ├── .agent-state/
@@ -53,7 +52,6 @@
 //!         ├── wave-plan.md
 //!         ├── qa-report.json
 //!         ├── qa-report.html
-//!         ├── economy-baselines.json
 //!         ├── adr/
 //!         ├── .events/
 //!         ├── .blobs/
@@ -169,6 +167,8 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "spec",
     "graph",
     "capabilities",
+    // Plan-mode plan files — `settings.json#plansDirectory` points here.
+    "plans",
 ];
 
 /// File names under `<root>/.claude/.cache/` that Mustard owns. Single source
@@ -177,7 +177,6 @@ const CACHE_FILES: &[&str] = &[
     "detect.json",
     "scan-dispatch.json",
     "knowledge-seen.json",
-    "memory-seen.json",
 ];
 
 impl ClaudePaths {
@@ -311,11 +310,10 @@ impl ClaudePaths {
     /// directory.
     ///
     /// **Note:** the per-wave / per-spec artefacts (`diff.md`, `prompt.md`,
-    /// `warnings.txt`, `qa-report.{json,html}`, `economy-baselines.json`) have
+    /// `warnings.txt`, `qa-report.{json,html}`) have
     /// moved into the per-spec / per-wave directories under [`Self::spec_dir`].
     /// This accessor remains for the *pipeline-state JSON files themselves*
-    /// (`{spec}.json` markers) and the legacy retroactive ingester
-    /// (`pipeline-state-ingest`) which scans the directory for back-compat.
+    /// (`{spec}.json` markers).
     /// Active pipeline-state tracking writes here today; future work may move
     /// these to a per-spec destination, but that migration is out of scope
     /// for W2 of `2026-05-26-claude-paths-single-source`.
@@ -381,13 +379,6 @@ impl ClaudePaths {
     #[must_use]
     pub fn knowledge_seen_path(&self) -> PathBuf {
         self.cache_dir().join("knowledge-seen.json")
-    }
-
-    /// `<root>/.claude/.cache/memory-seen.json` — memory ingestion dedupe
-    /// marker.
-    #[must_use]
-    pub fn memory_seen_path(&self) -> PathBuf {
-        self.cache_dir().join("memory-seen.json")
     }
 
     // -- catalogs --------------------------------------------------------
@@ -536,13 +527,6 @@ impl SpecPaths {
     #[must_use]
     pub fn qa_report_html_path(&self) -> PathBuf {
         self.spec_dir.join("qa-report.html")
-    }
-
-    /// `<spec>/economy-baselines.json` — token / wall-time baselines used by
-    /// `/economia`.
-    #[must_use]
-    pub fn economy_baselines_path(&self) -> PathBuf {
-        self.spec_dir.join("economy-baselines.json")
     }
 
     /// Build a [`WavePaths`] for `<spec>/<wave-slug>/`.
@@ -783,20 +767,20 @@ mod tests {
             "spec",
             "graph",
             "capabilities",
+            "plans",
         ] {
             assert!(dirs.contains(&expected), "missing {expected} from documented_dirs");
         }
     }
 
     #[test]
-    fn cache_files_lists_four_caches() {
+    fn cache_files_lists_three_caches() {
         let files = ClaudePaths::cache_files();
-        assert_eq!(files.len(), 4);
+        assert_eq!(files.len(), 3);
         for expected in [
             "detect.json",
             "scan-dispatch.json",
             "knowledge-seen.json",
-            "memory-seen.json",
         ] {
             assert!(files.contains(&expected), "missing {expected} from cache_files");
         }

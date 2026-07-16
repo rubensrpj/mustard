@@ -1,10 +1,3 @@
-//! Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three Overview
-//! aggregations live at the bottom of this file (`dashboard_token_summary`,
-//! `dashboard_month_activity`, `dashboard_events_feed`). Onda 1
-//! (`dashboard-sqlite-out-telemetria-ndjson`) deleted the SQLite source they
-//! read; they now return their empty/scaffold payloads (NDJSON-backed rebuild
-//! is Onda 2). The live spec views come from the `*_v2` adapter family below.
-//!
 //! `*_v2` adapter family that delegates to `mustard-core`.
 //!
 //! Each `*_v2` function is a thin adapter — it takes the cached workspace
@@ -20,12 +13,6 @@
 //! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
 //! already delegated to the `*_v2` adapters since Wave 4 of the audit.
 
-// Onda 1 (spec `dashboard-sqlite-out-telemetria-ndjson`): the dead SQLite
-// `db.rs` facade was deleted. The aggregations that depended on it (spec
-// events, hygiene health, top-files, overview token/month/events) now resolve
-// to their fail-open empty payloads directly; rebuilding them over the
-// per-spec NDJSON sink is Onda 2. The `*_v2` adapter family below already
-// reads NDJSON via `mustard_core::view::projection`.
 use mustard_core::io::fs;
 use serde::{Deserialize, Serialize};
 
@@ -128,39 +115,6 @@ pub struct SpecQualityItem {
     pub fail_reason: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct SpecTimelineNode {
-    pub ts: String,
-    pub kind: String, // phase | wave | qa | review | agent | tool
-    pub label: String,
-    pub phase: Option<String>,
-    pub wave: Option<i64>,
-    pub payload_summary: Option<String>,
-}
-
-/// Filter parameters for spec_events.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct EventFilter {
-    pub kinds: Option<Vec<String>>,
-    pub wave: Option<i64>,
-    pub agent: Option<String>,
-    pub q: Option<String>,
-}
-
-/// Mirrors `telemetry_agg::TimelineEvent` — reused for spec_events output.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct TimelineEvent {
-    pub id: String,
-    pub ts: String,
-    pub phase: Option<String>,
-    pub spec: Option<String>,
-    pub agent: Option<String>,
-    pub summary: String,
-}
-
 /// Action kind for spec_action.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -217,55 +171,6 @@ pub struct FileCount {
     pub count: i64,
 }
 
-/// Wave-4 (2026-05-20) — JSON shape for `mustard-rt run metrics wave-status`.
-/// Mirrors `apps/rt/src/run/metrics_wave_status.rs::WaveStatus` so the
-/// dashboard can deserialise the subprocess stdout straight into a typed
-/// struct instead of `serde_json::Value`. Optional fields (`status`, `model`)
-/// stay `Option` because the rt side serialises with `skip_serializing_if`.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct MetricsWaveRow {
-    pub name: String,
-    pub status: Option<String>,
-    pub tokens_saved: i64,
-    pub duration_ms: i64,
-    pub retries: i64,
-    pub model: Option<String>,
-}
-
-/// Result of `dashboard_metrics_wave_status` — parent name plus per-wave rows.
-/// Empty `waves` vec when the spec has no wave-plan or the subprocess fails;
-/// the dashboard renders an empty state in that case.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct MetricsWaveStatus {
-    pub parent: Option<String>,
-    pub waves: Vec<MetricsWaveRow>,
-}
-
-/// Wave-3 (2026-05-20, spec `mustard-wave-network-standard`) — one wikilink
-/// occurrence emitted by `mustard-rt run wikilink-extract`. Mirrors the JSON
-/// shape `{from, to, file, line}`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct Wikilink {
-    pub from: String,
-    pub to: String,
-    pub file: String,
-    pub line: u32,
-}
-
-/// Wave-3 — full payload of `mustard-rt run wikilink-extract`: every wikilink
-/// occurrence plus the list of orphan targets (referenced names that have no
-/// resolvable spec file). The dashboard groups these into parent/waves/dependents
-/// layers client-side.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct WikilinkExtract {
-    pub wikilinks: Vec<Wikilink>,
-    pub orphans: Vec<String>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkspaceSummary {
@@ -316,7 +221,6 @@ pub struct WorkspaceHealth {
 // They are removed here.
 //
 // Onda 2 rebuilt these in `lib.rs` over the NDJSON sink:
-//   * `dashboard_spec_events`   → reshapes `spec_timeline_v2` per spec.
 //   * `dashboard_spec_action`   → reopen/close/remove now emit `pipeline.status`
 //                                 via `lib_emit_pipeline_status` (no longer the
 //                                 "banco de dados indisponível" error fallback).
@@ -1130,26 +1034,12 @@ fn parse_wave_plan_row(line: &str) -> Option<(i64, Option<String>, Option<String
     Some((n, role, summary))
 }
 
-/// W8A-2 adapter: timeline projection via `mustard-core` projections.
-/// `All` window; the dashboard does its own client-side filtering when it
-/// needs a narrower view.
-pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineNode>, String> {
-    let project = std::path::PathBuf::from(repo_path);
-    let events = crate::telemetry::workspace_harness_events_cached(&project);
-    let nodes = mustard_core::view::projection::project_timeline(
-        spec,
-        &events,
-        mustard_core::TimeWindow::All,
-    );
-    Ok(nodes.iter().map(timeline_node_from_view).collect())
-}
-
 /// Wave-6 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`): list sub-specs
 /// linked to `parent` via the **union** of two sources — the SQLite
 /// `spec.link` projection AND a filesystem scan for `### Parent: <slug>` in
 /// every `.claude/spec/*/spec.md` header. The union lives in `mustard-rt run
 /// spec-children` so the Tauri command stays a thin subprocess wrapper (same
-/// pattern as [`dashboard_spec_wave_files_run`] / [`dashboard_wikilink_extract_run`]).
+/// pattern as [`dashboard_spec_wave_files_run`]).
 ///
 /// Previously this delegated to a `SpecReader::children_of` projection that
 /// queried only SQLite. Sub-specs created by `/mustard:tactical-fix`
@@ -1228,80 +1118,6 @@ struct ChildEntryRaw {
     /// keeps older subprocess payloads (pre-Wave-2) compatible.
     #[serde(default)]
     wave: Option<u32>,
-}
-
-/// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — invoke
-/// `mustard-rt run metrics wave-status --spec <name>` and parse stdout into a
-/// typed [`MetricsWaveStatus`]. Audit-2 in `metrics-audit.md` documents why
-/// this exists; Audit-1 explains why the numbers may currently be all zeros
-/// (writer/aggregator mismatch in `apps/rt/src/run/metrics_wave_status.rs`).
-///
-/// Subprocess invocation matches the project's existing convention:
-/// `cmd /C mustard-rt ...` on Windows, `sh -c` elsewhere. The function never
-/// returns an `Err` for "process failed" or "JSON garbage" — the dashboard
-/// always gets *something* renderable (empty waves vec). The `Err` arm is
-/// reserved for spawn errors so the frontend can show "mustard-rt not on
-/// PATH" without crashing the page.
-pub fn dashboard_metrics_wave_status_run(
-    repo_path: &str,
-    spec_name: &str,
-) -> Result<MetricsWaveStatus, String> {
-    // Reject obvious traversal — spec_name is a single directory under
-    // .claude/spec/, never a path. Mirrors `dashboard_spec_markdown`.
-    if spec_name.is_empty()
-        || spec_name.contains('/')
-        || spec_name.contains('\\')
-        || spec_name.contains("..")
-    {
-        return Err(format!("invalid spec name: {spec_name}"));
-    }
-
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = crate::process_util::no_window_command("cmd");
-        c.args([
-            "/C",
-            "mustard-rt",
-            "run",
-            "metrics",
-            "wave-status",
-            "--spec",
-            spec_name,
-        ]);
-        c
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let mut c = crate::process_util::no_window_command("mustard-rt");
-        c.args(["run", "metrics", "wave-status", "--spec", spec_name]);
-        c
-    };
-
-    cmd.current_dir(repo_path);
-
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // The rt binary prints the JSON document at the end of stdout. Some hook
-    // installations also print a leading `[rtk] ...` banner; trim everything
-    // before the first `{` so the parse is robust to that prefix.
-    let json_start = stdout.find('{').unwrap_or(0);
-    let json_slice = &stdout[json_start..];
-    match serde_json::from_str::<MetricsWaveStatus>(json_slice) {
-        Ok(parsed) => Ok(parsed),
-        Err(_) => {
-            // Subprocess emitted unparseable output (binary missing, panic,
-            // schema drift). Surface an empty result so the dashboard renders
-            // the empty state instead of throwing. The frontend's `parent`
-            // null + empty waves combo is the agreed empty contract.
-            Ok(MetricsWaveStatus {
-                parent: Some(spec_name.to_string()),
-                waves: Vec::new(),
-            })
-        }
-    }
 }
 
 /// Wave 4 adapter: workspace summary via `mustard-core`. Replaces the
@@ -1425,22 +1241,6 @@ fn quality_item_from_view(view: &mustard_core::AcceptanceCriterion) -> SpecQuali
     }
 }
 
-/// Map [`mustard_core::TimelineNode`] → legacy [`SpecTimelineNode`].
-fn timeline_node_from_view(view: &mustard_core::TimelineNode) -> SpecTimelineNode {
-    SpecTimelineNode {
-        ts: view.ts.clone(),
-        kind: timeline_kind_string(view.kind).into(),
-        label: view.label.clone(),
-        phase: view.phase.map(|p| phase_string(p).to_string()),
-        wave: view.wave.map(i64::from),
-        payload_summary: if view.payload_summary.is_empty() {
-            None
-        } else {
-            Some(view.payload_summary.clone())
-        },
-    }
-}
-
 /// Map [`mustard_core::WorkspaceSummary`] → legacy [`WorkspaceSummary`].
 fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> WorkspaceSummary {
     WorkspaceSummary {
@@ -1544,23 +1344,6 @@ const fn ac_status_string(s: mustard_core::AcStatus) -> &'static str {
     }
 }
 
-const fn timeline_kind_string(k: mustard_core::TimelineKind) -> &'static str {
-    use mustard_core::TimelineKind;
-    match k {
-        TimelineKind::Scope => "scope",
-        TimelineKind::Phase => "phase",
-        TimelineKind::Status => "status",
-        TimelineKind::Task => "task",
-        TimelineKind::Wave => "wave",
-        TimelineKind::Qa => "qa",
-        TimelineKind::Review => "review",
-        TimelineKind::Agent => "agent",
-        TimelineKind::Tool => "tool",
-        TimelineKind::Decision => "decision",
-        TimelineKind::Other => "other",
-    }
-}
-
 const fn segment_state_string(s: mustard_core::SegmentState) -> &'static str {
     use mustard_core::SegmentState;
     match s {
@@ -1582,20 +1365,15 @@ const fn workspace_alert_kind_string(k: mustard_core::WorkspaceAlertKind) -> &'s
 }
 
 // ===========================================================================
-// Wave 3 (2026-05-20) — wikilink graph + cross-wave memory bridges.
-//
-// The frontend `SpecNetworkTab` shells out to `mustard-rt run wikilink-extract`
-// once per spec to render the graph, and `mustard-rt run memory cross-wave`
-// once per detected wave for the markdown panel. Both helpers follow the same
-// fail-open contract as `dashboard_metrics_wave_status_run`: subprocess
-// failures resolve to an empty payload so the dashboard renders an empty
-// state instead of throwing. `Err` is reserved for spawn failures so the UI
-// can surface "mustard-rt not on PATH".
+// `mustard-rt` subprocess plumbing shared by the spec-children / wave-files /
+// children-tree bridges. Fail-open contract: subprocess failures resolve to an
+// empty payload so the dashboard renders an empty state instead of throwing.
+// `Err` is reserved for spawn failures so the UI can surface "mustard-rt not
+// on PATH".
 // ===========================================================================
 
 /// Build a `Command` that invokes `mustard-rt` with the given args. Uses
-/// `cmd /C` on Windows so the binary is resolved against PATH the same way
-/// `dashboard_metrics_wave_status_run` does it.
+/// `cmd /C` on Windows so the binary is resolved against PATH.
 fn mustard_rt_command(args: &[&str]) -> std::process::Command {
     #[cfg(target_os = "windows")]
     {
@@ -1620,110 +1398,6 @@ fn slice_json(stdout: &str) -> &str {
         Some(i) => &stdout[i..],
         None => stdout,
     }
-}
-
-/// Wave-3 — the `wikilink-extract` verb never shipped in `mustard-rt` (audit
-/// 2026-07-07: no matching `RunCmd` variant ever existed), so every spawn here
-/// failed and degraded to the empty extract. Return the empty extract directly
-/// instead of paying a doomed subprocess per render — the frontend keeps
-/// rendering the exact same empty state it always did.
-pub fn dashboard_wikilink_extract_run(
-    _repo_path: &str,
-    _spec_name: &str,
-) -> Result<WikilinkExtract, String> {
-    Ok(WikilinkExtract::default())
-}
-
-/// Cross-wave memory for a spec, sourced from the LIVE unified knowledge store
-/// (markdown rows under `.claude/memory/`, ranked by the recall decay curve) via
-/// `mustard-rt run memory search --spec <name>`. The dead `memory cross-wave`
-/// verb (which read the removed `agent.memory` SQLite path) no longer exists; the
-/// `search` verb is the live equivalent — it returns every active memory row
-/// carrying this spec across ALL its waves (`--spec` filters on the frontmatter
-/// `spec` field, so wave-scoped summaries surface here), ranked by effective
-/// confidence. `search` emits a JSON array of rows; this function renders that
-/// into a compact markdown block (rendering is a dashboard concern — the ranking
-/// is owned by rt and reused as-is). The `wave` parameter is no longer consulted:
-/// the live verb has no per-wave reach — it returns the spec's full accumulated
-/// memory and the drawer shows priors regardless of the current wave.
-///
-/// Empty string when the spec has no memory rows (the common case — early waves
-/// carry no priors). `Err` is reserved for spawn failures, matching the prior
-/// contract; an unparseable payload degrades to an empty block.
-pub fn dashboard_memory_cross_wave_run(
-    repo_path: &str,
-    spec: &str,
-    _wave: u32,
-) -> Result<String, String> {
-    if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
-        return Err(format!("invalid spec name: {spec}"));
-    }
-    let mut cmd = mustard_rt_command(&["run", "memory", "search", "--spec", spec]);
-    cmd.current_dir(repo_path);
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(render_memory_rows_markdown(slice_json_array(&stdout)))
-}
-
-/// One row of `mustard-rt run memory search` output. Mirrors the producer's
-/// `SearchRow` (knowledge/memory.rs); only the fields the drawer renders are
-/// decoded, and every field tolerates absence so a shape change never makes the
-/// drawer error (it just renders less). Field names are the JSON keys the
-/// producer emits (snake_case via serde default).
-#[derive(Deserialize, Default)]
-struct MemorySearchRow {
-    #[serde(default)]
-    wave: Option<i64>,
-    #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    details: Option<String>,
-}
-
-/// Trim leading log/banner noise so `serde_json::from_str` sees a pure JSON
-/// document starting at the first `[` (the `search` payload is an array; the
-/// object-oriented [`slice_json`] would stop at a stray `{` inside it).
-fn slice_json_array(stdout: &str) -> &str {
-    match stdout.find('[') {
-        Some(i) => &stdout[i..],
-        None => stdout,
-    }
-}
-
-/// Render the `memory search` JSON rows into the markdown block the cross-wave
-/// drawer expects. Empty (or unparseable) input yields an empty string so the
-/// frontend renders its empty state, preserving the prior "empty when nothing to
-/// report" contract. Each row becomes a bullet tagged with its wave/role; the
-/// `details` body, when present, follows as an indented note.
-fn render_memory_rows_markdown(json: &str) -> String {
-    let rows: Vec<MemorySearchRow> = serde_json::from_str(json).unwrap_or_default();
-    let mut out = String::new();
-    for row in rows {
-        let summary = row.summary.trim();
-        if summary.is_empty() {
-            continue;
-        }
-        let tag = match (row.wave, row.role.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
-            (Some(w), Some(r)) => format!("wave {w} · {r}"),
-            (Some(w), None) => format!("wave {w}"),
-            (None, Some(r)) => r.to_string(),
-            (None, None) => String::new(),
-        };
-        if tag.is_empty() {
-            out.push_str(&format!("- {summary}\n"));
-        } else {
-            out.push_str(&format!("- **{tag}** — {summary}\n"));
-        }
-        if let Some(details) = row.details.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            out.push_str(&format!("  {details}\n"));
-        }
-    }
-    out.trim_end().to_string()
 }
 
 /// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — payload for
@@ -1873,7 +1547,7 @@ pub fn dashboard_spec_waves_planned_run(
 
 /// Wave 2 — invoke `mustard-rt run wave-files --spec <name> --wave <N>` and
 /// parse the JSON stdout into a typed [`WaveFilesPayload`]. Subprocess
-/// invocation mirrors `dashboard_metrics_wave_status_run` (Windows uses
+/// invocation goes through [`mustard_rt_command`] (Windows uses
 /// `cmd /C mustard-rt …`, POSIX uses the binary directly). Fail-open:
 /// missing wave sub-spec → `{count:0, markdown:"", path:null}`; subprocess
 /// JSON parse failure → same empty payload. `Err` is reserved for spawn
@@ -2013,337 +1687,6 @@ pub fn spec_children_tree_run(repo_path: &str, spec: &str) -> Result<ChildrenTre
             spec: spec.to_string(),
             ..ChildrenTree::default()
         }),
-    }
-}
-
-// ===========================================================================
-// Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three aggregations
-// for the redesigned Overview page. Onda 1
-// (`dashboard-sqlite-out-telemetria-ndjson`) removed the SQLite reader these
-// opened; each command now returns its empty/scaffold payload directly and
-// only returns `Err` for argument-validation failures (e.g. invalid month).
-// The NDJSON-backed rebuild of these projections is Onda 2.
-//
-// Schema notes (legacy events table — kept for the Onda 2 rebuild reference):
-//   * the "kind" referenced in the spec maps to column `event`
-//   * payload is a JSON column; sub-fields are extracted via
-//     `json_extract(payload, '$.<name>')`
-//   * `ts` is ISO-8601 text and lexicographically sortable
-// ===========================================================================
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct TopPipeline {
-    pub spec: String,
-    pub saved: i64,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct TokenSummary {
-    pub total_saved: i64,
-    pub top_pipelines: Vec<TopPipeline>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct DayActivity {
-    /// `YYYY-MM-DD`
-    pub date: String,
-    pub event_count: i32,
-    pub top_phase: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct FeedEvent {
-    pub id: String,
-    /// ISO-8601 (as stored in `events.ts`).
-    pub ts: String,
-    /// Spec field name is `kind`; underlying column is `events.event`.
-    pub kind: String,
-    pub spec: Option<String>,
-    /// ≤120 chars derived from payload.
-    pub payload_summary: String,
-}
-
-/// `dashboard_token_summary` — Onda 2: total tokens saved + top pipelines by
-/// savings, folded from the NDJSON savings channel. `total_saved` comes from
-/// the core `savings_breakdown` (project scope); the per-spec ranking is folded
-/// directly from `pipeline.economy.savings.*` events grouped by `spec`.
-/// Off-main-thread wrapper for [`dashboard_token_summary_impl`] (cold cache
-/// pays the full workspace parse). A join error degrades to a zeroed summary.
-#[tauri::command]
-pub async fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, String> {
-    tauri::async_runtime::spawn_blocking(move || dashboard_token_summary_impl(project_path))
-        .await
-        .unwrap_or_else(|_| Ok(TokenSummary::default()))
-}
-
-fn dashboard_token_summary_impl(project_path: String) -> Result<TokenSummary, String> {
-    use mustard_core::domain::economy::scope::ProjectPath as CoreProjectPath;
-    use mustard_core::domain::economy::EconomyScope as CoreScope;
-
-    let root = std::path::PathBuf::from(&project_path);
-    let breakdown = mustard_core::domain::economy::savings_breakdown(
-        &root,
-        CoreScope::Project(CoreProjectPath::new(&root)),
-    )
-    .unwrap_or_default();
-    let total_saved = breakdown.total_tokens_saved;
-
-    // Per-spec savings ranking from the raw savings events (the core breakdown
-    // carries no spec dimension at project scope).
-    let events = crate::telemetry::walk_ndjson_events_cached(&root);
-    let mut by_spec: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for v in events.iter() {
-        if !crate::telemetry::event_name_of(v).starts_with("pipeline.economy.savings.") {
-            continue;
-        }
-        let payload = v.get("payload");
-        let tokens = payload
-            .and_then(|p| p.get("tokens_saved"))
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
-        let spec = v
-            .get("spec")
-            .or_else(|| payload.and_then(|p| p.get("spec_id")))
-            .and_then(|s| s.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unattributed")
-            .to_string();
-        *by_spec.entry(spec).or_insert(0) += tokens;
-    }
-    let mut top_pipelines: Vec<TopPipeline> = by_spec
-        .into_iter()
-        .map(|(spec, saved)| TopPipeline { spec, saved })
-        .collect();
-    top_pipelines.sort_by(|a, b| b.saved.cmp(&a.saved));
-    top_pipelines.truncate(10);
-
-    Ok(TokenSummary {
-        total_saved,
-        top_pipelines,
-    })
-}
-
-/// `dashboard_month_activity` — Onda 2: one entry per day of the given month
-/// with the real event count + the day's top pipeline phase, folded from the
-/// complete NDJSON walker. Days with no events keep `event_count: 0` /
-/// `top_phase: None`, so the scaffold shape is preserved exactly.
-/// Off-main-thread wrapper for [`dashboard_month_activity_impl`] (cold cache
-/// pays the full workspace parse). A join error degrades to an empty list.
-#[tauri::command]
-pub async fn dashboard_month_activity(
-    project_path: String,
-    year: i32,
-    month: u32,
-) -> Result<Vec<DayActivity>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_month_activity_impl(project_path, year, month)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_month_activity_impl(
-    project_path: String,
-    year: i32,
-    month: u32,
-) -> Result<Vec<DayActivity>, String> {
-    if !(1..=12).contains(&month) {
-        return Err(format!("invalid month: {month}"));
-    }
-    let root = std::path::PathBuf::from(&project_path);
-    let month_prefix = format!("{year:04}-{month:02}-");
-    let events = crate::telemetry::walk_ndjson_events_cached(&root);
-
-    // date -> (event_count, phase -> count)
-    let mut per_day: std::collections::HashMap<String, (i32, std::collections::HashMap<String, i32>)> =
-        std::collections::HashMap::new();
-    for v in events.iter() {
-        let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        if !ts.starts_with(&month_prefix) || ts.len() < 10 {
-            continue;
-        }
-        let date = ts[..10].to_string();
-        let entry = per_day.entry(date).or_insert((0, std::collections::HashMap::new()));
-        entry.0 += 1;
-        if crate::telemetry::event_name_of(v) == "pipeline.phase" {
-            if let Some(p) = v
-                .get("payload")
-                .and_then(|p| p.get("to").or_else(|| p.get("phase")))
-                .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                *entry.1.entry(p.to_string()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    let days_in_month = days_in_month(year, month);
-    let out: Vec<DayActivity> = (1..=days_in_month)
-        .map(|d| {
-            let date = format!("{year:04}-{month:02}-{d:02}");
-            match per_day.get(&date) {
-                Some((count, phases)) => DayActivity {
-                    date,
-                    event_count: *count,
-                    top_phase: phases
-                        .iter()
-                        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-                        .map(|(p, _)| p.clone()),
-                },
-                None => DayActivity {
-                    date,
-                    event_count: 0,
-                    top_phase: None,
-                },
-            }
-        })
-        .collect();
-    Ok(out)
-}
-
-/// `dashboard_events_feed` — Onda 2: chronological cross-spec feed (newest
-/// first) folded from the complete NDJSON walker, in the `FeedEvent` shape.
-/// Off-main-thread wrapper for [`dashboard_events_feed_impl`] (cold cache
-/// pays the full workspace parse). A join error degrades to an empty list.
-#[tauri::command]
-pub async fn dashboard_events_feed(
-    project_path: String,
-    limit: u32,
-) -> Result<Vec<FeedEvent>, String> {
-    tauri::async_runtime::spawn_blocking(move || dashboard_events_feed_impl(project_path, limit))
-        .await
-        .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_events_feed_impl(
-    project_path: String,
-    limit: u32,
-) -> Result<Vec<FeedEvent>, String> {
-    let cap = limit.clamp(1, 1000) as usize;
-    let root = std::path::PathBuf::from(&project_path);
-    let events = crate::telemetry::walk_ndjson_events_cached(&root);
-    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
-    ordered.sort_by(|a, b| {
-        let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        tb.cmp(ta)
-    });
-    let rows: Vec<FeedEvent> = ordered
-        .into_iter()
-        .filter(|v| v.get("ts").and_then(|t| t.as_str()).is_some())
-        .take(cap)
-        .enumerate()
-        .map(|(i, v)| {
-            let kind = crate::telemetry::event_name_of(v).to_string();
-            let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("").to_string();
-            let payload = v.get("payload");
-            let spec = v
-                .get("spec")
-                .or_else(|| payload.and_then(|p| p.get("spec")))
-                .and_then(|s| s.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            let payload_summary = feed_payload_summary(&kind, payload);
-            FeedEvent {
-                id: format!("feed-{i}"),
-                ts,
-                kind,
-                spec,
-                payload_summary,
-            }
-        })
-        .collect();
-    Ok(rows)
-}
-
-/// ≤120-char human summary for a feed event, derived per event family from the
-/// payload. Kept local to `spec_views` (the `lib.rs` `event_summary` covers the
-/// `RecentEvent`-shaped feeds; this mirrors it for the `FeedEvent` shape).
-fn feed_payload_summary(kind: &str, payload: Option<&serde_json::Value>) -> String {
-    let s = match kind {
-        "tool.use" => {
-            let tool = payload
-                .and_then(|p| p.get("tool").or_else(|| p.get("tool_name")))
-                .and_then(|x| x.as_str())
-                .unwrap_or("tool");
-            let target = payload
-                .and_then(|p| p.get("target"))
-                .and_then(|t| t.as_object())
-                .and_then(|o| {
-                    o.get("file_path")
-                        .or_else(|| o.get("file"))
-                        .or_else(|| o.get("command"))
-                        .or_else(|| o.get("description"))
-                })
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            if target.is_empty() { tool.to_string() } else { format!("{tool} · {target}") }
-        }
-        "pipeline.phase" => {
-            let to = payload.and_then(|p| p.get("to")).and_then(|x| x.as_str()).unwrap_or("");
-            format!("→ {to}")
-        }
-        "pipeline.status" => {
-            let to = payload.and_then(|p| p.get("to")).and_then(|x| x.as_str()).unwrap_or("");
-            format!("status → {to}")
-        }
-        // Digest adherence (spec `instrumentar-adesao-ao-digest-no`). Payload
-        // keys are camelCase — see `digest-adherence-finalize` in rt.
-        "analyze.digest.summary" => {
-            let used = payload
-                .and_then(|p| p.get("digestUsed"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let before = payload
-                .and_then(|p| p.get("sourceReadsBeforeDigest"))
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0);
-            if used {
-                format!("digest usado · {before} reads antes")
-            } else {
-                format!("digest não usado · {before} reads diretos")
-            }
-        }
-        "analyze.digest.used" => {
-            let terms = payload
-                .and_then(|p| p.get("queryTerms"))
-                .and_then(serde_json::Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            if terms.is_empty() {
-                "digest consultado".to_string()
-            } else {
-                format!("digest consultado · {terms}")
-            }
-        }
-        other => other.to_string(),
-    };
-    s.chars().take(120).collect()
-}
-
-/// Number of days in `month` for the given `year` (Gregorian).
-const fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            // Leap year rule: divisible by 4, except centuries not divisible by 400.
-            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 0,
     }
 }
 
@@ -2638,26 +1981,4 @@ mod tests {
         assert_eq!(card.source_reads_before_digest, 0);
     }
 
-    #[test]
-    fn feed_summary_renders_digest_events() {
-        let used = json!({"digestUsed": true, "sourceReadsBeforeDigest": 3});
-        assert_eq!(
-            feed_payload_summary("analyze.digest.summary", Some(&used)),
-            "digest usado · 3 reads antes"
-        );
-        let unused = json!({"digestUsed": false, "sourceReadsBeforeDigest": 5});
-        assert_eq!(
-            feed_payload_summary("analyze.digest.summary", Some(&unused)),
-            "digest não usado · 5 reads diretos"
-        );
-        let query = json!({"queryTerms": ["auth", "token"], "miss": false});
-        assert_eq!(
-            feed_payload_summary("analyze.digest.used", Some(&query)),
-            "digest consultado · auth, token"
-        );
-        assert_eq!(
-            feed_payload_summary("analyze.digest.used", None),
-            "digest consultado"
-        );
-    }
 }

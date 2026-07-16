@@ -12,13 +12,10 @@
 //!
 //! | Reader | Source |
 //! |---|---|
-//! | `rtk_summary`, `rtk_summary_global` | subprocess `rtk gain -f json --daily` |
+//! | `rtk_summary` | subprocess `rtk gain -f json --daily` |
 //! | `hook_fire_counts` | filesystem `.claude/.metrics/*.jsonl` |
 //! | `routing_breakdown` | filesystem `.claude/.metrics/model-routing-gate.jsonl` |
-//! | `workflow_by_phase` | NDJSON `event=="pipeline.phase"` |
-//! | `tool_breakdown` | NDJSON `event=="tool.use"`, agg `payload.tool` |
 //! | `agent_activity` | NDJSON `event=="agent.start"`/`"agent.stop"` |
-//! | `measured` | NDJSON `event=="pipeline.telemetry.run"`, sum tokens |
 //! | `dashboard_spec_trace` | NDJSON `event=="tool.use"` per spec (minimal) |
 //!
 //! Every reader is **fail-open** — a missing dir, malformed line, or absent
@@ -89,13 +86,6 @@ pub struct RtkBlock {
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub struct MeasuredBlock {
-    pub tokens_total: u64,
-    pub tokens_today: u64,
-}
-
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub struct HookFireCount {
     pub hook: String,
     pub fires: u64,
@@ -133,26 +123,6 @@ pub struct RoutingBlock {
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub struct PhaseCount {
-    pub phase: String,
-    pub count: u64,
-}
-
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct WorkflowBlock {
-    pub by_phase: Vec<PhaseCount>,
-}
-
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct ToolCount {
-    pub tool_name: String,
-    pub count: u64,
-}
-
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub struct AgentActivity {
     pub agent_type: String,
     pub starts: u64,
@@ -170,19 +140,6 @@ pub struct AgentActivityBlock {
     pub agents: Vec<AgentActivity>,
 }
 
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct TelemetrySummary {
-    pub rtk: RtkBlock,
-    pub measured: MeasuredBlock,
-    pub prevention: Vec<HookFireCount>,
-    pub routing: RoutingBlock,
-    pub workflow: WorkflowBlock,
-    pub tool_breakdown: Vec<ToolCount>,
-    pub agent_activity: AgentActivityBlock,
-    pub session_start_ts: Option<String>,
-}
-
 /// Per-event friction entry. Kept for the dashboard "Atrito" widget.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -190,17 +147,6 @@ pub struct FrictionEntry {
     pub kind: String,
     pub count: u64,
     pub last_ts: Option<String>,
-}
-
-/// Live-activity envelope. Mirrors the legacy `LiveActivity` projection.
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct LiveActivity {
-    pub events_last_5m: u64,
-    pub current_phase: Option<String>,
-    pub current_spec: Option<String>,
-    pub last_event_ts: Option<String>,
-    pub session_id: Option<String>,
 }
 
 /// OTEL collector health snapshot.
@@ -977,12 +923,6 @@ pub fn rtk_summary(repo_path: &Path) -> RtkBlock {
     run_rtk_gain(Some(repo_path))
 }
 
-/// Global RTK summary across every known workspace. Same shape, no `-p`.
-#[must_use]
-pub fn rtk_summary_global() -> RtkBlock {
-    run_rtk_gain(None)
-}
-
 // ── Hook fire counts ─────────────────────────────────────────────────────────
 
 const EXCLUDED_HOOKS: &[&str] = &["rtk-gain", "rtk-rewrite", "budget-observations"];
@@ -1175,82 +1115,6 @@ fn extract_routing_key(v: &Value) -> String {
     "outros".to_string()
 }
 
-// ── Workflow by phase ────────────────────────────────────────────────────────
-
-/// Count `pipeline.phase` events across every per-spec NDJSON channel.
-///
-/// The emit-phase writer keeps the target phase under `payload.to`; we group
-/// by that. Returns phases ordered by count desc.
-#[must_use]
-pub fn workflow_by_phase(repo_path: &Path) -> WorkflowBlock {
-    let mut by_phase: HashMap<String, u64> = HashMap::new();
-    for_each_ndjson_line(repo_path, |v| {
-        // Match by the harness event name (the NDJSON record's `event` field).
-        if v.get("event").and_then(Value::as_str) != Some("pipeline.phase") {
-            return;
-        }
-        let payload = match v.get("payload") {
-            Some(p) => p,
-            None => return,
-        };
-        // emit-phase writes `{ to: "<PHASE>" }`; legacy rows used `phase`.
-        let phase = payload
-            .get("to")
-            .or_else(|| payload.get("phase"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if phase.is_empty() {
-            return;
-        }
-        *by_phase.entry(phase.to_string()).or_insert(0) += 1;
-    });
-
-    let mut rows: Vec<PhaseCount> = by_phase
-        .into_iter()
-        .map(|(phase, count)| PhaseCount { phase, count })
-        .collect();
-    rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.phase.cmp(&b.phase)));
-    WorkflowBlock { by_phase: rows }
-}
-
-// ── Tool breakdown ───────────────────────────────────────────────────────────
-
-/// Top-N tool breakdown — counts every `tool.use` event across all per-spec
-/// NDJSON channels, grouped by `payload.tool`. Returns up to 15 entries
-/// ordered by count desc.
-#[must_use]
-pub fn tool_breakdown(repo_path: &Path) -> Vec<ToolCount> {
-    const LIMIT: usize = 15;
-    let mut by_tool: HashMap<String, u64> = HashMap::new();
-    for_each_ndjson_line(repo_path, |v| {
-        if v.get("event").and_then(Value::as_str) != Some("tool.use") {
-            return;
-        }
-        let payload = match v.get("payload") {
-            Some(p) => p,
-            None => return,
-        };
-        // `tracker` writes `{ tool: "<Name>" }`; legacy rows used `tool_name`.
-        let tool = payload
-            .get("tool")
-            .or_else(|| payload.get("tool_name"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if tool.is_empty() {
-            return;
-        }
-        *by_tool.entry(tool.to_string()).or_insert(0) += 1;
-    });
-
-    let mut rows: Vec<ToolCount> = by_tool
-        .into_iter()
-        .map(|(tool_name, count)| ToolCount { tool_name, count })
-        .collect();
-    rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.tool_name.cmp(&b.tool_name)));
-    rows.truncate(LIMIT);
-    rows
-}
-
 // ── Agent activity ───────────────────────────────────────────────────────────
 
 /// Aggregate `agent.start` / `agent.stop` pairs by agent_type. Tokens are
@@ -1362,161 +1226,6 @@ pub fn agent_activity(repo_path: &Path) -> AgentActivityBlock {
         total_dispatches,
         total_errors,
         agents,
-    }
-}
-
-// ── Measured tokens ──────────────────────────────────────────────────────────
-
-/// Sum `tokens_in` + `tokens_out` (the writer pre-extracts these onto the
-/// NDJSON record) across every `pipeline.telemetry.run` event. `tokens_today`
-/// filters by `ts >= today (UTC midnight)`.
-#[must_use]
-pub fn measured(repo_path: &Path) -> MeasuredBlock {
-    let today_prefix = today_iso_prefix();
-    let mut tokens_total: u64 = 0;
-    let mut tokens_today: u64 = 0;
-    for_each_ndjson_line(repo_path, |v| {
-        if v.get("event").and_then(Value::as_str) != Some("pipeline.telemetry.run") {
-            return;
-        }
-        // Prefer the record-level pre-extracted hints (the writer fills these
-        // when the payload carries `tokens_in`/`tokens_out`). Fall back to
-        // payload-level fields the OTEL collector writes
-        // (`extra.input_tokens` / `extra.output_tokens`), then to the bare
-        // top-level keys.
-        let tin = v.get("tokens_in").and_then(Value::as_u64).unwrap_or_else(|| {
-            v.get("payload")
-                .and_then(|p| p.get("extra"))
-                .and_then(|e| e.get("input_tokens"))
-                .and_then(Value::as_u64)
-                .or_else(|| v.get("payload").and_then(|p| p.get("input_tokens")).and_then(Value::as_u64))
-                .unwrap_or(0)
-        });
-        let tout = v.get("tokens_out").and_then(Value::as_u64).unwrap_or_else(|| {
-            v.get("payload")
-                .and_then(|p| p.get("extra"))
-                .and_then(|e| e.get("output_tokens"))
-                .and_then(Value::as_u64)
-                .or_else(|| v.get("payload").and_then(|p| p.get("output_tokens")).and_then(Value::as_u64))
-                .unwrap_or(0)
-        });
-        let row_tokens = tin + tout;
-        tokens_total += row_tokens;
-        let ts = v.get("ts").and_then(Value::as_str).unwrap_or("");
-        if !today_prefix.is_empty() && ts.starts_with(&today_prefix) {
-            tokens_today += row_tokens;
-        }
-    });
-    MeasuredBlock {
-        tokens_total,
-        tokens_today,
-    }
-}
-
-/// `YYYY-MM-DD` of "today UTC" — used as a string-prefix filter on ISO-8601
-/// timestamps. Empty string on any clock failure.
-fn today_iso_prefix() -> String {
-    chrono::Utc::now().format("%Y-%m-%d").to_string()
-}
-
-// ── Session start + live activity ────────────────────────────────────────────
-
-/// ISO-8601 cut-off marking the start of the current session, or `None` when
-/// no NDJSON event with a `session_id` has been observed under `repo_path`.
-#[must_use]
-pub fn session_start_ts(repo_path: &Path) -> Option<String> {
-    let spec_base = repo_path.join(".claude").join("spec");
-    let _ = std::fs::read_dir(&spec_base).ok()?;
-
-    // First pass: find the most-recent (latest ts) event that carries a
-    // non-empty session_id.
-    let mut latest: Option<(String, String)> = None;
-    for_each_ndjson_line(repo_path, |v| {
-        let session = v.get("session_id").and_then(Value::as_str).unwrap_or("");
-        if session.is_empty() {
-            return;
-        }
-        let ts = v.get("ts").and_then(Value::as_str).unwrap_or("");
-        if ts.is_empty() {
-            return;
-        }
-        let take = match latest.as_ref() {
-            None => true,
-            Some((prev, _)) => ts > prev.as_str(),
-        };
-        if take {
-            latest = Some((ts.to_string(), session.to_string()));
-        }
-    });
-
-    let (_, target_session) = latest?;
-
-    // Second pass: earliest ts sharing the target session_id.
-    let mut earliest: Option<String> = None;
-    for_each_ndjson_line(repo_path, |v| {
-        let session = v.get("session_id").and_then(Value::as_str).unwrap_or("");
-        if session != target_session {
-            return;
-        }
-        let ts = v.get("ts").and_then(Value::as_str).unwrap_or("");
-        if ts.is_empty() {
-            return;
-        }
-        let take = match earliest.as_ref() {
-            None => true,
-            Some(prev) => ts < prev.as_str(),
-        };
-        if take {
-            earliest = Some(ts.to_string());
-        }
-    });
-    earliest
-}
-
-/// Live activity snapshot — most-recent NDJSON event's phase/spec/session.
-/// Still a reduced shape vs the legacy SQLite reader (no 60-bucket sparkline,
-/// no per-phase fan-out); restoring those costs a dedicated reader and is
-/// scoped to a separate follow-up.
-#[must_use]
-pub fn live_activity(repo_path: &Path) -> LiveActivity {
-    let mut latest_ts: Option<String> = None;
-    let mut latest_payload: Option<Value> = None;
-    let mut latest_record: Option<Value> = None;
-    for_each_ndjson_line(repo_path, |v| {
-        let ts = v.get("ts").and_then(Value::as_str).unwrap_or("").to_string();
-        if ts.is_empty() {
-            return;
-        }
-        let take = match latest_ts.as_ref() {
-            None => true,
-            Some(prev) => ts > *prev,
-        };
-        if take {
-            latest_ts = Some(ts);
-            latest_payload = v.get("payload").cloned();
-            latest_record = Some(v.clone());
-        }
-    });
-    let payload = latest_payload.unwrap_or_default();
-    let record = latest_record.unwrap_or_default();
-    LiveActivity {
-        events_last_5m: 0,
-        current_phase: payload
-            .get("to")
-            .or_else(|| payload.get("phase"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        current_spec: record
-            .get("spec")
-            .or_else(|| payload.get("spec"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        last_event_ts: latest_ts,
-        session_id: record
-            .get("session_id")
-            .or_else(|| payload.get("session_id"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
     }
 }
 
@@ -3781,69 +3490,6 @@ mod tests {
     }
 
     #[test]
-    fn live_activity_picks_latest_event() {
-        let tmp = TempDir::new().unwrap();
-        let lines = format!(
-            "{}\n{}\n",
-            r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"s","spec":"alpha","payload":{"to":"PLAN"}}"#,
-            r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:05:00.000Z","session_id":"s","spec":"alpha","payload":{"to":"EXECUTE"}}"#,
-        );
-        write_event(tmp.path(), "alpha", "events.ndjson", &lines);
-        let live = live_activity(tmp.path());
-        assert_eq!(live.current_phase.as_deref(), Some("EXECUTE"));
-        assert_eq!(live.current_spec.as_deref(), Some("alpha"));
-    }
-
-    #[test]
-    fn session_start_returns_earliest_ts_in_latest_session() {
-        let tmp = TempDir::new().unwrap();
-        let lines = format!(
-            "{}\n{}\n{}\n{}\n",
-            r#"{"event":"k","kind":"other","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-1","spec":"a","payload":{}}"#,
-            r#"{"event":"k","kind":"other","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-2","spec":"a","payload":{}}"#,
-            r#"{"event":"k","kind":"other","ts":"2026-05-27T08:30:00.000Z","session_id":"sess-2","spec":"a","payload":{}}"#,
-            r#"{"event":"k","kind":"other","ts":"2026-05-27T10:00:00.000Z","session_id":"sess-2","spec":"a","payload":{}}"#,
-        );
-        write_event(tmp.path(), "a", "events.ndjson", &lines);
-        let start = session_start_ts(tmp.path()).expect("should resolve");
-        assert_eq!(start, "2026-05-27T08:30:00.000Z");
-    }
-
-    #[test]
-    fn workflow_by_phase_counts_pipeline_phase_events() {
-        let tmp = TempDir::new().unwrap();
-        let lines = concat!(
-            r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"to":"ANALYZE"}}"#, "\n",
-            r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:05:00.000Z","spec":"a","payload":{"to":"PLAN"}}"#, "\n",
-            r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:10:00.000Z","spec":"a","payload":{"to":"PLAN"}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:11:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let block = workflow_by_phase(tmp.path());
-        let plan = block.by_phase.iter().find(|p| p.phase == "PLAN").expect("PLAN row");
-        let analyze = block.by_phase.iter().find(|p| p.phase == "ANALYZE").expect("ANALYZE row");
-        assert_eq!(plan.count, 2);
-        assert_eq!(analyze.count, 1);
-    }
-
-    #[test]
-    fn tool_breakdown_aggregates_tool_use_events() {
-        let tmp = TempDir::new().unwrap();
-        let lines = concat!(
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:01:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:02:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
-            r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:03:00.000Z","spec":"a","payload":{"to":"PLAN"}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = tool_breakdown(tmp.path());
-        let read = rows.iter().find(|r| r.tool_name == "Read").expect("Read row");
-        let edit = rows.iter().find(|r| r.tool_name == "Edit").expect("Edit row");
-        assert_eq!(read.count, 2);
-        assert_eq!(edit.count, 1);
-    }
-
-    #[test]
     fn agent_activity_aggregates_start_stop_pairs() {
         let tmp = TempDir::new().unwrap();
         let lines = concat!(
@@ -3857,19 +3503,6 @@ mod tests {
         let explore = block.agents.iter().find(|a| a.agent_type == "Explore").expect("Explore row");
         assert_eq!(explore.starts, 1);
         assert_eq!(explore.stops, 1);
-    }
-
-    #[test]
-    fn measured_sums_telemetry_run_tokens() {
-        let tmp = TempDir::new().unwrap();
-        let lines = concat!(
-            r#"{"event":"pipeline.telemetry.run","kind":"pipeline.telemetry.run","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"extra":{"input_tokens":1000,"output_tokens":500}},"tokens_in":1000,"tokens_out":500}"#, "\n",
-            r#"{"event":"pipeline.telemetry.run","kind":"pipeline.telemetry.run","ts":"2026-05-27T09:01:00.000Z","spec":"a","payload":{"extra":{"input_tokens":200,"output_tokens":100}},"tokens_in":200,"tokens_out":100}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:02:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let block = measured(tmp.path());
-        assert_eq!(block.tokens_total, 1800);
     }
 
     #[test]
@@ -5278,15 +4911,15 @@ mod tests {
 
     #[test]
     fn non_ndjson_path_invalidation_is_ignored() {
-        // telemetry.db (and WAL/SHM) writes classify as `events` in the watcher
-        // but never feed the parsed snapshot — they must not dirty the cache.
+        // Only parsed `.ndjson` shards feed the snapshot — a write to any
+        // other file must not dirty the cache.
         let tmp = TempDir::new().unwrap();
         let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
         write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
         let first = walk_ndjson_events_cached(tmp.path());
         invalidate_events_cache_path(
             &tmp.path().to_string_lossy(),
-            &tmp.path().join(".claude").join(".harness").join("telemetry.db"),
+            &tmp.path().join(".claude").join(".harness").join("notes.txt"),
         );
         let second = walk_ndjson_events_cached(tmp.path());
         assert!(

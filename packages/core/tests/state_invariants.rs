@@ -2,13 +2,11 @@
 //! Invariant tests for the canonical [`SpecState`] model introduced in
 //! `spec-lifecycle-unification` Wave 1.
 //!
-//! Covers three things the unit tests in `model/view/spec.rs` complement:
+//! Covers two things the unit tests in `model/view/spec.rs` complement:
 //!
 //! 1. The [`SpecState::new`] constructor rejects the three illegal
 //!    `(stage, outcome, flags)` triples (the named ACs live here).
-//! 2. The legacy [`SpecStatus`] ↔ [`SpecState`] conversions are consistent
-//!    (active/terminal parity, exact round-trip for the unambiguous variants).
-//! 3. The header parser derives the right state from both the new
+//! 2. The header parser derives the right state from both the new
 //!    (`### Stage:` / `### Outcome:` / `### Flags:`) and the legacy
 //!    (`### Status:`) formats — exercised through the public projection
 //!    [`project_spec_view_with_header`] so the whole header → view path is
@@ -20,11 +18,7 @@
 //! on-disk `spec.md` path, exercising the same code path production readers
 //! consume.
 
-// The conversions and the derived `status` field are deprecated but
-// intentionally exercised here during the W1→W7 migration window.
-#![allow(deprecated)]
-
-use mustard_core::{Flags, Outcome, SpecState, SpecStatus, Stage, StateError};
+use mustard_core::{Flags, Outcome, SpecState, Stage, StateError};
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
@@ -68,53 +62,50 @@ fn rejects_wave_failed_outside_execute() {
 }
 
 // ---------------------------------------------------------------------------
-// Conversion idempotence / parity
+// Classification invariants
 // ---------------------------------------------------------------------------
 
+/// The active/terminal split is a pure function of the outcome — list filters
+/// depend on it staying that way regardless of stage or flags.
 #[test]
-fn spec_state_status_round_trip_preserves_classification() {
-    let statuses = [
-        SpecStatus::Planning,
-        SpecStatus::Implementing,
-        SpecStatus::Reviewing,
-        SpecStatus::Qa,
-        SpecStatus::ClosedFollowup,
-        SpecStatus::Completed,
-        SpecStatus::Cancelled,
-        SpecStatus::Abandoned,
-        SpecStatus::Blocked,
-        SpecStatus::WaveFailed,
-    ];
-    for status in statuses {
-        let state: SpecState = status.into();
-        // The active/terminal split must survive the lift, since list filters
-        // depend on it.
-        assert_eq!(state.is_active(), status.is_active(), "active parity {status:?}");
-        assert_eq!(
-            state.is_terminal(),
-            status.is_terminal(),
-            "terminal parity {status:?}"
-        );
-        // The back-projection is always a legal status.
-        let _back = SpecStatus::try_from(state).expect("validated state projects to a status");
-    }
-}
+fn active_terminal_split_follows_the_outcome() {
+    let active = SpecState::new(Stage::Execute, Outcome::Active, Flags::default()).unwrap();
+    assert!(active.is_active());
+    assert!(!active.is_terminal());
 
-#[test]
-fn terminal_and_qualifier_statuses_round_trip_exactly() {
-    // These variants are unambiguous in both directions.
-    for status in [
-        SpecStatus::Implementing,
-        SpecStatus::ClosedFollowup,
-        SpecStatus::Completed,
-        SpecStatus::Cancelled,
-        SpecStatus::Abandoned,
-        SpecStatus::Blocked,
-        SpecStatus::WaveFailed,
+    // A qualifier flag never flips the classification.
+    let blocked = SpecState::new(
+        Stage::Execute,
+        Outcome::Active,
+        Flags {
+            blocked: true,
+            ..Flags::default()
+        },
+    )
+    .unwrap();
+    assert!(blocked.is_active());
+
+    let followup = SpecState::new(
+        Stage::Close,
+        Outcome::Active,
+        Flags {
+            followup_open: true,
+            ..Flags::default()
+        },
+    )
+    .unwrap();
+    assert!(followup.is_active(), "the follow-up window is still active");
+
+    for outcome in [
+        Outcome::Completed,
+        Outcome::Cancelled,
+        Outcome::Abandoned,
+        Outcome::Superseded,
+        Outcome::Absorbed,
     ] {
-        let state: SpecState = status.into();
-        let back = SpecStatus::try_from(state).unwrap();
-        assert_eq!(back, status, "exact round-trip for {status:?}");
+        let state = SpecState::new(Stage::Close, outcome, Flags::default()).unwrap();
+        assert!(state.is_terminal(), "terminal for {outcome:?}");
+        assert!(!state.is_active(), "not active for {outcome:?}");
     }
 }
 
@@ -149,8 +140,6 @@ fn parses_legacy_approved_as_plan_active() {
     assert_eq!(view.state.stage, Stage::Plan);
     assert_eq!(view.state.outcome, Outcome::Active);
     assert!(!view.state.flags.blocked);
-    // Legacy field stays consistent.
-    assert_eq!(view.status, SpecStatus::Planning);
 }
 
 /// AC-W1-6: the new header format parses into the matching state.
@@ -168,8 +157,6 @@ fn parses_new_format() {
     assert_eq!(view.state.stage, Stage::Execute);
     assert_eq!(view.state.outcome, Outcome::Active);
     assert!(view.state.flags.blocked);
-    // The blocked flag projects back to the legacy Blocked status.
-    assert_eq!(view.status, SpecStatus::Blocked);
 }
 
 /// A terminal new-format header (Close + Completed) parses and projects.
@@ -187,5 +174,4 @@ fn parses_new_format_terminal() {
     assert_eq!(view.state.stage, Stage::Close);
     assert_eq!(view.state.outcome, Outcome::Completed);
     assert!(view.state.is_terminal());
-    assert_eq!(view.status, SpecStatus::Completed);
 }

@@ -220,6 +220,9 @@ fn audit_targets(root: &Path) -> Vec<PathBuf> {
         "apps/dashboard/src",
         "apps/dashboard/src-tauri/src",
         "packages/core/src",
+        // The command/skill/ref prose moved to the plugin tree in F4 (2.0);
+        // it must stay under the EN-only audit like the old `.claude/refs` did.
+        "plugin",
         ".claude/refs",
     ];
     candidates
@@ -270,7 +273,8 @@ fn is_scannable_ext(path: &Path) -> bool {
 /// for the canonical pt-BR example doc the rest of the audit references.
 fn is_allow_listed(path: &Path) -> bool {
     let s = path.to_string_lossy().replace('\\', "/");
-    s.ends_with("apps/cli/templates/refs/feature/spec-language.md")
+    s.ends_with("plugin/refs/feature/spec-language.md")
+        || s.ends_with("apps/cli/templates/refs/feature/spec-language.md")
         || s.ends_with(".claude/refs/feature/spec-language.md")
 }
 

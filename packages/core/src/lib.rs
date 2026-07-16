@@ -51,8 +51,6 @@ pub use platform::hook_resolve::{
     resolve_mustard_rt, rewrite_command, rewrite_hooks_value, rewrite_settings_hooks,
 };
 
-#[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
-pub use domain::model::view::SpecStatus;
 pub use domain::model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,
     Scope, SegmentState, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,

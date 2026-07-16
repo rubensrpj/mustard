@@ -2,7 +2,7 @@
 //!
 //! ## Scope (b3 Wave 5, knowledge family)
 //!
-//! This module consolidates three JavaScript hooks. Each is a distinct
+//! This module consolidates two JavaScript hooks. Each is a distinct
 //! *concern* kept as its own internal section — consolidation regroups, it
 //! does not merge logic:
 //!
@@ -11,9 +11,11 @@
 //!   `retry.attempt` event per measured hook-level retry.
 //! - `session-knowledge-inc.js` — `PostToolUse(Task)`: the incremental variant
 //!   — throttled, writes friction telemetry for the most recent pipeline-state.
-//! - `memory-auto-extract.js` — `SessionEnd`: scans `spec/{name}/spec.md`
-//!   for `## Decisions` / `## Lessons` (EN+PT) bullets and persists them as
-//!   memory decisions.
+//!
+//! The third historical concern (`memory-auto-extract` — spec bullets into a
+//! knowledge store) was retired with the Mustard memory hybrid: decisions and
+//! lessons are `decision`/`lesson` events now, emitted at CLOSE via
+//! `run emit-event`.
 //!
 //! ## Contract shape
 //!
@@ -28,17 +30,11 @@
 //!   only write friction telemetry and emit `retry.attempt`. This port
 //!   reproduces exactly that: it writes `friction.json` and emits
 //!   `retry.attempt`.
-//! - W3D: `memory-auto-extract` no longer shells out to `memory.js`. Decisions
-//!   and lessons extracted from spec bullets are written directly to
-//!   `.claude/knowledge/{slug}.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
-//!   YAML frontmatter carries `kind`, `captured_at`, `source_event`, and `spec`.
 
 use mustard_core::io::fs;
-use mustard_core::io::knowledge_store::KnowledgeStore;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::domain::model::knowledge::{Kind, Knowledge, Origin, Scope, Status};
 use mustard_core::ClaudePaths;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -46,8 +42,6 @@ use std::time::SystemTime;
 
 use mustard_core::time::now_iso8601;
 
-/// Max memory entries persisted per session — `MAX_ENTRIES_PER_SESSION`.
-const MAX_ENTRIES_PER_SESSION: usize = 5;
 /// Throttle window for `session-knowledge-inc` — 1 hour, max 3 runs.
 const THROTTLE_WINDOW_MS: u128 = 3_600_000;
 const THROTTLE_MAX: usize = 3;
@@ -464,263 +458,18 @@ fn run_session_knowledge_inc(cwd: &str) {
 }
 
 // ===========================================================================
-// memory-auto-extract — SessionEnd decision/lesson extraction
-// ===========================================================================
-
-/// One extracted memory item.
-struct MemoryItem {
-    /// `"decision"` or `"lesson"`.
-    item_type: &'static str,
-    content: String,
-}
-
-/// `true` if `line` opens a Decisions section (EN+PT). Mirrors the JS
-/// `^##\s+(?:Decisões não-óbvias|Decisions|Decisões)\b`.
-fn is_decisions_heading(line: &str) -> bool {
-    h2_named_any(
-        line,
-        &["decisões não-óbvias", "decisions", "decisões"],
-    )
-}
-
-/// `true` if `line` opens a Lessons section (EN+PT). Mirrors the JS
-/// `^##\s+(?:Lições|Lessons|Lições aprendidas)\b`.
-fn is_lessons_heading(line: &str) -> bool {
-    h2_named_any(line, &["lições aprendidas", "lições", "lessons"])
-}
-
-/// `true` if `line` is an `## <name>` heading for any `name` in `names`
-/// (case-insensitive, word-boundaried). Longer names are checked first so
-/// `Lições aprendidas` wins over `Lições`.
-fn h2_named_any(line: &str, names: &[&str]) -> bool {
-    let Some(rest) = line.strip_prefix("##") else {
-        return false;
-    };
-    if !rest.starts_with(char::is_whitespace) {
-        return false;
-    }
-    let rest = rest.trim_start().to_ascii_lowercase();
-    for name in names {
-        if rest.starts_with(name) {
-            let boundary_ok = rest
-                .as_bytes()
-                .get(name.len())
-                .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'));
-            if boundary_ok {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Extract `## Decisions` / `## Lessons` bullet items from a spec.md body.
-/// Port of `extractFromSpec`.
-fn extract_memory_items(content: &str) -> Vec<MemoryItem> {
-    let mut out: Vec<MemoryItem> = Vec::new();
-    let mut active: Option<&'static str> = None;
-    for line in content.lines() {
-        if line.starts_with("##") && line[2..].starts_with(char::is_whitespace) {
-            active = if is_decisions_heading(line) {
-                Some("decision")
-            } else if is_lessons_heading(line) {
-                Some("lesson")
-            } else {
-                None
-            };
-            continue;
-        }
-        let Some(item_type) = active else {
-            continue;
-        };
-        // `^\s*[-*]\s+(.*)$`.
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix('-').or_else(|| trimmed.strip_prefix('*')) else {
-            continue;
-        };
-        if !rest.starts_with(char::is_whitespace) {
-            continue;
-        }
-        let text = rest.trim();
-        if text.is_empty() || text.chars().count() < 8 {
-            continue;
-        }
-        // Skip placeholders.
-        let lower = text.to_ascii_lowercase();
-        if matches!(
-            lower.as_str(),
-            "nenhuma" | "nenhum" | "none" | "n/a" | "tbd" | "todo"
-        ) {
-            continue;
-        }
-        out.push(MemoryItem {
-            item_type,
-            content: text.to_string(),
-        });
-    }
-    out
-}
-
-/// Compute a short FNV-1a hash of a string (16 hex chars). Used only for the
-/// `.memory-seen.json` idempotency cache (a runtime cache never compared
-/// cross-implementation), so any deterministic, collision-resistant-enough hash
-/// is sufficient — correctness of the gate does not depend on matching any
-/// particular digest.
-fn content_hash(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{h:016x}")
-}
-
-/// Persist one extracted memory item via the unified [`KnowledgeStore`]. The
-/// item is a [`Kind::Decision`] / [`Kind::Lesson`] scoped to its origin spec,
-/// so the store lands it under `.claude/memory/{decisions,lessons}/` (the
-/// canonical home — which `session_start_inject` already scans recursively under
-/// `.claude/memory/`). `source` has the form `spec:{name}` → `origin.spec`.
-/// Returns `true` on success, `false` on any IO failure (fail-open).
-fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
-    let store = KnowledgeStore::new(
-        match ClaudePaths::for_project(Path::new(cwd)) {
-            Ok(p) => p.claude_dir(),
-            Err(_) => return false,
-        },
-    );
-    let spec = source.strip_prefix("spec:").unwrap_or(source).to_string();
-    let kind = if item.item_type == "decision" {
-        Kind::Decision
-    } else {
-        Kind::Lesson
-    };
-    let k = Knowledge {
-        kind,
-        scope: if spec.is_empty() {
-            Scope::Global
-        } else {
-            Scope::Spec { spec: spec.clone() }
-        },
-        label: item.content.chars().take(200).collect(),
-        content: item.content.clone(),
-        origin: Origin {
-            spec: (!spec.is_empty()).then_some(spec),
-            captured_at: now_iso8601(),
-            ..Origin::default()
-        },
-        confidence: 0.0,
-        status: Status::Active,
-    };
-    // `true` only when a record was actually persisted: the store's quality
-    // gate may skip a non-substantive record (`Ok(None)`), which must NOT count
-    // as a persist (it would otherwise mark the dedup hash seen and bump the
-    // per-session counter for nothing).
-    matches!(store.write(&k), Ok(Some(_)))
-}
-
-/// `memory-auto-extract`: on `SessionEnd`, scan active specs for Decisions /
-/// Lessons bullets and persist them as `.claude/knowledge/{slug}.md` via
-/// [`MarkdownStore::write_atomic`]. Pure side effect.
-fn run_memory_auto_extract(cwd: &str) {
-    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
-        return;
-    };
-    let active = paths.spec_dir();
-    if !active.exists() {
-        return;
-    }
-    // knowledge/ is created on first write by persist_memory; ensure it exists
-    // here so the seen-path cache can also be written under .cache/.
-    let _ = fs::create_dir_all(paths.claude_dir().join("knowledge"));
-
-    let seen_path = paths.memory_seen_path();
-    let mut seen_hashes: Vec<String> = fs::read_to_string(&seen_path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| {
-            v.get("hashes")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
-        })
-        .unwrap_or_default();
-    let mut seen_set: std::collections::HashSet<String> = seen_hashes.iter().cloned().collect();
-
-    let spec_files = collect_spec_files(&active);
-    let mut persisted = 0;
-    let mut new_hashes: Vec<String> = Vec::new();
-
-    'outer: for spec_path in spec_files {
-        if persisted >= MAX_ENTRIES_PER_SESSION {
-            break;
-        }
-        let spec_name = spec_path
-            .parent()
-            .and_then(|p| p.strip_prefix(&active).ok())
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
-        let Ok(content) = fs::read_to_string(&spec_path) else {
-            continue;
-        };
-        for item in extract_memory_items(&content) {
-            if persisted >= MAX_ENTRIES_PER_SESSION {
-                break 'outer;
-            }
-            let hash = content_hash(&format!(
-                "{spec_name}|{}|{}",
-                item.item_type, item.content
-            ));
-            if seen_set.contains(&hash) {
-                continue;
-            }
-            if persist_memory(&item, cwd, &format!("spec:{spec_name}")) {
-                seen_set.insert(hash.clone());
-                new_hashes.push(hash);
-                persisted += 1;
-            }
-        }
-    }
-
-    if !new_hashes.is_empty() {
-        seen_hashes.extend(new_hashes);
-        let start = seen_hashes.len().saturating_sub(500);
-        let kept = &seen_hashes[start..];
-        let _ = fs::write_atomic(
-            &seen_path,
-            serde_json::to_string_pretty(&json!({ "hashes": kept })).unwrap_or_default().as_bytes(),
-        );
-    }
-}
-
-/// Recursively collect every `spec.md` file under `dir`.
-fn collect_spec_files(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries {
-        if entry.is_dir {
-            out.extend(collect_spec_files(&entry.path));
-        } else if entry.file_name == "spec.md" {
-            out.push(entry.path);
-        }
-    }
-    out
-}
-
-// ===========================================================================
 // Contract impl
 // ===========================================================================
 
 impl Observer for SessionKnowledgeObserver {
-    /// Dispatch by trigger: `SessionEnd` runs `session-knowledge` +
-    /// `memory-auto-extract`; `PostToolUse(Task)` runs `session-knowledge-inc`.
-    /// Any other invocation is a no-op. Pure side effect — never panics.
+    /// Dispatch by trigger: `SessionEnd` runs `session-knowledge`;
+    /// `PostToolUse(Task)` runs `session-knowledge-inc`. Any other invocation
+    /// is a no-op. Pure side effect — never panics.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = ctx.project_dir_or_cwd(input);
         match ctx.trigger {
             Some(Trigger::SessionEnd) => {
                 run_session_knowledge(input, &cwd);
-                run_memory_auto_extract(&cwd);
             }
             Some(Trigger::PostToolUse) => {
                 if matches!(input.tool_name.as_deref(), Some("Task" | "Agent")) {
@@ -889,70 +638,6 @@ mod tests {
             2,
             "idempotent — no re-emission"
         );
-    }
-
-    // --- memory-auto-extract parity ----------------------------------------
-
-    #[test]
-    fn extract_memory_items_finds_decisions_and_lessons() {
-        let content = "# Spec\n\n## Decisions\n\
-                       - Use UUIDv7 for all primary keys\n\
-                       - nenhuma\n\
-                       - x\n\
-                       ## Other\n- not extracted here\n\
-                       ## Lessons\n- Always run the parity tests first\n";
-        let items = extract_memory_items(content);
-        // "nenhuma" (placeholder) and "x" (too short) are filtered.
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].item_type, "decision");
-        assert!(items[0].content.contains("UUIDv7"));
-        assert_eq!(items[1].item_type, "lesson");
-    }
-
-    #[test]
-    fn extract_memory_items_handles_pt_headings() {
-        let content = "## Decisões não-óbvias\n\
-                       - O parser de spec é idioma-agnóstico\n\
-                       ## Lições aprendidas\n\
-                       - Contar artefatos antes de extrapolar custo\n";
-        let items = extract_memory_items(content);
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].item_type, "decision");
-        assert_eq!(items[1].item_type, "lesson");
-    }
-
-    #[test]
-    fn memory_extract_writes_decision_md() {
-        // persist_memory routes through the unified KnowledgeStore: a decision
-        // bullet (kind=decision) lands under .claude/memory/decisions/ — the
-        // canonical decision home, which session_start_inject scans recursively.
-        let dir = tempdir().unwrap();
-        let active = dir.path().join(".claude/spec/demo");
-        std::fs::create_dir_all(&active).unwrap();
-        std::fs::write(
-            active.join("spec.md"),
-            "## Decisions\n- A real decision that is long enough\n",
-        )
-        .unwrap();
-        let input = HookInput {
-            hook_event_name: Some("SessionEnd".to_string()),
-            ..HookInput::default()
-        };
-        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
-        // The decision .md must land under .claude/memory/decisions/.
-        let decisions_dir = dir.path().join(".claude").join("memory").join("decisions");
-        let md_count = std::fs::read_dir(&decisions_dir)
-            .map(|rd| rd.flatten().filter(|e| {
-                e.path().extension().and_then(|x| x.to_str()) == Some("md")
-            }).count())
-            .unwrap_or(0);
-        assert!(md_count >= 1, "expected at least one decision .md written");
-    }
-
-    #[test]
-    fn content_hash_is_stable() {
-        assert_eq!(content_hash("a|decision|b"), content_hash("a|decision|b"));
-        assert_ne!(content_hash("a|decision|b"), content_hash("a|lesson|b"));
     }
 
     // --- routing -----------------------------------------------------------

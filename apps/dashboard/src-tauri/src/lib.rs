@@ -1,5 +1,4 @@
 mod artifact_update;
-pub mod amend_queries;
 pub mod commands;
 mod discovery;
 pub mod doctor;
@@ -11,7 +10,6 @@ mod projects;
 mod spec_staleness;
 pub mod spec_views;
 pub mod telemetry;
-pub mod telemetry_agg;
 mod watcher;
 
 use mustard_core::io::fs;
@@ -19,35 +17,6 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct PipelineSummary {
-    pub spec_name: String,
-    pub phase: String,
-    pub scope: String,
-    pub status: String,
-    pub updated_at: Option<String>,
-}
-
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct MetricsSummary {
-    pub total_events: usize,
-    pub sessions_recent: usize,
-    pub agents_dispatched: usize,
-    pub last_event_at: Option<String>,
-    pub tokens_total: u64,
-    pub tokens_today: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct KnowledgeSummary {
-    pub patterns_count: usize,
-    pub conventions_count: usize,
-    pub high_confidence_count: usize,
-}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -68,13 +37,17 @@ pub struct SpecRow {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct KnowledgeRow {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub type_: String,
-    pub name: String,
-    pub description: String,
-    pub confidence: f64,
-    pub source: Option<String>,
+    /// Event kind: `decision` or `lesson`.
+    pub kind: String,
+    /// Decision → `payload.title`; lesson → `payload.takeaway`.
+    pub title: String,
+    /// Decision → `payload.rationale`; lesson → `payload.trigger`. Optional —
+    /// both payload fields are nullable at the emitter.
+    pub body: Option<String>,
+    /// Spec attribution from the event's top-level `spec` field.
+    pub spec: Option<String>,
+    /// ISO-8601 event timestamp (empty when the record carries none).
+    pub ts: String,
 }
 
 // ── Consumption / cost summary (Phase 2 spans) ──────────────────────────────
@@ -135,233 +108,59 @@ pub struct ConsumptionSummary {
     pub daily_series: Vec<DailyPoint>,
 }
 
-#[derive(Serialize, Default, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct ProjectUsage {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub tokens_total: u64,
-    pub tokens_today: u64,
-    pub cost_total_usd: f64,
-    pub cost_today_usd: f64,
-    pub last_activity_ms: Option<u64>,
-}
-
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct GlobalConsumption {
-    pub tokens_total: u64,
-    pub tokens_today: u64,
-    pub cost_total_usd: f64,
-    pub cost_today_usd: f64,
-    pub by_project: Vec<ProjectUsage>,
-    pub by_model: Vec<ModelUsage>,
-    pub daily_series: Vec<DailyPoint>,
-    pub rtk: telemetry::RtkBlock,
-}
-
-/// Off-main-thread wrapper for [`dashboard_pipelines_impl`] — it runs the same
-/// heavy per-spec fold as `dashboard_active_pipelines`, so on a cold cache it
-/// pays the full workspace parse. A join error degrades to an empty list. See
-/// [`dashboard_metrics`] for the rationale.
-#[tauri::command]
-async fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || dashboard_pipelines_impl(repo_path))
-        .await
-        .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_pipelines_impl(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
-    // Onda 2: this legacy command has no live caller (superseded by
-    // `dashboard_active_pipelines`). Alias it to the same NDJSON-backed
-    // active-pipelines data, projected down to the leaner `PipelineSummary`
-    // shape so any stray consumer still sees real rows.
-    let actives = dashboard_active_pipelines_impl(repo_path)?;
-    Ok(actives
-        .into_iter()
-        .map(|p| PipelineSummary {
-            spec_name: p.spec_name,
-            phase: p.phase,
-            scope: String::new(),
-            status: p.status,
-            updated_at: p.updated_at,
-        })
-        .collect())
-}
-
-/// Off-main-thread wrapper for [`dashboard_metrics_impl`]. The body does a full
-/// workspace walk; running it on the main thread froze the UI under the live
-/// refresh burst. `spawn_blocking` moves the work off the UI thread so commands
-/// for different projects run concurrently. A join error (panic in the closure)
-/// degrades to a zeroed summary — never an Err toast (the failure-tolerant
-/// contract). The sync `_impl` is kept so unit tests call it directly.
-#[tauri::command]
-async fn dashboard_metrics(repo_path: String) -> Result<MetricsSummary, String> {
-    tauri::async_runtime::spawn_blocking(move || dashboard_metrics_impl(repo_path))
-        .await
-        .unwrap_or_else(|_| Ok(MetricsSummary::default()))
-}
-
-fn dashboard_metrics_impl(repo_path: String) -> Result<MetricsSummary, String> {
-    // Onda 2: NDJSON-backed metrics. total_events = count over the complete
-    // walker; last_event_at = max ts; agents_dispatched = agent_activity
-    // total; tokens = measured() sum. sessions_recent = distinct session_ids
-    // active within the open-session window.
-    let base = PathBuf::from(&repo_path);
-    let events = telemetry::walk_ndjson_events_cached(&base);
-    let mut total_events = 0usize;
-    let mut last_event_at: Option<String> = None;
-    let mut recent_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    const RECENT_WINDOW_MS: i64 = 15 * 60 * 1000;
-    for ev in events.iter() {
-        total_events += 1;
-        if let Some(ts) = ev.get("ts").and_then(|t| t.as_str()) {
-            if last_event_at.as_deref().map_or(true, |cur| ts > cur) {
-                last_event_at = Some(ts.to_string());
-            }
-            if let (Some(sid), Some(ms)) = (
-                ev.get("session_id").and_then(|s| s.as_str()).filter(|s| !s.is_empty()),
-                telemetry::iso_to_ms_crate(ts),
-            ) {
-                if now_ms - ms <= RECENT_WINDOW_MS {
-                    recent_sessions.insert(sid.to_string());
-                }
-            }
-        }
-    }
-    let agents = telemetry::agent_activity(&base);
-    let m = telemetry::measured(&base);
-    Ok(MetricsSummary {
-        total_events,
-        sessions_recent: recent_sessions.len(),
-        agents_dispatched: usize::try_from(agents.total_dispatches).unwrap_or(usize::MAX),
-        last_event_at,
-        tokens_total: m.tokens_total,
-        tokens_today: m.tokens_today,
-    })
-}
-
-#[tauri::command]
-fn dashboard_knowledge(repo_path: String) -> Result<KnowledgeSummary, String> {
-    // §5: there are NO knowledge events in the NDJSON stream. Read the on-disk
-    // `.claude/knowledge/` files (markdown/JSON) and project them honestly. A
-    // missing dir yields all-zeros (the empty state).
-    let rows = read_knowledge_rows(&PathBuf::from(&repo_path));
-    let patterns_count = rows.iter().filter(|r| r.type_ == "pattern").count();
-    let conventions_count = rows.iter().filter(|r| r.type_ == "convention").count();
-    let high_confidence_count = rows.iter().filter(|r| r.confidence >= 0.8).count();
-    Ok(KnowledgeSummary {
-        patterns_count,
-        conventions_count,
-        high_confidence_count,
-    })
-}
-
-/// §5: project the on-disk `.claude/knowledge/*.md` files into [`KnowledgeRow`]s.
-///
-/// There are NO knowledge events in the NDJSON stream, so the honest source is
-/// the captured-knowledge markdown the harness writes. Each file is YAML
-/// frontmatter (`kind`, `captured_at`, `source_event`, `spec`) plus a markdown
-/// body. We map:
-///   * `id`          → file stem
-///   * `type_`       → frontmatter `kind` (e.g. `decision`, `pattern`, `convention`)
-///   * `name`        → first non-empty body line (heading stripped), truncated
-///   * `description` → the full body, trimmed
-///   * `confidence`  → frontmatter `confidence` if present (0..1), else 1.0 —
-///                     captured decisions are confirmed, not probabilistic, so
-///                     a confirmed entry reads as fully confident. No score is
-///                     fabricated: when the file declares one we honour it.
-///   * `source`      → frontmatter `spec` (falls back to `source_event`)
-///
-/// Fail-open: a missing dir / unreadable file yields an empty list.
-fn read_knowledge_rows(base: &std::path::Path) -> Vec<KnowledgeRow> {
-    let dir = base.join(".claude").join("knowledge");
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
+/// Project the workspace NDJSON event walk into [`KnowledgeRow`]s: one row per
+/// `decision` / `lesson` event (the memory channel — the markdown knowledge
+/// store is gone). Field mapping:
+///   * decision → `title` = `payload.title`, `body` = `payload.rationale`
+///   * lesson   → `title` = `payload.takeaway`, `body` = `payload.trigger`
+/// Attribution (`spec`) and `ts` come from the event envelope. Rows sort
+/// newest-first by `ts`. Fail-open: a project with no events (or a title-less
+/// record) contributes nothing — never an error.
+fn knowledge_rows_from_events(base: &std::path::Path) -> Vec<KnowledgeRow> {
+    let events = telemetry::walk_ndjson_events_cached(base);
     let mut rows: Vec<KnowledgeRow> = Vec::new();
-    for entry in entries {
-        let path = &entry.path;
-        if entry.is_dir {
+    for v in events.iter() {
+        let kind = telemetry::event_name_of(v);
+        if kind != "decision" && kind != "lesson" {
             continue;
         }
-        if path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let payload = v.get("payload");
+        let field = |key: &str| {
+            payload
+                .and_then(|p| p.get(key))
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
         };
-        let (front, body) = split_frontmatter(&content);
-        let kind = yaml_value(&front, "kind").unwrap_or_else(|| "decision".to_string());
-        let source = yaml_value(&front, "spec")
-            .or_else(|| yaml_value(&front, "source_event"));
-        let confidence = yaml_value(&front, "confidence")
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|c| c.clamp(0.0, 1.0))
-            .unwrap_or(1.0);
-        let body_trim = body.trim();
-        let name = body_trim
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map(|l| l.trim_start_matches('#').trim())
-            .map(|l| l.chars().take(120).collect::<String>())
-            .unwrap_or_default();
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
+        let (title, body) = if kind == "decision" {
+            (field("title"), field("rationale"))
+        } else {
+            (field("takeaway"), field("trigger"))
+        };
+        // A record with no renderable title carries nothing to show — skip.
+        let Some(title) = title else { continue };
+        let spec = v
+            .get("spec")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let ts = v
+            .get("ts")
+            .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
         rows.push(KnowledgeRow {
-            id,
-            type_: kind,
-            name,
-            description: body_trim.to_string(),
-            confidence,
-            source,
+            kind: kind.to_string(),
+            title,
+            body,
+            spec,
+            ts,
         });
     }
-    // Most-recent first (file stems are ISO-ish timestamps → lexical sort).
-    rows.sort_by(|a, b| b.id.cmp(&a.id));
+    // Newest first (ISO-8601 is lexically chronological); ts-less rows sink.
+    rows.sort_by(|a, b| b.ts.cmp(&a.ts));
     rows
-}
-
-/// Split a markdown document into `(frontmatter, body)`. When the file opens
-/// with a `---` fence the frontmatter is everything up to the closing `---`;
-/// otherwise the whole document is the body and the frontmatter is empty.
-fn split_frontmatter(content: &str) -> (String, String) {
-    let stripped = content.strip_prefix('\u{FEFF}').unwrap_or(content);
-    if let Some(after) = stripped.strip_prefix("---\n").or_else(|| stripped.strip_prefix("---\r\n")) {
-        if let Some(end) = after.find("\n---") {
-            let front = after[..end].to_string();
-            let rest = &after[end + 4..];
-            let body = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n")).unwrap_or(rest);
-            return (front, body.to_string());
-        }
-    }
-    (String::new(), content.to_string())
-}
-
-/// Read one `key: value` scalar out of a YAML frontmatter block. Returns the
-/// trimmed, unquoted value or `None`.
-fn yaml_value(front: &str, key: &str) -> Option<String> {
-    for line in front.lines() {
-        let mut parts = line.splitn(2, ':');
-        let k = parts.next()?.trim();
-        if !k.eq_ignore_ascii_case(key) {
-            continue;
-        }
-        let v = parts.next()?.trim().trim_matches(|c| c == '"' || c == '\'');
-        if v.is_empty() {
-            return None;
-        }
-        return Some(v.to_string());
-    }
-    None
 }
 
 #[derive(Serialize)]
@@ -527,8 +326,8 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
 }
 
 /// Off-main-thread wrapper for [`dashboard_recent_events_impl`] (full workspace
-/// walk + sort). A join error degrades to an empty feed. See
-/// [`dashboard_metrics`] for the rationale.
+/// walk + sort) — heavy folds run via `spawn_blocking` so they never freeze
+/// the UI thread. A join error degrades to an empty feed.
 #[tauri::command]
 async fn dashboard_recent_events(
     repo_path: String,
@@ -717,7 +516,6 @@ fn event_summary(
 
 /// Off-main-thread wrapper for [`dashboard_specs_impl`] (spec-list walk; served
 /// from the specs cache when warm). A join error degrades to an empty list.
-/// See [`dashboard_metrics`] for the rationale.
 #[tauri::command]
 async fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
     tauri::async_runtime::spawn_blocking(move || dashboard_specs_impl(repo_path))
@@ -1295,324 +1093,50 @@ fn dashboard_spec_reactivate(repo_path: String, spec_name: String) -> Result<Str
     Ok("implementing".to_string())
 }
 
-/// Off-main-thread wrapper for [`dashboard_search_events_impl`] (full workspace
-/// walk + sort + filter). A join error degrades to an empty result. See
-/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-async fn dashboard_search_events(
-    repo_path: String,
-    query: String,
-    limit: Option<usize>,
-) -> Result<Vec<RecentEvent>, String> {
+async fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
+    // Case-insensitive substring search over the event-projected rows
+    // (title + body + spec). Off-main-thread: a cold call pays the full
+    // workspace event walk; a join error degrades to an empty list.
     tauri::async_runtime::spawn_blocking(move || {
-        dashboard_search_events_impl(repo_path, query, limit)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_search_events_impl(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
-    // Onda 2: case-insensitive substring filter over the same complete-walker
-    // fold as `dashboard_recent_events`. Matches against the serialized record
-    // (event name, spec, summary, tool, target). Newest first.
-    let base = PathBuf::from(&repo_path);
-    let needle = query.trim().to_lowercase();
-    let events = telemetry::walk_ndjson_events_cached(&base);
-    let timeline = telemetry::build_session_spec_timeline_from(&events);
-    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
-    ordered.sort_by(|a, b| {
-        let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        tb.cmp(ta)
-    });
-    let cap = limit.unwrap_or(100).min(2000);
-    let rows: Vec<RecentEvent> = ordered
-        .into_iter()
-        .map(|v| recent_event_from_value_attributed(v, Some(&timeline)))
-        .filter(|r| {
-            if needle.is_empty() {
-                return true;
-            }
-            let hay = format!(
-                "{} {} {} {} {}",
-                r.event_type,
-                r.spec.as_deref().unwrap_or(""),
-                r.summary.as_deref().unwrap_or(""),
-                r.tool_name.as_deref().unwrap_or(""),
-                r.target.as_deref().unwrap_or(""),
-            )
-            .to_lowercase();
-            hay.contains(&needle)
-        })
-        .take(cap)
-        .collect();
-    Ok(rows)
-}
-
-#[tauri::command]
-fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
-    // §5: substring search over the on-disk `.claude/knowledge/` projection.
-    let needle = query.trim().to_lowercase();
-    let rows: Vec<KnowledgeRow> = read_knowledge_rows(&PathBuf::from(&repo_path))
-        .into_iter()
-        .filter(|r| {
-            if needle.is_empty() {
-                return true;
-            }
-            format!("{} {} {} {}", r.type_, r.name, r.description, r.source.as_deref().unwrap_or(""))
+        let needle = query.trim().to_lowercase();
+        let rows: Vec<KnowledgeRow> = knowledge_rows_from_events(&PathBuf::from(&repo_path))
+            .into_iter()
+            .filter(|r| {
+                if needle.is_empty() {
+                    return true;
+                }
+                format!(
+                    "{} {} {}",
+                    r.title,
+                    r.body.as_deref().unwrap_or(""),
+                    r.spec.as_deref().unwrap_or("")
+                )
                 .to_lowercase()
                 .contains(&needle)
-        })
-        .take(limit.unwrap_or(100).min(1000))
-        .collect();
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_activity_aggregated_impl`] (full
-/// workspace walk + group fold). A join error degrades to an empty result. See
-/// [`dashboard_metrics`] for the rationale.
-#[tauri::command]
-async fn dashboard_activity_aggregated(
-    repo_path: String,
-    limit: Option<usize>,
-) -> Result<Vec<ActivityGroup>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_activity_aggregated_impl(repo_path, limit)
+            })
+            .take(limit.unwrap_or(100).min(1000))
+            .collect();
+        Ok(rows)
     })
     .await
     .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
-fn dashboard_activity_aggregated_impl(repo_path: String, limit: Option<usize>) -> Result<Vec<ActivityGroup>, String> {
-    // Onda 2: group `tool.use` / `agent.*` events by (spec, wave, action_kind)
-    // over the complete walker. action_kind = tool name for `tool.use`, the
-    // agent subtype for `agent.*`. Tracks count, min/max ts, token sums, and a
-    // distinct-file count (from `tool.use` target.file_path).
-    let base = PathBuf::from(&repo_path);
-    let events = telemetry::walk_ndjson_events_cached(&base);
-    // Read-time attribution so spec-less session `tool.use` / `agent.*` events
-    // group under the spec their session was bound to at the time.
-    let timeline = telemetry::build_session_spec_timeline_from(&events);
-
-    struct Acc {
-        spec: Option<String>,
-        wave: Option<i64>,
-        action_kind: Option<String>,
-        count: i64,
-        min_ts: Option<String>,
-        max_ts: Option<String>,
-        tokens_total: i64,
-        files: std::collections::HashSet<String>,
-    }
-    let mut groups: HashMap<(String, i64, String), Acc> = HashMap::new();
-
-    for v in events.iter() {
-        let name = telemetry::event_name_of(v);
-        let payload = v.get("payload");
-        let action_kind: Option<String> = match name {
-            "tool.use" => payload
-                .and_then(|p| p.get("tool").or_else(|| p.get("tool_name")))
-                .and_then(|t| t.as_str())
-                .map(str::to_string),
-            n if n.starts_with("agent.") => payload
-                .and_then(|p| p.get("subagentType").or_else(|| p.get("agent_type")))
-                .and_then(|t| t.as_str())
-                .map(str::to_string)
-                .or_else(|| Some(n.to_string())),
-            _ => continue,
-        };
-        let spec = timeline.attributed_spec(v).map(str::to_string);
-        let wave = v.get("wave").and_then(serde_json::Value::as_i64);
-        let ts = v.get("ts").and_then(|t| t.as_str()).map(str::to_string);
-        let tokens = v
-            .get("tokens_in")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0)
-            + v.get("tokens_out").and_then(serde_json::Value::as_i64).unwrap_or(0);
-        let file = if name == "tool.use" {
-            payload
-                .and_then(|p| p.get("target"))
-                .and_then(|t| t.as_object())
-                .and_then(|o| o.get("file_path").or_else(|| o.get("file")))
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-        } else {
-            None
-        };
-
-        let key = (
-            spec.clone().unwrap_or_default(),
-            wave.unwrap_or(-1),
-            action_kind.clone().unwrap_or_default(),
-        );
-        let entry = groups.entry(key).or_insert_with(|| Acc {
-            spec: spec.clone(),
-            wave,
-            action_kind: action_kind.clone(),
-            count: 0,
-            min_ts: None,
-            max_ts: None,
-            tokens_total: 0,
-            files: std::collections::HashSet::new(),
-        });
-        entry.count += 1;
-        entry.tokens_total += tokens;
-        if let Some(f) = file {
-            entry.files.insert(f);
-        }
-        if let Some(t) = ts {
-            if entry.min_ts.as_deref().map_or(true, |c| t.as_str() < c) {
-                entry.min_ts = Some(t.clone());
-            }
-            if entry.max_ts.as_deref().map_or(true, |c| t.as_str() > c) {
-                entry.max_ts = Some(t);
-            }
-        }
-    }
-
-    let mut rows: Vec<ActivityGroup> = groups
-        .into_values()
-        .map(|a| ActivityGroup {
-            spec: a.spec,
-            wave: a.wave,
-            action_kind: a.action_kind,
-            count: a.count,
-            min_ts: a.min_ts,
-            max_ts: a.max_ts,
-            tokens_total: a.tokens_total,
-            files_touched: i64::try_from(a.files.len()).unwrap_or(i64::MAX),
-        })
-        .collect();
-    // Most-active groups first, then most-recent.
-    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| b.max_ts.cmp(&a.max_ts)));
-    if let Some(n) = limit {
-        rows.truncate(n);
-    }
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_quality_metrics_impl`] (full
-/// workspace fold). A join error degrades to a zeroed summary. See
-/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-async fn dashboard_quality_metrics(repo_path: String) -> Result<QualityMetrics, String> {
-    tauri::async_runtime::spawn_blocking(move || dashboard_quality_metrics_impl(repo_path))
-        .await
-        .unwrap_or_else(|_| Ok(QualityMetrics::default()))
-}
-
-fn dashboard_quality_metrics_impl(repo_path: String) -> Result<QualityMetrics, String> {
-    // Onda 2: derive quality from `review.result` / `qa.result` events folded
-    // per spec via the core `project_quality` projection. pass@1 = share of
-    // specs whose latest QA had zero fails; fix_loop_rate = share of specs with
-    // ≥2 distinct qa.result runs (a re-run implies a fix loop). by_role is keyed
-    // by spec here (no role dimension on qa events). Honest about thin data:
-    // returns zeros when no review/qa events exist.
-    let base = PathBuf::from(&repo_path);
-    let events = telemetry::workspace_harness_events_cached(&base);
-
-    // Distinct specs that emitted any qa.result.
-    let mut qa_specs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut qa_runs_per_spec: HashMap<String, i64> = HashMap::new();
-    for e in events.iter() {
-        if e.event == "qa.result" {
-            if let Some(spec) = e.spec.as_deref() {
-                qa_specs.insert(spec.to_string());
-                *qa_runs_per_spec.entry(spec.to_string()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    let mut by_role: Vec<RoleQuality> = Vec::new();
-    let mut pass_specs = 0i64;
-    let mut fix_loop_specs = 0i64;
-    for spec in &qa_specs {
-        let rollup = mustard_core::view::projection::project_quality(spec, &events);
-        let runs = *qa_runs_per_spec.get(spec).unwrap_or(&0);
-        let passed_at_1 = if rollup.total > 0 && rollup.failed == 0 { 1.0 } else { 0.0 };
-        if passed_at_1 > 0.0 {
-            pass_specs += 1;
-        }
-        if runs >= 2 {
-            fix_loop_specs += 1;
-        }
-        by_role.push(RoleQuality {
-            role: spec.clone(),
-            pass_at_1: passed_at_1,
-            fix_loops: runs.saturating_sub(1),
-            samples: runs,
-        });
-    }
-    let spec_n = qa_specs.len() as f64;
-    let pass_at_1 = if spec_n > 0.0 { pass_specs as f64 / spec_n } else { 0.0 };
-    let fix_loop_rate = if spec_n > 0.0 { fix_loop_specs as f64 / spec_n } else { 0.0 };
-
-    // avg phase duration: mean of completed wave durations across specs.
-    let mut wave_durations: Vec<i64> = Vec::new();
-    for spec in &qa_specs {
-        for w in mustard_core::view::projection::project_waves(spec, &events) {
-            if let Some(d) = w.duration_ms {
-                if d >= 0 {
-                    wave_durations.push(d);
-                }
-            }
-        }
-    }
-    let avg_phase_duration_ms = if wave_durations.is_empty() {
-        0.0
-    } else {
-        wave_durations.iter().sum::<i64>() as f64 / wave_durations.len() as f64
-    };
-
-    by_role.sort_by(|a, b| a.role.cmp(&b.role));
-    Ok(QualityMetrics {
-        pass_at_1,
-        fix_loop_rate,
-        avg_phase_duration_ms,
-        by_role,
-        slowest_waves: Vec::new(),
-        tokens_by_phase: Vec::new(),
+async fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
+    // Decision/lesson events projected from the workspace walk, newest first.
+    // Off-main-thread: a cold call pays the full workspace event walk; a join
+    // error degrades to an empty list.
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows: Vec<KnowledgeRow> = knowledge_rows_from_events(&PathBuf::from(&repo_path))
+            .into_iter()
+            .take(limit.unwrap_or(200).min(2000))
+            .collect();
+        Ok(rows)
     })
-}
-
-#[tauri::command]
-fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
-    // §5: project the on-disk `.claude/knowledge/` files, newest first.
-    let rows: Vec<KnowledgeRow> = read_knowledge_rows(&PathBuf::from(&repo_path))
-        .into_iter()
-        .take(limit.unwrap_or(200).min(2000))
-        .collect();
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_impl`] (several full spec
-/// walks + an `rtk gain` subprocess). The heaviest single command — running it
-/// on the main thread is the dominant freeze. A join error degrades to a zeroed
-/// summary. See [`dashboard_metrics`] for the rationale.
-#[tauri::command]
-async fn dashboard_telemetry(repo_path: String) -> Result<telemetry::TelemetrySummary, String> {
-    tauri::async_runtime::spawn_blocking(move || dashboard_telemetry_impl(repo_path))
-        .await
-        .unwrap_or_else(|_| Ok(telemetry::TelemetrySummary::default()))
-}
-
-fn dashboard_telemetry_impl(repo_path: String) -> Result<telemetry::TelemetrySummary, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    // Derive the current session cut-off once and feed it into the
-    // accumulator readers so they can report "+N this session" alongside the
-    // lifetime totals.
-    let session_start = telemetry::session_start_ts(&base);
-    let since = session_start.as_deref();
-    Ok(telemetry::TelemetrySummary {
-        rtk: telemetry::rtk_summary(&base),
-        measured: telemetry::measured(&base),
-        prevention: telemetry::hook_fire_counts(&base, since),
-        routing: telemetry::routing_breakdown(&base, since),
-        workflow: telemetry::workflow_by_phase(&base),
-        tool_breakdown: telemetry::tool_breakdown(&base),
-        agent_activity: telemetry::agent_activity(&base),
-        session_start_ts: session_start.clone(),
-    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 /// Friction telemetry from `.claude/.metrics/friction.json` — measured atrito
@@ -1629,19 +1153,6 @@ async fn dashboard_friction(repo_path: String) -> Result<Vec<telemetry::Friction
     })
     .await
     .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-/// Live activity derived from mustard.db. Events are written by mustard-rt
-/// on every hook dispatch, so the DB always reflects the current session.
-/// Off-main-thread; a join error degrades to a zeroed summary.
-#[tauri::command]
-async fn dashboard_live_activity(repo_path: String) -> Result<telemetry::LiveActivity, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let base = std::path::PathBuf::from(&repo_path);
-        Ok(telemetry::live_activity(&base))
-    })
-    .await
-    .unwrap_or_else(|_| Ok(telemetry::LiveActivity::default()))
 }
 
 /// Build a [`ConsumptionSummary`] for one project root from the core NDJSON
@@ -1754,74 +1265,6 @@ async fn dashboard_consumption(repo_path: String) -> Result<ConsumptionSummary, 
     .unwrap_or_else(|_| Ok(ConsumptionSummary::default()))
 }
 
-/// Cross-project (global) consumption: walks every project discovered under
-/// `projects_root`, sums tokens and cost per project + per model, builds a
-/// merged 14-day daily series, and attaches the global RTK block.
-#[tauri::command]
-fn dashboard_consumption_global(projects_root: String) -> Result<GlobalConsumption, String> {
-    let root = std::path::PathBuf::from(&projects_root);
-    let projects = discovery::discover(&root)?;
-
-    let mut out = GlobalConsumption::default();
-    let mut model_totals: HashMap<String, ModelUsage> = HashMap::new();
-
-    for p in projects {
-        // Onda 2: each discovered project contributes a real NDJSON-folded
-        // consumption row via the same `consumption_for_root` the per-project
-        // command uses. Global token/cost totals and `by_model` accumulate
-        // across every project.
-        let c = consumption_for_root(std::path::Path::new(&p.path));
-        out.tokens_total += c.tokens_total;
-        out.tokens_today += c.tokens_today;
-        out.cost_total_usd += c.cost_total_usd;
-        out.cost_today_usd += c.cost_today_usd;
-        for m in &c.by_model {
-            let entry = model_totals.entry(m.model.clone()).or_insert_with(|| ModelUsage {
-                model: m.model.clone(),
-                ..ModelUsage::default()
-            });
-            entry.calls += m.calls;
-            entry.input_tokens += m.input_tokens;
-            entry.output_tokens += m.output_tokens;
-            entry.total_tokens += m.total_tokens;
-            entry.cost_usd += m.cost_usd;
-        }
-        let row = ProjectUsage {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            path: p.path.clone(),
-            tokens_total: c.tokens_total,
-            tokens_today: c.tokens_today,
-            cost_total_usd: c.cost_total_usd,
-            cost_today_usd: c.cost_today_usd,
-            last_activity_ms: p.last_activity_ms,
-        };
-        out.by_project.push(row);
-    }
-
-    // Finalise per-model token-share once the global total is known.
-    let global_tokens: u64 = model_totals.values().map(|m| m.total_tokens).sum();
-    let mut by_model: Vec<ModelUsage> = model_totals.into_values().collect();
-    for m in &mut by_model {
-        m.pct_tokens = if global_tokens > 0 {
-            m.total_tokens as f64 / global_tokens as f64
-        } else {
-            0.0
-        };
-    }
-    by_model.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
-    out.by_model = by_model;
-
-    out.by_project.sort_by(|a, b| {
-        b.cost_total_usd
-            .partial_cmp(&a.cost_total_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    out.rtk = telemetry::rtk_summary_global();
-    Ok(out)
-}
-
 #[tauri::command]
 fn discover_projects(root: String) -> Result<Vec<discovery::Project>, String> {
     discovery::discover(std::path::Path::new(&root))
@@ -1862,7 +1305,7 @@ fn dashboard_watch_repos(
 
 /// Off-main-thread wrapper for [`dashboard_active_pipelines_impl`] (per-spec
 /// card folds over the whole workspace). A join error degrades to an empty
-/// list. See [`dashboard_metrics`] for the rationale.
+/// list.
 #[tauri::command]
 async fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
     tauri::async_runtime::spawn_blocking(move || dashboard_active_pipelines_impl(repo_path))
@@ -1980,47 +1423,18 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
     Ok(())
 }
 
-/// Install Mustard's `.claude/` scaffold into `path` (B5 Wave 3).
-///
-/// Calls `mustard_cli::init` natively — no sidecar process. The CLI runs in
-/// its non-interactive mode automatically: with no terminal attached it falls
-/// back to a safe merge when `.claude/` already exists, and `yes: true` keeps
-/// the git-flow wizard from blocking on a prompt that can never be answered.
-///
-/// `anyhow::Error` is not `Serialize`, so the error is flattened to a string
-/// for the frontend (the Tauri-2 idiom for `Result`-returning commands).
-#[tauri::command]
-fn mustard_install(path: String) -> Result<(), String> {
-    let options = mustard_cli::InitOptions {
-        yes: true,
-        ..Default::default()
-    };
-    mustard_cli::init(std::path::Path::new(&path), &options).map_err(|e| format!("{e:#}"))
-}
-
-/// Refresh an existing Mustard install at `path` (B5 Wave 3).
-///
-/// Calls `mustard_cli::update` natively. `force: true` skips the confirmation
-/// prompt (there is no terminal in the GUI); the timestamped backup the CLI
-/// takes is never skipped.
-#[tauri::command]
-fn mustard_update(path: String) -> Result<(), String> {
-    let options = mustard_cli::UpdateOptions { force: true };
-    mustard_cli::update(std::path::Path::new(&path), &options).map_err(|e| format!("{e:#}"))
-}
-
 // ── Wave-2 per-spec rollup commands ──────────────────────────────────────────
 
 /// Wave 4 (2026-05-20) — these spec commands now delegate to
 /// `mustard-core` via the `*_v2` adapters in `spec_views.rs`. The legacy
 /// fallback that hard-coded `"unknown"`/`0` for missing data is gone: a spec
-/// with no events resolves to the typed `SpecStatus::NoEvents`, which the
-/// adapter surfaces as the `"no-events"` string, and the UI can render an
-/// honest empty state.
+/// with no events resolves to the empty typed view, which the adapter
+/// surfaces as the `"no-events"` card, and the UI can render an honest
+/// empty state.
 /// Off-main-thread wrapper for [`dashboard_spec_card_impl`]. The spec-detail
 /// route fans 5 commands out in parallel; all of them now read the cached
 /// workspace slice, but the cold rebuild is still a full parse — keep it off
-/// the main thread (see [`dashboard_metrics`]). A join error degrades to the
+/// the main thread. A join error degrades to the
 /// "no-events" card (the failure-tolerant contract).
 #[tauri::command]
 async fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
@@ -2118,78 +1532,6 @@ async fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<s
 }
 
 #[tauri::command]
-async fn dashboard_spec_timeline(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecTimelineNode>, String> {
-    tauri::async_runtime::spawn_blocking(move || spec_views::spec_timeline_v2(&repo_path, &spec))
-        .await
-        .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-/// Off-main-thread wrapper for [`dashboard_spec_events_impl`]. A join error
-/// degrades to an empty list.
-#[tauri::command]
-async fn dashboard_spec_events(
-    repo_path: String,
-    spec: String,
-    filter: Option<spec_views::EventFilter>,
-) -> Result<Vec<spec_views::TimelineEvent>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_spec_events_impl(repo_path, spec, filter)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_spec_events_impl(
-    repo_path: String,
-    spec: String,
-    filter: Option<spec_views::EventFilter>,
-) -> Result<Vec<spec_views::TimelineEvent>, String> {
-    // Onda 2: per-spec event timeline from the same projection that backs
-    // `dashboard_spec_timeline` (`spec_timeline_v2`), reshaped into the
-    // `TimelineEvent` row the events panel consumes, with optional client-style
-    // filtering (kinds / wave / substring) applied server-side.
-    let nodes = spec_views::spec_timeline_v2(&repo_path, &spec)?;
-    let f = filter.unwrap_or_default();
-    let mut rows: Vec<spec_views::TimelineEvent> = Vec::new();
-    for (i, n) in nodes.into_iter().enumerate() {
-        if let Some(kinds) = &f.kinds {
-            if !kinds.is_empty() && !kinds.iter().any(|k| k.eq_ignore_ascii_case(&n.kind)) {
-                continue;
-            }
-        }
-        if let Some(w) = f.wave {
-            if n.wave != Some(w) {
-                continue;
-            }
-        }
-        if let Some(q) = &f.q {
-            let q = q.trim().to_lowercase();
-            if !q.is_empty() {
-                let hay = format!(
-                    "{} {} {}",
-                    n.label,
-                    n.payload_summary.as_deref().unwrap_or(""),
-                    n.kind
-                )
-                .to_lowercase();
-                if !hay.contains(&q) {
-                    continue;
-                }
-            }
-        }
-        rows.push(spec_views::TimelineEvent {
-            id: format!("{spec}-{i}"),
-            ts: n.ts,
-            phase: n.phase,
-            spec: Some(spec.clone()),
-            agent: if n.kind == "agent" { Some(n.label.clone()) } else { None },
-            summary: n.payload_summary.unwrap_or(n.label),
-        });
-    }
-    Ok(rows)
-}
-
-#[tauri::command]
 fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Result<spec_views::SpecAction, String> {
     // Onda 2: actually perform the verb over the NDJSON sink via the same
     // `lib_emit_pipeline_status` the live `dashboard_spec_complete` / `_cancel`
@@ -2237,50 +1579,10 @@ async fn spec_children_tree(
     spec_views::spec_children_tree_run(&project_path, &spec)
 }
 
-/// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — shell out to
-/// `mustard-rt run metrics wave-status --spec <name>` and return the typed
-/// `MetricsWaveStatus`. Audit-2 in this wave's `metrics-audit.md` documents
-/// why this exists (the page was never wired to the wave-status output).
-#[tauri::command]
-fn dashboard_metrics_wave_status(
-    repo_path: String,
-    spec_name: String,
-) -> Result<spec_views::MetricsWaveStatus, String> {
-    spec_views::dashboard_metrics_wave_status_run(&repo_path, &spec_name)
-}
-
-/// Wave 3 (2026-05-20, spec `mustard-wave-network-standard`) — shell out to
-/// `mustard-rt run wikilink-extract --spec-dir <dir>` for the spec resolved
-/// from `spec_name` and return the parsed `{wikilinks, orphans}` payload. The
-/// `SpecNetworkTab` consumes this to render the dependency graph.
-#[tauri::command]
-fn dashboard_wikilink_extract(
-    repo_path: String,
-    spec_name: String,
-) -> Result<spec_views::WikilinkExtract, String> {
-    spec_views::dashboard_wikilink_extract_run(&repo_path, &spec_name)
-}
-
-/// Cross-wave memory for a spec — shells out to `mustard-rt run memory search
-/// --spec <name>` (the live unified knowledge store) and returns a markdown
-/// block of the spec's accumulated memory across its waves, ranked by recall.
-/// Empty string when there is none yet (the common case for early waves). The
-/// `wave` arg is retained for the frontend contract but no longer narrows the
-/// query — the live verb returns the spec's full memory regardless of wave.
-#[tauri::command]
-fn dashboard_memory_cross_wave(
-    repo_path: String,
-    spec: String,
-    wave: u32,
-) -> Result<String, String> {
-    spec_views::dashboard_memory_cross_wave_run(&repo_path, &spec, wave)
-}
-
 /// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — shell out to
 /// `mustard-rt run wave-files --spec <name> --wave <N>` and return the typed
 /// payload (real file count from the wave sub-spec's `## Arquivos` block plus
-/// the full markdown for the wave drawer). Mirrors the spawn pattern used by
-/// `dashboard_metrics_wave_status` / `dashboard_memory_cross_wave`.
+/// the full markdown for the wave drawer).
 #[tauri::command]
 async fn dashboard_spec_wave_files(
     repo_path: String,
@@ -2406,492 +1708,6 @@ fn workspace_health_impl(repo_path: String) -> spec_views::WorkspaceHealth {
     }
 }
 
-// ── Wave-7 telemetry aggregation commands ────────────────────────────────────
-
-/// Lower bound (epoch-ms) for a `time_range` token (`24h` / `7d` / `30d` / `all`).
-/// Anything unrecognised → 0 (all time). Used by the telemetry-plane commands to
-/// filter the NDJSON fold to a window.
-fn time_range_floor_ms(time_range: &str) -> i64 {
-    let now = chrono::Utc::now().timestamp_millis();
-    let day = 24 * 60 * 60 * 1000;
-    match time_range.trim().to_lowercase().as_str() {
-        "24h" | "1d" | "today" => now - day,
-        "7d" | "week" => now - 7 * day,
-        "30d" | "month" => now - 30 * day,
-        _ => 0,
-    }
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_phases_impl`] (cold cache
-/// pays the full workspace parse). A join error degrades to an empty list.
-#[tauri::command]
-async fn dashboard_telemetry_phases(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::PhaseSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_phases_impl(repo_path, time_range)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_telemetry_phases_impl(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::PhaseSummary>, String> {
-    // Onda 2: count `pipeline.phase` events per target phase over the complete
-    // walker, with a 7-day daily sparkline (oldest first, 7 slots).
-    let base = PathBuf::from(&repo_path);
-    let floor = time_range_floor_ms(&time_range);
-    let now = chrono::Utc::now().timestamp_millis();
-    let day = 24 * 60 * 60 * 1000;
-    let events = telemetry::walk_ndjson_events_cached(&base);
-
-    struct Acc {
-        count: i64,
-        last: Option<String>,
-        spark: [i64; 7],
-    }
-    let mut by_phase: HashMap<String, Acc> = HashMap::new();
-    for v in events.iter() {
-        if telemetry::event_name_of(v) != "pipeline.phase" {
-            continue;
-        }
-        let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        let ms = match telemetry::iso_to_ms_crate(ts) {
-            Some(m) if m >= floor => m,
-            _ => continue,
-        };
-        let phase = v
-            .get("payload")
-            .and_then(|p| p.get("to").or_else(|| p.get("phase")))
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-        if phase.is_empty() {
-            continue;
-        }
-        let entry = by_phase.entry(phase.to_string()).or_insert(Acc {
-            count: 0,
-            last: None,
-            spark: [0; 7],
-        });
-        entry.count += 1;
-        if entry.last.as_deref().map_or(true, |c| ts > c) {
-            entry.last = Some(ts.to_string());
-        }
-        // Sparkline bucket: how many days ago (0..6), slot 6 = today.
-        let days_ago = ((now - ms) / day).clamp(0, 6) as usize;
-        entry.spark[6 - days_ago] += 1;
-    }
-
-    let mut rows: Vec<telemetry_agg::PhaseSummary> = by_phase
-        .into_iter()
-        .map(|(phase, a)| telemetry_agg::PhaseSummary {
-            phase,
-            events_count: a.count,
-            last_event_at: a.last,
-            sparkline: a.spark.to_vec(),
-        })
-        .collect();
-    rows.sort_by(|a, b| b.events_count.cmp(&a.events_count).then(a.phase.cmp(&b.phase)));
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_timeline_impl`] (cold
-/// cache pays the full workspace parse). A join error degrades to an empty list.
-#[tauri::command]
-async fn dashboard_telemetry_timeline(
-    repo_path: String,
-    time_range: String,
-    limit: Option<usize>,
-) -> Result<Vec<telemetry_agg::TimelineEvent>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_timeline_impl(repo_path, time_range, limit)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_telemetry_timeline_impl(
-    repo_path: String,
-    time_range: String,
-    limit: Option<usize>,
-) -> Result<Vec<telemetry_agg::TimelineEvent>, String> {
-    // Onda 2 (HIGH-VALUE): cross-spec chronological event list (newest first)
-    // over the complete walker, reshaped into the `TimelineEvent` shape.
-    let base = PathBuf::from(&repo_path);
-    let floor = time_range_floor_ms(&time_range);
-    let events = telemetry::walk_ndjson_events_cached(&base);
-    let timeline = telemetry::build_session_spec_timeline_from(&events);
-    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
-    ordered.sort_by(|a, b| {
-        let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        tb.cmp(ta)
-    });
-    let cap = limit.unwrap_or(200).min(5000);
-    let rows: Vec<telemetry_agg::TimelineEvent> = ordered
-        .into_iter()
-        .filter(|v| {
-            v.get("ts")
-                .and_then(|t| t.as_str())
-                .and_then(telemetry::iso_to_ms_crate)
-                .map_or(false, |ms| ms >= floor)
-        })
-        .take(cap)
-        .enumerate()
-        .map(|(i, v)| {
-            let re = recent_event_from_value_attributed(v, Some(&timeline));
-            telemetry_agg::TimelineEvent {
-                id: format!("ev-{i}"),
-                ts: re.ts.unwrap_or_default(),
-                phase: re.phase,
-                spec: re.spec,
-                agent: re.actor_id,
-                summary: re.summary.unwrap_or(re.event_type),
-            }
-        })
-        .collect();
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_heatmap_impl`] (cold
-/// cache pays the full workspace parse). A join error degrades to an empty
-/// list. The sync `_impl` is kept so unit tests call it directly.
-#[tauri::command]
-async fn dashboard_telemetry_heatmap(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::HeatmapCell>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_heatmap_impl(repo_path, time_range)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_telemetry_heatmap_impl(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::HeatmapCell>, String> {
-    // Onda 2 (HIGH-VALUE): bucket every event's ts by weekday (0=Sun) × hour.
-    let base = PathBuf::from(&repo_path);
-    let floor = time_range_floor_ms(&time_range);
-    let events = telemetry::walk_ndjson_events_cached(&base);
-    let mut cells: HashMap<(i64, i64), i64> = HashMap::new();
-    for v in events.iter() {
-        let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        let ms = match telemetry::iso_to_ms_crate(ts) {
-            Some(m) if m >= floor => m,
-            _ => continue,
-        };
-        // Derive weekday + hour (UTC) from epoch-ms without a calendar dep.
-        let secs = ms.div_euclid(1000);
-        let days = secs.div_euclid(86_400);
-        // 1970-01-01 was a Thursday (=4). 0=Sun.
-        let dow = (days.rem_euclid(7) + 4) % 7;
-        let hour = secs.rem_euclid(86_400) / 3_600;
-        *cells.entry((dow, hour)).or_insert(0) += 1;
-    }
-    let mut rows: Vec<telemetry_agg::HeatmapCell> = cells
-        .into_iter()
-        .map(|((dow, hour), count)| telemetry_agg::HeatmapCell {
-            day_of_week: dow,
-            hour,
-            event_count: count,
-        })
-        .collect();
-    rows.sort_by(|a, b| a.day_of_week.cmp(&b.day_of_week).then(a.hour.cmp(&b.hour)));
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_history_impl`] (full
-/// workspace fold + per-spec quality rollups). A join error degrades to an
-/// empty list. See [`dashboard_metrics`] for the rationale.
-#[tauri::command]
-async fn dashboard_telemetry_history(
-    repo_path: String,
-    time_range: String,
-    limit: Option<usize>,
-) -> Result<Vec<telemetry_agg::HistoryEntry>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_history_impl(repo_path, time_range, limit)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_telemetry_history_impl(
-    repo_path: String,
-    time_range: String,
-    limit: Option<usize>,
-) -> Result<Vec<telemetry_agg::HistoryEntry>, String> {
-    // (C) trio: per-spec `pipeline.status` transition timeline + per-phase event
-    // counts + AC pass/total. Built from the cached workspace slice.
-    let base = PathBuf::from(&repo_path);
-    let floor = time_range_floor_ms(&time_range);
-    let h_events = telemetry::workspace_harness_events_cached(&base);
-
-    struct Acc {
-        status: String,
-        started_at: Option<String>,
-        completed_at: Option<String>,
-        per_phase: std::collections::HashMap<String, i64>,
-    }
-    let mut by_spec: HashMap<String, Acc> = HashMap::new();
-    for e in h_events.iter() {
-        let Some(spec) = e.spec.as_deref() else { continue };
-        if telemetry::iso_to_ms_crate(&e.ts).map_or(true, |ms| ms < floor) {
-            continue;
-        }
-        let entry = by_spec.entry(spec.to_string()).or_insert_with(|| Acc {
-            status: String::new(),
-            started_at: None,
-            completed_at: None,
-            per_phase: std::collections::HashMap::new(),
-        });
-        if entry.started_at.as_deref().map_or(true, |c| e.ts.as_str() < c) {
-            entry.started_at = Some(e.ts.clone());
-        }
-        match e.event.as_str() {
-            "pipeline.status" => {
-                if let Some(to) = e.payload.get("to").and_then(|x| x.as_str()) {
-                    entry.status = to.to_string();
-                    if matches!(to, "completed" | "cancelled" | "closed-followup") {
-                        entry.completed_at = Some(e.ts.clone());
-                    }
-                }
-            }
-            "pipeline.phase" => {
-                if let Some(to) = e.payload.get("to").and_then(|x| x.as_str()) {
-                    *entry.per_phase.entry(to.to_string()).or_insert(0) += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut rows: Vec<telemetry_agg::HistoryEntry> = by_spec
-        .into_iter()
-        .map(|(spec, a)| {
-            let rollup = mustard_core::view::projection::project_quality(&spec, &h_events);
-            telemetry_agg::HistoryEntry {
-                spec,
-                status: a.status,
-                started_at: a.started_at.unwrap_or_default(),
-                completed_at: a.completed_at,
-                duration_per_phase: a.per_phase,
-                ac_passed: i64::from(rollup.passed),
-                ac_total: i64::from(rollup.total),
-            }
-        })
-        .collect();
-    rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    if let Some(n) = limit {
-        rows.truncate(n);
-    }
-    Ok(rows)
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_criteria_impl`]. A join
-/// error degrades to an empty list.
-#[tauri::command]
-async fn dashboard_telemetry_criteria(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::AcceptanceCriterion>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_criteria_impl(repo_path, time_range)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_telemetry_criteria_impl(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::AcceptanceCriterion>, String> {
-    // (C) trio: AC rows across every spec via `project_quality` (qa.result).
-    let base = PathBuf::from(&repo_path);
-    let floor = time_range_floor_ms(&time_range);
-    let events = telemetry::workspace_harness_events_cached(&base);
-    let specs: std::collections::BTreeSet<String> = events
-        .iter()
-        .filter(|e| e.event == "qa.result")
-        .filter_map(|e| e.spec.clone())
-        .collect();
-    let mut rows: Vec<telemetry_agg::AcceptanceCriterion> = Vec::new();
-    for spec in specs {
-        let rollup = mustard_core::view::projection::project_quality(&spec, &events);
-        for c in rollup.criteria {
-            // Window filter on the AC's last run.
-            if let Some(run) = c.last_run_at.as_deref() {
-                if telemetry::iso_to_ms_crate(run).map_or(false, |ms| ms < floor) {
-                    continue;
-                }
-            }
-            rows.push(telemetry_agg::AcceptanceCriterion {
-                spec: spec.clone(),
-                id: c.id,
-                status: ac_status_word(c.status),
-                last_run_at: c.last_run_at,
-            });
-        }
-    }
-    Ok(rows)
-}
-
-/// Lowercase string for a core `AcStatus` — the criteria command's status field.
-fn ac_status_word(s: mustard_core::AcStatus) -> String {
-    use mustard_core::AcStatus;
-    match s {
-        AcStatus::Pass => "pass",
-        AcStatus::Fail => "fail",
-        AcStatus::Skip => "skip",
-        AcStatus::Pending => "pending",
-    }
-    .to_string()
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_effort_impl`] (cold cache
-/// pays the full workspace parse). A join error degrades to an empty breakdown.
-#[tauri::command]
-async fn dashboard_telemetry_effort(
-    repo_path: String,
-    time_range: String,
-) -> Result<telemetry_agg::EffortBreakdown, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_effort_impl(repo_path, time_range)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(telemetry_agg::EffortBreakdown::default()))
-}
-
-fn dashboard_telemetry_effort_impl(
-    repo_path: String,
-    time_range: String,
-) -> Result<telemetry_agg::EffortBreakdown, String> {
-    // (C) trio: top_files (`tool.use` target.file_path), top_tools
-    // (`tool_breakdown`), top_phases (`pipeline.phase` counts as a duration
-    // proxy), top_agents (`agent_activity`).
-    let base = PathBuf::from(&repo_path);
-    let floor = time_range_floor_ms(&time_range);
-    let events = telemetry::walk_ndjson_events_cached(&base);
-
-    let mut files: HashMap<String, i64> = HashMap::new();
-    let mut phases: HashMap<String, i64> = HashMap::new();
-    for v in events.iter() {
-        let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
-        if telemetry::iso_to_ms_crate(ts).map_or(true, |ms| ms < floor) {
-            continue;
-        }
-        match telemetry::event_name_of(v) {
-            "tool.use" => {
-                if let Some(f) = v
-                    .get("payload")
-                    .and_then(|p| p.get("target"))
-                    .and_then(|t| t.as_object())
-                    .and_then(|o| o.get("file_path").or_else(|| o.get("file")))
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                {
-                    *files.entry(f.to_string()).or_insert(0) += 1;
-                }
-            }
-            "pipeline.phase" => {
-                if let Some(p) = v
-                    .get("payload")
-                    .and_then(|p| p.get("to").or_else(|| p.get("phase")))
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                {
-                    *phases.entry(p.to_string()).or_insert(0) += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut top_files: Vec<telemetry_agg::FileCount> = files
-        .into_iter()
-        .map(|(path, count)| telemetry_agg::FileCount { path, count })
-        .collect();
-    top_files.sort_by(|a, b| b.count.cmp(&a.count).then(a.path.cmp(&b.path)));
-    top_files.truncate(15);
-
-    let top_tools: Vec<telemetry_agg::ToolUseCount> = telemetry::tool_breakdown(&base)
-        .into_iter()
-        .map(|t| telemetry_agg::ToolUseCount {
-            name: t.tool_name,
-            count: i64::try_from(t.count).unwrap_or(i64::MAX),
-        })
-        .collect();
-
-    let mut top_phases: Vec<telemetry_agg::PhaseEventCount> = phases
-        .into_iter()
-        .map(|(phase, count)| telemetry_agg::PhaseEventCount {
-            phase,
-            duration_ms: count,
-        })
-        .collect();
-    top_phases.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms).then(a.phase.cmp(&b.phase)));
-
-    let top_agents: Vec<telemetry_agg::AgentTypeCount> = telemetry::agent_activity(&base)
-        .agents
-        .into_iter()
-        .map(|a| telemetry_agg::AgentTypeCount {
-            agent_type: a.agent_type,
-            count: i64::try_from(a.starts).unwrap_or(i64::MAX),
-        })
-        .collect();
-
-    Ok(telemetry_agg::EffortBreakdown {
-        top_files,
-        top_tools,
-        top_phases,
-        top_agents,
-    })
-}
-
-/// Off-main-thread wrapper for [`dashboard_telemetry_agents_impl`] (cold cache
-/// pays the full workspace parse). A join error degrades to an empty list.
-#[tauri::command]
-async fn dashboard_telemetry_agents(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::AgentDispatch>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dashboard_telemetry_agents_impl(repo_path, time_range)
-    })
-    .await
-    .unwrap_or_else(|_| Ok(Vec::new()))
-}
-
-fn dashboard_telemetry_agents_impl(
-    repo_path: String,
-    time_range: String,
-) -> Result<Vec<telemetry_agg::AgentDispatch>, String> {
-    // Onda 2 (HIGH-VALUE): reshape `agent_activity` into the `AgentDispatch`
-    // rows the telemetry page consumes. (time_range is accepted for contract
-    // parity; agent_activity already folds the whole workspace — the page sorts
-    // and trims client-side.)
-    let _ = time_range;
-    let base = PathBuf::from(&repo_path);
-    let rows: Vec<telemetry_agg::AgentDispatch> = telemetry::agent_activity(&base)
-        .agents
-        .into_iter()
-        .map(|a| telemetry_agg::AgentDispatch {
-            subagent_type: a.agent_type,
-            count: i64::try_from(a.starts).unwrap_or(i64::MAX),
-            error_count: i64::try_from(a.errors).unwrap_or(i64::MAX),
-            avg_duration_ms: i64::try_from(a.avg_duration_ms).unwrap_or(i64::MAX),
-            last_dispatched_at: a.last_ts,
-        })
-        .collect();
-    Ok(rows)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2911,15 +1727,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            dashboard_pipelines, dashboard_metrics, dashboard_knowledge,
             dashboard_subprojects, dashboard_skills, dashboard_recent_events,
-            dashboard_specs, dashboard_spec_markdown, commands::specs::read_spec_meta,
+            dashboard_specs, dashboard_spec_markdown,
             commands::settings::set_language,
             commands::settings::set_tone,
             commands::settings::read_settings,
             dashboard_spec_complete, dashboard_spec_cancel, dashboard_spec_reactivate,
-            dashboard_search_events, dashboard_search_knowledge,
-            dashboard_telemetry, dashboard_live_activity, dashboard_friction,
+            dashboard_search_knowledge,
+            dashboard_friction,
             telemetry::dashboard_prompt_economy,
             telemetry::dashboard_economy_summary,
             telemetry::dashboard_economy_savings_breakdown,
@@ -2930,48 +1745,28 @@ pub fn run() {
             telemetry::dashboard_session_trace,
             telemetry::dashboard_sessions,
             telemetry::collector_health,
-            dashboard_consumption, dashboard_consumption_global,
-            dashboard_activity_aggregated, dashboard_quality_metrics, dashboard_knowledge_browse,
+            dashboard_consumption,
+            dashboard_knowledge_browse,
             dashboard_watch_repos, dashboard_active_pipelines,
             dashboard_read_env, dashboard_write_env,
             discover_projects,
-            mustard_install, mustard_update,
             projects::detect_project_mustard,
             projects::uninstall_mustard,
             artifact_update::artifact_update_check,
             artifact_update::artifact_update_apply,
             artifact_update::is_mustard_repo,
             doctor::doctor_status,
-            dashboard_telemetry_phases,
-            dashboard_telemetry_timeline,
-            dashboard_telemetry_heatmap,
-            dashboard_telemetry_history,
-            dashboard_telemetry_criteria,
-            dashboard_telemetry_effort,
-            dashboard_telemetry_agents,
-            amend_queries::amend_resolution_rate,
-            amend_queries::amend_drift_rate,
-            amend_queries::cross_session_amend_count,
-            amend_queries::amend_window_duration,
             dashboard_spec_card,
             dashboard_spec_cards,
             dashboard_spec_waves,
             dashboard_spec_checklist_progress,
             dashboard_spec_quality,
-            dashboard_spec_timeline,
-            dashboard_spec_events,
             dashboard_spec_action,
             dashboard_spec_children,
             spec_children_tree,
             dashboard_workspace_summary,
-            dashboard_metrics_wave_status,
-            dashboard_wikilink_extract,
-            dashboard_memory_cross_wave,
             dashboard_spec_wave_files,
             dashboard_spec_waves_planned,
-            spec_views::dashboard_token_summary,
-            spec_views::dashboard_month_activity,
-            spec_views::dashboard_events_feed,
             workspace_health,
             git_info::dashboard_git_info,
             git_info::dashboard_git_log,
@@ -2996,47 +1791,67 @@ mod onda2_tests {
     }
 
     #[test]
-    fn knowledge_rows_project_frontmatter_and_body() {
+    fn knowledge_rows_project_decision_and_lesson_events() {
         let tmp = TempDir::new().unwrap();
-        let kdir = tmp.path().join(".claude").join("knowledge");
-        std::fs::create_dir_all(&kdir).unwrap();
-        std::fs::write(
-            kdir.join("20260101T000000Z-aaa.md"),
-            "---\nkind: decision\nspec: my-spec\n---\n**D1** — keep state in meta.json\n",
-        )
-        .unwrap();
-        std::fs::write(
-            kdir.join("20260102T000000Z-bbb.md"),
-            "---\nkind: pattern\nconfidence: 0.5\nspec: other\n---\nReuse the projection layer\n",
-        )
-        .unwrap();
+        write_event(
+            tmp.path(),
+            "my-spec",
+            "a.ndjson",
+            concat!(
+                r#"{"event":"decision","ts":"2026-07-01T10:00:00.000Z","spec":"my-spec","actor":{"kind":"hook","id":"memory"},"payload":{"title":"Keep state in meta.json","rationale":"spec.md stays pure narrative"}}"#,
+                "\n",
+                r#"{"event":"tool.use","ts":"2026-07-01T10:00:01.000Z","spec":"my-spec","payload":{"tool":"Read"}}"#,
+                "\n",
+            ),
+        );
+        write_event(
+            tmp.path(),
+            "other",
+            "b.ndjson",
+            concat!(
+                r#"{"event":"lesson","ts":"2026-07-02T09:00:00.000Z","spec":"other","actor":{"kind":"cli","id":"memory"},"payload":{"trigger":"qa-run under cmd.exe","takeaway":"Avoid bang in AC commands"}}"#,
+                "\n",
+            ),
+        );
 
-        let rows = read_knowledge_rows(tmp.path());
-        assert_eq!(rows.len(), 2);
-        // Newest first (lexical stem desc).
-        assert_eq!(rows[0].id, "20260102T000000Z-bbb");
-        assert_eq!(rows[0].type_, "pattern");
-        assert!((rows[0].confidence - 0.5).abs() < 1e-9);
-        assert_eq!(rows[0].source.as_deref(), Some("other"));
-        assert!(rows[0].name.contains("Reuse the projection"));
-        // Decision with no confidence field defaults to 1.0 (confirmed).
-        let d = rows.iter().find(|r| r.type_ == "decision").unwrap();
-        assert!((d.confidence - 1.0).abs() < 1e-9);
-        assert_eq!(d.source.as_deref(), Some("my-spec"));
-
-        // Summary counts patterns/conventions/high-confidence honestly.
-        let summary = dashboard_knowledge(tmp.path().to_string_lossy().into_owned()).unwrap();
-        assert_eq!(summary.patterns_count, 1);
-        assert_eq!(summary.conventions_count, 0);
-        assert_eq!(summary.high_confidence_count, 1); // only the 1.0 decision
+        let rows = knowledge_rows_from_events(tmp.path());
+        assert_eq!(rows.len(), 2, "only decision/lesson events project");
+        // Newest first by ts.
+        assert_eq!(rows[0].kind, "lesson");
+        assert_eq!(rows[0].title, "Avoid bang in AC commands");
+        assert_eq!(rows[0].body.as_deref(), Some("qa-run under cmd.exe"));
+        assert_eq!(rows[0].spec.as_deref(), Some("other"));
+        assert_eq!(rows[0].ts, "2026-07-02T09:00:00.000Z");
+        assert_eq!(rows[1].kind, "decision");
+        assert_eq!(rows[1].title, "Keep state in meta.json");
+        assert_eq!(rows[1].body.as_deref(), Some("spec.md stays pure narrative"));
+        assert_eq!(rows[1].spec.as_deref(), Some("my-spec"));
     }
 
     #[test]
-    fn knowledge_empty_when_dir_absent() {
+    fn knowledge_rows_tolerate_null_body_and_skip_titleless_records() {
         let tmp = TempDir::new().unwrap();
-        assert!(read_knowledge_rows(tmp.path()).is_empty());
-        let s = dashboard_knowledge(tmp.path().to_string_lossy().into_owned()).unwrap();
-        assert_eq!(s.patterns_count, 0);
+        write_event(
+            tmp.path(),
+            "s1",
+            "a.ndjson",
+            concat!(
+                r#"{"event":"decision","ts":"2026-07-03T10:00:00.000Z","spec":"s1","payload":{"title":"Solo title","rationale":null}}"#,
+                "\n",
+                r#"{"event":"lesson","ts":"2026-07-03T11:00:00.000Z","spec":"s1","payload":{"trigger":"orphan trigger","takeaway":""}}"#,
+                "\n",
+            ),
+        );
+        let rows = knowledge_rows_from_events(tmp.path());
+        assert_eq!(rows.len(), 1, "title-less lesson is skipped");
+        assert_eq!(rows[0].title, "Solo title");
+        assert_eq!(rows[0].body, None);
+    }
+
+    #[test]
+    fn knowledge_rows_empty_without_events() {
+        let tmp = TempDir::new().unwrap();
+        assert!(knowledge_rows_from_events(tmp.path()).is_empty());
     }
 
     #[test]
@@ -3069,80 +1884,6 @@ mod onda2_tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].ts.as_deref(), Some("2026-05-27T09:05:00.000Z"));
         assert_eq!(rows[0].tool_name.as_deref(), Some("Edit"));
-    }
-
-    #[test]
-    fn search_events_substring_filter() {
-        let tmp = TempDir::new().unwrap();
-        let lines = concat!(
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:05:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = dashboard_search_events_impl(
-            tmp.path().to_string_lossy().into_owned(),
-            "edit".to_string(),
-            None,
-        )
-        .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tool_name.as_deref(), Some("Edit"));
-    }
-
-    #[test]
-    fn activity_aggregated_groups_by_spec_wave_action() {
-        let tmp = TempDir::new().unwrap();
-        let lines = concat!(
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"a","wave":1,"payload":{"tool":"Read","target":{"file_path":"x.rs"}}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:01:00.000Z","spec":"a","wave":1,"payload":{"tool":"Read","target":{"file_path":"y.rs"}}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:02:00.000Z","spec":"a","wave":1,"payload":{"tool":"Edit","target":{"file_path":"x.rs"}}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = dashboard_activity_aggregated_impl(tmp.path().to_string_lossy().into_owned(), None).unwrap();
-        let read = rows
-            .iter()
-            .find(|g| g.action_kind.as_deref() == Some("Read"))
-            .expect("Read group");
-        assert_eq!(read.count, 2);
-        assert_eq!(read.files_touched, 2);
-        assert_eq!(read.min_ts.as_deref(), Some("2026-05-27T09:00:00.000Z"));
-        assert_eq!(read.max_ts.as_deref(), Some("2026-05-27T09:01:00.000Z"));
-        assert_eq!(read.wave, Some(1));
-    }
-
-    #[test]
-    fn heatmap_buckets_weekday_and_hour() {
-        let tmp = TempDir::new().unwrap();
-        // 2026-05-27 is a Wednesday (=3). 10:00 UTC.
-        let lines = concat!(
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T10:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T10:30:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let cells = dashboard_telemetry_heatmap_impl(
-            tmp.path().to_string_lossy().into_owned(),
-            "all".to_string(),
-        )
-        .unwrap();
-        let cell = cells
-            .iter()
-            .find(|c| c.day_of_week == 3 && c.hour == 10)
-            .expect("Wed 10:00 cell");
-        assert_eq!(cell.event_count, 2);
-    }
-
-    #[test]
-    fn metrics_count_events_and_tokens() {
-        let tmp = TempDir::new().unwrap();
-        let lines = concat!(
-            r#"{"event":"pipeline.telemetry.run","kind":"pipeline.telemetry.run","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{},"tokens_in":1000,"tokens_out":500}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:01:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
-        );
-        write_event(tmp.path(), "a", "events.ndjson", lines);
-        let m = dashboard_metrics_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
-        assert_eq!(m.total_events, 2);
-        assert_eq!(m.tokens_total, 1500);
-        assert_eq!(m.last_event_at.as_deref(), Some("2026-05-27T09:01:00.000Z"));
     }
 
     #[test]

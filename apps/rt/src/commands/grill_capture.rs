@@ -8,8 +8,15 @@
 //! lives in this command — it only persists what the grill already settled.
 //!
 //! Contract:
-//! - **Glossary-only.** It writes a single term block (`## {Term}\n{definition}`)
-//!   into a `CONTEXT.md`; it never touches ADRs, specs, or `.claude/`.
+//! - **Glossary write.** It writes a single term block (`## {Term}\n{definition}`)
+//!   into a `CONTEXT.md`; the glossary write itself never touches ADRs or specs.
+//! - **Clarify finalize (F6).** With `--finalize`, the command mints
+//!   `<spec>/.clarified` for the spec — the marker `approve-spec` requires before
+//!   a Full plan may be approved. This is the SINGLE, explicit "clarification
+//!   complete" action; a term capture NEVER mints it, and it needs no term, so a
+//!   complete-glossary Full spec can still be finalized (killing the old
+//!   deadlock). Best-effort and fail-open. The gate itself lives in
+//!   `approve-spec`, not here.
 //! - **Update, not duplicate.** The target is parsed through the SAME resolver
 //!   (`resolve_context_files`, CONTEXT-MAP-aware) and term matcher
 //!   (`parse_term_blocks`) the slicer/coverage use, so a term that already has a
@@ -17,8 +24,8 @@
 //!   new term is appended. The producer and consumer of the glossary cannot
 //!   drift.
 //! - **Fail-open when absent.** No `--context` resolves to no destination →
-//!   `{ok:false, reason:"no-context-target"}`, exit 0. The grill is an
-//!   enhancement, never a gate.
+//!   `{ok:false, reason:"no-context-target"}`, exit 0. `grill-capture` itself
+//!   never blocks; the clarify gate it feeds lives in `scope_guard`.
 //!
 //! Output (stdout, byte-stable pretty JSON):
 //! `{ ok, action, term, contextFile, reason? }` where `action ∈ {appended,
@@ -30,6 +37,9 @@ use mustard_core::io::fs as mfs;
 use serde_json::json;
 
 use crate::commands::economy::context_slice::{parse_term_blocks, resolve_context_files};
+use crate::shared::context::{
+    clarified_marker_path, current_spec, session_id, spec_for_session,
+};
 
 /// Resolve the destination `CONTEXT.md` the same way `glossary-coverage` does:
 /// the first file that resolved on disk (CONTEXT-MAP expansion included), or the
@@ -160,8 +170,79 @@ fn emit(ok: bool, action: &str, term: &str, context_file: &str, reason: Option<&
     );
 }
 
+/// Emit the clarify-finalize result as byte-stable pretty JSON. `spec` is the
+/// resolved spec name (deterministic — no volatile path is emitted).
+fn emit_finalize(ok: bool, spec: &str, reason: Option<&str>) {
+    let payload = json!({
+        "ok": ok,
+        "action": "clarified",
+        "spec": spec,
+        "reason": reason,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into())
+    );
+}
+
+/// Finalize clarification: mint `<spec>/.clarified` unconditionally — no term
+/// required. This is the SINGLE deliberate minter of the marker `approve-spec`
+/// requires before a Full plan may be approved (a term capture never mints it),
+/// so a complete-glossary Full spec is not deadlocked out of approval.
+///
+/// The spec is taken from `--spec` when given (the explicit, robust path the
+/// Full PLAN flow uses, mirroring `approve-spec`); absent that, it falls back to
+/// the session-to-spec binding, then `current_spec`. Fail-open at every step — a
+/// resolution or write failure reports `{ok:false, reason}` and still exits 0.
+fn run_finalize(spec_arg: &str, root: &Path) {
+    let Some(root_str) = root.to_str() else {
+        emit_finalize(false, "", Some("bad-root"));
+        return;
+    };
+    let spec = if spec_arg.trim().is_empty() {
+        match spec_for_session(root_str, &session_id()).or_else(|| current_spec(root_str)) {
+            Some(s) => s,
+            None => {
+                emit_finalize(false, "", Some("no-active-spec"));
+                return;
+            }
+        }
+    } else {
+        spec_arg.trim().to_string()
+    };
+    let Some(marker) = clarified_marker_path(root_str, &spec) else {
+        emit_finalize(false, &spec, Some("bad-spec"));
+        return;
+    };
+    if let Some(parent) = marker.parent() {
+        let _ = mfs::create_dir_all(parent);
+    }
+    let body = format!("spec={spec}\nvia=grill-finalize\n");
+    if mfs::write_atomic(&marker, body.as_bytes()).is_err() {
+        emit_finalize(false, &spec, Some("write-failed"));
+        return;
+    }
+    emit_finalize(true, &spec, None);
+}
+
 /// Dispatch `mustard-rt run grill-capture`. Always exits 0 (fail-open).
-pub fn run(term: &str, definition: &str, context: &[String], _root: &Path) {
+///
+/// Two modes: `--finalize` mints `<spec>/.clarified` (the clarify-finalize — see
+/// [`run_finalize`]) and returns; otherwise this is the glossary term capture
+/// (`--term` / `--definition` / `--context`). A capture NEVER mints `.clarified`
+/// — only the deliberate finalize does.
+pub fn run(
+    term: &str,
+    definition: &str,
+    context: &[String],
+    spec: &str,
+    finalize: bool,
+    root: &Path,
+) {
+    if finalize {
+        run_finalize(spec, root);
+        return;
+    }
     let term_t = term.trim();
     if term_t.is_empty() || definition.trim().is_empty() {
         emit(false, "none", term_t, "", Some("empty-term-or-definition"));
@@ -238,5 +319,63 @@ mod tests {
         assert_eq!(block_term("- **Ledger** a log").as_deref(), Some("Ledger"));
         assert_eq!(block_term("plain prose"), None);
         assert_eq!(block_term("#NoSpace"), None);
+    }
+
+    // ── The clarify-marker mint (integration over a tempdir) ─────────────────
+
+    /// Seed `.claude/spec/<spec>/meta.json` (scope/stage) + a pipeline-state
+    /// file so `current_spec` resolves `<spec>` via its FS fallback — the same
+    /// no-env-mutation pattern `scope_guard`'s tests use (mutating process env
+    /// is `unsafe` under edition 2024).
+    fn seed_spec(root: &std::path::Path, spec: &str, scope: &str) {
+        let spec_dir = root.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            format!(r#"{{"scope":"{scope}","stage":"Plan","outcome":"Active"}}"#),
+        )
+        .unwrap();
+        let states = root.join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(states.join(format!("{spec}.json")), "{}").unwrap();
+    }
+
+    #[test]
+    fn capturing_a_term_does_not_mint_clarified() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full (wave plan)");
+
+        let ctx_file = root.join("CONTEXT.md");
+        let context = vec![ctx_file.to_string_lossy().into_owned()];
+        run("Payable", "A bill the org owes.", &context, "", false, root);
+
+        // The confirmed term lands in the glossary...
+        assert!(
+            std::fs::read_to_string(&ctx_file).unwrap().contains("## Payable"),
+            "the confirmed term must be persisted to the glossary"
+        );
+        // ...but a term capture NEVER mints .clarified — only the deliberate
+        // finalize does (F6: clarification is explicit, not a capture side effect).
+        let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
+        assert!(!marker.exists(), "a capture must NOT mint .clarified");
+    }
+
+    #[test]
+    fn finalize_mints_clarified_with_zero_terms() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full (wave plan)");
+
+        // The clarify-finalize takes the spec explicitly and needs NO term — a
+        // complete-glossary Full spec can still be marked clarified. This kills
+        // the old deadlock where `.clarified` could only be minted by a term
+        // capture, so a spec with nothing to grill could never be approved.
+        run("", "", &[], "epic", true, root);
+
+        let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
+        assert!(marker.exists(), "finalize must mint .clarified with zero terms");
     }
 }

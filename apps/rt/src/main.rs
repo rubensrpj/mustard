@@ -36,8 +36,7 @@
 //! `run` subcommand takes `clap` arguments and prints its own output, porting
 //! what used to be a standalone `bun` script under `templates/scripts/`.
 //! Wave 3 (economia-moat-unification) adds long-lived ingestion daemons under
-//! this face: `otel-collector` and the opt-in `transcript-watcher` (the
-//! `transcript_watcher` module is dispatched via [`commands::RunCmd::TranscriptWatcher`]).
+//! this face: `otel-collector`.
 //!
 //! A fourth face — `mustard-rt mcp` — serves the `mustard-memory` Model
 //! Context Protocol server over stdio (the re-port of the former TypeScript

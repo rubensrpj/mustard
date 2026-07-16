@@ -199,7 +199,7 @@ pub struct SpecInput {
     /// BCP-47 narrative locale (`pt-BR`, `en-US`, `fr-FR`, ...). Required.
     ///
     /// Stored as `String` at the boundary because the rt-side callers
-    /// (`spec_draft`, `spec_validate`) already work in BCP-47 strings; the
+    /// (`spec_draft`) already work in BCP-47 strings; the
     /// validator routes the value through [`UserLocale::new`] so any
     /// short-form / malformed input is surfaced as
     /// [`ContractViolation::InvalidLang`]. W7 promotes this to

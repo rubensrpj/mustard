@@ -10,18 +10,16 @@
 //!   size), the tool-use /
 //!   main-context counters (`tool_use_counter`, `main_context_counter`) plus
 //!   the agent/tool/skill observers (`subagent_observer`, `metrics_observer`,
-//!   `skill_usage_observer`), and `skills_advisory` (recommended-skills count
-//!   advisory).
+//!   `skill_usage_observer`).
 //! - Wave 4: the Write/Edit family — [`size_gate`] (spec/skill size + skill
-//!   validation), `path_gate` (sensitive-file + boundary gates),
+//!   validation), `boundary_gate` (the spec-boundary gate),
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
 //!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
 //!   [`scan_gate`] (the pre-pipeline scan gate — blocks until grain.model.json).
 //! - Wave 5: the session-lifecycle families — `session_start_inject`
-//!   (harness-init / session-memory / spec-hygiene), `session_knowledge_observer`
-//!   (session-knowledge / -inc / memory-auto-extract), `session_cleanup_observer`
-//!   (`SessionEnd` cleanup), `pre_compact_inject` (the `PreCompact` snapshot),
-//!   `prompt_submit_inject` (the `UserPromptSubmit` follow-up archival gate),
+//!   (harness-init / terrain census / spec-hygiene), `session_knowledge_observer`
+//!   (session-knowledge friction telemetry / -inc), `session_cleanup_observer`
+//!   (`SessionEnd` cleanup), `prompt_submit_inject` (the `UserPromptSubmit` follow-up archival gate),
 //!   and `spec_hygiene_observer` (the gated SessionStart auto-close).
 
 pub mod observe;

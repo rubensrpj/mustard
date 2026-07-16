@@ -22,7 +22,7 @@ pub enum ContextCmd {
     /// Research a feature request against the repo via the `scan` digest (no
     /// source reading) and emit the structured insumos for decomposition +
     /// `scan spec`. The grounding step of the elicitation loop.
-    #[command(display_order = 4)]
+    #[command(display_order = 3)]
     Feature {
         /// The free-text feature/bugfix request to research. The orchestration
         /// layer passes any cross-lingual translation INSIDE this text
@@ -44,7 +44,7 @@ pub enum ContextCmd {
     /// missing / unreadable model prints nothing, exit 0. Byte-stable output.
     /// (The per-prompt Level-2 entrypoints were removed: lexical prompt×path
     /// matching measured 1 useful hit in 17 across two field sessions.)
-    #[command(display_order = 5)]
+    #[command(display_order = 4)]
     Orient {
         /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
@@ -59,7 +59,7 @@ pub enum ContextCmd {
     /// Reuses the exact term matcher `context-slice` uses. Fail-open: a missing
     /// model / unreadable glossary degrades to `verdict: "na"`, exit 0.
     #[command(name = "glossary-coverage")]
-    #[command(display_order = 6)]
+    #[command(display_order = 5)]
     GlossaryCoverage {
         /// The free-text feature request whose domain terms are scored.
         #[arg(long)]
@@ -82,18 +82,31 @@ pub enum ContextCmd {
     /// (`action ∈ {appended, updated}`). Fail-open: no `--context` destination →
     /// `{ok:false, reason:"no-context-target"}`, exit 0.
     #[command(name = "grill-capture")]
-    #[command(display_order = 7)]
+    #[command(display_order = 6)]
     GrillCapture {
-        /// The domain term being defined (becomes the block heading).
-        #[arg(long)]
+        /// The domain term being defined (becomes the block heading). Optional
+        /// with `--finalize` (which needs no term).
+        #[arg(long, default_value = "")]
         term: String,
-        /// The confirmed one-line definition for the term.
-        #[arg(long)]
+        /// The confirmed one-line definition for the term. Optional with
+        /// `--finalize`.
+        #[arg(long, default_value = "")]
         definition: String,
         /// A `CONTEXT.md` / `CONTEXT-MAP.md` glossary path. Repeatable. The
         /// first resolved (or first requested) path is the write target.
         #[arg(long)]
         context: Vec<String>,
+        /// Clarify-finalize (F6): mint `<spec>/.clarified` for the spec — the
+        /// marker `approve-spec` requires before a Full plan may be approved —
+        /// then exit. Needs no term; the SINGLE explicit "clarification complete"
+        /// action (a term capture never mints it).
+        #[arg(long)]
+        finalize: bool,
+        /// The spec to finalize (with `--finalize`). Explicit and robust (mirrors
+        /// `approve-spec --spec`); absent, the active spec is resolved from the
+        /// session binding. Ignored without `--finalize`.
+        #[arg(long, default_value = "")]
+        spec: String,
         /// Workspace root. Defaults to `.`.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -114,7 +127,9 @@ pub fn dispatch(cmd: ContextCmd) {
             term,
             definition,
             context,
+            finalize,
+            spec,
             root,
-        } => grill_capture::run(&term, &definition, &context, &root),
+        } => grill_capture::run(&term, &definition, &context, &spec, finalize, &root),
     }
 }

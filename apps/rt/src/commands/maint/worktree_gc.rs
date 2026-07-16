@@ -39,7 +39,6 @@
 //!
 //! Emits two harness events per invocation (fail-open):
 //!
-//! - `worktree.gc.run { removed_count, kept_count, dry_run }` — the GC summary.
 //! - `pipeline.economy.operation.invoked { operation: "worktree-gc", duration_ms }`
 //!   — the universal `/economia` operation marker (W12 contract).
 
@@ -281,48 +280,17 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
 // Telemetry
 // ---------------------------------------------------------------------------
 
-/// Emit `worktree.gc.run` + `pipeline.economy.operation.invoked` to the
-/// project's harness event store. Fail-open at every step.
-fn emit_telemetry(
-    repo: &Path,
-    removed_count: usize,
-    kept_count: usize,
-    dry_run: bool,
-    duration_ms: u128,
-) {
+/// Emit `pipeline.economy.operation.invoked` to the project's harness event
+/// store. Fail-open at every step.
+fn emit_telemetry(repo: &Path, duration_ms: u128) {
     let dir = repo.display().to_string();
     let spec = current_spec(&dir);
     let session = session_id();
     let ts = now_iso8601();
 
-    // Cast a small unsigned count into i64 — clippy::cast_possible_wrap can't
-    // hit on a `usize` derived from at most ~10^4 worktrees per repo.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let removed_i = removed_count as i64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let kept_i = kept_count as i64;
     // `duration_ms` is unbounded `u128`; cap at i64::MAX before casting so we
     // never produce a negative JSON number on an overflow.
     let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-
-    let gc_event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: ts.clone(),
-        session_id: session.clone(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("worktree-gc".to_string()),
-            actor_type: None,
-        },
-        event: "worktree.gc.run".to_string(),
-        payload: json!({
-            "removed_count": removed_i,
-            "kept_count": kept_i,
-            "dry_run": dry_run,
-        }),
-        spec: spec.clone(),
-    };
 
     let econ_event = HarnessEvent {
         v: SCHEMA_VERSION,
@@ -342,10 +310,6 @@ fn emit_telemetry(
         spec,
     };
 
-    // W5: `worktree.gc.run` is non-pipeline (NDJSON); `pipeline.economy.*`
-    // is pipeline (SQLite). The router classifies each correctly so we no
-    // longer need the open-store-then-append shape.
-    let _ = crate::shared::events::route::emit(&dir, &gc_event);
     let _ = crate::shared::events::route::emit(&dir, &econ_event);
 }
 
@@ -399,10 +363,6 @@ pub fn run(opts: WorktreeGcOpts) {
     let report = gc(&repo, opts.age_days, opts.apply);
     let duration_ms = started.elapsed().as_millis();
 
-    let removed_count = report.removed.len();
-    let kept_count = report.kept.len();
-    let dry_run = report.dry_run;
-
     // Print BEFORE telemetry so the byte-stable JSON ordering is independent
     // of how long the store append takes (or whether it succeeds at all).
     let body: Value = serde_json::to_value(&report)
@@ -412,7 +372,7 @@ pub fn run(opts: WorktreeGcOpts) {
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".into())
     );
 
-    emit_telemetry(&repo, removed_count, kept_count, dry_run, duration_ms);
+    emit_telemetry(&repo, duration_ms);
 }
 
 // ---------------------------------------------------------------------------
