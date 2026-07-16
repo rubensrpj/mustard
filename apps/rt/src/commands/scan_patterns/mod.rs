@@ -9,13 +9,22 @@
 //! orchestrator's own Write tool. This module closes that asymmetry:
 //!
 //! - [`list`] projects the mold worklist deterministically FROM `grain.model.json`
-//!   (role clusters ≥3, attributed to their subproject, with real exemplars and
-//!   existing molds filtered) — no hand-derivation, no re-reading the repo.
-//! - [`apply`] writes one authored mold create-only, path-shape-guarded and
-//!   atomic — and, being a `mustard-rt run` command, sidesteps the
-//!   background-isolation gate that stalled the orchestrator's Write.
+//!   (role clusters ≥3, attributed to their subproject, with real exemplars) —
+//!   no hand-derivation, no re-reading the repo. Machine-pristine molds come
+//!   back as `mode: "refresh"` so every scan re-authors them fresh; hand-edited
+//!   or unmarked molds and recorded declines are never re-proposed.
+//! - [`apply`] writes one authored mold — create, or `--refresh` over a mold
+//!   whose [`provenance`] marker verifies — path-shape-guarded and atomic; and,
+//!   being a `mustard-rt run` command, it sidesteps the background-isolation
+//!   gate that stalled the orchestrator's Write.
+//! - [`decline`] records the agent's justified refusals so a dead candidate
+//!   stops burning a dispatch on every scan.
+//! - [`provenance`] is the machine-vs-hand line: a SHA-256 marker stamped at
+//!   write time; only a mold whose marker verifies is ever overwritten.
 //!
-//! Both are fully fail-open per the `mustard-rt run` contract.
+//! All fully fail-open per the `mustard-rt run` contract.
 
 pub mod apply;
+pub mod decline;
 pub mod list;
+pub(crate) mod provenance;

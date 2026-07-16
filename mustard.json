@@ -1,1 +1,18 @@
-{"buildCommand":"cargo build --workspace","specLang":"en-US","git":{"flow":{"*":"dev","dev":"main"},"provider":"github"}}
+{
+  "git": {
+    "flow": {
+      "*": "dev",
+      "dev": "main"
+    },
+    "provider": "github",
+    "submodules": false
+  },
+  "buildCommand": "cargo build --workspace",
+  "specLang": "en-US",
+  "runtime": {
+    "kind": "native",
+    "os": "windows",
+    "arch": "x86_64"
+  },
+  "version": "3.1.36"
+}

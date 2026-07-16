@@ -7,16 +7,19 @@
 //! attributes the cluster to the subproject that owns its `common_dir`, resolves
 //! 2-3 real exemplar files (hand-written only — generated/vendored code never
 //! teaches convention), and proposes a `{subproject-basename}-{role}-pattern`
-//! mold — unless that mold already exists (create-only, so an existing mold is
-//! never re-proposed). Capped at [`CAP_PER_SUBPROJECT`] new molds per subproject.
+//! mold. Machine-authored molds stay FRESH: an existing mold whose
+//! [`super::provenance`] marker verifies is re-proposed as `mode: "refresh"`
+//! on every scan; a hand-edited or unmarked mold is preserved and never
+//! re-proposed, and a slug recorded in `.claude/scan-declined.json`
+//! ([`super::decline`]) is skipped entirely. Uncapped — every cluster clearing
+//! the quality bars is proposed.
 //!
-//! Output: a JSON array `[{subproject, label, slug, moldPath, affix, affixKind,
-//! declKind, implements, count, exemplars}]` to stdout, sorted by
+//! Output: a JSON array `[{subproject, label, slug, mode, moldPath, affix,
+//! affixKind, declKind, implements, count, exemplars}]` to stdout, sorted by
 //! `(subproject, slug)` for byte-stable output. Fail-open: a missing or
 //! unparseable model degrades to `[]` and exit 0 — the enrich step then skips
 //! silently, exactly like Guards on an empty worklist.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -24,11 +27,6 @@ use serde::{Deserialize, Serialize};
 /// Minimum members a role cluster must have before it earns a mold — a mold
 /// teaches a *recurring* convention, and fewer than three files is not yet one.
 const MIN_CLUSTER: usize = 3;
-
-/// Hard cap on new molds proposed per subproject per scan. Mirrors the SKILL's
-/// "≤4 new molds per subproject per scan" — keeps a first scan of a large repo
-/// from fanning out an unbounded agent batch.
-const CAP_PER_SUBPROJECT: usize = 4;
 
 /// How many exemplar files a mold candidate carries — enough for the agent to
 /// read the shared shape, not so many the dispatch prompt bloats.
@@ -105,6 +103,9 @@ pub(crate) struct Candidate {
     /// `{slug}-pattern`. Matches the existing convention (`scan-stage`,
     /// `rt-inject`).
     pub(crate) slug: String,
+    /// `"create"` (no mold yet) or `"refresh"` (a machine-pristine mold exists
+    /// — re-author it fresh; the caller passes `--refresh` to apply).
+    pub(crate) mode: String,
     /// Where the agent's SKILL.md is written (`scan-patterns-apply --path`).
     #[serde(rename = "moldPath")]
     pub(crate) mold_path: String,
@@ -126,8 +127,8 @@ pub fn run(root: &Path) {
     println!("{}", serde_json::to_string(&candidates).unwrap_or_else(|_| "[]".to_string()));
 }
 
-/// The testable core of [`run`]: read the model and derive the capped, sorted
-/// mold worklist. Fail-open — any load/parse failure yields an empty worklist.
+/// The testable core of [`run`]: read the model and derive the sorted mold
+/// worklist. Fail-open — any load/parse failure yields an empty worklist.
 /// Crate-visible because `agent-prompt-render --role patterns` reuses it
 /// in-process to embed the per-subproject worklist in the dispatch prompt.
 pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
@@ -148,6 +149,10 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
     // Module paths sorted once — every exemplar scan reads this in a stable order.
     let mut modules: Vec<&Mod> = model.modules.iter().collect();
     modules.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // Slugs the enrich agent already refused with a recorded reason — a dead
+    // candidate must not burn a dispatch on every scan.
+    let declined = super::decline::declined(root);
 
     let mut candidates: Vec<Candidate> = Vec::new();
     for role in &model.roles {
@@ -171,12 +176,18 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
             continue;
         }
         let slug = format!("{subproj}-{label}");
-        let mold_path = format!("{}/.claude/skills/{}-pattern/SKILL.md", project.dir, slug);
-        // Create-only: an existing mold (this slug, or any `*-pattern` folder
-        // ending in `-{label}-pattern`) is never re-proposed.
-        if mold_exists(root, &project.dir, &slug, &label) {
-            continue;
+        if declined.contains_key(&slug) {
+            continue; // refused by the enrich agent with a recorded reason.
         }
+        let mold_path = format!("{}/.claude/skills/{}-pattern/SKILL.md", project.dir, slug);
+        // Machine-pristine molds refresh on every scan; a hand-edited/unmarked
+        // mold — or any other `*-{label}-pattern` folder claiming the role —
+        // is preserved and never re-proposed.
+        let mode = match mold_status(root, &project.dir, &slug, &label) {
+            MoldStatus::Missing => "create",
+            MoldStatus::Pristine => "refresh",
+            MoldStatus::Preserved => continue,
+        };
         let exemplars = exemplars_for(role, &modules);
         if exemplars.len() < MIN_EXEMPLARS {
             continue; // not a real file-naming convention — nothing teachable here.
@@ -185,6 +196,7 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
             subproject: project.dir.clone(),
             label,
             slug,
+            mode: mode.to_string(),
             mold_path,
             affix: role.affix.clone(),
             affix_kind: role.kind.clone(),
@@ -195,34 +207,9 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
         });
     }
 
-    cap_per_subproject(candidates)
-}
-
-/// Enforce [`CAP_PER_SUBPROJECT`]: keep the highest-count clusters per subproject
-/// (ties broken by slug), then return the survivors sorted by `(subproject, slug)`
-/// for byte-stable output.
-fn cap_per_subproject(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
-    // Rank within each subproject by count desc, then slug, so the cap keeps the
-    // strongest conventions.
-    candidates.sort_by(|a, b| {
-        a.subproject
-            .cmp(&b.subproject)
-            .then(b.count.cmp(&a.count))
-            .then(a.slug.cmp(&b.slug))
-    });
-    let mut kept: Vec<Candidate> = Vec::new();
-    let mut per: BTreeMap<String, usize> = BTreeMap::new();
-    for c in candidates {
-        let n = per.entry(c.subproject.clone()).or_insert(0);
-        if *n >= CAP_PER_SUBPROJECT {
-            continue;
-        }
-        *n += 1;
-        kept.push(c);
-    }
-    // Final byte-stable order for the emitted worklist.
-    kept.sort_by(|a, b| a.subproject.cmp(&b.subproject).then(a.slug.cmp(&b.slug)));
-    kept
+    // Byte-stable order for the emitted worklist.
+    candidates.sort_by(|a, b| a.subproject.cmp(&b.subproject).then(a.slug.cmp(&b.slug)));
+    candidates
 }
 
 /// True when `dir` sits under a conventional test/fixture segment.
@@ -264,28 +251,60 @@ fn slugify(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// Whether a mold for this cluster already exists under the subproject's
-/// `.claude/skills/`. True when the exact `{slug}-pattern` folder is present, OR
-/// any existing `*-pattern` folder ends in `-{label}-pattern` / equals
-/// `{label}-pattern` (the same role under a different subproject prefix).
-fn mold_exists(root: &Path, subproject: &str, slug: &str, label: &str) -> bool {
+/// How the on-disk skills tree answers a candidate.
+enum MoldStatus {
+    /// No mold claims the role — author it (`mode: "create"`).
+    Missing,
+    /// The exact `{slug}-pattern` mold exists and its provenance marker
+    /// verifies — machine-authored and untouched, re-author it fresh
+    /// (`mode: "refresh"`).
+    Pristine,
+    /// Preserved terrain, never re-proposed: the exact mold is hand-edited or
+    /// unmarked (legacy/hand-authored), or another `*-pattern` folder ending
+    /// in `-{label}-pattern` / equal to `{label}-pattern` claims the same role
+    /// under a different subproject prefix.
+    Preserved,
+}
+
+/// Classify the cluster against the subproject's `.claude/skills/` tree. See
+/// [`MoldStatus`]; the exact `{slug}-pattern` folder wins over a label match.
+fn mold_status(root: &Path, subproject: &str, slug: &str, label: &str) -> MoldStatus {
     let skills_dir: PathBuf = root.join(subproject).join(".claude").join("skills");
     let exact = format!("{slug}-pattern");
     let by_label_suffix = format!("-{label}-pattern");
     let by_label_exact = format!("{label}-pattern");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
-        return false; // no skills dir yet → nothing exists.
+        return MoldStatus::Missing; // no skills dir yet → nothing exists.
     };
+    let mut exact_found = false;
+    let mut label_claimed = false;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with("-pattern") {
             continue;
         }
-        if name == exact || name == by_label_exact || name.ends_with(&by_label_suffix) {
-            return true;
+        if name == exact {
+            exact_found = true;
+        } else if name == by_label_exact || name.ends_with(&by_label_suffix) {
+            label_claimed = true;
         }
     }
-    false
+    if exact_found {
+        // Refresh-eligible ONLY while the scan's own marker verifies: the
+        // machine wrote it and nobody touched it since. Unreadable or
+        // marker-less (a folder without SKILL.md included) → preserve.
+        return match std::fs::read_to_string(skills_dir.join(&exact).join("SKILL.md")) {
+            Ok(text) if super::provenance::verify(&text) == super::provenance::Provenance::Pristine => {
+                MoldStatus::Pristine
+            }
+            _ => MoldStatus::Preserved,
+        };
+    }
+    if label_claimed {
+        MoldStatus::Preserved
+    } else {
+        MoldStatus::Missing
+    }
 }
 
 /// Resolve up to [`MAX_EXEMPLARS`] hand-written exemplar files for `role`: the
@@ -397,6 +416,7 @@ mod tests {
         assert_eq!(c.subproject, "apps/api");
         assert_eq!(c.label, "service");
         assert_eq!(c.slug, "api-service");
+        assert_eq!(c.mode, "create", "no mold on disk yet");
         assert_eq!(c.mold_path, "apps/api/.claude/skills/api-service-pattern/SKILL.md");
         assert_eq!(c.implements.as_deref(), Some("BaseService"));
         // Only the two matching hand-written files are exemplars (README excluded).
@@ -453,11 +473,11 @@ mod tests {
     }
 
     #[test]
-    fn collect_caps_per_subproject() {
+    fn collect_emits_every_cluster_uncapped() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // Six clusters in one subproject, each with a real exemplar — only the
-        // top CAP_PER_SUBPROJECT (by count) survive.
+        // Six clusters in one subproject, each with real exemplars — ALL are
+        // proposed (no per-subproject cap; the quality bars are the only filter).
         let mut roles = String::new();
         let mut modules = String::new();
         for (i, n) in [("A", 10), ("B", 9), ("C", 8), ("D", 7), ("E", 6), ("F", 5)] {
@@ -477,10 +497,86 @@ mod tests {
         );
         write_model(root, &model);
         let got = collect(root);
-        assert_eq!(got.len(), CAP_PER_SUBPROJECT, "capped to {CAP_PER_SUBPROJECT}: {:?}", got.iter().map(|c| &c.slug).collect::<Vec<_>>());
-        // The four highest-count clusters (A,B,C,D) are the survivors.
         let slugs: Vec<&str> = got.iter().map(|c| c.slug.as_str()).collect();
-        assert_eq!(slugs, vec!["api-a", "api-b", "api-c", "api-d"]);
+        assert_eq!(slugs, vec!["api-a", "api-b", "api-c", "api-d", "api-e", "api-f"], "every cluster survives, sorted");
+    }
+
+    #[test]
+    fn collect_reproposes_pristine_mold_as_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"}
+              ]
+            }"#,
+        );
+        // A machine-authored mold, stamped by apply and untouched since.
+        let mold_dir = root.join("apps/api/.claude/skills/api-service-pattern");
+        std::fs::create_dir_all(&mold_dir).unwrap();
+        std::fs::write(mold_dir.join("SKILL.md"), super::super::provenance::stamp("# machine mold")).unwrap();
+
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "pristine mold comes back for a fresh re-author");
+        assert_eq!(got[0].mode, "refresh");
+        assert_eq!(got[0].slug, "api-service");
+    }
+
+    #[test]
+    fn collect_preserves_edited_and_unmarked_molds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"}
+              ]
+            }"#,
+        );
+        let mold_dir = root.join("apps/api/.claude/skills/api-service-pattern");
+        std::fs::create_dir_all(&mold_dir).unwrap();
+
+        // Stamped, then hand-edited: the digest no longer verifies.
+        let edited = format!("{}\nA HUMAN ADDED THIS LINE\n", super::super::provenance::stamp("# machine mold").trim_end());
+        std::fs::write(mold_dir.join("SKILL.md"), edited).unwrap();
+        assert!(collect(root).is_empty(), "a hand-edited mold is never re-proposed");
+
+        // Unmarked (legacy / hand-authored): preserved too.
+        std::fs::write(mold_dir.join("SKILL.md"), "# hand-authored skill\n").unwrap();
+        assert!(collect(root).is_empty(), "an unmarked mold is never re-proposed");
+    }
+
+    #[test]
+    fn collect_excludes_declined_slugs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"}
+              ]
+            }"#,
+        );
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(
+            root.join(".claude/scan-declined.json"),
+            r#"{"api-service":"covered by another mold"}"#,
+        )
+        .unwrap();
+        assert!(collect(root).is_empty(), "a recorded decline stops the re-proposal");
     }
 
     #[test]
