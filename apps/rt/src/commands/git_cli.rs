@@ -19,7 +19,7 @@ use crate::commands::{git_settle, work_unit_open};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum GitCmd {
-    /// The EXIT RITUAL of a delivered work unit (the `/git settle` action):
+    /// The EXIT RITUAL of a delivered work unit (the engine of `/git pr close`):
     /// runs from the WORK BRANCH (bare invocation on `dev`/`main` REFUSES),
     /// verifies the unit is 100% merged on its base (ancestry + `gh` fallback
     /// for squash merges — not merged: hard stop, nothing touched), advances
@@ -47,7 +47,7 @@ pub enum GitCmd {
     /// `EnterWorktree path=<returned path>`. An explicit `--base` MUST name a
     /// declared `git.flow` integration base; the branch name matches what
     /// `emit-pipeline` stored in the `pending-work-branch` marker. Cleanup is
-    /// `git-settle`'s job (`/git pr close`), never this command's.
+    /// the `/git pr close` ritual's job, never this command's.
     #[command(name = "work-unit-open")]
     #[command(display_order = 76)]
     WorkUnitOpen {

@@ -376,12 +376,17 @@ pub fn run(opts: EmitPipelineOpts) {
     // it as the session's `pending-work-branch` marker. `work_branch_gate` reads
     // it back on the first Write/Edit. A read-only request never edits, so the
     // marker is simply never consumed. Fail-open — the emit already succeeded.
+    // The name is also echoed in the success line so the orchestrator can pass
+    // it straight to `EnterWorktree name=…` (the WorktreeCreate hook cuts it
+    // from the right base).
+    let mut work_branch: Option<String> = None;
     if kind_str == EVENT_PIPELINE_KIND {
         if let Some(base) = kind_base.as_deref() {
             let project = project_dir();
             let branch =
                 super::work_branch::compute_work_branch(base, &spec_name, opts.intent.as_deref(), &sid, &ts, &project);
             crate::shared::context::set_pending_branch(&project, &sid, &branch);
+            work_branch = Some(branch);
         }
     }
 
@@ -430,9 +435,15 @@ pub fn run(opts: EmitPipelineOpts) {
     // the harness's own traceability tool opaque on the happy path (field
     // feedback, sialia 2026-07-09: "para um harness de rastreabilidade, a
     // própria ferramenta é opaca no sucesso"). One deterministic line: what
-    // was recorded, for which spec. No timestamp/session in it (run outputs
-    // are byte-compared in gates) — the NDJSON row carries those.
-    println!("{}", json!({ "ok": true, "kind": kind_str, "spec": spec_name }));
+    // was recorded, for which spec (+ the computed work branch on
+    // `pipeline.kind`, for the EnterWorktree hand-off). No timestamp/session
+    // in it (run outputs are byte-compared in gates) — the NDJSON row carries
+    // those.
+    let mut done = json!({ "ok": true, "kind": kind_str, "spec": spec_name });
+    if let Some(branch) = work_branch {
+        done["branch"] = json!(branch);
+    }
+    println!("{done}");
 }
 
 /// Returns `true` when the spec has a `qa.result` event with
