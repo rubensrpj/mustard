@@ -53,10 +53,10 @@ jobs:
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt
+        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
 
       # Plain clippy: the workspace lint table makes `unwrap_used` (and other
       # correctness lints) deny-level while keeping pedantic lints at warn, so
       # this fails the build on real problems without drowning in style noise.
       - name: Clippy
-        run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt
+        run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan

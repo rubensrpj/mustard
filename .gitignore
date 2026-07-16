@@ -137,9 +137,15 @@ packages/cli/templates/.claude/.metrics/
 # Benchmark corpus snapshots (grain model + dict regenerated via `scan.exe scan <corpus>` — heavy, regenerable)
 benchmarks/*/model/
 
-# Plugin binaries são artefato de build (release workflow popula plugin/bin/); nunca commitar
+# Plugin binaries são artefato de build (release workflow popula plugin/bin/,
+# ou o mustard-boot baixa dos assets do Release); nunca commitar. Os scripts
+# mustard-boot / mustard-boot.cmd SÃO commitados — não casar com eles aqui.
 plugin/bin/*.exe
 plugin/bin/*.old
 plugin/bin/mustard-rt
 plugin/bin/scan
+plugin/bin/mustard-mcp
+plugin/bin/mustard
 plugin/bin/*-macos
+plugin/bin/.version
+plugin/bin/.boot-tmp/

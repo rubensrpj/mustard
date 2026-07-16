@@ -30,9 +30,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SessionStart",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SessionStart",
             "statusMessage": "Initializing harness, memory, and budgets...",
-            "timeout": 15
+            "timeout": 120
           }
         ]
       }
