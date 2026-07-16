@@ -645,12 +645,14 @@ fn build_patterns_role_block(subproject: &str) -> String {
     format!(
         "ROLE: patterns\n\
          You author pattern skill molds for {subproject} ONLY — one SKILL.md per cluster \
-         listed in ## TASK, and NEVER one that is not listed there (existing molds were \
-         already filtered out; never the workspace root). READ 2-3 of the cluster's \
-         exemplar files (their paths are in the worklist) BEFORE authoring its mold: the \
-         mold teaches what they share — folder, extension, naming, shape (traits, exports, \
-         error style, test placement) and what a new member must/must-not do. Read-only: \
-         deliver every mold in your final message, each inside \
+         listed in ## TASK, and NEVER one that is not listed there (hand-maintained molds \
+         were already filtered out; never the workspace root). A `mode: refresh` entry is \
+         a machine-authored mold being regenerated: author it EXACTLY like a create, fresh \
+         from the CURRENT exemplars — never read or echo the old mold text. READ 2-3 of \
+         the cluster's exemplar files (their paths are in the worklist) BEFORE authoring \
+         its mold: the mold teaches what they share — folder, extension, naming, shape \
+         (traits, exports, error style, test placement) and what a new member must/must-not \
+         do. Read-only: deliver every mold in your final message, each inside \
          `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
          worklist; do NOT write any file — the caller pipes each block to \
          scan-patterns-apply. Canonical mold format (frontmatter first): name = the \
@@ -660,8 +662,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
          `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` \
          (folder / extension / file count), `## How to apply` (where a new member goes and \
          what it follows), `## Examples` (2-3 real `Ref:` paths you read). Never cite a \
-         framework the exemplars don't use. A cluster too weak to teach (shared folder but \
-         no real shape) → SKIP it and say so in one line."
+         framework the exemplars don't use. A cluster you refuse (no teachable shape, \
+         exemplars unreadable or generated-only, role already covered by another mold) → \
+         deliver `=== DECLINE: <slug> ===` <one-line reason> `=== END ===` so the caller \
+         records it and no future scan re-proposes it."
     )
 }
 
@@ -706,9 +710,10 @@ fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String 
 }
 
 /// Render the filtered worklist as the TASK body: one entry per candidate with
-/// slug, label, affix (+kind), declKind, count, implements (when present), the
-/// moldPath the returned block must name, and the exemplar files to read.
-/// Plain bullets only — no `## ` heading (see [`patterns_task_block`]).
+/// slug, mode (create | refresh), label, affix (+kind), declKind, count,
+/// implements (when present), the moldPath the returned block must name, and
+/// the exemplar files to read. Plain bullets only — no `## ` heading (see
+/// [`patterns_task_block`]).
 fn render_patterns_worklist(
     candidates: &[crate::commands::scan_patterns::list::Candidate],
 ) -> String {
@@ -721,8 +726,8 @@ fn render_patterns_worklist(
         let kind = if c.affix_kind.is_empty() { "-" } else { c.affix_kind.as_str() };
         let _ = write!(
             out,
-            "- slug: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
-            c.slug, c.label, c.affix, c.count
+            "- slug: {} | mode: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
+            c.slug, c.mode, c.label, c.affix, c.count
         );
         if let Some(imp) = c.implements.as_deref().filter(|s| !s.is_empty()) {
             let _ = write!(out, " | implements: {imp}");
