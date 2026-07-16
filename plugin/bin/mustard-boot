@@ -1,0 +1,52 @@
+#!/usr/bin/env sh
+# mustard-boot — first-run bootstrap for the Mustard plugin binaries.
+#
+# The plugin ships WITHOUT binaries (plugin/bin/* executables are build
+# artifacts, never committed). The SessionStart hook goes through this script:
+# when `mustard-rt` is missing — or was downloaded for a different plugin
+# version — it fetches `mustard-bins-<version>-<os>` from the GitHub Release
+# matching plugin.json's version, extracts it here, then delegates to the
+# binary. Every failure path is silent-allow: a hook must NEVER wedge the
+# session, so on any error this script exits 0 and the harness stays dormant
+# for the session (next SessionStart retries).
+#
+# Dev machines are exempt from re-downloads: a locally built bin/ has no
+# `.version` stamp, and a missing stamp is treated as "hands off".
+set -u
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
+RT="$DIR/mustard-rt"
+MANIFEST="$DIR/../.claude-plugin/plugin.json"
+STAMP="$DIR/.version"
+
+VER=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" 2>/dev/null | head -n 1)
+
+need_fetch=0
+if [ ! -x "$RT" ]; then
+  need_fetch=1
+elif [ -f "$STAMP" ] && [ -n "$VER" ] && [ "$(cat "$STAMP" 2>/dev/null)" != "$VER" ]; then
+  need_fetch=1
+fi
+
+if [ "$need_fetch" = "1" ] && [ -n "$VER" ]; then
+  case "$(uname -s)" in
+    Darwin) os="macos-universal" ;;
+    *)      os="linux-x64" ;;
+  esac
+  url="https://github.com/rubensrpj/mustard/releases/download/v${VER}/mustard-bins-${VER}-${os}.tar.gz"
+  tmp="$DIR/.boot-tmp"
+  mkdir -p "$tmp"
+  echo "[mustard-boot] fetching plugin binaries v${VER} (first run)" >&2
+  if curl -fsSL "$url" -o "$tmp/bins.tar.gz" && tar -xzf "$tmp/bins.tar.gz" -C "$DIR"; then
+    printf '%s' "$VER" > "$STAMP"
+    chmod +x "$DIR/mustard-rt" "$DIR/scan" "$DIR/mustard-mcp" "$DIR/mustard" 2>/dev/null || true
+  else
+    echo "[mustard-boot] download failed ($url) — mustard hooks stay dormant this session" >&2
+  fi
+  rm -rf "$tmp" 2>/dev/null || true
+fi
+
+if [ -x "$RT" ]; then
+  exec "$RT" "$@"
+fi
+exit 0

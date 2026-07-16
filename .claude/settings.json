@@ -26,12 +26,6 @@
     "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
     "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
-  "mcpServers": {
-    "mustard-memory": {
-      "command": "mustard-mcp",
-      "args": []
-    }
-  },
   "permissions": {
     "allow": [
       "Read",
@@ -133,108 +127,9 @@
       "Grep(**/Migrations/**)"
     ]
   },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreToolUse",
-            "timeout": 310
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PostToolUse",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SessionStart",
-            "statusMessage": "Initializing harness, memory, and budgets...",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "matcher": "prompt_input_exit|clear|other",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SessionEnd",
-            "statusMessage": "Extracting knowledge and cleaning state...",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SubagentStart",
-            "statusMessage": "Registering agent...",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SubagentStop",
-            "statusMessage": "Agent completed",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on UserPromptSubmit",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Stop",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
   "statusLine": {
     "type": "command",
-    "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe run statusline",
+    "command": "mustard-rt run statusline",
     "padding": 1
   }
 }

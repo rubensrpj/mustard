@@ -1,8 +1,0 @@
-{
-  "stage": "Analyze",
-  "phase": "ANALYZE",
-  "scope": "touch",
-  "lang": "pt-BR",
-  "kind": "tactical-fix",
-  "checkpoint": "2026-07-09T14:10:00.000Z"
-}

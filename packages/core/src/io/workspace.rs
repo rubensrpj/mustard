@@ -8,9 +8,23 @@
 //! subtly different answer in monorepos with nested submodules.
 //!
 //! [`workspace_root`] replaces all four. Given a `start_dir`, it walks
-//! ancestors looking for an **anchor** — a directory that contains **both**
-//! `mustard.json` (file) and `.claude/` (directory). The first ancestor that
-//! satisfies the predicate is the workspace root.
+//! ancestors looking for an **anchor** in two passes:
+//!
+//! 1. **Strict pass** — a directory that contains `mustard.json` (file),
+//!    `.claude/` (directory) **and** is a git repository root (`.git` exists —
+//!    as a *directory* for a normal repo, or as a *file* for a submodule /
+//!    linked worktree, which carry a `gitdir:` pointer file). The nearest
+//!    ancestor satisfying all three is the workspace root.
+//! 2. **Loose fallback** — when NO ancestor satisfies the strict predicate
+//!    (e.g. a project that uses no git at all), the walk repeats with the
+//!    historical rule: `mustard.json` + `.claude/` only.
+//!
+//! The strict pass exists because the loose rule alone made any directory with
+//! a stray committed `mustard.json` + `.claude/` a *phantom anchor*: in a
+//! monorepo, harness runtime state was scaffolded inside a subproject's
+//! `.claude/` instead of the repo root's. Requiring the git root pins the
+//! anchor to the repository boundary while the fallback keeps git-less
+//! projects working exactly as before.
 //!
 //! ## Override
 //!
@@ -185,6 +199,13 @@ fn resolve_uncached(
 
 /// Validate an override value: the path must exist, satisfy the anchor
 /// predicate, and not violate the I1 guard.
+///
+/// Deliberately validates against the **loose** anchor rule (`mustard.json` +
+/// `.claude/` only), NOT the strict git-root rule the ancestor walk prefers:
+/// `MUSTARD_WORKSPACE_ROOT` is an explicit, deliberate user choice — if the
+/// user points Mustard at a directory that is not a git repository root, we
+/// honour it rather than second-guess them. The strict rule only exists to
+/// disambiguate the *automatic* walk in monorepos.
 fn validate_override(path: PathBuf) -> Result<PathBuf, WorkspaceError> {
     if !path.exists() {
         return Err(WorkspaceError::OverrideInvalid {
@@ -204,8 +225,21 @@ fn validate_override(path: PathBuf) -> Result<PathBuf, WorkspaceError> {
     Ok(path)
 }
 
-/// Walk ancestors of `start_dir`, returning the first that is an anchor.
+/// Walk ancestors of `start_dir` in two passes.
+///
+/// Pass 1 (strict) returns the nearest ancestor that is an anchor **and** a
+/// git repository root — this is what pins the workspace to the repository
+/// boundary in monorepos, so a stray `mustard.json` + `.claude/` inside a
+/// subproject can never become a phantom anchor. Pass 2 (loose fallback) only
+/// runs when pass 1 found nothing anywhere up the tree: it re-walks with the
+/// historical anchor-only rule so projects with no git at all keep resolving
+/// exactly as before (fail-open).
 fn walk_ancestors(start_dir: &Path) -> Result<PathBuf, WorkspaceError> {
+    for candidate in start_dir.ancestors() {
+        if is_anchor(candidate) && is_git_repo_root(candidate) {
+            return Ok(candidate.to_path_buf());
+        }
+    }
     for candidate in start_dir.ancestors() {
         if is_anchor(candidate) {
             return Ok(candidate.to_path_buf());
@@ -221,6 +255,17 @@ fn is_anchor(dir: &Path) -> bool {
     let mustard_json = dir.join("mustard.json");
     let claude_dir = dir.join(".claude");
     mustard_json.is_file() && claude_dir.is_dir()
+}
+
+/// True iff `dir` is the root of a git repository: `dir/.git` exists as
+/// **either** a directory (normal checkout) **or** a file (a submodule or a
+/// linked worktree, where `.git` is a `gitdir:` pointer file). Purely a
+/// filesystem probe — no `git` subprocess — so it is cheap enough for the
+/// ancestor walk and never fails: an unreadable / absent path is simply
+/// "not a git root".
+pub fn is_git_repo_root(dir: &Path) -> bool {
+    let dot_git = dir.join(".git");
+    dot_git.is_dir() || dot_git.is_file()
 }
 
 /// Canonicalise `p`, falling back to the path as-given on error — so a relative
@@ -301,8 +346,18 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Build a minimal anchor: a directory containing `mustard.json` + `.claude/`.
+    /// Build a minimal STRICT anchor: `mustard.json` + `.claude/` + a `.git/`
+    /// directory (the fixture is a git repository root, satisfying the strict
+    /// pass — the shape of every real Mustard project under git).
     fn make_anchor(at: &Path) {
+        make_loose_anchor(at);
+        std::fs::create_dir_all(at.join(".git")).unwrap();
+    }
+
+    /// Build a LOOSE anchor only: `mustard.json` + `.claude/`, NO `.git`.
+    /// Resolvable solely through the fallback pass (git-less projects) — or
+    /// not at all when a strict anchor exists above it.
+    fn make_loose_anchor(at: &Path) {
         std::fs::write(at.join("mustard.json"), b"{}").unwrap();
         std::fs::create_dir_all(at.join(".claude")).unwrap();
     }
@@ -391,6 +446,72 @@ mod tests {
     }
 
     #[test]
+    fn workspace_root_skips_phantom_subproject_anchor_inside_git_repo() {
+        let _guard = serialize_test();
+        // The real monorepo defect: a stray committed `mustard.json` +
+        // `.claude/` inside apps/dashboard (which has NO `.git` of its own)
+        // made the subproject a phantom anchor and harness state landed there.
+        // The strict pass must walk past it to the git repository root.
+        let dir = tempdir().unwrap();
+        make_anchor(dir.path()); // git root + anchor
+        let sub = dir.path().join("apps").join("dashboard");
+        std::fs::create_dir_all(&sub).unwrap();
+        make_loose_anchor(&sub); // phantom: anchor files, no .git
+        let start = sub.join("src");
+        std::fs::create_dir_all(&start).unwrap();
+        let resolved = resolve_with_override(&start, None).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap(),
+            "phantom subproject anchor must lose to the git repository root"
+        );
+    }
+
+    #[test]
+    fn workspace_root_accepts_submodule_git_file_as_own_anchor() {
+        let _guard = serialize_test();
+        // sialia case: a git SUBMODULE has `.git` as a FILE carrying a
+        // `gitdir:` pointer. A user who ran `mustard init` inside it made it a
+        // deliberate anchor — the subproject must win over the outer root.
+        let dir = tempdir().unwrap();
+        make_anchor(dir.path()); // outer repo root, also an anchor
+        let sub = dir.path().join("backend").join("Sialia.Backend");
+        std::fs::create_dir_all(&sub).unwrap();
+        make_loose_anchor(&sub);
+        // The pointer target is deliberately bogus: `is_git_repo_root` is a
+        // pure filesystem probe and the worktree redirect is fail-open, so an
+        // unresolvable gitdir must not disturb the resolution.
+        std::fs::write(
+            sub.join(".git"),
+            b"gitdir: ../../.git/modules/Sialia.Backend\n",
+        )
+        .unwrap();
+        let resolved = resolve_with_override(&sub, None).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&sub).unwrap(),
+            "a submodule (.git file) that is an anchor wins over the outer root"
+        );
+    }
+
+    #[test]
+    fn workspace_root_loose_fallback_resolves_git_less_project() {
+        let _guard = serialize_test();
+        // No `.git` anywhere up the tree: the strict pass finds nothing and
+        // the loose fallback must keep today's behaviour (fail-open).
+        let dir = tempdir().unwrap();
+        make_loose_anchor(dir.path());
+        let deep = dir.path().join("src").join("lib");
+        std::fs::create_dir_all(&deep).unwrap();
+        let resolved = resolve_with_override(&deep, None).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap(),
+            "git-less projects must keep resolving through the loose fallback"
+        );
+    }
+
+    #[test]
     fn workspace_root_rejects_resolved_dot_claude_dot_claude() {
         let _guard = serialize_test();
         // Construct a contaminated start_dir: <root>/.claude/.claude. We
@@ -417,6 +538,23 @@ mod tests {
         let other = tempdir().unwrap();
         // `other` has no anchor; `dir` does. With the override pointing at
         // `dir`, calling from `other` must still resolve to `dir`.
+        let override_path = dir.path().to_string_lossy().into_owned();
+        let resolved = resolve_with_override(other.path(), Some(&override_path)).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn env_override_stays_loose_no_git_required() {
+        let _guard = serialize_test();
+        // MUSTARD_WORKSPACE_ROOT is a deliberate user choice: it must accept a
+        // loose anchor (no .git) — the strict rule only disambiguates the
+        // automatic ancestor walk, never an explicit override.
+        let dir = tempdir().unwrap();
+        make_loose_anchor(dir.path());
+        let other = tempdir().unwrap();
         let override_path = dir.path().to_string_lossy().into_owned();
         let resolved = resolve_with_override(other.path(), Some(&override_path)).unwrap();
         assert_eq!(

@@ -29,6 +29,7 @@ use crate::hooks::write::work_branch_gate::WorkBranchGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
+use crate::hooks::session::statusline_heal_observer::StatuslineHealObserver;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
 use crate::hooks::observe::session_stop_observer::SessionStopObserver;
@@ -400,6 +401,16 @@ impl Registry {
                 observer: Some(Box::new(SessionCleanupObserver)),
             },
             Module {
+                id: "statusline_heal_observer",
+                // `statusline-heal` — SessionStart self-heal of the
+                // `statusLine` entry in `.claude/settings.local.json` (points
+                // it at the running binary). An `Observer` (pure side effect,
+                // no verdict).
+                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(StatuslineHealObserver)),
+            },
+            Module {
                 id: "prompt_submit_inject",
                 // `followup-cancel-gate` — UserPromptSubmit follow-up archival.
                 // A `Check` (always allows; the archival is its side effect).
@@ -717,6 +728,7 @@ mod tests {
             "session_start_inject",
             "session_knowledge_observer",
             "session_cleanup_observer",
+            "statusline_heal_observer",
             "prompt_submit_inject",
             "user_prompt_observer",
             "amend_window_inject",
@@ -769,6 +781,8 @@ mod tests {
         let hyg_idx = start.iter().position(|id| *id == "spec_hygiene_observer");
         let ss_idx = start.iter().position(|id| *id == "session_start_inject");
         assert!(hyg_idx < ss_idx, "spec_hygiene_observer must precede session_start_inject");
+        // `statusline_heal_observer` also rides SessionStart.
+        assert!(start.contains(&"statusline_heal_observer"));
         // `session_cleanup_observer` + `session_knowledge_observer` on SessionEnd.
         let end = applicable_ids(&registry, Trigger::SessionEnd, None);
         assert!(end.contains(&"session_cleanup_observer"));
