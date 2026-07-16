@@ -46,8 +46,10 @@ pub enum GitCmd {
     /// orchestrator can switch the session into it via
     /// `EnterWorktree path=<returned path>`. An explicit `--base` MUST name a
     /// declared `git.flow` integration base; the branch name matches what
-    /// `emit-pipeline` stored in the `pending-work-branch` marker. Cleanup is
-    /// `git-settle`'s job (`/git pr close`), never this command's.
+    /// `emit-pipeline` stored in the `pending-work-branch` marker. On creation
+    /// it copies the main checkout's `.claude/settings.local.json` (gitignored,
+    /// absent from any checkout) into the worktree. Cleanup is `git-settle`'s
+    /// job (`/git pr close`), never this command's.
     #[command(name = "work-unit-open")]
     #[command(display_order = 76)]
     WorkUnitOpen {

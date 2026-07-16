@@ -1,0 +1,61 @@
+# bump-on-main — versão automática da era plugin: CADA merge na main
+# incrementa o PATCH do plugin (plugin/.claude-plugin/plugin.json), commita,
+# tagueia vX.Y.Z e despacha o workflow Release NO REF DA TAG — lá dentro,
+# `github.ref_type == 'tag'` satisfaz o gate do job `publish`, e a conferência
+# "tag == plugin.json" passa por construção (o bump acabou de gravar ambos).
+#
+# Por que o despacho explícito (`gh workflow run`): a tag é empurrada com o
+# GITHUB_TOKEN, e o GitHub NÃO dispara workflows a partir de pushes feitos com
+# esse token (anti-recursão) — sem o despacho, a tag nasceria muda. O mesmo
+# mecanismo garante que o commit de bump não re-dispara este workflow nem a CI;
+# o guard por mensagem abaixo é cinto-e-suspensório para o caso de um humano
+# empurrar um commit `chore(release):` manualmente.
+name: Bump on main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: bump-on-main
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump PATCH do plugin.json, tag e despacho do Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=plugin/.claude-plugin/plugin.json
+          pv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
+          IFS=. read -r ma mi pa <<<"$pv"
+          nv="$ma.$mi.$((pa+1))"
+          echo "bump: $pv -> $nv"
+          sed -i "s/\"version\": \"$pv\"/\"version\": \"$nv\"/" "$manifest"
+          grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$manifest"
+          git commit -m "chore(release): v$nv — bump automático pós-merge na main"
+          # Rebase ANTES da tag: se outro merge entrou no meio-tempo, o commit
+          # de bump é reescrito e a tag precisa apontar para o sha final.
+          git pull --rebase origin main
+          git tag -a "v$nv" -m "Mustard v$nv"
+          git push origin main "v$nv"
+
+          gh workflow run release.yml --ref "v$nv"
+          echo "Release despachado no ref v$nv"

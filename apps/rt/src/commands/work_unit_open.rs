@@ -14,6 +14,10 @@
 //! wrote; inside the worktree the gate then finds the branch already checked
 //! out and stays silent.
 //!
+//! On creation the main checkout's `.claude/settings.local.json` (gitignored,
+//! so never part of the checkout) is copied into the worktree — the entering
+//! session keeps its machine-local arrangements.
+//!
 //! Error posture: config/user/state errors are LOUD (`ok:false` + exit 1) —
 //! an unknown `--base` here is the same disease `resolve_base` now rejects at
 //! emit time. Only the network is forgiving: a failed `git fetch origin` never
@@ -180,6 +184,24 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         });
     }
 
+    // Machine-local settings (`.claude/settings.local.json`) are gitignored,
+    // so the checkout cannot carry them — copy the main checkout's file so the
+    // session that enters this worktree keeps its local arrangements
+    // (permission allowlists, statusline). Fail-open: a copy failure degrades
+    // to an honest "failed" field, never blocks the open (the committed
+    // settings.json still boots the session).
+    let local_settings = {
+        let src = main.join(".claude").join("settings.local.json");
+        if src.is_file() {
+            let dst_dir = wt_path.join(".claude");
+            let copied = std::fs::create_dir_all(&dst_dir).is_ok()
+                && std::fs::copy(&src, dst_dir.join("settings.local.json")).is_ok();
+            if copied { "copied" } else { "failed" }
+        } else {
+            "absent"
+        }
+    };
+
     json!({
         "ok": true,
         "path": wt_str,
@@ -187,6 +209,7 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         "base": base,
         "created": true,
         "fetched": fetched,
+        "localSettings": local_settings,
     })
 }
 
@@ -277,6 +300,7 @@ mod tests {
         assert_eq!(v["created"], json!(true));
         let path = v["path"].as_str().expect("path");
         assert!(path.ends_with(".claude/worktrees/dev_my-unit"), "{path}");
+        assert_eq!(v["localSettings"], json!("absent"), "fixture has no local settings");
         // Cut from origin/dev (the AHEAD commit), not the stale local dev.
         let wt_head = git_out(Path::new(path), &["rev-parse", "HEAD"]).expect("wt head");
         let origin = git_out(&main, &["rev-parse", "origin/dev"]).expect("origin");
@@ -288,6 +312,20 @@ mod tests {
             "dev",
             "main checkout stays on its branch"
         );
+    }
+
+    #[test]
+    fn copies_local_settings_into_new_worktree() {
+        let (_dir, main) = fixture();
+        std::fs::create_dir_all(main.join(".claude")).expect("mkdir .claude");
+        std::fs::write(main.join(".claude").join("settings.local.json"), br#"{"x":1}"#)
+            .expect("write local settings");
+        let v = open_at(&WorkUnitOpenOpts { spec: Some("loc".into()), ..opts(&main) });
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["localSettings"], json!("copied"), "{v}");
+        let path = v["path"].as_str().expect("path");
+        let copied = Path::new(path).join(".claude").join("settings.local.json");
+        assert!(copied.is_file(), "machine-local settings land inside the worktree");
     }
 
     #[test]
