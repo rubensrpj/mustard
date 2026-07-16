@@ -1,5 +1,4 @@
 ---
-name: git
 description: Use when the user runs /git or asks to commit, push, sync, or open a PR. Reads mustard.json for branch flow. Reversible operations only — never destructive filesystem or history rewrites.
 source: manual
 disable-model-invocation: true

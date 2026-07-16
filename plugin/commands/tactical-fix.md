@@ -1,6 +1,6 @@
 ---
-name: tactical-fix
 description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Creates a sub-spec linked to a parent when REVIEW or QA surfaces a small adjacent fix. Preserves SDD purity — parent spec stays frozen after approve. Weak fallback only: use when the router did not engage and a small adjacent fix needs a sub-spec under a parent.
+user-invocable: false
 source: manual
 ---
 <!-- mustard:generated -->

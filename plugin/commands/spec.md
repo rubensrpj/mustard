@@ -1,5 +1,4 @@
 ---
-name: spec
 description: Use when the user wants to approve a planned spec or continue an in-progress spec. Single picker — delegates to mustard-rt run active-specs and resume-bootstrap.
 source: manual
 ---

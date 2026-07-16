@@ -1,5 +1,4 @@
 ---
-name: close
 description: Use when the user runs /close or asks to finalize, complete, or cancel the active pipeline. Verifies build/review/QA, archives the spec, and emits the completion banner.
 disable-model-invocation: true
 source: manual

@@ -1,6 +1,6 @@
 ---
-name: feature
 description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Feature pipeline for a new entity or a change spanning ≥2 layers: ANALYZE → scope gate → inline EXECUTE (Light) or PLAN via the full-plan ref (Full). Weak fallback only: use when the router did not engage and the user asks to add, create, or implement a feature.
+user-invocable: false
 source: manual
 ---
 <!-- mustard:generated -->

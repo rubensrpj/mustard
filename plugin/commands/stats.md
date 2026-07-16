@@ -1,5 +1,4 @@
 ---
-name: stats
 description: Use when the user runs /stats or asks for pipeline metrics, token savings, performance stats, or DORA-style PR metrics. Single command for all metrics views.
 source: manual
 ---

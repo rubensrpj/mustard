@@ -38,6 +38,7 @@ pub mod wave;
 pub mod spec;
 pub mod maint;
 pub mod git_settle;
+pub mod work_unit_open;
 pub mod scan;
 pub mod scan_claude;
 pub mod scan_equivalences;

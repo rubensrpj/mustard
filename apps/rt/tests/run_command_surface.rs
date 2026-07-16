@@ -16,7 +16,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 76 declared variants + `help`, which clap generates at build time.
+/// 77 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "adapt-cursor",
@@ -94,6 +94,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "wave-scaffold",
     "wave-size-check",
     "wave-tree",
+    "work-unit-open",
     "worktree-gc",
 ];
 

@@ -1,5 +1,4 @@
 ---
-name: mustard
 description: Use this WHENEVER the user describes codebase work in plain language — add/create/implement something new; change/improve/adjust existing behavior; fix an error, bug, or broken behavior; or analyze/audit/investigate code — and when the user runs /mustard or asks how to use it. The single door: classifies the request (feature / change / bugfix / investigation + scope), narrates how it read it, asks only on genuine ambiguity, and dispatches the right internal flow.
 source: manual
 ---

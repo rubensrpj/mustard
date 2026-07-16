@@ -1,1 +1,1 @@
-{"buildCommand":"cargo build --workspace","specLang":"en-US"}
+{"buildCommand":"cargo build --workspace","specLang":"en-US","git":{"flow":{"*":"dev","dev":"main"},"provider":"github"}}

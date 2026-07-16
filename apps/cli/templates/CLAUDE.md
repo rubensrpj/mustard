@@ -29,7 +29,7 @@ Derive integration bases from `mustard.json#git.flow` (the non-`*` keys ∪ thei
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-`--intent` + `--base` seed the work unit's isolated worktree and record the `/git` PR target. Every path emits — no run is invisible. Read-only requests never branch. The options are the project's OWN bases, never a hardcoded pair.
+`--intent` + `--base` compute the unit's `{base}_{slug}` branch and record the `/git` PR target. Work that WRITES then isolates: `mustard-rt run work-unit-open --spec {slug} --base {base}` (idempotent worktree off a fresh `origin/{base}`) and switch in via `EnterWorktree path=<returned path>` — never `EnterWorktree name=…` (cuts from the default branch). Every path emits — no run is invisible. Read-only requests never branch or open a worktree. The options are the project's OWN bases, never a hardcoded pair.
 
 ## Delegate via Task
 

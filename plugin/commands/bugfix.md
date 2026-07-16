@@ -1,6 +1,6 @@
 ---
-name: bugfix
 description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Autonomous diagnose + fix pipeline for an error, bug, or broken behavior — zero context-switch. Weak fallback only: use when the router did not engage and the user reports an error, bug, or broken behavior.
+user-invocable: false
 source: manual
 ---
 <!-- mustard:generated -->
