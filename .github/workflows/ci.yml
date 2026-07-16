@@ -5,6 +5,9 @@ on:
     branches: [main, dev_rubens]
   pull_request:
     branches: [main]
+  # Manual runs (any branch) — lets a fix branch prove itself on all 3 OSes
+  # before reaching main: Actions -> CI -> Run workflow.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
