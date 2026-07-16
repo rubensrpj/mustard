@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "mustard",
   "displayName": "Mustard",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Spec-driven development harness for Claude Code: an intent router, multi-layer feature/bugfix/task pipelines, deterministic language-agnostic code retrieval (scan + digest), QA acceptance gates, and a memory-backed MCP server.",
   "author": {
     "name": "Rubens Pinheiro",
