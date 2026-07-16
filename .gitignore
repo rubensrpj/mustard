@@ -139,6 +139,7 @@ benchmarks/*/model/
 
 # Plugin binaries são artefato de build (release workflow popula plugin/bin/); nunca commitar
 plugin/bin/*.exe
+plugin/bin/*.old
 plugin/bin/mustard-rt
 plugin/bin/scan
 plugin/bin/*-macos
