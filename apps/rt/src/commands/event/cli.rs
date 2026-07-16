@@ -75,8 +75,9 @@ pub enum EventCmd {
         #[arg(long)]
         intent: Option<String>,
         /// Integration base the work branch is cut from. On
-        /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}` when
-        /// this names one of the project's `git.flow` integration bases; else
+        /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}`.
+        /// When set, it MUST name one of the project's `git.flow` integration
+        /// bases (unknown → error telling you to declare it); when omitted,
         /// the project's primary base is used. Agnostic — derived from
         /// `git.flow`, never hardcoded.
         #[arg(long)]

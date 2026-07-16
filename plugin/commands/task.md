@@ -1,6 +1,6 @@
 ---
-name: task
 description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Lean delegated code task (analyze, audit, compare, review, docs, refactor, implement) via separate Task contexts (L0 Universal Delegation). Weak fallback only: use when the router did not engage and the user asks for a delegated code task.
+user-invocable: false
 source: manual
 ---
 <!-- mustard:generated -->

@@ -7,22 +7,32 @@
 
 use std::path::Path;
 
-/// Resolve the effective integration base for the auto-branch prefix: the
-/// caller-supplied `--base` when it names one of the project's integration
-/// bases (`config.git.integration_bases()`), else the project's primary base
-/// (`config.git.primary_base()`).
+/// Resolve the effective integration base for the auto-branch prefix.
+///
+/// - `--base` omitted (or blank) → the project's primary base
+///   (`config.git.primary_base()`), as before.
+/// - `--base` naming one of `config.git.integration_bases()` → used verbatim.
+/// - `--base` naming anything else → `Err` with a didactic message. An
+///   explicit base is caller INTENT — silently coercing it to the primary
+///   base once sent `--base dev` work onto a `main_*` branch in the field.
 ///
 /// Agnostic — both the accepted set and the fallback come from `git.flow`; no
 /// branch name is hardcoded here. Do NOT re-derive the base set ad hoc: the
 /// core owns that derivation so `work_branch_gate` and this emitter agree.
-pub(crate) fn resolve_base(requested: Option<&str>, config: &mustard_core::ProjectConfig) -> String {
+pub(crate) fn resolve_base(
+    requested: Option<&str>,
+    config: &mustard_core::ProjectConfig,
+) -> Result<String, String> {
     let bases = config.git.integration_bases();
-    if let Some(b) = requested.map(str::trim).filter(|b| !b.is_empty()) {
-        if bases.contains(b) {
-            return b.to_string();
-        }
+    match requested.map(str::trim).filter(|b| !b.is_empty()) {
+        None => Ok(config.git.primary_base()),
+        Some(b) if bases.contains(b) => Ok(b.to_string()),
+        Some(b) => Err(format!(
+            "base '{b}' não é uma base de integração deste projeto (bases: {}). \
+             Declare-a em mustard.json#git.flow ou use uma das bases existentes.",
+            bases.iter().cloned().collect::<Vec<_>>().join(", ")
+        )),
     }
-    config.git.primary_base()
 }
 
 /// Resolve the slug lang for the auto-branch from `mustard.json` — `lang`
@@ -154,24 +164,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_base_honours_requested_when_in_bases_else_primary() {
+    fn resolve_base_honours_requested_when_in_bases() {
         // Standard two-tier flow → integration bases {dev, main}, primary = dev.
         let mut config = mustard_core::ProjectConfig::default();
         config.git.flow.insert("*".to_string(), "dev".to_string());
         config.git.flow.insert("dev".to_string(), "main".to_string());
         // A requested base that IS an integration base is used verbatim.
-        assert_eq!(super::resolve_base(Some("main"), &config), "main");
-        assert_eq!(super::resolve_base(Some("dev"), &config), "dev");
-        // A requested base that is NOT an integration base → primary (flow["*"]).
-        assert_eq!(super::resolve_base(Some("feature/x"), &config), "dev");
-        // No request → primary.
-        assert_eq!(super::resolve_base(None, &config), "dev");
+        assert_eq!(super::resolve_base(Some("main"), &config), Ok("main".to_string()));
+        assert_eq!(super::resolve_base(Some("dev"), &config), Ok("dev".to_string()));
+        // No request → primary. Blank counts as omitted.
+        assert_eq!(super::resolve_base(None, &config), Ok("dev".to_string()));
+        assert_eq!(super::resolve_base(Some("  "), &config), Ok("dev".to_string()));
+    }
 
-        // Agnostic: a develop/master project resolves against ITS bases.
+    #[test]
+    fn resolve_base_errors_loudly_on_unknown_explicit_base() {
+        let mut config = mustard_core::ProjectConfig::default();
+        config.git.flow.insert("*".to_string(), "dev".to_string());
+        config.git.flow.insert("dev".to_string(), "main".to_string());
+        // An EXPLICIT base outside the declared set is an error, never a
+        // silent coercion to the primary.
+        let err = super::resolve_base(Some("feature/x"), &config).unwrap_err();
+        assert!(err.contains("feature/x"), "names the rejected base: {err}");
+        assert!(err.contains("git.flow"), "points at the config: {err}");
+        assert!(err.contains("dev") && err.contains("main"), "lists declared bases: {err}");
+
+        // Agnostic: a develop/master project resolves against ITS bases —
+        // the exact field bug: `--base dev` on an undeclared flow must error,
+        // not silently become the primary base.
         let mut dm = mustard_core::ProjectConfig::default();
         dm.git.flow.insert("*".to_string(), "develop".to_string());
         dm.git.flow.insert("develop".to_string(), "master".to_string());
-        assert_eq!(super::resolve_base(Some("master"), &dm), "master");
-        assert_eq!(super::resolve_base(Some("dev"), &dm), "develop", "unknown base → primary");
+        assert_eq!(super::resolve_base(Some("master"), &dm), Ok("master".to_string()));
+        assert!(super::resolve_base(Some("dev"), &dm).is_err(), "unknown base → loud error");
     }
 }

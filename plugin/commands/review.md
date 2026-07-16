@@ -1,5 +1,4 @@
 ---
-name: review
 description: Use when the user runs /review or asks to review, code-review, or audit a pull request. Auto-detects current branch PR or accepts PR number/URL.
 source: manual
 ---

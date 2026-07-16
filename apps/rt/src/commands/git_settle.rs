@@ -35,7 +35,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 /// Run `git` in `dir`, returning stdout on success.
-fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
     if !out.status.success() {
         return None;
@@ -44,7 +44,7 @@ fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// Run `git` in `dir`, success as a bool.
-fn git_ok(dir: &Path, args: &[&str]) -> bool {
+pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -55,7 +55,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> bool {
 
 /// Resolve the MAIN checkout root from anywhere inside the repo — including
 /// from inside a linked worktree (`--git-common-dir` names the shared `.git`).
-fn main_checkout_root(from: &Path) -> Option<PathBuf> {
+pub(crate) fn main_checkout_root(from: &Path) -> Option<PathBuf> {
     let common = git_out(from, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     let common = PathBuf::from(common);
     if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
@@ -76,15 +76,15 @@ fn base_of_branch(branch: &str, bases: &[String]) -> Option<String> {
 
 /// One `.claude/worktrees/` entry from `git worktree list --porcelain`.
 #[derive(Debug, PartialEq)]
-struct WorktreeEntry {
-    path: String,
-    branch: String,
+pub(crate) struct WorktreeEntry {
+    pub(crate) path: String,
+    pub(crate) branch: String,
 }
 
 /// Parse `git worktree list --porcelain` into the harness-owned entries only
 /// (paths under `.claude/worktrees/`, forward-slash normalized). Detached or
 /// branchless entries are ignored.
-fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
+pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     let mut out = Vec::new();
     let mut path: Option<String> = None;
     for line in porcelain.lines().chain(std::iter::once("")) {

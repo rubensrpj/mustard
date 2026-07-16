@@ -1,5 +1,4 @@
 ---
-name: maint
 description: Use when the user runs /maint or asks about dependencies, validate, sync, or doctor (project hygiene, build/type-check, registry sync, installation health check).
 source: manual
 ---
