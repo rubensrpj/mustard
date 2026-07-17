@@ -10,15 +10,21 @@
 //! motor as `mustard-rt run work-unit-open`): `{base}_{slug}` names cut from a
 //! fresh `origin/{base}`; non-unit names (`agent-*`, desktop) replicate the
 //! native default cut so background isolation never breaks.
+//!
+//! The event carries a NAME, not a path (`{hook_event_name:"WorktreeCreate",
+//! name:"dev_thing"}`) — `worktree_path` belongs to the *Remove* twin. Since a
+//! configured hook replaces the native `git worktree add`, choosing where the
+//! worktree lands is this hook's job: it mirrors the harness convention
+//! (`.claude/worktrees/{name}`, relative to the main checkout) and echoes the
+//! absolute path back.
 
 use mustard_core::domain::model::contract::HookInput;
 use std::path::PathBuf;
 
 /// Handle one `WorktreeCreate` invocation and exit per the event contract.
 pub fn run(input: &HookInput) -> ! {
-    let Some(requested) = input.worktree_path.as_deref().map(str::trim).filter(|p| !p.is_empty())
-    else {
-        eprintln!("WorktreeCreate: input sem worktree_path");
+    let Some(name) = input.worktree_name.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+        eprintln!("WorktreeCreate: input sem `name`");
         std::process::exit(1);
     };
     let cwd = input
@@ -27,7 +33,7 @@ pub fn run(input: &HookInput) -> ! {
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
-    match crate::commands::work_unit_open::hook_create(requested, &cwd) {
+    match crate::commands::work_unit_open::hook_create(name, &cwd) {
         Ok(path) => {
             println!("{path}");
             std::process::exit(0);

@@ -134,12 +134,21 @@ pub struct HookInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
-    /// Requested worktree path — present only on the `WorktreeCreate` /
-    /// `WorktreeRemove` isolation events, where a configured hook REPLACES
-    /// Claude Code's native `git worktree` handling and must create (and echo)
-    /// this path.
+    /// Worktree path to REMOVE — `WorktreeRemove` only. The isolation events do
+    /// NOT share a payload: `WorktreeRemove` carries this path, while
+    /// `WorktreeCreate` carries only [`Self::worktree_name`] and expects the
+    /// hook to decide the path and echo it. Reading this field on a create is
+    /// always `None` — the mistake that left worktree isolation dead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+
+    /// Worktree NAME to create (harness field `name`) — `WorktreeCreate` only.
+    /// A name, never a path: a configured hook REPLACES Claude Code's native
+    /// `git worktree add`, so it chooses where the worktree lands (the harness
+    /// convention is `.claude/worktrees/{name}`), creates it, and echoes the
+    /// absolute path on stdout. A non-zero exit aborts the creation.
+    #[serde(default, rename = "name", skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
 
     /// Session identifier (`session_id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
