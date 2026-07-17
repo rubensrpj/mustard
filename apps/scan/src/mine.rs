@@ -275,6 +275,7 @@ pub fn mine(
             },
             count: ents.len(),
             common_dir: top_key(role_dirs.get(r)),
+            dirs: recurring_dirs(role_dirs.get(r)),
             decl_kind: top_key(role_kinds.get(r)),
             implements: top_supertype(r),
             collaborators: collaborators_for(r),
@@ -758,6 +759,25 @@ fn top_key(m: Option<&HashMap<String, usize>>) -> String {
             .map(|(k, _)| k.clone())
     })
     .unwrap_or_default()
+}
+
+/// How many homes a role may declare — bounds the model against a noise affix
+/// smeared over dozens of folders while keeping every real multi-home
+/// convention (a handful of parents at most).
+const MAX_ROLE_DIRS: usize = 8;
+
+/// EVERY recurring folder of a role: the dirs holding ≥2 of its members,
+/// count desc then name asc (deterministic), capped at [`MAX_ROLE_DIRS`]. A
+/// convention spread across parents (`configs/` and `(dashboard)/<name>s`)
+/// keeps all its homes — `top_key` alone drops everything but the densest one.
+fn recurring_dirs(m: Option<&HashMap<String, usize>>) -> Vec<String> {
+    let Some(map) = m else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<(&String, &usize)> =
+        map.iter().filter(|(d, n)| **n >= 2 && !d.is_empty()).collect();
+    dirs.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    dirs.into_iter().take(MAX_ROLE_DIRS).map(|(d, _)| d.clone()).collect()
 }
 
 fn dedup(mut v: Vec<String>) -> Vec<String> {

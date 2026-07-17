@@ -65,6 +65,11 @@ struct Role {
     kind: String,
     count: usize,
     common_dir: String,
+    /// EVERY recurring home of the role (miner's `dirs`, additive — empty on
+    /// older models). A convention spread across parents keeps them all;
+    /// resolving against `common_dir` alone loses every exemplar outside the
+    /// densest one.
+    dirs: Vec<String>,
     decl_kind: String,
     implements: Option<String>,
 }
@@ -194,9 +199,16 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
         if mold_present(root, &project.dir, &slug, &label) {
             continue;
         }
-        let exemplars = exemplars_for(role, &modules);
+        // Every home of the role that belongs to THIS subproject and is not
+        // test terrain — exemplars may live in any of them.
+        let homes: Vec<&str> = std::iter::once(role.common_dir.as_str())
+            .chain(role.dirs.iter().map(String::as_str))
+            .filter(|d| !under_test(d))
+            .filter(|d| *d == project.dir || d.starts_with(&format!("{}/", project.dir)))
+            .collect();
+        let exemplars = exemplars_for(role, &modules, &homes);
         if exemplars.len() < MIN_EXEMPLARS {
-            continue; // not a real file-naming convention — nothing teachable here.
+            continue; // no teachable recurrence anywhere the role lives.
         }
         candidates.push(Candidate {
             subproject: project.dir.clone(),
@@ -298,17 +310,20 @@ fn mold_present(root: &Path, subproject: &str, slug: &str, label: &str) -> bool 
 ///    validation).
 ///
 /// In both signatures the LOCATION bar is the same: the file must sit directly
-/// in the role's `common_dir` — expanded by [`dir_matches`] when the miner
-/// generalized it (`Modules/v1/<Name>s/Services`); without that expansion every
-/// feature-folder convention (the whole .NET `Modules/{F}/…` backend) is
-/// silently discarded. `modules` is pre-sorted by path, so the pick is stable;
-/// generated/vendored code never teaches, so it is skipped.
-fn exemplars_for(role: &Role, modules: &[&Mod]) -> Vec<String> {
+/// in ONE OF the role's homes (`homes`: its `common_dir` plus every recurring
+/// `dirs` entry the caller kept) — each expanded by [`dir_matches`] when the
+/// miner generalized it (`Modules/v1/<Name>s/Services`); without that
+/// expansion every feature-folder convention (the whole .NET `Modules/{F}/…`
+/// backend) is silently discarded, and without the extra homes a convention
+/// spread across parents loses every exemplar outside the densest one.
+/// `modules` is pre-sorted by path, so the pick is stable; generated/vendored
+/// code never teaches, so it is skipped.
+fn exemplars_for(role: &Role, modules: &[&Mod], homes: &[&str]) -> Vec<String> {
     let affix = role.affix.to_lowercase();
     let located: Vec<&&Mod> = modules
         .iter()
         .filter(|m| m.file_class.is_empty()) // hand-written only
-        .filter(|m| dir_matches(parent_dir(&m.path), &role.common_dir))
+        .filter(|m| homes.iter().any(|h| dir_matches(parent_dir(&m.path), h)))
         .collect();
 
     let by_filename: Vec<String> = located
@@ -558,6 +573,38 @@ mod tests {
         assert!(!dir_matches("app/modules/contracts/repos", "app/modules/<Name>s/services"), "trailing literal differs");
         // Segment count must match.
         assert!(!dir_matches("app/modules/contracts/sub/services", "app/modules/<Name>s/services"));
+    }
+
+    #[test]
+    fn collect_resolves_exemplars_across_all_role_homes() {
+        // A convention SPREAD across parents: the miner's `common_dir` points
+        // at the densest home (`app/configs`, 1 file) but the real per-entity
+        // convention lives in the OTHER home (`(dashboard)/<name>s/config.tsx`,
+        // one per entity). With `dirs` carried in the model, the resolver must
+        // find the exemplars there — the exact shape that kept entity-config
+        // underivable in field validation.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"app","dir":"app"}],
+              "roles": [{"affix":"Config","kind":"suffix","count":49,"common_dir":"app/configs","dirs":["app/(dashboard)/<name>s"]}],
+              "modules": [
+                {"path":"app/configs/entity-picker-configs.ts","declarations":[{"kind":"const","name":"entityPickerRegistry"}]},
+                {"path":"app/(dashboard)/contracts/config.tsx"},
+                {"path":"app/(dashboard)/clients/config.tsx"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "multi-home cluster earns a mold");
+        assert_eq!(got[0].slug, "app-config");
+        assert_eq!(
+            got[0].exemplars,
+            vec!["app/(dashboard)/clients/config.tsx", "app/(dashboard)/contracts/config.tsx"],
+            "exemplars resolve in the non-dominant home"
+        );
     }
 
     #[test]

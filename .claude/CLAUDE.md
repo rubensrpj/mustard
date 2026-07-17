@@ -9,7 +9,7 @@ User-facing text (chat, questions, banners, errors) is didactic — expand an ab
 
 Every plan, spec or decision artifact the user must approve is written as a STORY per point, in four steps: (1) what happens today — the concrete case that exposed it; (2) why that is a problem — the principle, in plain words; (3) what changes — naming the file/mechanism without gratuitous jargon; (4) how it ends up — the result the user can observe. A structural change gets a small before/after ASCII diagram; tables only enumerate (files, counts) and never explain; a plain-life analogy beats a term of art. A plan the user cannot follow is a failed plan — it costs a rejection round-trip.
 
-Explanations follow the same discipline. When the user says they did not understand, NEVER compress or defend the same summary — re-explain from zero as a story: first recap the rule the user already knows, then the exception/novelty, then the consequence as a step-by-step flow (a small diagram of what would happen), then the one-action fix, then the offer to do it. One point per response; depth beats breadth.
+Every explanation follows the same discipline BY DEFAULT — the FIRST answer already tells the whole story: recap the rule in play, then the novelty/exception, then the consequence as a step-by-step flow (a small diagram of what would happen), then the one-action fix, then the offer to execute it. Never assume context the user did not just read, and never open with a compressed summary only a co-author of the code could follow. One point per response; depth beats breadth.
 
 ## Intent Routing (the single door)
 
