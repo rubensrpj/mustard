@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Graph_dart
 
 > Parent: [../../../../../CLAUDE.md](../../../../../CLAUDE.md) | Orchestrator: [../../../../../.claude/CLAUDE.md](../../../../../.claude/CLAUDE.md)
@@ -12,8 +14,3 @@ Before adding a construct, check what the Dart `tags.scm` captures: `method` com
 This is scan input, never compiled or run: keep `pubspec.yaml` a bare `name` + `environment` stub (it exists only so the scanner classes the root as a pub package) — do not add `dependencies` or try to make the Dart "real".
 The header comment in `lib/models.dart` is the fixture's spec — if you change what the file exercises, update that comment in the same edit.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: pub · 1 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

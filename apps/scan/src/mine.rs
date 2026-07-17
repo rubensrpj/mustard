@@ -166,7 +166,7 @@ pub fn mine(
                 // Role taken from the directory; entity is the folder above it.
                 (role_from_folder(segs[segs.len() - 2]), segs[segs.len() - 3].to_string())
             } else if s.tokens.len() >= 2 && role_suffixes.contains(s.tokens.last().unwrap()) {
-                (s.tokens.last().unwrap().clone(), s.tokens[..s.tokens.len() - 1].join(""))
+                (s.tokens.last().unwrap().clone(), entity_tokens(&s.tokens[..s.tokens.len() - 1]))
             } else if s.tokens.len() >= 2 && role_prefixes.contains(&s.tokens[0]) {
                 (s.tokens[0].clone(), s.tokens[1..].join(""))
             } else {
@@ -275,6 +275,7 @@ pub fn mine(
             },
             count: ents.len(),
             common_dir: top_key(role_dirs.get(r)),
+            dirs: recurring_dirs(role_dirs.get(r)),
             decl_kind: top_key(role_kinds.get(r)),
             implements: top_supertype(r),
             collaborators: collaborators_for(r),
@@ -644,6 +645,26 @@ fn strip_interface_i(tokens: Vec<String>) -> Vec<String> {
     }
 }
 
+/// Join entity tokens, dropping a leading ALL-LOWERCASE particle when a
+/// capitalized token follows (`useBanksConfig` → entity `Banks`, never
+/// `useBanks`): a camelCase head names the naming pattern (a hook/builder
+/// verb), not the entity — and keeping it breaks the dir abstraction (the
+/// folder `banks/` never matches the token `usebanks`, so every member lands
+/// in a distinct literal dir and the recurrence floor drops the whole
+/// convention). Case-shape rule only — no curated verb list (agnostic).
+fn entity_tokens(tokens: &[String]) -> String {
+    let rest = if tokens.len() >= 2
+        && !tokens[0].is_empty()
+        && tokens[0].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && tokens[1].chars().next().is_some_and(char::is_uppercase)
+    {
+        &tokens[1..]
+    } else {
+        tokens
+    };
+    rest.join("")
+}
+
 fn canonical_key(entity: &str) -> String {
     let lower = entity.to_lowercase();
     if lower.len() > 3 && lower.ends_with('s') && !lower.ends_with("ss") {
@@ -758,6 +779,25 @@ fn top_key(m: Option<&HashMap<String, usize>>) -> String {
             .map(|(k, _)| k.clone())
     })
     .unwrap_or_default()
+}
+
+/// How many homes a role may declare — bounds the model against a noise affix
+/// smeared over dozens of folders while keeping every real multi-home
+/// convention (a handful of parents at most).
+const MAX_ROLE_DIRS: usize = 8;
+
+/// EVERY recurring folder of a role: the dirs holding ≥2 of its members,
+/// count desc then name asc (deterministic), capped at [`MAX_ROLE_DIRS`]. A
+/// convention spread across parents (`configs/` and `(dashboard)/<name>s`)
+/// keeps all its homes — `top_key` alone drops everything but the densest one.
+fn recurring_dirs(m: Option<&HashMap<String, usize>>) -> Vec<String> {
+    let Some(map) = m else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<(&String, &usize)> =
+        map.iter().filter(|(d, n)| **n >= 2 && !d.is_empty()).collect();
+    dirs.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    dirs.into_iter().take(MAX_ROLE_DIRS).map(|(d, _)| d.clone()).collect()
 }
 
 fn dedup(mut v: Vec<String>) -> Vec<String> {

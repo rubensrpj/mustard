@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Php_laravel
 
 > Parent: [../../../../../CLAUDE.md](../../../../../CLAUDE.md) | Orchestrator: [../../../../../.claude/CLAUDE.md](../../../../../.claude/CLAUDE.md)
@@ -12,8 +14,3 @@ Dependency ORDER in `composer.json` is asserted verbatim (`require` before `requ
 `composer.json` must stay at the fixture root: the per-unit detection test locates the root unit by `dir == ""`, and `anchor_ranking.rs` expects the query `user` to hit — keep a `User`-named symbol under `app/Models/`.
 Any shape change here ripples across five test files (`php_laravel_fixture`, `stack_detection_e2e`, `anchor_ranking`, `stack_evidence_excludes` copies this tree wholesale, `graph_resolution` mirrors it) — run `cargo test -p scan` after touching anything.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: composer · 2 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

@@ -15,6 +15,9 @@
 ## REFERENCE
 {reference_files}
 
+## SKILLS
+{skills_list}
+
 ## WEB VALIDATION
 In doubt about API/version/pattern → search web for latest docs before implementing.
 

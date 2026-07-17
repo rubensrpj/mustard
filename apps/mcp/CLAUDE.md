@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Mcp
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
@@ -15,8 +17,3 @@
 - Tokens e métricas saem dos readers de `mustard_core::domain::economy` (ex.: `metric_token_summary`); não refaça a agregação à mão sobre `pipeline.telemetry.run` (sempre reportaria zero).
 - Preserve a paridade byte-a-byte das shapes serde com o original TypeScript: nomes de campo via `#[serde(rename)]` (camelCase) e os clamp de `limit` por ferramenta são contrato.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: cargo · 2 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

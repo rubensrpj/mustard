@@ -30,11 +30,11 @@ pub enum ScanCmd {
         /// Output path. Defaults to `<root>/.claude/grain.model.json`.
         #[arg(long)]
         out: Option<PathBuf>,
-        /// (Re)generate a lean CLAUDE.md for every subproject found in the
-        /// grain model. Only the machine-owned scan-map block is regenerated;
-        /// curated sections (Guards, Architecture, …) are preserved verbatim.
-        /// Without this flag the command only warns about CLAUDE.md files that
-        /// exceed the size threshold.
+        /// (Re)generate the mustard-owned `.claude/scan-map.md` for every
+        /// subproject found in the grain model, keeping the project's
+        /// CLAUDE.md footprint to one import line (+ Guards seed + breadcrumb
+        /// heal); curated content is preserved verbatim and never measured.
+        /// Without this flag only the model is written.
         #[arg(long)]
         full: bool,
     },
@@ -111,11 +111,11 @@ pub enum ScanCmd {
         root: PathBuf,
     },
     /// Write one enrich-agent-authored pattern mold to its
-    /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, path-shape-guarded
-    /// and stamped with a provenance marker. Without `--refresh` an existing
-    /// mold is left untouched; with it, ONLY a machine-pristine mold (marker
-    /// verifies) is overwritten — hand edits always survive. The mold twin of
-    /// `scan-guards-apply`; being a `run` command it sidesteps the
+    /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only,
+    /// path-shape-guarded, and stamped with the `<!-- mustard:generated -->`
+    /// origin notice. An existing mold is left untouched (the sweep already
+    /// removed the generated ones; a survivor is hand-authored). The mold twin
+    /// of `scan-guards-apply`; being a `run` command it sidesteps the
     /// background-isolation gate that blocks the orchestrator's own Write.
     #[command(name = "scan-patterns-apply")]
     #[command(display_order = 62)]
@@ -127,15 +127,11 @@ pub enum ScanCmd {
         /// so a body starting with `-`/`---` frontmatter is not mistaken for a flag.
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
-        /// Overwrite an existing mold — only when its provenance marker
-        /// verifies as machine-pristine (worklist `mode: "refresh"`).
-        #[arg(long)]
-        refresh: bool,
     },
-    /// Record the enrich agent's justified refusal of a mold candidate so
-    /// `scan-patterns-list` stops re-proposing it. Store:
-    /// `.claude/scan-declined.json` (slug → reason); re-auditing a refusal =
-    /// deleting its entry (or the file) and rescanning.
+    /// Record the enrich agent's justified refusal of a mold candidate so the
+    /// SAME scan run does not re-propose it. Store: `.claude/scan-declined.json`
+    /// (slug → reason) — run-scoped: `scan-patterns-sweep` clears it at the
+    /// start of every scan, so each run re-judges every cluster fresh.
     #[command(name = "scan-patterns-decline")]
     #[command(display_order = 77)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
     ScanPatternsDecline {
@@ -150,6 +146,20 @@ pub enum ScanCmd {
         #[arg(long, allow_hyphen_values = true)]
         reason: String,
     },
+    /// Delete every mustard-generated pattern skill (`source: scan`) under a
+    /// workspace BEFORE the enrich re-authors them, so each mold is written
+    /// fresh from the current exemplars with no bias from its old text.
+    /// Preserves hand-authored/adopted molds (`source: manual`). Also clears
+    /// the run-scoped decline ledger (`.claude/scan-declined.json`) so every
+    /// cluster is re-judged. Emits `{removed:[…], preserved:[…],
+    /// declinesCleared:n}`. Fail-open.
+    #[command(name = "scan-patterns-sweep")]
+    #[command(display_order = 78)] // tail slot — keep the display_order permutation gapless
+    ScanPatternsSweep {
+        /// Workspace root to sweep. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `scan`-family `run` subcommand.
@@ -162,11 +172,12 @@ pub fn dispatch(cmd: ScanCmd) {
             scan_guards::apply::run(&path, &root, &guards)
         }
         ScanCmd::ScanPatternsList { root } => scan_patterns::list::run(&root),
-        ScanCmd::ScanPatternsApply { path, content, refresh } => {
-            scan_patterns::apply::run(&path, &content, refresh)
+        ScanCmd::ScanPatternsApply { path, content } => {
+            scan_patterns::apply::run(&path, &content)
         }
         ScanCmd::ScanPatternsDecline { root, slug, reason } => {
             scan_patterns::decline::run(&root, &slug, &reason)
         }
+        ScanCmd::ScanPatternsSweep { root } => scan_patterns::sweep::run(&root),
     }
 }

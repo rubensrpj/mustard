@@ -413,10 +413,19 @@ pub(crate) fn render_prompt_at(
         }
         cross_wave_memory.push_str(&vocab_block);
     }
-    // Skills and the entity list were removed from Mustard: the dispatch
-    // template no longer carries `## SKILLS` / `## ENTITY`. The subagent's
-    // domain context comes from the inline `## GUARDS` block + the grain spec
-    // section + its anchors, not from a resolved skill/entity list.
+    // The subproject's skill shelf rides in the prompt DETERMINISTICALLY —
+    // names + trigger descriptions, never bodies, so the section stays
+    // PREFIX-STABLE (see refs/agent-prompt/agent-prompt.md). Field evaluation
+    // proved the pattern: artifacts pushed into context (Guards) get used;
+    // artifacts waiting to be retrieved idle. No scoring, no LLM — the flat
+    // list scoped to the dispatch's subproject. The `patterns` role is
+    // deliberately excluded: it AUTHORS the molds, and seeing the previous
+    // generation would bias the fresh re-author the sweep just enabled.
+    let skills_list = if role.trim().eq_ignore_ascii_case("patterns") {
+        String::new()
+    } else {
+        build_skills_list(&project, &subproject_str)
+    };
 
     // Remaining deterministic placeholders the dispatch template carries:
     //   {reference_files}  the spec's `## Files`/`## Arquivos` list + public
@@ -447,6 +456,7 @@ pub(crate) fn render_prompt_at(
         ("{change_log}", &change_log),
         ("{cross_wave_memory}", &cross_wave_memory),
         ("{reference_files}", &reference_files),
+        ("{skills_list}", &skills_list),
         ("{context_extras}", &context_extras),
         ("{retry_context}", &retry_context),
     ];
@@ -578,7 +588,10 @@ fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &st
              tests with the feature enabled (code presence is not effectiveness). If the prompt \
              carries a `## CHANGE REQUESTS` section, confirm EACH mid-pipeline request was \
              addressed in the code AND is covered by an Acceptance Criterion — flag any that was \
-             silently dropped. Deliver: your \
+             silently dropped. MOLD CONTRACT: for every file the wave created or refactored whose \
+             kind matches a skill in `## SKILLS` (the subproject's `{{role}}-pattern` molds), read \
+             that SKILL.md and verify the file follows it — folder, naming, shape, must/must-not \
+             rules; an unjustified deviation is a finding. Deliver: your \
              final message is a ≤60-line verdict — pass/fail per claim, each backed by the command \
              you ran and its real output."
         ),
@@ -645,10 +658,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
     format!(
         "ROLE: patterns\n\
          You author pattern skill molds for {subproject} ONLY — one SKILL.md per cluster \
-         listed in ## TASK, and NEVER one that is not listed there (hand-maintained molds \
-         were already filtered out; never the workspace root). A `mode: refresh` entry is \
-         a machine-authored mold being regenerated: author it EXACTLY like a create, fresh \
-         from the CURRENT exemplars — never read or echo the old mold text. READ 2-3 of \
+         listed in ## TASK, and NEVER one that is not listed there (hand-authored/adopted \
+         molds were already filtered out; never the workspace root). Every mold is authored \
+         FRESH from the CURRENT exemplars — the old mold text was swept before you ran, so \
+         there is nothing to echo. READ 2-3 of \
          the cluster's exemplar files (their paths are in the worklist) BEFORE authoring \
          its mold: the mold teaches what they share — folder, extension, naming, shape \
          (traits, exports, error style, test placement) and what a new member must/must-not \
@@ -710,10 +723,9 @@ fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String 
 }
 
 /// Render the filtered worklist as the TASK body: one entry per candidate with
-/// slug, mode (create | refresh), label, affix (+kind), declKind, count,
-/// implements (when present), the moldPath the returned block must name, and
-/// the exemplar files to read. Plain bullets only — no `## ` heading (see
-/// [`patterns_task_block`]).
+/// slug, label, affix (+kind), declKind, count, implements (when present), the
+/// moldPath the returned block must name, and the exemplar files to read.
+/// Plain bullets only — no `## ` heading (see [`patterns_task_block`]).
 fn render_patterns_worklist(
     candidates: &[crate::commands::scan_patterns::list::Candidate],
 ) -> String {
@@ -726,8 +738,8 @@ fn render_patterns_worklist(
         let kind = if c.affix_kind.is_empty() { "-" } else { c.affix_kind.as_str() };
         let _ = write!(
             out,
-            "- slug: {} | mode: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
-            c.slug, c.mode, c.label, c.affix, c.count
+            "- slug: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
+            c.slug, c.label, c.affix, c.count
         );
         if let Some(imp) = c.implements.as_deref().filter(|s| !s.is_empty()) {
             let _ = write!(out, " | implements: {imp}");
@@ -1319,6 +1331,50 @@ fn render_capability_bullets(
 // ---------------------------------------------------------------------------
 // F3-b — deterministic placeholder fillers
 // ---------------------------------------------------------------------------
+
+/// Build `{skills_list}` — the target subproject's skill shelf: one line per
+/// `<subproject>/.claude/skills/*/SKILL.md` (`- name — description`), sorted
+/// by folder name for byte-stable output, preceded by the load instruction.
+/// Names and trigger descriptions only — never bodies — so the `## SKILLS`
+/// section stays PREFIX-STABLE (cache-safe) exactly as the agent-prompt ref
+/// documents. Empty (the section collapses) when the subproject has no
+/// readable skills. Fail-open: an unparseable SKILL.md contributes its folder
+/// name without a description rather than dropping the shelf.
+fn build_skills_list(project: &Path, subproject: &str) -> String {
+    let skills_dir = project.join(subproject).join(".claude").join("skills");
+    let Ok(entries) = std::fs::read_dir(&skills_dir) else {
+        return String::new();
+    };
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let skill_md = entry.path().join("SKILL.md");
+        let Ok(text) = std::fs::read_to_string(&skill_md) else {
+            continue;
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let description = mustard_core::domain::skill::frontmatter::parse(&text)
+            .map(|fm| fm.description)
+            .unwrap_or_default();
+        rows.push((name, description));
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    rows.sort();
+    let mut out = String::from(
+        "This subproject has skills — its module molds and conventions. BEFORE creating \
+         or refactoring a module of a kind listed below, load the matching skill (Skill \
+         tool, or Read its SKILL.md) and follow it; deviations are review findings:\n",
+    );
+    for (name, description) in rows {
+        if description.is_empty() {
+            let _ = writeln!(out, "- {name}");
+        } else {
+            let _ = writeln!(out, "- {name} — {description}");
+        }
+    }
+    out.trim_end().to_string()
+}
 
 /// Build `{reference_files}` — the spec's `## Files` / `## Arquivos` list plus
 /// a compact structural summary (public signatures + declared entities) of the
@@ -1965,6 +2021,44 @@ mod tests {
     }
 
     #[test]
+    fn skills_list_renders_shelf_sorted_and_fails_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let skills = root.join("apps/api/.claude/skills");
+        // Two parseable skills + one broken (no frontmatter) — the broken one
+        // still contributes its name (fail-open), never sinks the shelf.
+        for (folder, desc) in [
+            ("api-service-pattern", "Use when adding or refactoring a service."),
+            ("api-log-pattern", "Use when adding or refactoring an audit log entity."),
+        ] {
+            let d = skills.join(folder);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("SKILL.md"),
+                format!("---\nname: {folder}\ndescription: \"{desc}\"\nsource: scan\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        let broken = skills.join("api-odd-pattern");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("SKILL.md"), "# no frontmatter\n").unwrap();
+
+        let out = build_skills_list(root, "apps/api");
+        assert!(out.contains("- api-log-pattern — Use when adding or refactoring an audit log entity."), "{out}");
+        assert!(out.contains("- api-service-pattern — Use when adding"), "{out}");
+        assert!(out.contains("- api-odd-pattern"), "broken skill keeps its name: {out}");
+        // Sorted by name: log < odd < service.
+        let (log, odd, svc) = (
+            out.find("api-log-pattern").unwrap(),
+            out.find("api-odd-pattern").unwrap(),
+            out.find("api-service-pattern").unwrap(),
+        );
+        assert!(log < odd && odd < svc, "shelf must be sorted: {out}");
+        // No skills dir → empty (the ## SKILLS section collapses).
+        assert!(build_skills_list(root, "apps/none").is_empty());
+    }
+
+    #[test]
     fn collapse_empty_sections_drops_blank_keeps_filled() {
         let text = "## A\n\n## B\nbody\n\n## C\n   \n## D\nx";
         let out = collapse_empty_sections(text);
@@ -2528,6 +2622,7 @@ mod tests {
             ("{change_log}", ""),
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
+            ("{skills_list}", ""),
             ("{context_extras}", &context_extras),
             ("{retry_context}", ""),
         ];

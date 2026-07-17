@@ -25,11 +25,11 @@ fn default_model_path(root: &Path) -> PathBuf {
 /// Run `grain scan <root> --out <model>`; print a small JSON result. Fail-open:
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
-/// When `full` is `true`, (re)generates a lean CLAUDE.md per subproject after
-/// the model is written, regenerating only the machine-owned scan-map block and
-/// preserving every curated section verbatim. In the default mode, oversized
-/// CLAUDE.md files (> [`scan_claude::CLAUDE_MD_WARN_BYTES`]) are reported in the
-/// JSON output and a human-readable warning is printed to stderr.
+/// When `full` is `true`, (re)generates the mustard-owned
+/// `.claude/scan-map.md` per subproject after the model is written, and keeps
+/// the project's CLAUDE.md footprint minimal (import line + legacy-block
+/// migration + Guards seed + breadcrumb heal — never measured, never
+/// refused). The hard cap guards only the machine map (runaway generator).
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
 
@@ -53,9 +53,9 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
             if !pass.over_cap.is_empty() {
                 for entry in &pass.over_cap {
                     eprintln!(
-                        "scan: CLAUDE.md over hard cap ({} bytes > {} ceiling): {} — not written; trim curated prose",
+                        "scan: scan-map over hard cap ({} bytes > {} ceiling): {} — not written; runaway machine map",
                         entry.bytes,
-                        scan_claude::CLAUDE_MD_HARD_CAP_BYTES,
+                        scan_claude::SCAN_MAP_HARD_CAP_BYTES,
                         entry.path,
                     );
                 }
@@ -65,21 +65,6 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
                 result["over_cap"] = json!(over_cap_json);
                 result["ok"] = json!(false);
             }
-        } else {
-            if !pass.oversized.is_empty() {
-                for entry in &pass.oversized {
-                    eprintln!(
-                        "scan: CLAUDE.md oversized ({} bytes > {} threshold): {} — run with --full to regenerate",
-                        entry.bytes,
-                        scan_claude::CLAUDE_MD_WARN_BYTES,
-                        entry.path,
-                    );
-                }
-            }
-            let oversized_json: Vec<Value> = pass.oversized.iter().map(|e| {
-                json!({ "path": e.path, "bytes": e.bytes })
-            }).collect();
-            result["oversized"] = json!(oversized_json);
         }
 
         // Equivalences artifact (additive): project the dictionary the scan
