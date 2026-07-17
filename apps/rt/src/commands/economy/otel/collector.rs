@@ -576,8 +576,18 @@ mod tests {
             body.len()
         );
         stream.write_all(req.as_bytes()).unwrap();
-        let mut resp = String::new();
-        stream.read_to_string(&mut resp).unwrap();
+        // Read to EOF, tolerating a reset. Windows surfaces the peer's close as
+        // WSAECONNRESET (10054) often enough that unwrapping here makes the
+        // suite flaky on the CI runner while passing everywhere else — the
+        // server answers and closes, and whether the client sees a clean FIN or
+        // a reset is not this test's subject. `read_to_end` is used over
+        // `read_to_string` because it GUARANTEES the bytes read before an error
+        // stay in the buffer; on error `read_to_string` leaves the buffer
+        // unspecified. Nothing is masked: a response that never arrived leaves
+        // `resp` empty, `status` parses to 0, and the caller's assertion fails.
+        let mut raw = Vec::new();
+        let _ = stream.read_to_end(&mut raw);
+        let resp = String::from_utf8_lossy(&raw).into_owned();
         let status = resp
             .lines()
             .next()
