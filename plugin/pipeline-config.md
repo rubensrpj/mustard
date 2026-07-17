@@ -23,7 +23,7 @@ One `spec.md`, two `##` layers — `## PRD` (what/why) + `## Plan`/`## Plano` (h
 
 ## Agents
 
-Read by `verify-pipeline` only when grain discovery is empty (per-subproject `Build`/`Validate` overrides); leave empty unless overriding.
+Read by `verify-pipeline` only when grain discovery is empty (per-subproject `Build`/`Validate` overrides).
 
 | Subproject | Build | Validate |
 |------------|-------|----------|
@@ -119,7 +119,7 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 | `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (strict) | no `qa.result`, `fail`, or spec/wave-plan edited after it (stale → re-run `/mustard:qa`) |
 | `close_gate` (checklist) | same | `MUSTARD_CHECKLIST_GATE_MODE` (strict) | unchecked `- [ ]` |
 | `close_gate` (debt) | same | `MUSTARD_DEBT_GATE_MODE` (strict) | unresolved tracked debt |
-| `approve-spec` (approval) | `approve-spec` run | `MUSTARD_APPROVAL_MODE` (strict) | no `<spec>/.approved-by-user` marker — approval must come from the USER: plan-mode accept (`ExitPlanMode` → `plan_approval_observer`) or the approval `AskUserQuestion` (`approval_marker_observer`); strict refuses (exit≠0), warn nudges, off disables; the orchestrator cannot self-approve |
+| `approve-spec` (approval) | `approve-spec` run | `MUSTARD_APPROVAL_MODE` (strict) | no `<spec>/.approved-by-user` marker — approval must come from the USER: plan-mode accept (`ExitPlanMode` → `plan_approval_observer`) or the approval `AskUserQuestion` (`approval_marker_observer`); strict refuses (exit≠0), warn nudges, off disables |
 | `bash_command_gate` (rtk) | Bash | `MUSTARD_RTK_GATE_MODE` (warn) | unprefixed → auto-rewrite to `rtk`; `strict` denies; builtins pass |
 | `bash_command_gate` (commit) | `git commit` | `MUSTARD_COMMIT_GATE_MODE` (warn) | secrets staged / build broken |
 | `bash_command_gate` (native-redirect) | Bash | always-on | `grep`/`ls`/`cat`/`head`/`tail`/`find` → suggests Grep/Glob/Read |
