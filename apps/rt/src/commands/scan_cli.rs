@@ -109,6 +109,14 @@ pub enum ScanCmd {
         /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
         root: PathBuf,
+        /// Emit the DROPPED roles instead of the worklist: `[{affix, kind,
+        /// count, commonDir, subproject, reason}]`, reason from a closed set
+        /// (`below_cluster_min`, `no_common_dir`, `test_terrain`, `no_owner`,
+        /// `empty_label`, `declined`, `mold_exists`, `no_exemplars`). Answers
+        /// "why is there no mold for X here?" without re-reading the funnel —
+        /// every drop point is otherwise silent. Default output is unchanged.
+        #[arg(long)]
+        rejected: bool,
     },
     /// Write one enrich-agent-authored pattern mold to its
     /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only,
@@ -171,7 +179,7 @@ pub fn dispatch(cmd: ScanCmd) {
         ScanCmd::ScanGuardsApply { path, root, guards } => {
             scan_guards::apply::run(&path, &root, &guards)
         }
-        ScanCmd::ScanPatternsList { root } => scan_patterns::list::run(&root),
+        ScanCmd::ScanPatternsList { root, rejected } => scan_patterns::list::run(&root, rejected),
         ScanCmd::ScanPatternsApply { path, content } => {
             scan_patterns::apply::run(&path, &content)
         }

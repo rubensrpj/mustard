@@ -30,6 +30,12 @@ use serde_json::{json, Value};
 
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees};
 
+/// Where Claude Code itself puts worktrees, relative to the main checkout.
+/// Mirrored so a hook-managed worktree lands exactly where the native one would
+/// — the `WorktreeCreate` event names the worktree but never says where to put
+/// it, leaving the layout to whoever replaces the native `git worktree add`.
+const WORKTREES_RELDIR: &str = ".claude/worktrees";
+
 /// Options for `mustard-rt run work-unit-open`.
 pub struct WorkUnitOpenOpts {
     /// Any directory inside the repo (worktrees welcome — the command resolves
@@ -195,8 +201,8 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
     })
 }
 
-/// The `WorktreeCreate` hook engine: create the worktree at the harness's
-/// REQUESTED path and return the path to echo. Naming decides the cut:
+/// The `WorktreeCreate` hook engine: create the worktree the harness NAMED and
+/// return the path to echo. Naming decides the cut:
 ///
 /// - `{base}_…` with a DECLARED base → work unit: fetch + cut from a fresh
 ///   `origin/{base}` (attach the branch if it already exists).
@@ -206,24 +212,26 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
 ///   `origin/HEAD` when resolvable, else the local `HEAD` — background
 ///   isolation must never break.
 ///
+/// The event hands over a NAME, never a path (`worktree_path` is the *Remove*
+/// twin's field), so placing the worktree is this engine's call: it mirrors the
+/// harness layout, `{main}/.claude/worktrees/{name}`, anchored at the MAIN
+/// checkout rather than `cwd` — the hook may be invoked from any subdirectory,
+/// and a worktree cut relative to the caller would land outside the repo.
+///
 /// An already-registered branch returns its registered path (idempotent).
-pub(crate) fn hook_create(requested_path: &str, cwd: &Path) -> Result<String, String> {
-    let requested = requested_path.trim();
-    if requested.is_empty() {
-        return Err("WorktreeCreate: worktree_path vazio no input do hook".to_string());
+pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, String> {
+    let name = worktree_name.trim().to_string();
+    if name.is_empty() {
+        return Err("WorktreeCreate: `name` vazio no input do hook".to_string());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(format!("WorktreeCreate: `name` não pode conter separador de path: {name}"));
     }
     let Some(main) = main_checkout_root(cwd) else {
         return Err("WorktreeCreate: não é um repositório git".to_string());
     };
-    let wt_path = Path::new(requested);
-    let name = wt_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
-    if name.is_empty() {
-        return Err(format!("WorktreeCreate: path sem nome de worktree: {requested}"));
-    }
+    let requested = format!("{}/{}/{}", main.display(), WORKTREES_RELDIR, name).replace('\\', "/");
+    let wt_path = PathBuf::from(&requested);
 
     // Idempotency: a registration for this branch is the answer.
     let entries = git_out(&main, &["worktree", "list", "--porcelain"])
@@ -433,15 +441,16 @@ mod tests {
 
     #[test]
     fn hook_create_unit_name_cuts_from_fresh_origin_base() {
+        // The event hands over a NAME, never a path — `worktree_path` is the
+        // Remove twin's field. Placing the worktree is this engine's job.
         let (_dir, main) = fixture();
-        let requested = main.join(".claude").join("worktrees").join("dev_hooked");
-        let got = hook_create(requested.to_string_lossy().as_ref(), &main).expect("creates");
-        assert!(got.ends_with(".claude/worktrees/dev_hooked"), "{got}");
+        let got = hook_create("dev_hooked", &main).expect("creates");
+        assert!(got.ends_with(".claude/worktrees/dev_hooked"), "harness layout, from a name: {got}");
         let wt_head = git_out(Path::new(&got), &["rev-parse", "HEAD"]).expect("wt head");
         let origin = git_out(&main, &["rev-parse", "origin/dev"]).expect("origin");
         assert_eq!(wt_head, origin, "unit name cut from fresh origin/dev, not stale local");
         // Idempotent: second call returns the registered path, creates nothing.
-        let again = hook_create(requested.to_string_lossy().as_ref(), &main).expect("idempotent");
+        let again = hook_create("dev_hooked", &main).expect("idempotent");
         assert_eq!(again.replace('\\', "/"), got.replace('\\', "/"));
     }
 
@@ -449,8 +458,7 @@ mod tests {
     fn hook_create_non_unit_name_falls_back_to_native_cut() {
         // `agent-*` (no underscore) must never break — background isolation.
         let (_dir, main) = fixture();
-        let requested = main.join(".claude").join("worktrees").join("agent-bg1");
-        let got = hook_create(requested.to_string_lossy().as_ref(), &main).expect("creates");
+        let got = hook_create("agent-bg1", &main).expect("creates");
         assert!(Path::new(&got).is_dir(), "worktree materialized");
         assert_eq!(
             git_out(Path::new(&got), &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
@@ -460,12 +468,32 @@ mod tests {
     }
 
     #[test]
+    fn hook_create_anchors_the_worktree_at_the_main_checkout() {
+        // The hook may be invoked from ANY subdirectory: the harness reports the
+        // caller's cwd, not the repo root. Deriving the layout from cwd would cut
+        // the worktree outside the repository.
+        let (_dir, main) = fixture();
+        let deep = main.join("nested").join("deeper");
+        std::fs::create_dir_all(&deep).expect("subdir");
+        let got = hook_create("dev_fromdeep", &deep).expect("creates");
+        let expected = format!("{}/.claude/worktrees/dev_fromdeep", main.display()).replace('\\', "/");
+        assert_eq!(got.replace('\\', "/"), expected, "anchored at the main checkout, not at cwd");
+    }
+
+    #[test]
     fn hook_create_undeclared_prefix_is_loud() {
         let (_dir, main) = fixture();
-        let requested = main.join(".claude").join("worktrees").join("hml_x");
-        let err = hook_create(requested.to_string_lossy().as_ref(), &main).unwrap_err();
+        let err = hook_create("hml_x", &main).unwrap_err();
         assert!(err.contains("hml") && err.contains("git.flow"), "didactic: {err}");
-        assert!(!requested.exists(), "nothing created on refusal");
+        assert!(!main.join(".claude/worktrees/hml_x").exists(), "nothing created on refusal");
+    }
+
+    #[test]
+    fn hook_create_rejects_a_name_carrying_a_path_separator() {
+        // `name` is a name. A separator would escape the worktrees dir.
+        let (_dir, main) = fixture();
+        let err = hook_create("../../etc/evil", &main).unwrap_err();
+        assert!(err.contains("separador"), "refused: {err}");
     }
 
     #[test]
