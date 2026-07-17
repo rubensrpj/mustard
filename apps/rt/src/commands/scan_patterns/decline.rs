@@ -3,12 +3,15 @@
 //!
 //! The patterns agent may DECLINE a worklist candidate (exemplars that are all
 //! generated code behind a read-deny, a role already covered by another mold,
-//! a cluster with no teachable shape). Before this command the refusal left no
-//! trace on disk, so every scan re-proposed and re-judged the same candidate
-//! forever. The orchestrator now relays each `=== DECLINE: <slug> ===` block
-//! here; the store is `.claude/scan-declined.json` (slug → reason, a `BTreeMap`
-//! so the bytes are stable). Re-auditing a refusal = deleting its entry (or the
-//! whole file) and rescanning.
+//! a cluster with no teachable shape). The refusal is recorded so the SAME
+//! scan run does not re-propose or double-author the candidate (the run's
+//! final worklist check reads it); the store is `.claude/scan-declined.json`
+//! (slug → reason, a `BTreeMap` so the bytes are stable).
+//!
+//! The ledger is RUN-SCOPED: [`super::sweep`] clears it at the start of every
+//! scan, so each run re-judges every cluster from scratch — a decline is an
+//! agent's judgment about the current mold landscape, never a permanent
+//! verdict.
 //!
 //! Fail-open per the `mustard-rt run` contract: any IO/serde failure prints a
 //! clear stderr line and exits 0. The only non-zero exit is an empty

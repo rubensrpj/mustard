@@ -30,11 +30,11 @@ pub enum ScanCmd {
         /// Output path. Defaults to `<root>/.claude/grain.model.json`.
         #[arg(long)]
         out: Option<PathBuf>,
-        /// (Re)generate a lean CLAUDE.md for every subproject found in the
-        /// grain model. Only the machine-owned scan-map block is regenerated;
-        /// curated sections (Guards, Architecture, …) are preserved verbatim.
-        /// Without this flag the command only warns about CLAUDE.md files that
-        /// exceed the size threshold.
+        /// (Re)generate the mustard-owned `.claude/scan-map.md` for every
+        /// subproject found in the grain model, keeping the project's
+        /// CLAUDE.md footprint to one import line (+ Guards seed + breadcrumb
+        /// heal); curated content is preserved verbatim and never measured.
+        /// Without this flag only the model is written.
         #[arg(long)]
         full: bool,
     },
@@ -128,10 +128,10 @@ pub enum ScanCmd {
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
     },
-    /// Record the enrich agent's justified refusal of a mold candidate so
-    /// `scan-patterns-list` stops re-proposing it. Store:
-    /// `.claude/scan-declined.json` (slug → reason); re-auditing a refusal =
-    /// deleting its entry (or the file) and rescanning.
+    /// Record the enrich agent's justified refusal of a mold candidate so the
+    /// SAME scan run does not re-propose it. Store: `.claude/scan-declined.json`
+    /// (slug → reason) — run-scoped: `scan-patterns-sweep` clears it at the
+    /// start of every scan, so each run re-judges every cluster fresh.
     #[command(name = "scan-patterns-decline")]
     #[command(display_order = 77)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
     ScanPatternsDecline {
@@ -149,8 +149,10 @@ pub enum ScanCmd {
     /// Delete every mustard-generated pattern skill (`source: scan`) under a
     /// workspace BEFORE the enrich re-authors them, so each mold is written
     /// fresh from the current exemplars with no bias from its old text.
-    /// Preserves hand-authored/adopted molds (`source: manual`). Emits
-    /// `{removed:[…], preserved:[…]}`. Fail-open.
+    /// Preserves hand-authored/adopted molds (`source: manual`). Also clears
+    /// the run-scoped decline ledger (`.claude/scan-declined.json`) so every
+    /// cluster is re-judged. Emits `{removed:[…], preserved:[…],
+    /// declinesCleared:n}`. Fail-open.
     #[command(name = "scan-patterns-sweep")]
     #[command(display_order = 78)] // tail slot — keep the display_order permutation gapless
     ScanPatternsSweep {
