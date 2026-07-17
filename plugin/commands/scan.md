@@ -13,7 +13,7 @@ source: manual
 mustard-rt run scan --full [--root <dir>] [--out <path>]
 ```
 
-Writes `.claude/grain.model.json` (the language-agnostic model — modules, declarations, dependency graph, mined roles, vertical slices, shared contracts, touchpoints) AND regenerates the mustard-owned map file `<subproject>/.claude/scan-map.md` per subproject. **The `CLAUDE.md` belongs to the PROJECT**: mustard's whole footprint there is one `@.claude/scan-map.md` import line at the top (Claude Code's native import — the map still auto-loads with the file), a `## Guards` `pending` seed where none exists, and a breadcrumb heal; curated prose is preserved verbatim, its size is never measured, and a legacy inline scan-map block is migrated out automatically. Downstream (`/feature`, `/bugfix`) consumes the model via `mustard-rt run feature` and `scan spec` — never by reading it directly. Parse the JSON (`{ ok, model, regenerated?, over_cap? }`); a non-empty `over_cap` means a RUNAWAY machine map (generator bug — surface it), never oversized human prose.
+Writes `.claude/grain.model.json` (the language-agnostic model — modules, declarations, dependency graph, mined roles, vertical slices, shared contracts, touchpoints) AND regenerates the mustard-owned map file `<unit>/.claude/scan-map.md` for EVERY unit — each subproject and the workspace root alike. **The `CLAUDE.md` belongs to the PROJECT**: mustard's whole footprint there is one `@.claude/scan-map.md` import line at the top (Claude Code's native import — the map still auto-loads with the file), a `## Guards` `pending` seed where none exists, and a breadcrumb heal; curated prose is preserved verbatim, its size is never measured, and a legacy inline scan-map block is migrated out automatically. Downstream (`/feature`, `/bugfix`) consumes the model via `mustard-rt run feature` and `scan spec` — never by reading it directly. Parse the JSON (`{ ok, model, regenerated?, over_cap? }`); a non-empty `over_cap` means a RUNAWAY machine map (generator bug — surface it), never oversized human prose.
 
 Both enrichment passes below are **incremental** (only the delta since the last scan) and **fail-open** (headless / no LLM / empty worklist → skip silently; the model is already complete). One cheap read-only agent per subproject per pass.
 
@@ -36,6 +36,6 @@ The per-subproject "how we write an X module here" skills that auto-load when an
 
 ## Inviolable
 
-- The deterministic pass NEVER calls AI and NEVER reads source; it always writes `grain.model.json` + the lean maps (preserving `## Guards`, root excluded).
+- The deterministic pass NEVER calls AI and NEVER reads source; it always writes `grain.model.json` + every unit's `.claude/scan-map.md` (workspace root included), preserving `## Guards`. Only the Guards ENRICH excludes the root.
 - Enrichment is STANDARD + fail-open — no opt-in flag, no confirmation, no dollar cost EVER. If a pass can run it runs silently; if it cannot it skips silently.
 - An LLM in enrichment writes exactly TWO things: subproject `## Guards` (capped ~6 lines, non-destructive) and `{role}-pattern` molds — swept fresh each scan (every `source: scan` mold is deleted then re-authored; a `source: manual`/hand-authored mold is NEVER touched). Never the root, never source, never system prompts.

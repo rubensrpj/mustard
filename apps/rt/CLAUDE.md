@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Rt
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
@@ -15,8 +17,3 @@
 - As faces `run` e `mcp` NÃO leem o stdin do harness (despachadas antes da leitura no `main.rs`); só `on`/`check` consomem o `HookInput`. Mantenha `main.rs` magro: roteamento de argv + match das faces, sem lógica de negócio.
 - Saída de comando `run` deve ser determinística e byte-estável (JSON ordenado, sem timestamps/caminhos voláteis) — há snapshots `insta` e gates que comparam a saída.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: cargo · 227 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

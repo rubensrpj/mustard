@@ -30,7 +30,7 @@ Read by `verify-pipeline` only when grain discovery is empty (per-subproject `Bu
 
 ## Role Rules
 
-Roles emerge from detection (manifests+folders) — no canonical list. Delivery contracts are code-rendered (`build_role_block`/`build_guards_role_block`) as `{role_block}` — never hand-written into tables or subproject `CLAUDE.md`; `/scan` authors only orientation blocks + `## Guards`.
+Roles emerge from detection (manifests+folders) — no canonical list. Delivery contracts are code-rendered (`build_role_block`/`build_guards_role_block`) as `{role_block}` — never hand-written into tables or subproject `CLAUDE.md`; in the project's `CLAUDE.md` `/scan` authors only the `@.claude/scan-map.md` import line + the `## Guards` seed (the machine map lives in `scan-map.md`).
 
 ## Skill Discovery Heuristic
 

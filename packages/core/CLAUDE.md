@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Core
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
@@ -15,8 +17,3 @@
 - `ProjectConfig` (`domain/config.rs`) é o dono único do schema de `mustard.json`: chaves de topo em camelCase, lido só do raiz via `ClaudePaths` — não crie parser ad-hoc nem leia o JSON como `Value` solto.
 - `unwrap()`/`expect()` são `deny` no workspace fora de teste; propague `Result`. O automaton Aho-Corasick (`vocabulary/`) é único — reúse `KeyedAutomaton`, não instancie outro.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: cargo · 85 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

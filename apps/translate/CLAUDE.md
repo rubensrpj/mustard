@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Translate
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
@@ -13,8 +15,3 @@ Decoding must stay deterministic: greedy `greedy_pick` (pad masked, NaN skipped,
 Keep the empty `[workspace]` table in Cargo.toml AND the root manifest's `exclude` — this sidecar deliberately lives outside the workspace so candle/lingua never bloat `mustard-rt` (runs on every tool call) or the deterministic `mustard-scan`.
 Model swaps must stay commercially licensed: OPUS-MT is CC-BY-4.0; NLLB and Tower are CC-BY-NC and banned from the product. Weights load from `refs/pr/4` (the safetensors conversion — upstream `main` only ships pickle) into the per-MACHINE cache; never vendor weights into the repo or pin them per project.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: cargo · 1 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->
