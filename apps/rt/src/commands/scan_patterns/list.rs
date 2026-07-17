@@ -103,9 +103,6 @@ pub(crate) struct Candidate {
     /// `{slug}-pattern`. Matches the existing convention (`scan-stage`,
     /// `rt-inject`).
     pub(crate) slug: String,
-    /// `"create"` (no mold yet) or `"refresh"` (a machine-pristine mold exists
-    /// — re-author it fresh; the caller passes `--refresh` to apply).
-    pub(crate) mode: String,
     /// Where the agent's SKILL.md is written (`scan-patterns-apply --path`).
     #[serde(rename = "moldPath")]
     pub(crate) mold_path: String,
@@ -180,14 +177,12 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
             continue; // refused by the enrich agent with a recorded reason.
         }
         let mold_path = format!("{}/.claude/skills/{}-pattern/SKILL.md", project.dir, slug);
-        // Machine-pristine molds refresh on every scan; a hand-edited/unmarked
-        // mold — or any other `*-{label}-pattern` folder claiming the role —
-        // is preserved and never re-proposed.
-        let mode = match mold_status(root, &project.dir, &slug, &label) {
-            MoldStatus::Missing => "create",
-            MoldStatus::Pristine => "refresh",
-            MoldStatus::Preserved => continue,
-        };
+        // Any surviving mold (this slug, or another `*-{label}-pattern` claiming
+        // the role) is preserved — the sweep already deleted the mustard-
+        // generated ones, so whatever remains is hand-authored/adopted.
+        if mold_present(root, &project.dir, &slug, &label) {
+            continue;
+        }
         let exemplars = exemplars_for(role, &modules);
         if exemplars.len() < MIN_EXEMPLARS {
             continue; // not a real file-naming convention — nothing teachable here.
@@ -196,7 +191,6 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
             subproject: project.dir.clone(),
             label,
             slug,
-            mode: mode.to_string(),
             mold_path,
             affix: role.affix.clone(),
             affix_kind: role.kind.clone(),
@@ -251,60 +245,30 @@ fn slugify(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// How the on-disk skills tree answers a candidate.
-enum MoldStatus {
-    /// No mold claims the role — author it (`mode: "create"`).
-    Missing,
-    /// The exact `{slug}-pattern` mold exists and its provenance marker
-    /// verifies — machine-authored and untouched, re-author it fresh
-    /// (`mode: "refresh"`).
-    Pristine,
-    /// Preserved terrain, never re-proposed: the exact mold is hand-edited or
-    /// unmarked (legacy/hand-authored), or another `*-pattern` folder ending
-    /// in `-{label}-pattern` / equal to `{label}-pattern` claims the same role
-    /// under a different subproject prefix.
-    Preserved,
-}
-
-/// Classify the cluster against the subproject's `.claude/skills/` tree. See
-/// [`MoldStatus`]; the exact `{slug}-pattern` folder wins over a label match.
-fn mold_status(root: &Path, subproject: &str, slug: &str, label: &str) -> MoldStatus {
+/// Whether ANY mold already claims this cluster under the subproject's
+/// `.claude/skills/` — the exact `{slug}-pattern` folder, or another
+/// `*-pattern` folder ending in `-{label}-pattern` / equal to `{label}-pattern`
+/// (the same role under a different subproject prefix). Post-sweep, a surviving
+/// mold is hand-authored/adopted (`source: manual`); the mustard-generated ones
+/// were already deleted, so presence alone means "preserve, do not re-author".
+fn mold_present(root: &Path, subproject: &str, slug: &str, label: &str) -> bool {
     let skills_dir: PathBuf = root.join(subproject).join(".claude").join("skills");
     let exact = format!("{slug}-pattern");
     let by_label_suffix = format!("-{label}-pattern");
     let by_label_exact = format!("{label}-pattern");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
-        return MoldStatus::Missing; // no skills dir yet → nothing exists.
+        return false; // no skills dir yet → nothing exists.
     };
-    let mut exact_found = false;
-    let mut label_claimed = false;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with("-pattern") {
             continue;
         }
-        if name == exact {
-            exact_found = true;
-        } else if name == by_label_exact || name.ends_with(&by_label_suffix) {
-            label_claimed = true;
+        if name == exact || name == by_label_exact || name.ends_with(&by_label_suffix) {
+            return true;
         }
     }
-    if exact_found {
-        // Refresh-eligible ONLY while the scan's own marker verifies: the
-        // machine wrote it and nobody touched it since. Unreadable or
-        // marker-less (a folder without SKILL.md included) → preserve.
-        return match std::fs::read_to_string(skills_dir.join(&exact).join("SKILL.md")) {
-            Ok(text) if super::provenance::verify(&text) == super::provenance::Provenance::Pristine => {
-                MoldStatus::Pristine
-            }
-            _ => MoldStatus::Preserved,
-        };
-    }
-    if label_claimed {
-        MoldStatus::Preserved
-    } else {
-        MoldStatus::Missing
-    }
+    false
 }
 
 /// Resolve up to [`MAX_EXEMPLARS`] hand-written exemplar files for `role`: the
@@ -317,16 +281,41 @@ fn mold_status(root: &Path, subproject: &str, slug: &str, label: &str) -> MoldSt
 /// that merely recurs in a shared folder) resolves too few and is rightly
 /// dropped. `modules` is pre-sorted by path, so the pick is stable; generated/
 /// vendored code never teaches, so it is skipped.
+///
+/// The `common_dir` may be GENERALIZED by the miner — a per-feature layout
+/// (`Modules/v1/Contracts/Services`, `…/Partners/Services`, …) collapses to
+/// `Modules/v1/<Name>s/Services` (`apps/scan/src/mine.rs` `abstract_entity`).
+/// [`dir_matches`] expands that placeholder so the real files still resolve;
+/// without it every feature-folder convention (the whole .NET `Modules/{F}/…`
+/// backend) is silently discarded.
 fn exemplars_for(role: &Role, modules: &[&Mod]) -> Vec<String> {
     let affix = role.affix.to_lowercase();
     modules
         .iter()
         .filter(|m| m.file_class.is_empty()) // hand-written only
-        .filter(|m| parent_dir(&m.path) == role.common_dir)
+        .filter(|m| dir_matches(parent_dir(&m.path), &role.common_dir))
         .filter(|m| matches_affix(stem(&m.path), &affix, &role.kind))
         .map(|m| m.path.clone())
         .take(MAX_EXEMPLARS)
         .collect()
+}
+
+/// Whether `actual` (a real parent dir) matches `pattern` (a role `common_dir`
+/// that may carry generalized `<…>` placeholder segments). Segment-for-segment:
+/// same segment count, and a `pattern` segment containing `<` is a wildcard
+/// (matches any real segment); every other segment must be equal. No regex —
+/// the placeholder always occupies a whole segment (`<Name>s`, `<name>`), so a
+/// segment-level wildcard is exact for the miner's output and cheap.
+fn dir_matches(actual: &str, pattern: &str) -> bool {
+    if !pattern.contains('<') {
+        return actual == pattern; // fast path: literal common_dir
+    }
+    let a: Vec<&str> = actual.split('/').collect();
+    let p: Vec<&str> = pattern.split('/').collect();
+    if a.len() != p.len() {
+        return false;
+    }
+    a.iter().zip(p.iter()).all(|(seg, pat)| pat.contains('<') || seg == pat)
 }
 
 /// The directory portion of a path (everything before the last `/`), or `""` for
@@ -416,7 +405,6 @@ mod tests {
         assert_eq!(c.subproject, "apps/api");
         assert_eq!(c.label, "service");
         assert_eq!(c.slug, "api-service");
-        assert_eq!(c.mode, "create", "no mold on disk yet");
         assert_eq!(c.mold_path, "apps/api/.claude/skills/api-service-pattern/SKILL.md");
         assert_eq!(c.implements.as_deref(), Some("BaseService"));
         // Only the two matching hand-written files are exemplars (README excluded).
@@ -502,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_reproposes_pristine_mold_as_refresh() {
+    fn collect_preserves_any_surviving_mold() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_model(
@@ -516,43 +504,53 @@ mod tests {
               ]
             }"#,
         );
-        // A machine-authored mold, stamped by apply and untouched since.
+        // Any mold surviving the sweep (hand-authored/adopted) is preserved —
+        // the list never re-authors over an existing folder. (The generated
+        // ones were already deleted by the sweep before list ran.)
         let mold_dir = root.join("apps/api/.claude/skills/api-service-pattern");
         std::fs::create_dir_all(&mold_dir).unwrap();
-        std::fs::write(mold_dir.join("SKILL.md"), super::super::provenance::stamp("# machine mold")).unwrap();
-
-        let got = collect(root);
-        assert_eq!(got.len(), 1, "pristine mold comes back for a fresh re-author");
-        assert_eq!(got[0].mode, "refresh");
-        assert_eq!(got[0].slug, "api-service");
+        std::fs::write(mold_dir.join("SKILL.md"), "---\nname: api-service-pattern\nsource: manual\n---\nhand\n").unwrap();
+        assert!(collect(root).is_empty(), "a surviving mold is never re-proposed");
     }
 
     #[test]
-    fn collect_preserves_edited_and_unmarked_molds() {
+    fn dir_matches_expands_generalized_segments() {
+        // Literal fast path.
+        assert!(dir_matches("app/services", "app/services"));
+        assert!(!dir_matches("app/services", "app/repos"));
+        // Placeholder segment is a wildcard; literal segments must still match.
+        assert!(dir_matches("app/modules/contracts/services", "app/modules/<Name>s/services"));
+        assert!(dir_matches("app/modules/partners/services", "app/modules/<Name>s/services"));
+        assert!(!dir_matches("app/modules/contracts/repos", "app/modules/<Name>s/services"), "trailing literal differs");
+        // Segment count must match.
+        assert!(!dir_matches("app/modules/contracts/sub/services", "app/modules/<Name>s/services"));
+    }
+
+    #[test]
+    fn collect_resolves_exemplars_under_generalized_common_dir() {
+        // The bug that hid the whole feature-folder backend: a role whose
+        // common_dir carries the miner's `<Name>s` placeholder must still
+        // resolve its real exemplars (which live in per-feature subfolders).
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_model(
             root,
             r#"{
-              "projects": [{"name":"api","dir":"apps/api"}],
-              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+              "projects": [{"name":"app","dir":"app"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":9,"common_dir":"app/modules/<Name>s/services"}],
               "modules": [
-                {"path":"apps/api/services/UserService.ts"},
-                {"path":"apps/api/services/OrderService.ts"}
+                {"path":"app/modules/contracts/services/ContractService.cs"},
+                {"path":"app/modules/partners/services/PartnerService.cs"}
               ]
             }"#,
         );
-        let mold_dir = root.join("apps/api/.claude/skills/api-service-pattern");
-        std::fs::create_dir_all(&mold_dir).unwrap();
-
-        // Stamped, then hand-edited: the digest no longer verifies.
-        let edited = format!("{}\nA HUMAN ADDED THIS LINE\n", super::super::provenance::stamp("# machine mold").trim_end());
-        std::fs::write(mold_dir.join("SKILL.md"), edited).unwrap();
-        assert!(collect(root).is_empty(), "a hand-edited mold is never re-proposed");
-
-        // Unmarked (legacy / hand-authored): preserved too.
-        std::fs::write(mold_dir.join("SKILL.md"), "# hand-authored skill\n").unwrap();
-        assert!(collect(root).is_empty(), "an unmarked mold is never re-proposed");
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "generalized cluster resolves and becomes a candidate");
+        assert_eq!(got[0].slug, "app-service");
+        assert_eq!(
+            got[0].exemplars,
+            vec!["app/modules/contracts/services/ContractService.cs", "app/modules/partners/services/PartnerService.cs"]
+        );
     }
 
     #[test]

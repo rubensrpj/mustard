@@ -645,10 +645,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
     format!(
         "ROLE: patterns\n\
          You author pattern skill molds for {subproject} ONLY — one SKILL.md per cluster \
-         listed in ## TASK, and NEVER one that is not listed there (hand-maintained molds \
-         were already filtered out; never the workspace root). A `mode: refresh` entry is \
-         a machine-authored mold being regenerated: author it EXACTLY like a create, fresh \
-         from the CURRENT exemplars — never read or echo the old mold text. READ 2-3 of \
+         listed in ## TASK, and NEVER one that is not listed there (hand-authored/adopted \
+         molds were already filtered out; never the workspace root). Every mold is authored \
+         FRESH from the CURRENT exemplars — the old mold text was swept before you ran, so \
+         there is nothing to echo. READ 2-3 of \
          the cluster's exemplar files (their paths are in the worklist) BEFORE authoring \
          its mold: the mold teaches what they share — folder, extension, naming, shape \
          (traits, exports, error style, test placement) and what a new member must/must-not \
@@ -710,10 +710,9 @@ fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String 
 }
 
 /// Render the filtered worklist as the TASK body: one entry per candidate with
-/// slug, mode (create | refresh), label, affix (+kind), declKind, count,
-/// implements (when present), the moldPath the returned block must name, and
-/// the exemplar files to read. Plain bullets only — no `## ` heading (see
-/// [`patterns_task_block`]).
+/// slug, label, affix (+kind), declKind, count, implements (when present), the
+/// moldPath the returned block must name, and the exemplar files to read.
+/// Plain bullets only — no `## ` heading (see [`patterns_task_block`]).
 fn render_patterns_worklist(
     candidates: &[crate::commands::scan_patterns::list::Candidate],
 ) -> String {
@@ -726,8 +725,8 @@ fn render_patterns_worklist(
         let kind = if c.affix_kind.is_empty() { "-" } else { c.affix_kind.as_str() };
         let _ = write!(
             out,
-            "- slug: {} | mode: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
-            c.slug, c.mode, c.label, c.affix, c.count
+            "- slug: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
+            c.slug, c.label, c.affix, c.count
         );
         if let Some(imp) = c.implements.as_deref().filter(|s| !s.is_empty()) {
             let _ = write!(out, " | implements: {imp}");
