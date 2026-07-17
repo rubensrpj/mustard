@@ -78,6 +78,17 @@ struct Mod {
     /// Only hand-written files may serve as exemplars — a mold must teach the
     /// convention humans wrote, never a codegen output.
     file_class: String,
+    /// The module's mined declarations — the fallback exemplar signal for
+    /// clusters whose convention lives in DECLARATION names, not filenames
+    /// (`configs/contracts.ts` declaring `contractsConfig`).
+    declarations: Vec<Decl>,
+}
+
+/// One mined declaration (only the name matters here).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Decl {
+    name: String,
 }
 
 /// A workspace subproject (one per build manifest).
@@ -272,29 +283,52 @@ fn mold_present(root: &Path, subproject: &str, slug: &str, label: &str) -> bool 
 }
 
 /// Resolve up to [`MAX_EXEMPLARS`] hand-written exemplar files for `role`: the
-/// files *directly* in its `common_dir` (grain's role→folder map) whose filename
-/// stem carries the affix. The match is deliberately precise — no folder-neighbour
-/// fallback — because the exemplars ARE the quality signal: two or more files
-/// whose names carry the affix (`UserService.ts`, `OrderService.ts`;
-/// `amend_window_inject.rs`) prove a real file-naming convention worth a mold,
-/// whereas a declaration-name affix with no matching filenames (a type suffix
-/// that merely recurs in a shared folder) resolves too few and is rightly
-/// dropped. `modules` is pre-sorted by path, so the pick is stable; generated/
-/// vendored code never teaches, so it is skipped.
+/// files *directly* in its `common_dir` (grain's role→folder map) that carry
+/// the affix. Two accepted signatures, tried in order:
 ///
-/// The `common_dir` may be GENERALIZED by the miner — a per-feature layout
-/// (`Modules/v1/Contracts/Services`, `…/Partners/Services`, …) collapses to
-/// `Modules/v1/<Name>s/Services` (`apps/scan/src/mine.rs` `abstract_entity`).
-/// [`dir_matches`] expands that placeholder so the real files still resolve;
-/// without it every feature-folder convention (the whole .NET `Modules/{F}/…`
-/// backend) is silently discarded.
+/// 1. **Filename affix** — the file's stem carries it (`UserService.ts`,
+///    `OrderService.ts`): the classic file-naming convention.
+/// 2. **Declaration affix** (fallback, when 1 resolves fewer than
+///    [`MIN_EXEMPLARS`]) — the file DECLARES a symbol carrying it
+///    (`configs/contracts.ts` declaring `contractsConfig`; `_components/form/`
+///    files declaring `ClientForm`). The role was mined from declarations, so
+///    resolving exemplars by the same signal is symmetric — without this, a
+///    real per-entity convention whose filenames vary never earns a mold (the
+///    defect that hid the entity-config/entity-form conventions in field
+///    validation).
+///
+/// In both signatures the LOCATION bar is the same: the file must sit directly
+/// in the role's `common_dir` — expanded by [`dir_matches`] when the miner
+/// generalized it (`Modules/v1/<Name>s/Services`); without that expansion every
+/// feature-folder convention (the whole .NET `Modules/{F}/…` backend) is
+/// silently discarded. `modules` is pre-sorted by path, so the pick is stable;
+/// generated/vendored code never teaches, so it is skipped.
 fn exemplars_for(role: &Role, modules: &[&Mod]) -> Vec<String> {
     let affix = role.affix.to_lowercase();
-    modules
+    let located: Vec<&&Mod> = modules
         .iter()
         .filter(|m| m.file_class.is_empty()) // hand-written only
         .filter(|m| dir_matches(parent_dir(&m.path), &role.common_dir))
+        .collect();
+
+    let by_filename: Vec<String> = located
+        .iter()
         .filter(|m| matches_affix(stem(&m.path), &affix, &role.kind))
+        .map(|m| m.path.clone())
+        .take(MAX_EXEMPLARS)
+        .collect();
+    if by_filename.len() >= MIN_EXEMPLARS {
+        return by_filename;
+    }
+
+    // Fallback: the convention lives in the declaration names.
+    located
+        .iter()
+        .filter(|m| {
+            m.declarations
+                .iter()
+                .any(|d| matches_affix(d.name.to_lowercase(), &affix, &role.kind))
+        })
         .map(|m| m.path.clone())
         .take(MAX_EXEMPLARS)
         .collect()
@@ -524,6 +558,62 @@ mod tests {
         assert!(!dir_matches("app/modules/contracts/repos", "app/modules/<Name>s/services"), "trailing literal differs");
         // Segment count must match.
         assert!(!dir_matches("app/modules/contracts/sub/services", "app/modules/<Name>s/services"));
+    }
+
+    #[test]
+    fn collect_resolves_exemplars_by_declaration_affix() {
+        // The convention lives in DECLARATION names, not filenames: a flat
+        // `configs/` folder whose files are named by entity (`contracts.ts`)
+        // but each declares a `*Config` symbol. The filename pass finds 0; the
+        // declaration fallback must resolve them — this exact shape (49-file
+        // Config cluster) was silently dropped in field validation.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"app","dir":"app"}],
+              "roles": [{"affix":"Config","kind":"suffix","count":49,"common_dir":"app/configs"}],
+              "modules": [
+                {"path":"app/configs/contracts.ts","declarations":[{"kind":"const","name":"contractsConfig"}]},
+                {"path":"app/configs/clients.ts","declarations":[{"kind":"const","name":"clientsConfig"}]},
+                {"path":"app/configs/index.ts","declarations":[{"kind":"const","name":"registry"}]}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "declaration-affix cluster earns a mold");
+        assert_eq!(got[0].slug, "app-config");
+        // Only the files whose declarations carry the affix — index.ts is out.
+        assert_eq!(got[0].exemplars, vec!["app/configs/clients.ts", "app/configs/contracts.ts"]);
+    }
+
+    #[test]
+    fn filename_signature_wins_over_declaration_fallback() {
+        // When ≥2 filenames carry the affix, the classic signature is used and
+        // the fallback never fires (a README-style neighbour with a matching
+        // declaration cannot dilute the exemplar set).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"apps/api/services/helpers.ts","declarations":[{"kind":"fn","name":"buildService"}]}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].exemplars,
+            vec!["apps/api/services/OrderService.ts", "apps/api/services/UserService.ts"],
+            "filename signature only — helpers.ts stays out"
+        );
     }
 
     #[test]
