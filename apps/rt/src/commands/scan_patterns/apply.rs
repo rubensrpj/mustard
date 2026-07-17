@@ -47,13 +47,32 @@ pub fn run(path: &Path, content: &str) {
         std::process::exit(1);
     }
 
-    // Create-only: never overwrite. Post-sweep this is a fresh write; a survivor
-    // is hand-authored/adopted (`source: manual`) and must be preserved.
+    // Create-only: never overwrite. Two very different things reach this branch,
+    // and calling both "hand-authored" made one of them invisible.
+    //
+    // The sweep deletes every `source: scan` mold BEFORE any authoring, so a
+    // survivor carrying that marker cannot be a leftover — it was written by
+    // THIS run, seconds ago, which means two candidates resolved to one mold
+    // path and this block is being thrown away. That is a worklist defect (see
+    // `list::fold_collisions`), not a preserve: an agent burned a read and an
+    // authoring pass for nothing. It must never again be reported as if a human
+    // owned the file.
     if path.exists() {
-        eprintln!(
-            "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
-            path.display()
-        );
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        if super::origin::is_mustard_generated(&existing) {
+            eprintln!(
+                "scan-patterns-apply: COLLISION at {} — a `source: scan` mold was already written \
+                 there BY THIS RUN (the sweep removes them all before authoring), so this block is \
+                 DISCARDED. Two candidates share one mold path: the worklist should have folded \
+                 them. Nothing was hand-authored here.",
+                path.display()
+            );
+        } else {
+            eprintln!(
+                "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
+                path.display()
+            );
+        }
         return;
     }
 
@@ -61,6 +80,23 @@ pub fn run(path: &Path, content: &str) {
         eprintln!("scan-patterns-apply: empty mold body — nothing to write");
         return;
     };
+
+    // Validate the frontmatter BEFORE writing. A mold that lands without
+    // frontmatter-first or without `source: scan` is never swept again and
+    // blocks its cluster forever — a permanent orphan. Better a loud refusal
+    // now than a silent orphan a scan or two later. Exit 1 so the orchestrator
+    // sees the failure and can re-dispatch, instead of reporting a phantom
+    // "created". (`stamp` re-injects the notice idempotently, but it cannot
+    // invent a `name:` or a `source:` the agent never wrote.)
+    let defects = super::origin::frontmatter_defects(&body);
+    if !defects.is_empty() {
+        eprintln!(
+            "scan-patterns-apply: refusing {} — malformed mold, NOT written:\n  - {}",
+            path.display(),
+            defects.join("\n  - ")
+        );
+        std::process::exit(1);
+    }
 
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -133,11 +169,19 @@ mod tests {
         assert_eq!(resolve_content("# mold").as_deref(), Some("# mold"));
     }
 
+    /// A well-formed generated mold body — frontmatter-first, `name` +
+    /// `description` + `source: scan`, which the apply now requires.
+    fn valid_mold(name: &str) -> String {
+        format!(
+            "---\nname: {name}\ndescription: Use when adding or refactoring an X.\nsource: scan\n---\n\n## Purpose\nbody"
+        )
+    }
+
     #[test]
     fn run_writes_and_marks_generated() {
         let dir = tempfile::tempdir().unwrap();
         let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
-        run(&path, "---\nname: api-service-pattern\nsource: scan\n---\n\n## Purpose\nbody");
+        run(&path, &valid_mold("api-service-pattern"));
         assert!(path.exists(), "mold written");
         let got = std::fs::read_to_string(&path).unwrap();
         assert!(got.contains("## Purpose"), "body preserved: {got}");
@@ -155,5 +199,42 @@ mod tests {
         // hand-authored (the sweep removed the generated ones already).
         run(&path, "---\nname: x\nsource: scan\n---\nregenerated");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "HAND AUTHORED — keep me");
+    }
+
+    #[test]
+    fn a_collision_is_not_reported_as_a_preserve() {
+        // Both cases leave the file untouched, so behaviour alone cannot tell
+        // them apart — the REPORT is the whole product here. A survivor marked
+        // `source: scan` was written by this very run (the sweep clears them
+        // all first), so it is a discarded authoring pass, never a human's file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-report-pattern/SKILL.md");
+        run(&path, &valid_mold("api-report-pattern"));
+        let first = std::fs::read_to_string(&path).unwrap();
+        // Second block for the SAME mold path — the collision.
+        run(&path, &valid_mold("api-report-pattern"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first, "create-only still holds");
+        assert!(super::super::origin::is_mustard_generated(&first), "the survivor is this run's own");
+    }
+
+    #[test]
+    fn a_malformed_mold_is_refused_never_written() {
+        // The whole point: a mold without `source: scan` (or without
+        // frontmatter at all) that reached disk would be an orphan the sweep
+        // can never reclaim. The gate refuses it, and nothing is written.
+        let cases = [
+            ("no frontmatter", "## Purpose\njust prose, no `---`"),
+            ("no source", "---\nname: api-x-pattern\ndescription: Use when …\n---\nbody"),
+            ("no name", "---\ndescription: Use when …\nsource: scan\n---\nbody"),
+        ];
+        for (label, body) in cases {
+            let defects = super::super::origin::frontmatter_defects(body);
+            assert!(!defects.is_empty(), "{label}: should be rejected, got no defects");
+        }
+        // A valid one has zero defects — the gate is not over-eager.
+        assert!(
+            super::super::origin::frontmatter_defects(&valid_mold("api-x-pattern")).is_empty(),
+            "a canonical mold must pass"
+        );
     }
 }

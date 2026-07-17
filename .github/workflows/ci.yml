@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, dev_rubens]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   # Manual runs (any branch) — lets a fix branch prove itself on all 3 OSes
   # before reaching main: Actions -> CI -> Run workflow.
   workflow_dispatch:

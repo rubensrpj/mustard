@@ -33,6 +33,32 @@ fn default_model_path(root: &Path) -> PathBuf {
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
 
+    // Preflight BEFORE the miner: an unpopulated submodule is indistinguishable
+    // from an absent subtree once the walk runs — it visits the directory, finds
+    // nothing, and mines a model missing that whole subproject with no error and
+    // no coverage entry. Refusing here keeps the PREVIOUS (complete) model on
+    // disk, which is strictly better than replacing it with a hollow one.
+    let hollow = hollow_submodules(root);
+    if !hollow.is_empty() {
+        for path in &hollow {
+            eprintln!(
+                "scan: submodule `{path}` is declared in .gitmodules but its directory is EMPTY — \
+                 the model would silently omit that entire subproject."
+            );
+        }
+        eprintln!(
+            "scan: refusing to mine a hollow model (the existing one is left untouched). \
+             Populate with `git submodule update --init --recursive`, then re-run."
+        );
+        let result = json!({
+            "ok": false,
+            "reason": "hollow-submodules",
+            "empty_submodules": hollow,
+        });
+        println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
+        return;
+    }
+
     let scan_result = Scan::locate().scan(root, &model_path);
 
     let mut result: Value = match &scan_result {
@@ -78,4 +104,90 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     }
 
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
+}
+
+/// Submodule paths declared in `.gitmodules` whose working directory holds no
+/// files — checked out out of band or never populated.
+///
+/// The declaration is the evidence: `.gitmodules` says a subtree belongs here,
+/// so an empty directory is a hole, not an absence. Nothing else can tell the
+/// difference — git metadata is invisible to the miner, and the walk only sees
+/// files. Parsing is deliberately dumb (the `path =` entries, nothing else): a
+/// `.gitmodules` we cannot read yields nothing to complain about, which is the
+/// fail-open default for a repo that has no submodules at all.
+fn hollow_submodules(root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join(".gitmodules")) else {
+        return Vec::new(); // no submodules declared — nothing to check.
+    };
+    let mut out: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("path")?.trim_start().strip_prefix('='))
+        .map(|p| p.trim().replace('\\', "/"))
+        .filter(|p| !p.is_empty())
+        .filter(|p| {
+            // Absent or empty — both mean "not checked out here".
+            std::fs::read_dir(root.join(p)).map_or(true, |mut it| it.next().is_none())
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(path: &Path, body: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(path, body).expect("write");
+    }
+
+    #[test]
+    fn a_repo_without_submodules_has_nothing_to_report() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(hollow_submodules(dir.path()).is_empty(), "no .gitmodules → fail-open");
+    }
+
+    #[test]
+    fn a_declared_but_unpopulated_submodule_is_reported() {
+        // The shape that costs a scan run: `.gitmodules` promises the subtree,
+        // the directory is there, and it is empty. Only the declaration and the
+        // emptiness matter — never what the subtree is written in.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join(".gitmodules"), "[submodule \"sub\"]\n\tpath = sub\n\turl = u\n");
+        std::fs::create_dir_all(dir.path().join("sub")).expect("empty dir");
+        assert_eq!(hollow_submodules(dir.path()), vec!["sub".to_string()]);
+
+        // A missing directory is the same hole.
+        let gone = tempfile::tempdir().expect("tempdir");
+        write(&gone.path().join(".gitmodules"), "[submodule \"sub\"]\n\tpath = sub\n");
+        assert_eq!(hollow_submodules(gone.path()), vec!["sub".to_string()]);
+    }
+
+    #[test]
+    fn any_file_at_all_counts_as_populated() {
+        // The check is emptiness, not content: the miner decides what is source,
+        // and this preflight stays blind to language, extension and layout.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join(".gitmodules"), "[submodule \"sub\"]\n\tpath = sub\n\turl = u\n");
+        write(&dir.path().join("sub").join("anything"), "x");
+        assert!(hollow_submodules(dir.path()).is_empty(), "checked out → silent");
+    }
+
+    #[test]
+    fn every_declared_path_is_checked_not_just_the_first() {
+        // A superproject with several submodules must not hide the second hole
+        // behind the first populated one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            &dir.path().join(".gitmodules"),
+            "[submodule \"a\"]\n\tpath = vendor/a\n[submodule \"b\"]\n\tpath = vendor/b\n",
+        );
+        write(&dir.path().join("vendor").join("a").join("anything"), "x");
+        std::fs::create_dir_all(dir.path().join("vendor").join("b")).expect("empty dir");
+        assert_eq!(hollow_submodules(dir.path()), vec!["vendor/b".to_string()]);
+    }
 }

@@ -47,6 +47,15 @@ use crate::ClaudePaths;
 pub const BUILD_COMMAND_FALLBACK: &str = "<build command>";
 
 /// The `git` block of `mustard.json`.
+///
+/// It carries only what the project DECIDES and no probe can answer: which
+/// branches it promotes through, and who hosts it. A fact the repository
+/// already states — whether it has submodules, say — is read from the
+/// repository when it is needed (`.gitmodules` on disk), never cached here: a
+/// declaration written at `init` time goes stale the moment someone adds a
+/// submodule, and a stale answer is worse than no answer. (`submodules: bool`
+/// lived here, written by `init` and read by nobody; an unknown key in an
+/// existing `mustard.json` is ignored on load, so older files keep working.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct GitConfig {
@@ -54,13 +63,11 @@ pub struct GitConfig {
     pub flow: BTreeMap<String, String>,
     /// Hosting provider — `github`, `gitlab`, or `bitbucket`.
     pub provider: String,
-    /// Whether the repository uses git submodules.
-    pub submodules: bool,
 }
 
 impl Default for GitConfig {
     fn default() -> Self {
-        Self { flow: BTreeMap::new(), provider: "github".to_string(), submodules: false }
+        Self { flow: BTreeMap::new(), provider: "github".to_string() }
     }
 }
 
