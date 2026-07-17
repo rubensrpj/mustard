@@ -222,7 +222,15 @@ pub struct CodeExample {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct RoleStat {
     pub affix: String,
-    /// "suffix" or "prefix"
+    /// Where the affix lives — the signal that revealed the role. FOUR values:
+    /// "suffix" / "prefix" (it sits in the symbol NAME), "nested" (a bare
+    /// recurring declaration inside a role folder), "folder" (the affix IS the
+    /// folder name). Consumers MUST branch on all four: a folder role's affix
+    /// never appears in its members' filenames — that is what makes it a folder
+    /// role — so testing the name resolves nothing and silently discards the
+    /// whole cluster. This doc read "suffix or prefix" while the miner already
+    /// minted all four, and the consumer that believed it dropped every
+    /// folder-borne convention.
     pub kind: String,
     pub count: usize,
     /// Most common folder these live in (relative), for the role->folder map.
