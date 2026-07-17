@@ -448,7 +448,7 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     if interactive || fresh {
         let facts = git_flow::probe_git(project_path);
         let choices = git_flow::collect_choices(&facts, &config, interactive)?;
-        git_flow::apply_choices(&mut config, &facts, &choices, project_path);
+        git_flow::apply_choices(&mut config, &choices, project_path);
     } else {
         println!("  mustard.json already exists - git flow preserved");
     }

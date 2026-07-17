@@ -4,21 +4,23 @@
 //! This is the pattern-mold twin of `scan-guards-list`. Where Guards walks the
 //! `CLAUDE.md` tree, patterns projects FROM the deterministic model: for each
 //! mined role cluster (`roles[]`) with at least [`MIN_CLUSTER`] members, it
-//! attributes the cluster to the subproject that owns its `common_dir`, resolves
-//! 2-3 real exemplar files (hand-written only — generated/vendored code never
-//! teaches convention), and proposes a `{subproject-basename}-{role}-pattern`
-//! mold. Machine-authored molds stay FRESH: an existing mold whose
-//! [`super::provenance`] marker verifies is re-proposed as `mode: "refresh"`
-//! on every scan; a hand-edited or unmarked mold is preserved and never
-//! re-proposed, and a slug recorded in `.claude/scan-declined.json`
-//! ([`super::decline`]) is skipped entirely. Uncapped — every cluster clearing
-//! the quality bars is proposed.
+//! resolves the cluster's real hand-written exemplars (generated/vendored code
+//! never teaches convention), attributes them to the subprojects they actually
+//! live in, and proposes one `{subproject-basename}-{role}-pattern` mold per
+//! house that holds enough of them. Machine-authored molds stay FRESH by
+//! DELETION, not by refresh: [`super::sweep`] removes every `source: scan` mold
+//! before any authoring runs, so by the time this worklist is built every
+//! proposal is a create. A hand-edited or `source: manual` mold survives the
+//! sweep and is never re-proposed ([`super::origin`]), and a slug recorded in
+//! `.claude/scan-declined.json` ([`super::decline`]) is skipped entirely.
+//! Uncapped — every cluster clearing the quality bars is proposed.
 //!
-//! Output: a JSON array `[{subproject, label, slug, mode, moldPath, affix,
-//! affixKind, declKind, implements, count, exemplars}]` to stdout, sorted by
-//! `(subproject, slug)` for byte-stable output. Fail-open: a missing or
-//! unparseable model degrades to `[]` and exit 0 — the enrich step then skips
-//! silently, exactly like Guards on an empty worklist.
+//! Output: a JSON array `[{subproject, label, slug, moldPath, affix, affixKind,
+//! declKind, implements, count, exemplars}]` to stdout, ordered by
+//! `(subproject, rank desc, slug)` — byte-stable, and within a house the
+//! strongest convention reads first. Fail-open: a missing or unparseable model
+//! degrades to `[]` and exit 0 — the enrich step then skips silently, exactly
+//! like Guards on an empty worklist.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

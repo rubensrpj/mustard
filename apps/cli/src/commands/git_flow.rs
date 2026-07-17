@@ -209,11 +209,14 @@ pub fn collect_choices(
 /// default). The command set is detected agnostically from the project's
 /// manifests, but **never overwrites** a command the user already set — only
 /// absent fields are filled.
-pub fn apply_choices(config: &mut ProjectConfig, facts: &GitFacts, choices: &Choices, root: &Path) {
+///
+/// Takes no [`GitFacts`]: probed facts inform the PROMPT (they seed defaults and
+/// are shown to the user), never the written config. What lands in
+/// `mustard.json` is what the project decided — see [`GitConfig`].
+pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path) {
     config.git = GitConfig {
         flow: build_flow(choices.dev_branch.trim(), choices.production.trim()),
         provider: choices.provider.clone(),
-        submodules: facts.has_submodules,
     };
 
     let cmds = detect_commands(root);
@@ -255,7 +258,7 @@ pub fn configure(project_path: &Path, interactive: bool) -> Result<()> {
 
     let facts = probe_git(project_path);
     let choices = collect_choices(&facts, &config, interactive)?;
-    apply_choices(&mut config, &facts, &choices, project_path);
+    apply_choices(&mut config, &choices, project_path);
     config.write(project_path)?;
     println!("  created mustard.json");
     Ok(())
@@ -300,10 +303,9 @@ mod tests {
             spec_lang: "en-US".into(),
             tone: "technical".into(),
         };
-        apply_choices(&mut config, &f, &choices, dir.path());
+        apply_choices(&mut config, &choices, dir.path());
 
         assert_eq!(config.git.provider, "gitlab");
-        assert!(config.git.submodules);
         assert_eq!(config.git.flow.get("*"), Some(&"dev".to_string()));
         // Cargo project → cargo build, never npm.
         assert_eq!(config.build_command.as_deref(), Some("cargo build"));
@@ -325,7 +327,7 @@ mod tests {
             spec_lang: "pt-BR".into(),
             tone: "didactic".into(),
         };
-        apply_choices(&mut config, &f, &choices, dir.path());
+        apply_choices(&mut config, &choices, dir.path());
         // User's command survives; detection does not clobber it.
         assert_eq!(config.build_command.as_deref(), Some("custom build"));
     }
@@ -346,6 +348,10 @@ mod tests {
     #[test]
     fn configure_preserves_existing_file_when_non_interactive() {
         let dir = tempdir().unwrap();
+        // The `submodules` key is deliberately still here: it was dropped from
+        // `GitConfig` (written by init, read by nobody, stale the moment a
+        // submodule is added), and every mustard.json in the wild still carries
+        // it. Loading must ignore the unknown key, not choke on it.
         std::fs::write(
             dir.path().join("mustard.json"),
             r#"{"git":{"flow":{},"provider":"gitlab","submodules":false}}"#,
