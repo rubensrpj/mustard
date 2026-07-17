@@ -166,7 +166,7 @@ pub fn mine(
                 // Role taken from the directory; entity is the folder above it.
                 (role_from_folder(segs[segs.len() - 2]), segs[segs.len() - 3].to_string())
             } else if s.tokens.len() >= 2 && role_suffixes.contains(s.tokens.last().unwrap()) {
-                (s.tokens.last().unwrap().clone(), s.tokens[..s.tokens.len() - 1].join(""))
+                (s.tokens.last().unwrap().clone(), entity_tokens(&s.tokens[..s.tokens.len() - 1]))
             } else if s.tokens.len() >= 2 && role_prefixes.contains(&s.tokens[0]) {
                 (s.tokens[0].clone(), s.tokens[1..].join(""))
             } else {
@@ -643,6 +643,26 @@ fn strip_interface_i(tokens: Vec<String>) -> Vec<String> {
     } else {
         tokens
     }
+}
+
+/// Join entity tokens, dropping a leading ALL-LOWERCASE particle when a
+/// capitalized token follows (`useBanksConfig` → entity `Banks`, never
+/// `useBanks`): a camelCase head names the naming pattern (a hook/builder
+/// verb), not the entity — and keeping it breaks the dir abstraction (the
+/// folder `banks/` never matches the token `usebanks`, so every member lands
+/// in a distinct literal dir and the recurrence floor drops the whole
+/// convention). Case-shape rule only — no curated verb list (agnostic).
+fn entity_tokens(tokens: &[String]) -> String {
+    let rest = if tokens.len() >= 2
+        && !tokens[0].is_empty()
+        && tokens[0].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && tokens[1].chars().next().is_some_and(char::is_uppercase)
+    {
+        &tokens[1..]
+    } else {
+        tokens
+    };
+    rest.join("")
 }
 
 fn canonical_key(entity: &str) -> String {
