@@ -171,6 +171,13 @@ pub(crate) struct Candidate {
     pub(crate) count: usize,
     /// 1-3 real hand-written files of the cluster the agent must read.
     pub(crate) exemplars: Vec<String>,
+    /// Every hand-written file of the cluster in this house, in resolution
+    /// order — the set `count`/`exemplars` are derived from. Not serialised:
+    /// it exists so [`fold_collisions`] can UNION two case-variants' files and
+    /// count the union, since their sets overlap (one file can declare both
+    /// `struct FooReport` and `fn foo_report`).
+    #[serde(skip)]
+    pub(crate) files: Vec<String>,
     /// Slice recurrence ([`recurrence_by_role`]) — READ ORDER only, never a
     /// gate. Not serialised: it steers which candidate the agent reads first
     /// and is not part of the worklist contract.
@@ -310,7 +317,7 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
         }
         let mut earned = false;
         for (project_dir, house) in &by_project {
-            if house.exemplars.len() < MIN_EXEMPLARS {
+            if house.count() < MIN_EXEMPLARS {
                 continue; // this house is too thin; another may still teach.
             }
             // Lower-kebab the subproject short name too, so a PascalCase C# unit
@@ -341,16 +348,20 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 affix_kind: role.kind.clone(),
                 decl_kind: role.decl_kind.clone(),
                 implements: role.implements.clone(),
-                count: house.count,
-                exemplars: house.exemplars.clone(),
+                count: house.count(),
+                exemplars: house.exemplars(),
+                files: house.files.clone(),
                 rank: rank_of.get(&role.affix.to_lowercase()).copied().unwrap_or(0),
             });
         }
         // Exemplars exist, but no single house holds enough to show a recurrence.
-        if !earned && !by_project.iter().any(|(_, h)| h.exemplars.len() >= MIN_EXEMPLARS) {
+        if !earned && !by_project.iter().any(|(_, h)| h.count() >= MIN_EXEMPLARS) {
             drop(role, "", "no_exemplars");
         }
     }
+
+    // One mold path, one candidate — see [`fold_collisions`].
+    let mut candidates = fold_collisions(candidates);
 
     // Byte-stable order, now rank-first: within a subproject the agent reads the
     // strongest convention first (highest slice recurrence), and an unranked role
@@ -360,6 +371,81 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
         a.subproject.cmp(&b.subproject).then(b.rank.cmp(&a.rank)).then(a.slug.cmp(&b.slug))
     });
     (candidates, rejected)
+}
+
+/// Fold candidates that resolve to the SAME mold path into one.
+///
+/// Roles are mined case-sensitively, but [`slugify`] lower-kebabs the affix —
+/// so two spellings of one role (a naming convention that cases the affix
+/// differently per declaration kind is ordinary, in any language that has one)
+/// land on the same `label`, the same `slug` and, in the same house, the very
+/// same `moldPath`. They are not two roles competing for one file: they are ONE
+/// role spelled twice, which is exactly what the shared label already says. The
+/// key is the mold path itself, so this stays blind to WHY they collided — any
+/// future signal that folds two affixes onto one path folds here too.
+///
+/// Emitting both was silent data loss. The apply is create-only: the first
+/// block wins and the second is dropped with `exit 0` and a message blaming a
+/// hand-authored mold — so an agent burned a read + an authoring pass for
+/// nothing, and no report could tell that from a legitimate preserve. This
+/// repo's own model carries six such collisions, and it is not about its
+/// language: any codebase whose convention varies the affix case has them.
+///
+/// The fold KEEPS every signal rather than picking a winner: the file sets
+/// UNION (never add — one file can carry both spellings, so the sets overlap,
+/// and inflating the local tally would undo the very honesty it was given),
+/// exemplars come off that union, and `affix`/`declKind` carry each spelling
+/// verbatim from the miner — so the agent is told both, and can teach the whole
+/// convention instead of half of it. Deterministic: variants fold
+/// strongest-first, affix breaking ties, so the output stays byte-stable.
+///
+/// This is a MERGE, never a cap: no cluster is dropped, and the uncapped
+/// contract of the worklist is untouched.
+fn fold_collisions(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut by_path: std::collections::BTreeMap<String, Vec<Candidate>> =
+        std::collections::BTreeMap::new();
+    for c in candidates {
+        by_path.entry(c.mold_path.clone()).or_default().push(c);
+    }
+    by_path.into_values().filter_map(fold_variants).collect()
+}
+
+/// Fold one mold path's variants into a single candidate (see
+/// [`fold_collisions`]). `None` only for an empty group, which
+/// [`fold_collisions`] never builds.
+fn fold_variants(mut group: Vec<Candidate>) -> Option<Candidate> {
+    group.sort_by(|a, b| b.count.cmp(&a.count).then(a.affix.cmp(&b.affix)));
+    let mut variants = group.into_iter();
+    let mut folded = variants.next()?;
+    for v in variants {
+        folded.rank = folded.rank.max(v.rank);
+        folded.affix = join_distinct(&folded.affix, &v.affix, "/");
+        folded.affix_kind = join_distinct(&folded.affix_kind, &v.affix_kind, ", ");
+        folded.decl_kind = join_distinct(&folded.decl_kind, &v.decl_kind, ", ");
+        folded.implements = folded.implements.or(v.implements);
+        for f in v.files {
+            if !folded.files.contains(&f) {
+                folded.files.push(f);
+            }
+        }
+    }
+    // count/exemplars are re-derived from the UNION, never carried over.
+    folded.count = folded.files.len();
+    folded.exemplars = folded.files.iter().take(MAX_EXEMPLARS).cloned().collect();
+    Some(folded)
+}
+
+/// Append `add` to the `sep`-joined `acc` unless it is already a member — the
+/// two variants of a folded role usually share `affixKind` (`suffix`/`suffix`)
+/// while differing in `affix` and `declKind`.
+fn join_distinct(acc: &str, add: &str, sep: &str) -> String {
+    if add.is_empty() || acc.split(sep).any(|part| part == add) {
+        return acc.to_string();
+    }
+    if acc.is_empty() {
+        return add.to_string();
+    }
+    format!("{acc}{sep}{add}")
 }
 
 /// Highest slice recurrence per role affix (lowercased), from the miner's
@@ -478,11 +564,7 @@ fn group_by_project(found: Vec<String>, projects: &[&Proj]) -> Vec<(String, Hous
         let Some(project) = owner_of(&path, projects) else {
             continue; // root-level file: molds are never authored for the root.
         };
-        let house = by_project.entry(project.dir.as_str()).or_default();
-        house.count += 1;
-        if house.exemplars.len() < MAX_EXEMPLARS {
-            house.exemplars.push(path);
-        }
+        by_project.entry(project.dir.as_str()).or_default().files.push(path);
     }
     let mut out: Vec<(String, House)> =
         by_project.into_iter().map(|(d, h)| (d.to_string(), h)).collect();
@@ -490,15 +572,33 @@ fn group_by_project(found: Vec<String>, projects: &[&Proj]) -> Vec<(String, Hous
     out
 }
 
-/// One subproject's share of a role: how many of its files live there, and the
-/// [`MAX_EXEMPLARS`] the agent will read. `count` is the LOCAL tally, not the
-/// role's repo-wide one — a role spread over four subprojects would otherwise
-/// tell each of them it has all the files, and the agent would author a mold
-/// claiming a recurrence that this house does not have.
+/// One subproject's share of a role: the role's hand-written files that live
+/// there, in resolution order. The tally is LOCAL, not the role's repo-wide one
+/// — a role spread over four subprojects would otherwise tell each of them it
+/// has all the files, and the agent would author a mold claiming a recurrence
+/// this house does not have.
+///
+/// The full path list is kept (not just the [`MAX_EXEMPLARS`] the agent reads)
+/// because two case-variants of one role can resolve OVERLAPPING file sets — a
+/// file declaring both `struct FooReport` and `fn foo_report`. Folding them
+/// ([`fold_collisions`]) therefore has to union the paths and count the union;
+/// adding the two tallies would inflate the very recurrence figure the local
+/// count exists to keep honest.
 #[derive(Default)]
 struct House {
-    count: usize,
-    exemplars: Vec<String>,
+    files: Vec<String>,
+}
+
+impl House {
+    /// How many hand-written files of the role live in this house.
+    fn count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// The 1-3 files the agent is asked to read.
+    fn exemplars(&self) -> Vec<String> {
+        self.files.iter().take(MAX_EXEMPLARS).cloned().collect()
+    }
 }
 
 /// Resolve the hand-written exemplar files of `role`: the files *directly* in
@@ -750,6 +850,65 @@ mod tests {
         std::fs::write(existing.join("SKILL.md"), "# existing").unwrap();
 
         assert!(collect(root).is_empty(), "an existing mold for the role must not be re-proposed");
+    }
+
+    #[test]
+    fn case_variants_of_one_role_fold_into_a_single_mold() {
+        // The miner is case-sensitive, so a convention that cases the affix per
+        // declaration kind yields TWO roles — but slugify lower-kebabs both, so
+        // both resolve to ONE moldPath. Emitting two meant the create-only apply
+        // silently dropped the second and blamed a hand-authored mold for it.
+        // `declKind` values are the miner's, verbatim: this test asserts they
+        // survive the fold, never what they are.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = r#"{"projects":[{"name":"api","dir":"apps/api"}],
+          "roles":[
+            {"affix":"Report","kind":"suffix","decl_kind":"typedecl","count":16,"common_dir":"apps/api/reports"},
+            {"affix":"report","kind":"suffix","decl_kind":"function","count":10,"common_dir":"apps/api/reports"}
+          ],
+          "modules":[
+            {"path":"apps/api/reports/DriftReport.x"},{"path":"apps/api/reports/PathReport.x"},
+            {"path":"apps/api/reports/drift_report.x"},{"path":"apps/api/reports/path_report.x"}
+          ]}"#;
+        write_model(root, model);
+        let got = collect(root);
+        let reports: Vec<&Candidate> = got.iter().filter(|c| c.label == "report").collect();
+        assert_eq!(reports.len(), 1, "one mold path, one candidate: {:?}", got.iter().map(|c| &c.slug).collect::<Vec<_>>());
+        let folded = reports[0];
+        // Nothing is picked over the other — every signal survives the fold.
+        assert_eq!(folded.affix, "Report/report", "both spellings reach the agent");
+        assert_eq!(folded.decl_kind, "typedecl, function", "both declaration kinds do too");
+        assert_eq!(folded.affix_kind, "suffix", "a shared kind is not repeated");
+        // The tally is the UNION of the two file sets, never their sum: the
+        // variants resolve overlapping files, so adding would claim a
+        // recurrence this house does not have.
+        assert_eq!(folded.count, 4, "four distinct files carry the role");
+        assert_eq!(folded.exemplars.len(), MAX_EXEMPLARS, "read-list still capped");
+        let mut uniq = folded.exemplars.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), folded.exemplars.len(), "no file is offered twice");
+    }
+
+    #[test]
+    fn folding_never_drops_a_distinct_cluster() {
+        // The fold is a merge keyed by mold path, NOT a cap: two roles that do
+        // not collide stay two candidates.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = r#"{"projects":[{"name":"api","dir":"apps/api"}],
+          "roles":[
+            {"affix":"Service","kind":"suffix","decl_kind":"class","count":5,"common_dir":"apps/api/svc"},
+            {"affix":"Handler","kind":"suffix","decl_kind":"class","count":4,"common_dir":"apps/api/hdl"}
+          ],
+          "modules":[
+            {"path":"apps/api/svc/UserService.ts"},{"path":"apps/api/svc/BankService.ts"},
+            {"path":"apps/api/hdl/UserHandler.ts"},{"path":"apps/api/hdl/BankHandler.ts"}
+          ]}"#;
+        write_model(root, model);
+        let slugs: Vec<String> = collect(root).into_iter().map(|c| c.slug).collect();
+        assert_eq!(slugs, vec!["api-handler", "api-service"], "distinct roles keep distinct molds");
     }
 
     #[test]

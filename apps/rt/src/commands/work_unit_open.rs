@@ -283,7 +283,58 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         git_try(&main, &["worktree", "add", "-b", &name, &wt_str, &start])
     };
     add.map_err(|e| format!("WorktreeCreate: git worktree add falhou: {e}"))?;
+    let _ = init_submodules(&wt_path);
     Ok(wt_str)
+}
+
+/// Populate a FRESHLY CUT worktree's submodules — `git worktree add` registers
+/// every gitlink but leaves its directory EMPTY, and nothing downstream knows
+/// the difference between "submodule not checked out" and "subtree that does
+/// not exist": the scan's walk visits the dir, finds zero files, and mines a
+/// model missing that whole subtree without a word. Whatever a project keeps in
+/// a submodule, it loses entirely.
+///
+/// This is the other half of plugging the native `git worktree add` — the
+/// native cut populates submodules, so replacing it without this step is a
+/// regression the hook could not exhibit while it was dead (it aborted every
+/// creation by reading the *Remove* twin's field).
+///
+/// Trigger is the worktree's own `.gitmodules` — the FACT on disk — not
+/// `mustard.json#git.submodules`, which is a declaration made at `init` time
+/// and goes stale the moment a submodule is added. No `.gitmodules` → no-op.
+///
+/// Called ONLY on the fresh-cut path, never on the idempotent one: `submodule
+/// update` checks out the recorded commit, which in an ALREADY-populated
+/// worktree could move a submodule the caller is working in. A new worktree has
+/// no work to lose.
+///
+/// Forgiving like `fetch` — the network is the one step allowed to fail. A
+/// submodule that cannot be fetched must not abort the creation (a non-zero
+/// exit here kills the whole `EnterWorktree`), so the failure degrades to a
+/// loud WARN: the worktree is usable, and the operator is told the one thing
+/// that matters — a scan run here would mine an INCOMPLETE model.
+///
+/// Returns the decision so a test can observe it: `None` = nothing declared,
+/// `Some(Ok)` = populated, `Some(Err)` = attempted and failed (degraded). That
+/// the populating command itself works is a property of git, verified out of
+/// band; a local-path submodule cannot be cloned in-process without relaxing
+/// `protocol.file.allow` (CVE-2022-39253), and this crate does not mutate the
+/// environment (`std::env::set_var` is `unsafe` under edition 2024).
+fn init_submodules(worktree: &Path) -> Option<Result<(), String>> {
+    if !worktree.join(".gitmodules").exists() {
+        return None;
+    }
+    let outcome = git_try(worktree, &["submodule", "update", "--init", "--recursive"]);
+    if let Err(e) = &outcome {
+        eprintln!(
+            "WorktreeCreate: WARN: submódulos não populados em {}: {e}\n\
+             O worktree existe e é utilizável, mas os diretórios de submódulo estão VAZIOS — \
+             um /scan daqui mineraria um modelo INCOMPLETO (sem aviso). \
+             Rode `git submodule update --init --recursive` antes de escanear.",
+            worktree.display()
+        );
+    }
+    Some(outcome)
 }
 
 /// Run `work-unit-open` from `opts.root`, print the single-line JSON report,
@@ -494,6 +545,84 @@ mod tests {
         let (_dir, main) = fixture();
         let err = hook_create("../../etc/evil", &main).unwrap_err();
         assert!(err.contains("separador"), "refused: {err}");
+    }
+
+    /// [`fixture`] + a REAL git submodule at `vendor/lib`, committed on `dev`
+    /// and pushed, so a cut from `origin/dev` carries the gitlink.
+    ///
+    /// Local-path submodules are refused by default since CVE-2022-39253, and
+    /// the allowance is honoured ONLY from the command line or the global scope
+    /// — a repo-local `protocol.file.allow` is ignored on purpose (a repo must
+    /// not be able to authorise itself). So the fixture's own `submodule add`
+    /// passes `-c`, while the ENGINE never does: relaxing that guard in
+    /// production to make a test pass would trade a real protection for
+    /// convenience.
+    fn fixture_with_submodule() -> (tempfile::TempDir, PathBuf) {
+        let (dir, main) = fixture();
+        let up = dir.path().join("sublib");
+        std::fs::create_dir_all(&up).expect("mkdir sublib");
+        git(&up, &["init", "."]);
+        git(&up, &["config", "user.email", "t@t"]);
+        git(&up, &["config", "user.name", "t"]);
+        std::fs::write(up.join("lib.txt"), "lib").expect("seed sub");
+        git(&up, &["add", "-A"]);
+        git(&up, &["commit", "-m", "sub seed"]);
+
+        // The base fixture parks the local branch one commit BEHIND origin/dev;
+        // realign so the submodule commit fast-forwards onto the pushed tip.
+        git(&main, &["reset", "--hard", "origin/dev"]);
+        let url = up.to_string_lossy().replace('\\', "/");
+        git(&main, &["-c", "protocol.file.allow=always", "submodule", "add", &url, "vendor/lib"]);
+        git(&main, &["commit", "-m", "add submodule"]);
+        git(&main, &["push", "origin", "dev"]);
+        (dir, main)
+    }
+
+    #[test]
+    fn a_fresh_worktree_of_a_superproject_declares_its_submodules() {
+        // The regression this guards, stated as the fact it rests on: `git
+        // worktree add` registers the gitlink but leaves its directory EMPTY.
+        // Nothing downstream distinguishes "not checked out" from "does not
+        // exist" — the scan's walk finds zero files and mines a model missing
+        // that whole subtree, with no error and no coverage entry.
+        let (_dir, main) = fixture_with_submodule();
+        let got = hook_create("dev_withsub", &main).expect("creates");
+        let wt = Path::new(&got);
+        assert!(wt.join(".gitmodules").is_file(), "the cut carries the declaration");
+        // Hence the engine must ASK to populate — proven by the attempt below.
+        assert!(init_submodules(wt).is_some(), "a declared submodule is always acted on");
+    }
+
+    #[test]
+    fn a_worktree_without_submodules_is_left_alone() {
+        // No `.gitmodules` → no git call at all. The trigger is the fact on
+        // disk, never `mustard.json#git.submodules` (a declaration made at init
+        // time that goes stale the moment a submodule is added).
+        let (_dir, main) = fixture();
+        let got = hook_create("dev_nosub", &main).expect("creates");
+        assert_eq!(init_submodules(Path::new(&got)), None, "plain repo: nothing to do");
+    }
+
+    #[test]
+    fn hook_create_survives_an_unfetchable_submodule() {
+        // The network is the ONE forgiving step: a submodule that cannot be
+        // fetched must not abort the creation — a non-zero exit here kills the
+        // whole EnterWorktree. Loud WARN, usable worktree.
+        let (_dir, main) = fixture_with_submodule();
+        std::fs::write(
+            main.join(".gitmodules"),
+            "[submodule \"vendor/lib\"]\n\tpath = vendor/lib\n\turl = ../nope-does-not-exist\n",
+        )
+        .expect("break url");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "break submodule url"]);
+        git(&main, &["push", "origin", "dev"]);
+        let got = hook_create("dev_broken", &main).expect("worktree still created");
+        assert!(Path::new(&got).is_dir(), "creation survives a failing submodule");
+        assert!(
+            matches!(init_submodules(Path::new(&got)), Some(Err(_))),
+            "the failure is reported, never swallowed and never fatal"
+        );
     }
 
     #[test]

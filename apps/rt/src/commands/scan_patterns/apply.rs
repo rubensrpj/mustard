@@ -47,13 +47,32 @@ pub fn run(path: &Path, content: &str) {
         std::process::exit(1);
     }
 
-    // Create-only: never overwrite. Post-sweep this is a fresh write; a survivor
-    // is hand-authored/adopted (`source: manual`) and must be preserved.
+    // Create-only: never overwrite. Two very different things reach this branch,
+    // and calling both "hand-authored" made one of them invisible.
+    //
+    // The sweep deletes every `source: scan` mold BEFORE any authoring, so a
+    // survivor carrying that marker cannot be a leftover — it was written by
+    // THIS run, seconds ago, which means two candidates resolved to one mold
+    // path and this block is being thrown away. That is a worklist defect (see
+    // `list::fold_collisions`), not a preserve: an agent burned a read and an
+    // authoring pass for nothing. It must never again be reported as if a human
+    // owned the file.
     if path.exists() {
-        eprintln!(
-            "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
-            path.display()
-        );
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        if super::origin::is_mustard_generated(&existing) {
+            eprintln!(
+                "scan-patterns-apply: COLLISION at {} — a `source: scan` mold was already written \
+                 there BY THIS RUN (the sweep removes them all before authoring), so this block is \
+                 DISCARDED. Two candidates share one mold path: the worklist should have folded \
+                 them. Nothing was hand-authored here.",
+                path.display()
+            );
+        } else {
+            eprintln!(
+                "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
+                path.display()
+            );
+        }
         return;
     }
 
@@ -155,5 +174,21 @@ mod tests {
         // hand-authored (the sweep removed the generated ones already).
         run(&path, "---\nname: x\nsource: scan\n---\nregenerated");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "HAND AUTHORED — keep me");
+    }
+
+    #[test]
+    fn a_collision_is_not_reported_as_a_preserve() {
+        // Both cases leave the file untouched, so behaviour alone cannot tell
+        // them apart — the REPORT is the whole product here. A survivor marked
+        // `source: scan` was written by this very run (the sweep clears them
+        // all first), so it is a discarded authoring pass, never a human's file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-report-pattern/SKILL.md");
+        run(&path, "---\nname: api-report-pattern\nsource: scan\n---\nfirst block");
+        let first = std::fs::read_to_string(&path).unwrap();
+        // Second block for the SAME mold path — the collision.
+        run(&path, "---\nname: api-report-pattern\nsource: scan\n---\nsecond block");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first, "create-only still holds");
+        assert!(super::super::origin::is_mustard_generated(&first), "the survivor is this run's own");
     }
 }
