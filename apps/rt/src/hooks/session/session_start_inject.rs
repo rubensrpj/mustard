@@ -303,21 +303,6 @@ impl Check for SessionStartInject {
         if ctx.trigger != Some(Trigger::SessionStart) {
             return Ok(Verdict::Allow);
         }
-        // Recursion guard: the cold-path interpreter spawns `claude --print`
-        // sub-sessions to label clusters. Those sub-sessions inherit the
-        // parent `mustard-rt` hooks. Without this short-circuit, this very
-        // function would re-spawn the OTEL collector, re-run spec-hygiene,
-        // re-inject the terrain, and (more importantly) potentially trigger any
-        // downstream side effect that calls back into the registry scan —
-        // infinite recursion. The cold-path sets
-        // `MUSTARD_COLD_PATH_INVOKED=1` on every subprocess it spawns; we
-        // self-allow here so the sub-session is effectively hook-less while
-        // OAuth/keychain auth still works (which `claude --bare` would have
-        // broken). Any subprocess that sets `MUSTARD_COLD_PATH_INVOKED` is
-        // treated as hook-less here.
-        if std::env::var_os("MUSTARD_COLD_PATH_INVOKED").is_some() {
-            return Ok(Verdict::Allow);
-        }
         let cwd = ctx.project_dir_or_cwd(input);
         run_harness_init(input, &cwd);
         // Wave 3 (economia-moat-unification): the OTEL collector is no longer

@@ -94,15 +94,16 @@ pub enum ScanCmd {
         guards: String,
     },
     /// Derive the pattern-skill *mold* worklist from `grain.model.json`: for
-    /// each mined role cluster (≥3 members, not under a test/fixture path)
-    /// attributed to its subproject, propose a `{subproject}-{role}-pattern`
-    /// mold with real hand-written exemplars — `mode: "create"` when no mold
-    /// exists, `mode: "refresh"` when a machine-pristine mold exists (its
-    /// provenance marker verifies; re-authored fresh every scan). Hand-edited
-    /// or unmarked molds and slugs recorded in `.claude/scan-declined.json`
-    /// are never re-proposed. Uncapped. Emits a JSON array `[{subproject,
-    /// label, slug, mode, moldPath, affix, exemplars, ...}]`. The mold twin of
-    /// `scan-guards-list`. Fail-open: a missing/unparseable model → `[]`.
+    /// each mined role cluster (≥3 members, not under a test/fixture path),
+    /// propose a `{subproject}-{role}-pattern` mold with real hand-written
+    /// exemplars — one per subproject the cluster actually lives in. Every
+    /// proposal is a create: `scan-patterns-sweep` deletes the machine-authored
+    /// molds before authoring, so there is no refresh to distinguish.
+    /// Hand-edited or `source: manual` molds and slugs recorded in
+    /// `.claude/scan-declined.json` are never re-proposed. Uncapped. Emits a
+    /// JSON array `[{subproject, label, slug, moldPath, affix, exemplars,
+    /// ...}]`. The mold twin of `scan-guards-list`. Fail-open: a
+    /// missing/unparseable model → `[]`.
     #[command(name = "scan-patterns-list")]
     #[command(display_order = 61)]
     ScanPatternsList {

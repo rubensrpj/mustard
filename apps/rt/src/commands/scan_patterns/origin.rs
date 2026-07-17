@@ -29,6 +29,14 @@ pub(crate) fn is_mustard_generated(text: &str) -> bool {
 /// The `source:` value from the leading `---`…`---` frontmatter block, or
 /// `None` when there is no frontmatter or no `source:` key in it.
 fn frontmatter_source(text: &str) -> Option<String> {
+    frontmatter_value(text, "source:")
+}
+
+/// The trimmed value of `key` (e.g. `"source:"`, `"name:"`) inside the leading
+/// `---`…`---` frontmatter block, or `None` when there is no frontmatter or the
+/// key is absent. Shared by [`is_mustard_generated`] and [`frontmatter_defects`]
+/// so both read the block the exact same way.
+fn frontmatter_value(text: &str, key: &str) -> Option<String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text); // tolerate a BOM
     let mut lines = text.lines();
     if lines.next()?.trim() != "---" {
@@ -39,11 +47,54 @@ fn frontmatter_source(text: &str) -> Option<String> {
         if l == "---" {
             break; // end of the frontmatter block
         }
-        if let Some(v) = l.strip_prefix("source:") {
+        if let Some(v) = l.strip_prefix(key) {
             return Some(v.trim().to_string());
         }
     }
     None
+}
+
+/// Whether the leading `---` frontmatter block is closed by a second `---`.
+fn frontmatter_is_closed(text: &str) -> bool {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    lines.any(|l| l.trim() == "---")
+}
+
+/// The reasons `body` is NOT a well-formed generated mold, in reading order —
+/// empty when it is fine. This is the gate the apply runs BEFORE writing: a
+/// mold that reaches disk without frontmatter-first, or without `source: scan`,
+/// is never swept again ([`is_mustard_generated`] returns false) and
+/// `mold_present` blocks its cluster forever — a silent orphan indistinguishable
+/// from a hand-authored file. Refusing here turns "orphan discovered a scan or
+/// two later" into "loud error, nothing written". `name`/`description` are the
+/// minimum that makes the file a usable SKILL, so a truncated authoring is
+/// caught too. Nothing beyond the canonical frontmatter is required — the body
+/// prose is the agent's craft, not a schema.
+pub(crate) fn frontmatter_defects(body: &str) -> Vec<&'static str> {
+    let mut defects = Vec::new();
+    if body.strip_prefix('\u{feff}').unwrap_or(body).lines().next().map(str::trim) != Some("---") {
+        // Everything downstream reads the block from line 1; without it there is
+        // nothing to check and the whole mold is malformed. One defect, stop.
+        return vec!["missing frontmatter (line 1 must be `---`)"];
+    }
+    if !frontmatter_is_closed(body) {
+        defects.push("frontmatter block is not closed by a second `---`");
+    }
+    if frontmatter_value(body, "name:").is_none_or(|v| v.is_empty()) {
+        defects.push("missing `name:` in frontmatter");
+    }
+    if frontmatter_value(body, "description:").is_none_or(|v| v.is_empty()) {
+        defects.push("missing `description:` in frontmatter");
+    }
+    if !frontmatter_source(body).is_some_and(|s| s.eq_ignore_ascii_case("scan")) {
+        // The load-bearing one: without it the sweep can never reclaim the file.
+        defects.push("missing `source: scan` (without it the mold is never swept — permanent orphan)");
+    }
+    defects
 }
 
 /// Stamp `body` for writing: normalise line endings + trailing newline, then
