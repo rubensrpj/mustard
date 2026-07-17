@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Graph_go
 
 > Parent: [../../../../../CLAUDE.md](../../../../../CLAUDE.md) | Orchestrator: [../../../../../.claude/CLAUDE.md](../../../../../.claude/CLAUDE.md)
@@ -12,8 +14,3 @@ The `module example.test/graphdemo` line in `go.mod` and the import path in `int
 `internal/model/user.go` deliberately samples one of each Go definition shape (struct + method, interface, type alias) with zero imports — extend shapes inside it if needed, but keep it import-free so it stays the pure fan-in target.
 Never make this fixture buildable or runnable (no `main`, no dependencies, no `go mod tidy`): the scan miner parses it with tree-sitter and never compiles it — minimality is the spec, and any "fix" toward a real app adds noise the tests will count.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: go · 2 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

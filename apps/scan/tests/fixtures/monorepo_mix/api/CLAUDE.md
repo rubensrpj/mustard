@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Api
 
 > Parent: [../../../../../../CLAUDE.md](../../../../../../CLAUDE.md) | Orchestrator: [../../../../../../.claude/CLAUDE.md](../../../../../../.claude/CLAUDE.md)
@@ -12,8 +14,3 @@ This directory is a frozen scan test fixture, not an application: `monorepo_stra
 Keep `Api.csproj` a bare `Microsoft.NET.Sdk` stub with no `PackageReference` and no extra properties — its only job is to make scan classify `api/` as its own dotnet stratum; real dependencies would change the deterministic facts this fixture exists to pin.
 Never run `dotnet build`/`dotnet restore` in this directory: generated `obj/` sources (e.g. `*.AssemblyAttributes.cs`) would be swept up by scan and silently change the stratum's code-file count and ranking.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: dotnet · 1 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

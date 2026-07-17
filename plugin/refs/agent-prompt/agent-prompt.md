@@ -38,10 +38,10 @@ The Anthropic API caches a prompt prefix that is byte-identical between nearby c
 
 ```text
 <!-- PREFIX-STABLE -->
-## CONTEXT          (skill IDs only, no bodies)
+## CONTEXT          (static ground rules: Guards pointer, sibling check, spec language)
 ## SHARED LANGUAGE  ({context_md} slice — stable across the wave)
 ## REFERENCE        (file paths only)
-## SKILLS           (names only; the agent loads each via the Skill tool)
+## SKILLS           (the subproject's shelf: names + trigger descriptions, never bodies — the agent loads each via the Skill tool; empty for the `patterns` role by design)
 ## ROLE / ## EFFICIENCY   (static)
 <!-- VARIABLE -->
 ## RETRY CONTEXT    (re-dispatches only)

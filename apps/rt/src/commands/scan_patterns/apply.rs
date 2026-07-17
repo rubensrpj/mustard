@@ -1,21 +1,18 @@
 //! `scan-patterns-apply` — write the enrich agent's authored pattern-skill mold
-//! to `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`.
+//! to `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only.
 //!
-//! The pattern-mold twin of `scan-guards-apply`. Where Guards splices into an
-//! existing pending block, a mold is a whole file. Two modes:
-//!
-//! * **create** (default) — refuses to overwrite an existing mold;
-//! * **`--refresh`** — overwrites ONLY a mold whose [`super::provenance`]
-//!   marker verifies as pristine (machine-authored, untouched); a hand-edited
-//!   or unmarked mold is preserved even when the caller asks for a refresh.
-//!
-//! Every write is stamped with the provenance marker, makes the parent
-//! directories, and lands atomically via the same primitive `scan_claude` uses.
+//! The pattern-mold twin of `scan-guards-apply`. Mustard-generated molds are
+//! swept before generation ([`super::sweep`]), so by the time apply runs the
+//! target does not exist and this is a plain CREATE. It refuses to overwrite an
+//! existing mold — whatever survived the sweep is hand-authored/adopted and must
+//! be preserved. Every write is stamped with the origin notice
+//! ([`super::origin::stamp`]), makes the parent directories, and lands
+//! atomically via the same primitive `scan_claude` uses.
 //!
 //! Routing the write THROUGH this command (rather than the orchestrator's own
-//! Write tool) is the point: it is idempotent, path-shape-guarded, and — like
-//! every `mustard-rt run` — outside the background-isolation gate, so the mold
-//! enrich no longer stalls when the orchestrator runs as a background job.
+//! Write tool) is the point: it is path-shape-guarded and — like every
+//! `mustard-rt run` — outside the background-isolation gate, so the mold enrich
+//! no longer stalls when the orchestrator runs as a background job.
 //!
 //! Fail-open per the `mustard-rt run` contract: a recoverable error (blank body,
 //! IO failure, already-present mold) prints a clear stderr line and exits 0. The
@@ -36,13 +33,12 @@ const MOLD_SUFFIX: &str = "-pattern/SKILL.md";
 ///
 /// - `path`: the mold `SKILL.md` to write (`{subproject}/.claude/skills/{slug}-pattern/SKILL.md`).
 /// - `content`: the agent's authored SKILL.md body, or `-` to read it from stdin.
-/// - `refresh`: allow overwriting an existing mold — ONLY when its provenance
-///   marker verifies as pristine (see module docs).
 ///
-/// On a successful write prints a one-line confirmation and exits 0. A path
-/// that is not a mold SKILL.md exits 1; every other recoverable error is
-/// fail-open.
-pub fn run(path: &Path, content: &str, refresh: bool) {
+/// Create-only: an existing mold is left untouched (the sweep already removed
+/// the generated ones; a survivor is hand-authored). On a successful write
+/// prints a one-line confirmation and exits 0. A path that is not a mold
+/// SKILL.md exits 1; every other recoverable error is fail-open.
+pub fn run(path: &Path, content: &str) {
     if !is_mold_path(path) {
         eprintln!(
             "scan-patterns-apply: refusing {} — not a `…/.claude/skills/<slug>-pattern/SKILL.md` path",
@@ -51,28 +47,14 @@ pub fn run(path: &Path, content: &str, refresh: bool) {
         std::process::exit(1);
     }
 
-    let existed = path.exists();
-    if existed {
-        if !refresh {
-            eprintln!(
-                "scan-patterns-apply: mold already exists at {} — left unchanged (pass --refresh for a machine-pristine mold)",
-                path.display()
-            );
-            return;
-        }
-        // Refresh overwrites ONLY what the machine wrote and nobody touched:
-        // the provenance digest must verify. Hand edits survive even a
-        // confused caller.
-        let pristine = std::fs::read_to_string(path)
-            .map(|t| super::provenance::verify(&t) == super::provenance::Provenance::Pristine)
-            .unwrap_or(false);
-        if !pristine {
-            eprintln!(
-                "scan-patterns-apply: mold at {} is hand-maintained (edited or unmarked) — preserved",
-                path.display()
-            );
-            return;
-        }
+    // Create-only: never overwrite. Post-sweep this is a fresh write; a survivor
+    // is hand-authored/adopted (`source: manual`) and must be preserved.
+    if path.exists() {
+        eprintln!(
+            "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
+            path.display()
+        );
+        return;
     }
 
     let Some(body) = resolve_content(content) else {
@@ -87,15 +69,14 @@ pub fn run(path: &Path, content: &str, refresh: bool) {
         }
     }
 
-    // Normalised body + provenance marker: byte-stable regardless of how the
-    // agent's block was trimmed, and refresh-eligible on the next scan.
-    let out = super::provenance::stamp(&body);
+    // Normalised body + injected origin notice: byte-stable regardless of how
+    // the agent's block was trimmed, and swept fresh on the next scan.
+    let out = super::origin::stamp(&body);
     if let Err(e) = mfs::write_atomic(path, out.as_bytes()) {
         eprintln!("scan-patterns-apply: cannot write {}: {e}", path.display());
         return;
     }
-    let verb = if existed { "refreshed" } else { "created" };
-    println!("scan-patterns-apply: {verb} {}", path.display());
+    println!("scan-patterns-apply: created {}", path.display());
 }
 
 /// Resolve the mold body: `-` reads from stdin, anything else is the literal
@@ -153,62 +134,26 @@ mod tests {
     }
 
     #[test]
-    fn run_creates_the_mold_with_parents_and_stamps_provenance() {
+    fn run_writes_and_marks_generated() {
         let dir = tempfile::tempdir().unwrap();
         let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
-        run(&path, "# service pattern\n\nbody", false);
+        run(&path, "---\nname: api-service-pattern\nsource: scan\n---\n\n## Purpose\nbody");
         assert!(path.exists(), "mold written");
         let got = std::fs::read_to_string(&path).unwrap();
-        assert!(got.starts_with("# service pattern\n\nbody\n"), "body preserved: {got}");
-        assert_eq!(
-            super::super::provenance::verify(&got),
-            super::super::provenance::Provenance::Pristine,
-            "the written mold carries a verifying marker"
-        );
+        assert!(got.contains("## Purpose"), "body preserved: {got}");
+        assert!(got.contains("<!-- mustard:generated"), "origin notice injected");
+        assert!(super::super::origin::is_mustard_generated(&got), "reads as generated");
     }
 
     #[test]
-    fn run_without_refresh_is_create_only() {
+    fn run_is_create_only() {
         let dir = tempfile::tempdir().unwrap();
         let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "HAND EDITED — keep me").unwrap();
-        // A second author attempt must NOT clobber the existing (possibly
-        // hand-maintained) mold.
-        run(&path, "# regenerated", false);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "HAND EDITED — keep me");
-    }
-
-    #[test]
-    fn refresh_overwrites_a_pristine_mold() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
-        run(&path, "# v1", false);
-        run(&path, "# v2 — fresh from current exemplars", true);
-        let got = std::fs::read_to_string(&path).unwrap();
-        assert!(got.starts_with("# v2"), "machine mold regenerated: {got}");
-        assert_eq!(
-            super::super::provenance::verify(&got),
-            super::super::provenance::Provenance::Pristine,
-            "the refreshed mold is stamped again"
-        );
-    }
-
-    #[test]
-    fn refresh_preserves_hand_edited_and_unmarked_molds() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
-
-        // Stamped then hand-edited: --refresh must refuse.
-        run(&path, "# v1", false);
-        let edited = format!("{}CURATED BY A HUMAN\n", std::fs::read_to_string(&path).unwrap());
-        std::fs::write(&path, &edited).unwrap();
-        run(&path, "# v2", true);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited, "hand edit survives a refresh");
-
-        // Unmarked (legacy / hand-authored): --refresh must refuse too.
-        std::fs::write(&path, "# hand-authored\n").unwrap();
-        run(&path, "# v3", true);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# hand-authored\n");
+        std::fs::write(&path, "HAND AUTHORED — keep me").unwrap();
+        // A write over an existing mold must NOT clobber it — survivors are
+        // hand-authored (the sweep removed the generated ones already).
+        run(&path, "---\nname: x\nsource: scan\n---\nregenerated");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "HAND AUTHORED — keep me");
     }
 }

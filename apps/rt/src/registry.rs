@@ -15,6 +15,7 @@ use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::task::delegation_advisory::DelegationAdvisory;
 use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
+use crate::hooks::write::mold_gate::MoldGate;
 use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::scope_guard::ScopeGuard;
 use crate::hooks::write::secret_files::SecretFiles;
@@ -317,6 +318,17 @@ impl Registry {
             // legitimate Full-scope PLAN dispatch is never trapped; the
             // production-file protection re-fires on the subagent's own
             // Write/Edit calls. Fail-open inside the module.
+            // Skill-usage loop, the "during" hook: on a NEW file whose kind
+            // matches a `{role}-pattern` mold of its subproject, a non-blocking
+            // advisory points at the SKILL.md before the first byte lands.
+            // Creation-only (no per-edit nagging); advisory-only by design
+            // (mold enforcement belongs to REVIEW). Fail-open inside.
+            Module {
+                id: "mold_gate",
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Write"))],
+                check: Some(Box::new(MoldGate)),
+                observer: None,
+            },
             Module {
                 id: "scope_guard",
                 applies_to: &[

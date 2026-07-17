@@ -65,6 +65,11 @@ struct Role {
     kind: String,
     count: usize,
     common_dir: String,
+    /// EVERY recurring home of the role (miner's `dirs`, additive — empty on
+    /// older models). A convention spread across parents keeps them all;
+    /// resolving against `common_dir` alone loses every exemplar outside the
+    /// densest one.
+    dirs: Vec<String>,
     decl_kind: String,
     implements: Option<String>,
 }
@@ -78,6 +83,17 @@ struct Mod {
     /// Only hand-written files may serve as exemplars — a mold must teach the
     /// convention humans wrote, never a codegen output.
     file_class: String,
+    /// The module's mined declarations — the fallback exemplar signal for
+    /// clusters whose convention lives in DECLARATION names, not filenames
+    /// (`configs/contracts.ts` declaring `contractsConfig`).
+    declarations: Vec<Decl>,
+}
+
+/// One mined declaration (only the name matters here).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Decl {
+    name: String,
 }
 
 /// A workspace subproject (one per build manifest).
@@ -103,9 +119,6 @@ pub(crate) struct Candidate {
     /// `{slug}-pattern`. Matches the existing convention (`scan-stage`,
     /// `rt-inject`).
     pub(crate) slug: String,
-    /// `"create"` (no mold yet) or `"refresh"` (a machine-pristine mold exists
-    /// — re-author it fresh; the caller passes `--refresh` to apply).
-    pub(crate) mode: String,
     /// Where the agent's SKILL.md is written (`scan-patterns-apply --path`).
     #[serde(rename = "moldPath")]
     pub(crate) mold_path: String,
@@ -180,23 +193,27 @@ pub(crate) fn collect(root: &Path) -> Vec<Candidate> {
             continue; // refused by the enrich agent with a recorded reason.
         }
         let mold_path = format!("{}/.claude/skills/{}-pattern/SKILL.md", project.dir, slug);
-        // Machine-pristine molds refresh on every scan; a hand-edited/unmarked
-        // mold — or any other `*-{label}-pattern` folder claiming the role —
-        // is preserved and never re-proposed.
-        let mode = match mold_status(root, &project.dir, &slug, &label) {
-            MoldStatus::Missing => "create",
-            MoldStatus::Pristine => "refresh",
-            MoldStatus::Preserved => continue,
-        };
-        let exemplars = exemplars_for(role, &modules);
+        // Any surviving mold (this slug, or another `*-{label}-pattern` claiming
+        // the role) is preserved — the sweep already deleted the mustard-
+        // generated ones, so whatever remains is hand-authored/adopted.
+        if mold_present(root, &project.dir, &slug, &label) {
+            continue;
+        }
+        // Every home of the role that belongs to THIS subproject and is not
+        // test terrain — exemplars may live in any of them.
+        let homes: Vec<&str> = std::iter::once(role.common_dir.as_str())
+            .chain(role.dirs.iter().map(String::as_str))
+            .filter(|d| !under_test(d))
+            .filter(|d| *d == project.dir || d.starts_with(&format!("{}/", project.dir)))
+            .collect();
+        let exemplars = exemplars_for(role, &modules, &homes);
         if exemplars.len() < MIN_EXEMPLARS {
-            continue; // not a real file-naming convention — nothing teachable here.
+            continue; // no teachable recurrence anywhere the role lives.
         }
         candidates.push(Candidate {
             subproject: project.dir.clone(),
             label,
             slug,
-            mode: mode.to_string(),
             mold_path,
             affix: role.affix.clone(),
             affix_kind: role.kind.clone(),
@@ -251,82 +268,103 @@ fn slugify(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// How the on-disk skills tree answers a candidate.
-enum MoldStatus {
-    /// No mold claims the role — author it (`mode: "create"`).
-    Missing,
-    /// The exact `{slug}-pattern` mold exists and its provenance marker
-    /// verifies — machine-authored and untouched, re-author it fresh
-    /// (`mode: "refresh"`).
-    Pristine,
-    /// Preserved terrain, never re-proposed: the exact mold is hand-edited or
-    /// unmarked (legacy/hand-authored), or another `*-pattern` folder ending
-    /// in `-{label}-pattern` / equal to `{label}-pattern` claims the same role
-    /// under a different subproject prefix.
-    Preserved,
-}
-
-/// Classify the cluster against the subproject's `.claude/skills/` tree. See
-/// [`MoldStatus`]; the exact `{slug}-pattern` folder wins over a label match.
-fn mold_status(root: &Path, subproject: &str, slug: &str, label: &str) -> MoldStatus {
+/// Whether ANY mold already claims this cluster under the subproject's
+/// `.claude/skills/` — the exact `{slug}-pattern` folder, or another
+/// `*-pattern` folder ending in `-{label}-pattern` / equal to `{label}-pattern`
+/// (the same role under a different subproject prefix). Post-sweep, a surviving
+/// mold is hand-authored/adopted (`source: manual`); the mustard-generated ones
+/// were already deleted, so presence alone means "preserve, do not re-author".
+fn mold_present(root: &Path, subproject: &str, slug: &str, label: &str) -> bool {
     let skills_dir: PathBuf = root.join(subproject).join(".claude").join("skills");
     let exact = format!("{slug}-pattern");
     let by_label_suffix = format!("-{label}-pattern");
     let by_label_exact = format!("{label}-pattern");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
-        return MoldStatus::Missing; // no skills dir yet → nothing exists.
+        return false; // no skills dir yet → nothing exists.
     };
-    let mut exact_found = false;
-    let mut label_claimed = false;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with("-pattern") {
             continue;
         }
-        if name == exact {
-            exact_found = true;
-        } else if name == by_label_exact || name.ends_with(&by_label_suffix) {
-            label_claimed = true;
+        if name == exact || name == by_label_exact || name.ends_with(&by_label_suffix) {
+            return true;
         }
     }
-    if exact_found {
-        // Refresh-eligible ONLY while the scan's own marker verifies: the
-        // machine wrote it and nobody touched it since. Unreadable or
-        // marker-less (a folder without SKILL.md included) → preserve.
-        return match std::fs::read_to_string(skills_dir.join(&exact).join("SKILL.md")) {
-            Ok(text) if super::provenance::verify(&text) == super::provenance::Provenance::Pristine => {
-                MoldStatus::Pristine
-            }
-            _ => MoldStatus::Preserved,
-        };
-    }
-    if label_claimed {
-        MoldStatus::Preserved
-    } else {
-        MoldStatus::Missing
-    }
+    false
 }
 
 /// Resolve up to [`MAX_EXEMPLARS`] hand-written exemplar files for `role`: the
-/// files *directly* in its `common_dir` (grain's role→folder map) whose filename
-/// stem carries the affix. The match is deliberately precise — no folder-neighbour
-/// fallback — because the exemplars ARE the quality signal: two or more files
-/// whose names carry the affix (`UserService.ts`, `OrderService.ts`;
-/// `amend_window_inject.rs`) prove a real file-naming convention worth a mold,
-/// whereas a declaration-name affix with no matching filenames (a type suffix
-/// that merely recurs in a shared folder) resolves too few and is rightly
-/// dropped. `modules` is pre-sorted by path, so the pick is stable; generated/
-/// vendored code never teaches, so it is skipped.
-fn exemplars_for(role: &Role, modules: &[&Mod]) -> Vec<String> {
+/// files *directly* in its `common_dir` (grain's role→folder map) that carry
+/// the affix. Two accepted signatures, tried in order:
+///
+/// 1. **Filename affix** — the file's stem carries it (`UserService.ts`,
+///    `OrderService.ts`): the classic file-naming convention.
+/// 2. **Declaration affix** (fallback, when 1 resolves fewer than
+///    [`MIN_EXEMPLARS`]) — the file DECLARES a symbol carrying it
+///    (`configs/contracts.ts` declaring `contractsConfig`; `_components/form/`
+///    files declaring `ClientForm`). The role was mined from declarations, so
+///    resolving exemplars by the same signal is symmetric — without this, a
+///    real per-entity convention whose filenames vary never earns a mold (the
+///    defect that hid the entity-config/entity-form conventions in field
+///    validation).
+///
+/// In both signatures the LOCATION bar is the same: the file must sit directly
+/// in ONE OF the role's homes (`homes`: its `common_dir` plus every recurring
+/// `dirs` entry the caller kept) — each expanded by [`dir_matches`] when the
+/// miner generalized it (`Modules/v1/<Name>s/Services`); without that
+/// expansion every feature-folder convention (the whole .NET `Modules/{F}/…`
+/// backend) is silently discarded, and without the extra homes a convention
+/// spread across parents loses every exemplar outside the densest one.
+/// `modules` is pre-sorted by path, so the pick is stable; generated/vendored
+/// code never teaches, so it is skipped.
+fn exemplars_for(role: &Role, modules: &[&Mod], homes: &[&str]) -> Vec<String> {
     let affix = role.affix.to_lowercase();
-    modules
+    let located: Vec<&&Mod> = modules
         .iter()
         .filter(|m| m.file_class.is_empty()) // hand-written only
-        .filter(|m| parent_dir(&m.path) == role.common_dir)
+        .filter(|m| homes.iter().any(|h| dir_matches(parent_dir(&m.path), h)))
+        .collect();
+
+    let by_filename: Vec<String> = located
+        .iter()
         .filter(|m| matches_affix(stem(&m.path), &affix, &role.kind))
         .map(|m| m.path.clone())
         .take(MAX_EXEMPLARS)
+        .collect();
+    if by_filename.len() >= MIN_EXEMPLARS {
+        return by_filename;
+    }
+
+    // Fallback: the convention lives in the declaration names.
+    located
+        .iter()
+        .filter(|m| {
+            m.declarations
+                .iter()
+                .any(|d| matches_affix(d.name.to_lowercase(), &affix, &role.kind))
+        })
+        .map(|m| m.path.clone())
+        .take(MAX_EXEMPLARS)
         .collect()
+}
+
+/// Whether `actual` (a real parent dir) matches `pattern` (a role `common_dir`
+/// that may carry generalized `<…>` placeholder segments). Segment-for-segment:
+/// same segment count, and a `pattern` segment containing `<` is a wildcard
+/// (matches any real segment); every other segment must be equal. No regex —
+/// the placeholder always occupies a whole segment (`<Name>s`, `<name>`), so a
+/// segment-level wildcard is exact for the miner's output and cheap.
+fn dir_matches(actual: &str, pattern: &str) -> bool {
+    if !pattern.contains('<') {
+        return actual == pattern; // fast path: literal common_dir
+    }
+    let a: Vec<&str> = actual.split('/').collect();
+    let p: Vec<&str> = pattern.split('/').collect();
+    if a.len() != p.len() {
+        return false;
+    }
+    a.iter().zip(p.iter()).all(|(seg, pat)| pat.contains('<') || seg == pat)
 }
 
 /// The directory portion of a path (everything before the last `/`), or `""` for
@@ -416,7 +454,6 @@ mod tests {
         assert_eq!(c.subproject, "apps/api");
         assert_eq!(c.label, "service");
         assert_eq!(c.slug, "api-service");
-        assert_eq!(c.mode, "create", "no mold on disk yet");
         assert_eq!(c.mold_path, "apps/api/.claude/skills/api-service-pattern/SKILL.md");
         assert_eq!(c.implements.as_deref(), Some("BaseService"));
         // Only the two matching hand-written files are exemplars (README excluded).
@@ -502,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_reproposes_pristine_mold_as_refresh() {
+    fn collect_preserves_any_surviving_mold() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_model(
@@ -516,19 +553,93 @@ mod tests {
               ]
             }"#,
         );
-        // A machine-authored mold, stamped by apply and untouched since.
+        // Any mold surviving the sweep (hand-authored/adopted) is preserved —
+        // the list never re-authors over an existing folder. (The generated
+        // ones were already deleted by the sweep before list ran.)
         let mold_dir = root.join("apps/api/.claude/skills/api-service-pattern");
         std::fs::create_dir_all(&mold_dir).unwrap();
-        std::fs::write(mold_dir.join("SKILL.md"), super::super::provenance::stamp("# machine mold")).unwrap();
-
-        let got = collect(root);
-        assert_eq!(got.len(), 1, "pristine mold comes back for a fresh re-author");
-        assert_eq!(got[0].mode, "refresh");
-        assert_eq!(got[0].slug, "api-service");
+        std::fs::write(mold_dir.join("SKILL.md"), "---\nname: api-service-pattern\nsource: manual\n---\nhand\n").unwrap();
+        assert!(collect(root).is_empty(), "a surviving mold is never re-proposed");
     }
 
     #[test]
-    fn collect_preserves_edited_and_unmarked_molds() {
+    fn dir_matches_expands_generalized_segments() {
+        // Literal fast path.
+        assert!(dir_matches("app/services", "app/services"));
+        assert!(!dir_matches("app/services", "app/repos"));
+        // Placeholder segment is a wildcard; literal segments must still match.
+        assert!(dir_matches("app/modules/contracts/services", "app/modules/<Name>s/services"));
+        assert!(dir_matches("app/modules/partners/services", "app/modules/<Name>s/services"));
+        assert!(!dir_matches("app/modules/contracts/repos", "app/modules/<Name>s/services"), "trailing literal differs");
+        // Segment count must match.
+        assert!(!dir_matches("app/modules/contracts/sub/services", "app/modules/<Name>s/services"));
+    }
+
+    #[test]
+    fn collect_resolves_exemplars_across_all_role_homes() {
+        // A convention SPREAD across parents: the miner's `common_dir` points
+        // at the densest home (`app/configs`, 1 file) but the real per-entity
+        // convention lives in the OTHER home (`(dashboard)/<name>s/config.tsx`,
+        // one per entity). With `dirs` carried in the model, the resolver must
+        // find the exemplars there — the exact shape that kept entity-config
+        // underivable in field validation.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"app","dir":"app"}],
+              "roles": [{"affix":"Config","kind":"suffix","count":49,"common_dir":"app/configs","dirs":["app/(dashboard)/<name>s"]}],
+              "modules": [
+                {"path":"app/configs/entity-picker-configs.ts","declarations":[{"kind":"const","name":"entityPickerRegistry"}]},
+                {"path":"app/(dashboard)/contracts/config.tsx"},
+                {"path":"app/(dashboard)/clients/config.tsx"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "multi-home cluster earns a mold");
+        assert_eq!(got[0].slug, "app-config");
+        assert_eq!(
+            got[0].exemplars,
+            vec!["app/(dashboard)/clients/config.tsx", "app/(dashboard)/contracts/config.tsx"],
+            "exemplars resolve in the non-dominant home"
+        );
+    }
+
+    #[test]
+    fn collect_resolves_exemplars_by_declaration_affix() {
+        // The convention lives in DECLARATION names, not filenames: a flat
+        // `configs/` folder whose files are named by entity (`contracts.ts`)
+        // but each declares a `*Config` symbol. The filename pass finds 0; the
+        // declaration fallback must resolve them — this exact shape (49-file
+        // Config cluster) was silently dropped in field validation.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"app","dir":"app"}],
+              "roles": [{"affix":"Config","kind":"suffix","count":49,"common_dir":"app/configs"}],
+              "modules": [
+                {"path":"app/configs/contracts.ts","declarations":[{"kind":"const","name":"contractsConfig"}]},
+                {"path":"app/configs/clients.ts","declarations":[{"kind":"const","name":"clientsConfig"}]},
+                {"path":"app/configs/index.ts","declarations":[{"kind":"const","name":"registry"}]}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "declaration-affix cluster earns a mold");
+        assert_eq!(got[0].slug, "app-config");
+        // Only the files whose declarations carry the affix — index.ts is out.
+        assert_eq!(got[0].exemplars, vec!["app/configs/clients.ts", "app/configs/contracts.ts"]);
+    }
+
+    #[test]
+    fn filename_signature_wins_over_declaration_fallback() {
+        // When ≥2 filenames carry the affix, the classic signature is used and
+        // the fallback never fires (a README-style neighbour with a matching
+        // declaration cannot dilute the exemplar set).
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_model(
@@ -538,21 +649,45 @@ mod tests {
               "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
               "modules": [
                 {"path":"apps/api/services/UserService.ts"},
-                {"path":"apps/api/services/OrderService.ts"}
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"apps/api/services/helpers.ts","declarations":[{"kind":"fn","name":"buildService"}]}
               ]
             }"#,
         );
-        let mold_dir = root.join("apps/api/.claude/skills/api-service-pattern");
-        std::fs::create_dir_all(&mold_dir).unwrap();
+        let got = collect(root);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].exemplars,
+            vec!["apps/api/services/OrderService.ts", "apps/api/services/UserService.ts"],
+            "filename signature only — helpers.ts stays out"
+        );
+    }
 
-        // Stamped, then hand-edited: the digest no longer verifies.
-        let edited = format!("{}\nA HUMAN ADDED THIS LINE\n", super::super::provenance::stamp("# machine mold").trim_end());
-        std::fs::write(mold_dir.join("SKILL.md"), edited).unwrap();
-        assert!(collect(root).is_empty(), "a hand-edited mold is never re-proposed");
-
-        // Unmarked (legacy / hand-authored): preserved too.
-        std::fs::write(mold_dir.join("SKILL.md"), "# hand-authored skill\n").unwrap();
-        assert!(collect(root).is_empty(), "an unmarked mold is never re-proposed");
+    #[test]
+    fn collect_resolves_exemplars_under_generalized_common_dir() {
+        // The bug that hid the whole feature-folder backend: a role whose
+        // common_dir carries the miner's `<Name>s` placeholder must still
+        // resolve its real exemplars (which live in per-feature subfolders).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"app","dir":"app"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":9,"common_dir":"app/modules/<Name>s/services"}],
+              "modules": [
+                {"path":"app/modules/contracts/services/ContractService.cs"},
+                {"path":"app/modules/partners/services/PartnerService.cs"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "generalized cluster resolves and becomes a candidate");
+        assert_eq!(got[0].slug, "app-service");
+        assert_eq!(
+            got[0].exemplars,
+            vec!["app/modules/contracts/services/ContractService.cs", "app/modules/partners/services/PartnerService.cs"]
+        );
     }
 
     #[test]

@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "equivalences": {
+    "actor": [
+      "not",
+      "sure"
+    ],
+    "api": [
+      "bees"
+    ],
+    "arquivos": [
+      "files"
+    ],
+    "assert": [
+      "insight"
+    ],
+    "attribute": [
+      "not",
+      "sure"
+    ],
+    "auto": [
+      "car"
+    ],
+    "census": [
+      "the",
+      "whole",
+      "thing",
+      "little"
+    ],
+    "clone": [
+      "not",
+      "gonna",
+      "that"
+    ],
+    "concern": [
+      "care"
+    ],
+    "declaration": [
+      "conference"
+    ],
+    "declares": [
+      "the",
+      "commission",
+      "shall",
+      "adopt"
+    ],
+    "degrades": [
+      "degradation"
+    ],
+    "dep": [
+      "top"
+    ],
+    "deterministic": [
+      "determine"
+    ],
+    "domain": [
+      "not",
+      "sure"
+    ],
+    "enforcement": [
+      "copy"
+    ],
+    "explicit": [
+      "clear"
+    ],
+    "face": [
+      "does"
+    ],
+    "fix": [
+      "unwrought"
+    ],
+    "flatten": [
+      "low"
+    ],
+    "grammars": [
+      "lights"
+    ],
+    "honest": [
+      "good"
+    ],
+    "i18n": [
+      "18n"
+    ],
+    "impl": [
+      "imprint"
+    ],
+    "interval": [
+      "contract"
+    ],
+    "invalid": [
+      "creative"
+    ],
+    "invocation": [
+      "the"
+    ],
+    "literal": [
+      "ignoring",
+      "the",
+      "situation"
+    ],
+    "manifests": [
+      "posters"
+    ],
+    "miss": [
+      "missing"
+    ],
+    "monorepo": [
+      "single",
+      "handed"
+    ],
+    "opens": [
+      "addition",
+      "the",
+      "commission",
+      "has"
+    ],
+    "otel": [
+      "steel"
+    ],
+    "partialeq": [
+      "partialq"
+    ],
+    "passes": [
+      "change"
+    ],
+    "plus": [
+      "more"
+    ],
+    "posttooluse": [
+      "post",
+      "72use"
+    ],
+    "pretooluse": [
+      "pre",
+      "sbs"
+    ],
+    "prior": [
+      "higher"
+    ],
+    "readable": [
+      "disposable"
+    ],
+    "regression": [
+      "the",
+      "internet"
+    ],
+    "relevance": [
+      "fit"
+    ],
+    "renderer": [
+      "render"
+    ],
+    "route": [
+      "road"
+    ],
+    "sessionstart": [
+      "session"
+    ],
+    "silent": [
+      "the",
+      "commission",
+      "proposal"
+    ],
+    "sqlite": [
+      "public",
+      "registry"
+    ],
+    "stdout": [
+      "stout"
+    ],
+    "stem": [
+      "new"
+    ],
+    "subprocess": [
+      "sub"
+    ],
+    "symbol": [
+      "the",
+      "number"
+    ],
+    "tauri": [
+      "bulls"
+    ],
+    "trim": [
+      "but"
+    ],
+    "true": [
+      "other"
+    ],
+    "union": [
+      "sorry"
+    ],
+    "usage": [
+      "use"
+    ],
+    "uses": [
+      "use"
+    ],
+    "vocab": [
+      "vocabulary"
+    ]
+  }
+}

@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Src-tauri
 
 > Parent: [../../../CLAUDE.md](../../../CLAUDE.md) | Orchestrator: [../../../.claude/CLAUDE.md](../../../.claude/CLAUDE.md)
@@ -15,8 +17,3 @@
 - Reaproveite dados via `mustard-core`/`mustard-cli` nativamente: leia o modelo com `read_projects`/`read_entity_names` em vez de parsear `grain.model.json`; a fonte de pipeline é o NDJSON por spec + walk de `spec.md`, não há SQLite compartilhado.
 - A ordem de registro de plugins no `Builder` é fixa e o `tauri-plugin-updater` entra só dentro de `.setup()` sob `#[cfg(desktop)]` — não o mova para a cadeia de `.plugin()` (quebra mobile).
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: cargo · 19 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

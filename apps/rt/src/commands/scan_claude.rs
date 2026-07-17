@@ -1,36 +1,54 @@
-//! Deterministic CLAUDE.md generator for subprojects — no AI, no source reads.
+//! Deterministic scan-map generator for subprojects — no AI, no source reads.
 //!
-//! Invoked by `scan::run` after `grain.model.json` is written:
-//! - `--full`: (re)generates `{root}/{dir}/CLAUDE.md` per subproject. Mustard
-//!   owns exactly ONE block, delimited by [`SENTINEL_OPEN`] / [`SENTINEL_CLOSE`]
-//!   and kept at the END of the file; each pass removes the prior block from
-//!   wherever it sat and re-appends the fresh one at the tail. Every other byte
-//!   (curated `## Architecture`, `## Guards`, a hand-written legacy CLAUDE.md, …)
-//!   is preserved verbatim and never stripped or reordered — the safe path for
-//!   adopting an existing human-authored file.
-//! - default: reports files exceeding [`CLAUDE_MD_WARN_BYTES`] as oversized.
+//! Invoked by `scan::run` (`--full`) after `grain.model.json` is written. The
+//! ownership split is the contract:
+//!
+//! - **`CLAUDE.md` belongs to the PROJECT.** Mustard writes at most three
+//!   things into it, all idempotent and minimal: the one-line
+//!   [`MAP_IMPORT_LINE`] at the top (Claude Code's native `@path` import, so
+//!   the map still auto-loads with the file), a `## Guards` seed when the
+//!   section is an un-curated placeholder (humans curate it afterwards), and a
+//!   depth-correct breadcrumb heal. Its SIZE is the human's business — never
+//!   measured, never refused.
+//! - **`.claude/scan-map.md` belongs to MUSTARD.** The machine map (kind +
+//!   size + digest pointer + detected `## Commands`) is regenerated there on
+//!   every pass, capped by [`SCAN_MAP_HARD_CAP_BYTES`] as a guard against a
+//!   runaway generator.
+//!
+//! Migration: older passes spliced the map INTO `CLAUDE.md` between
+//! [`SENTINEL_OPEN`] / [`SENTINEL_CLOSE`]. That block is machine-owned by
+//! definition, so the first new pass removes it and the import line takes its
+//! place; every byte outside the sentinels is preserved verbatim.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 
-/// Files larger than this threshold trigger a warning in default (non-full) mode.
-pub const CLAUDE_MD_WARN_BYTES: usize = 2048;
+/// Hard ceiling on the machine-owned `.claude/scan-map.md`. The map is a terse
+/// orientation file (~200 bytes + an optional commands table); a file this
+/// large means the GENERATOR ran away, so `run_full` refuses to write it and
+/// reports a deterministic error. Curated `CLAUDE.md` prose is never measured
+/// against this (or any) ceiling.
+pub const SCAN_MAP_HARD_CAP_BYTES: usize = 8192;
 
-/// Hard ceiling on a generated CLAUDE.md in `--full` mode. A file this large is
-/// no longer a lean orientation map — it is curated prose run amok or a runaway
-/// machine block — so `run_full` refuses to write it and reports a deterministic
-/// error instead of silently shipping a bloated file. Chosen well above the
-/// scaffold + a reasonable hand-written `## Architecture`/`## Guards`, so only a
-/// genuine outlier trips it.
-pub const CLAUDE_MD_HARD_CAP_BYTES: usize = 8192;
+/// The mustard-owned map file, relative to each unit's directory
+/// (forward-slashed — it doubles as the import target in [`MAP_IMPORT_LINE`]).
+pub const SCAN_MAP_RELPATH: &str = ".claude/scan-map.md";
 
-/// Opening marker of the machine-owned block. Everything between this and
-/// [`SENTINEL_CLOSE`] is regenerated on each `--full` pass; everything outside
-/// it is curated by humans and never touched.
+/// The single line mustard injects at the TOP of a unit's `CLAUDE.md`: Claude
+/// Code's native `@path` import (resolved relative to the importing file), so
+/// the map loads into context together with the CLAUDE.md exactly as the old
+/// inline block did. Injected once — a file already carrying the line is left
+/// unchanged. NOTE: the path must stay bare (no backticks) — Claude Code skips
+/// imports inside code spans.
+pub const MAP_IMPORT_LINE: &str = "@.claude/scan-map.md";
+
+/// Opening marker of the LEGACY inline machine block. Kept only so the
+/// migration can find and remove the block older passes spliced into
+/// `CLAUDE.md`; new passes never write these markers.
 const SENTINEL_OPEN: &str = "<!-- mustard:scan-map -->";
-/// Closing marker of the machine-owned block.
+/// Closing marker of the legacy inline machine block.
 const SENTINEL_CLOSE: &str = "<!-- /mustard:scan-map -->";
 
 /// Opening marker of the enrichable `## Guards` block. The literal ` pending`
@@ -50,15 +68,16 @@ pub const GUARDS_DONE_OPEN: &str = "<!-- mustard:guards -->";
 /// `pub` so `scan_guards` reuses it (single source of the literal).
 pub const GUARDS_CLOSE: &str = "<!-- /mustard:guards -->";
 
-/// Result of running the CLAUDE.md pass over a set of projects.
+/// Result of running the scan-map pass over a set of projects.
 pub struct ClaudeMdResult {
-    /// Paths regenerated (full mode).
+    /// Paths (re)written this pass: every `.claude/scan-map.md`, plus any
+    /// `CLAUDE.md` that actually changed (import injected, legacy block
+    /// migrated out, Guards placeholder reseeded, breadcrumb healed).
     pub regenerated: Vec<String>,
-    /// Oversized files (default mode): path + byte count.
-    pub oversized: Vec<OversizedEntry>,
-    /// Full mode: rendered files that exceeded [`CLAUDE_MD_HARD_CAP_BYTES`] and
-    /// were therefore NOT written (path + byte count). A non-empty list is a hard
-    /// failure the caller must surface.
+    /// Machine map files whose RENDERED size exceeded
+    /// [`SCAN_MAP_HARD_CAP_BYTES`] and were therefore NOT written (path + byte
+    /// count) — a runaway-generator guard. A non-empty list is a hard failure
+    /// the caller must surface. `CLAUDE.md` is never measured.
     pub over_cap: Vec<OversizedEntry>,
 }
 
@@ -95,36 +114,33 @@ fn find_sentinel_span(content: &str) -> Option<(usize, usize)> {
     Some((open, close_end))
 }
 
-/// Build the machine-owned block (delimited by the sentinels) for a unit: a
-/// terse orientation map (kind + size + the digest pointer) plus the
-/// `## Commands` section — and only when the caller passes NON-DEFAULT commands
-/// (it zeroes the conventional language defaults, so `render_commands` omits the
+/// Render the mustard-owned `.claude/scan-map.md` for a unit: a terse
+/// orientation map (kind + size + the digest pointer) plus the `## Commands`
+/// section — and only when the caller passes NON-DEFAULT commands (it zeroes
+/// the conventional language defaults, so `render_commands` omits the
 /// section). The dependency `## Stack` was dropped on purpose: a dep list is
 /// auto-inferable from the manifest, so it is token noise, not signal. The
-/// returned string starts with [`SENTINEL_OPEN`] and ends with [`SENTINEL_CLOSE`]
-/// (no trailing newline) so callers control the surrounding whitespace.
-fn build_managed_block(
+/// whole FILE is machine-owned, so no sentinels are needed; ends in exactly
+/// one newline (byte-stable).
+pub(crate) fn render_map(
     kind: &str,
     code_files: usize,
     commands: &mustard_core::domain::config::Commands,
 ) -> String {
     let commands_block = render_commands(commands);
 
-    let mut block = String::new();
-    let _ = writeln!(block, "{SENTINEL_OPEN}");
-    let _ = writeln!(block, "Tipo: {kind} · {code_files} arquivos");
+    let mut out = String::new();
+    let _ = writeln!(out, "Tipo: {kind} · {code_files} arquivos");
     let _ = writeln!(
-        block,
+        out,
         "O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
     );
     if !commands_block.is_empty() {
-        block.push('\n');
+        out.push('\n');
         // `render_commands` already ends in a newline.
-        block.push_str(&commands_block);
+        out.push_str(&commands_block);
     }
-    // Close marker with no trailing newline — the caller owns spacing.
-    block.push_str(SENTINEL_CLOSE);
-    block
+    out
 }
 
 /// Render the `## Commands` markdown table — one row per command the detector
@@ -200,74 +216,57 @@ pub(crate) fn build_guards_block(
     out
 }
 
-/// Render a lean CLAUDE.md for a subproject.
+/// Render the PROJECT's CLAUDE.md for a unit — mustard's footprint is minimal
+/// and idempotent.
 ///
 /// - `name`: subproject name (will be title-cased for the H1 heading)
-/// - `kind`: grain project kind (e.g. `rust`, `typescript`, …)
-/// - `code_files`: number of code files grain counted
-/// - `frameworks`: frequency-ranked frameworks/deps mined for this unit
-/// - `stacks`: registry-inferred stack detections for this unit (additive next
-///   to `frameworks`; empty when nothing was inferred / older model)
-/// - `commands`: build/test/lint/type-check set detected for this unit
+/// - `kind`/`frameworks`/`stacks`/`scripts`: deterministic facts for the
+///   Guards seed
 /// - `existing`: current content of the CLAUDE.md (if the file exists)
-/// - `is_root`: the workspace-root unit (empty `dir`). The root is EXCLUDED from
-///   enrich, so a freshly-scaffolded root gets the legacy human seed instead of
-///   the `pending` Guards block — only subprojects carry the Wave-2 marker.
+/// - `is_root`: the workspace-root unit (empty `dir`). The root is EXCLUDED
+///   from enrich, so a freshly-scaffolded root gets the inert human seed
+///   instead of the `pending` Guards block.
 ///
-/// Mustard owns exactly ONE block (between [`SENTINEL_OPEN`] and
-/// [`SENTINEL_CLOSE`]), kept at the END of the file. When `existing` carries the
-/// sentinels the old block is removed from wherever it sat and the fresh one is
-/// re-appended at the tail; when `existing` is a legacy/human file without
-/// sentinels the block is simply appended at the end. Either way every other byte
-/// is preserved verbatim — nothing is stripped or reordered. When `existing` is
-/// `None`, a fresh scaffold is emitted (block at the end). The block is a pure
-/// function of the inputs, so re-rendering the output reproduces it byte-for-byte
-/// (idempotent).
-pub fn render(
+/// When `existing` is present: (1) the LEGACY inline machine block (between
+/// the sentinels) is removed — migration; the map now lives in
+/// `.claude/scan-map.md`; (2) an un-curated `## Guards` placeholder is
+/// reseeded to the `pending` enrich block; (3) the [`MAP_IMPORT_LINE`] is
+/// ensured at the top. Every other byte is the project's and is preserved
+/// verbatim; file size is never measured. When `existing` is `None`, a fresh
+/// minimal scaffold is emitted. Pure function of its inputs — re-rendering the
+/// output reproduces it byte-for-byte (idempotent).
+pub fn render_claude_md(
     name: &str,
     kind: &str,
-    code_files: usize,
     frameworks: &[String],
     stacks: &[StackDetection],
     scripts: &[String],
-    commands: &mustard_core::domain::config::Commands,
     existing: Option<&str>,
     is_root: bool,
 ) -> String {
-    let block = build_managed_block(kind, code_files, commands);
-
     match existing {
-        // File exists — remove any prior managed block (wherever it sat) and
-        // re-append the fresh one at the END. Every other byte is preserved
-        // verbatim: a human/legacy CLAUDE.md is never stripped or reordered, and
-        // a previously-managed file simply has its block relocated to the tail.
         Some(content) => {
-            let without_block = match find_sentinel_span(content) {
-                Some((start, end)) => format!("{}{}", &content[..start], &content[end..]),
-                None => content.to_string(),
-            };
+            let migrated = strip_sentinel_block(content);
             // Turn an un-curated `## Guards` placeholder (empty / `(populated by
             // /scan)` / legacy seed) into a fresh `pending` enrich block so the
-            // optional enrich step picks the subproject up. Curated guards and an
-            // already pending/done block survive untouched; root is never reseeded.
-            // Reseed BEFORE re-appending the managed block, so the block (now at the
-            // tail) never bleeds into the `## Guards` body detection.
+            // enrich step picks the subproject up. Curated guards and an already
+            // pending/done block survive untouched; root is never reseeded.
             let reseeded =
-                reseed_guards_if_placeholder(&without_block, kind, frameworks, stacks, scripts, is_root);
-            append_managed_block(&reseeded, &block)
+                reseed_guards_if_placeholder(&migrated, kind, frameworks, stacks, scripts, is_root);
+            ensure_import_line(&reseeded)
         }
-        // No file yet — emit a fresh scaffold.
-        None => scaffold(name, &block, kind, frameworks, stacks, scripts, is_root),
+        // No file yet — emit a fresh minimal scaffold.
+        None => scaffold(name, kind, frameworks, stacks, scripts, is_root),
     }
 }
 
-/// Emit a fresh CLAUDE.md: H1 + Parent line + the machine-owned block, then a
-/// `## Guards` section. Subprojects get the enrichable `pending` Guards block
-/// (Wave 2 fills it); the root gets the inert human seed (root is excluded from
-/// enrich).
+/// Emit a fresh CLAUDE.md: the map import line on top, then H1 + Parent line +
+/// a `## Guards` section. Subprojects get the enrichable `pending` Guards
+/// block (the enrich fills it); the root gets the inert human seed (root is
+/// excluded from enrich). Everything below the import line is the project's to
+/// grow.
 fn scaffold(
     name: &str,
-    block: &str,
     kind: &str,
     frameworks: &[String],
     stacks: &[StackDetection],
@@ -280,30 +279,51 @@ fn scaffold(
     } else {
         build_guards_block(kind, frameworks, stacks, scripts)
     };
-    // The managed block lives at the END — identifiable and replaceable, with the
-    // human-owned `## Guards` (and any curated prose) above it.
     format!(
-        "# {title}\n\
+        "{MAP_IMPORT_LINE}\n\
+         \n\
+         # {title}\n\
          \n\
          > Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)\n\
          \n\
-         {guards}\n\
-         {block}\n"
+         {guards}"
     )
 }
 
-/// Append the managed block to a file at the very END, after exactly one blank
-/// line, preserving every existing byte above it verbatim. The safe path for
-/// both a freshly-relocated managed file and a human-authored legacy CLAUDE.md:
-/// Mustard adds only its identifiable block at the tail and never touches the
-/// content above. Trailing whitespace on the input is normalised so the result
-/// is byte-stable across re-renders (idempotence).
-fn append_managed_block(content: &str, block: &str) -> String {
-    let body = content.trim_end();
-    if body.is_empty() {
-        return format!("{block}\n");
+/// Remove the LEGACY inline machine block (sentinel span) from `content`,
+/// tidying the whitespace the removal leaves behind (runs of 3+ newlines
+/// collapse to a blank line; exactly one trailing newline). A file without the
+/// sentinels — including every file already migrated — passes through with
+/// only the trailing-newline normalisation, so the migration is idempotent.
+fn strip_sentinel_block(content: &str) -> String {
+    let without = match find_sentinel_span(content) {
+        Some((start, end)) => format!("{}{}", &content[..start], &content[end..]),
+        None => content.to_string(),
+    };
+    let mut tidy = without;
+    while tidy.contains("\n\n\n") {
+        tidy = tidy.replace("\n\n\n", "\n\n");
     }
-    format!("{body}\n\n{block}\n")
+    let body = tidy.trim_end();
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    }
+}
+
+/// Ensure the [`MAP_IMPORT_LINE`] is present — injected as the FIRST line
+/// (followed by a blank) when missing; a file already carrying it anywhere is
+/// returned unchanged (idempotent). Exact-line match, so a backticked mention
+/// in prose does not count as presence.
+fn ensure_import_line(content: &str) -> String {
+    if content.lines().any(|l| l.trim() == MAP_IMPORT_LINE) {
+        return content.to_string();
+    }
+    if content.trim().is_empty() {
+        return format!("{MAP_IMPORT_LINE}\n");
+    }
+    format!("{MAP_IMPORT_LINE}\n\n{content}")
 }
 
 /// Join `lines`, collapsing runs of blank lines to a single blank and trimming a
@@ -412,7 +432,9 @@ fn fix_breadcrumb(text: &str, dir: &str) -> String {
     format!("{}\n", out.join("\n"))
 }
 
-/// Run the CLAUDE.md pass (full or default) over all subprojects.
+/// Run the scan-map pass over all subprojects (only `--full` does work — the
+/// default mode has nothing to check: `CLAUDE.md` size is the project's
+/// business, and the machine map is only rewritten by a full pass).
 ///
 /// Returns a [`ClaudeMdResult`] whose fields populate the JSON response in
 /// `scan::run`. In `full` mode also creates `{root}/{dir}/.claude/` if absent.
@@ -424,7 +446,7 @@ pub fn run_pass(
     if full {
         run_full(root, projects)
     } else {
-        run_default(root, projects)
+        ClaudeMdResult { regenerated: Vec::new(), over_cap: Vec::new() }
     }
 }
 
@@ -439,6 +461,7 @@ fn run_full(
         let dir = root.join(&project.dir);
         let claude_md_path = dir.join("CLAUDE.md");
         let claude_dir = dir.join(".claude");
+        let map_path = claude_dir.join("scan-map.md");
         // The workspace-root unit (empty `dir`) is excluded from enrich — it gets
         // the inert human seed, never the Wave-2 `pending` Guards block.
         let is_root = project.dir.is_empty();
@@ -463,16 +486,51 @@ fn run_full(
             mustard_core::domain::config::Commands::default()
         };
 
-        // Read existing content so curated sections are preserved — fail-open.
+        // Ensure .claude/ subdir exists
+        if let Err(e) = std::fs::create_dir_all(&claude_dir) {
+            eprintln!(
+                "scan --full: could not create {:?}: {e}",
+                claude_dir.display()
+            );
+        }
+
+        // --- 1. The mustard-owned map file ---------------------------------
+        // Hard cap guards MUSTARD's own output only: a map this large means the
+        // generator ran away, so refuse the write and surface it. Deterministic
+        // — the outcome is a pure function of the rendered byte length.
+        let map = render_map(&project.kind, project.code_files, &commands);
+        if map.len() > SCAN_MAP_HARD_CAP_BYTES {
+            eprintln!(
+                "scan --full: refusing to write {:?}: {} bytes exceeds hard cap of {} — runaway machine map",
+                map_path.display(),
+                map.len(),
+                SCAN_MAP_HARD_CAP_BYTES,
+            );
+            over_cap.push(OversizedEntry {
+                path: path_to_string(&map_path),
+                bytes: map.len(),
+            });
+        } else {
+            match mustard_core::io::fs::write_atomic(&map_path, map.as_bytes()) {
+                Ok(()) => regenerated.push(path_to_string(&map_path)),
+                Err(e) => eprintln!(
+                    "scan --full: could not write {:?}: {e}",
+                    map_path.display()
+                ),
+            }
+        }
+
+        // --- 2. The project's CLAUDE.md ------------------------------------
+        // Mustard's footprint here is minimal: import line + legacy-block
+        // migration + Guards reseed + breadcrumb heal. Never measured against
+        // any size ceiling — the file (and its size) belongs to the project.
         let existing = std::fs::read_to_string(&claude_md_path).ok();
-        let content = render(
+        let content = render_claude_md(
             &project.name,
             &project.kind,
-            project.code_files,
             &project.frameworks,
             &project.detected_stacks,
             &project.scripts,
-            &commands,
             existing.as_deref(),
             is_root,
         );
@@ -483,76 +541,21 @@ fn run_full(
         // drops the meaningless `> Parent`. Self-healing on every `--full`.
         let content = fix_breadcrumb(&content, &project.dir);
 
-        // Hard cap: refuse to ship a bloated CLAUDE.md. Record the overage and
-        // skip the write so the existing (smaller) file is left intact rather
-        // than overwritten with something over the ceiling. Deterministic — the
-        // outcome is a pure function of the rendered byte length.
-        if content.len() > CLAUDE_MD_HARD_CAP_BYTES {
-            eprintln!(
-                "scan --full: refusing to write {:?}: {} bytes exceeds hard cap of {} — trim curated prose",
-                claude_md_path.display(),
-                content.len(),
-                CLAUDE_MD_HARD_CAP_BYTES,
-            );
-            over_cap.push(OversizedEntry {
-                path: path_to_string(&claude_md_path),
-                bytes: content.len(),
-            });
-            continue;
-        }
-
-        // Ensure .claude/ subdir exists
-        if let Err(e) = std::fs::create_dir_all(&claude_dir) {
-            eprintln!(
-                "scan --full: could not create {:?}: {e}",
-                claude_dir.display()
-            );
-        }
-
-        // Write CLAUDE.md (use mustard_core atomic write for safety)
-        let write_result =
-            mustard_core::io::fs::write_atomic(&claude_md_path, content.as_bytes());
-        match write_result {
-            Ok(()) => {
-                regenerated.push(path_to_string(&claude_md_path));
-            }
-            Err(e) => {
-                eprintln!(
+        // Only touch the project's file when something actually changed
+        // (first import injection, migration, reseed, heal) — a settled
+        // CLAUDE.md is not rewritten.
+        if existing.as_deref() != Some(content.as_str()) {
+            match mustard_core::io::fs::write_atomic(&claude_md_path, content.as_bytes()) {
+                Ok(()) => regenerated.push(path_to_string(&claude_md_path)),
+                Err(e) => eprintln!(
                     "scan --full: could not write {:?}: {e}",
                     claude_md_path.display()
-                );
+                ),
             }
         }
     }
 
-    ClaudeMdResult {
-        regenerated,
-        oversized: Vec::new(),
-        over_cap,
-    }
-}
-
-fn run_default(root: &Path, projects: &[mustard_core::domain::scan::Project]) -> ClaudeMdResult {
-    let mut oversized: Vec<OversizedEntry> = Vec::new();
-
-    for project in projects {
-        let claude_md_path = root.join(&project.dir).join("CLAUDE.md");
-        if let Ok(meta) = std::fs::metadata(&claude_md_path) {
-            let bytes = meta.len() as usize;
-            if bytes > CLAUDE_MD_WARN_BYTES {
-                oversized.push(OversizedEntry {
-                    path: path_to_string(&claude_md_path),
-                    bytes,
-                });
-            }
-        }
-    }
-
-    ClaudeMdResult {
-        regenerated: Vec::new(),
-        oversized,
-        over_cap: Vec::new(),
-    }
+    ClaudeMdResult { regenerated, over_cap }
 }
 
 fn path_to_string(path: &Path) -> String {
@@ -575,23 +578,19 @@ mod tests {
 
     #[test]
     fn render_without_existing_creates_scaffold() {
-        // (d) existing=None on the ROOT (is_root=true) → scaffold: H1 + sentinel
-        // block + inert human `## Guards` seed (the root is excluded from enrich,
-        // so no `pending` marker here).
-        let out = render("dashboard", "typescript", 42, &[], &[], &[], &no_commands(), None, true);
+        // existing=None on the ROOT (is_root=true) → minimal scaffold: import
+        // line on TOP, H1, breadcrumb, inert human `## Guards` seed (the root
+        // is excluded from enrich, so no `pending` marker here). No inline
+        // machine block — the map lives in `.claude/scan-map.md`.
+        let out = render_claude_md("dashboard", "typescript", &[], &[], &[], None, true);
+        assert!(out.starts_with(MAP_IMPORT_LINE), "import line must open the file: {out}");
         assert!(out.contains("# Dashboard"), "header missing: {out}");
-        assert!(out.contains("Tipo: typescript · 42 arquivos"), "map missing: {out}");
-        assert!(out.contains(SENTINEL_OPEN), "scan-map open missing: {out}");
-        assert!(out.contains(SENTINEL_CLOSE), "scan-map close missing: {out}");
         assert!(out.contains("## Guards"), "guards heading missing: {out}");
         assert!(out.contains("<!-- seed DO/DON'T aqui -->"), "seed placeholder missing: {out}");
         // Root never carries the Wave-2 `pending` marker.
         assert!(!out.contains(GUARDS_PENDING_OPEN), "root must not get pending guards: {out}");
-        // `## Guards` lives ABOVE the managed block now (the block is at the END).
-        let open = out.find(SENTINEL_OPEN).unwrap();
-        let guards = out.find("## Guards").unwrap();
-        assert!(guards < open, "guards must sit above the managed block: {out}");
-        assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "managed block must be at the end: {out}");
+        // No legacy sentinels in fresh output — the map is not inlined anymore.
+        assert!(!out.contains(SENTINEL_OPEN), "no inline machine block in new scaffolds: {out}");
         assert!(out.ends_with('\n'), "missing trailing newline");
     }
 
@@ -599,26 +598,22 @@ mod tests {
     fn guards_pending() {
         // A fresh SUBPROJECT (is_root=false) gets the enrichable `## Guards`
         // block: a `pending` sentinel carrying the deterministic facts (kind,
-        // frameworks) in a comment for the Wave-2 enrich agent, OUTSIDE the
-        // scan-map block.
+        // frameworks) in a comment for the Wave-2 enrich agent.
         let frameworks = vec!["serde".to_string(), "clap".to_string()];
-        let out = render("rt", "rust", 12, &frameworks, &[], &[], &no_commands(), None, false);
+        let out = render_claude_md("rt", "rust", &frameworks, &[], &[], None, false);
         assert!(out.contains(GUARDS_PENDING_OPEN), "pending open marker missing: {out}");
         assert!(out.contains(GUARDS_CLOSE), "guards close marker missing: {out}");
         // Facts live in a comment inside the block — context, not content.
         assert!(out.contains("<!-- facts: kind=rust; frameworks=serde, clap -->"), "facts comment missing: {out}");
         // The marker carries the literal `pending` token Wave 2 matches on.
         assert!(GUARDS_PENDING_OPEN.contains("pending"), "open marker lost its pending token");
-        // The guards block sits ABOVE the scan-map block (the block is at the END).
-        let open = out.find(SENTINEL_OPEN).unwrap();
-        let pending = out.find(GUARDS_PENDING_OPEN).unwrap();
-        assert!(pending < open, "guards block must sit above the managed block: {out}");
         // No frameworks → facts still render with an explicit (none).
-        let bare = render("lib", "rust", 1, &[], &[], &[], &no_commands(), None, false);
+        let bare = render_claude_md("lib", "rust", &[], &[], &[], None, false);
         assert!(bare.contains("<!-- facts: kind=rust; frameworks=(none) -->"), "empty frameworks facts: {bare}");
         // Idempotence: re-rendering the scaffold preserves the pending block.
-        let again = render("rt", "rust", 12, &frameworks, &[], &[], &no_commands(), Some(&out), false);
+        let again = render_claude_md("rt", "rust", &frameworks, &[], &[], Some(&out), false);
         assert!(again.contains(GUARDS_PENDING_OPEN), "pending marker lost on re-render: {again}");
+        assert_eq!(out, again, "scaffold must round-trip byte-for-byte");
     }
 
     #[test]
@@ -650,7 +645,7 @@ mod tests {
             "empty stacks must reproduce the legacy block exactly"
         );
         // End-to-end through render: a scaffolded subproject carries the segment.
-        let out = render("rt", "rust", 12, &frameworks, &stacks, &[], &no_commands(), None, false);
+        let out = render_claude_md("rt", "rust", &frameworks, &stacks, &[], None, false);
         assert!(out.contains("stacks=laravel(0.95),nextjs(0.65)"), "render did not thread stacks: {out}");
     }
 
@@ -681,22 +676,20 @@ mod tests {
             "no scripts ⇒ legacy line: {without}"
         );
         // End-to-end through render threads the unit's scripts.
-        let out = render("rt", "rust", 12, &frameworks, &[], &scripts, &no_commands(), None, false);
+        let out = render_claude_md("rt", "rust", &frameworks, &[], &scripts, None, false);
         assert!(out.contains("scripts=generate:api, build"), "render did not thread scripts: {out}");
     }
 
     #[test]
-    fn render_preserves_arbitrary_sections_outside_block() {
-        // (a) Legacy file WITHOUT sentinels: the managed block is APPENDED at the
-        // end and NOTHING above is stripped or reordered — `## Stack`/`## Commands`
-        // may be hand-written, so they survive verbatim alongside `## Architecture`
-        // and `## Guards`.
+    fn render_injects_import_and_preserves_human_file() {
+        // A legacy HUMAN file without sentinels: mustard's only footprint is the
+        // import line at the top — every human section (`## Stack`, `## Commands`,
+        // `## Architecture`, curated `## Guards`) survives verbatim, whatever its
+        // size. No inline machine block is ever appended again.
         let existing = "\
 # Dashboard
 
 > Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)
-
-Tipo: typescript · 10 arquivos
 
 ## Stack
 
@@ -719,35 +712,27 @@ Layered: ui → domain → io.
 - Never import from `../apps/cli`
 - Always use `Result<T, anyhow::Error>`
 ";
-        let commands = Commands {
-            build: Some("cargo build".into()),
-            test: Some("cargo test".into()),
-            lint: None,
-            type_check: None,
-        };
-        let out = render("dashboard", "rust", 99, &[], &[], &[], &commands, Some(existing), false);
-        // Exactly one managed block, appended at the END.
-        assert_eq!(out.matches(SENTINEL_OPEN).count(), 1, "expected one block: {out}");
-        assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "block must be at the end: {out}");
-        assert!(out.contains("Tipo: rust · 99 arquivos"), "map not refreshed: {out}");
-        // NOTHING above the block is stripped — the legacy human sections survive
-        // verbatim, including any `## Stack` / `## Commands` (they may be human).
+        let out = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing), false);
+        assert!(out.starts_with(MAP_IMPORT_LINE), "import line must open the file: {out}");
+        assert!(!out.contains(SENTINEL_OPEN), "no inline machine block anymore: {out}");
+        // Human sections survive verbatim — even ones that look machine-ish.
         assert!(out.contains("## Stack"), "human Stack stripped: {out}");
         assert!(out.contains("old-framework"), "human Stack body stripped: {out}");
-        assert!(out.contains("## Architecture"), "architecture lost: {out}");
+        assert!(out.contains("| Build | `old build` |"), "human Commands stripped: {out}");
         assert!(out.contains("Layered: ui → domain → io."), "architecture body lost: {out}");
         assert!(out.contains("Never import from"), "guard line 1 lost: {out}");
         assert!(out.contains("Always use `Result<T, anyhow::Error>`"), "guard line 2 lost: {out}");
-        // Idempotent: re-rendering relocates/changes nothing further.
-        let again = render("dashboard", "rust", 99, &[], &[], &[], &commands, Some(&out), false);
+        // Idempotent: the import is injected exactly once.
+        let again = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&out), false);
         assert_eq!(out, again, "render must be idempotent");
+        assert_eq!(out.matches(MAP_IMPORT_LINE).count(), 1, "import injected once: {out}");
     }
 
     #[test]
-    fn render_relocates_block_to_end_preserving_everything_else() {
-        // (b) File already has the sentinel mid-file with prose + guards after it.
-        // The render removes the block and re-appends it at the END; the
-        // H1/breadcrumb stay on top and everything outside the block is preserved.
+    fn render_migrates_legacy_inline_block_out() {
+        // A file carrying the LEGACY inline machine block (sentinels): the
+        // migration removes the whole block — it is machine-owned by definition —
+        // injects the import line, and preserves every byte outside the span.
         let existing = "\
 # Dashboard
 
@@ -756,9 +741,6 @@ Layered: ui → domain → io.
 <!-- mustard:scan-map -->
 Tipo: typescript · 10 arquivos
 Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-## Stack
-
-Tipo: typescript
 <!-- /mustard:scan-map -->
 
 ## Architecture
@@ -769,68 +751,16 @@ Hand-written prose that must NOT move.
 
 - keep me
 ";
-        let out = render("dashboard", "rust", 77, &[], &[], &[], &no_commands(), Some(existing), false);
-        assert_eq!(out.matches(SENTINEL_OPEN).count(), 1, "duplicate block: {out}");
-        assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "block must be at the end: {out}");
-        assert!(out.starts_with("# Dashboard"), "header moved: {out}");
-        assert!(out.contains("Tipo: rust · 77 arquivos"), "block not refreshed: {out}");
+        let out = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing), false);
+        assert!(out.starts_with(MAP_IMPORT_LINE), "import line must open the file: {out}");
+        assert!(!out.contains(SENTINEL_OPEN), "legacy block must be migrated out: {out}");
+        assert!(!out.contains("Tipo: typescript · 10 arquivos"), "legacy map body must go: {out}");
+        assert!(out.contains("# Dashboard"), "header lost: {out}");
         assert!(out.contains("Hand-written prose that must NOT move."), "prose lost: {out}");
         assert!(out.contains("- keep me"), "guard lost: {out}");
-        // Idempotent.
-        let again = render("dashboard", "rust", 77, &[], &[], &[], &no_commands(), Some(&out), false);
-        assert_eq!(out, again, "render not idempotent");
-    }
-
-    #[test]
-    fn render_preserves_content_outside_block_and_relocates_to_end() {
-        // A file with the sentinel block plus other sections beside it. The render
-        // removes the old block, re-appends the fresh one at the END, and PRESERVES
-        // every other byte — the prior `purge` behaviour is gone: Mustard never
-        // touches content outside its block (it may be hand-written).
-        let existing = "\
-# Root
-
-> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)
-
-<!-- mustard:scan-map -->
-Tipo: cargo · 0 arquivos
-Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-<!-- /mustard:scan-map -->
-
-## Stack
-
-Tipo: cargo
-
-- anyhow
-- clap
-
-## Commands
-
-| Task | Command |
-|------|---------|
-| Build | `cargo build` |
-
-## Guards
-
-- keep me
-";
-        let commands = Commands {
-            build: Some("cargo build".into()),
-            test: None,
-            lint: None,
-            type_check: None,
-        };
-        let out = render("root", "npm", 11, &["serde".into()], &[], &[], &commands, Some(existing), true);
-        assert_eq!(out.matches(SENTINEL_OPEN).count(), 1, "duplicate sentinel: {out}");
-        assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "block must be relocated to the end: {out}");
-        assert!(out.contains("Tipo: npm · 11 arquivos"), "block not refreshed: {out}");
-        // Content outside the old block is PRESERVED (not purged).
-        assert!(out.contains("## Stack"), "outside Stack wrongly purged: {out}");
-        assert!(out.contains("- anyhow"), "outside Stack body wrongly purged: {out}");
-        assert!(out.contains("- keep me"), "guard lost: {out}");
-        // Idempotent.
-        let again = render("root", "npm", 11, &["serde".into()], &[], &[], &commands, Some(&out), true);
-        assert_eq!(out, again, "render not idempotent");
+        // Idempotent over the migration.
+        let again = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&out), false);
+        assert_eq!(out, again, "migration must be idempotent");
     }
 
     #[test]
@@ -850,11 +780,11 @@ Tipo: npm · 1 arquivos
 
 (populated by /scan)
 ";
-        let out = render("dashboard", "npm", 1, &["react".into()], &[], &[], &no_commands(), Some(stub), false);
+        let out = render_claude_md("dashboard", "npm", &["react".into()], &[], &[], Some(stub), false);
         assert!(out.contains(GUARDS_PENDING_OPEN), "stub not reseeded to pending: {out}");
         assert!(!out.contains("(populated by /scan)"), "stub survived: {out}");
         // Idempotent: a re-render keeps the pending block (does not re-reseed).
-        let again = render("dashboard", "npm", 1, &["react".into()], &[], &[], &no_commands(), Some(&out), false);
+        let again = render_claude_md("dashboard", "npm", &["react".into()], &[], &[], Some(&out), false);
         assert_eq!(out, again, "reseed must be idempotent");
 
         // Curated human guards are preserved, never reseeded.
@@ -871,7 +801,7 @@ Tipo: cargo · 1 arquivos
 
 - Real human rule that must stay.
 ";
-        let out2 = render("cli", "cargo", 1, &[], &[], &[], &no_commands(), Some(curated), false);
+        let out2 = render_claude_md("cli", "cargo", &[], &[], &[], Some(curated), false);
         assert!(out2.contains("- Real human rule that must stay."), "curated guard lost: {out2}");
         assert!(!out2.contains(GUARDS_PENDING_OPEN), "curated guards wrongly reseeded: {out2}");
 
@@ -887,7 +817,7 @@ Tipo: npm · 1 arquivos
 
 <!-- seed DO/DON'T aqui -->
 ";
-        let out3 = render("(root)", "npm", 1, &[], &[], &[], &no_commands(), Some(root), true);
+        let out3 = render_claude_md("(root)", "npm", &[], &[], &[], Some(root), true);
         assert!(out3.contains("<!-- seed DO/DON'T aqui -->"), "root seed wrongly reseeded: {out3}");
         assert!(!out3.contains(GUARDS_PENDING_OPEN), "root must not get pending: {out3}");
     }
@@ -917,23 +847,11 @@ Tipo: npm · 1 arquivos
 
     #[test]
     fn render_legacy_migration_is_idempotent() {
-        // (c) Idempotence over the migration path: render(out_a) == out_a.
+        // Idempotence over the migration path: render(out_a) == out_a.
         let existing = "\
 # Dashboard
 
 > Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)
-
-## Stack
-
-Tipo: typescript
-
-- old
-
-## Commands
-
-| Task | Command |
-|------|---------|
-| Build | `old` |
 
 ## Architecture
 
@@ -943,27 +861,21 @@ Keep me.
 
 - keep me too
 ";
-        let commands = Commands {
-            build: Some("cargo build".into()),
-            test: Some("cargo test".into()),
-            lint: None,
-            type_check: None,
-        };
-        let first = render("dashboard", "rust", 5, &[], &[], &[], &commands, Some(existing), false);
-        let second = render("dashboard", "rust", 5, &[], &[], &[], &commands, Some(&first), false);
+        let first = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing), false);
+        let second = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&first), false);
         assert_eq!(first, second, "render must be idempotent over migration");
     }
 
     #[test]
-    fn render_emits_commands_table_with_only_some_rows() {
-        let frameworks = vec!["serde".to_string(), "clap".to_string()];
+    fn map_emits_commands_table_with_only_some_rows() {
         let commands = Commands {
             build: Some("cargo build".into()),
             test: Some("cargo test".into()),
             lint: None,
             type_check: Some("cargo check".into()),
         };
-        let out = render("rt", "rust", 12, &frameworks, &[], &[], &commands, None, false);
+        let out = render_map("rust", 12, &commands);
+        assert!(out.contains("Tipo: rust · 12 arquivos"), "map header missing: {out}");
         // Commands table has only the Some rows, in fixed order, no Lint row.
         assert!(out.contains("## Commands"), "commands heading missing: {out}");
         assert!(out.contains("| Build | `cargo build` |"), "build row missing: {out}");
@@ -973,82 +885,27 @@ Keep me.
     }
 
     #[test]
-    fn render_omits_commands_table_when_all_none() {
-        let out = render("lib", "rust", 1, &[], &[], &[], &no_commands(), None, false);
+    fn map_omits_commands_table_when_all_none() {
+        let out = render_map("rust", 1, &no_commands());
         assert!(!out.contains("## Commands"), "commands section must be absent: {out}");
         // After the Stack cut there is no `## Stack` section at all.
         assert!(!out.contains("## Stack"), "stack section must be dropped: {out}");
+        assert!(out.ends_with('\n'), "map must end in a newline");
     }
 
     #[test]
-    fn render_is_idempotent_byte_for_byte() {
-        let frameworks = vec!["react".to_string()];
+    fn map_is_byte_stable() {
         let commands = Commands {
             build: Some("pnpm run build".into()),
             test: Some("pnpm test".into()),
             lint: Some("pnpm run lint".into()),
             type_check: Some("tsc --noEmit".into()),
         };
-        let first = render("dashboard", "typescript", 30, &frameworks, &[], &[], &commands, None, false);
-        // Feeding the previous render back in must reproduce it byte-for-byte:
-        // the scaffold's sentinel block round-trips through the splice path
-        // unchanged, and the `pending` Guards block is preserved outside it.
-        let second = render("dashboard", "typescript", 30, &frameworks, &[], &[], &commands, Some(&first), false);
-        assert_eq!(first, second, "render must be idempotent");
-    }
-
-    #[test]
-    fn default_mode_collects_oversized_and_ignores_small() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-
-        // Subproject 1: large file
-        let sub1 = root.join("apps").join("big");
-        std::fs::create_dir_all(&sub1).expect("mkdir big");
-        let big_path = sub1.join("CLAUDE.md");
-        let big_content = "x".repeat(CLAUDE_MD_WARN_BYTES + 1);
-        std::fs::File::create(&big_path)
-            .and_then(|mut f| f.write_all(big_content.as_bytes()))
-            .expect("write big");
-
-        // Subproject 2: small file
-        let sub2 = root.join("apps").join("small");
-        std::fs::create_dir_all(&sub2).expect("mkdir small");
-        let small_path = sub2.join("CLAUDE.md");
-        std::fs::File::create(&small_path)
-            .and_then(|mut f| f.write_all(b"tiny"))
-            .expect("write small");
-
-        let projects = vec![
-            mustard_core::domain::scan::Project {
-                name: "big".into(),
-                dir: "apps/big".into(),
-                kind: "rust".into(),
-                code_files: 1,
-                frameworks: Vec::new(),
-                dependencies: Vec::new(),
-                scripts: Vec::new(),
-                detected_stacks: Vec::new(),
-            },
-            mustard_core::domain::scan::Project {
-                name: "small".into(),
-                dir: "apps/small".into(),
-                kind: "rust".into(),
-                code_files: 1,
-                frameworks: Vec::new(),
-                dependencies: Vec::new(),
-                scripts: Vec::new(),
-                detected_stacks: Vec::new(),
-            },
-        ];
-
-        let result = run_default(root, &projects);
-        assert_eq!(result.oversized.len(), 1, "only the big file should be flagged");
-        assert!(result.oversized[0].path.contains("big"), "wrong file flagged");
-        assert!(result.oversized[0].bytes > CLAUDE_MD_WARN_BYTES);
-        assert!(result.regenerated.is_empty());
-        assert!(result.over_cap.is_empty(), "default mode never enforces the hard cap");
+        assert_eq!(
+            render_map("typescript", 30, &commands),
+            render_map("typescript", 30, &commands),
+            "two renders must produce identical bytes"
+        );
     }
 
     fn project(name: &str, dir: &str) -> mustard_core::domain::scan::Project {
@@ -1065,39 +922,65 @@ Keep me.
     }
 
     #[test]
-    fn claude_md_hard_cap() {
-        // `run_full` refuses to write a CLAUDE.md whose rendered size exceeds the
-        // hard cap: the over-cap file is recorded, NOT regenerated, and its prior
-        // (curated) content is left intact on disk.
+    fn giant_curated_prose_never_blocks_the_pass() {
+        // A CLAUDE.md far beyond any ceiling — because the PROSE is the
+        // human's — is still processed: the legacy inline block migrates out,
+        // the import line lands on top, the map file is written, and no
+        // over_cap entry is recorded. The project's file size is not
+        // mustard's business.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
 
-        // Over-cap unit: a curated CLAUDE.md with sentinels + a bloated
-        // `## Architecture` so the spliced render still exceeds the ceiling.
         let bloated = format!(
             "# Big\n\n{SENTINEL_OPEN}\nTipo: rust · 1 arquivos\n{SENTINEL_CLOSE}\n\n## Architecture\n\n{}\n",
-            "x".repeat(CLAUDE_MD_HARD_CAP_BYTES + 1)
+            "x".repeat(SCAN_MAP_HARD_CAP_BYTES + 1)
         );
         let big_dir = root.join("apps").join("big");
         std::fs::create_dir_all(&big_dir).expect("mkdir big");
         let big_path = big_dir.join("CLAUDE.md");
         std::fs::write(&big_path, &bloated).expect("write big");
 
-        // Under-cap unit: no file yet (fresh scaffold, well within the cap).
-        std::fs::create_dir_all(root.join("apps").join("small")).expect("mkdir small");
-
-        let projects = vec![project("big", "apps/big"), project("small", "apps/small")];
+        let projects = vec![project("big", "apps/big")];
         let result = run_full(root, &projects);
 
-        // The over-cap file is recorded, deterministically, by its byte length.
-        assert_eq!(result.over_cap.len(), 1, "exactly the bloated file trips the cap: {:?}", result.over_cap);
-        assert!(result.over_cap[0].path.contains("big"), "wrong file flagged: {:?}", result.over_cap);
-        assert!(result.over_cap[0].bytes > CLAUDE_MD_HARD_CAP_BYTES);
-        // It was NOT regenerated …
-        assert!(!result.regenerated.iter().any(|p| p.contains("big")), "over-cap file must not be written");
-        // … and its on-disk content is untouched.
-        assert_eq!(std::fs::read_to_string(&big_path).unwrap(), bloated, "prior content clobbered");
-        // The small unit still scaffolds and writes fine.
-        assert!(result.regenerated.iter().any(|p| p.contains("small")), "under-cap unit must write");
+        assert!(result.over_cap.is_empty(), "curated prose must never trip the cap: {:?}", result.over_cap);
+        // The map file was written beside it…
+        let map_path = big_dir.join(".claude").join("scan-map.md");
+        assert!(map_path.is_file(), "scan-map.md must be written");
+        assert!(result.regenerated.iter().any(|p| p.contains("scan-map.md")), "map reported");
+        // …and the giant CLAUDE.md was UPDATED (import in, legacy block out),
+        // with the human prose intact.
+        let updated = std::fs::read_to_string(&big_path).unwrap();
+        assert!(updated.starts_with(MAP_IMPORT_LINE), "import line missing: truncated? {}", &updated[..80]);
+        assert!(!updated.contains(SENTINEL_OPEN), "legacy block must migrate out");
+        assert!(updated.contains(&"x".repeat(64)), "human prose must survive");
+    }
+
+    #[test]
+    fn run_full_writes_map_and_settles_claude_md() {
+        // End-to-end steady state: first pass writes the map + updates the
+        // CLAUDE.md; a second pass rewrites only the map (the CLAUDE.md is
+        // settled and untouched).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps").join("small")).expect("mkdir small");
+
+        let projects = vec![project("small", "apps/small")];
+        let first = run_full(root, &projects);
+        let claude_md = root.join("apps/small/CLAUDE.md");
+        let map = root.join("apps/small/.claude/scan-map.md");
+        assert!(claude_md.is_file() && map.is_file(), "both files written on first pass");
+        assert!(first.regenerated.iter().any(|p| p.contains("CLAUDE.md")), "fresh scaffold reported");
+        let settled = std::fs::read_to_string(&claude_md).unwrap();
+        assert!(settled.starts_with(MAP_IMPORT_LINE), "scaffold opens with the import");
+
+        let second = run_full(root, &projects);
+        assert!(
+            !second.regenerated.iter().any(|p| p.ends_with("CLAUDE.md")),
+            "a settled CLAUDE.md is not rewritten: {:?}",
+            second.regenerated
+        );
+        assert!(second.regenerated.iter().any(|p| p.contains("scan-map.md")), "map always refreshes");
+        assert_eq!(std::fs::read_to_string(&claude_md).unwrap(), settled, "CLAUDE.md byte-identical");
     }
 }

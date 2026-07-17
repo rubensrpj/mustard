@@ -1,3 +1,5 @@
+@.claude/scan-map.md
+
 # Web
 
 > Parent: [../../../../../../CLAUDE.md](../../../../../../CLAUDE.md) | Orchestrator: [../../../../../../.claude/CLAUDE.md](../../../../../../.claude/CLAUDE.md)
@@ -12,8 +14,3 @@ Keep each module to exactly one empty `export class Invoice<X> {}` — the three
 The `invoice` vocabulary overlap with `api/Billing/InvoiceService.cs` is the point of the fixture (two strata sharing one term) — do not "improve" the naming to something more distinctive.
 `package.json` stays `"private": true` with zero dependencies: it exists only so scan detects the `web` npm stratum (`projects[].dir == "web"`); a real dependency would change the deterministic scan facts the test premise relies on.
 <!-- /mustard:guards -->
-
-<!-- mustard:scan-map -->
-Tipo: npm · 3 arquivos
-O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
-<!-- /mustard:scan-map -->

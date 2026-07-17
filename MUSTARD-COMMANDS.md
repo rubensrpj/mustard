@@ -123,25 +123,28 @@ Minera o repositório para `grain.model.json` (determinístico, agnóstico de li
 | | |
 |---|---|
 | **Trigger** | `/mustard:scan [--root <dir>] [--out <path>]` |
-| **Backend** | `scan --full` · `scan-guards-list/apply` · `scan-patterns-list/apply` · `agent-prompt-render --role guards` |
-| **Produz** | `.claude/grain.model.json` · `CLAUDE.md` enxuto por subprojeto · blocos `## Guards` · moldes `{role}-pattern/SKILL.md` |
-| **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ Guards (~6 linhas) e moldes ausentes (create-only) |
+| **Backend** | `scan --full` · `scan-guards-list/apply` · `scan-patterns-sweep/list/apply/decline` · `agent-prompt-render --role guards` |
+| **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade (+ a linha `@.claude/scan-map.md` no topo do `CLAUDE.md` do projeto) · blocos `## Guards` · moldes `{role}-pattern/SKILL.md` frescos |
+| **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ Guards (~6 linhas) e moldes — todo molde `source: scan` é varrido e re-autorado do zero a cada scan (adoção = `source: manual`); recusa vale UMA rodada |
 
 ```mermaid
 flowchart TD
     start(["/mustard:scan"]) --> full["mustard-rt run scan --full<br/>(rust — sem AI, sem ler fonte)"]
-    full --> model[("grain.model.json<br/>+ CLAUDE.md enxuto por subprojeto<br/>(preserva ## Guards escritos à mão)")]
+    full --> model[("grain.model.json<br/>+ .claude/scan-map.md por unidade<br/>(CLAUDE.md do projeto: só a linha @import;<br/>## Guards preservados)")]
 
-    subgraph enrich["Enriquecimento padrão (incremental, fail-open)"]
-        model --> gl["scan-guards-list<br/>(subprojetos com Guards pending)"]
+    subgraph enrich["Enriquecimento padrão (fail-open)"]
+        model --> sw["scan-patterns-sweep<br/>(apaga moldes source:scan +<br/>ledger de recusas — tudo fresco)"]
+        sw --> gl["scan-guards-list<br/>(subprojetos com Guards pending)"]
         gl --> gag["Task: 1 agente mustard-guards<br/>por subprojeto (read-only, 1 msg)"]
         gag --> gap["scan-guards-apply (stdin)<br/>~6 linhas do/don't"]
-        gap --> pl["scan-patterns-list<br/>(clusters de role ≥3 sem molde)"]
+        gap --> pl["scan-patterns-list<br/>(clusters de role ≥3, sem teto)"]
         pl --> pag["Task: 1 agente mustard-patterns<br/>por subprojeto (read-only, 1 msg)"]
-        pag --> pap["scan-patterns-apply<br/>(create-only, atômico)"]
+        pag --> pap["scan-patterns-apply<br/>(create-only, atômico, etiqueta EN)"]
+        pag --> pd["scan-patterns-decline<br/>(recusa registrada — vale 1 rodada)"]
     end
 
     pap --> done(["consumido por /mustard:feature e<br/>/mustard:bugfix via digest"])
+    pd --> done
 ```
 
 > Um Guard pode abrir com `[critical]` na forma checável `never <proibido> in <glob>` — vira gate de edição (`MUSTARD_GUARD_GATE_MODE=strict|warn`, default `warn`). Guards sem marca são consultivos.

@@ -227,6 +227,13 @@ pub struct RoleStat {
     pub count: usize,
     /// Most common folder these live in (relative), for the role->folder map.
     pub common_dir: String,
+    /// EVERY recurring folder of the role (abstracted, ≥2 members each, count
+    /// desc then name) — a convention spread across several parents
+    /// (`configs/` AND `(dashboard)/<name>s`) keeps all its homes; `common_dir`
+    /// alone loses everything outside the single most frequent one. Additive:
+    /// absent in older models.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirs: Vec<String>,
     /// A representative declaration kind (class/function/const/...).
     pub decl_kind: String,
     /// The base type these files most often extend/implement, if any (from
