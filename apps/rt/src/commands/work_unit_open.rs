@@ -526,9 +526,20 @@ mod tests {
         let (_dir, main) = fixture();
         let deep = main.join("nested").join("deeper");
         std::fs::create_dir_all(&deep).expect("subdir");
-        let got = hook_create("dev_fromdeep", &deep).expect("creates");
-        let expected = format!("{}/.claude/worktrees/dev_fromdeep", main.display()).replace('\\', "/");
-        assert_eq!(got.replace('\\', "/"), expected, "anchored at the main checkout, not at cwd");
+        let got = hook_create("dev_fromdeep", &deep).expect("creates").replace('\\', "/");
+
+        // Resolve the expectation THROUGH GIT, exactly as the engine does. A
+        // tempdir path is not canonical — macOS hands out `/var/…`, a symlink
+        // to `/private/var/…`, and a Windows runner hands out the short 8.3
+        // `RUNNER~1` form — while git always answers with the resolved path.
+        // Comparing a raw tempdir path against git's would fail on those two
+        // platforms for a reason that has nothing to do with anchoring.
+        let root = main_checkout_root(&deep).expect("main checkout");
+        let expected = format!("{}/.claude/worktrees/dev_fromdeep", root.display()).replace('\\', "/");
+        assert_eq!(got, expected, "anchored at the main checkout, not at cwd");
+        // The claim itself, independent of any path formatting: never under the
+        // caller's cwd.
+        assert!(!got.contains("/nested/"), "never cut under the caller's cwd: {got}");
     }
 
     #[test]
