@@ -1963,7 +1963,9 @@ mod tests {
         assert!(rendered.contains("affix: Service (suffix)"), "affix missing: {rendered}");
         assert!(rendered.contains("declKind: class"), "declKind missing: {rendered}");
         assert!(rendered.contains("implements: BaseService"), "implements missing: {rendered}");
-        assert!(rendered.contains("count: 5"), "count missing: {rendered}");
+        // The role tallies 5 repo-wide, but THIS subproject holds 2 — the agent
+        // is told what its own house has, never the global figure.
+        assert!(rendered.contains("count: 2"), "local count missing: {rendered}");
         assert!(
             rendered.contains("moldPath: apps/api/.claude/skills/api-service-pattern/SKILL.md"),
             "moldPath missing: {rendered}"
