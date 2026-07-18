@@ -88,7 +88,7 @@ pub(crate) fn run_at(cwd: &Path, spec: &str, to: &str, from: Option<&str>) -> Re
     // CLOSE transition: run the close-gate sub-gates inline. A strict failure
     // blocks the transition; fail-open on any infrastructure error.
     if to.eq_ignore_ascii_case("CLOSE") {
-        crate::hooks::write::close_gate::gate_close_for_spec(&cwd.to_string_lossy(), spec)?;
+        crate::commands::pipeline::close_gates::gate_close_for_spec(&cwd.to_string_lossy(), spec)?;
     }
 
     // `from` defaults to the spec's last known phase (null when none).

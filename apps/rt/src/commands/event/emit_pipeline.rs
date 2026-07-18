@@ -1143,7 +1143,7 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
         return;
     }
 
-    let qa_required = crate::hooks::write::close_gate::qa_gate_active()
+    let qa_required = crate::commands::pipeline::close_gates::qa_gate_active()
         && crate::commands::review::qa_run::spec_has_executable_acs(cwd, spec);
 
     if qa_required {
