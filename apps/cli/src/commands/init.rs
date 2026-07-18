@@ -13,9 +13,9 @@
 //!    backup-then-overwrite — interactively prompted when no flag decides it);
 //! 3. seed the harness into `.claude/`:
 //!    - `settings.json` — the reduced SEED (env / permissions / statusLine /
-//!      plansDirectory …) copied from the bundled template, then the
-//!      `enabledPlugins` + `extraKnownMarketplaces` keys that enable the
-//!      `mustard` plugin merged in;
+//!      plansDirectory …) copied from the bundled template; plugin enablement
+//!      is NOT planted (user-scope choice) and the broken pair an older build
+//!      wrote is retired ([`retire_planted_plugin_enablement`]);
 //!    - `mustard/*.md` — the injectable instruction files (orchestrator rules,
 //!      response style) copied from `templates/mustard/`; the session hooks
 //!      splice them into the agent's window per `mustard.json#inject` —
@@ -59,20 +59,20 @@ use crate::commands::git_flow;
 use crate::fs_ops::copy_dir;
 use mustard_core::{Injectable, ProjectConfig, Runtime};
 
-/// Marketplace name the `mustard` plugin is published under (the key in
-/// `settings.json#extraKnownMarketplaces` and the `@`-suffix of the plugin id).
+/// Marketplace name older `init` builds planted in the PROJECT
+/// `settings.json#extraKnownMarketplaces` (retired — see
+/// [`retire_planted_plugin_enablement`]).
 const PLUGIN_MARKETPLACE: &str = "mustard";
 
-/// `settings.json#enabledPlugins` key that turns the harness on: `<plugin>@<marketplace>`.
+/// `settings.json#enabledPlugins` key older `init` builds planted (retired).
 const PLUGIN_ID: &str = "mustard@mustard";
 
-/// Git URL of the private marketplace that distributes the `mustard` plugin.
-///
-/// **Placeholder** — a real deploy replaces this constant with the actual repo
-/// URL (or a future flag overrides it). It is intentionally obvious so it is
-/// never mistaken for a live endpoint: an `init` run against an unconfigured
-/// build writes this literal into `settings.json#extraKnownMarketplaces`, where
-/// it is inert until swapped for the real URL.
+/// The placeholder URL those older builds wrote. Kept ONLY as the recognition
+/// literal for the migration: an `extraKnownMarketplaces.mustard` entry whose
+/// url equals this literal is provably ours and safe to remove; any other url
+/// is user-authored and survives. Plugin enablement is the USER's choice at
+/// user scope (`~/.claude/settings.json`) — `init` no longer writes it into
+/// the project.
 const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
 
 /// Flags accepted by `mustard init`.
@@ -144,7 +144,7 @@ pub fn init_with_templates(
 
     if options.dry_run {
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
-        println!("    settings.json  — reduced seed + enable the `mustard` plugin (enabledPlugins + extraKnownMarketplaces)");
+        println!("    settings.json  — reduced seed (plugin enablement stays at user scope; a planted placeholder pair is retired)");
         println!("    mustard/*.md   — injectable instruction files (orchestrator, response style); hooks inject them per mustard.json#inject");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would migrate a legacy Mustard-planted .claude/CLAUDE.md away (and remove the Mustard import/breadcrumb lines from the root CLAUDE.md)");
@@ -261,18 +261,18 @@ fn guard_init_location(project_path: &Path) -> Result<()> {
     )
 }
 
-/// Seed `.claude/settings.json`: copy the reduced template SEED, then merge in
-/// the keys that enable the `mustard` plugin.
+/// Seed `.claude/settings.json`: copy the reduced template SEED, then retire
+/// the plugin-enablement keys older builds planted.
 ///
 /// - Fresh / overwrite (a backup was taken): the seed is the base.
 /// - Merge: the user's existing `settings.json` is the base and any seed key it
 ///   lacks is backfilled — user edits are never clobbered.
 ///
-/// In every case the `enabledPlugins` + `extraKnownMarketplaces` keys are merged
-/// in (never clobbering another marketplace / plugin the user declared), so the
-/// harness is enabled even when merging into an existing project. The seed's
-/// byte content is not depended on — whatever keys the template ships are copied
-/// verbatim through the JSON round-trip.
+/// Plugin enablement is NOT written here anymore: it is the user's choice at
+/// user scope (`~/.claude/settings.json`), where the plugin system already
+/// records it. [`retire_planted_plugin_enablement`] removes the broken pair a
+/// previous `init` may have planted (placeholder marketplace URL + the
+/// `mustard@mustard` alias that never resolves against it).
 fn write_settings_seed(claude_path: &Path, templates_dir: &Path, overwrite: bool) -> Result<()> {
     let dest = claude_path.join("settings.json");
     let seed = crate::fs_ops::read_json_object(&templates_dir.join("settings.json"));
@@ -287,38 +287,60 @@ fn write_settings_seed(claude_path: &Path, templates_dir: &Path, overwrite: bool
         existing
     };
 
-    enable_mustard_plugin(&mut settings);
+    retire_planted_plugin_enablement(&mut settings);
 
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))
         .context("serializing .claude/settings.json")?;
     serialized.push('\n');
     mfs::write_atomic(&dest, serialized.as_bytes())
         .with_context(|| format!("writing {}", dest.display()))?;
-    println!("  wrote .claude/settings.json (mustard plugin enabled)");
+    println!("  wrote .claude/settings.json");
     Ok(())
 }
 
-/// Merge the `mustard` plugin enablement into a `settings.json` object.
+/// Remove the plugin-enablement pair older `init` builds planted in the
+/// PROJECT settings — and ONLY that pair:
 ///
-/// Adds `extraKnownMarketplaces.mustard = { source: { source: "git", url } }`
-/// (only when absent — a user-declared mustard marketplace is preserved) and
-/// sets `enabledPlugins."mustard@mustard" = true`. Other marketplaces and
-/// plugins in those objects are left untouched.
-fn enable_mustard_plugin(settings: &mut Map<String, Value>) {
-    let marketplaces = settings
-        .entry("extraKnownMarketplaces")
-        .or_insert_with(|| json!({}));
-    if let Some(obj) = marketplaces.as_object_mut() {
-        obj.entry(PLUGIN_MARKETPLACE).or_insert_with(|| {
-            json!({ "source": { "source": "git", "url": MARKETPLACE_REPO_URL } })
-        });
+/// - `extraKnownMarketplaces.mustard` goes only when its url is the
+///   [`MARKETPLACE_REPO_URL`] placeholder (provably ours; a user-authored
+///   mustard marketplace with a real url survives).
+/// - `enabledPlugins."mustard@mustard"` goes only when the marketplace entry
+///   was ours-or-absent (an alias the user wired to a real marketplace stays).
+///
+/// Emptied containers are dropped so a clean project carries no residue.
+/// Every other marketplace/plugin key is untouched.
+fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
+    let planted_marketplace = settings
+        .get("extraKnownMarketplaces")
+        .and_then(|m| m.get(PLUGIN_MARKETPLACE))
+        .and_then(|e| e.pointer("/source/url"))
+        .and_then(Value::as_str)
+        == Some(MARKETPLACE_REPO_URL);
+    if planted_marketplace {
+        if let Some(obj) = settings
+            .get_mut("extraKnownMarketplaces")
+            .and_then(Value::as_object_mut)
+        {
+            obj.remove(PLUGIN_MARKETPLACE);
+        }
     }
-
-    let plugins = settings
-        .entry("enabledPlugins")
-        .or_insert_with(|| json!({}));
-    if let Some(obj) = plugins.as_object_mut() {
-        obj.insert(PLUGIN_ID.to_string(), json!(true));
+    let marketplace_present = settings
+        .get("extraKnownMarketplaces")
+        .and_then(|m| m.get(PLUGIN_MARKETPLACE))
+        .is_some();
+    if !marketplace_present {
+        if let Some(obj) = settings.get_mut("enabledPlugins").and_then(Value::as_object_mut) {
+            obj.remove(PLUGIN_ID);
+        }
+    }
+    for container in ["extraKnownMarketplaces", "enabledPlugins"] {
+        let emptied = settings
+            .get(container)
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty);
+        if emptied {
+            settings.remove(container);
+        }
     }
 }
 
@@ -915,7 +937,11 @@ fn install_ripgrep() -> bool {
 /// Print the closing "next steps" block.
 fn print_next_steps() {
     println!("\nDone!\n");
-    println!("Next: open Claude Code and run /scan to analyze your codebase.\n");
+    println!("Next:");
+    println!("  1. Make sure the `mustard` plugin is enabled in Claude Code (user scope):");
+    println!("     /plugin marketplace add <mustard repo or local directory>  →  /plugin install mustard");
+    println!("     (already installed? nothing to do — enablement lives in ~/.claude/settings.json)");
+    println!("  2. Open Claude Code and run /scan to analyze your codebase.\n");
 }
 
 #[cfg(test)]
@@ -1052,7 +1078,8 @@ mod tests {
             "init must not write .mcp.json — the plugin ships it"
         );
 
-        // settings.json carries the reduced seed keys AND the plugin enablement.
+        // settings.json carries the reduced seed keys and NO plugin enablement —
+        // that choice lives at user scope, never planted into the project.
         let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
         assert_eq!(
             settings
@@ -1062,21 +1089,20 @@ mod tests {
             Some("1"),
             "the reduced seed's env is copied verbatim"
         );
-        assert_eq!(
+        assert!(
             settings
                 .get("enabledPlugins")
                 .and_then(|p| p.get("mustard@mustard"))
-                .and_then(|v| v.as_bool()),
-            Some(true),
-            "the mustard plugin is enabled"
+                .is_none(),
+            "init must not plant enabledPlugins in the project"
         );
-        let url = settings
-            .get("extraKnownMarketplaces")
-            .and_then(|m| m.get("mustard"))
-            .and_then(|e| e.get("source"))
-            .and_then(|s| s.get("url"))
-            .and_then(|v| v.as_str());
-        assert!(url.is_some(), "the marketplace source url is seeded");
+        assert!(
+            settings
+                .get("extraKnownMarketplaces")
+                .and_then(|m| m.get("mustard"))
+                .is_none(),
+            "init must not plant a marketplace entry in the project"
+        );
 
         // .gitignore covers the ephemeral harness state.
         assert!(
@@ -1167,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn init_merge_preserves_user_injectable_and_enables_plugin() {
+    fn init_merge_preserves_user_injectable() {
         let work = tempdir().unwrap();
         let templates = fake_templates(work.path());
         let project = work.path().join("project");
@@ -1195,15 +1221,14 @@ mod tests {
             claude.join("mustard/response-style.md").exists(),
             "merge backfills the missing injectable"
         );
-        // …and the plugin is still enabled (settings.json is seeded on merge too).
+        // …and no plugin enablement is planted on the merge path either.
         let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
-        assert_eq!(
+        assert!(
             settings
                 .get("enabledPlugins")
                 .and_then(|p| p.get("mustard@mustard"))
-                .and_then(|v| v.as_bool()),
-            Some(true),
-            "merge still enables the mustard plugin"
+                .is_none(),
+            "merge must not plant plugin enablement"
         );
     }
 
@@ -1383,22 +1408,55 @@ mod tests {
     }
 
     #[test]
-    fn enable_mustard_plugin_preserves_other_marketplaces() {
-        // A user with their own marketplace + plugin: init adds mustard without
-        // clobbering theirs.
-        let mut settings: Map<String, Value> = serde_json::from_str(
-            r#"{"extraKnownMarketplaces":{"acme":{"source":{"source":"git","url":"x"}}},
-                "enabledPlugins":{"acme@acme":true}}"#,
-        )
+    fn retire_removes_only_the_planted_placeholder_pair() {
+        // The exact pair an older init planted: placeholder marketplace URL +
+        // the mustard@mustard alias. Both go; the user's own keys survive.
+        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
+            r#"{{"extraKnownMarketplaces":{{
+                    "acme":{{"source":{{"source":"git","url":"x"}}}},
+                    "mustard":{{"source":{{"source":"git","url":"{MARKETPLACE_REPO_URL}"}}}}}},
+                "enabledPlugins":{{"acme@acme":true,"mustard@mustard":true}}}}"#,
+        ))
         .unwrap();
 
-        enable_mustard_plugin(&mut settings);
+        retire_planted_plugin_enablement(&mut settings);
 
+        assert!(settings["extraKnownMarketplaces"].get("mustard").is_none(), "placeholder gone");
+        assert!(settings["enabledPlugins"].get("mustard@mustard").is_none(), "alias gone");
         // Theirs survive.
         assert!(settings["extraKnownMarketplaces"].get("acme").is_some());
         assert_eq!(settings["enabledPlugins"]["acme@acme"], json!(true));
-        // Ours are added.
-        assert!(settings["extraKnownMarketplaces"].get("mustard").is_some());
-        assert_eq!(settings["enabledPlugins"]["mustard@mustard"], json!(true));
+    }
+
+    #[test]
+    fn retire_preserves_a_user_authored_mustard_marketplace() {
+        // A REAL url under the `mustard` key is the user's wiring — the entry
+        // and the alias that resolves against it both stay.
+        let mut settings: Map<String, Value> = serde_json::from_str(
+            r#"{"extraKnownMarketplaces":{"mustard":{"source":{"source":"git","url":"https://example.com/real.git"}}},
+                "enabledPlugins":{"mustard@mustard":true}}"#,
+        )
+        .unwrap();
+
+        retire_planted_plugin_enablement(&mut settings);
+
+        assert!(settings["extraKnownMarketplaces"].get("mustard").is_some(), "real url stays");
+        assert_eq!(settings["enabledPlugins"]["mustard@mustard"], json!(true), "alias stays");
+    }
+
+    #[test]
+    fn retire_drops_emptied_containers() {
+        // A settings.json whose ONLY marketplace/plugin keys were ours ends up
+        // with no residue containers at all.
+        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
+            r#"{{"extraKnownMarketplaces":{{"mustard":{{"source":{{"source":"git","url":"{MARKETPLACE_REPO_URL}"}}}}}},
+                "enabledPlugins":{{"mustard@mustard":true}}}}"#,
+        ))
+        .unwrap();
+
+        retire_planted_plugin_enablement(&mut settings);
+
+        assert!(settings.get("extraKnownMarketplaces").is_none(), "emptied container dropped");
+        assert!(settings.get("enabledPlugins").is_none(), "emptied container dropped");
     }
 }
