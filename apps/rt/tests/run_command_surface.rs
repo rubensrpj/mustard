@@ -142,3 +142,26 @@ fn every_declared_command_keeps_its_help_slot() {
     let expected: Vec<usize> = (0..RUN_SUBCOMMANDS.len() - 1).collect();
     assert_eq!(orders, expected, "display_order slots must stay a gapless permutation");
 }
+
+/// The `--spec` / `--from-spec` flags are interchangeable on the spec-path
+/// commands. Field friction (sialia): an orchestrator that reached for the
+/// sibling command's flag (`scope-classify --spec` / `analyze-validation
+/// --from-spec`) hit a hard clap error and burned a retry. Each command keeps
+/// its canonical flag and accepts the sibling spelling as a hidden alias.
+#[test]
+fn spec_path_flag_aliases_are_interchangeable() {
+    let tree = run_command_tree();
+    let accepts = |args: &[&str]| tree.clone().try_get_matches_from(args).is_ok();
+
+    // Canonical `--from-spec`, alias `--spec`.
+    for flag in ["--from-spec", "--spec"] {
+        assert!(accepts(&["run", "scope-classify", flag, "x.md"]), "scope-classify {flag}");
+        assert!(accepts(&["run", "plan-prepare", flag, "x.md"]), "plan-prepare {flag}");
+        assert!(accepts(&["run", "scope-decompose", flag, "x.md"]), "scope-decompose {flag}");
+    }
+    // Canonical `--spec`, alias `--from-spec`.
+    for flag in ["--spec", "--from-spec"] {
+        assert!(accepts(&["run", "analyze-validation", flag, "x.md"]), "analyze-validation {flag}");
+        assert!(accepts(&["run", "qa-run", flag, "x"]), "qa-run {flag}");
+    }
+}

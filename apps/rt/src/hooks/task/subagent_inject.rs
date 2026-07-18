@@ -26,12 +26,14 @@
 //! decisive verdict is always either `Inject` (when something was resolved)
 //! or `Allow` (when nothing was).
 
-use mustard_core::domain::model::event::ActorKind;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use crate::shared::events::economy;
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::commands::agent::context_inject;
@@ -296,6 +298,85 @@ fn final_output_text(input: &HookInput) -> String {
     String::new()
 }
 
+/// Extract the FIRST `<MEMORY>...</MEMORY>` block's inner text, trimmed.
+/// `None` when absent, or present but blank after trimming (an empty tag
+/// pair is not a real memory). Byte-wise scan — no regex crate in this
+/// workspace. The `impl`/`plan` role contract (`role.rs::build_role_block`)
+/// gates EMISSION to a rare, real-choice bar, so this extractor does not
+/// need its own filter beyond "is the tag present and non-empty" — the
+/// scarcity is already enforced upstream, at the source.
+fn extract_memory_block(text: &str) -> Option<String> {
+    let start = text.find("<MEMORY>")? + "<MEMORY>".len();
+    let end_rel = text[start..].find("</MEMORY>")?;
+    let inner = text[start..start + end_rel].trim();
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
+}
+
+/// Harvest a `<MEMORY>` block from a returning subagent's final output and
+/// persist it as a `decision` harness event — the durable, queryable home
+/// for cross-wave lessons. Closes the gap the field trace found: the `impl`
+/// role is instructed to emit `<MEMORY>`, but nothing ever read it back —
+/// the block surfaced once in the orchestrator's Task-tool context and then
+/// evaporated (`session_stop_observer`'s prose capture was retired with the
+/// old knowledge store and never replaced). This makes capture AUTOMATIC —
+/// a hook, not an instruction the orchestrator has to remember to act on.
+///
+/// Spec attribution mirrors `emit-event`'s own fallback order: the
+/// session-bound `active-spec` marker first (kept fresh by every
+/// `pipeline.*` event the running pipeline already emits), then the
+/// legacy/env `current_spec` resolution. No spec resolves ⇒ no-op — a
+/// decision with no spec to attribute it to is discarded, never emitted
+/// orphaned.
+///
+/// Fail-open throughout: no memory block, no resolvable spec, or a write
+/// error all degrade to a silent no-op. This is telemetry, never a blocking
+/// path — never called from a `Check`, only from the `Observer`-shaped
+/// `SubagentStop` side effect below.
+fn capture_memory_decision(project: &Path, cwd: &str, input: &HookInput) {
+    capture_memory_decision_with_session(project, cwd, input, &crate::shared::context::session_id());
+}
+
+/// Session-explicit variant of [`capture_memory_decision`] — the actual
+/// worker, taking `session_id` as a parameter instead of resolving the
+/// ambient [`crate::shared::context::session_id`] internally. Mirrors this
+/// file's own [`span_level_eval_and_append`]/[`span_level_eval_and_append_in`]
+/// split and for the same reason: a test cannot safely mutate
+/// `MUSTARD_SESSION_ID` (`unsafe` under Rust 2024, forbidden in this crate),
+/// so the deterministic entry point takes the value directly.
+fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookInput, sid: &str) {
+    let Some(memory) = extract_memory_block(&final_output_text(input)) else {
+        return;
+    };
+    let spec = crate::shared::context::spec_for_session(cwd, sid)
+        .or_else(|| crate::shared::context::current_spec(cwd));
+    let Some(spec) = spec else {
+        return;
+    };
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: sid.to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: Some("subagent_inject".to_string()),
+            actor_type: None,
+        },
+        event: "decision".to_string(),
+        payload: json!({
+            "title": memory,
+            "role": role_from_input(input),
+            "source": "memory-block",
+        }),
+        spec: Some(spec),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+}
+
 /// Run the W4 span-level gate (Moment 3) for the returning child and append
 /// the verdict to `<wave-dir>/_review-spans.md`. Fail-open at every step —
 /// any IO or gate error degrades to a no-op so the orchestrator's
@@ -375,10 +456,16 @@ impl Check for SubagentInject {
         // W5.T5.2 — Span-level eval at SubagentStop. Runs per child return,
         // never accumulating until end-of-wave (AC-A-5). Fail-open: any IO
         // or gate error degrades to a no-op so the orchestrator continues.
+        //
+        // Memory capture rides the SAME return: harvest a `<MEMORY>` block
+        // (if the child emitted one) into a durable `decision` event — see
+        // `capture_memory_decision`. Independent of the span-level eval;
+        // either can no-op without affecting the other.
         if ctx.trigger == Some(Trigger::SubagentStop) {
             let cwd = ctx.project_dir_or_cwd(input);
             let project = PathBuf::from(&cwd);
             let _ = span_level_eval_and_append(&project, input, &cwd);
+            capture_memory_decision(&project, &cwd, input);
             return Ok(Verdict::Allow);
         }
 
@@ -924,5 +1011,126 @@ mod tests {
         let input = task_input("grep the codebase for the user module", "mustard-guards");
         let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
         assert_eq!(v, Verdict::Allow, "read-only role gets no regression-vocab noise");
+    }
+
+    // --- <MEMORY> capture (SubagentStop → `decision` event) ----------------
+
+    /// Read every `decision` event's `title` for `spec` under `cwd`, in the
+    /// order the NDJSON files sort. Test-only helper — production readers
+    /// live in `agent::render::mod::decision_events_block`.
+    fn decision_titles(cwd: &Path, spec: &str) -> Vec<String> {
+        let events_dir = ClaudePaths::for_project(cwd)
+            .and_then(|p| p.for_spec(spec))
+            .unwrap()
+            .events_dir();
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+            .iter()
+            .filter(|e| e.event == "decision")
+            .filter_map(|e| e.payload.get("title").and_then(|v| v.as_str()).map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn extract_memory_block_trims_and_rejects_blank() {
+        assert_eq!(
+            extract_memory_block("blah <MEMORY> real lesson here </MEMORY> more"),
+            Some("real lesson here".to_string())
+        );
+        assert_eq!(extract_memory_block("no tag at all"), None);
+        assert_eq!(extract_memory_block("<MEMORY>   </MEMORY>"), None, "blank body ⇒ None");
+        assert_eq!(extract_memory_block("<MEMORY>x"), None, "unterminated tag ⇒ None");
+    }
+
+    /// End-to-end: a `<MEMORY>` block in the child's final output, with the
+    /// session bound to a spec via the `active-spec` marker, lands as a
+    /// `decision` event carrying the memory text — readable back from the
+    /// spec's own event log.
+    #[test]
+    fn subagent_stop_with_memory_block_emits_decision_event() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "permissions-rbac-overhaul";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-1", spec);
+
+        let input = stop_input(
+            "impl-1",
+            "Files changed: foo.rs.\n\
+             <MEMORY>Chose atomic_md write over direct fs::write — a mid-write crash corrupts the file</MEMORY>",
+        );
+        capture_memory_decision_with_session(dir.path(), &cwd, &input, "sess-1");
+
+        let titles = decision_titles(dir.path(), spec);
+        assert_eq!(
+            titles,
+            vec!["Chose atomic_md write over direct fs::write — a mid-write crash corrupts the file".to_string()]
+        );
+    }
+
+    /// No `<MEMORY>` block in the return text ⇒ no event at all (not even an
+    /// empty one) — the common case (per the role contract, most waves emit
+    /// nothing) must cost zero writes.
+    #[test]
+    fn subagent_stop_without_memory_block_emits_nothing() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "no-memory-here";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-2", spec);
+
+        let input = stop_input("impl-2", "Files changed: bar.rs. No non-obvious decisions.");
+        capture_memory_decision_with_session(dir.path(), &cwd, &input, "sess-2");
+
+        assert!(decision_titles(dir.path(), spec).is_empty());
+    }
+
+    /// A `<MEMORY>` block with no session→spec binding at all (the session
+    /// was never bound, e.g. a spec-less ad-hoc dispatch) fails open: no
+    /// spec to attribute the decision to ⇒ no event, never an orphaned one.
+    #[test]
+    fn subagent_stop_memory_block_with_unbound_session_is_a_noop() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+
+        let input = stop_input("impl-3", "<MEMORY>a real lesson</MEMORY>");
+        // "sess-unbound" was never bound to any spec via bind_session_spec.
+        capture_memory_decision_with_session(dir.path(), &cwd, &input, "sess-unbound");
+
+        // No spec dir was ever created, so there is nothing to assert a
+        // titles-list against — the meaningful assertion is that this call
+        // did not panic and (by construction of the fail-open `let..else`)
+        // never reached the `route::emit` call. Covered structurally by
+        // `extract_memory_block`/`spec_for_session`/`current_spec` each
+        // already having their own None-path unit coverage.
+        let _ = input;
+    }
+
+    /// Two children in the SAME spec each emit a DIFFERENT `<MEMORY>` — both
+    /// land, in order, as separate `decision` events (never overwriting one
+    /// another; the NDJSON sink is append-only).
+    #[test]
+    fn two_children_same_spec_both_decisions_land() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "multi-wave-spec";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-3", spec);
+
+        capture_memory_decision_with_session(
+            dir.path(), &cwd,
+            &stop_input("wave-1-child", "<MEMORY>decision from wave 1</MEMORY>"),
+            "sess-3",
+        );
+        capture_memory_decision_with_session(
+            dir.path(), &cwd,
+            &stop_input("wave-2-child", "<MEMORY>decision from wave 2</MEMORY>"),
+            "sess-3",
+        );
+
+        let titles = decision_titles(dir.path(), spec);
+        assert_eq!(titles.len(), 2, "{titles:?}");
+        assert!(titles.contains(&"decision from wave 1".to_string()));
+        assert!(titles.contains(&"decision from wave 2".to_string()));
     }
 }

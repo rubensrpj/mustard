@@ -462,11 +462,12 @@ mod tests {
         let rendered_b = render_wave_plan(&plan_b, &hd, None, "epic-x");
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
         // The wave-plan.md is a MACHINE artefact → ENGLISH-FIXED heading even for
-        // a pt-BR plan, plus the wikilinks.
+        // a pt-BR plan, plus the wikilinks. `wave.`-prefixed — matches the
+        // `id:` each target wave actually stamps.
         assert!(rendered_a.contains("# Wave Plan"));
         assert!(!rendered_a.contains("# Plano de Waves"));
-        assert!(rendered_a.contains("[[wave-1-general]]"));
-        assert!(rendered_a.contains("[[wave-2-frontend]]"));
+        assert!(rendered_a.contains("[[wave.epic-x.1-general]]"));
+        assert!(rendered_a.contains("[[wave.epic-x.2-frontend]]"));
     }
 
     #[test]

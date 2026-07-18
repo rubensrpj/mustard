@@ -743,9 +743,10 @@ mod tests {
         assert_eq!(meta["isWavePlan"], json!(true), "{meta}");
         assert_eq!(meta["scopeOverride"], json!("user-rejected-waves"), "{meta}");
 
-        // wave-plan.md still present and references wave-1 only.
+        // wave-plan.md still present and references wave-1 only. `wave.`-
+        // prefixed — matches the `id:` wave-scaffold actually stamps.
         let wp = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
-        assert!(wp.contains("[[wave-1-general]]"), "{wp}");
+        assert!(wp.contains("[[wave.full-collapse.1-general]]"), "{wp}");
         assert!(!wp.contains("wave-2"), "{wp}");
     }
 
