@@ -20,7 +20,7 @@ No stage emit here; the slug is born at §2 (`spec-draft` backfills the ANALYZE 
 
 1. Note the intent in your own words plus every concrete critique.
 2. `mustard-rt run scan` when `grain.model.json` is absent or materially stale.
-3. Lapidate the intent to code vocabulary YOURSELF (infinitive verbs, plural collection nouns, layer terms over cross-layer domain nouns), then call ONCE: `mustard-rt run feature --intent "<lapidated terms + the request content words>"`. PT hits the code PT, EN its EN, a wrong guess matches nothing (deterministic, no model call). Lapidation rules: `${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md`.
+3. Lapidate the intent to code vocabulary YOURSELF, then call ONCE: `mustard-rt run feature --intent "<lapidated terms + the request content words>"` (deterministic, no model call). Lapidation + query-shaping rules: `${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md`.
 
 | Digest field | Rule |
 |---|---|
@@ -45,12 +45,12 @@ No stage emit here; the slug is born at §2 (`spec-draft` backfills the ANALYZE 
 6. `scope="light"` → §3. `scope="full"` → open `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` and stop reading this file.
 7. Digest `concerns` ≥2 → each is its own unit, scoped to its anchors (Full: a wave; light/task: its own dispatch).
 
-Orientation labels (plan-prepare decides on a populated census): light = 1-2 layers, ≤5 files, mirrors a slice · extended-light = matched slice + modifies existing, 6-8 files · full = 3+ layers, net-new, ≥2 slices with ≥2 layers, or >8 files.
+Orientation labels (plan-prepare decides on a populated census): light = 1-2 layers, ≤5 files, mirrors a slice · extended-light (internal flow label — emits the canonical scope `light`) = matched slice + modifies existing, 6-8 files · full = 3+ layers, net-new, ≥2 slices with ≥2 layers, or >8 files.
 
 ## 3. Light / Extended-Light EXECUTE (inline — Full never reaches here)
 
 - Present the spec WITH the approval question: print it in the final message AND attach it as the `preview` of the AskUserQuestion options — "Approve and implement?" / "Adjust (give feedback)" / "Save for later (stop)". Never ask about a plan the user has not seen.
-- On approve: `emit-phase --to Execute` → `exec-rewave-check` (decomposed → use the wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch via `agent-prompt-render --emit ref` (the 2-line stub stdout IS the Task prompt, passed verbatim; all agents of a wave in one message; each with its role subagent_type) → per-wave validate → REVIEW per subproject (`review-result`, max 2 fix loops) → QA (`qa-run`: pass → CLOSE; fail → return the failing AC; skip → warn + allow CLOSE).
+- On approve: `emit-phase --to Execute` → `exec-rewave-check` (decomposed → use the wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch via `agent-prompt-render --emit ref` — never hand-craft (stub stdout passed verbatim as the Task prompt; all agents of a wave in one message; each with its role subagent_type) → per-wave validate → REVIEW per subproject (`review-result`, max 2 fix loops) → QA (`qa-run`: pass → CLOSE; fail → return the failing AC; skip → warn + allow CLOSE).
 - Prompt render + subagent_type mapping: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. The dispatch loop itself: `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § B`.
 
 ## Inviolable (all scopes)

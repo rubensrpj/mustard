@@ -198,7 +198,8 @@ pub enum SpecCmd {
         root: PathBuf,
     },
     /// Emit the deterministic spec-approval event sequence (replaces the
-    /// hand-assembled `emit-pipeline` steps in `approve-only-flow.md`).
+    /// hand-assembled `emit-pipeline` steps of the legacy approve flow —
+    /// now `plugin/refs/spec/resume-loop.md § A`).
     ///
     /// Emits, in order: `pipeline.stage {stage:"Plan"}` → `pipeline.status
     /// {from:"draft",to:"approved"}`, and — only with `--resume` — a trailing

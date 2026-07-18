@@ -7,9 +7,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export interface ProjectDetection {
-  /** True when `<path>/.claude/CLAUDE.md` exists. */
+  /** True when the project-root `<path>/mustard.json` exists (the workspace
+   *  anchor every install writes — `.claude/CLAUDE.md` is no longer planted). */
   installed: boolean;
-  /** Mustard CLI version stamped into `<path>/.claude/mustard.json`, when
+  /** Mustard CLI version stamped into `<path>/mustard.json`, when
    *  readable. `null` when the file is missing or malformed. */
   version: string | null;
 }

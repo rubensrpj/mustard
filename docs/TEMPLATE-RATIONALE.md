@@ -25,10 +25,12 @@
 - Contexto is a briefing, not agent input. Bad shape (real case): citing commit hashes, `UserTenant`, "DB-level" — assumes module knowledge, reads as compressed synthesis. Good shape (real case): explains *tenant* on first use, states the impact in user/business terms ("o mesmo email aparece em duas linhas"), no line numbers. A reader must answer "what's broken and why does it matter?" from Contexto alone.
 - Component Contract exists because FE agents improvise variants/states/a11y without an explicit contract ("AI-look": literal colors, missing empty states). It is UI-only because on backend specs it is pure bloat.
 
-## Pipeline execution (pipeline-execution SKILL)
+## Pipeline execution
+
+(The `pipeline-execution` SKILL was deleted 2026-07-18: `disable-model-invocation: true` kept it out of every context and nothing Read/Skill-loaded it — an unreachable file is not a law. Its surviving laws live in the render's `{role_block}` (diff-obeys-Guards/molds) and `commands/close.md` (capability authoring); the rationale stays here.)
 
 - Guards/molds are law for the DIFF (shape, not behavior) because "works" is not the bar — parallel conventions rot a codebase into many codebases. Divergence is the owner's call: agents flag, never impose.
-- The spec-memory relevance gate exists because irrelevant injected principles measurably degrade subagent reasoning (distractors compound with depth). Haiku is pinned there as a bounded mechanical judge — the one exception to inherit-session-model, kept in the orchestration layer so RT stays LLM-free and byte-stable.
+- The spec-memory relevance gate existed because irrelevant injected principles measurably degrade subagent reasoning (distractors compound with depth). The Haiku-pinned judge was RETIRED with the skill — the deterministic recall matcher (the former fallback) is the definitive selector; RT stays LLM-free and byte-stable.
 - `wave-advance` returns rendered rounds because hand-assembled prompts and hand-picked agents caused drift; the orchestrator is a relay. The `MUSTARD-PROMPT-REF` stub exists so the full prompt never transits (and re-bills) the parent context.
 - Review's 7 categories with Guards/molds as CRITICAL: field evals showed style-note demotion let violations ship.
 

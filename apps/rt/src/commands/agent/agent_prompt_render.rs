@@ -16,7 +16,11 @@
 //! - `first` → render the Dispatch Template block (`<!-- TEMPLATE: dispatch -->`).
 //! - `granular` / `fix-loop` → render the Minimal Retry Template block
 //!   (`<!-- TEMPLATE: retry -->`); `{retry_context}` is read from
-//!   `--retry-context-file` when provided, else `""`.
+//!   `--retry-context-file` when provided, else composed by
+//!   [`compose_retry_context`] from what the spec already recorded (the last
+//!   review verdict + persisted findings + the prior-wave diff and change
+//!   requests), so a rejected wave is re-dispatched with the WHY rather than a
+//!   blank prompt. Empty only when the spec recorded none of those.
 
 use crate::shared::context::project_dir;
 use crate::commands::agent::context_inject;
@@ -430,13 +434,20 @@ pub(crate) fn render_prompt_at(
     // Remaining deterministic placeholders the dispatch template carries:
     //   {reference_files}  the spec's `## Files`/`## Arquivos` list + public
     //                      signatures of those files via tree-sitter
-    //   {context_extras}   the per-role slice of `.claude/pipeline-config.md`
     let reference_files = build_reference_files(&project, &subproject_str, &op_spec_path);
-    let context_extras = build_context_extras(&project, role);
+    // The retry prompt (granular / fix-loop) carries the WHY a wave was
+    // rejected. An explicit `--retry-context-file` still wins verbatim (the
+    // historical contract); otherwise compose the context from what the spec
+    // already recorded — the review verdict + persisted findings + the
+    // prior-wave diff and change requests already built above — so the
+    // re-dispatched implementer is not sent back in blind. First mode never
+    // carries retry context.
     let retry_context = match (mode, retry_context_file) {
         (RenderMode::First, _) => String::new(),
         (_, Some(path)) => mfs::read_to_string(path).unwrap_or_default(),
-        (_, None) => String::new(),
+        (_, None) => {
+            compose_retry_context(&project, spec, &spec_dir, &prior_wave_diff, &change_log)
+        }
     };
 
     // No size budget: every placeholder rides in full. Relevance is the only
@@ -457,7 +468,6 @@ pub(crate) fn render_prompt_at(
         ("{cross_wave_memory}", &cross_wave_memory),
         ("{reference_files}", &reference_files),
         ("{skills_list}", &skills_list),
-        ("{context_extras}", &context_extras),
         ("{retry_context}", &retry_context),
     ];
     for (key, value) in substitutions {
@@ -678,7 +688,8 @@ fn build_patterns_role_block(subproject: &str) -> String {
          framework the exemplars don't use. A cluster you refuse (no teachable shape, \
          exemplars unreadable or generated-only, role already covered by another mold) → \
          deliver `=== DECLINE: <slug> ===` <one-line reason> `=== END ===` so the caller \
-         records it and no future scan re-proposes it."
+         records it and the NEXT scan round skips it (the decline ledger clears after one \
+         cycle — a later scan may re-propose the cluster)."
     )
 }
 
@@ -1095,6 +1106,94 @@ fn read_prior_wave_diff(project: &Path, spec: &str, wave_num: u32) -> String {
     String::new()
 }
 
+/// Read every harness event recorded for `spec` from its per-spec NDJSON sink
+/// (`.claude/spec/{spec}/.events`), chronologically sorted by the core reader.
+/// Empty on any path/IO error — fail-open like every reader here.
+fn read_spec_events(
+    project: &Path,
+    spec: &str,
+) -> Vec<mustard_core::domain::model::event::HarnessEvent> {
+    let Ok(sp) = ClaudePaths::for_project(project).and_then(|p| p.for_spec(spec)) else {
+        return Vec::new();
+    };
+    mustard_core::view::projection::read_harness_events_from_ndjson_dir(&sp.events_dir())
+}
+
+/// Compose the `## RETRY CONTEXT` body for a re-dispatched wave (granular /
+/// fix-loop) when the caller passed no explicit `--retry-context-file`. A
+/// rejected wave otherwise went back to the implementer with a blank prompt;
+/// this folds in the WHY from what the spec already recorded:
+///   - the last `review.result` verdict + critical count and the last
+///     `pipeline.wave.failed` signal (the event summary);
+///   - the reviewer's findings persisted at `<spec>/review/findings.md`
+///     (written by `review-result --findings-file`);
+///   - the prior-wave diff and mid-pipeline change requests already computed in
+///     [`render_prompt_at`] and passed in here — the retry template omits both,
+///     and re-passing them avoids reading anything twice.
+///
+/// Every part is optional; when all resolve empty the result is `""` and the
+/// `## RETRY CONTEXT` heading collapses (`collapse_empty_sections`). Sub-headings
+/// are `### ` so they are never mistaken for `## ` section boundaries.
+/// Deterministic: the event reader sorts by `ts`, so "last" is stable, and the
+/// findings/diff/change-log inputs are byte-stable on disk.
+fn compose_retry_context(
+    project: &Path,
+    spec: Option<&str>,
+    spec_dir: &Path,
+    prior_wave_diff: &str,
+    change_log: &str,
+) -> String {
+    let mut sections: Vec<String> = Vec::new();
+
+    // 1. Event summary — the last review verdict + wave-failure signal. Only a
+    //    spec has an event sink; a spec-less retry skips straight to the files.
+    if let Some(s) = spec {
+        let events = read_spec_events(project, s);
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(ev) = events.iter().rev().find(|e| e.event == "review.result") {
+            let verdict = ev.payload.get("verdict").and_then(|v| v.as_str()).unwrap_or("");
+            let critical = ev.payload.get("criticalCount").and_then(|v| v.as_i64()).unwrap_or(0);
+            if !verdict.is_empty() {
+                lines.push(format!(
+                    "Prior review verdict: {} — {critical} critical finding(s).",
+                    verdict.to_uppercase()
+                ));
+            }
+        }
+        if let Some(ev) = events.iter().rev().find(|e| e.event == "pipeline.wave.failed") {
+            // The twin payload today is `{spec, wave}`; a richer emitter may add
+            // a `reason`. Prefer the reason, else name the wave that failed.
+            let reason = ev.payload.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            if !reason.is_empty() {
+                lines.push(format!("Last wave failure: {reason}"));
+            } else if let Some(w) = ev.payload.get("wave").and_then(|v| v.as_u64()) {
+                lines.push(format!("Last wave failure recorded (wave {w})."));
+            }
+        }
+        if !lines.is_empty() {
+            sections.push(format!("### Prior verdict\n{}", lines.join("\n")));
+        }
+    }
+
+    // 2. The reviewer's persisted findings (`review-result --findings-file`).
+    let findings =
+        mfs::read_to_string(spec_dir.join("review").join("findings.md")).unwrap_or_default();
+    if !findings.trim().is_empty() {
+        sections.push(format!("### Review findings\n{}", findings.trim()));
+    }
+
+    // 3. Reuse the already-built prior-wave diff + change requests so the retry
+    //    carries what the retry template otherwise drops.
+    if !prior_wave_diff.trim().is_empty() {
+        sections.push(format!("### Prior wave diff\n{}", prior_wave_diff.trim()));
+    }
+    if !change_log.trim().is_empty() {
+        sections.push(format!("### Change requests\n{}", change_log.trim()));
+    }
+
+    sections.join("\n\n")
+}
+
 // ---------------------------------------------------------------------------
 // Capabilities — durable "what the system already does" injection.
 //
@@ -1496,49 +1595,6 @@ fn first_path_token(line: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-/// Build `{context_extras}` — the per-role slice of `.claude/pipeline-config.md`.
-///
-/// Scans `pipeline-config.md` for a `## ` / `### ` heading that names the role
-/// (case-insensitive substring, e.g. role `review` matches `## Review Rules`)
-/// and returns that section's body up to the next same-or-higher heading.
-/// Reuses the same heading-scan shape as [`read_guards_block`]. Empty when the
-/// file or a role-specific section is absent (fail-open).
-fn build_context_extras(project: &Path, role: &str) -> String {
-    let cfg = ClaudePaths::for_project(project)
-        .map(|p| p.claude_dir().join("pipeline-config.md"))
-        .unwrap_or_else(|_| project.join(".claude").join("pipeline-config.md"));
-    let text = mfs::read_to_string(&cfg).unwrap_or_default();
-    if text.is_empty() {
-        return String::new();
-    }
-    let role_lc = role.trim().to_ascii_lowercase();
-    if role_lc.is_empty() {
-        return String::new();
-    }
-    let mut in_section = false;
-    let mut collected = String::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
-            if in_section {
-                break; // Next heading ends the role slice.
-            }
-            let heading = trimmed.trim_start_matches('#').trim().to_ascii_lowercase();
-            if heading.contains(&role_lc) {
-                in_section = true;
-                collected.push_str(line);
-                collected.push('\n');
-                continue;
-            }
-        }
-        if in_section {
-            collected.push_str(line);
-            collected.push('\n');
-        }
-    }
-    collected.trim().to_string()
 }
 
 /// Find unfilled `{placeholder}` tokens (lowercase + underscore identifiers).
@@ -2357,7 +2413,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // F3-b — {entity_info} / {reference_files} / {context_extras} fillers
+    // F3-b — {reference_files} filler
     // -----------------------------------------------------------------------
 
     /// Plant a workspace anchor so `ClaudePaths::for_project` accepts the temp dir.
@@ -2391,23 +2447,57 @@ mod tests {
         assert!(build_reference_files(dir.path(), "api", &empty_spec).is_empty());
     }
 
+    /// B1: `compose_retry_context` folds the persisted findings, the prior-wave
+    /// diff and the mid-pipeline change requests into the retry body under `### `
+    /// sub-headings; nothing recorded → `""` (so `## RETRY CONTEXT` collapses).
     #[test]
-    fn build_context_extras_slices_role_section() {
+    fn compose_retry_context_folds_findings_diff_and_changelog() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
-        let cfg = ClaudePaths::for_project(dir.path()).unwrap().claude_dir().join("pipeline-config.md");
-        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-        std::fs::write(
-            &cfg,
-            "# Pipeline\n## Review Rules\n- stay skeptical\n- run tests\n## Parallel Rules\n- single message\n",
-        )
-        .unwrap();
-        let extras = build_context_extras(dir.path(), "review");
-        assert!(extras.contains("Review Rules"));
-        assert!(extras.contains("stay skeptical"));
-        assert!(!extras.contains("Parallel Rules"), "slice bled into next heading");
-        // Unknown role → empty.
-        assert!(build_context_extras(dir.path(), "nonexistent-role").is_empty());
+        // Findings persisted by `review-result --findings-file`.
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("demo").unwrap();
+        let review_dir = sp.dir().join("review");
+        std::fs::create_dir_all(&review_dir).unwrap();
+        std::fs::write(review_dir.join("findings.md"), "- critical: null deref in parse()\n").unwrap();
+
+        let body = compose_retry_context(
+            dir.path(),
+            Some("demo"),
+            sp.dir(),
+            "diff --git a/x b/x\n+added line",
+            "- **ts1** — tighten the guard",
+        );
+        assert!(body.contains("### Review findings"), "findings heading: {body}");
+        assert!(body.contains("null deref in parse()"), "findings body: {body}");
+        assert!(body.contains("### Prior wave diff"), "diff heading: {body}");
+        assert!(body.contains("+added line"), "diff body: {body}");
+        assert!(body.contains("### Change requests"), "changelog heading: {body}");
+        assert!(body.contains("tighten the guard"), "changelog body: {body}");
+
+        // Nothing recorded → empty (the `## RETRY CONTEXT` heading collapses).
+        let bare = ClaudePaths::for_project(dir.path()).unwrap().for_spec("bare").unwrap();
+        assert!(
+            compose_retry_context(dir.path(), Some("bare"), bare.dir(), "", "").is_empty(),
+            "no signals must yield empty retry context"
+        );
+    }
+
+    /// B1: the retry template carries a `## RETRY CONTEXT` heading that collapses
+    /// when the body is empty and survives (with its body) when filled — the fix
+    /// for the bare `{retry_context}` that had no heading at all.
+    #[test]
+    fn retry_template_retry_context_heading_collapses_when_empty() {
+        let body = extract_block(TEMPLATE, "retry").expect("retry block present");
+        assert!(body.contains("## RETRY CONTEXT"), "retry heading missing: {body}");
+        // Empty retry_context → the heading collapses.
+        let empty = collapse_empty_sections(&body.replace("{retry_context}", ""));
+        assert!(!empty.contains("## RETRY CONTEXT"), "empty heading must collapse: {empty}");
+        // Non-empty retry_context → the heading and its body survive.
+        let filled = collapse_empty_sections(
+            &body.replace("{retry_context}", "### Review findings\n- x"),
+        );
+        assert!(filled.contains("## RETRY CONTEXT"), "filled heading must survive: {filled}");
+        assert!(filled.contains("Review findings"), "filled body present: {filled}");
     }
 
     // --- capability_block: durable, relevance-gated, never mutates -----------
@@ -2585,10 +2675,10 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_render_fills_three_placeholders_and_leaves_no_unfilled() {
-        // End-to-end: assemble the dispatch block, substitute the three F3-b
-        // placeholders + the rest with realistic values, then assert no
-        // `{...}` placeholder remains (the `scan_unfilled` contract).
+    fn dispatch_render_fills_placeholders_and_leaves_no_unfilled() {
+        // End-to-end: assemble the dispatch block, substitute the deterministic
+        // placeholders with realistic values, then assert no `{...}` placeholder
+        // remains (the `scan_unfilled` contract).
         let dir = tempdir().unwrap();
         anchor(dir.path());
         let sub = dir.path().join("api");
@@ -2600,19 +2690,15 @@ mod tests {
             "# T\n## Files\n- `widget.rs`\n## Tasks\n- [ ] refactor the widget pipeline\n",
         )
         .unwrap();
-        let cfg = ClaudePaths::for_project(dir.path()).unwrap().claude_dir().join("pipeline-config.md");
-        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-        std::fs::write(&cfg, "# P\n## Review Rules\n- skeptical\n## Next\n- x\n").unwrap();
 
         let task_steps = read_task_steps(&spec);
         let reference_files = build_reference_files(dir.path(), "api", &spec);
-        let context_extras = build_context_extras(dir.path(), "review");
         assert!(!reference_files.is_empty(), "reference_files empty");
-        assert!(!context_extras.is_empty(), "context_extras empty");
 
         let mut rendered = extract_block(TEMPLATE, "dispatch").expect("dispatch block");
-        // The removed `{entity_info}` / `{recommended_skills}` placeholders are no
-        // longer in the template, so they are not substituted here either.
+        // The removed `{entity_info}` / `{recommended_skills}` / `{context_extras}`
+        // placeholders are no longer in the template, so they are not substituted
+        // here either.
         let subs: &[(&str, &str)] = &[
             ("{subproject}", "api"),
             ("{guards_summary}", "g"),
@@ -2625,7 +2711,6 @@ mod tests {
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
             ("{skills_list}", ""),
-            ("{context_extras}", &context_extras),
             ("{retry_context}", ""),
         ];
         for (k, v) in subs {
@@ -2635,7 +2720,6 @@ mod tests {
         // MEMORY, PRIOR WAVE DIFF) before the unfilled-placeholder check.
         let rendered = collapse_empty_sections(&rendered);
         assert!(rendered.contains("widget.rs"), "reference_files not rendered");
-        assert!(rendered.contains("Review Rules"), "context_extras not rendered");
         assert!(
             scan_unfilled(&rendered).is_empty(),
             "unfilled placeholders remain: {:?}",

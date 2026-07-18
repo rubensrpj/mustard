@@ -12,12 +12,15 @@ use std::fs;
 use mustard_cli::commands::init::{InitOptions, init_with_templates};
 
 /// Build a minimal fake `templates/` payload `init` can seed from. The thin
-/// Mustard 2.0 init reads only `CLAUDE.md`, `settings.json`, and `.gitignore`;
-/// the content payload (commands/skills/agents/refs) ships in the plugin now.
+/// Mustard 2.0 init reads `settings.json`, `.gitignore`, and the `mustard/`
+/// injectable instruction files (the orchestrator is injected by the session
+/// hooks now — no `CLAUDE.md` is planted); the content payload
+/// (commands/skills/agents/refs) ships in the plugin.
 fn fake_templates(root: &std::path::Path) -> std::path::PathBuf {
     let templates = root.join("templates");
-    fs::create_dir_all(&templates).unwrap();
-    fs::write(templates.join("CLAUDE.md"), "# rules").unwrap();
+    fs::create_dir_all(templates.join("mustard")).unwrap();
+    fs::write(templates.join("mustard/orchestrator.md"), "# Orchestrator Rules
+").unwrap();
     fs::write(templates.join("settings.json"), r#"{"env":{"MUSTARD_TEST":"1"}}"#).unwrap();
     fs::write(templates.join(".gitignore"), "spec/*/.events/
 ").unwrap();
@@ -40,7 +43,14 @@ fn init_runs_non_interactively_and_is_idempotent() {
     .expect("init should run without a terminal");
 
     let claude = project.join(".claude");
-    assert!(claude.join("CLAUDE.md").exists(), ".claude/ scaffolded");
+    assert!(
+        claude.join("mustard").join("orchestrator.md").exists(),
+        ".claude/mustard/ injectables scaffolded"
+    );
+    assert!(
+        !claude.join("CLAUDE.md").exists(),
+        "no .claude/CLAUDE.md planted — the orchestrator is injected now"
+    );
     assert!(project.join("mustard.json").exists(), "version stamp written at project root");
     assert!(!claude.join("mustard.json").exists(), "no .claude/mustard.json");
 
@@ -54,7 +64,7 @@ fn init_runs_non_interactively_and_is_idempotent() {
     .expect("re-running init should re-seed without a terminal");
 
     assert!(
-        claude.join("CLAUDE.md").exists(),
+        claude.join("mustard").join("orchestrator.md").exists(),
         "core seed still present after the idempotent re-seed",
     );
 }

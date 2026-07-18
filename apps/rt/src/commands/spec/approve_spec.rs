@@ -1,9 +1,9 @@
 //! `mustard-rt run approve-spec` — deterministic spec-approval event sequence.
 //!
-//! Replaces the hand-assembled `emit-pipeline` sequence the approve-flow SKILL
-//! used to make the LLM run by hand (`approve-only-flow.md` step 5: emit
-//! `pipeline.stage Plan` then `pipeline.status from:draft,to:approved`; step 4:
-//! patch the wave-1 `meta.json` for dispatch). The orchestrator now relays a
+//! Replaces the hand-assembled `emit-pipeline` sequence the legacy approve
+//! flow (now `plugin/refs/spec/resume-loop.md § A`) used to make the LLM run
+//! by hand (emit `pipeline.stage Plan` then `pipeline.status
+//! from:draft,to:approved`; patch the wave-1 `meta.json` for dispatch). The orchestrator now relays a
 //! single `mustard-rt run approve-spec` invocation and acts on the JSON report.
 //!
 //! ## Emitted sequence (in order)

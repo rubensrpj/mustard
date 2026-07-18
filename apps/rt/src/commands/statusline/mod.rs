@@ -25,7 +25,7 @@ pub(crate) mod theme;
 
 use segment::{
     context_segment, cost_segment, diff_segment, duration_segment, git_segment,
-    model_segment, module_segment, savings_segment, version_segment,
+    model_segment, module_segment, mustard_segment, savings_segment, version_segment,
     Segment,
 };
 use serde_json::Value;
@@ -69,6 +69,11 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     }
     segs.push(model_segment(data));
     if let Some(s) = version_segment(data) {
+        segs.push(s);
+    }
+    // Mustard's own tail mark: harness version, or the yellow drift hint
+    // (`m{stamped}↑{current}`) when the project needs `/mustard:upsert`.
+    if let Some(s) = mustard_segment(&cwd) {
         segs.push(s);
     }
     segs

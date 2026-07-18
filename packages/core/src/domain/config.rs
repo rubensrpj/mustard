@@ -218,6 +218,27 @@ pub struct RolePattern {
     pub role: String,
 }
 
+/// One `inject` declaration: an instruction file the session hooks splice into
+/// the agent's window as `additionalContext` on a given trigger.
+///
+/// The files live in the project (canonically `.claude/mustard/*.md`, seeded
+/// by `init` and freely editable by the user); `mustard.json#inject` declares
+/// which file rides which trigger. This replaces the planted
+/// `.claude/CLAUDE.md` orchestrator: content is *injected*, never written into
+/// the project's own instruction files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Injectable {
+    /// Trigger name (`userPromptSubmit`, `sessionStart`). Matched
+    /// case-insensitively — [`ProjectConfig::injectables`] lowercases it.
+    pub on: String,
+    /// Project-root-relative path of the file whose content is injected.
+    pub file: String,
+    /// Deliver at most once per session (the hooks keep a per-session marker
+    /// under `.claude/.session/<id>/`). Defaults to `false` (every trigger).
+    #[serde(default)]
+    pub once: bool,
+}
+
 /// The build/test/lint/type-check command set resolved from `mustard.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Commands {
@@ -274,6 +295,10 @@ pub struct ProjectConfig {
     pub max_active_specs: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub role_patterns: Vec<RolePattern>,
+    /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
+    /// Consumed through the normalising [`ProjectConfig::injectables`] accessor.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inject: Vec<Injectable>,
     /// Optional architectural layer order for the deterministic wave fallback
     /// used when the import DAG has no depth (all-net-new features, no edges to
     /// order by). Roles are scheduled in this order — each wave depends on the
@@ -422,6 +447,29 @@ impl ProjectConfig {
     #[must_use]
     pub fn drift_threshold(&self) -> Option<u32> {
         self.amend.drift_threshold.and_then(|n| u32::try_from(n).ok())
+    }
+
+    /// Declared injectables, normalised fail-open: entries with a blank `on`
+    /// or `file` are dropped (a config typo silences that entry, never the
+    /// hook), `on` is trimmed + ASCII-lowercased so hooks compare against
+    /// lowercase trigger names, and `file` is trimmed. Order preserved.
+    #[must_use]
+    pub fn injectables(&self) -> Vec<Injectable> {
+        self.inject
+            .iter()
+            .filter_map(|entry| {
+                let on = entry.on.trim();
+                let file = entry.file.trim();
+                if on.is_empty() || file.is_empty() {
+                    return None;
+                }
+                Some(Injectable {
+                    on: on.to_ascii_lowercase(),
+                    file: file.to_string(),
+                    once: entry.once,
+                })
+            })
+            .collect()
     }
 
     /// Resolve the banner/drafter [`I18n`] (locale + tone) for this project.
@@ -576,6 +624,75 @@ mod tests {
         assert_eq!(cfg.i18n().lang, SupportedLocale::PtBr);
         cfg.tone = Some("concise".into());
         assert_eq!(cfg.i18n().tone, Tone::Concise);
+    }
+
+    #[test]
+    fn inject_round_trips_through_write_and_load() {
+        let dir = tempdir().unwrap();
+        let mut cfg = ProjectConfig::default();
+        cfg.inject = vec![
+            Injectable {
+                on: "userPromptSubmit".into(),
+                file: ".claude/mustard/orchestrator.md".into(),
+                once: true,
+            },
+            Injectable {
+                on: "sessionStart".into(),
+                file: ".claude/mustard/response-style.md".into(),
+                once: false,
+            },
+        ];
+        cfg.write(dir.path()).unwrap();
+
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"inject\""), "inject key serialized: {raw}");
+        assert!(raw.contains("userPromptSubmit"), "on value preserved verbatim on disk");
+
+        let back = ProjectConfig::load(dir.path());
+        assert_eq!(back.inject.len(), 2, "both entries survive the round-trip");
+        assert_eq!(back.inject[0].file, ".claude/mustard/orchestrator.md");
+        assert!(back.inject[0].once);
+        assert!(!back.inject[1].once, "explicit once=false survives");
+
+        // The accessor normalises `on` to lowercase without touching the file.
+        let norm = back.injectables();
+        assert_eq!(norm[0].on, "userpromptsubmit");
+        assert_eq!(norm[1].on, "sessionstart");
+    }
+
+    #[test]
+    fn injectables_filters_blank_entries_fail_open() {
+        let mut cfg = ProjectConfig::default();
+        cfg.inject = vec![
+            Injectable { on: "  ".into(), file: "x.md".into(), once: false },
+            Injectable { on: "sessionStart".into(), file: "".into(), once: true },
+            Injectable { on: " SessionStart ".into(), file: " a.md ".into(), once: true },
+        ];
+        let got = cfg.injectables();
+        assert_eq!(got.len(), 1, "blank on/file entries are dropped: {got:?}");
+        assert_eq!(got[0].on, "sessionstart", "on is trimmed + lowercased");
+        assert_eq!(got[0].file, "a.md", "file is trimmed");
+        assert!(got[0].once);
+    }
+
+    #[test]
+    fn load_without_inject_defaults_to_empty() {
+        // An older mustard.json that predates the field loads fine and the
+        // accessor yields no injectables (fail-open Default).
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"make"}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.inject.is_empty());
+        assert!(cfg.injectables().is_empty());
+        // `once` missing on disk → false.
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"inject":[{"on":"sessionStart","file":"a.md"}]}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.injectables().len(), 1);
+        assert!(!cfg.injectables()[0].once, "absent once defaults to false");
     }
 
     #[test]

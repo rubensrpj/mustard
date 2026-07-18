@@ -1,7 +1,7 @@
 //! One module per `mustard` subcommand.
 //!
 //! Mustard 2.0 thin bootstrap: [`init`] seeds the harness (settings.json,
-//! orchestrator `CLAUDE.md`, `.gitignore`, `mustard.json`) and enables the
+//! the `.claude/mustard/` injectables, `.gitignore`, `mustard.json`) and enables the
 //! `mustard` plugin; [`config`] reconfigures git flow; [`add`] installs a
 //! third-party community template (the one fetch the plugin marketplace does
 //! not cover). `update` was retired — versioned refreshes come from the plugin

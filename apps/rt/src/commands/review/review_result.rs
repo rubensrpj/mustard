@@ -21,12 +21,19 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Record a REVIEW outcome: emit the event + metric, return the payload JSON.
+///
+/// `findings_file`, when present and readable, is persisted verbatim to
+/// `<spec>/review/findings.md` beside `verdict.md` — the retry renderer folds it
+/// into the re-dispatched implementer's `## RETRY CONTEXT`. Absent ⇒ no findings
+/// file is written (backward-compatible). The `review.result` event and its
+/// payload are unaffected either way.
 fn record_review(
     cwd: &Path,
     spec: &str,
     verdict: &str,
     critical_count: i64,
     subproject: Option<&str>,
+    findings_file: Option<&Path>,
 ) -> serde_json::Value {
     let payload = json!({
         "spec": spec,
@@ -65,7 +72,35 @@ fn record_review(
     // D4: materialise the human-readable verdict beside the phase dir.
     write_review_verdict_md(cwd, spec, verdict, critical_count, subproject);
 
+    // B1: persist the reviewer's findings so the retry prompt carries the WHY.
+    if let Some(path) = findings_file {
+        write_review_findings_md(cwd, spec, path);
+    }
+
     payload
+}
+
+/// Persist the reviewer's findings to `.claude/spec/{spec}/review/findings.md`
+/// (beside `verdict.md`). Reads `findings_file` and writes its content
+/// atomically via [`fs::write_atomic`]. Fail-open: an unreadable source, a
+/// missing project root, or a write error is a silent no-op — the findings file
+/// is an optional aid the retry renderer reuses, never load-bearing (the
+/// `review.result` event is the durable record).
+fn write_review_findings_md(cwd: &Path, spec: &str, findings_file: &Path) {
+    let Ok(content) = fs::read_to_string(findings_file) else {
+        return;
+    };
+    let Some(sp) = ClaudePaths::for_project(cwd)
+        .ok()
+        .and_then(|p| p.for_spec(spec).ok())
+    else {
+        return;
+    };
+    let review_dir = sp.dir().join("review");
+    if fs::create_dir_all(&review_dir).is_err() {
+        return;
+    }
+    let _ = fs::write_atomic(review_dir.join("findings.md"), content.as_bytes());
 }
 
 /// Write the materialised verdict at `.claude/spec/{spec}/review/verdict.md`
@@ -106,10 +141,16 @@ fn write_review_verdict_md(
 }
 
 /// Dispatch `mustard-rt run review-result`.
-pub fn run(spec: Option<&str>, verdict: Option<&str>, critical: i64, subproject: Option<&str>) {
+pub fn run(
+    spec: Option<&str>,
+    verdict: Option<&str>,
+    critical: i64,
+    subproject: Option<&str>,
+    findings_file: Option<&Path>,
+) {
     let (Some(spec), Some(verdict)) = (spec, verdict) else {
         eprintln!(
-            "Usage: review-result --spec <name> --verdict approved|rejected [--critical <N>] [--subproject <name>]"
+            "Usage: review-result --spec <name> --verdict approved|rejected [--critical <N>] [--subproject <name>] [--findings-file <path>]"
         );
         return;
     };
@@ -123,7 +164,7 @@ pub fn run(spec: Option<&str>, verdict: Option<&str>, critical: i64, subproject:
         .or_else(|| Some(PathBuf::from(project_dir())))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let payload = record_review(&cwd, spec, verdict, critical, subproject);
+    let payload = record_review(&cwd, spec, verdict, critical, subproject, findings_file);
     let out = json!({ "event": "review.result", "payload": payload });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
 }
@@ -136,7 +177,7 @@ mod tests {
     #[test]
     fn record_emits_event_and_metric() {
         let dir = tempdir().unwrap();
-        let payload = record_review(dir.path(), "demo", "approved", 0, Some("api"));
+        let payload = record_review(dir.path(), "demo", "approved", 0, Some("api"), None);
         assert_eq!(payload["verdict"], json!("approved"));
         assert_eq!(payload["subproject"], json!("api"));
 
@@ -173,7 +214,7 @@ mod tests {
     #[test]
     fn review_verdict_md_is_materialized() {
         let dir = tempdir().unwrap();
-        record_review(dir.path(), "demo", "approved", 2, Some("api"));
+        record_review(dir.path(), "demo", "approved", 2, Some("api"), None);
 
         let verdict_path = ClaudePaths::for_project(dir.path())
             .unwrap()
@@ -187,5 +228,38 @@ mod tests {
         assert!(md.contains("Verdict: **APPROVED**"));
         assert!(md.contains("Critical findings: 2"));
         assert!(md.contains("Subproject: `api`"));
+    }
+
+    /// B1: `--findings-file` persists the reviewer's findings to
+    /// `.claude/spec/{spec}/review/findings.md` beside `verdict.md`; absent, no
+    /// findings file is written (backward-compatible).
+    #[test]
+    fn findings_file_is_persisted_when_supplied() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("findings-src.md");
+        std::fs::write(&src, "- critical: null deref in parse()\n- minor: rename x\n").unwrap();
+
+        record_review(dir.path(), "demo", "rejected", 1, Some("api"), Some(&src));
+
+        let findings_path = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .for_spec("demo")
+            .unwrap()
+            .dir()
+            .join("review")
+            .join("findings.md");
+        let md = std::fs::read_to_string(&findings_path).expect("findings.md written");
+        assert!(md.contains("null deref in parse()"), "findings body: {md}");
+
+        // No --findings-file → no findings.md (verdict.md still written).
+        record_review(dir.path(), "bare", "approved", 0, None, None);
+        let bare = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .for_spec("bare")
+            .unwrap()
+            .dir()
+            .join("review")
+            .join("findings.md");
+        assert!(!bare.exists(), "no findings file without --findings-file");
     }
 }

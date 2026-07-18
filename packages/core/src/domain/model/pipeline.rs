@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 /// A canonical pipeline phase.
 ///
-/// Single source of truth: `.claude/refs/canonical-phases.md`. The sequence is
-/// `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`, plus `COORDINATE` for
-/// roadmap / multi-spec parents. `#[non_exhaustive]` because the phase
-/// vocabulary is owned by that ref doc and may grow.
+/// Single source of truth: `plugin/pipeline-config.md § Pipeline Phases`. The
+/// sequence is `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`, plus
+/// `COORDINATE` for roadmap / multi-spec parents. `#[non_exhaustive]` because
+/// the phase vocabulary is owned by that reference doc and may grow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[non_exhaustive]

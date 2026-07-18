@@ -16,7 +16,7 @@ One command runs every gate and, on pass, finalizes in-process:
 mustard-rt run close-orchestrate --spec {spec}
 ```
 
-Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` (fail → block; skip → pass); (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for non-architectural specs); (5) **pipeline-summary** (advisory). It derives `overall`.
+Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` (fail → block; skip with no AC → advisory; skip with ACs recorded → block in strict — a skip is not a verification); (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for non-architectural specs); (5) **pipeline-summary** (advisory). It derives `overall`.
 
 **The finalize is automatic — you never decide whether to call `complete-spec`.** On `overall == "pass"`, `close-orchestrate` chains the finalize in-process: the spec flips to `completed`, `pipeline.complete` is emitted and auto-verified, and `meta.json` is stamped `Close/Completed/CLOSE` (report carries `"chained": true`, `"verified": true|false`). On `overall == "fail"` it is report-only (`"chained": false`) — fix the failing gate and re-run; NEVER hand-call `complete-spec` to bypass a red gate (the `emit-pipeline` QA-gate rejects it anyway).
 
@@ -30,6 +30,7 @@ Blockers: unresolved `BLOCKED` → block; `CONCERN`/`DEFERRED` → surface + pro
 4. Knowledge (max 3 each, skip trivial; durable prose belongs to native auto-memory):
    - decision: `mustard-rt run emit-event --event decision --spec {spec} --payload "title=…" --payload "rationale=…"`
    - lesson: `mustard-rt run emit-event --event lesson --spec {spec} --payload "takeaway=…" --payload "trigger=…"`
+   - capability: `mustard-rt run capability create --slug {slug} --title "…"` when the spec shipped a durable user-facing capability (then link `[[cap.{slug}]]` in the spec)
 5. Metrics: read the pipeline-state projection → `.claude/.metrics/{spec}.json` (omit missing fields).
 6. Print `pipeline-summary` → `wave-tree` → banner `PIPELINE COMPLETE — {spec}` (agents/files/registry + optional `rtk gain` line). All fail-open.
 7. Epic auto-fold is handled in-process by `close-orchestrate` (children all closed → folded) — nothing to run by hand.

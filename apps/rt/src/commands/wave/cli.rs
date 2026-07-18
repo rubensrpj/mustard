@@ -124,7 +124,7 @@ pub enum WaveCmd {
         plan: Option<String>,
     },
     /// Deterministically merge a wave-plan's decomposition back down — the
-    /// "reject decomposition" branch of `approve-only-flow.md`.
+    /// "reject decomposition" branch of `plugin/refs/spec/resume-loop.md § A`.
     ///
     /// `--mode full`: collapse N waves into a single `wave-1-{role}/spec.md`
     /// (parent root spec stays the orchestration doc), delete `wave-2..N`,

@@ -12,15 +12,15 @@ source: manual
 
 Run `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-hygiene.md`; ensure `mustard-rt run scan` has produced `.claude/grain.model.json`. (No stage emit yet — `spec-draft` backfills the `ANALYZE` marker when the slug is born.)
 
-**Locate by what the symptom hands you** (`${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md` owns triage / query-shaping / reading anchors). A bug almost always carries a LITERAL anchor — error message, field/type name, `file:line`, HTTP status, log line → `grep`/`glob` it directly and go straight to DIAGNOSE (skip the digest — a concept query over a literal symptom is too broad). The digest `mustard-rt run feature --intent "…"` is ONLY for a CONCEPT-only symptom (no quotable token — "import broken", "total wrong", "slow") — then READ its anchors.
+**Locate by what the symptom hands you** (`${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md` owns triage / query-shaping / reading anchors): a LITERAL anchor (error message, symbol, `file:line`, log line) → `grep`/`glob` it directly, straight to DIAGNOSE; a CONCEPT-only symptom (no quotable token) → the digest `mustard-rt run feature --intent "…"`, then READ its anchors.
 
-**DIAGNOSE.** Dispatch Explore (`≤20 tool uses, ≤3 full reads`) with the `diagnose` skill, prompt rendered via `agent-prompt-render --role explore --task-text … --emit ref` (spec-less; pass the stub verbatim). Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation. When ≥2 distinct symptoms surface, DIAGNOSE + fix each separately, scoped to its own anchors.
+**DIAGNOSE.** Dispatch Explore (`≤15 tool uses (warn 12), ≤3 full reads`), prompt rendered via `agent-prompt-render --role explore --task-text … --emit ref` (spec-less; pass the stub verbatim). Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation. When ≥2 distinct symptoms surface, DIAGNOSE + fix each separately, scoped to its own anchors.
 
 **Root-cause cache** (in-memory): `sha256(bugDescription|affectedFiles)` + a content hash; reused on a Structural retry when the hash matches and the failure stays inside `affectedFiles`.
 
 ## 2. ASSESS
 
-1-2 files, clear root cause → **Fast Path** (skip PLAN). 3+ files, unclear/cross-layer → **Full Path** (brief spec). **PROMOTE to `/feature`** when the fix becomes feature work — a wide rename, an API/contract change, a UX change, a sweep across subprojects. This can fire mid-pipeline: hand off the moment DIAGNOSE/EXECUTE reveals the true scope (the `change-log.md` records what surfaced).
+1-2 files, clear root cause → **Fast Path** (skip PLAN; canonical emitted scope: `lean`). 3+ files, unclear/cross-layer → **Full Path** (brief spec; canonical emitted scope: `full`). **PROMOTE to `/feature`** when the fix becomes feature work — a wide rename, an API/contract change, a UX change, a sweep across subprojects. This can fire mid-pipeline: hand off the moment DIAGNOSE/EXECUTE reveals the true scope (the `change-log.md` records what surfaced).
 
 ## 3. Full Path spec
 
@@ -30,7 +30,7 @@ Once the slug exists, run `mustard-rt run digest-adherence-finalize --spec {slug
 
 ## 4. EXECUTE
 
-All prompts via `agent-prompt-render --emit ref` (NEVER hand-craft; the 2-line stub IS the Task prompt). Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard-review`; the DIAGNOSE Explore already ran read-only). `role=ui` → append `Read ${CLAUDE_PLUGIN_ROOT}/refs/stack-templates/browser-debug.md before instrumenting.` to `{context_extras}`. Validate: build/type-check passes, no regression (max 3 iterations).
+All prompts via `agent-prompt-render --emit ref` — never hand-craft; stub mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard-review`; the DIAGNOSE Explore already ran read-only). Browser/UI-layer bug → append to the render's `--task-text`: `First Read ${CLAUDE_PLUGIN_ROOT}/refs/stack-templates/browser-debug.md and follow its instrumentation protocol.` Validate: build/type-check passes, no regression (max 3 iterations).
 
 ## 5. Failure routing
 

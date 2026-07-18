@@ -279,6 +279,22 @@ fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Option<String> {
     if !event_accepts_hook_output(event_name) {
         return None;
     }
+    // `UserPromptSubmit` blocks through a DIFFERENT shape than `PreToolUse`:
+    // the harness's discriminated union gives this event no `permissionDecision`
+    // member — a denial is the TOP-LEVEL `{"decision": "block", "reason": …}`
+    // pair (the prompt is erased and the reason shown to the user). Emitting
+    // the PreToolUse shape here would be rejected wholesale and the gate would
+    // silently never fire. Non-deny verdicts keep the shared path below
+    // (`additionalContext` is a valid member for this event).
+    if event_name == "UserPromptSubmit" {
+        if let Verdict::Deny { reason } = &outcome.verdict {
+            let root = serde_json::json!({
+                "decision": "block",
+                "reason": reason,
+            });
+            return Some(root.to_string());
+        }
+    }
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
@@ -385,4 +401,35 @@ mod tests {
         assert!(json.contains("additionalContext"));
     }
 
+    #[test]
+    fn user_prompt_submit_deny_emits_top_level_block_decision() {
+        // A Deny on `UserPromptSubmit` (the installation gate) must speak the
+        // event's OWN blocking shape — top-level `decision: "block"` + `reason`
+        // — never the PreToolUse `permissionDecision` member, which this
+        // event's hookSpecificOutput union does not carry (the harness would
+        // reject the whole response and the gate would silently not fire).
+        let outcome = Outcome {
+            verdict: Verdict::Deny {
+                reason: "Mustard is not installed".to_string(),
+            },
+            warnings: Vec::new(),
+        };
+        let json = hook_specific_output("UserPromptSubmit", &outcome)
+            .expect("a denying UserPromptSubmit outcome must emit output");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed.get("decision").and_then(|v| v.as_str()), Some("block"));
+        assert_eq!(
+            parsed.get("reason").and_then(|v| v.as_str()),
+            Some("Mustard is not installed")
+        );
+        assert!(
+            !json.contains("permissionDecision"),
+            "PreToolUse shape must not leak into UserPromptSubmit: {json}"
+        );
+
+        // A PreToolUse deny keeps the historical permissionDecision shape.
+        let json = hook_specific_output("PreToolUse", &outcome)
+            .expect("a denying PreToolUse outcome must emit output");
+        assert!(json.contains("\"permissionDecision\":\"deny\""), "unexpected: {json}");
+    }
 }

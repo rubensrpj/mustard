@@ -11,9 +11,9 @@
 //! ## Why
 //!
 //! Before this contract the layout was implicit: scattered string templates
-//! inside `apps/cli/templates/commands/mustard/feature/SKILL.md` literally
-//! wrote out ~80 lines of `## Contexto`, `## Tarefas`, `## Critérios de
-//! Aceitação` boilerplate per intent. Skill drift, header drift, AC drift were
+//! inside the legacy feature SKILL (today `plugin/commands/feature.md`)
+//! literally wrote out ~80 lines of `## Contexto`, `## Tarefas`, `## Critérios
+//! de Aceitação` boilerplate per intent. Skill drift, header drift, AC drift were
 //! permanent. The contract pins the canonical sections, makes generation
 //! deterministic, and gives validators an unambiguous referent.
 //!

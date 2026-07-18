@@ -355,6 +355,10 @@ fn classify(
     // 2. CLAUDE.md / pipeline-config.md / grain.model.json / settings.json
     //    sit at the root of every installed `.claude/`. Treat them as KEEP
     //    (their consumers are declared in templates/ and in mustard-rt itself).
+    //    `pipeline-config.md` is no longer generated there by init/update (the
+    //    live rules live in the plugin), but the keep-list entry is PROTECTIVE:
+    //    it stops the pruner from deleting a legacy or hand-authored copy in a
+    //    downstream `.claude/`. Left intentionally.
     let well_known_files: BTreeSet<&'static str> = [
         "CLAUDE.md",
         "pipeline-config.md",

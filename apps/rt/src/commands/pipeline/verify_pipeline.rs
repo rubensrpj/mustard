@@ -212,6 +212,14 @@ fn stack_aware_commands(
 }
 
 /// Fallback: scan `pipeline-config.md` for a Build Command column.
+///
+/// NOTE: `init`/`update` no longer generate `<project>/.claude/pipeline-config.md`
+/// (the live pipeline rules moved to the plugin's `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md`,
+/// read by the LLM, not this binary). This tier is therefore self-disabling —
+/// a missing file yields `Vec::new()` and the chain falls through to
+/// `discover_defaults`. It is kept deliberately: a hand-authored
+/// `.claude/pipeline-config.md` Build table remains a valid manual override of
+/// build-target discovery.
 fn discover_via_config(cwd: &Path) -> Vec<VerifyTarget> {
     let Ok(paths) = ClaudePaths::for_project(cwd) else {
         return Vec::new();

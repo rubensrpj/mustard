@@ -21,7 +21,7 @@ O agente que *usa* o harness reportou três atritos. Investigados e classificado
 
 ## Correção 3 — consolidação dos refs de fluxo
 
-**Decisão:** colapsar `refs/spec/approve-only-flow.md` (109 linhas) + `refs/spec/resume-flow.md` (118 linhas) num único **`refs/spec/resume-loop.md`** (~95 linhas), com duas seções marcadas:
+**Decisão:** colapsar `refs/spec/approve-only-flow.md` (109 linhas) + `refs/spec/resume-flow.md` (118 linhas) *(colapsados em resume-loop.md — layout atual; os dois arquivos não existem mais)* num único **`refs/spec/resume-loop.md`** (~95 linhas), com duas seções marcadas:
 
 - **§A — Approve gate** (`stage=Plan`): render focado, pergunta única de aprovação (com o plano anexado como `preview`), detecção de wave-plan, auditoria de tamanho (advisory), branch de rejeição (contrato `wave-collapse --mode full|light`), `approve-spec`. Se `implementNow=true`, cai direto no §B.
 - **§B — O laço** (`stage=Execute`): `wave-advance` como relay (rodada com prompts renderizados + precheck inline), review round, `review-result --subproject`, `wave-done`, `close-pipeline`. Tabela de escalonamento **inline** (6 linhas) — remove a dependência do `pipeline-config.md § Escalation Statuses`.
