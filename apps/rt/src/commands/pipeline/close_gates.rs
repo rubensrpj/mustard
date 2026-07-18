@@ -36,9 +36,28 @@
 //!
 //! `close-gate.js` distinguishes a *real* sensor failure (non-zero exit →
 //! deny) from an *env error* (spawn failure / timeout → fail-open, never
-//! deny). `bash_guard::run_build` carries a different shape (and the Wave-2
-//! timeout-leak Concern); this module ports `runCommand` faithfully rather
-//! than reuse it, so the env-error/real-failure distinction stays exact.
+//! deny). `bash_guard::run_build` carries a different shape; this module ports
+//! `runCommand` faithfully rather than reuse it, so the env-error/real-failure
+//! distinction stays exact.
+//!
+//! The three shell runners in the crate — [`run_command`] here,
+//! `bash_guard::run_build`, and `qa_run::run_ac_command` — deliberately stay
+//! SEPARATE. Each mirrors a different JS original with a different env-error
+//! taxonomy: here (and in `run_build`) a timeout / spawn failure is an
+//! *env error* that never denies; in `qa-run` the same conditions are a
+//! `skip`, and a `skip` is NOT a `fail` — the close-gate QA sub-gate treats an
+//! all-`skip` run with acceptance criteria present as its own `deny-qa-skip`
+//! verdict. `qa-run` further carries a self-invocation guard, a
+//! compilation-aware variable timeout, and a `raw_arg` shell builder. A single
+//! parametrized runner would have to reproduce all three taxonomies through
+//! per-caller callbacks that buy no clarity and risk a silent verdict drift, so
+//! the consolidation is intentionally declined.
+//!
+//! Timeout handling: [`run_command`] polls with `try_wait`, keeping the
+//! [`std::process::Child`] owned by this thread, so its timeout branch actually
+//! kills the child before failing open — closing the Wave-2 timeout-leak
+//! Concern that previously orphaned the process (the earlier
+//! move-`Child`-into-a-worker-thread shape could not reach it to kill).
 
 use mustard_core::io::fs;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
@@ -48,7 +67,7 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::shared::gate_mode::{resolve_mode, GateMode};
 use crate::util::format_gate_message;
@@ -438,6 +457,9 @@ fn checklist_unmarked_in(raw: &str) -> Option<Vec<String>> {
         }
     }
     let start = start?;
+    // NB: deliberately NOT `spec_sections::section_end` — this gate also treats
+    // a bare `##` (no text after the hashes) as a section boundary, a shape the
+    // shared scanner does not recognise. Folding it in would change behaviour.
     let mut end = lines.len();
     for (i, line) in lines.iter().enumerate().skip(start) {
         if line.starts_with("## ") || *line == "##" {
@@ -715,51 +737,68 @@ fn run_command(cmd: &str, cwd: &str) -> CommandResult {
         }
     };
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let _ = tx.send((status, child));
-    });
-
-    match rx.recv_timeout(COMMAND_TIMEOUT) {
-        Ok((Ok(status), _child)) => {
-            let mut output = String::new();
-            if let Some(mut out) = stdout {
+    // No native wait-with-timeout in std; spawn + poll so the `Child` stays
+    // owned by THIS thread — the only shape in which the timeout branch can
+    // actually kill it (the prior move-into-a-worker-thread form surrendered the
+    // handle and leaked the process: the Wave-2 timeout-leak Concern). `qa-run`
+    // and `verify-pipeline` use this same poll+kill loop. The env-error vs
+    // real-failure classification is UNCHANGED: spawn failure / wait error /
+    // timeout → env error (fail-open); non-zero exit → real failure; exit 0 → ok.
+    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            // Exited within budget — read the piped output (stdout then stderr,
+            // into one buffer, exactly as before) and classify by exit status.
+            Ok(Some(status)) => {
                 use std::io::Read;
-                let _ = out.read_to_string(&mut output);
-            }
-            if let Some(mut err) = stderr {
-                use std::io::Read;
-                let _ = err.read_to_string(&mut output);
-            }
-            if status.success() {
-                CommandResult {
-                    ok: true,
-                    env_error: false,
-                    output: String::new(),
+                let mut output = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut output);
                 }
-            } else {
-                CommandResult {
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut output);
+                }
+                return if status.success() {
+                    CommandResult {
+                        ok: true,
+                        env_error: false,
+                        output: String::new(),
+                    }
+                } else {
+                    CommandResult {
+                        ok: false,
+                        env_error: false,
+                        output: output.trim().to_string(),
+                    }
+                };
+            }
+            // Still running — once the budget is spent, KILL the child and fail
+            // open (the JS `status === null` branch). This is the leak fix: the
+            // child is owned here, so `kill` reaches it; `wait` then reaps it.
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return CommandResult {
+                        ok: false,
+                        env_error: true,
+                        output: format!(
+                            "[timeout after {}ms] {cmd}",
+                            COMMAND_TIMEOUT.as_millis()
+                        ),
+                    };
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // Wait itself failed → env error.
+            Err(err) => {
+                return CommandResult {
                     ok: false,
-                    env_error: false,
-                    output: output.trim().to_string(),
-                }
+                    env_error: true,
+                    output: err.to_string(),
+                };
             }
         }
-        // Wait itself failed → env error.
-        Ok((Err(err), _child)) => CommandResult {
-            ok: false,
-            env_error: true,
-            output: err.to_string(),
-        },
-        // Timed out → env error (fail-open, the JS `status === null` branch).
-        Err(_) => CommandResult {
-            ok: false,
-            env_error: true,
-            output: format!("[timeout after {}ms] {cmd}", COMMAND_TIMEOUT.as_millis()),
-        },
     }
 }
 

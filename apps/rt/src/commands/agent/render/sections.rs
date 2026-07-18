@@ -3,7 +3,7 @@
 //! the two post-substitution passes that keep the rendered prompt clean
 //! ([`collapse_empty_sections`], [`strip_unfilled_template_tokens`]).
 
-use crate::commands::spec::spec_sections::is_heading;
+use crate::commands::spec::spec_sections::{is_heading, section_end};
 use mustard_core::io::fs as mfs;
 use std::path::Path;
 
@@ -14,6 +14,10 @@ pub(crate) fn read_guards_block(subproject_dir: &Path) -> String {
     if text.is_empty() {
         return String::new();
     }
+    // NB: deliberately a bespoke single-pass scan, NOT `section_end` — a
+    // subproject `CLAUDE.md` may carry an *indented* `## Guards`, so both the
+    // start match and the boundary `trim_start()` first. The shared scanner
+    // anchors at column 0; folding it in would change behaviour.
     let mut in_section = false;
     let mut collected = String::new();
     for line in text.lines() {
@@ -198,13 +202,7 @@ fn cut_section_by_key(text: &str, key: &str) -> Option<String> {
 /// the line before the next `## ` heading or EOF. `None` when the body is
 /// entirely blank (an empty heading must not survive into the TASK block).
 fn cut_section_at(lines: &[&str], start: usize) -> Option<String> {
-    let mut end = lines.len();
-    for (i, l) in lines.iter().enumerate().skip(start + 1) {
-        if l.starts_with("## ") {
-            end = i;
-            break;
-        }
-    }
+    let end = section_end(lines, start);
     let has_body = lines[start + 1..end].iter().any(|l| !l.trim().is_empty());
     if !has_body {
         return None;

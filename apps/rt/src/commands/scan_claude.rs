@@ -28,6 +28,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use crate::commands::spec::spec_sections::section_end;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 
 /// Hard ceiling on the machine-owned `.claude/scan-map.md`. The map is a terse
@@ -361,10 +362,7 @@ fn reseed_guards_if_placeholder(
         return text.to_string();
     };
     let body_start = g + 1;
-    let body_end = lines[body_start..]
-        .iter()
-        .position(|l| l.starts_with("## "))
-        .map_or(lines.len(), |off| body_start + off);
+    let body_end = section_end(&lines, g);
     let body = &lines[body_start..body_end];
     // Already an enrich-managed block (pending or done) — never overwrite it.
     if body.iter().any(|l| l.contains(GUARDS_PENDING_OPEN) || l.contains(GUARDS_DONE_OPEN)) {

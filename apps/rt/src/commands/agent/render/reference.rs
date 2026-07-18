@@ -2,7 +2,7 @@
 //! compact structural summary (public signatures + declared entities) of the
 //! listed files via tree-sitter. Never a file dump.
 
-use crate::commands::spec::spec_sections::is_heading;
+use crate::commands::spec::spec_sections::{is_heading, section_end};
 use mustard_core::domain::ast::{extract_entities, extract_function_signatures, GrammarLoader};
 use mustard_core::io::fs as mfs;
 use std::fmt::Write as _;
@@ -87,11 +87,9 @@ pub(crate) fn files_section_paths(spec_text: &str) -> Vec<String> {
     let Some(start) = lines.iter().position(|l| is_heading(l, "files")) else {
         return Vec::new();
     };
+    let end = section_end(&lines, start);
     let mut out: Vec<String> = Vec::new();
-    for line in lines.iter().skip(start + 1) {
-        if line.starts_with("## ") {
-            break;
-        }
+    for line in &lines[start + 1..end] {
         if let Some(path) = first_path_token(line) {
             if !out.contains(&path) {
                 out.push(path);
