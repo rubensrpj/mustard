@@ -233,15 +233,34 @@ fn effect_cwd() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(project_dir()))
 }
 
+/// The stderr line for an unknown `--kind`. A WORK-TYPE (`feature`/`bugfix`/
+/// `task`/`tactical-fix`) — the value that belongs in the `--payload` `kind`
+/// field, not in `--kind` — gets the specific "it goes in --payload" fix
+/// (the recurring sialia field round-trip: an orchestrator typed `--kind
+/// feature`, burned a retry decoding the generic error). Anything else gets the
+/// valid-event list. Pure — unit-tested without `process::exit`.
+fn unknown_kind_message(kind: &str) -> String {
+    const WORK_TYPES: &[&str] = &["feature", "bugfix", "task", "tactical-fix"];
+    if WORK_TYPES.contains(&kind) {
+        format!(
+            "emit-pipeline: {kind:?} is a work-type, not an event kind. The event is \
+             `pipeline.kind`; the work-type goes in --payload. \
+             Use: --kind pipeline.kind --payload '{{\"kind\":{kind:?},\"scope\":\"...\"}}'"
+        )
+    } else {
+        format!(
+            "emit-pipeline: unknown kind {:?}. Valid kinds: {}",
+            kind,
+            KNOWN_KINDS.join(", ")
+        )
+    }
+}
+
 /// Reject an unknown `kind` (exit 1). The event vocabulary is a closed literal
 /// set — never magically extended (cf. `KNOWN_KINDS`).
 fn validate_kind_or_exit(kind: &str) {
     if !KNOWN_KINDS.contains(&kind) {
-        eprintln!(
-            "emit-pipeline: unknown kind {:?}. Valid kinds: {}",
-            kind,
-            KNOWN_KINDS.join(", ")
-        );
+        eprintln!("{}", unknown_kind_message(kind));
         std::process::exit(1);
     }
 }
@@ -1222,6 +1241,24 @@ mod tests {
     // -----------------------------------------------------------------------
     // Validation + payload parsing (unit-level, no store I/O)
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn work_type_in_kind_flag_gets_payload_hint() {
+        // The sialia field mistake: `--kind feature`. `feature` is the payload
+        // work-type, not an event kind — the message must name the exact fix
+        // (it goes in --payload) instead of only dumping the valid-event list.
+        for wt in ["feature", "bugfix", "task", "tactical-fix"] {
+            let msg = unknown_kind_message(wt);
+            assert!(msg.contains("work-type"), "{wt}: {msg}");
+            assert!(msg.contains("--payload"), "{wt}: {msg}");
+            assert!(msg.contains("pipeline.kind"), "{wt}: {msg}");
+            assert!(msg.contains(wt), "hint echoes the offending value: {msg}");
+        }
+        // A genuinely unknown kind still gets the valid-event list, unchanged.
+        let other = unknown_kind_message("bogus.kind");
+        assert!(other.contains("Valid kinds"), "{other}");
+        assert!(!other.contains("work-type"), "{other}");
+    }
 
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
