@@ -27,6 +27,9 @@
 //!   `userPromptSubmit` re-deliver on the next prompt — and the `sessionStart`
 //!   entries re-inject immediately (markers ignored): the compacted window
 //!   lost them, so they must ride back in.
+//! - version drift advisory — an installed project (`mustard.json` present)
+//!   whose `version` stamp differs from the running harness gets a one-line
+//!   nudge toward `/mustard:upsert`, appended last. Advisory, never blocking.
 //!
 //! ## Contract shape
 //!
@@ -360,19 +363,46 @@ impl Check for SessionStartInject {
             "sessionstart",
             is_compact,
         );
+        // Version drift advisory: an installed project whose `mustard.json`
+        // stamp differs from the running harness gets a one-paragraph nudge
+        // toward `/mustard:upsert`. Advisory only — the user decides.
+        let drift = version_drift_notice(Path::new(&cwd));
         // ONE composed Inject (the dispatcher fold is last-writer-wins):
-        // terrain first, injectables after, blank-line separated.
-        let context = match (terrain, injected) {
-            (Some(t), Some(i)) => Some(format!("{t}\n\n{i}")),
-            (Some(t), None) => Some(t),
-            (None, Some(i)) => Some(i),
-            (None, None) => None,
-        };
-        Ok(match context {
-            Some(context) => Verdict::Inject { context },
-            None => Verdict::Allow,
+        // terrain first, injectables after, drift advisory last —
+        // blank-line separated.
+        let parts: Vec<String> = [terrain, injected, drift].into_iter().flatten().collect();
+        Ok(if parts.is_empty() {
+            Verdict::Allow
+        } else {
+            Verdict::Inject { context: parts.join("\n\n") }
         })
     }
+}
+
+/// One-paragraph advisory when the project's `mustard.json#version` stamp
+/// differs from the running harness ([`mustard_core::harness_version`] — the
+/// installed plugin's manifest, or the core line outside the plugin).
+///
+/// `None` when the project has no `mustard.json` (not installed — the
+/// prompt-gate story covers that) or when the stamp matches. A missing
+/// `version` key on an installed project counts as drift: it predates the
+/// stamp and the first `/mustard:upsert` writes one.
+fn version_drift_notice(root: &Path) -> Option<String> {
+    if !mustard_core::ProjectConfig::exists(root) {
+        return None;
+    }
+    let stamped = mustard_core::ProjectConfig::load(root).version;
+    let current = mustard_core::harness_version();
+    if stamped.as_deref() == Some(current.as_str()) {
+        return None;
+    }
+    let label = stamped.unwrap_or_else(|| "unstamped (pre-version era)".to_string());
+    Some(format!(
+        "[Mustard] Harness version drift — project stamp: {label}; running harness: \
+         {current}. Tell the user this project's Mustard footprint is out of date and \
+         suggest running /mustard:upsert to realign (a notice that persists after an \
+         upsert means the plugin itself needs updating)."
+    ))
 }
 
 #[cfg(test)]
@@ -411,6 +441,44 @@ mod tests {
             SessionStartInject.evaluate(&input, &other).expect("no error"),
             Verdict::Allow
         );
+    }
+
+    // --- version drift advisory --------------------------------------------
+
+    #[test]
+    fn drift_notice_absent_without_mustard_json() {
+        let dir = tempdir().unwrap();
+        assert_eq!(version_drift_notice(dir.path()), None);
+    }
+
+    #[test]
+    fn drift_notice_absent_when_stamp_matches() {
+        let dir = tempdir().unwrap();
+        let current = mustard_core::harness_version();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            format!(r#"{{"version":"{current}"}}"#),
+        )
+        .unwrap();
+        assert_eq!(version_drift_notice(dir.path()), None);
+    }
+
+    #[test]
+    fn drift_notice_fires_on_mismatch_and_names_upsert() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"version":"0.0.0-test"}"#)
+            .unwrap();
+        let notice = version_drift_notice(dir.path()).expect("drift must fire");
+        assert!(notice.contains("0.0.0-test"), "names the stamped version: {notice}");
+        assert!(notice.contains("/mustard:upsert"), "points at the realign door: {notice}");
+    }
+
+    #[test]
+    fn drift_notice_fires_on_missing_stamp() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"make"}"#).unwrap();
+        let notice = version_drift_notice(dir.path()).expect("unstamped must fire");
+        assert!(notice.contains("unstamped"), "labels the pre-version era: {notice}");
     }
 
     // --- harness-init parity -----------------------------------------------
@@ -539,9 +607,14 @@ mod tests {
 
     /// Declare one `on: sessionStart, once: true` injectable + its file.
     fn seed_session_injectable(dir: &Path, body: &str) {
+        // The fixture stamps the CURRENT harness version so the drift advisory
+        // stays silent — these tests exercise the injectable path, not drift.
         std::fs::write(
             dir.join("mustard.json"),
-            r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/response-style.md","once":true}]}"#,
+            format!(
+                r#"{{"version":"{}","inject":[{{"on":"sessionStart","file":".claude/mustard/response-style.md","once":true}}]}}"#,
+                mustard_core::harness_version()
+            ),
         )
         .unwrap();
         let mustard_dir = dir.join(".claude").join("mustard");
@@ -631,9 +704,14 @@ mod tests {
     fn missing_declared_file_degrades_to_allow() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
+        // Stamped with the current harness version: the drift advisory stays
+        // silent, isolating the missing-file behaviour under test.
         std::fs::write(
             dir.path().join("mustard.json"),
-            r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/gone.md","once":true}]}"#,
+            format!(
+                r#"{{"version":"{}","inject":[{{"on":"sessionStart","file":".claude/mustard/gone.md","once":true}}]}}"#,
+                mustard_core::harness_version()
+            ),
         )
         .unwrap();
         let v = SessionStartInject

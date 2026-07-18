@@ -692,6 +692,7 @@ flowchart TD
 | Comando | Categoria | Backend principal (`mustard-rt run …`) | Usa `grain.model.json`? |
 |---|---|---|---|
 | `/mustard` | porta única | — (roteia via `CLAUDE.md § Intent Routing`) | não |
+| `/mustard:upsert` | instalação (bootstrap) | `upsert` | não |
 | `/mustard:scan` | core | `scan --full`, `scan-guards-*`, `scan-patterns-*` | **produz** |
 | `/mustard:feature` | core · fluxo interno | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
 | `/mustard:bugfix` | core · fluxo interno | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |

@@ -8,10 +8,11 @@
 //! `docs/TEMPLATE-RATIONALE.md`, never in the loaded templates.
 //!
 //! Mustard 2.0: the command/skill/ref corpus now ships in the `plugin/` tree;
-//! `templates/` carries only what init seeds — notably the `templates/mustard/`
-//! injectable instruction files the session hooks splice as
-//! `additionalContext`. The budget scan therefore walks `plugin/` plus
-//! `templates/mustard/`.
+//! the harness seeds — notably the `mustard/` injectable instruction files the
+//! session hooks splice as `additionalContext` — live in
+//! `packages/core/templates/` (compiled into the binaries via `include_str!`).
+//! The budget scan therefore walks `plugin/` plus
+//! `packages/core/templates/mustard/`.
 //!
 //! Budgets (whitespace-separated words):
 //! - Dieted files: a strict per-file cap + an emphasis cap (bold pairs
@@ -46,10 +47,12 @@ fn plugin_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin")
 }
 
-/// The `templates/` tree — only the files init seeds (settings, `.gitignore`,
-/// and the `mustard/` injectables).
-fn templates_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("templates")
+/// The core seed tree — the compiled-in harness seeds (settings, `.gitignore`,
+/// and the `mustard/` injectables) moved from `apps/cli/templates/` to
+/// `packages/core/templates/` so both `mustard init` and `mustard-rt run
+/// upsert` embed them via `include_str!`.
+fn core_templates_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core/templates")
 }
 
 /// Absolute path of a [`STRICT_BUDGETS`] entry — all live under `plugin/`.
@@ -98,8 +101,9 @@ fn template_budget_word_caps_hold() {
     let plugin = plugin_dir();
     let mut files = Vec::new();
     collect_md(&plugin, &mut files);
-    // The injectable templates ship under templates/mustard/ (init seeds them).
-    collect_md(&templates_dir().join("mustard"), &mut files);
+    // The injectable templates ship under packages/core/templates/mustard/
+    // (compiled into the binaries; init/upsert seed them from there).
+    collect_md(&core_templates_dir().join("mustard"), &mut files);
     assert!(!files.is_empty(), "no templates found under {}", plugin.display());
 
     let mut violations: Vec<String> = Vec::new();
@@ -157,7 +161,7 @@ fn template_budget_emphasis_cap_holds_on_dieted_files() {
 /// block injected in the same hook response.
 #[test]
 fn injectable_templates_fit_the_additional_context_cap() {
-    let dir = templates_dir().join("mustard");
+    let dir = core_templates_dir().join("mustard");
     let mut files = Vec::new();
     collect_md(&dir, &mut files);
     assert!(

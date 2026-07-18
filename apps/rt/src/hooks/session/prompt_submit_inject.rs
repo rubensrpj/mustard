@@ -2,8 +2,15 @@
 //!
 //! ## Scope (b3 Wave 5, prompt family + orchestrator-redesign injectables)
 //!
-//! Two concerns ride `UserPromptSubmit`:
+//! Three concerns ride `UserPromptSubmit`, in this order:
 //!
+//! - **installation gate** (orchestrator-redesign): a `/mustard:*` command in
+//!   a project with NO `mustard.json` at the root is denied with a didactic
+//!   pointer to `/mustard:upsert` — the one command exempted (it is the
+//!   bootstrap door; the bare `/mustard` help never matches the `/mustard:`
+//!   prefix and passes too). The gate runs BEFORE the injectables: without an
+//!   installation there is nothing to inject. A free-text prompt is never
+//!   gated — the hooks stay silent on uninstalled projects.
 //! - `followup-cancel-gate` (the b3 port): when the prompt invokes
 //!   `/mustard:feature`, `/mustard:bugfix`, or `/mustard:task`, close any open
 //!   per-session amendment window — the previous follow-up window is over, so
@@ -20,12 +27,12 @@
 //!
 //! ## Contract shape
 //!
-//! `followup-cancel-gate.js` never blocks — it always `process.exit(0)`. The
-//! b3 spec classes `prompt_gate` as a [`Check`]; this port honours that —
-//! `evaluate` performs the side effects and always returns [`Verdict::Allow`].
-//! (It is a `Check`, not an `Observer`, because `UserPromptSubmit` is the seam
-//! where a future prompt gate *could* deny; modelling it as a `Check` keeps
-//! that extension point open without changing today's always-allow verdict.)
+//! `followup-cancel-gate.js` never blocked — it always `process.exit(0)`. The
+//! b3 spec classes `prompt_gate` as a [`Check`], which is exactly why the
+//! installation gate could land here: `UserPromptSubmit` is the seam where a
+//! prompt gate denies, and `main.rs` maps a [`Verdict::Deny`] on this event to
+//! the harness's `{"decision": "block", "reason": …}` shape. Every other path
+//! still allows.
 //!
 //! ## Single-stage close
 //!
@@ -45,6 +52,8 @@ use crate::shared::events::economy;
 use crate::hooks::observe::amend_window_inject::close_amend_windows_for_session;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::ProjectConfig;
+use std::path::Path;
 
 /// W8.T8.2 — pipeline-in-flight reminder: surfaced when the user's prompt is
 /// NOT a `/mustard:*` invocation AND a spec is active. Keeps the agent aware
@@ -80,16 +89,40 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
 /// `true` if `prompt` starts with any `/mustard:` namespaced command. Broader
 /// than [`is_pipeline_prompt`] — used by the W8.T8.2 reminder check, where we
 /// suppress the banner for every `/mustard:*` (not just pipeline ones), since
-/// a slash command always knows its own context.
+/// a slash command always knows its own context. The bare `/mustard` help
+/// (no colon) deliberately does NOT match: it is the orientation door and
+/// must keep working on an uninstalled project.
 fn is_mustard_command(prompt: &str) -> bool {
     let t = prompt.trim_start().to_ascii_lowercase();
     t.starts_with("/mustard:")
 }
 
+/// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
+/// installation gate exempts. Same word-boundary rule as
+/// [`is_pipeline_prompt`], so `/mustard:upsertish` does not sneak through.
+fn is_upsert_prompt(prompt: &str) -> bool {
+    let t = prompt.trim_start().to_ascii_lowercase();
+    let Some(rest) = t.strip_prefix("/mustard:") else {
+        return false;
+    };
+    const CMD: &str = "upsert";
+    rest.starts_with(CMD)
+        && rest
+            .as_bytes()
+            .get(CMD.len())
+            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
+}
+
+/// The installation-gate refusal (didactic, short, technical EN).
+const NOT_INSTALLED_REASON: &str = "Mustard is not installed in this project (no mustard.json at \
+     the root). Run /mustard:upsert to install it — everything else stays disabled until then.";
+
 impl Check for PromptSubmitInject {
-    /// On `UserPromptSubmit`, close the session's amendment window when the
-    /// prompt starts a new pipeline. For a non-`/mustard:*` prompt the verdict
-    /// composes the declared injectables (`mustard.json#inject`,
+    /// On `UserPromptSubmit`: first the installation gate — a `/mustard:*`
+    /// command (except `/mustard:upsert`) is denied when the project has no
+    /// `mustard.json` at the root. Then close the session's amendment window
+    /// when the prompt starts a new pipeline. For a non-`/mustard:*` prompt
+    /// the verdict composes the declared injectables (`mustard.json#inject`,
     /// `on: userPromptSubmit`) and the W8.T8.2 pipeline-in-flight banner into
     /// ONE `Inject` — injectables first, banner after; either alone also
     /// injects. A `/mustard:*` prompt never injects (it is already inside the
@@ -104,6 +137,18 @@ impl Check for PromptSubmitInject {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         let cwd = ctx.project_dir_or_cwd(input);
+        // Installation gate — BEFORE everything else (without an installation
+        // there is no amend window to close and nothing to inject): any
+        // `/mustard:*` command except the bootstrap door `/mustard:upsert` is
+        // denied when `mustard.json` is absent from the project root. Normal
+        // prompts are never gated — the hooks stay silent on uninstalled
+        // projects.
+        if is_mustard_command(prompt)
+            && !is_upsert_prompt(prompt)
+            && !ProjectConfig::exists(Path::new(&cwd))
+        {
+            return Ok(Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() });
+        }
         if is_pipeline_prompt(prompt) {
             // Close any open amendment windows for this session — the user is
             // starting a new pipeline, so the window's context is done.
@@ -215,12 +260,80 @@ mod tests {
         // The amendment-window close is a no-op without an open window; the
         // verdict is Allow when no spec is active (and the prompt itself is a
         // `/mustard:*` command, so the W8.T8.2 banner is suppressed either way).
-        let (_dir, c) = ctx();
+        // The project is INSTALLED (mustard.json present) so the installation
+        // gate stays out of the way — this is the historical behavior.
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("mustard.json"), "{}").unwrap();
         let v = PromptSubmitInject
             .evaluate(&prompt_input("/mustard:feature x"), &c)
             .unwrap();
         // For a `/mustard:*` command, never Inject regardless of spec state.
         assert!(matches!(v, Verdict::Allow), "unexpected verdict: {v:?}");
+    }
+
+    // --- installation gate --------------------------------------------------
+
+    #[test]
+    fn gate_denies_mustard_command_without_installation() {
+        // No mustard.json in the tempdir: any `/mustard:*` command (pipeline
+        // or not) is denied with the didactic pointer to /mustard:upsert.
+        let (_dir, c) = ctx();
+        for prompt in ["/mustard:feature x", "/mustard:status", "  /MUSTARD:QA"] {
+            let v = PromptSubmitInject.evaluate(&prompt_input(prompt), &c).unwrap();
+            match v {
+                Verdict::Deny { reason } => {
+                    assert!(
+                        reason.contains("/mustard:upsert"),
+                        "reason must point at the bootstrap door: {reason}"
+                    );
+                    assert!(
+                        reason.contains("mustard.json"),
+                        "reason must name the missing anchor: {reason}"
+                    );
+                }
+                other => panic!("expected Deny for {prompt:?} without mustard.json, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn gate_allows_upsert_without_installation() {
+        // The bootstrap door itself must pass — it is how the project gets
+        // installed. Word-boundary: a hypothetical `/mustard:upsertish` is a
+        // different (unknown) command and stays gated.
+        let (_dir, c) = ctx();
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input("/mustard:upsert"), &c)
+            .unwrap();
+        assert_eq!(v, Verdict::Allow, "/mustard:upsert must pass the gate");
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input("/mustard:upsertish"), &c)
+            .unwrap();
+        assert!(matches!(v, Verdict::Deny { .. }), "boundary must hold: {v:?}");
+    }
+
+    #[test]
+    fn gate_allows_bare_mustard_help_without_installation() {
+        // The bare `/mustard` (no colon) is the orientation door — it must
+        // keep working so it can point the user at /mustard:upsert.
+        let (_dir, c) = ctx();
+        let v = PromptSubmitInject.evaluate(&prompt_input("/mustard"), &c).unwrap();
+        assert!(
+            matches!(v, Verdict::Allow | Verdict::Inject { .. }),
+            "bare /mustard must not be denied: {v:?}"
+        );
+    }
+
+    #[test]
+    fn gate_ignores_normal_prompts_without_installation() {
+        // Free-text prompts are never gated — the hooks stay silent on
+        // uninstalled projects (Allow, or an env-var banner Inject; never Deny).
+        let (_dir, c) = ctx();
+        let v = PromptSubmitInject.evaluate(&prompt_input("hello there"), &c).unwrap();
+        assert!(
+            !matches!(v, Verdict::Deny { .. }),
+            "a normal prompt must never be denied: {v:?}"
+        );
     }
 
     #[test]

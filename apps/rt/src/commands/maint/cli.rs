@@ -147,6 +147,17 @@ pub enum MaintCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Install or update Mustard in the current project (the plugin's
+    /// bootstrap door).
+    ///
+    /// Idempotent, always merge-mode: seeds `.claude/settings.json`, the
+    /// injectable instruction files under `.claude/mustard/`,
+    /// `.claude/.gitignore` and the project-root `mustard.json` — an existing
+    /// user file is preserved, only what is missing is created or backfilled;
+    /// the legacy planted-orchestrator footprint is migrated away. Emits the
+    /// `UpsertReport` as deterministic pretty JSON.
+    #[command(display_order = 79)]
+    Upsert {},
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
@@ -203,5 +214,6 @@ pub fn dispatch(cmd: MaintCmd) {
         MaintCmd::MaintValidate { dry_run } => {
             maint::maint_validate::run(maint::maint_validate::MaintValidateOpts { dry_run });
         }
+        MaintCmd::Upsert {} => maint::upsert::run(),
     }
 }

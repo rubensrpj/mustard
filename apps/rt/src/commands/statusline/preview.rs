@@ -58,6 +58,8 @@ fn synthetic_segments() -> Vec<Segment> {
     if let Some(s) = version_segment(&payload) {
         segs.push(s);
     }
+    // Forge the Mustard tail mark (the live builder reads project state).
+    segs.push(Segment::new(SegmentKind::Mustard, "m0.1.0"));
     segs
 }
 

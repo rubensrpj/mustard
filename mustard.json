@@ -4,8 +4,7 @@
       "*": "dev",
       "dev": "main"
     },
-    "provider": "github",
-    "submodules": false
+    "provider": "github"
   },
   "buildCommand": "cargo build --workspace",
   "specLang": "en-US",

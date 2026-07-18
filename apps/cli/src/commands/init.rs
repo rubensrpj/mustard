@@ -11,16 +11,19 @@
 //!    roots — see [`guard_init_location`]);
 //! 2. handle an already-present `.claude/` (force-overwrite, merge, or
 //!    backup-then-overwrite — interactively prompted when no flag decides it);
-//! 3. seed the harness into `.claude/`:
+//! 3. seed the harness into `.claude/` — delegated to the core seeding engine
+//!    (`mustard_core::platform::project_seed`, fed by the compiled-in
+//!    `platform::seeds` constants; `mustard-rt run upsert` consumes the same
+//!    engine):
 //!    - `settings.json` — the reduced SEED (env / permissions / statusLine /
-//!      plansDirectory …) copied from the bundled template; plugin enablement
-//!      is NOT planted (user-scope choice) and the broken pair an older build
-//!      wrote is retired ([`retire_planted_plugin_enablement`]);
+//!      plansDirectory …); plugin enablement is NOT planted (user-scope
+//!      choice) and the broken pair an older build wrote is retired
+//!      (`mustard_core::retire_planted_plugin_enablement`);
 //!    - `mustard/*.md` — the injectable instruction files (orchestrator rules,
-//!      response style) copied from `templates/mustard/`; the session hooks
-//!      splice them into the agent's window per `mustard.json#inject` —
-//!      **no `CLAUDE.md` is planted anymore** (a planted orchestrator drowned
-//!      in large root files; injection always lands);
+//!      response style); the session hooks splice them into the agent's window
+//!      per `mustard.json#inject` — **no `CLAUDE.md` is planted anymore** (a
+//!      planted orchestrator drowned in large root files; injection always
+//!      lands);
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!    - migration: a legacy Mustard-planted `.claude/CLAUDE.md` (identified by
 //!      its `# Orchestrator Rules` marker) is deleted, and the Mustard import
@@ -53,27 +56,11 @@ use anyhow::{Context, Result};
 use dialoguer::Select;
 use dialoguer::theme::ColorfulTheme;
 use mustard_core::io::fs as mfs;
-use serde_json::{Map, Value, json};
+use serde_json::json;
 
 use crate::commands::git_flow;
 use crate::fs_ops::copy_dir;
-use mustard_core::{Injectable, ProjectConfig, Runtime};
-
-/// Marketplace name older `init` builds planted in the PROJECT
-/// `settings.json#extraKnownMarketplaces` (retired — see
-/// [`retire_planted_plugin_enablement`]).
-const PLUGIN_MARKETPLACE: &str = "mustard";
-
-/// `settings.json#enabledPlugins` key older `init` builds planted (retired).
-const PLUGIN_ID: &str = "mustard@mustard";
-
-/// The placeholder URL those older builds wrote. Kept ONLY as the recognition
-/// literal for the migration: an `extraKnownMarketplaces.mustard` entry whose
-/// url equals this literal is provably ours and safe to remove; any other url
-/// is user-authored and survives. Plugin enablement is the USER's choice at
-/// user scope (`~/.claude/settings.json`) — `init` no longer writes it into
-/// the project.
-const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
+use mustard_core::{ProjectConfig, Runtime, SeedOutcome};
 
 /// Flags accepted by `mustard init`.
 #[derive(Debug, Default, Clone)]
@@ -178,18 +165,27 @@ pub fn init_with_templates(
     // footprint the pre-injectable Mustard left in the project's instruction
     // files — the planted `.claude/CLAUDE.md` orchestrator and the import +
     // breadcrumb lines in the root `CLAUDE.md`. Runs BEFORE seeding so the
-    // legacy layout is gone when the new one lands. Fail-open: any IO error
-    // degrades to a warning, never aborts the init.
-    migrate_orchestrator_footprint(&project_path, &claude_path);
+    // legacy layout is gone when the new one lands. Fail-open in the core
+    // engine: any IO error degrades to "not migrated", never aborts the init.
+    report_migration(&mustard_core::migrate_orchestrator_footprint(&project_path, &claude_path));
 
-    // (a)+(e) settings.json: the reduced seed + the plugin-enable keys.
-    write_settings_seed(&claude_path, templates_dir, overwrite)?;
+    // (a)+(e) settings.json: the reduced seed + the plugin-enablement retire —
+    // the core engine owns the content (compiled-in seed) and the merge rules.
+    let outcome = mustard_core::seed_settings(&claude_path, overwrite)
+        .context("seeding .claude/settings.json")?;
+    report_seed(".claude/settings.json", outcome);
     // (b) injectable instruction files — the orchestrator is INJECTED by the
     // session hooks now (per `mustard.json#inject`), never planted as
     // `.claude/CLAUDE.md`.
-    seed_injectables(templates_dir, &claude_path, overwrite)?;
+    for (name, outcome) in mustard_core::seed_injectable_files(&claude_path, overwrite)
+        .context("seeding .claude/mustard/ injectables")?
+    {
+        report_seed(&format!(".claude/mustard/{name}"), outcome);
+    }
     // (c) ephemeral-state .gitignore.
-    seed_file(templates_dir, &claude_path, ".gitignore", overwrite)?;
+    let outcome = mustard_core::seed_gitignore(&claude_path, overwrite)
+        .context("seeding .claude/.gitignore")?;
+    report_seed(".claude/.gitignore", outcome);
 
     // (d) `.mcp.json` is intentionally NOT written — the `mustard` plugin ships
     // its own, so a project-level copy is redundant once the plugin is enabled.
@@ -261,251 +257,36 @@ fn guard_init_location(project_path: &Path) -> Result<()> {
     )
 }
 
-/// Seed `.claude/settings.json`: copy the reduced template SEED, then retire
-/// the plugin-enablement keys older builds planted.
-///
-/// - Fresh / overwrite (a backup was taken): the seed is the base.
-/// - Merge: the user's existing `settings.json` is the base and any seed key it
-///   lacks is backfilled — user edits are never clobbered.
-///
-/// Plugin enablement is NOT written here anymore: it is the user's choice at
-/// user scope (`~/.claude/settings.json`), where the plugin system already
-/// records it. [`retire_planted_plugin_enablement`] removes the broken pair a
-/// previous `init` may have planted (placeholder marketplace URL + the
-/// `mustard@mustard` alias that never resolves against it).
-fn write_settings_seed(claude_path: &Path, templates_dir: &Path, overwrite: bool) -> Result<()> {
-    let dest = claude_path.join("settings.json");
-    let seed = crate::fs_ops::read_json_object(&templates_dir.join("settings.json"));
-
-    let mut settings = if overwrite {
-        seed
-    } else {
-        let mut existing = crate::fs_ops::read_json_object(&dest);
-        for (key, value) in seed {
-            existing.entry(key).or_insert(value);
-        }
-        existing
-    };
-
-    retire_planted_plugin_enablement(&mut settings);
-
-    let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))
-        .context("serializing .claude/settings.json")?;
-    serialized.push('\n');
-    mfs::write_atomic(&dest, serialized.as_bytes())
-        .with_context(|| format!("writing {}", dest.display()))?;
-    println!("  wrote .claude/settings.json");
-    Ok(())
-}
-
-/// Remove the plugin-enablement pair older `init` builds planted in the
-/// PROJECT settings — and ONLY that pair:
-///
-/// - `extraKnownMarketplaces.mustard` goes only when its url is the
-///   [`MARKETPLACE_REPO_URL`] placeholder (provably ours; a user-authored
-///   mustard marketplace with a real url survives).
-/// - `enabledPlugins."mustard@mustard"` goes only when the marketplace entry
-///   was ours-or-absent (an alias the user wired to a real marketplace stays).
-///
-/// Emptied containers are dropped so a clean project carries no residue.
-/// Every other marketplace/plugin key is untouched.
-fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
-    let planted_marketplace = settings
-        .get("extraKnownMarketplaces")
-        .and_then(|m| m.get(PLUGIN_MARKETPLACE))
-        .and_then(|e| e.pointer("/source/url"))
-        .and_then(Value::as_str)
-        == Some(MARKETPLACE_REPO_URL);
-    if planted_marketplace {
-        if let Some(obj) = settings
-            .get_mut("extraKnownMarketplaces")
-            .and_then(Value::as_object_mut)
-        {
-            obj.remove(PLUGIN_MARKETPLACE);
-        }
-    }
-    let marketplace_present = settings
-        .get("extraKnownMarketplaces")
-        .and_then(|m| m.get(PLUGIN_MARKETPLACE))
-        .is_some();
-    if !marketplace_present {
-        if let Some(obj) = settings.get_mut("enabledPlugins").and_then(Value::as_object_mut) {
-            obj.remove(PLUGIN_ID);
-        }
-    }
-    for container in ["extraKnownMarketplaces", "enabledPlugins"] {
-        let emptied = settings
-            .get(container)
-            .and_then(Value::as_object)
-            .is_some_and(Map::is_empty);
-        if emptied {
-            settings.remove(container);
-        }
+/// Print one didactic line per seeded file. The seeding itself lives in the
+/// core (`mustard_core::platform::project_seed`) — the CLI only narrates:
+/// `Created`/`Updated` announce a write, `Preserved` confirms the user's file
+/// survived the merge untouched.
+fn report_seed(name: &str, outcome: SeedOutcome) {
+    match outcome {
+        SeedOutcome::Created | SeedOutcome::Updated => println!("  wrote {name}"),
+        SeedOutcome::Preserved => println!("  kept {name} (yours, unchanged)"),
     }
 }
 
-/// Copy `templates/mustard/*.md` → `.claude/mustard/` — the injectable
-/// instruction files the session hooks splice into the agent's window, per the
-/// `mustard.json#inject` declarations. On merge (`overwrite == false`) an
-/// existing file is preserved — a user-customised injectable survives; on
-/// fresh/overwrite the template content is (re)laid down. Fail-open: a missing
-/// `templates/mustard/` is a warning, never an abort.
-fn seed_injectables(templates_dir: &Path, claude_path: &Path, overwrite: bool) -> Result<()> {
-    let src_dir = templates_dir.join("mustard");
-    if !src_dir.is_dir() {
-        eprintln!(
-            "  warning: seed dir {} missing from templates — injectable files skipped",
-            src_dir.display()
-        );
-        return Ok(());
-    }
-    let dest_dir = claude_path.join("mustard");
-    mfs::create_dir_all(&dest_dir)
-        .with_context(|| format!("creating {}", dest_dir.display()))?;
-    let entries = std::fs::read_dir(&src_dir)
-        .with_context(|| format!("reading {}", src_dir.display()))?;
-    for entry in entries.flatten() {
-        let src = entry.path();
-        if !src.is_file() || src.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(name) = src.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
-            continue;
-        };
-        let dest = dest_dir.join(&name);
-        if !overwrite && dest.exists() {
-            continue; // merge: the user's customisation wins.
-        }
-        let bytes = mfs::read(&src).with_context(|| format!("reading seed {}", src.display()))?;
-        mfs::write_atomic(&dest, &bytes)
-            .with_context(|| format!("writing {}", dest.display()))?;
-        println!("  wrote .claude/mustard/{name}");
-    }
-    Ok(())
-}
-
-/// Marker that identifies a Mustard-planted orchestrator file (vs a file the
-/// user authored at the same path). Matches the heading the legacy
-/// `templates/CLAUDE.md` always opened with.
-const ORCHESTRATOR_MARKER: &str = "# Orchestrator Rules";
-
-/// The exact `@import` line older `/scan` passes injected at the top of the
-/// project-root `CLAUDE.md` (mirrors `scan_claude::MAP_IMPORT_LINE`).
-const SCAN_MAP_IMPORT_LINE: &str = "@.claude/scan-map.md";
-
-/// Prefix of the breadcrumb line older `/scan` passes wrote into the
-/// project-root `CLAUDE.md` (the root form is Orchestrator-only).
-const ORCHESTRATOR_BREADCRUMB_PREFIX: &str = "> Orchestrator:";
-
-/// Idempotent migration away from the planted-orchestrator layout.
-///
-/// (a) `.claude/CLAUDE.md`: deleted when it carries the
-/// [`ORCHESTRATOR_MARKER`] (it is ours); a file *without* the marker is the
-/// user's own and survives untouched (with a didactic note). (b) the
-/// project-root `CLAUDE.md`: the exact [`SCAN_MAP_IMPORT_LINE`] and any line
-/// starting with [`ORCHESTRATOR_BREADCRUMB_PREFIX`] are removed — every other
-/// byte (including line endings) is preserved verbatim, and the file is only
-/// rewritten when something actually changed. Fail-open throughout: an
-/// unreadable file or a failed write degrades to a warning.
-fn migrate_orchestrator_footprint(project_path: &Path, claude_path: &Path) {
-    // (a) the planted orchestrator under .claude/.
-    let legacy = claude_path.join("CLAUDE.md");
-    if legacy.is_file() {
-        match mfs::read_to_string(&legacy) {
-            Ok(text) if text.contains(ORCHESTRATOR_MARKER) => {
-                match std::fs::remove_file(&legacy) {
-                    Ok(()) => println!(
-                        "  removed legacy .claude/CLAUDE.md (the orchestrator is injected from .claude/mustard/ now)"
-                    ),
-                    Err(e) => eprintln!(
-                        "  warning: could not remove legacy {}: {e}",
-                        legacy.display()
-                    ),
-                }
-            }
-            Ok(_) => println!(
-                "  note: .claude/CLAUDE.md exists but is not the Mustard orchestrator — left untouched (the file is yours; Mustard injects its rules from .claude/mustard/ instead)"
+/// Print the didactic lines for what the core migration engine
+/// (`mustard_core::migrate_orchestrator_footprint`) found and did.
+fn report_migration(outcome: &mustard_core::MigrationOutcome) {
+    for entry in &outcome.migrated {
+        match entry.as_str() {
+            ".claude/CLAUDE.md" => println!(
+                "  removed legacy .claude/CLAUDE.md (the orchestrator is injected from .claude/mustard/ now)"
             ),
-            Err(e) => eprintln!("  warning: could not read {}: {e}", legacy.display()),
+            "CLAUDE.md" => println!(
+                "  cleaned CLAUDE.md (removed the Mustard import + breadcrumb lines — the root file is fully yours again)"
+            ),
+            other => println!("  migrated {other}"),
         }
     }
-
-    // (b) the root CLAUDE.md — give the file back to the user.
-    let root_md = project_path.join("CLAUDE.md");
-    let Ok(text) = mfs::read_to_string(&root_md) else {
-        return; // absent or unreadable → nothing to migrate.
-    };
-    let cleaned = strip_mustard_root_lines(&text);
-    if cleaned == text {
-        return; // nothing of ours in it — do not rewrite.
+    if outcome.foreign_claude_md {
+        println!(
+            "  note: .claude/CLAUDE.md exists but is not the Mustard orchestrator — left untouched (the file is yours; Mustard injects its rules from .claude/mustard/ instead)"
+        );
     }
-    match mfs::write_atomic(&root_md, cleaned.as_bytes()) {
-        Ok(()) => println!(
-            "  cleaned CLAUDE.md (removed the Mustard import + breadcrumb lines — the root file is fully yours again)"
-        ),
-        Err(e) => eprintln!("  warning: could not rewrite {}: {e}", root_md.display()),
-    }
-}
-
-/// Remove the Mustard-owned lines from a root `CLAUDE.md` body: the exact
-/// [`SCAN_MAP_IMPORT_LINE`] and any line starting with
-/// [`ORCHESTRATOR_BREADCRUMB_PREFIX`]. Line-terminator-preserving — every
-/// surviving line keeps its original bytes (CRLF included), so the rest of the
-/// file round-trips byte-for-byte.
-fn strip_mustard_root_lines(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        let content = line.strip_suffix('\n').unwrap_or(line);
-        let content = content.strip_suffix('\r').unwrap_or(content);
-        if content == SCAN_MAP_IMPORT_LINE {
-            continue;
-        }
-        if content.starts_with(ORCHESTRATOR_BREADCRUMB_PREFIX) {
-            continue;
-        }
-        out.push_str(line);
-    }
-    out
-}
-
-/// The default `mustard.json#inject` declarations seeded by `init`: the
-/// orchestrator rides every session's first prompt, the response style rides
-/// the session start — both once per session. Written in the same casing the
-/// docs use; the config accessor lowercases `on` at read time.
-fn default_inject_entries() -> Vec<Injectable> {
-    vec![
-        Injectable {
-            on: "userPromptSubmit".to_string(),
-            file: ".claude/mustard/orchestrator.md".to_string(),
-            once: true,
-        },
-        Injectable {
-            on: "sessionStart".to_string(),
-            file: ".claude/mustard/response-style.md".to_string(),
-            once: true,
-        },
-    ]
-}
-
-/// Copy a single seed file (`.gitignore`) from `templates_dir` into
-/// `.claude/`. On merge (`overwrite == false`) an existing file is preserved —
-/// user edits survive. Fail-open: a seed missing from the template is skipped
-/// with a warning, never an abort.
-fn seed_file(templates_dir: &Path, claude_path: &Path, name: &str, overwrite: bool) -> Result<()> {
-    let src = templates_dir.join(name);
-    if !src.is_file() {
-        eprintln!("  warning: seed {} missing from templates — skipped", src.display());
-        return Ok(());
-    }
-    let dest = claude_path.join(name);
-    if !overwrite && dest.exists() {
-        return Ok(());
-    }
-    let bytes = mfs::read(&src).with_context(|| format!("reading seed {}", src.display()))?;
-    mfs::write_atomic(&dest, &bytes)
-        .with_context(|| format!("writing {}", dest.display()))?;
-    println!("  wrote .claude/{name}");
-    Ok(())
 }
 
 /// Resolve the bundled `templates/` directory.
@@ -638,14 +419,18 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     }
 
     // Seed the default inject declarations only when the user has none — a
-    // curated (non-empty) list is theirs and is preserved verbatim.
+    // curated (non-empty) list is theirs and is preserved verbatim. The
+    // defaults live in the core (`project_seed::default_inject_entries`).
     if config.inject.is_empty() {
-        config.inject = default_inject_entries();
+        config.inject = mustard_core::default_inject_entries();
         println!("  seeded inject declarations (.claude/mustard/*.md ride the session hooks)");
     }
 
     config.runtime = Some(runtime.clone());
-    config.version = Some(crate::VERSION.to_string());
+    // The stamp is the HARNESS version (plugin manifest when launched from the
+    // plugin, the core line otherwise) — no longer this CLI crate's version.
+    // The drift advisory + `/mustard:upsert` compare against the same source.
+    config.version = Some(mustard_core::harness_version());
     config.write(project_path)?;
     println!("  wrote mustard.json");
     Ok(())
@@ -952,38 +737,23 @@ mod tests {
 
     /// Build a minimal fake `templates/` tree and return its path. Tests point
     /// `init_with_templates` at this so they never touch the real payload. The
-    /// `commands/` dir is a decoy: the thin init must NOT copy it into `.claude/`.
+    /// four harness seeds (settings, injectables, `.gitignore`) come from the
+    /// COMPILED-IN core constants now — this fixture only carries what the
+    /// templates dir still owns for init (`.github/`, manifests) plus a
+    /// `commands/` decoy: the thin init must NOT copy it into `.claude/`.
     fn fake_templates(root: &Path) -> PathBuf {
         let templates = root.join("templates");
         fs::create_dir_all(templates.join("commands")).unwrap();
-        // The injectable instruction files init copies to `.claude/mustard/`.
-        fs::create_dir_all(templates.join("mustard")).unwrap();
-        fs::write(
-            templates.join("mustard/orchestrator.md"),
-            "# Orchestrator Rules\n\nroute intents.\n",
-        )
-        .unwrap();
-        fs::write(
-            templates.join("mustard/response-style.md"),
-            "# Response Style\n\nbe didactic.\n",
-        )
-        .unwrap();
-        // A reduced seed with an env + a permission the init must copy verbatim.
-        fs::write(
-            templates.join("settings.json"),
-            r#"{"env":{"MUSTARD_TEST":"1"},"permissions":{"allow":["Read"]}}"#,
-        )
-        .unwrap();
         fs::write(templates.join("commands/feature.md"), "feature").unwrap();
-        fs::write(templates.join(".gitignore"), "spec/*/.events/\n").unwrap();
         templates
     }
 
     /// Regression guard (2026-06-03): the legacy per-subproject guards file
     /// `.claude/commands/guards.md` (and its `patterns.md` companion) is
     /// OBSOLETE. No shipped template may point an agent at those non-existent
-    /// paths. Walks the REAL bundled `templates/` payload and fails if the
-    /// obsolete path is reintroduced.
+    /// paths. Walks the REAL bundled `templates/` payloads — the CLI's own
+    /// tree AND the core seed tree (`packages/core/templates/`, where the
+    /// harness seeds moved) — and fails if the obsolete path is reintroduced.
     #[test]
     fn templates_never_reference_obsolete_guards_file() {
         let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
@@ -992,12 +762,19 @@ mod tests {
             "templates payload missing at {}",
             templates.display()
         );
+        let core_templates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/core/templates");
+        assert!(
+            core_templates.is_dir(),
+            "core seed payload missing at {}",
+            core_templates.display()
+        );
 
         const FORBIDDEN: [&str; 2] = ["commands/guards.md", "commands/patterns.md"];
         let mut offenders: Vec<String> = Vec::new();
 
         // Iterative directory walk — no external crate.
-        let mut stack = vec![templates.clone()];
+        let mut stack = vec![templates.clone(), core_templates];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = fs::read_dir(&dir) else {
                 continue;
@@ -1080,15 +857,18 @@ mod tests {
 
         // settings.json carries the reduced seed keys and NO plugin enablement —
         // that choice lives at user scope, never planted into the project.
+        // Content now comes from the compiled-in core seed, so assert on a
+        // stable key the real seed carries.
         let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
         assert_eq!(
             settings
                 .get("env")
-                .and_then(|e| e.get("MUSTARD_TEST"))
+                .and_then(|e| e.get("MUSTARD_SPEC_SIZE_MODE"))
                 .and_then(|v| v.as_str()),
-            Some("1"),
-            "the reduced seed's env is copied verbatim"
+            Some("warn"),
+            "the compiled-in seed's env is laid down verbatim"
         );
+        assert!(settings.get("statusLine").is_some(), "seed statusLine present");
         assert!(
             settings
                 .get("enabledPlugins")
@@ -1114,7 +894,11 @@ mod tests {
         // stamp, runtime, and the language/tone defaults — and there is NO
         // .claude/mustard.json.
         let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
-        assert_eq!(cfg.get("version").and_then(|v| v.as_str()), Some(crate::VERSION));
+        assert_eq!(
+            cfg.get("version").and_then(|v| v.as_str()),
+            Some(mustard_core::harness_version().as_str()),
+            "the stamp is the harness version, not the CLI crate's"
+        );
         assert!(cfg.get("runtime").is_some(), "runtime block written");
         assert!(cfg.get("git").is_some(), "git-flow block written");
         assert_eq!(cfg.get("specLang").and_then(|v| v.as_str()), Some("pt-BR"));
@@ -1163,17 +947,14 @@ mod tests {
 
     /// Regression guard for the `.claude/.claude/` nesting bug (I1 rule): even
     /// if `templates/` carries a stray `.claude/` sub-directory, the thin init —
-    /// which reads only the three named seed files — must never propagate it.
+    /// whose harness seeds are compiled-in constants, not directory copies —
+    /// must never propagate it.
     #[test]
     fn init_does_not_create_nested_claude_dir() {
         let work = tempdir().unwrap();
 
         let templates = work.path().join("templates");
         fs::create_dir_all(templates.join("commands")).unwrap();
-        fs::create_dir_all(templates.join("mustard")).unwrap();
-        fs::write(templates.join("mustard/orchestrator.md"), "# Orchestrator Rules\n").unwrap();
-        fs::write(templates.join("settings.json"), "{}").unwrap();
-        fs::write(templates.join(".gitignore"), ".events/\n").unwrap();
         // Inject the offending .claude/ inside templates/.
         fs::create_dir_all(templates.join(".claude/commands")).unwrap();
         fs::write(templates.join(".claude/commands/notes.md"), "boilerplate").unwrap();
@@ -1407,56 +1188,7 @@ mod tests {
         assert!(project.join(".claude").join("settings.json").exists());
     }
 
-    #[test]
-    fn retire_removes_only_the_planted_placeholder_pair() {
-        // The exact pair an older init planted: placeholder marketplace URL +
-        // the mustard@mustard alias. Both go; the user's own keys survive.
-        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
-            r#"{{"extraKnownMarketplaces":{{
-                    "acme":{{"source":{{"source":"git","url":"x"}}}},
-                    "mustard":{{"source":{{"source":"git","url":"{MARKETPLACE_REPO_URL}"}}}}}},
-                "enabledPlugins":{{"acme@acme":true,"mustard@mustard":true}}}}"#,
-        ))
-        .unwrap();
-
-        retire_planted_plugin_enablement(&mut settings);
-
-        assert!(settings["extraKnownMarketplaces"].get("mustard").is_none(), "placeholder gone");
-        assert!(settings["enabledPlugins"].get("mustard@mustard").is_none(), "alias gone");
-        // Theirs survive.
-        assert!(settings["extraKnownMarketplaces"].get("acme").is_some());
-        assert_eq!(settings["enabledPlugins"]["acme@acme"], json!(true));
-    }
-
-    #[test]
-    fn retire_preserves_a_user_authored_mustard_marketplace() {
-        // A REAL url under the `mustard` key is the user's wiring — the entry
-        // and the alias that resolves against it both stay.
-        let mut settings: Map<String, Value> = serde_json::from_str(
-            r#"{"extraKnownMarketplaces":{"mustard":{"source":{"source":"git","url":"https://example.com/real.git"}}},
-                "enabledPlugins":{"mustard@mustard":true}}"#,
-        )
-        .unwrap();
-
-        retire_planted_plugin_enablement(&mut settings);
-
-        assert!(settings["extraKnownMarketplaces"].get("mustard").is_some(), "real url stays");
-        assert_eq!(settings["enabledPlugins"]["mustard@mustard"], json!(true), "alias stays");
-    }
-
-    #[test]
-    fn retire_drops_emptied_containers() {
-        // A settings.json whose ONLY marketplace/plugin keys were ours ends up
-        // with no residue containers at all.
-        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
-            r#"{{"extraKnownMarketplaces":{{"mustard":{{"source":{{"source":"git","url":"{MARKETPLACE_REPO_URL}"}}}}}},
-                "enabledPlugins":{{"mustard@mustard":true}}}}"#,
-        ))
-        .unwrap();
-
-        retire_planted_plugin_enablement(&mut settings);
-
-        assert!(settings.get("extraKnownMarketplaces").is_none(), "emptied container dropped");
-        assert!(settings.get("enabledPlugins").is_none(), "emptied container dropped");
-    }
+    // The `retire_planted_plugin_enablement` unit tests moved to the core with
+    // the function (`packages/core/src/platform/project_seed.rs`) — the CLI
+    // only relays through `mustard_core::seed_settings`, covered above.
 }

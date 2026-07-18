@@ -50,6 +50,16 @@ pub mod platform;
 pub use platform::hook_resolve::{
     resolve_mustard_rt, rewrite_command, rewrite_hooks_value, rewrite_settings_hooks,
 };
+// Project seeding — the compiled-in seed payload (`seeds`) and the
+// install/update engine (`project_seed`) shared by `mustard init` and
+// `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed.rs`.
+pub use platform::project_seed::{
+    default_inject_entries, migrate_orchestrator_footprint, retire_planted_plugin_enablement,
+    seed_gitignore, seed_injectable_files, seed_settings, upsert_project, MigrationOutcome,
+    SeedOutcome, UpsertReport,
+};
+pub use platform::harness::harness_version;
+pub use platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, RESPONSE_STYLE_MD, SETTINGS_SEED};
 
 pub use domain::model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,
