@@ -455,13 +455,7 @@ pub fn run(opts: EmitPipelineOpts) {
 /// the conservative outcome on missing data is to block (not allow). Callers
 /// can opt out via `--allow-no-qa`.
 fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
-    let events_dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map_or_else(
-            || ClaudePaths::compose_unchecked(cwd).spec_dir().join(spec).join(".events"),
-            |sp| sp.dir().join(".events"),
-        );
+    let events_dir = ClaudePaths::spec_dir_or_unchecked(cwd, spec).join(".events");
     let mut events =
         mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
     // Chronological order — last matching event wins (mirrors `close_gate`).

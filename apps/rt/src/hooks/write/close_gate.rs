@@ -22,7 +22,8 @@ use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use serde_json::Value;
 
-use crate::commands::pipeline::close_gates::{CloseGateModes, GateMode, run_close_gates};
+use crate::commands::pipeline::close_gates::{CloseGateModes, run_close_gates};
+use crate::shared::gate_mode::GateMode;
 
 /// The pipeline-CLOSE sensor gate module.
 pub struct CloseGate;
@@ -62,15 +63,6 @@ fn extract_content(input: &HookInput) -> Option<String> {
         return Some(c.to_string());
     }
     None
-}
-
-/// The `file_path` of a Write/Edit invocation.
-fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
 }
 
 /// The uppercased phase from a pipeline-state JSON string. Reads `phaseName`
@@ -116,7 +108,7 @@ fn close_gate_with_modes(input: &HookInput, cwd: &str, modes: CloseGateModes) ->
     if mode == GateMode::Off {
         return Verdict::Allow;
     }
-    let Some(file_path) = file_path_of(input) else {
+    let Some(file_path) = input.file_path() else {
         return Verdict::Allow;
     };
     if !is_pipeline_state_file(&file_path) {

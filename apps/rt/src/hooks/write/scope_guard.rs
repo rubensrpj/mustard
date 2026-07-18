@@ -73,16 +73,6 @@ fn is_artifact_path(rel: &str) -> bool {
     ARTIFACT_PREFIXES.iter().any(|p| rel.starts_with(p))
 }
 
-/// Resolve the `file_path` of a Write/Edit invocation (accepts the legacy
-/// `path` key), forward-slash normalised.
-fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(Value::as_str)
-        .map(|s| s.replace('\\', "/"))
-}
-
 /// Compute `file_path` relative to `cwd`, forward-slash normalised. Returns
 /// `None` when the path escapes `cwd` — the caller treats that as non-
 /// production (fail-open to allow). A relative input is taken as-is.
@@ -146,7 +136,7 @@ fn approval_event_present(cwd: &Path, spec: &str) -> bool {
 fn evaluate_write(input: &HookInput, cwd: &str) -> Verdict {
     // Resolve the production-file path; a missing/`../`/escaping path is not
     // attributable to production code → allow (fail-open).
-    let Some(file_path) = file_path_of(input) else {
+    let Some(file_path) = input.file_path() else {
         return Verdict::Allow;
     };
     let Some(rel) = relative_to_cwd(cwd, &file_path) else {

@@ -472,7 +472,11 @@ fn find_or_insert_task<'a>(tasks: &'a mut Vec<PipelineTaskView>, name: &str) -> 
         status: "pending".to_string(),
         ..Default::default()
     });
-    tasks.last_mut().expect("just pushed")
+    // Just pushed, so the vec is non-empty — index the tail instead of
+    // `.last_mut().expect(...)`, keeping the module free of production `expect`
+    // (the rt fail-open contract).
+    let tail = tasks.len() - 1;
+    &mut tasks[tail]
 }
 
 #[cfg(test)]

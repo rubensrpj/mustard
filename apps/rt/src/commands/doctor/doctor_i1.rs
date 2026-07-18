@@ -50,10 +50,7 @@ fn walk(dir: &Path, out: &mut Vec<String>, depth: usize, max_depth: usize) {
         return;
     }
     if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-        if matches!(
-            name,
-            "node_modules" | "target" | ".git" | "dist" | "build" | "bin" | "obj"
-        ) {
+        if fs::PRUNE_DIRS.contains(&name) {
             return;
         }
     }

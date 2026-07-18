@@ -20,8 +20,8 @@
 //! `MUSTARD_DOCS_AUDIT_INCLUDE_NESTED=1`) to opt back into a full-monorepo
 //! audit.
 //!
-//! Other always-excluded directories: `target/`, `node_modules/`, `.git/`,
-//! `dist/`, `bin/`, `obj/`, plus the rest of [`IGNORE_DIRS`].
+//! Other always-excluded directories: the shared [`fs::PRUNE_DIRS`] floor
+//! (`target/`, `node_modules/`, `.git/`, `dist/`, …) plus [`EXTRA_IGNORE_DIRS`].
 //!
 //! `/mustard:close` invokes this in its Verification Gate: by default a hit
 //! prints a warning; setting `MUSTARD_DOCS_AUDIT_MODE=strict` (or passing
@@ -42,11 +42,12 @@ use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// Directories never descended into — mirrors `security_scan::IGNORE_DIRS`,
-/// plus `.git` so a working copy never explodes the scan.
-const IGNORE_DIRS: &[&str] = &[
-    "node_modules", ".git", "dist", "bin", "obj", ".next", "vendor",
-    "__pycache__", ".nuxt", ".output", "build", "coverage", "target",
+/// Extra directories this stale-doc scan skips beyond the shared
+/// [`fs::PRUNE_DIRS`] floor — framework build caches, vendored trees, and the
+/// orphan agent worktrees that would otherwise raise false-positive hits. The
+/// effective ignore set is [`fs::PRUNE_DIRS`] ∪ this list (see [`walk`]).
+const EXTRA_IGNORE_DIRS: &[&str] = &[
+    ".next", "vendor", "__pycache__", ".nuxt", ".output", "coverage",
     "migrations", ".vs", ".idea",
     // W0/AC-0.2: skip orphan agent worktrees that linger under
     // `.claude/worktrees/agent-*` — they mirror the source tree and trigger
@@ -284,7 +285,8 @@ fn walk(
         if is_dir {
             // Skip ignored dirs, but allow `.claude` (it is a hidden dir
             // that holds the docs we audit).
-            if IGNORE_DIRS.contains(&name.as_str()) {
+            if fs::PRUNE_DIRS.contains(&name.as_str()) || EXTRA_IGNORE_DIRS.contains(&name.as_str())
+            {
                 continue;
             }
             if name.starts_with('.') && name != ".claude" {

@@ -75,7 +75,7 @@ fn session_id_from(input: &HookInput) -> String {
 /// the state root. An absolute edit into another tree (session cwd in a
 /// worktree, target in the main checkout) is judged by the TARGET's tree.
 fn local_tree_of(input: &HookInput, state_root: &str) -> String {
-    if let Some(fp) = super::boundary_gate::file_path_of(input) {
+    if let Some(fp) = input.file_path() {
         let p = Path::new(&fp);
         if p.is_absolute() {
             let mut dir = p.parent();
@@ -237,7 +237,7 @@ impl Check for WorkBranchGate {
         // target lives outside the project root (`~/.claude` memory files,
         // temp dirs, …) is not repo work: never block it, never cut a branch
         // for it, and keep the pending marker for the first IN-repo edit.
-        if let Some(fp) = super::boundary_gate::file_path_of(input) {
+        if let Some(fp) = input.file_path() {
             match super::boundary_gate::relative_to_cwd(&project, &fp) {
                 None => return Ok(Verdict::Allow),
                 // Plan-mode artifacts (`.claude/plans/…`) are harness state,

@@ -50,6 +50,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::shared::gate_mode::{resolve_mode, GateMode};
 use crate::util::format_gate_message;
 use mustard_core::time::now_iso8601;
 
@@ -61,61 +62,17 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const TRUNCATE_CHARS: usize = 500;
 
 // ---------------------------------------------------------------------------
-// Mode resolution — each sub-gate, all default `strict`
+// Mode resolution — the shared cascade ([`crate::shared::gate_mode`]) with the
+// close family's `strict` default; the QA-composition gate opts into `warn`.
 // ---------------------------------------------------------------------------
 
-/// A three-state gate mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GateMode {
-    Off,
-    Warn,
-    Strict,
-}
-
-/// Resolve a `MUSTARD_*_MODE` mode in cascade: env var → `mustard.json`
-/// (`gates.<field>`, supplied as `config_override`) → built-in `strict` — the
-/// close-gate family default. An env var set to a non-empty value wins; an
-/// absent string OR an unrecognised value falls back to `strict`.
-fn resolve_mode(env_var: &str, config_override: Option<&str>) -> GateMode {
-    let s = std::env::var(env_var)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| config_override.map(str::to_string));
-    match s.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "off" => GateMode::Off,
-        "warn" => GateMode::Warn,
-        _ => GateMode::Strict,
-    }
-}
-
 /// `true` when the QA close-gate is **active** — `MUSTARD_QA_GATE_MODE`
-/// resolves to a non-`off` mode (default `strict`). Reuses [`resolve_mode`],
-/// the exact cascade `run_close_gates`'s QA sub-gate uses, so the final-wave
-/// auto-settle in `emit-pipeline` and the CLOSE gate agree on whether a spec
-/// still owes a QA pass before it can be finalized.
+/// resolves to a non-`off` mode (default `strict`). Reuses the shared
+/// [`resolve_mode`] cascade `run_close_gates`'s QA sub-gate uses, so the
+/// final-wave auto-settle in `emit-pipeline` and the CLOSE gate agree on whether
+/// a spec still owes a QA pass before it can be finalized.
 pub(crate) fn qa_gate_active() -> bool {
-    resolve_mode("MUSTARD_QA_GATE_MODE", None) != GateMode::Off
-}
-
-/// Resolve the QA-composition gate mode from `MUSTARD_QA_COMPOSITION_GATE_MODE`.
-///
-/// Unlike the other close sub-gates this defaults to **warn**, not strict: a
-/// natural-language close prompt (e.g. "feche isso") is itself recorded as a
-/// `pipeline.change.request` after the last QA, so a strict default could block
-/// a legitimate close. `warn` surfaces the pending requests as telemetry (and on
-/// the dashboard) without a hard deadlock; opt into `strict` for a hard block.
-fn resolve_composition_mode() -> GateMode {
-    match std::env::var("MUSTARD_QA_COMPOSITION_GATE_MODE")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "off" => GateMode::Off,
-        "strict" => GateMode::Strict,
-        _ => GateMode::Warn,
-    }
+    resolve_mode("MUSTARD_QA_GATE_MODE", None, GateMode::Strict) != GateMode::Off
 }
 
 // ---------------------------------------------------------------------------
@@ -869,10 +826,14 @@ impl CloseGateModes {
     pub(crate) fn resolve(cwd: &str) -> Self {
         let gates = crate::shared::context::project_config_cached(Path::new(cwd)).gates;
         Self {
-            close: resolve_mode("MUSTARD_CLOSE_GATE_MODE", None),
-            debt: resolve_mode("MUSTARD_DEBT_GATE_MODE", None),
-            checklist: resolve_mode("MUSTARD_CHECKLIST_GATE_MODE", gates.checklist.as_deref()),
-            qa: resolve_mode("MUSTARD_QA_GATE_MODE", None),
+            close: resolve_mode("MUSTARD_CLOSE_GATE_MODE", None, GateMode::Strict),
+            debt: resolve_mode("MUSTARD_DEBT_GATE_MODE", None, GateMode::Strict),
+            checklist: resolve_mode(
+                "MUSTARD_CHECKLIST_GATE_MODE",
+                gates.checklist.as_deref(),
+                GateMode::Strict,
+            ),
+            qa: resolve_mode("MUSTARD_QA_GATE_MODE", None, GateMode::Strict),
         }
     }
 }
@@ -1153,7 +1114,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
     // close prompt is itself recorded as a request, so a strict default could
     // deadlock the close); `strict` blocks. Only meaningful once a QA pass
     // exists (`qa_ts`); a missing QA is already caught by the QA gate above.
-    let composition_mode = resolve_composition_mode();
+    let composition_mode = resolve_mode("MUSTARD_QA_COMPOSITION_GATE_MODE", None, GateMode::Warn);
     if composition_mode != GateMode::Off {
         let (_, _, _, _, qa_ts) = find_last_qa_result(cwd, spec_ref);
         if let Some(qa_ts) = qa_ts {
