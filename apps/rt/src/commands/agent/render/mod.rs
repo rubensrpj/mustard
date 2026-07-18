@@ -309,6 +309,21 @@ pub(crate) fn render_prompt_at(
         }
         cross_wave_memory.push_str(&spec_memory_block);
     }
+    // Fold in `decision` events captured from prior waves' `<MEMORY>` blocks
+    // (see `hooks::task::subagent_inject::capture_memory_decision`) — the
+    // durable cross-wave lesson channel. No relevance filter and no count
+    // cap, UNLIKE capabilities/spec-memory above: emission is already
+    // gated at the SOURCE (the role's strict "real choice + a future agent
+    // would decide worse" bar), so volume stays small by construction —
+    // adding a second filter here would just re-litigate a decision the
+    // role contract already made.
+    let decisions_block = decision_events_block(&project, spec_key);
+    if !decisions_block.is_empty() {
+        if !cross_wave_memory.is_empty() {
+            cross_wave_memory.push_str("\n\n");
+        }
+        cross_wave_memory.push_str(&decisions_block);
+    }
     // W5.T5.3 — inject the regression vocabulary so the child agent sees
     // the same Semantic/Pattern term lists the gate will check at Moment 1.
     // This is an INTERNAL agent prompt, so the regression vocabulary is rendered
@@ -470,6 +485,43 @@ fn read_prior_wave_diff(project: &Path, spec: &str, wave_num: u32) -> String {
         }
     }
     String::new()
+}
+
+/// Fold the spec's captured `decision` events into a compact `## DECISIONS`
+/// block — the durable home for `<MEMORY>` blocks a prior wave's `impl`
+/// agent emitted (harvested automatically at `SubagentStop`, see
+/// `hooks::task::subagent_inject::capture_memory_decision`). Reads the
+/// spec's OWN per-spec NDJSON event log (never the whole project's), keeps
+/// only `event == "decision"` rows, dedupes exact repeats. Empty when the
+/// spec has none — the `""` collapses the section via
+/// `collapse_empty_sections`, so a spec with no captured decisions yet is
+/// silent, not a dangling empty heading. Fail-open: a missing/unreadable
+/// spec dir degrades to no events.
+fn decision_events_block(project: &Path, spec: &str) -> String {
+    if spec.is_empty() {
+        return String::new();
+    }
+    let Some(events_dir) = ClaudePaths::for_project(project)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.events_dir())
+    else {
+        return String::new();
+    };
+    let events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+    let mut lines: Vec<String> = events
+        .iter()
+        .filter(|e| e.event == "decision")
+        .filter_map(|e| e.payload.get("title").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("- {t}"))
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    lines.dedup();
+    format!("## DECISIONS\n{}", lines.join("\n"))
 }
 
 /// Read the spec's `change-log.md` (mid-pipeline requests) for the prompt's
@@ -744,5 +796,120 @@ mod tests {
             "unfilled placeholders remain: {:?}",
             scan_unfilled(&rendered)
         );
+    }
+
+    // --- decision_events_block: cross-wave `<MEMORY>` delivery --------------
+
+    /// Append one `decision` event to `spec`'s own NDJSON log — mirrors
+    /// exactly the shape `hooks::task::subagent_inject::capture_memory_decision`
+    /// writes in production, so this test proves the SAME reader the render
+    /// uses can fold back what that hook emits (not a parallel fixture format
+    /// that could silently drift from the real writer).
+    fn seed_decision_event(project: &Path, spec: &str, title: &str) {
+        use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: mustard_core::time::now_iso8601(),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Hook,
+                id: Some("subagent_inject".to_string()),
+                actor_type: None,
+            },
+            event: "decision".to_string(),
+            payload: serde_json::json!({ "title": title, "role": "impl", "source": "memory-block" }),
+            spec: Some(spec.to_string()),
+        };
+        let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+    }
+
+    #[test]
+    fn decision_events_block_empty_when_no_decisions_captured() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        std::fs::create_dir_all(dir.path().join(".claude/spec/fresh-spec")).unwrap();
+        assert_eq!(decision_events_block(dir.path(), "fresh-spec"), "");
+        // Empty spec key (spec-less render) is also empty — never panics.
+        assert_eq!(decision_events_block(dir.path(), ""), "");
+    }
+
+    #[test]
+    fn decision_events_block_renders_captured_titles_only() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        std::fs::create_dir_all(dir.path().join(".claude/spec/rbac-spec")).unwrap();
+        seed_decision_event(dir.path(), "rbac-spec", "chose X over Y because Z");
+        // A non-decision event in the SAME log must not leak in.
+        seed_decision_event(dir.path(), "rbac-spec", "");
+        let block = decision_events_block(dir.path(), "rbac-spec");
+        assert!(block.starts_with("## DECISIONS\n"), "{block}");
+        assert!(block.contains("- chose X over Y because Z"), "{block}");
+        // The blank-title seed contributes nothing (filtered, not a blank bullet).
+        assert!(!block.contains("- \n") && !block.trim_end().ends_with("- "), "{block}");
+    }
+
+    /// End-to-end: a decision captured for wave 1 shows up in the FULL
+    /// rendered dispatch prompt for wave 2 of the SAME spec — the actual
+    /// consumer path (`render_prompt_at`), not just the block builder in
+    /// isolation. This is the fix for the traced gap: `<MEMORY>` used to
+    /// evaporate after a wave; now it survives into the next wave's prompt.
+    #[test]
+    fn captured_decision_flows_into_next_wave_dispatch_prompt() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "cross-wave-memory-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n## Tasks\n- [ ] wave 2 task\n",
+        )
+        .unwrap();
+        seed_decision_event(
+            dir.path(),
+            spec,
+            "Chose atomic_md write over direct fs::write — a mid-write crash corrupts the file",
+        );
+
+        let rendered = render_prompt_at(
+            dir.path(),
+            Some(spec),
+            None,
+            "backend",
+            Path::new("."),
+            RenderMode::First,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            rendered.contains("## DECISIONS"),
+            "decisions heading missing from rendered prompt: {rendered}"
+        );
+        assert!(
+            rendered.contains("Chose atomic_md write over direct fs::write"),
+            "captured decision text missing from rendered prompt: {rendered}"
+        );
+    }
+
+    /// A spec with zero captured decisions renders with NO `## DECISIONS`
+    /// heading at all — `collapse_empty_sections` must drop it, not leave a
+    /// dangling empty section (the negative-signal noise the render
+    /// deliberately avoids everywhere else).
+    #[test]
+    fn no_captured_decisions_leaves_no_decisions_heading() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "no-decisions-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# T\n## Tasks\n- [ ] a task\n").unwrap();
+
+        let rendered = render_prompt_at(
+            dir.path(), Some(spec), None, "backend", Path::new("."),
+            RenderMode::First, None, None, None,
+        );
+        assert!(!rendered.contains("## DECISIONS"), "{rendered}");
     }
 }

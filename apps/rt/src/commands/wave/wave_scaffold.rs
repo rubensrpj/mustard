@@ -225,20 +225,20 @@ pub(crate) fn render_wave_plan(
     out.push_str(hd.table_sep);
     out.push('\n');
     for w in &plan.waves {
-        let name = wave_name(w);
+        let link = wave_self_link(parent_slug, w);
         let deps = if w.depends_on.is_empty() {
             "—".to_string()
         } else {
             w.depends_on
                 .iter()
-                .map(|d| format!("[[{d}]]"))
+                .map(|d| wave_dep_link(parent_slug, d))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
         let summary = w.summary.replace('|', "\\|");
         let _ = writeln!(
             out,
-            "| {n} | [[{name}]] | {role} | {deps} | {summary} |",
+            "| {n} | {link} | {role} | {deps} | {summary} |",
             n = w.n,
             role = w.role,
         );
@@ -261,6 +261,41 @@ pub(crate) fn render_wave_plan(
 /// `wave-{n}-{role}` folder/spec name.
 pub(crate) fn wave_name(w: &WavePlanEntry) -> String {
     format!("wave-{n}-{role}", n = w.n, role = w.role)
+}
+
+/// Convert a `wave-{n}-{role}` dependency string into its resolvable
+/// `[[wave.{parent}.{n}-{role}]]` wikilink — the same `id:` shape
+/// [`render_wave_spec`] stamps on each wave's own frontmatter. A bare
+/// `[[wave-1-backend]]` link can never resolve: the wave lives at
+/// `wave-1-backend/spec.md` (a directory, not a flat `wave-1-backend.md`),
+/// and its stamped `id:` carries the `wave.{parent}.` prefix — the
+/// resolver's `id:`-match path is the only one that can ever succeed, and
+/// only when the token is prefixed to match. Falls back to the bare
+/// bracketed form when `dep` does not start with `wave-` (a malformed/
+/// legacy dependency string) or `parent` is empty (defensive) — the
+/// resolver then honestly flags it `⚠ unresolved` rather than silently
+/// mis-linking.
+fn wave_dep_link(parent: &str, dep: &str) -> String {
+    match dep.strip_prefix("wave-") {
+        Some(suffix) if !parent.is_empty() => format!("[[wave.{parent}.{suffix}]]"),
+        _ => format!("[[{dep}]]"),
+    }
+}
+
+/// The resolvable `[[wave.{parent}.{n}-{role}]]` self-identity wikilink for
+/// wave `w` — the exact `id:` [`render_wave_spec`] stamps on its own
+/// frontmatter. Used for the wave-plan table's own-wave column, so the row
+/// actually links to the wave instead of rendering `⚠ unresolved` for every
+/// row. [`wave_dep_link`] is the dependency-column sibling (same target
+/// shape, built from a plan-supplied string instead of a [`WavePlanEntry`]).
+/// Falls back to the bare `[[wave-{n}-{role}]]` form when `parent` is empty
+/// (defensive — the resolver then honestly flags it unresolved).
+fn wave_self_link(parent: &str, w: &WavePlanEntry) -> String {
+    if parent.is_empty() {
+        format!("[[{}]]", wave_name(w))
+    } else {
+        format!("[[wave.{parent}.{n}-{role}]]", n = w.n, role = w.role)
+    }
 }
 
 /// Render an individual wave's `spec.md` — `## Summary` + `## Network`, then
@@ -294,12 +329,18 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
     }
     out.push_str(hd.network);
     out.push_str("\n\n");
-    let _ = writeln!(out, "- {p}: [[{parent}]]", p = hd.parent);
+    // `spec.{parent}` — not the bare slug — because `spec-draft` stamps the
+    // spec root's own identity as `id: spec.{slug}` inside `{slug}/spec.md`
+    // (a directory, not a flat `{slug}.md`). The wikilink resolver's filename
+    // fallback (`{token}.md`) can never match a directory-nested `spec.md`,
+    // so the `id:` match is the only path — and it only succeeds prefixed.
+    // A bare `[[{parent}]]` here always rendered `⚠ unresolved` in the footer.
+    let _ = writeln!(out, "- {p}: [[spec.{parent}]]", p = hd.parent);
     if !w.depends_on.is_empty() {
         let deps: Vec<String> = w
             .depends_on
             .iter()
-            .map(|d| format!("[[{d}]]"))
+            .map(|d| wave_dep_link(parent, d))
             .collect();
         let _ = writeln!(out, "- {dep}: {}", deps.join(", "), dep = hd.depends_on);
     }
@@ -866,10 +907,11 @@ mod tests {
         // `lang: "pt"`).
         let hd = headings();
         let md = render_wave_plan(&sample_plan(), &hd, None, "epic-x");
-        assert!(md.contains("[[wave-1-general]]"));
-        assert!(md.contains("[[wave-2-frontend]]"));
+        // `spec.`/`wave.`-prefixed — matches the `id:` each target actually
+        // stamps (a bare `[[wave-1-general]]` never resolves).
+        assert!(md.contains("[[wave.epic-x.1-general]]"));
+        assert!(md.contains("[[wave.epic-x.2-frontend]]"));
         assert!(md.contains("foundations"));
-        assert!(md.contains("[[wave-1-general]]"));
         // The wave-plan carries its rename-proof identity handle as leading
         // `id:` frontmatter (parent slug + `.plan`).
         assert!(md.starts_with("---\nid: wave.epic-x.plan\n---\n\n"), "{md}");
@@ -894,14 +936,16 @@ mod tests {
         assert!(!s1.contains("### Outcome:"));
         assert!(!s1.contains("### Parent:"));
         assert!(s1.contains("## Network"));
-        assert!(s1.contains("[[epic-x]]"));
+        // `spec.`-prefixed — matches the `id: spec.{slug}` spec-draft actually
+        // stamps on the root spec.md (a bare `[[epic-x]]` never resolves).
+        assert!(s1.contains("[[spec.epic-x]]"));
         // English-fixed summary heading, never the PT form.
         assert!(s1.contains("## Summary"));
         assert!(!s1.contains("## Resumo"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
         assert!(s2.starts_with("---\nid: wave.epic-x.2-frontend\n---\n\n"), "{s2}");
         assert!(!s2.contains("### Stage:"));
-        assert!(s2.contains("[[wave-1-general]]"));
+        assert!(s2.contains("[[wave.epic-x.1-general]]"));
         assert!(s2.contains("## Network"));
         assert!(s2.contains("Depends on"));
     }
@@ -948,7 +992,7 @@ mod tests {
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert!(!s1.contains("### Stage:"));
         assert!(!s1.contains("### Parent:"));
-        assert!(s1.contains("[[epic-x]]"));
+        assert!(s1.contains("[[spec.epic-x]]"));
         assert!(s1.contains("## Network"));
         // meta.json carries the lifecycle metadata instead.
         assert!(spec_dir.join("wave-1-general").join("meta.json").exists());
@@ -997,9 +1041,10 @@ mod tests {
 
         let plan_md = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
         // The deps column of wave 2 carries the wikilink (not "—") — proves the
-        // camelCase `dependsOn` survived deserialization.
+        // camelCase `dependsOn` survived deserialization. `wave.epic-camel.`-
+        // prefixed to match the `id:` the target wave actually stamps.
         assert!(
-            plan_md.contains("| frontend | [[wave-1-backend]] |"),
+            plan_md.contains("| frontend | [[wave.epic-camel.1-backend]] |"),
             "camelCase dependsOn must render in the Depends-on column, got:\n{plan_md}"
         );
     }

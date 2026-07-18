@@ -23,7 +23,7 @@ pub enum ReviewCmd {
     #[command(display_order = 16)]
     AnalyzeValidation {
         /// Path to the spec file.
-        #[arg(long)]
+        #[arg(long, alias = "from-spec")]
         spec: Option<String>,
     },
     /// Pre-dispatch factual gate: greps the spec's subproject for every JSX
@@ -72,7 +72,7 @@ pub enum ReviewCmd {
     #[command(display_order = 28)]
     QaRun {
         /// Spec name (resolved under `.claude/specs` or `.claude/spec` — flat layout).
-        #[arg(long)]
+        #[arg(long, alias = "from-spec")]
         spec: String,
         /// Output format: `json` (default) or `html` (extra artifact).
         #[arg(long, default_value = "json")]

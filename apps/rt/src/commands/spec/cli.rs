@@ -68,7 +68,7 @@ pub enum SpecCmd {
     ScopeDecompose {
         /// Compute the signals deterministically from this spec file instead of
         /// reading them from stdin.
-        #[arg(long = "from-spec")]
+        #[arg(long = "from-spec", alias = "spec")]
         from_spec: Option<String>,
     },
     /// Classify a spec's scope (light / extended-light / full) deterministically.
@@ -81,7 +81,7 @@ pub enum SpecCmd {
     #[command(display_order = 22)]
     ScopeClassify {
         /// Compute the signals deterministically from this spec file.
-        #[arg(long = "from-spec")]
+        #[arg(long = "from-spec", alias = "spec")]
         from_spec: String,
         /// Count of matched recurring slices from the `feature` digest's
         /// `sliceMatchCount` — vocabulary-overlap precedent: >=2 counts toward
@@ -98,7 +98,7 @@ pub enum SpecCmd {
     #[command(display_order = 23)]
     PlanPrepare {
         /// Compute the signals deterministically from this spec file.
-        #[arg(long = "from-spec")]
+        #[arg(long = "from-spec", alias = "spec")]
         from_spec: String,
         /// `sliceMatchCount` from the `feature` digest (same meaning as
         /// `scope-classify`). Defaults to 0.
