@@ -18,13 +18,22 @@
 //! - `spec-hygiene.js` — auto-moves stale completed/cancelled specs from
 //!   `spec/{name}/` (flat layout — lifecycle status lives in each spec's
 //!   `meta.json` sidecar, no bucket moves).
+//! - declared injectables (orchestrator-redesign) — the `mustard.json#inject`
+//!   entries with `on: sessionStart` (canonically the response style in
+//!   `.claude/mustard/response-style.md`) are appended AFTER the terrain
+//!   census, blank-line separated, in the same single `Inject` verdict. On a
+//!   post-compaction `SessionStart` (`source == "compact"`) the session's
+//!   `injected-*` markers are cleared first — so the `once` entries of
+//!   `userPromptSubmit` re-deliver on the next prompt — and the `sessionStart`
+//!   entries re-inject immediately (markers ignored): the compacted window
+//!   lost them, so they must ride back in.
 //!
 //! ## Contract shape
 //!
 //! `harness-init` and `spec-hygiene` are pure side effects (`Observer`).
-//! The terrain census produces an `additionalContext` payload, surfaced as a
-//! [`Verdict::Inject`] so the single `emit_outcome` owns the only stdout
-//! write. `SessionStartInject` is a `Check`.
+//! The terrain census + injectables produce an `additionalContext` payload,
+//! surfaced as a [`Verdict::Inject`] so the single `emit_outcome` owns the
+//! only stdout write. `SessionStartInject` is a `Check`.
 //!
 //! ## OTEL collector spawn (Wave 3 — economia-moat-unification)
 //!
@@ -325,13 +334,41 @@ impl Check for SessionStartInject {
         crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
         // orient-census Level 1 (Terrain): project `grain.model.json` into a
         // once-per-session terrain map so the AI opens the session already
-        // knowing the subprojects instead of grepping to orient. The injected
-        // block is terrain-only. Fail-open: a missing / unreadable model
-        // yields no terrain and the verdict degrades to `Allow`.
+        // knowing the subprojects instead of grepping to orient. Fail-open: a
+        // missing / unreadable model yields no terrain.
         let terrain = crate::commands::orient::render_terrain(
             &crate::commands::orient::compute_orientation(Path::new(&cwd)),
         );
-        Ok(match terrain {
+        // Declared injectables (`mustard.json#inject`, `on: sessionStart`).
+        // A post-compaction SessionStart (`source == "compact"`) first clears
+        // the session's `injected-*` markers — the compacted window lost every
+        // earlier injection, so the `once` userPromptSubmit entries must
+        // re-deliver on the next prompt — and then re-injects the sessionStart
+        // entries immediately, markers ignored. Fail-open throughout.
+        let session = current_session_id(input);
+        let is_compact = input
+            .raw
+            .get("source")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("compact"));
+        if is_compact {
+            crate::hooks::session::injectables::clear_markers(&cwd, Some(session.as_str()));
+        }
+        let injected = crate::hooks::session::injectables::collect(
+            &cwd,
+            Some(session.as_str()),
+            "sessionstart",
+            is_compact,
+        );
+        // ONE composed Inject (the dispatcher fold is last-writer-wins):
+        // terrain first, injectables after, blank-line separated.
+        let context = match (terrain, injected) {
+            (Some(t), Some(i)) => Some(format!("{t}\n\n{i}")),
+            (Some(t), None) => Some(t),
+            (None, Some(i)) => Some(i),
+            (None, None) => None,
+        };
+        Ok(match context {
             Some(context) => Verdict::Inject { context },
             None => Verdict::Allow,
         })
@@ -488,9 +525,8 @@ mod tests {
 
     #[test]
     fn no_grain_model_returns_allow() {
-        // No `grain.model.json` → no terrain → the verdict degrades to Allow
-        // (the legacy persistent-memory block is gone; terrain is the only
-        // injectable payload).
+        // No `grain.model.json` and no declared injectables → nothing to
+        // inject → the verdict degrades to Allow.
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let verdict = SessionStartInject
@@ -499,4 +535,110 @@ mod tests {
         assert_eq!(verdict, Verdict::Allow);
     }
 
+    // --- declared injectables (orchestrator-redesign) ------------------------
+
+    /// Declare one `on: sessionStart, once: true` injectable + its file.
+    fn seed_session_injectable(dir: &Path, body: &str) {
+        std::fs::write(
+            dir.join("mustard.json"),
+            r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/response-style.md","once":true}]}"#,
+        )
+        .unwrap();
+        let mustard_dir = dir.join(".claude").join("mustard");
+        std::fs::create_dir_all(&mustard_dir).unwrap();
+        std::fs::write(mustard_dir.join("response-style.md"), body).unwrap();
+    }
+
+    fn session_input_with_source(session_id: &str, source: &str) -> HookInput {
+        HookInput {
+            hook_event_name: Some("SessionStart".to_string()),
+            session_id: Some(session_id.to_string()),
+            raw: json!({ "source": source }),
+            ..HookInput::default()
+        }
+    }
+
+    #[test]
+    fn session_start_injects_declared_file_once() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        seed_session_injectable(dir.path(), "STYLE-BODY\n");
+
+        // Startup: the declared file rides the SessionStart inject.
+        let v = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
+            .unwrap();
+        match v {
+            Verdict::Inject { context } => {
+                assert!(context.contains("STYLE-BODY"), "injectable missing: {context}");
+            }
+            other => panic!("expected Inject, got {other:?}"),
+        }
+        assert!(
+            dir.path()
+                .join(".claude/.session/s1/injected-response-style.md")
+                .is_file(),
+            "delivery marker recorded"
+        );
+
+        // A resume of the SAME session finds the marker → no re-delivery (no
+        // terrain here, so the verdict degrades to Allow).
+        let v = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "resume"), &ctx(project))
+            .unwrap();
+        assert_eq!(v, Verdict::Allow, "once injectable must not re-deliver on resume");
+    }
+
+    #[test]
+    fn compact_resets_markers_and_reinjects() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        seed_session_injectable(dir.path(), "STYLE-BODY\n");
+        // Plant a userPromptSubmit marker too — compact must clear BOTH so the
+        // next prompt re-delivers its own once entries.
+        let session = dir.path().join(".claude/.session/s1");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("injected-orchestrator.md"), "x").unwrap();
+
+        // First startup burns the sessionStart marker.
+        let _ = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
+            .unwrap();
+        assert!(session.join("injected-response-style.md").is_file());
+
+        // Compact: prompt-side marker cleared AND the sessionStart entry
+        // re-injects despite its (now cleared) marker.
+        let v = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "compact"), &ctx(project))
+            .unwrap();
+        match v {
+            Verdict::Inject { context } => {
+                assert!(context.contains("STYLE-BODY"), "compact must re-inject: {context}");
+            }
+            other => panic!("expected re-inject on compact, got {other:?}"),
+        }
+        assert!(
+            !session.join("injected-orchestrator.md").exists(),
+            "compact clears the prompt-side once markers"
+        );
+        assert!(
+            session.join("injected-response-style.md").is_file(),
+            "the re-delivered sessionStart entry re-records its marker"
+        );
+    }
+
+    #[test]
+    fn missing_declared_file_degrades_to_allow() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/gone.md","once":true}]}"#,
+        )
+        .unwrap();
+        let v = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
+            .unwrap();
+        assert_eq!(v, Verdict::Allow, "missing declared file must fail open");
+    }
 }

@@ -53,7 +53,7 @@ mustard-rt run wave-advance --spec {spec}
 Returns the **current round** — `[{wave, role, subproject, subagent_type, prompt, precheck}]` for every wave of the lowest not-yet-complete dependency level. Once all impl waves carry `pipeline.wave.complete`, it returns the **review round** (one `role:review`/`mustard-review` per touched subproject). `[]` only after every touched subproject also carries a `review.result`.
 
 **Each round:**
-1. **[you] Dispatch the WHOLE round in ONE message** — one `Task` per item, `prompt` **verbatim** (a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands — NEVER read the `.dispatch/` file), `subagent_type` = the item field. Before an impl item, check its `precheck`: `{ok:true}`/absent → dispatch; `{ok:false,missing,…}` → print `BLOCKED — N missing symbols`, emit `pipeline.dispatch_failure`, `AskUserQuestion` (tactical-fix / investigate / force). **Skip** on `mode:continued` or `MUSTARD_DEPENDENCY_PRECHECK_MODE=off`.
+1. **[you] Dispatch the WHOLE round in ONE message** — one `Task` per item, `prompt` **verbatim** (a `MUSTARD-PROMPT-REF` stub — never hand-craft, NEVER read the `.dispatch/` file; mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`), `subagent_type` = the item field. Before an impl item, check its `precheck`: `{ok:true}`/absent → dispatch; `{ok:false,missing,…}` → print `BLOCKED — N missing symbols`, emit `pipeline.dispatch_failure`, `AskUserQuestion` (tactical-fix / investigate / force). **Skip** on `mode:continued` or `MUSTARD_DEPENDENCY_PRECHECK_MODE=off`.
 2. **[you] After each impl wave:** commit (`feat(wave-{N}/{role}): {summary}`), then `mustard-rt run wave-done --spec {spec} --wave {N} --duration-ms {elapsed}` (emits `pipeline.wave.complete` + caches the diff — one atomic call).
 3. **[you] After each review item:** save the review agent's return verbatim to a scratch file, then `mustard-rt run review-result --spec {spec} --verdict approved|rejected [--critical N] --subproject {sub} --findings-file {scratch}` — the "already reviewed" signal (else the next `wave-advance` re-emits it); persists `<spec>/review/findings.md` for the fix-loop's `## RETRY CONTEXT`. No commit/wave-done. REJECTED (any CRITICAL) → **§ Fix Loop** before advancing.
 4. **[you] After the round:** `mustard-rt run wave-tree --spec-dir .claude/spec/{spec}`, then re-run `wave-advance`.
@@ -86,7 +86,7 @@ Status definitions: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Escalation Stat
 
 ## Fix Loop (review returned REJECTED, any CRITICAL)
 
-1. Re-render the SAME impl role with `mustard-rt run agent-prompt-render --spec {spec} --role {role} --subproject {sub} --mode fix-loop --emit ref` — the renderer composes `## RETRY CONTEXT` (last review verdict + critical count, persisted `review/findings.md` verbatim, prior-wave diff, change requests) from the spec's recorded events; you do NOT hand-assemble it (loop K, max 2).
+1. Re-render the SAME impl role with `mustard-rt run agent-prompt-render --spec {spec} --role {role} --subproject {sub} --mode fix-loop --emit ref` — the renderer composes `## RETRY CONTEXT` from the spec's recorded events; you do NOT hand-assemble it (composition detail: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md § Retry Modes`). Loop K, max 2.
 2. Dispatch that Task (do NOT change the role).
 3. On return, re-dispatch the REVIEW agent (normal — read-only) and record the verdict via `review-result`.
 4. Still REJECTED after 2 loops → **wave failure** (below).
@@ -106,7 +106,7 @@ Status definitions: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Escalation Stat
 
 **Residual risk:** wave N-1 commits can be semantically incomplete without wave N (e.g. schema without API); `failure.md` states the exposed surface.
 
-**Granular Retry** (PARTIAL): re-render the same role with `--mode granular` (renderer composes `## RETRY CONTEXT` from the spec's recorded events, persisted findings and the prior-wave diff); re-dispatch only the remaining steps via `--task-filter`. **Max 2 per agent** — exhausted → STOP.
+**Granular Retry** (PARTIAL): re-render the same role with `--mode granular` (the renderer composes `## RETRY CONTEXT` — see agent-prompt.md § Retry Modes); re-dispatch only the remaining steps via `--task-filter`. **Max 2 per agent** — exhausted → STOP.
 
 **Pause:** on user pause / session end, emit `mustard-rt run emit-pipeline --kind pipeline.pause --spec {spec} --payload '{"pausedAt":"<ISO>","pauseReason":"<reason>","nextAction":"<ONE sentence>"}'` and confirm the saved next action.
 

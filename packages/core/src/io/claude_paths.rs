@@ -38,6 +38,7 @@
 //! ├── .metrics/
 //! ├── .agent-state/
 //! ├── .obsidian/
+//! ├── mustard/
 //! ├── commands/
 //! ├── skills/
 //! ├── refs/
@@ -159,6 +160,10 @@ const DOCUMENTED_DIRS: &[&str] = &[
     ".agent-state",
     ".obsidian",
     ".pipeline-states",
+    // Injectable instruction files (`mustard.json#inject` targets) — seeded by
+    // `mustard init` from `templates/mustard/`, user-editable, spliced into the
+    // session by the rt hooks. Must never be pruned as an orphan.
+    "mustard",
     "commands",
     "skills",
     "refs",
@@ -333,7 +338,12 @@ impl ClaudePaths {
 
     // -- root-level files ------------------------------------------------
 
-    /// `<root>/.claude/CLAUDE.md` — orchestrator rules.
+    /// `<root>/.claude/CLAUDE.md` — the project's own orchestrator file, when
+    /// it has one. **No longer seeded by `mustard init`**: the orchestrator
+    /// rules now live in `.claude/mustard/*.md` and are *injected* per the
+    /// `mustard.json#inject` declarations, so this file — if present — is
+    /// entirely the user's. The accessor stays because consumers still need
+    /// the canonical location (migration in `init`, prune keep-list, doctor).
     #[must_use]
     pub fn claude_md_path(&self) -> PathBuf {
         self.claude_dir().join("CLAUDE.md")
@@ -759,6 +769,7 @@ mod tests {
             ".agent-state",
             ".obsidian",
             ".pipeline-states",
+            "mustard",
             "commands",
             "skills",
             "refs",

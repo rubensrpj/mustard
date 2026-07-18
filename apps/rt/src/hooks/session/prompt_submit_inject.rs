@@ -1,12 +1,22 @@
 //! `prompt_submit_inject` — the UserPromptSubmit gate module.
 //!
-//! ## Scope (b3 Wave 5, prompt family)
+//! ## Scope (b3 Wave 5, prompt family + orchestrator-redesign injectables)
 //!
-//! Ports `followup-cancel-gate.js` **alone** — a single concern with no
-//! sibling hook to merge. It triggers on `UserPromptSubmit` and, when the
-//! prompt invokes `/mustard:feature`, `/mustard:bugfix`, or `/mustard:task`,
-//! closes any open per-session amendment window — the previous follow-up
-//! window is over, so subsequent edits belong to a new context.
+//! Two concerns ride `UserPromptSubmit`:
+//!
+//! - `followup-cancel-gate` (the b3 port): when the prompt invokes
+//!   `/mustard:feature`, `/mustard:bugfix`, or `/mustard:task`, close any open
+//!   per-session amendment window — the previous follow-up window is over, so
+//!   subsequent edits belong to a new context.
+//! - **declared injectables** (orchestrator-redesign): the
+//!   `mustard.json#inject` entries with `on: userPromptSubmit` (canonically
+//!   the orchestrator rules in `.claude/mustard/orchestrator.md`) are spliced
+//!   into the window via [`crate::hooks::session::injectables::collect`] —
+//!   once per session when `once: true`. A `/mustard:*` prompt gets NO
+//!   injectables (the slash command is already inside the flow). The
+//!   injectable text and the W8.T8.2 banner compose into a SINGLE
+//!   [`Verdict::Inject`] (the dispatcher fold is last-writer-wins, so two
+//!   separate Injects would drop one): injectables first, banner after.
 //!
 //! ## Contract shape
 //!
@@ -78,10 +88,12 @@ fn is_mustard_command(prompt: &str) -> bool {
 
 impl Check for PromptSubmitInject {
     /// On `UserPromptSubmit`, close the session's amendment window when the
-    /// prompt starts a new pipeline. The verdict is `Inject` when a pipeline
-    /// is active and the prompt is not itself a `/mustard:*` slash command
-    /// (W8.T8.2 reminder), else `Allow`. Any non-`UserPromptSubmit` trigger
-    /// self-allows.
+    /// prompt starts a new pipeline. For a non-`/mustard:*` prompt the verdict
+    /// composes the declared injectables (`mustard.json#inject`,
+    /// `on: userPromptSubmit`) and the W8.T8.2 pipeline-in-flight banner into
+    /// ONE `Inject` — injectables first, banner after; either alone also
+    /// injects. A `/mustard:*` prompt never injects (it is already inside the
+    /// flow). Any non-`UserPromptSubmit` trigger self-allows.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::UserPromptSubmit) {
             return Ok(Verdict::Allow);
@@ -101,22 +113,43 @@ impl Check for PromptSubmitInject {
                 }
             }
         }
-        // W8.T8.2 — for non-`/mustard:*` prompts, inject a single-line reminder
-        // when a spec is active (a slash command already knows its context).
-        // The per-prompt entrypoints census that used to fill the no-spec
-        // branch was REMOVED: lexical prompt-token × path-token matching
-        // measured 1 useful hit in 17 across two field sessions — location is
-        // on-demand work (Grep for literals, the digest for concepts), not a
-        // per-prompt guess. Fail-open throughout.
-        if !is_mustard_command(prompt) {
-            if let Some(spec) = crate::shared::context::current_spec(&cwd).filter(|s| !s.is_empty()) {
-                economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
-                return Ok(Verdict::Inject {
-                    context: format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}"),
-                });
-            }
+        // A `/mustard:*` prompt receives neither injectables nor the banner —
+        // a slash command always knows its own context.
+        if is_mustard_command(prompt) {
+            return Ok(Verdict::Allow);
         }
-        Ok(Verdict::Allow)
+        // Declared injectables (`on: userPromptSubmit`) — fail-open; `once`
+        // entries are tracked per session via `injected-*` markers.
+        let injected = crate::hooks::session::injectables::collect(
+            &cwd,
+            input.session_id.as_deref(),
+            "userpromptsubmit",
+            false,
+        );
+        // W8.T8.2 — inject a single-line reminder when a spec is active. The
+        // per-prompt entrypoints census that used to fill the no-spec branch
+        // was REMOVED: lexical prompt-token × path-token matching measured 1
+        // useful hit in 17 across two field sessions — location is on-demand
+        // work (Grep for literals, the digest for concepts), not a per-prompt
+        // guess. Fail-open throughout.
+        let banner = crate::shared::context::current_spec(&cwd)
+            .filter(|s| !s.is_empty())
+            .map(|spec| {
+                economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
+                format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}")
+            });
+        // ONE composed Inject — the dispatcher fold is last-writer-wins, so
+        // the concerns must share a verdict. Injectables first, banner after.
+        let context = match (injected, banner) {
+            (Some(inj), Some(ban)) => Some(format!("{inj}\n\n{ban}")),
+            (Some(inj), None) => Some(inj),
+            (None, Some(ban)) => Some(ban),
+            (None, None) => None,
+        };
+        Ok(match context {
+            Some(context) => Verdict::Inject { context },
+            None => Verdict::Allow,
+        })
     }
 }
 
@@ -245,6 +278,114 @@ mod tests {
                 .evaluate(&prompt_input("/mustard:feature x"), &other)
                 .unwrap(),
             Verdict::Allow
+        );
+    }
+
+    // --- declared injectables (orchestrator-redesign) ----------------------
+
+    fn prompt_input_with_session(prompt: &str, session: &str) -> HookInput {
+        HookInput {
+            hook_event_name: Some("UserPromptSubmit".to_string()),
+            session_id: Some(session.to_string()),
+            raw: serde_json::json!({ "prompt": prompt }),
+            ..HookInput::default()
+        }
+    }
+
+    /// Declare one `on: userPromptSubmit, once: true` injectable + its file.
+    fn seed_injectable(dir: &std::path::Path, body: &str) {
+        std::fs::write(
+            dir.join("mustard.json"),
+            r#"{"inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
+        )
+        .unwrap();
+        let mustard_dir = dir.join(".claude").join("mustard");
+        std::fs::create_dir_all(&mustard_dir).unwrap();
+        std::fs::write(mustard_dir.join("orchestrator.md"), body).unwrap();
+    }
+
+    #[test]
+    fn first_prompt_injects_declared_file_and_records_marker() {
+        let (dir, c) = ctx();
+        seed_injectable(dir.path(), "ORCH-RULES-BODY\n");
+
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input_with_session("how do I add a field?", "sess-1"), &c)
+            .unwrap();
+        match v {
+            Verdict::Inject { context } => {
+                assert!(context.contains("ORCH-RULES-BODY"), "injectable missing: {context}");
+            }
+            other => panic!("expected Inject with the declared file, got {other:?}"),
+        }
+        assert!(
+            dir.path()
+                .join(".claude/.session/sess-1/injected-orchestrator.md")
+                .is_file(),
+            "delivery marker must be recorded"
+        );
+    }
+
+    #[test]
+    fn second_prompt_same_session_does_not_repeat_once_injectable() {
+        let (dir, c) = ctx();
+        seed_injectable(dir.path(), "ORCH-RULES-BODY\n");
+        let input = prompt_input_with_session("first question", "sess-1");
+        let _ = PromptSubmitInject.evaluate(&input, &c).unwrap();
+
+        // Same session, next prompt: the once-entry stays quiet. The verdict
+        // may still be an Inject when the outer shell exports
+        // MUSTARD_ACTIVE_SPEC (the W8.T8.2 banner) — assert on the CONTENT.
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input_with_session("second question", "sess-1"), &c)
+            .unwrap();
+        if let Verdict::Inject { context } = v {
+            assert!(
+                !context.contains("ORCH-RULES-BODY"),
+                "once injectable must not re-deliver in the same session: {context}"
+            );
+        }
+    }
+
+    #[test]
+    fn mustard_command_prompt_gets_no_injectables() {
+        let (dir, c) = ctx();
+        seed_injectable(dir.path(), "ORCH-RULES-BODY\n");
+        // A `/mustard:*` prompt is already inside the flow — strict Allow, and
+        // no delivery marker is burned (the next free-text prompt still gets it).
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input_with_session("/mustard:status", "sess-1"), &c)
+            .unwrap();
+        assert_eq!(v, Verdict::Allow, "slash command must not receive injectables");
+        assert!(
+            !dir.path()
+                .join(".claude/.session/sess-1/injected-orchestrator.md")
+                .exists(),
+            "no marker burned on a slash-command prompt"
+        );
+    }
+
+    #[test]
+    fn missing_declared_file_stays_fail_open() {
+        let (dir, c) = ctx();
+        // Declared, but the file was never materialised on disk.
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"inject":[{"on":"userPromptSubmit","file":".claude/mustard/gone.md","once":true}]}"#,
+        )
+        .unwrap();
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input_with_session("hello", "sess-1"), &c)
+            .unwrap();
+        // Allow in a clean environment; an env-var active spec may still
+        // banner-inject — either way the missing file must not break the hook.
+        assert!(
+            matches!(v, Verdict::Allow | Verdict::Inject { .. }),
+            "unexpected verdict: {v:?}"
+        );
+        assert!(
+            !dir.path().join(".claude/.session/sess-1/injected-gone.md").exists(),
+            "no marker for an undelivered entry"
         );
     }
 }

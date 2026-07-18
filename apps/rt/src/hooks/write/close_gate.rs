@@ -12,7 +12,7 @@
 //!    `TODO`/`FIXME`/`future hook`/… markers in its actionable sections.
 //! 2. **Checklist gate** — denies if the spec's `## Checklist` has unmarked
 //!    items.
-//! 3. **QA gate (Wave 10)** — denies if no `qa.result` with `overall=pass`
+//! 3. **QA gate** — denies if no `qa.result` with `overall=pass`
 //!    exists in the harness event log.
 //! 4. **Build/test gate (Wave 9)** — runs `build → type → lint → test` from
 //!    `mustard.json` and denies on the first real (non-env) failure.
@@ -1097,7 +1097,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
         }
     }
 
-    // ── QA gate (Wave 10) ─────────────────────────────────────────────────
+    // ── QA gate ───────────────────────────────────────────────────────────
     let qa_mode = modes.qa;
     if qa_mode != GateMode::Off {
         let (found, overall, failed_count, criteria_count, qa_ts) =

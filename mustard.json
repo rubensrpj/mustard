@@ -9,6 +9,18 @@
   },
   "buildCommand": "cargo build --workspace",
   "specLang": "en-US",
+  "inject": [
+    {
+      "on": "userPromptSubmit",
+      "file": ".claude/mustard/orchestrator.md",
+      "once": true
+    },
+    {
+      "on": "sessionStart",
+      "file": ".claude/mustard/response-style.md",
+      "once": true
+    }
+  ],
   "runtime": {
     "kind": "native",
     "os": "windows",

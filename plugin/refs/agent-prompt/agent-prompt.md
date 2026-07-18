@@ -34,6 +34,8 @@ The 12 placeholders the renderer substitutes (`substitutions` in `agent_prompt_r
 | `{skills_list}` | the subproject's skill shelf — names + trigger descriptions, never bodies | The agent loads each via the Skill tool; empty for the `patterns` role by design. |
 | `{retry_context}` | renderer-composed (`compose_retry_context`): last `review.result` verdict + critical count, last `pipeline.wave.failed` signal, persisted `<spec>/review/findings.md`, prior-wave diff, change log | Empty in `first`; composed in `granular`/`fix-loop`; `--retry-context-file` overrides with hand-supplied text. |
 
+Why `## SKILLS` is a shelf and not the native per-agent skill preload: the native preload is static in the agent definition and injects skill BODIES — both would break the per-subproject selection and the PREFIX-STABLE byte-identical head; the shelf is computed per subproject and carries names + trigger descriptions only (the agent loads a body on demand via the Skill tool).
+
 ## Retry Modes
 
 `agent-prompt-render --mode <first|granular|fix-loop>` picks the template and fills `{retry_context}`:

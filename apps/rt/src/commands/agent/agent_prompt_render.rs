@@ -688,7 +688,8 @@ fn build_patterns_role_block(subproject: &str) -> String {
          framework the exemplars don't use. A cluster you refuse (no teachable shape, \
          exemplars unreadable or generated-only, role already covered by another mold) → \
          deliver `=== DECLINE: <slug> ===` <one-line reason> `=== END ===` so the caller \
-         records it and no future scan re-proposes it."
+         records it and the NEXT scan round skips it (the decline ledger clears after one \
+         cycle — a later scan may re-propose the cluster)."
     )
 }
 

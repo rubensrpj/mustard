@@ -384,9 +384,11 @@ impl Registry {
             },
             Module {
                 id: "session_start_inject",
-                // `harness-init` + `spec-hygiene` + terrain census — the
-                // SessionStart bootstrap. A `Check` (the terrain-census
-                // payload is its `Inject` verdict).
+                // `harness-init` + `spec-hygiene` + terrain census + declared
+                // injectables (`mustard.json#inject`, `on: sessionStart`) —
+                // the SessionStart bootstrap. A `Check` (terrain + injectables
+                // compose into its single `Inject` verdict; a post-compaction
+                // start re-arms the once-per-session markers).
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
                 check: Some(Box::new(SessionStartInject)),
                 observer: None,
@@ -424,8 +426,10 @@ impl Registry {
             },
             Module {
                 id: "prompt_submit_inject",
-                // `followup-cancel-gate` — UserPromptSubmit follow-up archival.
-                // A `Check` (always allows; the archival is its side effect).
+                // `followup-cancel-gate` (amendment-window close, a side
+                // effect) + declared injectables (`mustard.json#inject`,
+                // `on: userPromptSubmit`) + the W8.T8.2 pipeline-in-flight
+                // banner — composed into one `Inject`; never blocks.
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
                 check: Some(Box::new(PromptSubmitInject)),
                 observer: None,

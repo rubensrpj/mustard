@@ -35,6 +35,17 @@
             "timeout": 120
           }
         ]
+      },
+      {
+        "matcher": "compact|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SessionStart",
+            "statusMessage": "Re-injecting session context...",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "SessionEnd": [

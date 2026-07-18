@@ -62,7 +62,7 @@ flowchart TD
 
 ## Pipeline canônico
 
-Vocabulário único de fases (fonte: `plugin/refs/canonical-phases.md`):
+Vocabulário único de fases (fonte: `plugin/pipeline-config.md § Pipeline Phases`):
 
 ```mermaid
 flowchart LR

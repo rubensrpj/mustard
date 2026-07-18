@@ -30,6 +30,7 @@ Blockers: unresolved `BLOCKED` → block; `CONCERN`/`DEFERRED` → surface + pro
 4. Knowledge (max 3 each, skip trivial; durable prose belongs to native auto-memory):
    - decision: `mustard-rt run emit-event --event decision --spec {spec} --payload "title=…" --payload "rationale=…"`
    - lesson: `mustard-rt run emit-event --event lesson --spec {spec} --payload "takeaway=…" --payload "trigger=…"`
+   - capability: `mustard-rt run capability create --slug {slug} --title "…"` when the spec shipped a durable user-facing capability (then link `[[cap.{slug}]]` in the spec)
 5. Metrics: read the pipeline-state projection → `.claude/.metrics/{spec}.json` (omit missing fields).
 6. Print `pipeline-summary` → `wave-tree` → banner `PIPELINE COMPLETE — {spec}` (agents/files/registry + optional `rtk gain` line). All fail-open.
 7. Epic auto-fold is handled in-process by `close-orchestrate` (children all closed → folded) — nothing to run by hand.

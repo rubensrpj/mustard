@@ -4,9 +4,12 @@
 //! or may not be a Mustard project. This module exposes the single Tauri
 //! command needed to inspect an arbitrary folder:
 //!
-//! - [`detect_project_mustard`] — does `<path>/.claude/CLAUDE.md` exist? if so,
-//!   read `<path>/mustard.json` (the project-root config) and surface the
-//!   `version` stamp written by `mustard-cli init`.
+//! - [`detect_project_mustard`] — does `<path>/mustard.json` exist? if so,
+//!   read it (the project-root config, the workspace anchor) and surface the
+//!   `version` stamp written by `mustard-cli init`. (`.claude/CLAUDE.md` is no
+//!   longer the install signal: the orchestrator redesign stopped planting it,
+//!   so `mustard.json` — which every install writes — is the marker, matching
+//!   `discovery::discover`.)
 //!
 //! In-place refresh is no longer a dashboard command. Template and plugin
 //! content now ships through the `mustard` plugin marketplace, and re-seeding
@@ -25,7 +28,7 @@ use std::path::Path;
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectDetection {
-    /// `true` when `<path>/.claude/CLAUDE.md` exists.
+    /// `true` when `<path>/mustard.json` exists.
     pub installed: bool,
     /// The `version` field from `<path>/mustard.json`, when readable.
     /// `None` when the file is missing, malformed, or has no `version` key.
@@ -35,20 +38,19 @@ pub struct ProjectDetection {
 /// Inspect `path` and return whether Mustard is installed there + its version.
 ///
 /// Detection rule mirrors `discovery::discover`: a folder counts as installed
-/// when its `.claude/CLAUDE.md` exists. The version is best-effort — a missing
-/// or malformed `mustard.json` yields `version: None` rather than an
-/// error, so the UI can still show "installed, version unknown".
+/// when its project-root `mustard.json` exists (the workspace anchor every
+/// install writes; the orchestrator redesign stopped planting
+/// `.claude/CLAUDE.md`, so that file signals nothing). The version is
+/// best-effort — a malformed `mustard.json` yields `version: None` rather
+/// than an error, so the UI can still show "installed, version unknown".
 #[tauri::command]
 pub async fn detect_project_mustard(path: String) -> Result<ProjectDetection, String> {
     let base = Path::new(&path);
-    let claude_dir = base.join(".claude");
-    let installed = claude_dir.join("CLAUDE.md").is_file();
+    let installed = base.join("mustard.json").is_file();
     if !installed {
         return Ok(ProjectDetection { installed: false, version: None });
     }
 
-    // Version lives in the project-root mustard.json (the workspace anchor),
-    // not under `.claude/`. `installed` is still keyed on `.claude/CLAUDE.md`.
     let version = ProjectConfig::load(base).version;
     Ok(ProjectDetection { installed: true, version })
 }

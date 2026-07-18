@@ -2,17 +2,6 @@
   "schemaVersion": 1,
   "artifacts": [
     {
-      "id": "skill:pipeline-execution",
-      "category": "skill",
-      "source": {
-        "kind": "manual"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "skills/pipeline-execution",
-      "checksum": null
-    },
-    {
       "id": "ref:agent-prompt",
       "category": "ref",
       "source": {
@@ -21,17 +10,6 @@
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "refs/agent-prompt",
-      "checksum": null
-    },
-    {
-      "id": "ref:canonical-phases",
-      "category": "ref",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "refs/canonical-phases.md",
       "checksum": null
     },
     {
