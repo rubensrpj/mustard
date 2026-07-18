@@ -339,8 +339,11 @@ impl Check for SessionStartInject {
         // once-per-session terrain map so the AI opens the session already
         // knowing the subprojects instead of grepping to orient. Fail-open: a
         // missing / unreadable model yields no terrain.
+        let terrain_lang =
+            crate::shared::context::project_config_cached(Path::new(&cwd)).i18n().lang;
         let terrain = crate::commands::orient::render_terrain(
             &crate::commands::orient::compute_orientation(Path::new(&cwd)),
+            terrain_lang,
         );
         // Declared injectables (`mustard.json#inject`, `on: sessionStart`).
         // A post-compaction SessionStart (`source == "compact"`) first clears

@@ -30,6 +30,7 @@ use std::path::Path;
 
 use crate::commands::spec::spec_sections::section_end;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
+use mustard_core::{translate, SupportedLocale};
 
 /// Hard ceiling on the machine-owned `.claude/scan-map.md`. The map is a terse
 /// orientation file (~200 bytes + an optional commands table); a file this
@@ -127,19 +128,26 @@ fn find_sentinel_span(content: &str) -> Option<(usize, usize)> {
 /// auto-inferable from the manifest, so it is token noise, not signal. The
 /// whole FILE is machine-owned, so no sentinels are needed; ends in exactly
 /// one newline (byte-stable).
+///
+/// Language follows `mustard.json#lang` (`lang`): the map is DISPLAYED to the
+/// developer and injected as orientation, so it is user-facing text, not an
+/// internal index (finding #1 of the 2026-07 SOLID audit). A project with no
+/// declared locale defaults to `pt-BR` via [`mustard_core::ProjectConfig::i18n`],
+/// so existing installs are unchanged.
 pub(crate) fn render_map(
     kind: &str,
     code_files: usize,
     commands: &mustard_core::domain::config::Commands,
+    lang: SupportedLocale,
 ) -> String {
     let commands_block = render_commands(commands);
 
     let mut out = String::new();
-    let _ = writeln!(out, "Tipo: {kind} · {code_files} arquivos");
-    let _ = writeln!(
-        out,
-        "O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
-    );
+    let type_line = translate("scan.map.type_line", lang)
+        .replace("{kind}", kind)
+        .replace("{count}", &code_files.to_string());
+    let _ = writeln!(out, "{type_line}");
+    let _ = writeln!(out, "{}", translate("scan.map.pointer", lang));
     if !commands_block.is_empty() {
         out.push('\n');
         // `render_commands` already ends in a newline.
@@ -451,6 +459,12 @@ fn run_full(
     let mut regenerated: Vec<String> = Vec::new();
     let mut over_cap: Vec<OversizedEntry> = Vec::new();
 
+    // The scan-map language follows the project's declared locale
+    // (`mustard.json#lang`) — resolved once at the scan root, applied to every
+    // unit. Fail-open: no/unreadable config ⇒ `i18n()`'s `pt-BR` default, so
+    // existing installs render exactly as before (finding #1, SOLID audit).
+    let lang = crate::shared::context::project_config_cached(root).i18n().lang;
+
     for project in projects {
         let dir = root.join(&project.dir);
         let claude_md_path = dir.join("CLAUDE.md");
@@ -494,7 +508,7 @@ fn run_full(
         // Hard cap guards MUSTARD's own output only: a map this large means the
         // generator ran away, so refuse the write and surface it. Deterministic
         // — the outcome is a pure function of the rendered byte length.
-        let map = render_map(&project.kind, project.code_files, &commands);
+        let map = render_map(&project.kind, project.code_files, &commands, lang);
         if map.len() > SCAN_MAP_HARD_CAP_BYTES {
             eprintln!(
                 "scan --full: refusing to write {:?}: {} bytes exceeds hard cap of {} — runaway machine map",
@@ -866,7 +880,7 @@ Keep me.
             lint: None,
             type_check: Some("cargo check".into()),
         };
-        let out = render_map("rust", 12, &commands);
+        let out = render_map("rust", 12, &commands, SupportedLocale::PtBr);
         assert!(out.contains("Tipo: rust · 12 arquivos"), "map header missing: {out}");
         // Commands table has only the Some rows, in fixed order, no Lint row.
         assert!(out.contains("## Commands"), "commands heading missing: {out}");
@@ -878,7 +892,7 @@ Keep me.
 
     #[test]
     fn map_omits_commands_table_when_all_none() {
-        let out = render_map("rust", 1, &no_commands());
+        let out = render_map("rust", 1, &no_commands(), SupportedLocale::PtBr);
         assert!(!out.contains("## Commands"), "commands section must be absent: {out}");
         // After the Stack cut there is no `## Stack` section at all.
         assert!(!out.contains("## Stack"), "stack section must be dropped: {out}");
@@ -894,9 +908,23 @@ Keep me.
             type_check: Some("tsc --noEmit".into()),
         };
         assert_eq!(
-            render_map("typescript", 30, &commands),
-            render_map("typescript", 30, &commands),
+            render_map("typescript", 30, &commands, SupportedLocale::PtBr),
+            render_map("typescript", 30, &commands, SupportedLocale::PtBr),
             "two renders must produce identical bytes"
+        );
+    }
+
+    #[test]
+    fn map_follows_declared_locale_en() {
+        // finding #1 (SOLID audit): an `en-US` project gets an English map;
+        // a project with no declared locale keeps the pt-BR default (asserted
+        // by the sibling tests). The header + pointer both route through i18n.
+        let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs);
+        assert!(out.contains("Type: rust · 12 files"), "EN header missing: {out}");
+        assert!(!out.contains("arquivos"), "no pt-BR bytes in an EN map: {out}");
+        assert!(
+            out.contains("The terrain is already in your window"),
+            "EN pointer missing: {out}"
         );
     }
 
