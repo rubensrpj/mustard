@@ -34,40 +34,12 @@
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 
+use crate::shared::gate_mode::{resolve_mode, GateMode};
 use crate::util::format_gate_message;
 
 // ---------------------------------------------------------------------------
-// Shared: mode resolution + content extraction
+// Shared: content extraction (mode resolution lives in `shared::gate_mode`)
 // ---------------------------------------------------------------------------
-
-/// A three-state gate mode, `off` / `warn` / `strict`. The JS `resolveMode`
-/// lowercases the env var and falls back to the default for any unrecognised
-/// value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateMode {
-    Off,
-    Warn,
-    Strict,
-}
-
-/// Resolve a `MUSTARD_*_MODE` mode in cascade: env var → `mustard.json`
-/// (`gates.<field>`, supplied as `config_override`) → built-in `default`.
-///
-/// An env var set to a non-empty value wins; otherwise the config override is
-/// tried; an absent string OR an unrecognised value falls through to `default`
-/// — matching `resolveMode` / `getMode` in the JS hooks.
-fn resolve_mode(env_var: &str, config_override: Option<&str>, default: GateMode) -> GateMode {
-    let s = std::env::var(env_var)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| config_override.map(str::to_string));
-    match s.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "off" => GateMode::Off,
-        "warn" => GateMode::Warn,
-        "strict" => GateMode::Strict,
-        _ => default,
-    }
-}
 
 /// The line-count thresholds shared by the spec and skill size gates.
 const WARN_LINES: usize = 200;
@@ -130,16 +102,6 @@ fn resolve_content(input: &HookInput) -> Option<String> {
         }
         _ => None,
     }
-}
-
-/// The `file_path` of a Write/Edit invocation (also accepts the legacy `path`
-/// key — `tool_input.file_path || tool_input.path`).
-fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -790,7 +752,7 @@ impl Check for SizeGate {
         if tool != "Write" && tool != "Edit" {
             return Ok(Verdict::Allow);
         }
-        let Some(file_path) = file_path_of(input) else {
+        let Some(file_path) = input.file_path() else {
             return Ok(Verdict::Allow);
         };
 

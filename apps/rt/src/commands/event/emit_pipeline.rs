@@ -166,64 +166,131 @@ fn parse_payload_tolerant(raw: &str) -> Result<Value, serde_json::Error> {
 /// 1. a `qa.result` event with `overall == "pass"` exists for the spec, or
 /// 2. `--allow-no-qa` is set.
 pub fn run(opts: EmitPipelineOpts) {
-    // --- Validate kind ---
-    if !KNOWN_KINDS.contains(&opts.kind.as_str()) {
+    // --- VALIDATE — each check exits BEFORE any event is written --------------
+    validate_kind_or_exit(&opts.kind);
+    let kind_base = resolve_kind_base_or_exit(&opts);
+    enforce_qa_gate_or_exit(&opts);
+    let payload = parse_payload_or_exit(&opts);
+
+    // --- EMIT the primary event (+ any legacy→new alias twin) -----------------
+    //
+    // Capture the kind/spec strings and one shared `ts` + `session_id` for the
+    // whole transition: a legacy event and its new-kind alias must land on the
+    // *same* timestamp/session so the projection correlates them as one
+    // transition (AC-W2-6). The event router opens its store on demand — no
+    // eager open here.
+    let kind = opts.kind.clone();
+    let spec = opts.spec.clone();
+    let ts = now_iso8601();
+    let sid = session_id();
+    emit_primary_and_alias(&kind, &spec, &payload, &ts, &sid);
+
+    // --- APPLY the one kind-specific side effect, keyed by `kind` -------------
+    //
+    // Exactly one arm runs per invocation — the six effect blocks the emitter
+    // fans out AFTER the row is on disk. Each arm delegates to a named,
+    // fail-open effect fn; only `pipeline.kind` yields a value (the work branch
+    // echoed for the `EnterWorktree` hand-off).
+    let work_branch = match kind.as_str() {
+        EVENT_PIPELINE_STATUS => {
+            sync_status_transition(&effect_cwd(), &spec, &payload, &ts, &sid);
+            None
+        }
+        EVENT_PIPELINE_WAVE_COMPLETE => {
+            apply_wave_complete(&effect_cwd(), &spec, &payload, &ts);
+            None
+        }
+        EVENT_PIPELINE_WAVE_START => {
+            if let Some(wave) = payload.get("wave").and_then(Value::as_u64) {
+                sync_wave_started(&effect_cwd(), &spec, wave, &ts);
+            }
+            None
+        }
+        EVENT_PIPELINE_KIND => {
+            mark_pending_work_branch(&spec, kind_base.as_deref(), opts.intent.as_deref(), &sid, &ts)
+        }
+        EVENT_PIPELINE_STAGE | EVENT_PIPELINE_OUTCOME => {
+            patch_meta_for_transition(&effect_cwd(), &spec, &kind, &payload, &ts);
+            None
+        }
+        EVENT_PIPELINE_COMPLETE => {
+            finalize_complete(&effect_cwd(), &spec, &ts, &sid);
+            None
+        }
+        _ => None,
+    };
+
+    // Remove the terminal-state marker (keyed on the predicate, so it runs for
+    // every kind), then echo the one deterministic success line.
+    cleanup_terminal_state(&kind, &payload, &spec);
+    echo_success(&kind, &spec, work_branch);
+}
+
+/// The process cwd, degrading to the configured project dir (never panics) —
+/// the exact expression every pipeline effect and gate used inline before the
+/// `run()` split. One place so each effect resolves the root the same way.
+fn effect_cwd() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(project_dir()))
+}
+
+/// Reject an unknown `kind` (exit 1). The event vocabulary is a closed literal
+/// set — never magically extended (cf. `KNOWN_KINDS`).
+fn validate_kind_or_exit(kind: &str) {
+    if !KNOWN_KINDS.contains(&kind) {
         eprintln!(
             "emit-pipeline: unknown kind {:?}. Valid kinds: {}",
-            opts.kind,
+            kind,
             KNOWN_KINDS.join(", ")
         );
         std::process::exit(1);
     }
+}
 
-    // --- Strict base validation (pipeline.kind only) ---
-    //
-    // An EXPLICIT `--base` that names no integration base is a user/config
-    // error — fail loudly BEFORE anything is emitted (a late error would leave
-    // the event half-recorded). Silent coercion to the primary base once sent
-    // `--base dev` work onto a `main_*` branch in the field.
-    let kind_base: Option<String> = if opts.kind == EVENT_PIPELINE_KIND {
-        let project = project_dir();
-        let config = mustard_core::ProjectConfig::load(Path::new(&project));
-        match super::work_branch::resolve_base(opts.base.as_deref(), &config) {
-            Ok(b) => Some(b),
-            Err(msg) => {
-                eprintln!("emit-pipeline: {msg}");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        None
-    };
-
-    // --- REVIEW/QA gate: pipeline.complete requires qa.result(overall=pass). ---
-    //
-    // Without this gate the orchestrator can emit `pipeline.complete` after
-    // EXECUTE finishes the last wave, silently skipping REVIEW + QA. Fail-open
-    // applies only to *event-store unreachable*: if we cannot read the spec's
-    // events dir we take the conservative path (block emission), since allowing
-    // a complete on a missing store would erase the gate entirely.
-    if opts.kind == EVENT_PIPELINE_COMPLETE && !opts.allow_no_qa {
-        let cwd = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-        if !qa_result_passed(&cwd, &opts.spec) {
-            eprintln!(
-                "BLOCKED: cannot emit pipeline.complete for {} — no qa.result event \
-                 with overall=pass exists. Run: rtk mustard-rt run qa-run --spec {}",
-                opts.spec, opts.spec
-            );
-            std::process::exit(2);
+/// Resolve the integration base for `pipeline.kind` (the only kind that cuts a
+/// work branch). An EXPLICIT `--base` naming no integration base is a
+/// user/config error — fail loudly (exit 1) BEFORE anything is emitted, never
+/// silently coerced (silent coercion once sent `--base dev` work onto a `main_*`
+/// branch in the field). `None` for every other kind.
+fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts) -> Option<String> {
+    if opts.kind != EVENT_PIPELINE_KIND {
+        return None;
+    }
+    let project = project_dir();
+    let config = mustard_core::ProjectConfig::load(Path::new(&project));
+    match super::work_branch::resolve_base(opts.base.as_deref(), &config) {
+        Ok(b) => Some(b),
+        Err(msg) => {
+            eprintln!("emit-pipeline: {msg}");
+            std::process::exit(1);
         }
     }
+}
 
-    // --- Parse optional payload ---
-    //
-    // A missing `--payload` is normally `null`. For `pipeline.complete` that
-    // null breaks the projection (`serde_json::from_value::<PipelineComplete
-    // Payload>(null)` → "invalid type: null, expected struct"). Default a bare
-    // `pipeline.complete` to `{}` so a valid empty `PipelineCompletePayload` is
-    // emitted (the projection is also hardened to tolerate null — both ends).
-    let payload: Value = match opts.payload.as_deref() {
+/// REVIEW/QA gate: `pipeline.complete` requires a `qa.result(overall=pass)` for
+/// the spec unless `--allow-no-qa` is set. Fail-CLOSED on an unreachable store
+/// (block emission, exit 2) — allowing a complete on a missing store would erase
+/// the gate entirely.
+fn enforce_qa_gate_or_exit(opts: &EmitPipelineOpts) {
+    if opts.kind != EVENT_PIPELINE_COMPLETE || opts.allow_no_qa {
+        return;
+    }
+    let cwd = effect_cwd();
+    if !qa_result_passed(&cwd, &opts.spec) {
+        eprintln!(
+            "BLOCKED: cannot emit pipeline.complete for {} — no qa.result event \
+             with overall=pass exists. Run: rtk mustard-rt run qa-run --spec {}",
+            opts.spec, opts.spec
+        );
+        std::process::exit(2);
+    }
+}
+
+/// Parse `--payload` into a JSON value (exit 1 on invalid JSON). A missing
+/// payload is `null`, except a bare `pipeline.complete` defaults to `{}` so the
+/// projection sees a valid empty `PipelineCompletePayload` rather than choking on
+/// `null`. Uses [`parse_payload_tolerant`] for the PowerShell `\"` quirk.
+fn parse_payload_or_exit(opts: &EmitPipelineOpts) -> Value {
+    match opts.payload.as_deref() {
         None if opts.kind == EVENT_PIPELINE_COMPLETE => json!({}),
         None => Value::Null,
         Some(raw) => match parse_payload_tolerant(raw) {
@@ -233,213 +300,164 @@ pub fn run(opts: EmitPipelineOpts) {
                 std::process::exit(1);
             }
         },
-    };
+    }
+}
 
-    // W5: the event router (`route::emit`) opens the SQLite store on
-    // demand for `pipeline.*` events; there is no need to open it eagerly here.
-
-    // Capture the values we need after `event` consumes them.
-    let kind_str = opts.kind.clone();
-    let spec_name = opts.spec.clone();
-    let payload_for_header = payload.clone();
-
-    // One shared `ts` + `session_id` for the whole transition: a legacy event
-    // and its new-kind alias must land on the *same* timestamp/session so the
-    // projection layer can correlate them as one transition (AC-W2-6).
-    let ts = now_iso8601();
-    let sid = session_id();
-
-    // Resolve any legacy → new alias *before* moving the payload into the
-    // primary event. `aliased` carries the equivalent new event when the
-    // incoming kind is a legacy kind that maps onto the canonical state model.
-    let aliased = alias_event(&kind_str, &payload, &ts, &sid, &spec_name);
-
-    // When we are about to fan out an alias, tag the legacy event's payload so
-    // an auditor can distinguish the back-compat write from a first-class one.
+/// Route the primary event to the NDJSON sink, then its legacy→new alias twin
+/// when the incoming kind is a legacy kind (`pipeline.status`/`pipeline.phase`).
+/// The legacy event is tagged `legacy_alias=true`; both rows share `ts` + `sid`
+/// so the projection correlates them as one transition. A directly-emitted NEW
+/// kind produces no alias (idempotency). Fail-open on the write.
+fn emit_primary_and_alias(kind: &str, spec: &str, payload: &Value, ts: &str, sid: &str) {
+    // Resolve any legacy → new alias BEFORE tagging: `aliased.is_some()` decides
+    // whether the legacy event carries the audit tag.
+    let aliased = alias_event(kind, payload, ts, sid, spec);
     let primary_payload = if aliased.is_some() {
-        tag_legacy_alias(payload)
+        tag_legacy_alias(payload.clone())
     } else {
-        payload
+        payload.clone()
     };
-
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: ts.clone(),
-        session_id: sid.clone(),
+        ts: ts.to_string(),
+        session_id: sid.to_string(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
             id: Some("emit-pipeline".to_string()),
             actor_type: None,
         },
-        event: opts.kind,
+        event: kind.to_string(),
         payload: primary_payload,
-        spec: Some(opts.spec),
+        spec: Some(spec.to_string()),
     };
-
     // Fail-open: a write failure is logged but never propagates to an exit 1.
-    // W5: route through `route::emit` so `pipeline.*` → SQLite while
-    // `hygiene.*` / other non-pipeline kinds land in the per-spec NDJSON sink.
     let _ = crate::shared::events::route::emit(&project_dir(), &event);
-
-    // Emit the canonical new-kind alias for a legacy transition. Same ts +
-    // session as the legacy event. Emitting a *new* kind directly produces no
-    // alias here (`alias_event` returns `None` for new kinds) — idempotency.
+    // Emit the canonical new-kind alias for a legacy transition (same ts +
+    // session). A *new* kind emitted directly produces no alias — idempotency.
     if let Some(alias) = aliased {
         let _ = crate::shared::events::route::emit(&project_dir(), &alias);
     }
+}
 
-    // Sync spec.md header + meta.json whenever a pipeline.status or
-    // pipeline.stage/outcome event carries a status transition. Every
-    // transition that changes status calls sync_status on the corresponding
-    // file (parent or wave). Fail-open: errors are warnings only — the event
-    // has already been recorded.
-    if kind_str == EVENT_PIPELINE_STATUS {
-        if let Some(to) = payload_for_header.get("to").and_then(Value::as_str) {
-            let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-            // Fix-loop exhaustion twin (F1 G): a `to: wave-failed` status is
-            // the deterministic signal that a wave exhausted its fix-loops
-            // (refs/resume/fix-loop-wave.md). Fan out the wave-scoped
-            // `pipeline.wave.failed` the dashboard pairs with
-            // `pipeline.wave.complete`. Same ts + session; fail-open.
-            emit_wave_failed_twin(&cwd, &spec_name, &payload_for_header, &ts, &sid);
-            let state = state_from_status_word(to);
-            // Determine target path: wave-level transitions carry a `wave` field
-            // and sync the wave's spec.md; top-level transitions sync the parent.
-            let spec_path = if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
-                wave_spec_path(&cwd, &spec_name, wave)
-            } else {
-                ClaudePaths::for_project(&cwd)
-                    .and_then(|p| p.for_spec(&spec_name))
-                    .ok()
-                    .map(|sp| sp.dir().to_path_buf())
-            };
-            if let Some(path) = spec_path {
-                if let Err(e) = crate::commands::spec::spec_scaffold::sync_status(state, &path) {
-                    eprintln!("emit-pipeline: WARN: sync_status failed ({e}); headers may be stale");
-                }
-            }
+/// `pipeline.status` effect: fan out the `pipeline.wave.failed` twin (when the
+/// target word is `wave-failed`) and sync the spec.md header + meta.json of the
+/// transition's target file — the wave's sidecar when the payload names a
+/// `wave`, else the parent's. Fail-open; the event is already recorded.
+fn sync_status_transition(cwd: &Path, spec: &str, payload: &Value, ts: &str, sid: &str) {
+    let Some(to) = payload.get("to").and_then(Value::as_str) else {
+        return;
+    };
+    // Fix-loop exhaustion twin (F1 G): a `to: wave-failed` status is the
+    // deterministic signal a wave exhausted its fix-loops
+    // (refs/resume/fix-loop-wave.md). Fan out the wave-scoped
+    // `pipeline.wave.failed` the dashboard pairs with `pipeline.wave.complete`.
+    // Same ts + session; fail-open.
+    emit_wave_failed_twin(cwd, spec, payload, ts, sid);
+    let state = state_from_status_word(to);
+    // Wave-level transitions carry a `wave` and sync the wave's spec.md;
+    // top-level transitions sync the parent.
+    let spec_path = if let Some(wave) = payload.get("wave").and_then(Value::as_u64) {
+        wave_spec_path(cwd, spec, wave)
+    } else {
+        ClaudePaths::for_project(cwd)
+            .and_then(|p| p.for_spec(spec))
+            .ok()
+            .map(|sp| sp.dir().to_path_buf())
+    };
+    if let Some(path) = spec_path {
+        if let Err(e) = crate::commands::spec::spec_scaffold::sync_status(state, &path) {
+            eprintln!("emit-pipeline: WARN: sync_status failed ({e}); headers may be stale");
         }
     }
+}
 
-    // `pipeline.wave.complete`: sync the wave's spec.md + meta.json to
-    // Close/Completed AND bump the parent's progress fields. Fail-open.
-    if kind_str == EVENT_PIPELINE_WAVE_COMPLETE {
-        if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
-            let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-            if let Some(wave_path) = wave_spec_path(&cwd, &spec_name, wave) {
-                let wave_done = SpecState::new(Stage::Close, Outcome::Completed, Flags::default())
-                    .unwrap_or(SpecState {
-                        stage: Stage::Close,
-                        outcome: Outcome::Completed,
-                        flags: Flags::default(),
-                    });
-                if let Err(e) =
-                    crate::commands::spec::spec_scaffold::sync_status(wave_done, &wave_path)
-                {
-                    eprintln!(
-                        "emit-pipeline: WARN: sync_status wave failed ({e}); wave headers may be stale"
-                    );
-                }
-                // Backfill the wave's checklist by file existence: a completing
-                // wave whose planned files are on disk must not close with
-                // unchecked items. The PostToolUse auto-mark can miss a live edit
-                // (subagent context, a non-Write tool); this is the deterministic
-                // net at the wave boundary. Forward-only (never un-marks).
-                reconcile_wave_checklist(&cwd, &wave_path);
-            } else {
-                eprintln!(
-                    "emit-pipeline: WARN: no `wave-{wave}-*` directory under .claude/spec/{spec_name}; wave sync skipped"
-                );
-            }
-            bump_parent_progress(&cwd, &spec_name, wave, &ts);
+/// `pipeline.wave.complete` effect: sync the wave's spec.md + meta.json to
+/// Close/Completed, reconcile its checklist by file existence, and bump the
+/// parent's progress fields. Fail-open.
+fn apply_wave_complete(cwd: &Path, spec: &str, payload: &Value, ts: &str) {
+    let Some(wave) = payload.get("wave").and_then(Value::as_u64) else {
+        return;
+    };
+    if let Some(wave_path) = wave_spec_path(cwd, spec, wave) {
+        let wave_done = SpecState::new(Stage::Close, Outcome::Completed, Flags::default())
+            .unwrap_or(SpecState {
+                stage: Stage::Close,
+                outcome: Outcome::Completed,
+                flags: Flags::default(),
+            });
+        if let Err(e) = crate::commands::spec::spec_scaffold::sync_status(wave_done, &wave_path) {
+            eprintln!(
+                "emit-pipeline: WARN: sync_status wave failed ({e}); wave headers may be stale"
+            );
         }
+        // Backfill the wave's checklist by file existence: a completing wave
+        // whose planned files are on disk must not close with unchecked items.
+        // The PostToolUse auto-mark can miss a live edit (subagent context, a
+        // non-Write tool); this is the deterministic net at the wave boundary.
+        // Forward-only (never un-marks).
+        reconcile_wave_checklist(cwd, &wave_path);
+    } else {
+        eprintln!(
+            "emit-pipeline: WARN: no `wave-{wave}-*` directory under .claude/spec/{spec}; wave sync skipped"
+        );
     }
+    bump_parent_progress(cwd, spec, wave, ts);
+}
 
-    // `pipeline.wave.start`: advance the STARTED wave's own meta.json Plan→Execute
-    // (forward-only). Symmetric to the wave.complete sync above — without it the
-    // active wave's sidecar stays "Plan" for its whole run (a reader of the
-    // per-wave stage rendered an executing wave as PLANEJANDO). The dashboard's
-    // wave-row projection flips InProgress off the EVENT itself. Fail-open.
-    if kind_str == EVENT_PIPELINE_WAVE_START {
-        if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
-            let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-            sync_wave_started(&cwd, &spec_name, wave, &ts);
-        }
+/// `pipeline.kind` effect (porta-unica work-type signal): pre-compute the
+/// auto-branch name the FIRST file mutation of this work unit will check out and
+/// persist it as the session's `pending-work-branch` marker (`work_branch_gate`
+/// reads it back on the first Write/Edit; a read-only request never edits, so
+/// the marker is simply never consumed). Returns the branch so `run()` can echo
+/// it for the `EnterWorktree name=…` hand-off, or `None` when no base resolved.
+/// Fail-open — the emit already succeeded.
+fn mark_pending_work_branch(
+    spec: &str,
+    kind_base: Option<&str>,
+    intent: Option<&str>,
+    sid: &str,
+    ts: &str,
+) -> Option<String> {
+    let base = kind_base?;
+    let project = project_dir();
+    let branch = super::work_branch::compute_work_branch(base, spec, intent, sid, ts, &project);
+    crate::shared::context::set_pending_branch(&project, sid, &branch);
+    Some(branch)
+}
+
+/// `pipeline.complete` effect: patch the root meta.json to Close/Completed/CLOSE
+/// and emit the terminal `pipeline.status: completed` so the event projection
+/// agrees with the sidecar (no divergence — a run-face complete otherwise left
+/// the event log's last status mid-pipeline). The QA gate already guaranteed
+/// this transition is legitimate. Fail-open.
+fn finalize_complete(cwd: &Path, spec: &str, ts: &str, sid: &str) {
+    patch_meta_complete(cwd, spec, ts);
+    emit_completed_status_if_needed(cwd, spec, ts, sid);
+}
+
+/// Remove the `.pipeline-states/{spec}.json` marker when a terminal event is
+/// emitted, so `current_spec`'s step-3 FS fallback doesn't resurrect a closed
+/// spec in a later session. Keyed on the terminal predicate (not one kind), so
+/// it runs after the dispatch for EVERY kind. Fail-open: a missing file is fine.
+fn cleanup_terminal_state(kind: &str, payload: &Value, spec: &str) {
+    if !is_terminal_event(kind, payload) {
+        return;
     }
-
-    // `pipeline.kind` (porta-unica work-type signal): pre-compute the auto-branch
-    // name the FIRST file mutation of this work unit will check out, and persist
-    // it as the session's `pending-work-branch` marker. `work_branch_gate` reads
-    // it back on the first Write/Edit. A read-only request never edits, so the
-    // marker is simply never consumed. Fail-open — the emit already succeeded.
-    // The name is also echoed in the success line so the orchestrator can pass
-    // it straight to `EnterWorktree name=…` (the WorktreeCreate hook cuts it
-    // from the right base).
-    let mut work_branch: Option<String> = None;
-    if kind_str == EVENT_PIPELINE_KIND {
-        if let Some(base) = kind_base.as_deref() {
-            let project = project_dir();
-            let branch =
-                super::work_branch::compute_work_branch(base, &spec_name, opts.intent.as_deref(), &sid, &ts, &project);
-            crate::shared::context::set_pending_branch(&project, &sid, &branch);
-            work_branch = Some(branch);
-        }
+    let cwd = effect_cwd();
+    if let Ok(paths) = ClaudePaths::for_project(&cwd) {
+        let state_file = paths.pipeline_states_dir().join(format!("{spec}.json"));
+        let _ = fs::remove_file(&state_file);
     }
+}
 
-    // `pipeline.stage` / `pipeline.outcome`: patch the spec's `meta.json` so the
-    // sidecar tracks the canonical state-model transition. Without this the
-    // sidecar stays stuck at its last `pipeline.status`-synced value and
-    // `active-specs` shows a phantom active spec after CLOSE. Reuses the
-    // canonical `Meta` read-modify-write (no parallel writer). Fail-open.
-    if kind_str == EVENT_PIPELINE_STAGE || kind_str == EVENT_PIPELINE_OUTCOME {
-        let cwd = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-        patch_meta_for_transition(&cwd, &spec_name, &kind_str, &payload_for_header, &ts);
-    }
-
-    // `pipeline.complete`: the spec is done. Set `outcome = Completed` +
-    // `stage = Close` (+ `phase = CLOSE`) in `meta.json` so `active-specs` no
-    // longer lists it, AND emit the terminal `pipeline.status: completed` event
-    // so the event projection agrees with the sidecar (no divergence). Without
-    // the status emit a run-face `pipeline.complete` patched meta to Completed
-    // while the event log's last status stayed mid-pipeline (or, for the legacy
-    // close path, `closed-followup`). The QA gate above already guaranteed this
-    // transition is legitimate. Fail-open.
-    if kind_str == EVENT_PIPELINE_COMPLETE {
-        let cwd = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-        patch_meta_complete(&cwd, &spec_name, &ts);
-        emit_completed_status_if_needed(&cwd, &spec_name, &ts, &sid);
-    }
-
-    // Cleanup: remove the `.pipeline-states/{spec}.json` file when a terminal
-    // event is emitted so `current_spec` step-3 (FS fallback) doesn't return
-    // this closed spec in a future session. Fail-open: missing file is fine.
-    let is_terminal = is_terminal_event(&kind_str, &payload_for_header);
-    if is_terminal {
-        let cwd = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-        if let Ok(paths) = ClaudePaths::for_project(&cwd) {
-            let state_file = paths
-                .pipeline_states_dir()
-                .join(format!("{spec_name}.json"));
-            let _ = fs::remove_file(&state_file);
-        }
-    }
-
-    // Success echo — the emitter used to succeed in TOTAL silence, which made
-    // the harness's own traceability tool opaque on the happy path (field
-    // feedback, sialia 2026-07-09: "para um harness de rastreabilidade, a
-    // própria ferramenta é opaca no sucesso"). One deterministic line: what
-    // was recorded, for which spec (+ the computed work branch on
-    // `pipeline.kind`, for the EnterWorktree hand-off). No timestamp/session
-    // in it (run outputs are byte-compared in gates) — the NDJSON row carries
-    // those.
-    let mut done = json!({ "ok": true, "kind": kind_str, "spec": spec_name });
+/// The one deterministic success line — `{ok, kind, spec[, branch]}`. No
+/// timestamp/session (run outputs are byte-compared in gates); the NDJSON row
+/// carries those. `branch` is present only on `pipeline.kind`, for the
+/// `EnterWorktree` hand-off. The emitter used to succeed in TOTAL silence, which
+/// made the harness's own traceability tool opaque on the happy path.
+fn echo_success(kind: &str, spec: &str, work_branch: Option<String>) {
+    let mut done = json!({ "ok": true, "kind": kind, "spec": spec });
     if let Some(branch) = work_branch {
         done["branch"] = json!(branch);
     }
@@ -455,13 +473,7 @@ pub fn run(opts: EmitPipelineOpts) {
 /// the conservative outcome on missing data is to block (not allow). Callers
 /// can opt out via `--allow-no-qa`.
 fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
-    let events_dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map_or_else(
-            || ClaudePaths::compose_unchecked(cwd).spec_dir().join(spec).join(".events"),
-            |sp| sp.dir().join(".events"),
-        );
+    let events_dir = ClaudePaths::spec_dir_or_unchecked(cwd, spec).join(".events");
     let mut events =
         mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
     // Chronological order — last matching event wins (mirrors `close_gate`).
@@ -1143,7 +1155,7 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
         return;
     }
 
-    let qa_required = crate::hooks::write::close_gate::qa_gate_active()
+    let qa_required = crate::commands::pipeline::close_gates::qa_gate_active()
         && crate::commands::review::qa_run::spec_has_executable_acs(cwd, spec);
 
     if qa_required {

@@ -21,7 +21,7 @@
 use mustard_core::platform::config::Mode;
 use serde_json::json;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mustard_core::domain::model::contract::Verdict;
 
@@ -104,45 +104,54 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
     // Path 1: binary not found / ENOENT — fail open.
     let Ok(mut child) = command.spawn() else { return None };
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let stdout_handle = child.stdout.take();
-
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let _ = tx.send((status, child));
-    });
-
-    match rx.recv_timeout(RTK_REWRITE_TIMEOUT) {
-        Ok((Ok(status), _child)) => {
-            // Path 2: non-zero exit → no RTK equivalent — fail open.
-            if !status.success() {
-                return None;
+    // No native wait-with-timeout in std; spawn + poll so the `Child` stays
+    // owned by THIS thread — the only shape in which the timeout branch can
+    // actually kill it. The prior move-into-a-worker-thread form surrendered
+    // the handle: on timeout the child was still blocked in `wait()` on the
+    // worker, so the `recv_timeout(0)` kill branch could never fire and the
+    // process leaked. Mirrors `close_gates::run_command`. Every classification
+    // is UNCHANGED — non-zero exit / wait error / timeout / empty stdout all
+    // fail open (return None); exit 0 with distinct non-empty stdout →
+    // Some(rewritten). Poll interval is short (5 ms): this gate is on the hot
+    // path of every Bash command, so the wake latency must stay negligible
+    // against the 2 s budget.
+    let deadline = Instant::now() + RTK_REWRITE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Path 2: non-zero exit → no RTK equivalent — fail open.
+                if !status.success() {
+                    return None;
+                }
+                let mut output = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    use std::io::Read;
+                    let _ = out.read_to_string(&mut output);
+                }
+                // Filter the rtk "no hook installed" advisory before trimming.
+                // Defense-in-depth: if a future rtk version emits the warning on
+                // stdout instead of stderr (already null'd), this prevents a
+                // valid rewritten command from being discarded as noise-only.
+                let output = filter_rtk_noise(&output);
+                let trimmed = output.trim();
+                // Path 4: empty / whitespace stdout — fail open.
+                if trimmed.is_empty() {
+                    return None;
+                }
+                return Some(trimmed.to_string());
             }
-            let mut output = String::new();
-            if let Some(mut out) = stdout_handle {
-                use std::io::Read;
-                let _ = out.read_to_string(&mut output);
+            // Path 3: timeout — kill the child and fail open. The child is
+            // owned here, so `kill` reaches it; `wait` then reaps it.
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
             }
-            // Filter the rtk "no hook installed" advisory before trimming.
-            // Defense-in-depth: if a future rtk version emits the warning on
-            // stdout instead of stderr (already null'd), this prevents a valid
-            // rewritten command from being discarded as noise-only output.
-            let output = filter_rtk_noise(&output);
-            let trimmed = output.trim();
-            // Path 4: empty / whitespace stdout — fail open.
-            if trimmed.is_empty() {
-                return None;
-            }
-            Some(trimmed.to_string())
-        }
-        // Wait itself errored — fail open.
-        Ok((Err(_), _child)) => None,
-        // Path 3: timeout — kill the child and fail open.
-        Err(_) => {
-            if let Ok((_, mut child)) = rx.recv_timeout(Duration::from_millis(0)) {
-                let _ = child.kill();
-            }
-            None
+            // Wait itself errored — fail open.
+            Err(_) => return None,
         }
     }
 }

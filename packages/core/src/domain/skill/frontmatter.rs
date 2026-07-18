@@ -250,6 +250,23 @@ pub struct SkillFrontmatter {
     pub extra: serde_json::Value,
 }
 
+impl SkillFrontmatter {
+    /// The legacy top-level `source:` field (`scan` | `manual` | ...) when the
+    /// frontmatter carries one. It is not a typed key, so it lands in
+    /// [`Self::extra`] via `serde(flatten)`; this accessor is the canonical
+    /// reader so consumers (notably `apps/rt`'s `scan_patterns::origin`
+    /// provenance marker) read it without re-parsing the block. Distinct from
+    /// [`SkillMetadata::generated_by`] (`metadata.generated_by`), the newer
+    /// provenance field.
+    #[must_use]
+    pub fn source(&self) -> Option<String> {
+        self.extra
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -353,9 +370,12 @@ pub fn validate(
 }
 
 /// Extract the YAML body between leading `---\n` and the next `\n---` fence.
-/// Tolerates CRLF.
+/// Tolerates a leading UTF-8 BOM and CRLF line endings.
 #[must_use]
 pub fn extract_frontmatter(raw: &str) -> Option<String> {
+    // Some editors prepend a UTF-8 BOM; strip it before the opening fence so a
+    // BOM-first SKILL.md still parses (matches the scan-pattern origin reader).
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
     let normalized = raw.replace("\r\n", "\n");
     let rest = normalized.strip_prefix("---\n")?;
     let end = rest.find("\n---")?;
@@ -712,5 +732,35 @@ metadata:
         assert!(!is_kebab("é"), "single multi-byte char must fail");
         // "ab" is 2 chars (ASCII) — must pass.
         assert!(is_kebab("ab"), "two ASCII chars must pass");
+    }
+
+    #[test]
+    fn tolerates_leading_bom() {
+        // A BOM before the opening fence must not defeat extraction — this is
+        // the tolerance the scan-pattern origin reader always had and the core
+        // now shares (P2.8).
+        let raw = "\u{feff}---\nname: x\ndescription: Use when the user wants something with enough characters here.\nsource: scan\n---\nbody";
+        let fm = parse(raw).expect("BOM-prefixed frontmatter parses");
+        assert_eq!(fm.name, "x");
+        assert_eq!(fm.source().as_deref(), Some("scan"));
+    }
+
+    #[test]
+    fn source_accessor_reads_legacy_field() {
+        let raw = "---\nname: x\ndescription: Use when the user wants something with enough characters here.\nsource: manual\n---\n";
+        let fm = parse(raw).unwrap();
+        assert_eq!(fm.source().as_deref(), Some("manual"));
+        // Absent `source:` → None (not an empty string).
+        let raw_no_source = "---\nname: x\ndescription: Use when the user wants something with enough characters here.\n---\n";
+        assert_eq!(parse(raw_no_source).unwrap().source(), None);
+    }
+
+    #[test]
+    fn crlf_and_bom_converge_on_source() {
+        // CRLF line endings + a BOM together still yield the same `source`
+        // value — the two normalisations (BOM strip + CRLF replace) compose.
+        let raw = "\u{feff}---\r\nname: x\r\ndescription: Use when the user wants something with enough characters here.\r\nsource: scan\r\n---\r\nbody";
+        let fm = parse(raw).expect("CRLF+BOM parses");
+        assert_eq!(fm.source().as_deref(), Some("scan"));
     }
 }

@@ -128,13 +128,7 @@ fn candidates_from_payload(payload: &Value, source: &str) -> Vec<Candidate> {
 /// events are scanned in chronological order. Fail-open to an empty vec.
 #[must_use]
 pub(crate) fn detect_candidates(cwd: &Path, spec: &str) -> Vec<Candidate> {
-    let events_dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map(|sp| sp.events_dir())
-        .unwrap_or_else(|| {
-            ClaudePaths::compose_unchecked(cwd).spec_dir().join(spec).join(".events")
-        });
+    let events_dir = ClaudePaths::spec_dir_or_unchecked(cwd, spec).join(".events");
     let mut events = read_harness_events_from_ndjson_dir(&events_dir);
     events.sort_by(|a, b| a.ts.cmp(&b.ts));
     let mut out = Vec::new();
@@ -152,13 +146,7 @@ pub(crate) fn detect_candidates(cwd: &Path, spec: &str) -> Vec<Candidate> {
 /// The set of `candidate_id`s already proposed for `spec` — the idempotency
 /// guard set. Reads the same per-spec NDJSON dir.
 fn already_proposed_ids(cwd: &Path, spec: &str) -> std::collections::BTreeSet<String> {
-    let events_dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map(|sp| sp.events_dir())
-        .unwrap_or_else(|| {
-            ClaudePaths::compose_unchecked(cwd).spec_dir().join(spec).join(".events")
-        });
+    let events_dir = ClaudePaths::spec_dir_or_unchecked(cwd, spec).join(".events");
     read_harness_events_from_ndjson_dir(&events_dir)
         .iter()
         .filter(|e| e.event == EVENT_TACTICAL_FIX_PROPOSED)

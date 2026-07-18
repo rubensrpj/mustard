@@ -480,6 +480,29 @@ impl ClaudePaths {
             spec_name: name.to_string(),
         })
     }
+
+    /// Resolve `<root>/.claude/spec/<spec>/` through [`Self::for_project`] +
+    /// [`Self::for_spec`], falling back to [`Self::compose_unchecked`] when the
+    /// I1 guard rejects `project` or `spec` fails slug validation.
+    ///
+    /// This folds the fail-open spec-dir resolution that the pipeline / event /
+    /// spec command families each open-coded — the
+    /// `for_project(..).and_then(for_spec).map(dir)
+    /// .unwrap_or_else(compose_unchecked.spec_dir().join(spec))` shape. Callers
+    /// that want the per-spec `.events/` directory append `.join(".events")`
+    /// (equivalently [`SpecPaths::events_dir`] on the happy path).
+    ///
+    /// **Fail-open callers only** — the fallback bypasses the I1 guard exactly
+    /// as [`Self::compose_unchecked`] documents; production paths that must
+    /// surface an I1 violation should call [`Self::for_project`] directly.
+    #[must_use]
+    pub fn spec_dir_or_unchecked(project: impl AsRef<Path>, spec: &str) -> PathBuf {
+        let project = project.as_ref();
+        Self::for_project(project)
+            .and_then(|p| p.for_spec(spec))
+            .map(|sp| sp.dir().to_path_buf())
+            .unwrap_or_else(|_| Self::compose_unchecked(project).spec_dir().join(spec))
+    }
 }
 
 impl SpecPaths {
@@ -853,5 +876,40 @@ mod tests {
         let wp = sp.for_wave("wave-1-rt").unwrap();
         assert!(wp.diff_md_path().ends_with("diff.md"));
         assert!(wp.qa_report_json_path().ends_with("qa-report.json"));
+    }
+
+    #[test]
+    fn spec_dir_or_unchecked_matches_the_happy_path() {
+        let dir = tempdir().unwrap();
+        // A valid root + slug resolves to exactly `for_spec(..).dir()`.
+        let cp = ClaudePaths::for_project(dir.path()).unwrap();
+        let want = cp.for_spec("2026-05-26-x").unwrap().dir().to_path_buf();
+        assert_eq!(
+            ClaudePaths::spec_dir_or_unchecked(dir.path(), "2026-05-26-x"),
+            want
+        );
+        // The `.events/` composition the event/spec callers use.
+        assert_eq!(
+            ClaudePaths::spec_dir_or_unchecked(dir.path(), "2026-05-26-x").join(".events"),
+            cp.for_spec("2026-05-26-x").unwrap().events_dir()
+        );
+    }
+
+    #[test]
+    fn spec_dir_or_unchecked_falls_back_when_guard_rejects() {
+        let dir = tempdir().unwrap();
+        // A `.claude`-terminal root fails the I1 guard, so the resolver falls
+        // back to the unchecked composition rather than panicking or erroring.
+        let bad = dir.path().join(".claude");
+        assert_eq!(
+            ClaudePaths::spec_dir_or_unchecked(&bad, "some-spec"),
+            ClaudePaths::compose_unchecked(&bad).spec_dir().join("some-spec")
+        );
+        // A slug that fails `for_spec` validation (`..` traversal) also folds to
+        // the fallback branch — no error surfaces to the fail-open caller.
+        assert_eq!(
+            ClaudePaths::spec_dir_or_unchecked(dir.path(), ".."),
+            ClaudePaths::compose_unchecked(dir.path()).spec_dir().join("..")
+        );
     }
 }

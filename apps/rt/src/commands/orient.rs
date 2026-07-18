@@ -36,6 +36,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use mustard_core::domain::scan::Project;
+use mustard_core::{translate, SupportedLocale};
 
 // ===========================================================================
 // Grain model — the minimal read-only view this module deserializes.
@@ -160,24 +161,30 @@ pub fn compute_orientation(root: &Path) -> Orientation {
 // Rendering — byte-stable text for both the command and the injects.
 // ===========================================================================
 
-/// Header line for the terrain block.
-const TERRAIN_HEADER: &str =
-    "[Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:";
-
 /// Render the terrain block (header + one line per subproject), or `None`
 /// when there is no terrain (fail-open / empty model).
+///
+/// Language follows `mustard.json#lang` (`lang`): the terrain is injected as
+/// orientation and displayed to the developer, so it is user-facing text
+/// routed through the i18n catalogue, not an internal index (finding #1 of the
+/// 2026-07 SOLID audit). A project with no declared locale defaults to `pt-BR`
+/// via [`mustard_core::ProjectConfig::i18n`], so existing installs are
+/// unchanged. Output stays deterministic and byte-stable for a given locale.
 #[must_use]
-pub fn render_terrain(o: &Orientation) -> Option<String> {
+pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> {
     if o.terrain.is_empty() {
         return None;
     }
-    let mut out = String::from(TERRAIN_HEADER);
+    let mut out = String::from(translate("orient.terrain.header", lang));
     for row in &o.terrain {
         out.push_str("\n- ");
         out.push_str(&row.name);
         out.push_str(" · ");
         out.push_str(&row.kind);
-        out.push_str(&format!(" · {} arquivos", row.code_files));
+        out.push_str(
+            &translate("orient.census.files_suffix", lang)
+                .replace("{count}", &row.code_files.to_string()),
+        );
         if !row.role.is_empty() {
             out.push_str(" — ");
             out.push_str(&row.role);
@@ -194,7 +201,8 @@ pub fn render_terrain(o: &Orientation) -> Option<String> {
 /// nothing and exits 0 — fail-open, byte-stable.
 pub fn run(root: &Path) {
     let orientation = compute_orientation(root);
-    if let Some(t) = render_terrain(&orientation) {
+    let lang = crate::shared::context::project_config_cached(root).i18n().lang;
+    if let Some(t) = render_terrain(&orientation, lang) {
         println!("{t}");
     }
 }
@@ -240,9 +248,10 @@ mod tests {
         let o = compute_orientation(&root);
         // The nested inner crate and the test fixture are dropped by the
         // skeleton join; rt / web / (root) survive.
-        let rendered = render_terrain(&o).expect("terrain");
+        let rendered = render_terrain(&o, SupportedLocale::PtBr).expect("terrain");
+        let header = translate("orient.terrain.header", SupportedLocale::PtBr);
         let expected = format!(
-            "{TERRAIN_HEADER}
+            "{header}
 - web · npm · 40 arquivos — L0
 - rt · cargo · 232 arquivos — L1
 - (root) · npm · 12 arquivos — L2"
@@ -273,9 +282,10 @@ mod tests {
         }"#;
         let (_d, root) = seed(NESTED);
         let o = compute_orientation(&root);
-        let rendered = render_terrain(&o).expect("terrain");
+        let rendered = render_terrain(&o, SupportedLocale::PtBr).expect("terrain");
+        let header = translate("orient.terrain.header", SupportedLocale::PtBr);
         let expected = format!(
-            "{TERRAIN_HEADER}
+            "{header}
 - web · npm · 40 arquivos — L0
 - Big.App · dotnet · 700 arquivos — L3
 - Big.Data · dotnet · 300 arquivos — L3"
@@ -289,10 +299,25 @@ mod tests {
         // command prints nothing and exits 0 (parity with the injects).
         let dir = tempdir().unwrap();
         let o = compute_orientation(dir.path());
-        assert!(render_terrain(&o).is_none());
+        assert!(render_terrain(&o, SupportedLocale::PtBr).is_none());
         // An unparseable model degrades the same way.
         let (_d, root) = seed("{ not json");
         let o2 = compute_orientation(&root);
-        assert!(render_terrain(&o2).is_none());
+        assert!(render_terrain(&o2, SupportedLocale::PtBr).is_none());
+    }
+
+    #[test]
+    fn terrain_follows_declared_locale_en() {
+        // finding #1 (SOLID audit): an `en-US` project gets an English terrain
+        // banner + `files` suffix; the pt-BR default is asserted above.
+        let (_d, root) = seed(FIXTURE);
+        let o = compute_orientation(&root);
+        let rendered = render_terrain(&o, SupportedLocale::EnUs).expect("terrain");
+        assert!(
+            rendered.contains("[Terrain] subprojects mapped by /scan"),
+            "EN header missing: {rendered}"
+        );
+        assert!(rendered.contains("· 40 files"), "EN files suffix missing: {rendered}");
+        assert!(!rendered.contains("arquivos"), "no pt-BR bytes in an EN terrain: {rendered}");
     }
 }

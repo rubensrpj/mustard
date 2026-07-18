@@ -161,15 +161,10 @@ pub struct ResumeBootstrap {
 /// always exits 0 and prints a JSON document on stdout.
 pub fn run(spec: &str, json_flag: bool) {
     let project = PathBuf::from(project_dir());
-    let spec_dir = ClaudePaths::for_project(&project)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| {
-            // Fail-open: I1 guard rejected the root, OR `spec` failed slug
-            // validation. Use `compose_unchecked` so the spec-dir path still
-            // flows through the canonical accessor surface.
-            ClaudePaths::compose_unchecked(&project).spec_dir().join(spec)
-        });
+    // Fail-open: the I1 guard rejecting the root OR `spec` failing slug
+    // validation folds to `compose_unchecked` inside the resolver, so the
+    // spec-dir path always flows through the canonical accessor surface.
+    let spec_dir = ClaudePaths::spec_dir_or_unchecked(&project, spec);
 
     // Emit a fresh `pipeline.scope` event so `current_spec` in subsequent
     // calls within the same session returns this spec (not a stale closed one).

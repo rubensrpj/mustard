@@ -306,6 +306,30 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("memory.index.column.wave", Locale::PtBr) => "Onda",
         ("memory.index.column.wave", Locale::EnUs) => "Wave",
 
+        // Orientation artifacts — the once-per-session terrain banner
+        // (`commands/orient.rs`) and the machine-owned `.claude/scan-map.md`
+        // (`commands/scan_claude.rs::render_map`). Both are DISPLAYED to the
+        // developer and injected into the session, so they follow
+        // `mustard.json#lang` (finding #1 of the 2026-07 SOLID audit) — unlike
+        // the internal census/index/search, which stays English by policy. The
+        // `{kind}` / `{count}` slots are interpolated by the caller.
+        ("orient.terrain.header", Locale::PtBr) => {
+            "[Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:"
+        }
+        ("orient.terrain.header", Locale::EnUs) => {
+            "[Terrain] subprojects mapped by /scan — read from here, don't grep to orient yourself:"
+        }
+        ("orient.census.files_suffix", Locale::PtBr) => " · {count} arquivos",
+        ("orient.census.files_suffix", Locale::EnUs) => " · {count} files",
+        ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
+        ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
+        ("scan.map.pointer", Locale::PtBr) => {
+            "O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
+        }
+        ("scan.map.pointer", Locale::EnUs) => {
+            "The terrain is already in your window (the orientation census injected at session start). To locate: `grep` for a known exact term; `mustard-rt run feature` (digest) for a concept; then read the files it points to — the digest finds where to look, it does not replace reading."
+        }
+
         // Spec-draft + section-body placeholders. EN strings use the
         // canonical "fill in <X>." shape so a single `body.contains("fill
         // in")` assertion can distinguish EN bodies from the PT catalogue

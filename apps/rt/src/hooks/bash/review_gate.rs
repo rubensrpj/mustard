@@ -14,7 +14,7 @@ use mustard_core::time::now_iso8601;
 use serde_json::json;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::shared::context::current_spec;
 use crate::util::format_gate_message;
@@ -196,47 +196,55 @@ fn run_build(cmd: &str, project_dir: &str) -> BuildOutcome {
         }
     };
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    // The wait runs on a worker thread so the caller can apply a timeout.
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let _ = tx.send((status, child));
-    });
-
-    match rx.recv_timeout(BUILD_TIMEOUT) {
-        Ok((Ok(status), _child)) => {
-            let mut output = String::new();
-            if let Some(mut out) = stdout {
+    // No native wait-with-timeout in std; spawn + poll so the `Child` stays
+    // owned by THIS thread — the only shape in which the timeout branch can
+    // actually kill it. The prior move-into-a-worker-thread form surrendered
+    // the handle: on timeout the child was still blocked in `wait()` on the
+    // worker, so the `recv_timeout(0)` kill branch could never fire and the
+    // process leaked. Mirrors `close_gates::run_command`. Classification is
+    // UNCHANGED: spawn failure / wait error / timeout → env_error (fail-open);
+    // otherwise `ok = status.success()` with the combined stdout+stderr
+    // captured (read after exit, exactly as before).
+    let deadline = Instant::now() + BUILD_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
                 use std::io::Read;
-                let _ = out.read_to_string(&mut output);
+                let mut output = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut output);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut output);
+                }
+                return BuildOutcome {
+                    ok: status.success(),
+                    env_error: false,
+                    output: output.trim().to_string(),
+                };
             }
-            if let Some(mut err) = stderr {
-                use std::io::Read;
-                let _ = err.read_to_string(&mut output);
+            // Still running — once the budget is spent, KILL the child and fail
+            // open (the JS `SIGTERM` branch). The child is owned here, so `kill`
+            // reaches it; `wait` then reaps it.
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return BuildOutcome {
+                        ok: false,
+                        env_error: true,
+                        output: format!("[timeout] {cmd}"),
+                    };
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            BuildOutcome {
-                ok: status.success(),
-                env_error: false,
-                output: output.trim().to_string(),
-            }
-        }
-        // Wait itself failed → fail-open.
-        Ok((Err(err), _child)) => BuildOutcome {
-            ok: false,
-            env_error: true,
-            output: err.to_string(),
-        },
-        // Timed out — kill the child and fail open (the JS `SIGTERM` branch).
-        Err(_) => {
-            if let Ok((_, mut child)) = rx.recv_timeout(Duration::from_millis(0)) {
-                let _ = child.kill();
-            }
-            BuildOutcome {
-                ok: false,
-                env_error: true,
-                output: format!("[timeout] {cmd}"),
+            // Wait itself failed → fail-open.
+            Err(err) => {
+                return BuildOutcome {
+                    ok: false,
+                    env_error: true,
+                    output: err.to_string(),
+                };
             }
         }
     }

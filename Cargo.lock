@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-cli"
-version = "3.1.36"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",

@@ -34,16 +34,6 @@ use std::path::{Path, PathBuf};
 /// The auto-footer renderer.
 pub struct WikilinkFooterObserver;
 
-/// The `file_path` of a Write/Edit invocation, mirrors `post_edit::file_path_of`.
-fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
-
 /// Detect whether `path` lives under one of
 /// `.claude/{memory,knowledge,spec,capabilities,graph}/` **and** ends in `.md`.
 /// Works with forward- or back-slash separators.
@@ -114,7 +104,7 @@ impl Observer for WikilinkFooterObserver {
         if !matches!(input.tool_name.as_deref(), Some("Write" | "Edit")) {
             return;
         }
-        let Some(raw_path) = file_path_of(input) else {
+        let Some(raw_path) = input.file_path() else {
             return;
         };
         let path = PathBuf::from(&raw_path);

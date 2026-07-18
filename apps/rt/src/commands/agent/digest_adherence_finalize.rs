@@ -122,10 +122,7 @@ fn spec_events_for_session(project_dir: &str, spec: &str, session: &str) -> Vec<
         return Vec::new();
     }
     let root = Path::new(project_dir);
-    let spec_dir = ClaudePaths::for_project(root)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(root).spec_dir().join(spec));
+    let spec_dir = ClaudePaths::spec_dir_or_unchecked(root, spec);
     let mut dirs: Vec<PathBuf> = vec![spec_dir.join(".events")];
     if let Ok(entries) = mfs::read_dir(&spec_dir) {
         for entry in entries {

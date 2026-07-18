@@ -47,6 +47,18 @@ use crate::platform::error::Result;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Directory names a repo walk never descends into — dependency, build-output,
+/// and VCS trees that never hold project source. The shared floor for every
+/// walker in the workspace (the `scan-patterns` sweep, the doctor checks, …),
+/// so the same list is not re-spelled at each call site.
+///
+/// A walker that needs *extra*, tool-specific exclusions (a stale-doc scanner
+/// also skipping `vendor`, `coverage`, agent `worktrees`, …) checks this set
+/// **and** its own local list rather than redefining the common core — so no
+/// member any call site depends on is ever silently dropped.
+pub const PRUNE_DIRS: &[&str] =
+    &["node_modules", "target", ".git", "dist", "build", "bin", "obj"];
+
 /// One entry yielded by [`Fs::read_dir`].
 ///
 /// A flattened, owned snapshot of a directory entry — name, full path, and
