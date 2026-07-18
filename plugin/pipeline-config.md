@@ -38,7 +38,7 @@ Deterministic aggregation = `mustard-rt`; human decisions = LLM. Pattern: ONE `r
 
 ## Tactical Fix Discovery
 
-- A REVIEW/QA finding becomes a linked sub-spec (`meta.json#parent` + `spec.link`; fails open on missing parent) — never a silent follow-up or mid-EXECUTE wave; the parent freezes at approve. → `commands/mustard/tactical-fix/SKILL.md`.
+- A REVIEW/QA finding becomes a linked sub-spec (`meta.json#parent` + `spec.link`; fails open on missing parent) — never a silent follow-up or mid-EXECUTE wave; the parent freezes at approve. → `commands/tactical-fix.md`.
 - Agents list candidates under `## Tactical Fix Candidates`; orchestrator suggests `/mustard:tactical-fix <parent> "<desc>"` — advisory, never blocks.
 - Qualification (ALL): ≤100 LOC; no public contract change; no pending design decision; no new dependency. Outside → follow-up or fresh spec.
 
@@ -88,7 +88,7 @@ Keyed on `subagent_type`; `qa` rides `mustard-review`, `guards` `mustard-guards`
 | Agent | Max Context | Max Tool Uses | Max Return |
 |-------|-------------|---------------|------------|
 | `impl` (general-purpose) | ≤30K | — | 40 lines |
-| `explore` | ≤10K | ≤20 | 30 lines |
+| `explore` | ≤10K | ≤15 (warn 12) | 30 lines |
 | `review` / `qa` | ≤12K | — | 60 lines |
 | `plan` | — | — | 80 lines |
 

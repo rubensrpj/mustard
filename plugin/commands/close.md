@@ -16,7 +16,7 @@ One command runs every gate and, on pass, finalizes in-process:
 mustard-rt run close-orchestrate --spec {spec}
 ```
 
-Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` (fail → block; skip → pass); (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for non-architectural specs); (5) **pipeline-summary** (advisory). It derives `overall`.
+Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` (fail → block; skip with no AC → advisory; skip with ACs recorded → block in strict — a skip is not a verification); (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for non-architectural specs); (5) **pipeline-summary** (advisory). It derives `overall`.
 
 **The finalize is automatic — you never decide whether to call `complete-spec`.** On `overall == "pass"`, `close-orchestrate` chains the finalize in-process: the spec flips to `completed`, `pipeline.complete` is emitted and auto-verified, and `meta.json` is stamped `Close/Completed/CLOSE` (report carries `"chained": true`, `"verified": true|false`). On `overall == "fail"` it is report-only (`"chained": false`) — fix the failing gate and re-run; NEVER hand-call `complete-spec` to bypass a red gate (the `emit-pipeline` QA-gate rejects it anyway).
 

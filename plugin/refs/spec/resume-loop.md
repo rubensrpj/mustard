@@ -1,6 +1,6 @@
 # /mustard:spec — Resume loop (approve → dispatch → close)
 
-Drives a spec from PLAN through CLOSE. `spec/SKILL.md` §3 routes here by `resume-bootstrap` stage:
+Drives a spec from PLAN through CLOSE. `${CLAUDE_PLUGIN_ROOT}/commands/spec.md` §3 routes here by `resume-bootstrap` stage:
 
 - **`Plan`** → **§A Approve** (then, if approved-inline, fall straight into §B).
 - **`Execute` / `Analyze` / `QaReview` / `QaPending` / `ReviewPending` / `Close`** → **§B Loop**.
@@ -55,7 +55,7 @@ Returns the **current round** — `[{wave, role, subproject, subagent_type, prom
 **Each round:**
 1. **[you] Dispatch the WHOLE round in ONE message** — one `Task` per item, `prompt` **verbatim** (a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands — NEVER read the `.dispatch/` file), `subagent_type` = the item field. Before an impl item, check its `precheck`: `{ok:true}`/absent → dispatch; `{ok:false,missing,…}` → print `BLOCKED — N missing symbols`, emit `pipeline.dispatch_failure`, `AskUserQuestion` (tactical-fix / investigate / force). **Skip** on `mode:continued` or `MUSTARD_DEPENDENCY_PRECHECK_MODE=off`.
 2. **[you] After each impl wave:** commit (`feat(wave-{N}/{role}): {summary}`), then `mustard-rt run wave-done --spec {spec} --wave {N} --duration-ms {elapsed}` (emits `pipeline.wave.complete` + caches the diff — one atomic call).
-3. **[you] After each review item:** `mustard-rt run review-result --spec {spec} --verdict approved|rejected [--critical N] --subproject {sub}` — the "already reviewed" signal (without it the next `wave-advance` re-emits it). No commit/wave-done. REJECTED (any CRITICAL) → **§ Fix Loop** before advancing.
+3. **[you] After each review item:** save the review agent's return verbatim to a scratch file, then `mustard-rt run review-result --spec {spec} --verdict approved|rejected [--critical N] --subproject {sub} --findings-file {scratch}` — the "already reviewed" signal (else the next `wave-advance` re-emits it); persists `<spec>/review/findings.md` for the fix-loop's `## RETRY CONTEXT`. No commit/wave-done. REJECTED (any CRITICAL) → **§ Fix Loop** before advancing.
 4. **[you] After the round:** `mustard-rt run wave-tree --spec-dir .claude/spec/{spec}`, then re-run `wave-advance`.
 5. **`wave-advance` returns `[]`** → do NOT emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction`:
 
@@ -86,7 +86,7 @@ Status definitions: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Escalation Stat
 
 ## Fix Loop (review returned REJECTED, any CRITICAL)
 
-1. Re-render the SAME impl role with `mustard-rt run agent-prompt-render --spec {spec} --role {role} --subproject {sub} --mode fix-loop --emit ref` — the renderer fills `## RETRY CONTEXT` (prior dispatch, files, review findings verbatim) from the spec events; you do NOT hand-assemble it (loop K, max 2).
+1. Re-render the SAME impl role with `mustard-rt run agent-prompt-render --spec {spec} --role {role} --subproject {sub} --mode fix-loop --emit ref` — the renderer composes `## RETRY CONTEXT` (last review verdict + critical count, persisted `review/findings.md` verbatim, prior-wave diff, change requests) from the spec's recorded events; you do NOT hand-assemble it (loop K, max 2).
 2. Dispatch that Task (do NOT change the role).
 3. On return, re-dispatch the REVIEW agent (normal — read-only) and record the verdict via `review-result`.
 4. Still REJECTED after 2 loops → **wave failure** (below).
@@ -104,9 +104,9 @@ Status definitions: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Escalation Stat
    - **"Reescrever wave {N}"** → delete `wave-{N}-{role}/spec.md`, re-PLAN scoped to wave N, re-approve via `/mustard:spec`.
    - **"Abortar pipeline"** → no filesystem move (the spec dir NEVER moves; lifecycle lives in `meta.json` + events): record it via `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec} --payload '{"to":"abandoned"}'` (use `"wave-failed"` when only this wave died); keep waves 1..N-1 commits. Inform: `Pipeline aborted. Waves 1..{N-1} commits preserved. Waves {N}..{totalWaves} discarded.`
 
-**Risco residual:** commits de wave N-1 podem ficar semanticamente incompletos sem wave N (ex.: schema sem API); `failure.md` explicita a superfície exposta.
+**Residual risk:** wave N-1 commits can be semantically incomplete without wave N (e.g. schema without API); `failure.md` states the exposed surface.
 
-**Granular Retry** (PARTIAL): re-render the same role with `--mode granular` (renderer fills `## RETRY CONTEXT`: prior dispatch + error + resume-from-step); re-dispatch only the remaining steps. **Max 2 per agent** — exhausted → STOP.
+**Granular Retry** (PARTIAL): re-render the same role with `--mode granular` (renderer composes `## RETRY CONTEXT` from the spec's recorded events, persisted findings and the prior-wave diff); re-dispatch only the remaining steps via `--task-filter`. **Max 2 per agent** — exhausted → STOP.
 
 **Pause:** on user pause / session end, emit `mustard-rt run emit-pipeline --kind pipeline.pause --spec {spec} --payload '{"pausedAt":"<ISO>","pauseReason":"<reason>","nextAction":"<ONE sentence>"}'` and confirm the saved next action.
 
@@ -114,7 +114,7 @@ Status definitions: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Escalation Stat
 
 ---
 
-## Inviolable (loop-specific — see spec/SKILL.md for picker/approve rules)
+## Inviolable (loop-specific — see `${CLAUDE_PLUGIN_ROOT}/commands/spec.md` for picker/approve rules)
 
 - Main context **IS** the runner — never wrap it in a single Task.
 - Never implement code directly — all via Task (1 per subproject per wave).

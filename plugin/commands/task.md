@@ -27,7 +27,7 @@ Spec-less is not context-less. **Locate first** (`${CLAUDE_PLUGIN_ROOT}/refs/loc
 The agent prompt is **always** produced by `agent-prompt-render` — NEVER hand-assembled. `{guards_summary}` (subproject `## Guards`) and `{context_md}` (relevance-sliced glossary) are filled by the renderer. Render each action, folding the anchors into `--task-text` so the agent starts from them:
 
 ```bash
-mustard-rt run agent-prompt-render --spec {scope} --role {role} \
+mustard-rt run agent-prompt-render --role {role} \
   --subproject {subproject} \
   --task-text "<the action's work> — start from these anchors: <paths>" \
   --mode first --emit ref

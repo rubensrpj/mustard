@@ -2,7 +2,7 @@
 
 > Detail for `/feature` — Pre-EXECUTE existence check (Full scope only).
 
-Skip when: Light scope, OR `## Files` lists more than 8 files (the explorer's ≤10 tool-use self-cap will not cover — cost-benefit inverts).
+Skip when: Light scope, OR `## Files` lists more than 8 files (the explorer's tool-use budget — 15, warn 12 — will not cover; cost-benefit inverts).
 
 Before dispatching implementation agents, verify the work is still needed.
 
@@ -14,18 +14,13 @@ rtk git diff --stat HEAD -- <files listed in `## Files`>
 - < 10 total insertions/deletions → skip the gate, EXECUTE normally (trivial change, not worth the overhead).
 - ≥ 10 insertions/deletions → dispatch the explorer below.
 
-Dispatch one `Task(subagent_type: "Explore")` with this prompt:
+Render the explorer prompt via the binary — NEVER hand-assemble it (`${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md` owns the contract):
+```bash
+mustard-rt run agent-prompt-render --spec {specName} --role explore \
+  --task-text "EXISTENCE CHECK — read .claude/spec/{specName}/spec.md, sections Files and Checklist. For EACH checklist task (task-level, NOT file-level): (1) extract 1-3 concrete identifiers from the task text (function/component names, path fragments, string literals; e.g. Add LogoutButton with handleLogout -> LogoutButton, handleLogout); (2) identify the task target files from the Files section; (3) grep each target file for the identifiers; (4) verdict: ALL targets contain a MAJORITY of identifiers -> yes, SOME -> partial, NONE -> no. Return ONLY a markdown table with columns task, target_files, all_present (yes/partial/no), evidence (identifier:line or none)." \
+  --mode first --emit ref
 ```
-# EXISTENCE CHECK
-Read .claude/spec/{specName}/spec.md sections "## Files" and "## Checklist".
-For EACH checklist task (task-level, NOT file-level):
-  1. Extract 1-3 concrete identifiers from the task text — function/component names, path fragments, string literals. e.g. "Add LogoutButton with handleLogout" -> ["LogoutButton","handleLogout"].
-  2. Identify the task's target files from "## Files" (extension, name hint, or context).
-  3. Grep each target file for the identifiers.
-  4. Verdict: ALL targets contain a MAJORITY of identifiers -> yes; SOME do -> partial; NONE -> no.
-Return a markdown table: | task | target_files | all_present (yes/partial/no) | evidence (identifier:line or "none") |
-Return <=20 lines. Self-cap: <=10 tool uses (the true limit, not the task count).
-```
+Pass the stdout **verbatim** as the `Task(subagent_type: "Explore")` prompt — with `--emit ref` it is a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands at dispatch (the explorer's return cap + the 15/12 tool-use limit ride in the rendered role block, not the prompt body).
 
 Decision on the returned table:
 - All tasks `no` → gate is transparent; EXECUTE normally.
