@@ -76,6 +76,11 @@ jobs:
   windows-installer:
     needs: version
     runs-on: windows-latest
+    # Bake the release version into every binary this job compiles (read by
+    # `mustard_core::harness_version` via `option_env!`). Job-level so the
+    # `cargo build` step and any build script inherit it.
+    env:
+      MUSTARD_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -164,6 +169,10 @@ jobs:
   macos-installer:
     needs: version
     runs-on: macos-latest
+    # Bake the release version in — `build-pkg.sh` runs `cargo build` and
+    # inherits this job-level env.
+    env:
+      MUSTARD_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -230,6 +239,10 @@ jobs:
   linux-deb:
     needs: version
     runs-on: ubuntu-latest
+    # Bake the release version into the compiled binaries (job-level so the
+    # cargo build step inherits it).
+    env:
+      MUSTARD_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 

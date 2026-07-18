@@ -10,6 +10,14 @@ members = ["apps/cli", "apps/mcp", "apps/rt", "apps/scan", "packages/core"]
 # deterministic scanner; it builds standalone, as its own workspace.
 exclude = ["apps/dashboard/src-tauri", "apps/translate"]
 
+[workspace.package]
+# The single source of the Mustard version. Every workspace crate inherits it
+# with `version.workspace = true`, so the CLI no longer drifts on its own line.
+# This value is the DEV/local fallback — the shipped binary carries the release
+# version instead, baked in at build time via `MUSTARD_RELEASE_VERSION` (the git
+# tag == plugin.json, the line `bump-on-main` advances). See `platform::harness`.
+version = "0.1.0"
+
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
 # inline deps (Tauri-pinned, edition 2021) and does not consume this table.

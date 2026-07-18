@@ -1,6 +1,6 @@
 [package]
 name = "mustard-mcp"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 rust-version = "1.85"
 description = "Mustard MCP face: the `mustard-memory` Model Context Protocol server (JSON-RPC over stdio), extracted from `mustard-rt` into its own binary so Claude Code holds a different exe than the enforcement runtime — decoupling the long-lived MCP server from `mustard-rt` rebuilds."
