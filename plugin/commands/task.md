@@ -13,12 +13,14 @@ source: manual
 | Action | `--role` | `subagent_type` |
 |--------|----------|-----------------|
 | `analyze` | `explore` | `Explore` (read-only) |
-| `audit` | `audit` | `general-purpose` |
+| `audit` | `explore` | `Explore` (read-only) |
 | `compare` | `explore` ×N → `plan` | `Explore` parallel → `Plan` |
 | `review` | `review` | `mustard-review` (read-only) |
-| `docs` | `docs` | `general-purpose` |
-| `refactor` | `plan` → `implement` | `Plan` → `general-purpose` |
-| `implement` | `implement` | `general-purpose` |
+| `docs` | `impl` | `general-purpose` |
+| `refactor` | `plan` → `impl` | `Plan` → `general-purpose` |
+| `implement` | `impl` | `general-purpose` |
+
+Roles are the render's canonical vocabulary (`explore`, `plan`, `impl`, `review`) — an unknown role falls through to the impl contract, so never pass the action name as `--role`.
 
 ## LOCATE → render → dispatch
 
@@ -27,15 +29,15 @@ Spec-less is not context-less. **Locate first** (`${CLAUDE_PLUGIN_ROOT}/refs/loc
 The agent prompt is **always** produced by `agent-prompt-render` — NEVER hand-assembled. `{guards_summary}` (subproject `## Guards`) and `{context_md}` (relevance-sliced glossary) are filled by the renderer. Render each action, folding the anchors into `--task-text` so the agent starts from them:
 
 ```bash
-mustard-rt run agent-prompt-render --spec {scope} --role {role} \
+mustard-rt run agent-prompt-render --role {role} \
   --subproject {subproject} \
   --task-text "<the action's work> — start from these anchors: <paths>" \
   --mode first --emit ref
 ```
 
-Pass the stdout **verbatim** as the Task `prompt` — with `--emit ref` it is a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands at dispatch; never read the `.dispatch/` file. Swap `--mode granular|fix-loop` on a retry. When the digest's `concerns` show ≥2, render + dispatch ONE action per concern, each scoped to its own anchors.
+Pass the stdout **verbatim** as the Task `prompt` — never hand-assemble, never read the `.dispatch/` file; stub mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. Swap `--mode granular|fix-loop` on a retry. When the digest's `concerns` show ≥2, render + dispatch ONE action per concern, each scoped to its own anchors.
 
-**Per-action:** `audit`/`refactor` first load `improve-codebase-architecture` (the audit checklist rides in via `--task-text`). `refactor` is two-phase — render `plan`, print verbatim, AskUserQuestion (Approve/Adjust/Cancel), then render `implement`. `compare` dispatches one `explore` per subproject in one parallel message → `Plan` merges. `implement` returns ≤30 lines + runs build/type-check; ON CONCERN → offer `/feature` Light.
+**Per-action:** `audit` folds its checklist (§ Audit checklists) into `--task-text`. `refactor` is two-phase — render `plan`, print verbatim, AskUserQuestion (Approve/Adjust/Cancel), then render `impl`. `compare` dispatches one `explore` per subproject in one parallel message → `Plan` merges. `implement` returns ≤30 lines + runs build/type-check; ON CONCERN → offer `/feature` Light.
 
 ## Dispatch resilience
 

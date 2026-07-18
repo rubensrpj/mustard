@@ -3,13 +3,18 @@
 //! Invoked by `scan::run` (`--full`) after `grain.model.json` is written. The
 //! ownership split is the contract:
 //!
-//! - **`CLAUDE.md` belongs to the PROJECT.** Mustard writes at most three
-//!   things into it, all idempotent and minimal: the one-line
+//! - **`CLAUDE.md` belongs to the PROJECT.** For a SUBPROJECT Mustard writes
+//!   at most three things into it, all idempotent and minimal: the one-line
 //!   [`MAP_IMPORT_LINE`] at the top (Claude Code's native `@path` import, so
 //!   the map still auto-loads with the file), a `## Guards` seed when the
 //!   section is an un-curated placeholder (humans curate it afterwards), and a
 //!   depth-correct breadcrumb heal. Its SIZE is the human's business — never
 //!   measured, never refused.
+//! - **The WORKSPACE-ROOT `CLAUDE.md` is never touched** (orchestrator
+//!   redesign): no scaffold, no import line, no breadcrumb heal — root
+//!   orientation is injected by the session hooks (`mustard.json#inject` +
+//!   the terrain census), so the root file is fully the user's. The root's
+//!   `.claude/scan-map.md` IS still written — that file is Mustard's.
 //! - **`.claude/scan-map.md` belongs to MUSTARD.** The machine map (kind +
 //!   size + digest pointer + detected `## Commands`) is regenerated there on
 //!   every pass, capped by [`SCAN_MAP_HARD_CAP_BYTES`] as a guard against a
@@ -34,7 +39,6 @@ pub const SCAN_MAP_HARD_CAP_BYTES: usize = 8192;
 
 /// The mustard-owned map file, relative to each unit's directory
 /// (forward-slashed — it doubles as the import target in [`MAP_IMPORT_LINE`]).
-pub const SCAN_MAP_RELPATH: &str = ".claude/scan-map.md";
 
 /// The single line mustard injects at the TOP of a unit's `CLAUDE.md`: Claude
 /// Code's native `@path` import (resolved relative to the importing file), so
@@ -216,16 +220,14 @@ pub(crate) fn build_guards_block(
     out
 }
 
-/// Render the PROJECT's CLAUDE.md for a unit — mustard's footprint is minimal
-/// and idempotent.
+/// Render a SUBPROJECT's CLAUDE.md — mustard's footprint is minimal and
+/// idempotent. (The workspace-root `CLAUDE.md` never reaches this function:
+/// `run_full` skips the root entirely — orchestrator redesign.)
 ///
 /// - `name`: subproject name (will be title-cased for the H1 heading)
 /// - `kind`/`frameworks`/`stacks`/`scripts`: deterministic facts for the
 ///   Guards seed
 /// - `existing`: current content of the CLAUDE.md (if the file exists)
-/// - `is_root`: the workspace-root unit (empty `dir`). The root is EXCLUDED
-///   from enrich, so a freshly-scaffolded root gets the inert human seed
-///   instead of the `pending` Guards block.
 ///
 /// When `existing` is present: (1) the LEGACY inline machine block (between
 /// the sentinels) is removed — migration; the map now lives in
@@ -242,7 +244,6 @@ pub fn render_claude_md(
     stacks: &[StackDetection],
     scripts: &[String],
     existing: Option<&str>,
-    is_root: bool,
 ) -> String {
     match existing {
         Some(content) => {
@@ -250,41 +251,34 @@ pub fn render_claude_md(
             // Turn an un-curated `## Guards` placeholder (empty / `(populated by
             // /scan)` / legacy seed) into a fresh `pending` enrich block so the
             // enrich step picks the subproject up. Curated guards and an already
-            // pending/done block survive untouched; root is never reseeded.
+            // pending/done block survive untouched.
             let reseeded =
-                reseed_guards_if_placeholder(&migrated, kind, frameworks, stacks, scripts, is_root);
+                reseed_guards_if_placeholder(&migrated, kind, frameworks, stacks, scripts);
             ensure_import_line(&reseeded)
         }
         // No file yet — emit a fresh minimal scaffold.
-        None => scaffold(name, kind, frameworks, stacks, scripts, is_root),
+        None => scaffold(name, kind, frameworks, stacks, scripts),
     }
 }
 
-/// Emit a fresh CLAUDE.md: the map import line on top, then H1 + Parent line +
-/// a `## Guards` section. Subprojects get the enrichable `pending` Guards
-/// block (the enrich fills it); the root gets the inert human seed (root is
-/// excluded from enrich). Everything below the import line is the project's to
-/// grow.
+/// Emit a fresh subproject CLAUDE.md: the map import line on top, then H1 +
+/// Parent line + the enrichable `pending` `## Guards` block (the enrich fills
+/// it). Everything below the import line is the project's to grow.
 fn scaffold(
     name: &str,
     kind: &str,
     frameworks: &[String],
     stacks: &[StackDetection],
     scripts: &[String],
-    is_root: bool,
 ) -> String {
     let title = title_case(name);
-    let guards = if is_root {
-        String::from("## Guards\n\n<!-- seed DO/DON'T aqui -->\n")
-    } else {
-        build_guards_block(kind, frameworks, stacks, scripts)
-    };
+    let guards = build_guards_block(kind, frameworks, stacks, scripts);
     format!(
         "{MAP_IMPORT_LINE}\n\
          \n\
          # {title}\n\
          \n\
-         > Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)\n\
+         > Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/mustard/orchestrator.md](../.claude/mustard/orchestrator.md)\n\
          \n\
          {guards}"
     )
@@ -352,20 +346,16 @@ fn collapse_blanks(lines: &[String]) -> String {
 /// worklist (`scan-guards-list`, which matches only `pending`) never sees it.
 /// Replacing such a placeholder with a `pending` block lets `/scan --enrich`
 /// pick the subproject up. Curated human guards (any real line) and an already
-/// `pending`/`done` block are left byte-for-byte untouched; the workspace root
-/// is never reseeded (it is excluded from enrich).
+/// `pending`/`done` block are left byte-for-byte untouched. (The workspace
+/// root never reaches this — `run_full` skips it.)
 fn reseed_guards_if_placeholder(
     text: &str,
     kind: &str,
     frameworks: &[String],
     stacks: &[StackDetection],
     scripts: &[String],
-    is_root: bool,
 ) -> String {
     const PLACEHOLDERS: [&str; 2] = ["(populated by /scan)", "<!-- seed DO/DON'T aqui -->"];
-    if is_root {
-        return text.to_string();
-    }
     let lines: Vec<&str> = text.lines().collect();
     let Some(g) = lines.iter().position(|l| l.trim_end() == "## Guards") else {
         return text.to_string();
@@ -400,14 +390,20 @@ fn reseed_guards_if_placeholder(
 /// scan root, forward-slashed). The number of `../` hops equals the unit's depth,
 /// so a depth-2 subproject (`apps/dashboard`) links to `../../CLAUDE.md`, not the
 /// non-existent `../CLAUDE.md`. The workspace root (depth 0) has no parent, so it
-/// gets an Orchestrator-only line pointing at `.claude/CLAUDE.md`.
+/// gets an Orchestrator-only line. The orchestrator lives at
+/// `.claude/mustard/orchestrator.md` (the injectable the hooks deliver — the
+/// planted `.claude/CLAUDE.md` is gone).
 fn breadcrumb(dir: &str) -> String {
     let depth = dir.split('/').filter(|s| !s.is_empty()).count();
     if depth == 0 {
-        return "> Orchestrator: [.claude/CLAUDE.md](.claude/CLAUDE.md)".to_string();
+        return "> Orchestrator: [.claude/mustard/orchestrator.md](.claude/mustard/orchestrator.md)"
+            .to_string();
     }
     let up = "../".repeat(depth);
-    format!("> Parent: [{up}CLAUDE.md]({up}CLAUDE.md) | Orchestrator: [{up}.claude/CLAUDE.md]({up}.claude/CLAUDE.md)")
+    format!(
+        "> Parent: [{up}CLAUDE.md]({up}CLAUDE.md) | Orchestrator: \
+         [{up}.claude/mustard/orchestrator.md]({up}.claude/mustard/orchestrator.md)"
+    )
 }
 
 /// Replace the existing `> Parent:` / `> Orchestrator:` breadcrumb line with the
@@ -462,8 +458,10 @@ fn run_full(
         let claude_md_path = dir.join("CLAUDE.md");
         let claude_dir = dir.join(".claude");
         let map_path = claude_dir.join("scan-map.md");
-        // The workspace-root unit (empty `dir`) is excluded from enrich — it gets
-        // the inert human seed, never the Wave-2 `pending` Guards block.
+        // The workspace-root unit (empty `dir`): its CLAUDE.md is NEVER
+        // touched (orchestrator redesign — root orientation is injected by
+        // the session hooks, not written into the user's file). Only the
+        // mustard-owned `.claude/scan-map.md` is still produced for it.
         let is_root = project.dir.is_empty();
 
         // Detect this unit's command set. The subproject is probed first; for a
@@ -520,7 +518,13 @@ fn run_full(
             }
         }
 
-        // --- 2. The project's CLAUDE.md ------------------------------------
+        // --- 2. The project's CLAUDE.md (SUBPROJECTS ONLY) -----------------
+        // The workspace root is skipped entirely: no scaffold, no import
+        // line, no breadcrumb heal — the root file belongs to the user
+        // (orchestrator redesign; the hooks inject the orientation instead).
+        if is_root {
+            continue;
+        }
         // Mustard's footprint here is minimal: import line + legacy-block
         // migration + Guards reseed + breadcrumb heal. Never measured against
         // any size ceiling — the file (and its size) belongs to the project.
@@ -532,13 +536,12 @@ fn run_full(
             &project.detected_stacks,
             &project.scripts,
             existing.as_deref(),
-            is_root,
         );
         // The Parent/Orchestrator breadcrumb is a function of the unit's depth
         // below the scan root, not a fixed `../`. Regenerate it so deep
         // subprojects (`apps/dashboard`, depth 2 → `../../CLAUDE.md`) link to the
-        // real targets instead of the non-existent `../CLAUDE.md`, and the root
-        // drops the meaningless `> Parent`. Self-healing on every `--full`.
+        // real targets instead of the non-existent `../CLAUDE.md`. Self-healing
+        // on every `--full`.
         let content = fix_breadcrumb(&content, &project.dir);
 
         // Only touch the project's file when something actually changed
@@ -578,17 +581,14 @@ mod tests {
 
     #[test]
     fn render_without_existing_creates_scaffold() {
-        // existing=None on the ROOT (is_root=true) → minimal scaffold: import
-        // line on TOP, H1, breadcrumb, inert human `## Guards` seed (the root
-        // is excluded from enrich, so no `pending` marker here). No inline
+        // existing=None on a subproject → minimal scaffold: import line on
+        // TOP, H1, breadcrumb, enrichable `pending` Guards block. No inline
         // machine block — the map lives in `.claude/scan-map.md`.
-        let out = render_claude_md("dashboard", "typescript", &[], &[], &[], None, true);
+        let out = render_claude_md("dashboard", "typescript", &[], &[], &[], None);
         assert!(out.starts_with(MAP_IMPORT_LINE), "import line must open the file: {out}");
         assert!(out.contains("# Dashboard"), "header missing: {out}");
         assert!(out.contains("## Guards"), "guards heading missing: {out}");
-        assert!(out.contains("<!-- seed DO/DON'T aqui -->"), "seed placeholder missing: {out}");
-        // Root never carries the Wave-2 `pending` marker.
-        assert!(!out.contains(GUARDS_PENDING_OPEN), "root must not get pending guards: {out}");
+        assert!(out.contains(GUARDS_PENDING_OPEN), "pending guards block missing: {out}");
         // No legacy sentinels in fresh output — the map is not inlined anymore.
         assert!(!out.contains(SENTINEL_OPEN), "no inline machine block in new scaffolds: {out}");
         assert!(out.ends_with('\n'), "missing trailing newline");
@@ -600,7 +600,7 @@ mod tests {
         // block: a `pending` sentinel carrying the deterministic facts (kind,
         // frameworks) in a comment for the Wave-2 enrich agent.
         let frameworks = vec!["serde".to_string(), "clap".to_string()];
-        let out = render_claude_md("rt", "rust", &frameworks, &[], &[], None, false);
+        let out = render_claude_md("rt", "rust", &frameworks, &[], &[], None);
         assert!(out.contains(GUARDS_PENDING_OPEN), "pending open marker missing: {out}");
         assert!(out.contains(GUARDS_CLOSE), "guards close marker missing: {out}");
         // Facts live in a comment inside the block — context, not content.
@@ -608,10 +608,10 @@ mod tests {
         // The marker carries the literal `pending` token Wave 2 matches on.
         assert!(GUARDS_PENDING_OPEN.contains("pending"), "open marker lost its pending token");
         // No frameworks → facts still render with an explicit (none).
-        let bare = render_claude_md("lib", "rust", &[], &[], &[], None, false);
+        let bare = render_claude_md("lib", "rust", &[], &[], &[], None);
         assert!(bare.contains("<!-- facts: kind=rust; frameworks=(none) -->"), "empty frameworks facts: {bare}");
         // Idempotence: re-rendering the scaffold preserves the pending block.
-        let again = render_claude_md("rt", "rust", &frameworks, &[], &[], Some(&out), false);
+        let again = render_claude_md("rt", "rust", &frameworks, &[], &[], Some(&out));
         assert!(again.contains(GUARDS_PENDING_OPEN), "pending marker lost on re-render: {again}");
         assert_eq!(out, again, "scaffold must round-trip byte-for-byte");
     }
@@ -645,7 +645,7 @@ mod tests {
             "empty stacks must reproduce the legacy block exactly"
         );
         // End-to-end through render: a scaffolded subproject carries the segment.
-        let out = render_claude_md("rt", "rust", &frameworks, &stacks, &[], None, false);
+        let out = render_claude_md("rt", "rust", &frameworks, &stacks, &[], None);
         assert!(out.contains("stacks=laravel(0.95),nextjs(0.65)"), "render did not thread stacks: {out}");
     }
 
@@ -676,7 +676,7 @@ mod tests {
             "no scripts ⇒ legacy line: {without}"
         );
         // End-to-end through render threads the unit's scripts.
-        let out = render_claude_md("rt", "rust", &frameworks, &[], &scripts, None, false);
+        let out = render_claude_md("rt", "rust", &frameworks, &[], &scripts, None);
         assert!(out.contains("scripts=generate:api, build"), "render did not thread scripts: {out}");
     }
 
@@ -712,7 +712,7 @@ Layered: ui → domain → io.
 - Never import from `../apps/cli`
 - Always use `Result<T, anyhow::Error>`
 ";
-        let out = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing), false);
+        let out = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing));
         assert!(out.starts_with(MAP_IMPORT_LINE), "import line must open the file: {out}");
         assert!(!out.contains(SENTINEL_OPEN), "no inline machine block anymore: {out}");
         // Human sections survive verbatim — even ones that look machine-ish.
@@ -723,7 +723,7 @@ Layered: ui → domain → io.
         assert!(out.contains("Never import from"), "guard line 1 lost: {out}");
         assert!(out.contains("Always use `Result<T, anyhow::Error>`"), "guard line 2 lost: {out}");
         // Idempotent: the import is injected exactly once.
-        let again = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&out), false);
+        let again = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&out));
         assert_eq!(out, again, "render must be idempotent");
         assert_eq!(out.matches(MAP_IMPORT_LINE).count(), 1, "import injected once: {out}");
     }
@@ -751,7 +751,7 @@ Hand-written prose that must NOT move.
 
 - keep me
 ";
-        let out = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing), false);
+        let out = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing));
         assert!(out.starts_with(MAP_IMPORT_LINE), "import line must open the file: {out}");
         assert!(!out.contains(SENTINEL_OPEN), "legacy block must be migrated out: {out}");
         assert!(!out.contains("Tipo: typescript · 10 arquivos"), "legacy map body must go: {out}");
@@ -759,7 +759,7 @@ Hand-written prose that must NOT move.
         assert!(out.contains("Hand-written prose that must NOT move."), "prose lost: {out}");
         assert!(out.contains("- keep me"), "guard lost: {out}");
         // Idempotent over the migration.
-        let again = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&out), false);
+        let again = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&out));
         assert_eq!(out, again, "migration must be idempotent");
     }
 
@@ -780,11 +780,11 @@ Tipo: npm · 1 arquivos
 
 (populated by /scan)
 ";
-        let out = render_claude_md("dashboard", "npm", &["react".into()], &[], &[], Some(stub), false);
+        let out = render_claude_md("dashboard", "npm", &["react".into()], &[], &[], Some(stub));
         assert!(out.contains(GUARDS_PENDING_OPEN), "stub not reseeded to pending: {out}");
         assert!(!out.contains("(populated by /scan)"), "stub survived: {out}");
         // Idempotent: a re-render keeps the pending block (does not re-reseed).
-        let again = render_claude_md("dashboard", "npm", &["react".into()], &[], &[], Some(&out), false);
+        let again = render_claude_md("dashboard", "npm", &["react".into()], &[], &[], Some(&out));
         assert_eq!(out, again, "reseed must be idempotent");
 
         // Curated human guards are preserved, never reseeded.
@@ -801,33 +801,22 @@ Tipo: cargo · 1 arquivos
 
 - Real human rule that must stay.
 ";
-        let out2 = render_claude_md("cli", "cargo", &[], &[], &[], Some(curated), false);
+        let out2 = render_claude_md("cli", "cargo", &[], &[], &[], Some(curated));
         assert!(out2.contains("- Real human rule that must stay."), "curated guard lost: {out2}");
         assert!(!out2.contains(GUARDS_PENDING_OPEN), "curated guards wrongly reseeded: {out2}");
-
-        // The root is never reseeded, even carrying the seed placeholder.
-        let root = "\
-# (root)
-
-<!-- mustard:scan-map -->
-Tipo: npm · 1 arquivos
-<!-- /mustard:scan-map -->
-
-## Guards
-
-<!-- seed DO/DON'T aqui -->
-";
-        let out3 = render_claude_md("(root)", "npm", &[], &[], &[], Some(root), true);
-        assert!(out3.contains("<!-- seed DO/DON'T aqui -->"), "root seed wrongly reseeded: {out3}");
-        assert!(!out3.contains(GUARDS_PENDING_OPEN), "root must not get pending: {out3}");
+        // (The workspace-root CLAUDE.md never reaches the renderer at all —
+        // see `run_full_never_touches_the_root_claude_md`.)
     }
 
     #[test]
     fn breadcrumb_depth_and_fix() {
         // Depth drives the number of `../` hops.
-        assert_eq!(breadcrumb(""), "> Orchestrator: [.claude/CLAUDE.md](.claude/CLAUDE.md)");
+        assert_eq!(
+            breadcrumb(""),
+            "> Orchestrator: [.claude/mustard/orchestrator.md](.claude/mustard/orchestrator.md)"
+        );
         assert!(breadcrumb("apps/dashboard").contains("[../../CLAUDE.md](../../CLAUDE.md)"));
-        assert!(breadcrumb("apps/dashboard").contains("../../.claude/CLAUDE.md"));
+        assert!(breadcrumb("apps/dashboard").contains("../../.claude/mustard/orchestrator.md"));
         assert!(breadcrumb("apps/dashboard/src-tauri").contains("[../../../CLAUDE.md]"));
 
         // fix_breadcrumb heals a wrong fixed-`../` line to the depth-correct one.
@@ -841,7 +830,12 @@ Tipo: npm · 1 arquivos
         // The root drops the meaningless `> Parent` entirely.
         let root_wrong = "# (root)\n\n> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)\n\n## Stack\n";
         let root_fixed = fix_breadcrumb(root_wrong, "");
-        assert!(root_fixed.contains("> Orchestrator: [.claude/CLAUDE.md](.claude/CLAUDE.md)"), "root orch link wrong: {root_fixed}");
+        assert!(
+            root_fixed.contains(
+                "> Orchestrator: [.claude/mustard/orchestrator.md](.claude/mustard/orchestrator.md)"
+            ),
+            "root orch link wrong: {root_fixed}"
+        );
         assert!(!root_fixed.contains("> Parent:"), "root must not carry Parent: {root_fixed}");
     }
 
@@ -861,8 +855,8 @@ Keep me.
 
 - keep me too
 ";
-        let first = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing), false);
-        let second = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&first), false);
+        let first = render_claude_md("dashboard", "rust", &[], &[], &[], Some(existing));
+        let second = render_claude_md("dashboard", "rust", &[], &[], &[], Some(&first));
         assert_eq!(first, second, "render must be idempotent over migration");
     }
 
@@ -954,6 +948,48 @@ Keep me.
         assert!(updated.starts_with(MAP_IMPORT_LINE), "import line missing: truncated? {}", &updated[..80]);
         assert!(!updated.contains(SENTINEL_OPEN), "legacy block must migrate out");
         assert!(updated.contains(&"x".repeat(64)), "human prose must survive");
+    }
+
+    #[test]
+    fn run_full_never_touches_the_root_claude_md() {
+        // Orchestrator redesign: the workspace-root unit (empty `dir`) gets
+        // its mustard-owned `.claude/scan-map.md`, but its `CLAUDE.md` is
+        // never created, imported-into, or healed — the file is the user's.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Case A: no root CLAUDE.md exists → the pass must not create one.
+        let projects = vec![project("(root)", "")];
+        let first = run_full(root, &projects);
+        assert!(
+            root.join(".claude/scan-map.md").is_file(),
+            "the root's mustard-owned map is still written"
+        );
+        assert!(
+            !root.join("CLAUDE.md").exists(),
+            "no root CLAUDE.md may be scaffolded"
+        );
+        assert!(
+            !first.regenerated.iter().any(|p| p.ends_with("CLAUDE.md")),
+            "no CLAUDE.md reported for the root: {:?}",
+            first.regenerated
+        );
+
+        // Case B: a user-authored root CLAUDE.md exists WITHOUT the import
+        // line → it survives byte-for-byte (no import injected, no heal).
+        let user_file = "# My project\n\nMy own rules, my own layout.\n";
+        std::fs::write(root.join("CLAUDE.md"), user_file).expect("write root md");
+        let second = run_full(root, &projects);
+        assert_eq!(
+            std::fs::read_to_string(root.join("CLAUDE.md")).unwrap(),
+            user_file,
+            "the user's root CLAUDE.md must be byte-identical after the pass"
+        );
+        assert!(
+            !second.regenerated.iter().any(|p| p.ends_with("CLAUDE.md")),
+            "the root CLAUDE.md must never be reported as regenerated: {:?}",
+            second.regenerated
+        );
     }
 
     #[test]

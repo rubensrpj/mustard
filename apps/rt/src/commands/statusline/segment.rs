@@ -27,10 +27,11 @@ pub enum SegmentKind {
     Cost = 6,
     Model = 7,
     Version = 8,
+    Mustard = 9,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 9;
+pub const SEGMENT_KIND_COUNT: usize = 10;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -259,6 +260,29 @@ pub fn model_segment(data: &Value) -> Segment {
 pub fn version_segment(data: &Value) -> Option<Segment> {
     let v = data.get("version").and_then(Value::as_str)?;
     Some(Segment::new(SegmentKind::Version, format!("v{v}")))
+}
+
+/// Mustard harness segment. Aligned project → `m{version}` (the running
+/// harness). Drifted stamp (older install, or unstamped) → `m{stamped}⇡{current}`
+/// in yellow — the visual "update available" hint; `/mustard:upsert` realigns.
+/// `None` when the project carries no `mustard.json` (Mustard not installed —
+/// the line stays quiet).
+#[must_use]
+pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
+    if !mustard_core::ProjectConfig::exists(cwd) {
+        return None;
+    }
+    let stamped = mustard_core::ProjectConfig::load(cwd).version;
+    let current = mustard_core::harness_version();
+    Some(match stamped {
+        Some(s) if s == current => Segment::new(SegmentKind::Mustard, format!("m{current}")),
+        other => {
+            let from = other.unwrap_or_else(|| "?".to_string());
+            let mut seg = Segment::new(SegmentKind::Mustard, format!("m{from}\u{2191}{current}"));
+            seg.override_fg = Some(Color::Ansi(3));
+            seg
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------

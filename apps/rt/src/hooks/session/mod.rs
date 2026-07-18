@@ -1,3 +1,4 @@
+pub mod injectables;
 pub mod session_start_inject;
 pub mod session_cleanup_observer;
 pub mod session_knowledge_observer;

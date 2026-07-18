@@ -26,4 +26,6 @@ O orquestrador **sempre narra a leitura** antes de agir e **só pergunta quando 
 
 Continuam como **atalho de poder** (override): se você já sabe o fluxo que quer, invoque direto. Mas você **não precisa** — a porta única roteia a partir da sua descrição.
 
+- **`/mustard:upsert`** — instala ou atualiza o mustard NESTE projeto (cria o `mustard.json` e os arquivos do harness, preservando o que já é seu); sem essa instalação, todos os outros comandos `/mustard:*` ficam bloqueados.
+
 > **Nota (mantenedores):** esta página é a doc **de usuário** (a porta única). A doc **interna** — o roteador (intenção → fluxo + escopo) e os procedimentos de cada fluxo — vive em `CLAUDE.md § Intent Routing` e nos SKILLs dos fluxos (marcados *internal flow*). Manter as duas separadas evita a IA se confundir sobre qual fluxo está rodando.

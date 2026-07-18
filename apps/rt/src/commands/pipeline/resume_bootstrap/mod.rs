@@ -1,7 +1,7 @@
 //! `mustard-rt run resume-bootstrap` — single-shot resume decision engine.
 //!
 //! Replaces Steps 0 + 0.5 + 1 + 5 + parts of Step 2 of the legacy
-//! `resume-flow.md` ref. One process call resolves: mode (`continued` |
+//! `resume-flow.md` ref (now `plugin/refs/spec/resume-loop.md § B`). One process call resolves: mode (`continued` |
 //! `reanalyzed` | `ask`), spec stage, the operational spec path (root
 //! `spec.md` or `wave-N-{role}/spec.md`), wave progress, stub flag, dispatch
 //! failure replay, whether to refresh `diff` / `context-slice`,

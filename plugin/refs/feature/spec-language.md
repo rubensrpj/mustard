@@ -33,7 +33,7 @@
 | `## Decisions` | `## Decisões não-óbvias` |
 | `## Symptom` | `## Sintoma` |
 
-- `## PRD` and `## Plan`/`## Plano` are narrative DIVIDERS (PRD = what/why; Plano = how) grouping subsections in one file — intentionally absent from the parser map. The authoritative matcher is `apps/rt/src/run/spec_sections.rs`: when adding or renaming a PARSED heading, update the table AND the module.
+- `## PRD` and `## Plan`/`## Plano` are narrative DIVIDERS (PRD = what/why; Plano = how) grouping subsections in one file — intentionally absent from the parser map. The authoritative matcher is `apps/rt/src/commands/spec/spec_sections.rs`: when adding or renaming a PARSED heading, update the table AND the module.
 
 ## Contexto rules
 

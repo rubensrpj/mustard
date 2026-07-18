@@ -186,6 +186,11 @@ fn is_target(path: &Path) -> bool {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default();
+    // `pipeline-config.md` stays a named audit target, but note the live copy
+    // moved to the plugin (`${CLAUDE_PLUGIN_ROOT}/pipeline-config.md`), which is
+    // outside this linter's default scope — so in-repo the entry is effectively
+    // inert until the scope is repointed. Kept to keep auditing any
+    // `.claude/pipeline-config.md` a downstream install still carries.
     if name == "CLAUDE.md" || name == "pipeline-config.md" {
         return true;
     }

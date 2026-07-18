@@ -1,6 +1,6 @@
 //! `mustard-rt run wave-collapse` — deterministically merge a wave-plan's
 //! decomposition back down, the "reject decomposition" branch of the
-//! approve-flow SKILL (`approve-only-flow.md`).
+//! approve flow (`plugin/refs/spec/resume-loop.md § A`).
 //!
 //! Today that branch makes the LLM concatenate sections across N wave specs,
 //! delete the surplus `wave-N-*/` dirs, and hand-patch the sidecars — the most
@@ -23,7 +23,7 @@
 //!   for Light.
 //!
 //! Both modes also record `scope_override: "user-rejected-waves"` in the
-//! patched `meta.json` (the key the `approve-only-flow.md` prose uses).
+//! patched `meta.json` (the key the `refs/spec/resume-loop.md` prose uses).
 //!
 //! ## Merge
 //!
@@ -416,7 +416,7 @@ fn patch_root_meta_light(spec_dir: &Path) {
 }
 
 /// Record `scope_override:"user-rejected-waves"` in the `meta.json` catch-all
-/// `raw` object (the key the `approve-only-flow.md` prose uses).
+/// `raw` object (the key the `refs/spec/resume-loop.md` prose uses).
 fn set_scope_override(meta: &mut Meta) {
     if !meta.raw.is_object() {
         meta.raw = json!({});

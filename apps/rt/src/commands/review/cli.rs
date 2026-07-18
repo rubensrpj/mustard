@@ -93,6 +93,12 @@ pub enum ReviewCmd {
         /// Subproject the review targeted.
         #[arg(long)]
         subproject: Option<String>,
+        /// Optional file whose content is persisted to
+        /// `<spec>/review/findings.md` (folded into the retry prompt's
+        /// `## RETRY CONTEXT` on re-dispatch). Absent ⇒ no findings file is
+        /// written; the `review.result` event is unaffected.
+        #[arg(long = "findings-file")]
+        findings_file: Option<PathBuf>,
     },
     /// Scan a project tree for committed secrets + misconfigurations.
     #[command(display_order = 37)]
@@ -191,7 +197,14 @@ pub fn dispatch(cmd: ReviewCmd) {
             verdict,
             critical,
             subproject,
-        } => review::review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
+            findings_file,
+        } => review::review_result::run(
+            spec.as_deref(),
+            verdict.as_deref(),
+            critical,
+            subproject.as_deref(),
+            findings_file.as_deref(),
+        ),
         ReviewCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
         ReviewCmd::ReviewPrefetch { pr_ref, format, root: _ } => {
             let pr_ref = pr_ref.unwrap_or_default();

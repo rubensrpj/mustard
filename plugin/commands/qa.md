@@ -1,5 +1,5 @@
 ---
-description: Use when the user runs /qa or asks to run QA, validate AC, or check acceptance criteria. Executes the QA phase (Wave 10) — runs each AC and reports pass/fail. Blocks CLOSE on failure.
+description: Use when the user runs /qa or asks to run QA, validate AC, or check acceptance criteria. Executes the QA gate — runs each AC and reports pass/fail. Blocks CLOSE on failure.
 source: manual
 ---
 <!-- mustard:generated -->
@@ -28,7 +28,7 @@ mustard-rt run qa-run --spec {spec}
 
 - **`pass`** → emit `pipeline.stage: Close`. *"QA passed."*
 - **`fail`** → list failing AC. After 3 failures → `AskUserQuestion`: (a) fix+retry, (b) relax AC, (c) abort.
-- **`skip`** → not a failure (CLOSE treats skip as pass). Happens with no AC, or when every AC timed out (per-AC limit 120s — raise the timeout or split the AC). Warn *"QA skipped — {no AC | all AC timed out}; CLOSE not blocked."*
+- **`skip`** → two shapes, told apart by `criteria` in the result. **No AC at all** (`criteria` empty) → advisory; warn *"QA skipped — spec carries no AC; CLOSE not blocked."* **ACs exist but every one skipped** (per-AC timeout 120s / spawn failure) → NOT a pass: the strict close gate blocks CLOSE. Fix the AC commands (raise the timeout or split the AC) and re-run — or confirm the skip with the user (`AskUserQuestion`) before closing under `MUSTARD_QA_GATE_MODE=warn`.
 
 ## 4. Tactical-fix discovery (post-pass — detect + propose, never auto-create)
 

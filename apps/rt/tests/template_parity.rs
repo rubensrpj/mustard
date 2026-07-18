@@ -223,12 +223,23 @@ fn forward_corpus(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The prose half of the REVERSE caller corpus: templates (md/json, which
-/// includes the settings.json template), the CLI sources, and the installer.
+/// includes the settings.json seed), the CLI sources, and the installer.
 fn reverse_prose_corpus(root: &Path) -> Vec<PathBuf> {
     let templates = root.join("apps/cli/templates");
     assert!(templates.is_dir(), "templates dir missing at {}", templates.display());
     let mut files = Vec::new();
     walk_files(&templates, &mut files);
+    // The harness seeds (settings.json — whose permissions/statusLine name
+    // `mustard-rt run` commands — and the injectable instruction files) moved
+    // to `packages/core/templates/`, compiled into the binaries via
+    // `include_str!`. They are product callers all the same.
+    let core_templates = root.join("packages/core/templates");
+    assert!(
+        core_templates.is_dir(),
+        "core seed dir missing at {}",
+        core_templates.display()
+    );
+    walk_files(&core_templates, &mut files);
     files.retain(|p| has_extension(p, &["md", "json"]));
 
     // Mustard 2.0: the command/skill/ref callers moved from `apps/cli/templates`

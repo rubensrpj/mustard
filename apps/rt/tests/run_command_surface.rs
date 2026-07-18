@@ -16,7 +16,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 77 declared variants + `help`, which clap generates at build time.
+/// 80 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "adapt-cursor",
@@ -87,6 +87,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "tactical-fix-create",
     "tactical-fix-detect",
     "unhook",
+    "upsert",
     "verify-pipeline",
     "wave-advance",
     "wave-collapse",
@@ -128,8 +129,8 @@ fn every_declared_command_keeps_its_help_slot() {
     // clap orders the flat `run --help` listing by `(display_order, name)`.
     // The families are split across `commands/<family>/cli.rs`, so each variant
     // pins its historical slot explicitly. A duplicate or a gap would reshuffle
-    // the published listing — assert the 77 declared commands still carry the
-    // exact permutation 0..=76 (`help` is clap's own, appended last).
+    // the published listing — assert the 80 declared commands still carry the
+    // exact permutation 0..=79 (`help` is clap's own, appended last).
     let cmd = run_command_tree();
     let mut orders: Vec<usize> = cmd
         .get_subcommands()

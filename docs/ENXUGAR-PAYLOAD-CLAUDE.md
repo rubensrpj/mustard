@@ -80,7 +80,7 @@ Commit: `refactor(skills): de-dup reference prose into one-level-deep refs; keep
 - `feature/spec-language.md` (11.4) → tirar `## Component Contract` + `## Contexto narrative rules` → `refs/feature/narrative-and-contract.md`; spec-language linka. +TOC.
 - `spec/resume-flow.md` (12.8) → cauda Escalation + Dependency Precheck (dup pipeline-config) → `refs/resume/escalation.md`. +TOC.
 - `feature/wave-decomposition.md` (9.5) → seção COORDINATE → `refs/feature/coordinate.md` (opcional). +TOC.
-- **TOC no topo de todo ref >100 linhas** (resume-flow, spec-language, full-plan, approve-only-flow, pipeline-config).
+- **TOC no topo de todo ref >100 linhas** (resume-flow, spec-language, full-plan, approve-only-flow, pipeline-config). *(Nota: approve-only-flow.md e resume-flow.md — colapsados em `refs/spec/resume-loop.md`; layout atual.)*
 
 **Renomear** (nome descritivo; atualizar TODOS os inbound por grep):
 - `refs/scan-enrich-purpose.md` → `recall-index.md` (inbound: digest-validate, scan SKILL).

@@ -12,7 +12,7 @@
 //!    `TODO`/`FIXME`/`future hook`/… markers in its actionable sections.
 //! 2. **Checklist gate** — denies if the spec's `## Checklist` has unmarked
 //!    items.
-//! 3. **QA gate (Wave 10)** — denies if no `qa.result` with `overall=pass`
+//! 3. **QA gate** — denies if no `qa.result` with `overall=pass`
 //!    exists in the harness event log.
 //! 4. **Build/test gate (Wave 9)** — runs `build → type → lint → test` from
 //!    `mustard.json` and denies on the first real (non-env) failure.
@@ -630,8 +630,10 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// The last `qa.result` for a spec. Returns
-/// `(found, overall, failed_count, ts)` — `ts` is the ISO-8601 timestamp of that
-/// most-recent `qa.result` (used to detect a stale pass).
+/// `(found, overall, failed_count, criteria_count, ts)` — `ts` is the ISO-8601
+/// timestamp of that most-recent `qa.result` (used to detect a stale pass);
+/// `criteria_count` distinguishes the two `overall=skip` shapes (0 = the spec
+/// carries no AC at all; >0 = ACs exist but every one skipped at run time).
 ///
 /// W5: `qa.result` events live in the per-spec NDJSON sink, not in `pipeline_events`,
 /// so this reads the spec's `events/` directory directly. With `spec = None` we
@@ -639,7 +641,7 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 fn find_last_qa_result(
     cwd: &str,
     spec: Option<&str>,
-) -> (bool, Option<String>, usize, Option<String>) {
+) -> (bool, Option<String>, usize, usize, Option<String>) {
     let project = Path::new(cwd);
     let mut events: Vec<HarnessEvent> = Vec::new();
     let paths = ClaudePaths::for_project(project).ok();
@@ -654,7 +656,7 @@ fn find_last_qa_result(
     } else {
         // No spec attribution — scan every per-spec .events/ dir under .claude/spec/.
         let Some(specs_root) = paths.as_ref().map(ClaudePaths::spec_dir) else {
-            return (false, None, 0, None);
+            return (false, None, 0, 0, None);
         };
         if let Ok(entries) = fs::read_dir(&specs_root) {
             for entry in entries {
@@ -684,23 +686,21 @@ fn find_last_qa_result(
         last = Some(ev);
     }
     let Some(last) = last else {
-        return (false, None, 0, None);
+        return (false, None, 0, 0, None);
     };
     let overall = last
         .payload
         .get("overall")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let failed_count = last
-        .payload
-        .get("criteria")
-        .and_then(Value::as_array)
-        .map_or(0, |arr| {
-            arr.iter()
-                .filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("fail"))
-                .count()
-        });
-    (true, overall, failed_count, Some(last.ts))
+    let criteria = last.payload.get("criteria").and_then(Value::as_array);
+    let failed_count = criteria.map_or(0, |arr| {
+        arr.iter()
+            .filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("fail"))
+            .count()
+    });
+    let criteria_count = criteria.map_or(0, Vec::len);
+    (true, overall, failed_count, criteria_count, Some(last.ts))
 }
 
 /// `Some(filename)` when the spec's acceptance source (`spec.md` / `wave-plan.md`)
@@ -1097,10 +1097,11 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
         }
     }
 
-    // ── QA gate (Wave 10) ─────────────────────────────────────────────────
+    // ── QA gate ───────────────────────────────────────────────────────────
     let qa_mode = modes.qa;
     if qa_mode != GateMode::Off {
-        let (found, overall, failed_count, qa_ts) = find_last_qa_result(cwd, spec_ref);
+        let (found, overall, failed_count, criteria_count, qa_ts) =
+            find_last_qa_result(cwd, spec_ref);
         if !found {
             let reason = format_gate_message(
                 "Close Gate",
@@ -1135,7 +1136,45 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
             }
             // warn → fall through.
         } else if overall.as_deref() == Some("skip") {
-            // No testable AC — QA is advisory; fall through.
+            // Two skip shapes, told apart by the criteria the run recorded:
+            // - `criteria` empty → the spec carries nothing testable; the
+            //   historical advisory contract holds — fall through.
+            // - `criteria` non-empty → ACs exist but every one skipped at run
+            //   time (timeout / spawn failure). A silent green here would close
+            //   a spec whose criteria were never exercised; strict routes the
+            //   decision to the user instead.
+            if criteria_count > 0 {
+                let reason = format_gate_message(
+                    "Close Gate",
+                    &spec_ref.map_or_else(
+                        || format!("QA skipped all {criteria_count} acceptance criteria"),
+                        |s| {
+                            format!(
+                                "QA for spec \"{s}\" skipped all {criteria_count} acceptance \
+                                 criteria (timeout or spawn failure)"
+                            )
+                        },
+                    ),
+                    "a skip is not a verification — the criteria exist but were never exercised",
+                    "fix the AC commands and re-run /mustard:qa, or confirm the skip with the \
+                     user and set MUSTARD_QA_GATE_MODE=warn to close anyway",
+                );
+                if qa_mode == GateMode::Strict {
+                    emit_close_gate_event(
+                        cwd,
+                        spec_ref,
+                        json!({
+                            "result": "deny-qa-skip",
+                            "mode": mode_str(mode),
+                            "qaMode": mode_str(qa_mode),
+                            "spec": spec_ref,
+                            "criteriaCount": criteria_count,
+                        }),
+                    );
+                    return Verdict::Deny { reason };
+                }
+                // warn → fall through.
+            }
         } else if overall.as_deref() != Some("pass") {
             let failed_str = if failed_count > 0 {
                 format!("{failed_count} criteria failed")
@@ -1220,7 +1259,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
     // exists (`qa_ts`); a missing QA is already caught by the QA gate above.
     let composition_mode = resolve_composition_mode();
     if composition_mode != GateMode::Off {
-        let (_, _, _, qa_ts) = find_last_qa_result(cwd, spec_ref);
+        let (_, _, _, _, qa_ts) = find_last_qa_result(cwd, spec_ref);
         if let Some(qa_ts) = qa_ts {
             let pending = unaddressed_change_requests(cwd, spec_ref, &qa_ts);
             if !pending.is_empty() {
@@ -1687,6 +1726,8 @@ mod tests {
         );
     }
 
+    /// The legitimate skip shape: the spec carries NO acceptance criteria at
+    /// all (`criteria` empty) — the historical advisory contract holds.
     #[test]
     fn close_gate_allows_when_qa_skipped() {
         let dir = make_project();
@@ -1696,6 +1737,53 @@ mod tests {
         assert!(
             !close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict())
                 .is_blocking()
+        );
+    }
+
+    /// The dangerous skip shape: acceptance criteria EXIST but every one
+    /// skipped at run time (timeout / spawn failure). Strict must route the
+    /// decision to the user instead of closing on a green that verified nothing.
+    #[test]
+    fn close_gate_denies_when_qa_skipped_with_criteria() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+        write_qa_event(
+            dir.path(),
+            "skip-ac-spec",
+            "skip",
+            json!([
+                { "id": "AC-1", "status": "skip" },
+                { "id": "AC-2", "status": "skip" },
+            ]),
+        );
+        let input = close_input(dir.path(), "skip-ac-spec");
+        match close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict()) {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("skipped all 2"), "reason names the count: {reason}");
+                assert!(
+                    reason.contains("never exercised"),
+                    "reason explains the principle: {reason}"
+                );
+            }
+            other => panic!("expected Deny for skip-with-criteria, got {other:?}"),
+        }
+    }
+
+    /// Same shape under `qa: warn` — advisory, falls through without blocking.
+    #[test]
+    fn close_gate_warn_allows_qa_skipped_with_criteria() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+        write_qa_event(
+            dir.path(),
+            "skip-ac-warn-spec",
+            "skip",
+            json!([{ "id": "AC-1", "status": "skip" }]),
+        );
+        let input = close_input(dir.path(), "skip-ac-warn-spec");
+        let modes = CloseGateModes { qa: GateMode::Warn, ..all_strict() };
+        assert!(
+            !close_gate_with_modes(&input, dir.path().to_str().unwrap(), modes).is_blocking()
         );
     }
 

@@ -10,7 +10,7 @@ source: manual
 
 - `<parent>` — slug of the parent spec (`.claude/spec/<parent>/`).
 - `<descrição>` — short natural-language description (seeds the slug + body).
-- `--scope` — default `light` (≤100 LOC). `touch` ≤30 LOC throwaway; `full` only if it needs a full PRD.
+- `--scope` — default `light` (≤100 LOC). `touch` ≤30 LOC throwaway; `full` only if it needs a full PRD. (Sub-spec `meta.json#scope` vocabulary — the router's `pipeline.kind` emit for a tactical-fix always carries the canonical scope `lean`.)
 
 **Qualification** (≤100 LOC, no public-contract change, no pending design decision, no new dependency) → `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Tactical Fix Discovery`. Outside it → regular follow-up or a fresh `/mustard:feature`.
 

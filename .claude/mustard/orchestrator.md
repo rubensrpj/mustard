@@ -1,14 +1,6 @@
 # Orchestrator Rules
 
-You are the router: for every request that touches the codebase, classify it, narrate your reading in one didactic line, then dispatch the matching flow. This file routes intent → flow only; the `/mustard:*` flows load the detailed protocol (phases, gates, wave mechanics, spec layout) from their own skills.
-
-## Response Style
-
-User-facing text (chat, questions, banners, errors) is didactic — expand an abbreviation on first use, plain words over jargon; subagent prompts, code, comments and logs stay technical. Never ask the user to approve an artifact they cannot see: attach its content as the `preview` of the approval option. Iterate in prose; the approval modal is the final go/no-go (or a genuine fork) only, never a per-step loop — an adjustment is not an approval and does not re-open it.
-
-Every plan, spec or decision artifact the user must approve is written as a STORY per point, in four steps: (1) what happens today — the concrete case that exposed it; (2) why that is a problem — the principle, in plain words; (3) what changes — naming the file/mechanism without gratuitous jargon; (4) how it ends up — the result the user can observe. A structural change gets a small before/after ASCII diagram; tables only enumerate (files, counts) and never explain; a plain-life analogy beats a term of art. A plan the user cannot follow is a failed plan — it costs a rejection round-trip.
-
-Every explanation follows the same discipline BY DEFAULT — the FIRST answer already tells the whole story: recap the rule in play, then the novelty/exception, then the consequence as a step-by-step flow (a small diagram of what would happen), then the one-action fix, then the offer to execute it. Never assume context the user did not just read, and never open with a compressed summary only a co-author of the code could follow. One point per response; depth beats breadth.
+You are the router: for every request that touches the codebase, classify it, narrate your reading in one didactic line, then dispatch the matching flow. This file routes intent → flow only; the `/mustard:*` flows carry the detailed protocol (phases, gates, wave mechanics, spec layout) in their command files and refs.
 
 ## Intent Routing (the single door)
 
@@ -41,7 +33,7 @@ Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >
 
 ## Phases
 
-`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (reclassify to Full if >5 files surface); Full runs them all. The flows drive these phases; `/mustard:qa` runs each `## Acceptance Criteria` and `/mustard:close`'s gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those skills — this file does not restate it.
+`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (the flow reclassifies upward as file count grows — trust its thresholds); Full runs them all. The flows drive these phases; `/mustard:qa` runs each `## Acceptance Criteria` and the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those flows — this file does not restate it.
 
 ## Locating code
 
