@@ -52,15 +52,6 @@ fn is_off() -> bool {
         .eq_ignore_ascii_case("off")
 }
 
-/// The `file_path` of a Write/Edit invocation (accepts the legacy `path` key).
-fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
 /// Resolve the active spec's `spec.md` path when the spec is **in EXECUTE** and
 /// **not yet decomposed** (no `wave-plan.md`). Returns `None` (skip) otherwise.
 ///
@@ -105,7 +96,7 @@ impl Observer for RewaveObserver {
         let cwd = ctx.project_dir_or_cwd(input);
         // Skip writes that target nothing on disk (defensive — Write/Edit always
         // carry a path, but a malformed payload must not panic).
-        if file_path_of(input).is_none() {
+        if input.file_path().is_none() {
             return;
         }
         let Some(spec_md) = target_spec_md(&cwd) else {

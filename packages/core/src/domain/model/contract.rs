@@ -211,6 +211,23 @@ impl HookInput {
                 .and_then(Value::as_str)
                 .is_some_and(|s| !s.is_empty())
     }
+
+    /// The `file_path` a Write/Edit (or Read) invocation targets, accepting the
+    /// legacy `path` key (`tool_input.file_path || tool_input.path`).
+    ///
+    /// Returns the raw string exactly as the harness sent it — `None` when
+    /// neither key holds a string. Callers that need forward-slash normalisation
+    /// apply it at their own boundary (their `relative_to_cwd` re-normalises
+    /// regardless). Before this method the same body was copy-pasted
+    /// byte-identically into seven hook modules across `mustard-rt`.
+    #[must_use]
+    pub fn file_path(&self) -> Option<String> {
+        let ti = &self.tool_input;
+        ti.get("file_path")
+            .or_else(|| ti.get("path"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
 }
 
 // ---------------------------------------------------------------------------

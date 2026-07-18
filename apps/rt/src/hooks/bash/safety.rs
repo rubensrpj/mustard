@@ -20,6 +20,8 @@
 //!    reordering, character classes). IDs keep their historical `BGnn` names
 //!    so deny reasons stay greppable.
 
+use std::collections::BTreeSet;
+
 use mustard_core::domain::model::contract::Verdict;
 
 use super::lex::{ends_with_token_seq, has_word, has_word_pair, split_after, truncate};
@@ -29,8 +31,11 @@ use super::lex::{ends_with_token_seq, has_word, has_word_pair, split_after, trun
 struct DangerRule {
     /// Stable identifier (`BG01`–`BG13`).
     id: &'static str,
-    /// `true` when `cmd` (already lowercased) matches this rule.
-    test: fn(&str) -> bool,
+    /// `true` when `cmd` (already lowercased) matches this rule. The second
+    /// argument is the project's integration bases (`git.flow`); only BG07
+    /// (branch-delete) consults it — every other rule ignores it, so its test
+    /// takes the form `|c, _| …`.
+    test: fn(&str, &BTreeSet<String>) -> bool,
     /// The user-facing reason fragment.
     msg: &'static str,
 }
@@ -41,7 +46,7 @@ const DANGER_RULES: &[DangerRule] = &[
     // covered by a finite set of word-boundary glob prefixes.
     DangerRule {
         id: "BG01",
-        test: is_rm_recursive_force,
+        test: |c, _| is_rm_recursive_force(c),
         msg: "Recursive force delete blocked",
     },
     // The deny layer start-anchors, so reordered (`git push origin -f`) and
@@ -49,74 +54,79 @@ const DANGER_RULES: &[DangerRule] = &[
     // while keeping `--force-with-lease` allowed.
     DangerRule {
         id: "BG02",
-        test: is_force_push,
+        test: |c, _| is_force_push(c),
         msg: "Force push blocked (use --force-with-lease for safer overwrite)",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG03",
-        test: |c| has_word_pair(c, "git", "reset") && c.contains("--hard"),
+        test: |c, _| has_word_pair(c, "git", "reset") && c.contains("--hard"),
         msg: "git reset --hard blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG04",
-        test: is_git_clean_force,
+        test: |c, _| is_git_clean_force(c),
         msg: "git clean -f blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG05",
-        test: |c| ends_with_token_seq(c, &["git", "checkout", "--", "."]),
+        test: |c, _| ends_with_token_seq(c, &["git", "checkout", "--", "."]),
         msg: "git checkout -- . blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG06",
-        test: |c| ends_with_token_seq(c, &["git", "restore", "."]),
+        test: |c, _| ends_with_token_seq(c, &["git", "restore", "."]),
         msg: "git restore . blocked",
     },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
+    // The protected branches are the project's `git.flow` integration bases
+    // (agnostic), NOT a hardcoded main/master: a `develop`/`master` project
+    // protects `develop` too, and a `dev`/`main` project leaves `master`
+    // deletable. main/master survive as the `integration_bases()` fallback, not
+    // as a literal here. Wrapper-prefix insensitivity is still structural (glob
+    // is start-anchored).
     DangerRule {
         id: "BG07",
-        test: is_branch_delete_main,
-        msg: "Deleting main/master branch blocked",
+        test: is_branch_delete_protected,
+        msg: "Deleting a protected integration base blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG08",
-        test: |c| has_word_pair(c, "chmod", "777"),
+        test: |c, _| has_word_pair(c, "chmod", "777"),
         msg: "chmod 777 blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG09",
-        test: |c| has_word(c, "mkfs"),
+        test: |c, _| has_word(c, "mkfs"),
         msg: "mkfs blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG10",
-        test: |c| has_word_pair(c, "dd", "if="),
+        test: |c, _| has_word_pair(c, "dd", "if="),
         msg: "dd if= blocked",
     },
     // The drive-letter character class (`[a-z]:`) has no native-pattern
     // equivalent (a glob cannot say "any single letter").
     DangerRule {
         id: "BG11",
-        test: is_format_drive,
+        test: |c, _| is_format_drive(c),
         msg: "format drive blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG12",
-        test: |c| has_word(c, "shutdown"),
+        test: |c, _| has_word(c, "shutdown"),
         msg: "shutdown blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG13",
-        test: |c| has_word(c, "reboot"),
+        test: |c, _| has_word(c, "reboot"),
         msg: "reboot blocked",
     },
 ];
@@ -176,14 +186,21 @@ fn is_git_clean_force(cmd: &str) -> bool {
     })
 }
 
-/// `\bgit\s+branch\s+-D\s+(main|master)\b`.
-fn is_branch_delete_main(cmd: &str) -> bool {
+/// `git branch -d/-D <base>` where `<base>` is one of the project's integration
+/// bases (`git.flow`), NOT a hardcoded `main|master`. The base set comes from
+/// [`mustard_core::domain::config::GitConfig::integration_bases`], whose
+/// documented fallback is `{main, master}` when the flow is empty/unreadable —
+/// so main/master stay protected (via that fallback) while a `develop`/`master`
+/// project also protects `develop`, and a `dev`/`main` project leaves `master`
+/// deletable. `cmd` is already lowercased; bases are matched case-insensitively
+/// so a mixed-case `git.flow` entry still guards.
+fn is_branch_delete_protected(cmd: &str, bases: &BTreeSet<String>) -> bool {
     if !has_word_pair(cmd, "git", "branch") {
         return false;
     }
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     tokens.windows(2).any(|w| {
-        (w[0] == "-d" || w[0] == "-D") && (w[1] == "main" || w[1] == "master")
+        (w[0] == "-d" || w[0] == "-D") && bases.iter().any(|b| b.eq_ignore_ascii_case(w[1]))
     })
 }
 
@@ -202,11 +219,38 @@ fn is_format_drive(cmd: &str) -> bool {
     false
 }
 
-/// The `bash-safety` gate: deny when any rule matches.
+/// The project's integration bases (`git.flow`) for the BG07 branch-delete
+/// guard, resolved fail-open.
+///
+/// `bash_safety` receives only the command string, so the root is resolved the
+/// same self-contained way any hook does off a bare command:
+/// [`crate::shared::context::project_dir`] (honours `CLAUDE_PROJECT_DIR`, then
+/// the workspace-anchor walk), then the process-cached config. This is the ONE
+/// spot in the module that reads project state; it is fully fail-open —
+/// [`mustard_core::domain::config::GitConfig::integration_bases`] returns its
+/// documented `{main, master}` fallback when the config is absent/unreadable,
+/// so main/master stay protected and this module hardcodes no branch name.
+fn guard_integration_bases() -> BTreeSet<String> {
+    let root = crate::shared::context::project_dir();
+    crate::shared::context::project_config_cached(std::path::Path::new(&root))
+        .git
+        .integration_bases()
+}
+
+/// The `bash-safety` gate: deny when any rule matches. Resolves the project's
+/// integration bases once (for BG07) and delegates to [`bash_safety_with_bases`]
+/// — the deterministic, IO-free core the unit tests drive with an explicit base
+/// set.
 pub(super) fn bash_safety(cmd: &str) -> Option<Verdict> {
+    bash_safety_with_bases(cmd, &guard_integration_bases())
+}
+
+/// The rule engine over an explicit integration-base set. Pure and
+/// deterministic (no IO) so tests can pin BG07 against a chosen `git.flow`.
+fn bash_safety_with_bases(cmd: &str, bases: &BTreeSet<String>) -> Option<Verdict> {
     let lower = cmd.to_ascii_lowercase();
     for rule in DANGER_RULES {
-        if (rule.test)(&lower) {
+        if (rule.test)(&lower, bases) {
             return Some(Verdict::Deny {
                 reason: format!(
                     "[bash-safety {}] {}.\nCommand: {}",
@@ -232,6 +276,23 @@ mod tests {
             }
             other => panic!("{cmd:?}: expected Deny({id}), got {other:?}"),
         }
+    }
+
+    /// Like [`assert_denied`] but drives the deterministic core with an explicit
+    /// integration-base set — BG07 depends on `git.flow`, so its tests pin the
+    /// bases rather than reading the ambient project config.
+    fn assert_denied_with_bases(cmd: &str, id: &str, bases: &BTreeSet<String>) {
+        match bash_safety_with_bases(cmd, bases) {
+            Some(Verdict::Deny { reason }) => {
+                assert!(reason.contains(id), "{cmd:?}: reason missing {id}: {reason}");
+            }
+            other => panic!("{cmd:?}: expected Deny({id}), got {other:?}"),
+        }
+    }
+
+    /// A base set standing in for an explicit `git.flow`.
+    fn bases(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
     }
 
     // --- BG01: rm recursive+force — clusters and order -----------------------
@@ -300,8 +361,8 @@ mod tests {
             ("BG04", "git clean -fd"),
             ("BG05", "git checkout -- ."),
             ("BG06", "git restore ."),
-            ("BG07", "git branch -D main"),
-            ("BG07", "git branch -D master"),
+            // BG07 depends on `git.flow` — covered deterministically in the
+            // dedicated `bg07_*` tests, not through the ambient-config path.
             ("BG08", "chmod 777 /etc/passwd"),
             ("BG09", "mkfs.ext4 /dev/sda1"),
             ("BG10", "dd if=/dev/zero of=/dev/sda"),
@@ -324,7 +385,8 @@ mod tests {
             ("BG04", "rtk git clean -fd"),
             ("BG05", "rtk git checkout -- ."),
             ("BG06", "rtk git restore ."),
-            ("BG07", "rtk git branch -D main"),
+            // BG07's wrapped-spelling proof lives in `bg07_protects_custom_flow_bases_including_wrapped`
+            // (it needs an explicit base set, not the ambient project config).
             ("BG08", "sudo chmod 777 /etc/passwd"),
             ("BG09", "sudo mkfs.ext4 /dev/sda1"),
             ("BG10", "sudo dd if=/dev/zero of=/dev/sda"),
@@ -344,7 +406,6 @@ mod tests {
             "git clean -n",             // BG04 needs an -f flag
             "git checkout -- src/a.rs", // BG05 is the bare `.` wipe only
             "git restore src/a.rs",     // BG06 is the bare `.` wipe only
-            "git branch -D feature-x",  // BG07 protects main/master only
             "chmod 755 script.sh",      // BG08 is 777 only
         ] {
             assert!(
@@ -352,5 +413,47 @@ mod tests {
                 "{safe:?} must pass the safety table"
             );
         }
+    }
+
+    // --- BG07: branch delete protects the project's integration bases --------
+
+    /// THE fix: BG07 protects whatever `git.flow` declares. A `develop`/`master`
+    /// project protects BOTH — including the custom `develop` base a hardcoded
+    /// `main|master` guard let through (the audited P2.4 violation). The
+    /// wrapper-prefix (`rtk` — our golden rule — or `sudo`) is still caught.
+    #[test]
+    fn bg07_protects_custom_flow_bases_including_wrapped() {
+        let flow = bases(&["develop", "master"]);
+        assert_denied_with_bases("git branch -D develop", "BG07", &flow);
+        assert_denied_with_bases("git branch -D master", "BG07", &flow);
+        assert_denied_with_bases("rtk git branch -D develop", "BG07", &flow);
+        // -d (safe delete) is guarded the same as -D.
+        assert_denied_with_bases("git branch -d develop", "BG07", &flow);
+    }
+
+    /// main/master stay protected through the `integration_bases()` fallback set
+    /// (the ONLY place those names are hardcoded — and it lives in core, not
+    /// here). This is what an empty / unreadable `git.flow` degrades to.
+    #[test]
+    fn bg07_main_master_protected_via_fallback_set() {
+        let fallback = bases(&["main", "master"]);
+        assert_denied_with_bases("git branch -D main", "BG07", &fallback);
+        assert_denied_with_bases("git branch -D master", "BG07", &fallback);
+        assert_denied_with_bases("rtk git branch -D main", "BG07", &fallback);
+    }
+
+    /// Agnosticism, the other direction: a `{base}_slug` work branch is never a
+    /// base, and in a `develop`/`master` project `main` is NOT an integration
+    /// base — both stay deletable. (The mirror of the bug: a non-base branch
+    /// must pass free.)
+    #[test]
+    fn bg07_allows_non_base_branches() {
+        let flow = bases(&["develop", "master"]);
+        assert!(bash_safety_with_bases("git branch -D develop_rubens", &flow).is_none());
+        assert!(bash_safety_with_bases("git branch -D feature-x", &flow).is_none());
+        assert!(
+            bash_safety_with_bases("git branch -D main", &flow).is_none(),
+            "main is not an integration base when the flow is develop/master"
+        );
     }
 }

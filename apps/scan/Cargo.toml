@@ -1,6 +1,6 @@
 [package]
 name = "scan"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Mine a codebase's recurring conventions into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
 license = "MIT"

@@ -67,8 +67,8 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
     ),
     (
         "mark-checklist-item",
-        "instructed by the close_gate deny remediation \
-         (hooks/write/close_gate.rs: mark each via mustard-rt run \
+        "instructed by the close-gate deny remediation \
+         (commands/pipeline/close_gates.rs: mark each via mustard-rt run \
          mark-checklist-item)",
     ),
     (

@@ -2,6 +2,7 @@ pub mod cli;
 
 pub mod pipeline_summary;
 pub mod verify_pipeline;
+pub mod close_gates;
 pub mod close_orchestrate;
 pub mod close_pipeline;
 pub mod dispatch_plan;

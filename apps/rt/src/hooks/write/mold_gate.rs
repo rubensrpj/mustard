@@ -80,7 +80,7 @@ impl Check for MoldGate {
 
 /// The gate's real logic — `None` means pass-through (fail-open).
 fn advise(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
-    let fp = super::boundary_gate::file_path_of(input)?;
+    let fp = input.file_path()?;
     let project = ctx.project_dir_or_cwd(input);
     // Repo work only, and never the harness's own tree (`.claude/` holds the
     // molds themselves, specs, plans — none of that is a module).

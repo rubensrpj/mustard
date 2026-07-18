@@ -8,6 +8,8 @@
 //!
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
+//! - [`gate_mode`] — the three-state gate mode (`off`/`warn`/`strict`) and its
+//!   cascade resolver, shared by the size gates and the close-gate engine.
 //! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`])
 //!   and the append-only writer ([`events::writer_ndjson`]).
 //! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
@@ -19,5 +21,6 @@
 
 pub mod context;
 pub mod events;
+pub mod gate_mode;
 pub mod proc;
 pub mod translate;

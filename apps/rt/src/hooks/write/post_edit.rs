@@ -62,15 +62,6 @@ pub struct PostEdit;
 // Shared helpers
 // ===========================================================================
 
-/// The `file_path` of a Write/Edit invocation.
-fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
 /// `true` if this is a `Write` or `Edit` tool invocation.
 fn is_write_or_edit(input: &HookInput) -> bool {
     matches!(input.tool_name.as_deref(), Some("Write" | "Edit"))
@@ -439,7 +430,7 @@ fn guard_verify(input: &HookInput, cwd: &str) -> Verdict {
     if !is_write_or_edit(input) {
         return Verdict::Allow;
     }
-    let Some(file_path) = file_path_of(input) else {
+    let Some(file_path) = input.file_path() else {
         return Verdict::Allow;
     };
     // `path.relative(ROOT, filePath)` — relative to cwd, forward-slash.
@@ -734,7 +725,7 @@ fn extension(path: &str) -> String {
 /// Prettier config or `node_modules/.bin/prettier` is present), `dotnet
 /// format` for `.cs`.
 fn run_auto_format(input: &HookInput, cwd: &str) {
-    let Some(file_path) = file_path_of(input) else {
+    let Some(file_path) = input.file_path() else {
         return;
     };
     if file_path.is_empty() {
@@ -837,7 +828,7 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
     if !is_write_or_edit(input) {
         return;
     }
-    let Some(file_path) = file_path_of(input) else {
+    let Some(file_path) = input.file_path() else {
         return;
     };
     if file_path.is_empty() {

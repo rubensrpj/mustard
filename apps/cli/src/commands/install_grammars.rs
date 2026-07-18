@@ -83,19 +83,23 @@ struct GrammarEntry {
 
 /// Top-level catalogue document. The `_doc` field is documentation-only —
 /// we ignore unknown fields to keep the JSON forward-compatible.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct GrammarsCatalog {
     #[serde(default)]
     grammars: Vec<GrammarEntry>,
 }
 
 impl GrammarsCatalog {
-    /// Parse the embedded catalogue. Panics on malformed JSON — that is a
-    /// compile-time problem (the JSON ships with the binary), not a runtime
-    /// one. Caller is `load`.
+    /// Parse the embedded catalogue. Fail-open (cli Guard: no `expect` outside
+    /// tests, never panic): a malformed embedded JSON degrades to an empty
+    /// catalogue with a stderr warning. The `embedded_catalog_is_well_formed`
+    /// test locks the real invariant — the shipped JSON always parses — so this
+    /// branch is unreachable in a correct build, not a silent hole. Caller: `load`.
     fn from_embedded() -> Self {
-        serde_json::from_str(EMBEDDED_CATALOG)
-            .expect("apps/cli/templates/grammars-suggestions.json is malformed at build time")
+        serde_json::from_str(EMBEDDED_CATALOG).unwrap_or_else(|e| {
+            eprintln!("[mustard] embedded grammars catalogue malformed at build: {e}");
+            Self::default()
+        })
     }
 
     /// Load the catalogue. Always starts from the embedded source of truth and

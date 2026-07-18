@@ -93,6 +93,30 @@ pub fn is_heading(line: &str, key: &str) -> bool {
     false
 }
 
+/// The line index one-past-the-end of the `## ` section whose heading sits at
+/// `heading_idx`: the first `## ` H2 boundary strictly after the heading, or
+/// `lines.len()` when the section runs to EOF. So the body is
+/// `lines[heading_idx + 1 .. section_end(lines, heading_idx)]` and the block
+/// *including* the heading is `lines[heading_idx .. section_end(..)]`.
+///
+/// The single owner of the "where does a `## ` section stop" scan — shared by
+/// [`section_blocks`], the render TASK-block cutters ([`super::super`]'s
+/// `cut_section_at`), `reference::files_section_paths`, and the `/scan`
+/// `## Guards` swap. Two callers deliberately keep their own boundary loop and
+/// must NOT be folded in: `close_gates::checklist_unmarked_in` also treats a
+/// bare `##` (no text after the hashes) as a boundary, and
+/// `render::read_guards_block` tolerates an *indented* `## ` — folding either in
+/// would change behaviour, not remove duplication.
+#[must_use]
+pub fn section_end(lines: &[&str], heading_idx: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .skip(heading_idx + 1)
+        .find(|(_, l)| l.starts_with("## "))
+        .map_or(lines.len(), |(j, _)| j)
+}
+
 /// The full `## <key>` section — from its heading line (inclusive) through the
 /// line before the next `## ` heading (or EOF) — or `None` when the section is
 /// absent. Heading recognition is i18n-aware via [`is_heading`], so the block
@@ -128,13 +152,7 @@ fn section_blocks(markdown: &str, key: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        let mut end = lines.len();
-        for (j, l) in lines.iter().enumerate().skip(i + 1) {
-            if l.starts_with("## ") {
-                end = j;
-                break;
-            }
-        }
+        let end = section_end(&lines, i);
         out.push(lines[i..end].join("\n"));
         i = end;
     }

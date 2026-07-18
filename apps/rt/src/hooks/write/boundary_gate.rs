@@ -14,9 +14,10 @@
 //! [`super::secret_files`] residue, which keeps the old case-insensitive
 //! full-path substring semantics the globs cannot express.
 //!
-//! This module also hosts the shared path helpers ([`file_path_of`],
-//! [`relative_to_cwd`]) that `work_branch_gate` consumes to scope branching
-//! to in-repo mutations.
+//! This module also hosts the shared path helper [`relative_to_cwd`] that
+//! `work_branch_gate` consumes to scope branching to in-repo mutations. The
+//! `file_path` extraction it used to host now lives on
+//! [`HookInput::file_path`](mustard_core::domain::model::contract::HookInput::file_path).
 //!
 //! ## W3C migration
 //!
@@ -400,19 +401,6 @@ fn glob_match_at(text: &[u8], pat: &[u8]) -> bool {
     false
 }
 
-/// Resolve the `file_path` of a Write/Edit (or Read) invocation, accepting the
-/// legacy `path` key. Mirrors `tool_input.file_path || tool_input.path`.
-/// `pub(crate)`: `work_branch_gate` reuses it to scope branching to in-repo
-/// mutations.
-pub(crate) fn file_path_of(input: &HookInput) -> Option<String> {
-    let ti = &input.tool_input;
-    ti.get("file_path")
-        .or_else(|| ti.get("path"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
-
 /// Compute the path of `file_path` relative to `cwd`, forward-slash
 /// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
 /// caller treats that the same as a meta path (skip). Mirrors the JS
@@ -523,7 +511,7 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if mode == BoundaryMode::Off {
         return None;
     }
-    let file_path = file_path_of(input)?;
+    let file_path = input.file_path()?;
     // Compute rel; an escaping (`../`) path → None → skip.
     let rel = relative_to_cwd(cwd, &file_path)?;
     if is_meta_path(&rel) {

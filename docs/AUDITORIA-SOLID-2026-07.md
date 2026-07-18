@@ -56,3 +56,26 @@ Saúde geral: **boa, com três focos de drift reais**. A família `scan_patterns
 - Hooks→commands documentados (worktree_create→work_unit_open, active_spec_limit→count_active, subagent_inject→EPISTEMIC_FLOOR) — costuras deliberadas; o anômalo é só o sentido inverso.
 - `wave_scaffold.rs` e `dispatch_plan.rs` — coesos; tamanho vem de teste.
 - `parse_payload_tolerant` (emit_pipeline :144-156) — absorve classe real de erro de quoting; remover quebra campo.
+
+## Resolução — execução (2026-07-16 → 07-18)
+
+Ordem de execução: **H** (P1 estruturais) → **I** (DRY P2/P3) → **J** (médios). Suíte verde a cada passo (HEAD: 3782 passed, 6 ignored); clippy exit-0.
+
+**H — P1 (achados 2, 3).** `close_gate` motor extraído para `commands/pipeline/close_gates.rs` (`run_close_gates` + sub-gates debt/checklist/QA/build-runner); o hook `hooks/write/close_gate.rs` virou adapter fino — **ciclo commands→hooks eliminado**. `agent_prompt_render.rs` fatiado em `commands/agent/render/{mod,prompt_ref,role,sections,retry,capabilities,skills,reference}.rs` com façade no caminho antigo (zero churn de consumidor).
+
+**I — P2/P3 (achados 8, 9, 10, 11, 12).** `file_path_of` ×7 → `HookInput::file_path()` no core. `resolve_mode` ×3 → `shared/gate_mode.rs`. Prune ×4 → `PRUNE_DIRS` no core. Spec-dir fallback ×7 → `ClaudePaths::spec_dir_or_unchecked`. Frontmatter: `origin.rs` consome o parser canônico do core (BOM + accessor `source` adicionados). Os 2 `.expect(` de produção (achado 6) foram degradados aqui (index no lugar de `.last_mut().expect`; fail-open + `Default` no `install_grammars`).
+
+**J — médios (achados 4, 5, 7, 13).**
+- **4 (safety branch):** `is_branch_delete_protected(cmd, bases)` deriva de `GitConfig::integration_bases()` (main/master vira fallback documentado, não literal). `bash_safety` split em `bash_safety_with_bases` (puro/testável) + `guard_integration_bases` (fail-open).
+- **5 (runners):** o **leak de processo** (o bug real) foi corrigido nos TRÊS runners — `close_gates::run_command`, `review_gate::run_build`, `rtk_rewrite` — via poll+kill (`try_wait` com o `Child` na thread chamadora; `kill`+`wait` no timeout). A **unificação num runner único** foi **declinada por projeto**: a semântica env-error/real-failure diverge por chamador (a própria linha "O que NÃO mexer" acima já avisava) e forçá-la num só ponto obscurece mais que ajuda. *Follow-up:* os três leem stdout/stderr só após o exit — deadlock latente se a saída passar de ~64KB de pipe; é **pré-existente e idêntico** à versão anterior (não é regressão), fica para um passo dedicado de drain concorrente.
+- **7 (emit_pipeline SRP):** `run()` de ~280 → ~60 linhas (validar → emitir → aplicar-efeitos via `match kind`); 12 helpers extraídos, um por efeito.
+- **13 (corte de seção):** `section_end(lines, heading_idx)` extraído em `commands/spec/spec_sections.rs`, irmão de `is_heading` (todos os consumidores são da face rt — daí ali, não no core). **4 sites migrados byte-exato:** a própria `section_blocks`, `render::cut_section_at`, `reference::files_section_paths`, o swap de `## Guards` do `scan_claude`. **2 outliers mantidos com NB documentada:** `checklist_unmarked_in` (fronteira inclui bare `##`) e `read_guards_block` (tolera `## ` indentado) — folding mudaria comportamento, não removeria duplicação.
+
+**Achado 1 (pt-BR em saída) — FEITO (2026-07-18), pelas duas políticas do próprio remédio.** Decisão do user: artefatos de orientação seguem `mustard.json#lang`.
+- **Artefatos DISPLAY → `mustard.json#lang`:** `scan_claude::render_map` (scan-map.md) e `orient::render_terrain` (banner de terreno) agora recebem o locale e rendem pelo catálogo i18n (chaves `scan.map.type_line`/`scan.map.pointer`/`orient.terrain.header`/`orient.census.files_suffix`). Locale resolvido uma vez via `project_config_cached(root).i18n().lang`; default `pt-BR` preserva installs existentes byte-a-byte (testes pt-BR verdes + 2 testes EN novos provando a rota).
+- **Diagnósticos → inglês canônico (carve-out logs/diagnóstico):** as 9 strings de `work_unit_open.rs` (`WorktreeCreate: …`, hint de CLI) viraram inglês — são erros técnicos de git/worktree, não prosa de usuário; roteá-los pelo catálogo de banners seria misturar diagnóstico com texto de usuário, e o resto do crate já erra em inglês. (Se o user preferir que esses diagnósticos TAMBÉM sigam `lang`, é um passo de i18n adicional — alavanca registrada.)
+- **Legado deixado de propósito:** `scan_claude.rs` PLACEHOLDERS `<!-- seed DO/DON'T aqui -->` (padrão de DETECÇÃO retro-compatível de stub, não emitido) e a fixture `render_migrates_legacy_inline_block_out` (bytes históricos) — pt-BR ali representa o que binários antigos escreveram; mudá-los quebraria migração/fixture.
+
+**Adiado (decisão pendente ou baixo valor):**
+- **6 (`expect_used = deny`):** **revertido** — desproporcional a um P2: ~32 arquivos de teste usam `expect` em helpers FORA de `#[test]` (o `allow-expect-in-tests` do clippy não os cobre), e o guard quebrava o clippy nesses. Os 2 pontos de produção já foram degradados (em I). Fica como follow-up se a política endurecer.
+- **14 (qa_ts) e 15 (`context.rs` split):** P3 oportunistas, não tocados.

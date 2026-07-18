@@ -119,7 +119,7 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                 return json!({
                     "ok": false,
                     "reason": "missing-slug",
-                    "hint": "passe --spec, --intent ou --branch",
+                    "hint": "pass --spec, --intent or --branch",
                 });
             }
             let main_str = main.to_string_lossy().to_string();
@@ -222,13 +222,13 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
 pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, String> {
     let name = worktree_name.trim().to_string();
     if name.is_empty() {
-        return Err("WorktreeCreate: `name` vazio no input do hook".to_string());
+        return Err("WorktreeCreate: `name` empty in hook input".to_string());
     }
     if name.contains('/') || name.contains('\\') {
-        return Err(format!("WorktreeCreate: `name` não pode conter separador de path: {name}"));
+        return Err(format!("WorktreeCreate: `name` must not contain a path separator: {name}"));
     }
     let Some(main) = main_checkout_root(cwd) else {
-        return Err("WorktreeCreate: não é um repositório git".to_string());
+        return Err("WorktreeCreate: not a git repository".to_string());
     };
     let requested = format!("{}/{}/{}", main.display(), WORKTREES_RELDIR, name).replace('\\', "/");
     let wt_path = PathBuf::from(&requested);
@@ -241,7 +241,7 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         return Ok(e.path.clone());
     }
     if wt_path.exists() {
-        return Err(format!("WorktreeCreate: path já ocupado: {requested}"));
+        return Err(format!("WorktreeCreate: path already occupied: {requested}"));
     }
 
     let wt_str = requested.replace('\\', "/");
@@ -261,12 +261,12 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         } else if ref_exists(&main, &format!("refs/heads/{base}")) {
             base
         } else {
-            return Err(format!("WorktreeCreate: base '{base}' não encontrada no repositório"));
+            return Err(format!("WorktreeCreate: base '{base}' not found in the repository"));
         }
     } else if let Some((prefix, _)) = name.split_once('_') {
         return Err(format!(
-            "WorktreeCreate: '{prefix}' (de '{name}') não é uma base de integração deste projeto \
-             (bases: {}). Declare-a em mustard.json#git.flow ou use um nome sem '_'.",
+            "WorktreeCreate: '{prefix}' (from '{name}') is not an integration base of this project \
+             (bases: {}). Declare it in mustard.json#git.flow or use a name without '_'.",
             bases.join(", ")
         ));
     } else {
@@ -282,7 +282,7 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     } else {
         git_try(&main, &["worktree", "add", "-b", &name, &wt_str, &start])
     };
-    add.map_err(|e| format!("WorktreeCreate: git worktree add falhou: {e}"))?;
+    add.map_err(|e| format!("WorktreeCreate: git worktree add failed: {e}"))?;
     let _ = init_submodules(&wt_path);
     Ok(wt_str)
 }
@@ -327,10 +327,10 @@ fn init_submodules(worktree: &Path) -> Option<Result<(), String>> {
     let outcome = git_try(worktree, &["submodule", "update", "--init", "--recursive"]);
     if let Err(e) = &outcome {
         eprintln!(
-            "WorktreeCreate: WARN: submódulos não populados em {}: {e}\n\
-             O worktree existe e é utilizável, mas os diretórios de submódulo estão VAZIOS — \
-             um /scan daqui mineraria um modelo INCOMPLETO (sem aviso). \
-             Rode `git submodule update --init --recursive` antes de escanear.",
+            "WorktreeCreate: WARN: submodules not populated in {}: {e}\n\
+             The worktree exists and is usable, but the submodule directories are EMPTY — \
+             a /scan from here would mine an INCOMPLETE model (silently). \
+             Run `git submodule update --init --recursive` before scanning.",
             worktree.display()
         );
     }
@@ -555,7 +555,7 @@ mod tests {
         // `name` is a name. A separator would escape the worktrees dir.
         let (_dir, main) = fixture();
         let err = hook_create("../../etc/evil", &main).unwrap_err();
-        assert!(err.contains("separador"), "refused: {err}");
+        assert!(err.contains("separator"), "refused: {err}");
     }
 
     /// [`fixture`] + a REAL git submodule at `vendor/lib`, committed on `dev`

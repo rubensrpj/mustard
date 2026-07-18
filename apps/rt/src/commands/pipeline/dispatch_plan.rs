@@ -97,10 +97,7 @@ struct WaveRow {
 /// unchecked composition (mirrors `resume_bootstrap`). `pub(crate)` so
 /// `wave-advance` resolves the same directory the dispatch plan was built from.
 pub(crate) fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
-    ClaudePaths::for_project(project)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(project).spec_dir().join(spec))
+    ClaudePaths::spec_dir_or_unchecked(project, spec)
 }
 
 /// Assemble the ordered dispatch items for `spec`.

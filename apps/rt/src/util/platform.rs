@@ -7,7 +7,7 @@
 //!
 //! Note: other modules wrap a *specific* program through the platform shell
 //! (`status::run_git` runs `cmd /C git …`) or use a different, std-quoted
-//! variant (`close_gate::run_command` uses `cmd /c <cmd>` via `Command::args`,
+//! variant (`close_gates::run_command` uses `cmd /c <cmd>` via `Command::args`,
 //! which does not handle cmd.exe quoting the way [`build_shell_command`] does).
 //! Those are intentionally NOT folded in here — they are different shapes, not
 //! copies of this one.

@@ -20,8 +20,6 @@
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 
-use super::boundary_gate::file_path_of;
-
 /// The secret-file gate.
 pub struct SecretFiles;
 
@@ -76,7 +74,7 @@ fn file_guard(input: &HookInput) -> Option<Verdict> {
     if !matches!(tool, "Read" | "Write" | "Edit") {
         return None;
     }
-    let file_path = file_path_of(input)?;
+    let file_path = input.file_path()?;
     let normalized = file_path.replace('\\', "/");
     let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
 

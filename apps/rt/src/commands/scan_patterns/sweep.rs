@@ -22,11 +22,8 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::io::fs::PRUNE_DIRS;
 use serde::Serialize;
-
-/// Folders whose descent never yields project skills — pruned so a large repo
-/// sweep stays cheap and never wanders into dependency or VCS trees.
-const PRUNE_DIRS: &[&str] = &["node_modules", "target", ".git", "dist", "build", "bin", "obj"];
 
 #[derive(Serialize, Default)]
 pub(crate) struct SweepReport {

@@ -68,10 +68,7 @@ fn build_slug(description: &str, lang: Locale, today: &str) -> String {
 
 /// Read the parent's locale to inherit the body headings. Falls back to PT-BR.
 fn parent_lang(cwd: &Path, parent: &str) -> Locale {
-    let dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(parent))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(cwd).spec_dir().join(parent));
+    let dir = ClaudePaths::spec_dir_or_unchecked(cwd, parent);
     if let Some(meta) = read_meta(&dir.join("meta.json")) {
         if let Some(raw) = meta.lang {
             if let Ok(l) = raw.parse::<Locale>() {
@@ -117,10 +114,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     let lang = parent_lang(cwd, &opts.parent);
     let today = today_utc();
     let slug = build_slug(&opts.description, lang, &today);
-    let spec_dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(&slug))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(cwd).spec_dir().join(&slug));
+    let spec_dir = ClaudePaths::spec_dir_or_unchecked(cwd, &slug);
     let mut report = TacticalFixReport {
         parent: opts.parent.clone(),
         slug: slug.clone(),
