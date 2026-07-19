@@ -25,7 +25,7 @@ Derive integration bases from `mustard.json#git.flow` (the non-`*` keys ∪ thei
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-`--intent` + `--base` compute the unit's `{base}_{slug}` branch (echoed as `branch` in the output) and record the `/git` PR target. Work that WRITES then isolates in ONE native step: `EnterWorktree name=<branch from the output>` — the plugin's WorktreeCreate hook cuts it from a fresh `origin/{base}`, never from the default branch. Every path emits — no run is invisible. Read-only requests never branch or open a worktree. The options are the project's OWN bases, never a hardcoded pair.
+`--intent` + `--base` compute the unit's `{base}_{slug}` branch (echoed as `branch` in the output) and record the `/git` PR target. Spec authoring (PLAN) writes IN-PLACE — the `work_branch_gate` carves out `.claude/spec/` (like `.claude/plans/`), so `spec.md` is written on the base branch with NO worktree; opening one just to author the spec collides with the in-place guard (the branch it needs is held by the worktree). Code writing (EXECUTE) is what isolates, in ONE native step: `EnterWorktree name=<branch from the output>` — the plugin's WorktreeCreate hook cuts it from a fresh `origin/{base}`, never from the default branch. Every path emits — no run is invisible. Read-only requests never branch or open a worktree. The options are the project's OWN bases, never a hardcoded pair.
 
 ## Delegate via Task
 

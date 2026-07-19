@@ -315,10 +315,10 @@ fn apply_scope_gate(
     let classified = verdict.get("scope").and_then(serde_json::Value::as_str).unwrap_or("full");
     let signals = verdict.get("signals").cloned().unwrap_or_else(|| json!({}));
 
-    // A non-confident `light` (the `## Files` census is still a placeholder, so
-    // `fileCount` parsed to 0) is NOT grounds to rebaixar: the same spec can flip
-    // to full once its census lands. Only a trustworthy classification gates.
-    // (`classify_from_spec` already flags this premature verdict.)
+    // A non-confident verdict (`scope: "abstain"` — the `## Files` census is
+    // still a placeholder, so `fileCount` parsed to 0) is NOT grounds to
+    // rebaixar: the same spec can flip to full once its census lands. Only a
+    // trustworthy classification gates. (`classify_from_spec` flags this.)
     let confident = !verdict
         .get("filesSectionEmpty")
         .and_then(serde_json::Value::as_bool)

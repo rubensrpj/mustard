@@ -694,28 +694,28 @@ pub fn classify(signals: &Value, slice_match_count: i64) -> &'static str {
 /// placeholder when the spec scaffold is freshly drafted — the `/feature` SKILL
 /// runs `scope-classify` immediately after `spec-draft`, *before* the file
 /// census is filled in. With zero parsed paths the verdict is **arithmetically
-/// correct** (0 files ⇒ `light`) but **not yet trustworthy**: the same spec can
-/// flip to `full` once its census lands. The classifier still emits `light`
-/// (and never a non-zero exit — a genuinely tiny change is legitimately light),
-/// but it must say so out loud so the orchestrator does not execute inline off a
-/// stale verdict.
+/// correct** (0 files ⇒ `light`) but **not a decision**: the same spec can flip
+/// to `full` once its census lands. So the classifier downgrades the verdict to
+/// `scope: "abstain"` (never a non-zero exit), telling the orchestrator to keep
+/// the scope `spec-draft` requested instead of executing inline off a premature
+/// read.
 ///
 /// Distinguishes "section absent / placeholder" (`None` or `Some(empty)` ⇒ 0
 /// paths) from "section present with ≥1 real path" (`Some(non-empty)`): the
 /// warning fires **only** when nothing was parsed. A spec that legitimately
 /// touches a single real file is silent (no false alarm).
 const FILES_SECTION_EMPTY_WARNING: &str = "## Arquivos vazio/placeholder — \
-fileCount=0; classificacao nao-confiavel ate preencher o censo";
+fileCount=0; scope=abstain ate autorar o censo (preencha ## Arquivos e re-rode)";
 
 /// Classify a spec file's scope deterministically: compute the structural
 /// signals via [`compute_signals_from_spec`] (no duplicate computation), then
 /// [`classify`]. Returns `{ "scope": ..., "signals": { ... } }`.
 ///
 /// When the `## Files` section parses to **zero** paths (absent or placeholder),
-/// the verdict carries `"filesSectionEmpty": true` plus a human `"warning"` so a
-/// confident-but-premature `light` is never mistaken for a settled one — see
-/// [`FILES_SECTION_EMPTY_WARNING`]. The exit code is unchanged (this stays
-/// non-blocking).
+/// the verdict is downgraded to `"scope": "abstain"` and carries
+/// `"filesSectionEmpty": true` plus a human `"warning"`, so a premature read is
+/// never mistaken for a settled `light`/`full` — see
+/// [`FILES_SECTION_EMPTY_WARNING`]. The exit code is unchanged (non-blocking).
 ///
 /// Unreadable spec: routing stays conservative (`scope: "full"` gets the most
 /// pipeline rigor — PLAN + /spec approval + per-wave gates), but the verdict is
@@ -760,9 +760,13 @@ pub fn classify_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
     // Honest signal: a zero `fileCount` means the `## Files`/`## Arquivos`
     // section was absent or a placeholder (nothing parsed) — distinct from a
     // section holding ≥1 real path. Flag it so the consumer treats this `light`
-    // as non-confident, without blocking (legitimate light exists).
+    // as non-confident: downgrade the arithmetic `light` to `abstain` so the
+    // consumer keeps the requested scope instead of reading a premature census
+    // as a settled verdict (non-blocking; legitimate light exists once the
+    // census lands).
     if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
         if let Some(obj) = out.as_object_mut() {
+            obj.insert("scope".to_string(), json!("abstain"));
             obj.insert("filesSectionEmpty".to_string(), json!(true));
             obj.insert("warning".to_string(), json!(FILES_SECTION_EMPTY_WARNING));
         }
@@ -865,9 +869,12 @@ pub(crate) fn prepare_from_spec(spec_file: &Path, slice_match_count: i64) -> Val
             "newEntityCount": signals.get("newEntityCount").cloned().unwrap_or(json!(0)),
         },
     });
-    // Same non-confident-`light` honesty flag `scope-classify` emits.
+    // Same empty-census downgrade `scope-classify` emits: relabel the premature
+    // `light` as `abstain` (decompose/waves stay as computed - the roadmap
+    // signal is independent of the file census).
     if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
         if let Some(obj) = out.as_object_mut() {
+            obj.insert("scope".to_string(), json!("abstain"));
             obj.insert("filesSectionEmpty".to_string(), json!(true));
             obj.insert("warning".to_string(), json!(FILES_SECTION_EMPTY_WARNING));
         }
@@ -994,11 +1001,15 @@ mod tests {
         assert_eq!(p["scope"], json!("light"), "single file ⇒ light: {p}");
         assert_eq!(p["waves"], json!(0), "light runs inline, no waves: {p}");
 
-        // Empty census ⇒ the non-confident-light flag, same as scope-classify.
+        // Empty census ⇒ scope downgraded to `abstain` (never a settled light),
+        // plus the flag, identically to scope-classify.
         let empty = dir.path().join("empty.md");
         std::fs::write(&empty, "# E\n\n## Files\n\n## Tasks\n- [ ] x\n").unwrap();
         let pe = prepare_from_spec(&empty, 0);
         assert_eq!(pe["filesSectionEmpty"], json!(true), "empty census flagged: {pe}");
+        assert_eq!(pe["scope"], json!("abstain"), "empty census ⇒ abstain: {pe}");
+        // Both commands agree on the empty-census verdict.
+        assert_eq!(classify_from_spec(&empty, 0)["scope"], json!("abstain"), "classify agrees: {pe}");
     }
 
     #[test]
@@ -1398,9 +1409,9 @@ mod tests {
 
     /// Honesty annotation: a freshly-drafted spec whose `## Arquivos` section is
     /// a placeholder (no real bullet paths) parses to `fileCount=0`. The verdict
-    /// stays `light` (0 files is arithmetically light) but MUST carry
-    /// `filesSectionEmpty: true` + the warning so the orchestrator does not treat
-    /// the premature `light` as settled. A spec with ≥1 real path is silent.
+    /// is downgraded to `abstain` (never a settled `light`) and MUST carry
+    /// `filesSectionEmpty: true` + the warning so the orchestrator keeps the
+    /// requested scope. A spec with ≥1 real path is silent.
     #[test]
     fn classify_from_spec_flags_empty_files_section() {
         let dir = tempfile::tempdir().unwrap();
@@ -1414,7 +1425,7 @@ mod tests {
         std::fs::write(&placeholder_path, placeholder).unwrap();
         let d = classify_from_spec(&placeholder_path, 0);
         assert_eq!(d["signals"]["fileCount"], json!(0));
-        assert_eq!(d["scope"], json!("light"), "0 files is arithmetically light");
+        assert_eq!(d["scope"], json!("abstain"), "0 files ⇒ abstain, not a settled light");
         assert_eq!(d["filesSectionEmpty"], json!(true), "placeholder ⇒ flagged");
         assert!(
             d["warning"].as_str().is_some_and(|w| !w.is_empty()),
@@ -1427,6 +1438,7 @@ mod tests {
         std::fs::write(&absent_path, absent).unwrap();
         let da = classify_from_spec(&absent_path, 0);
         assert_eq!(da["filesSectionEmpty"], json!(true), "absent section ⇒ flagged");
+        assert_eq!(da["scope"], json!("abstain"), "absent section ⇒ abstain");
 
         // (ii) Section present with ≥1 real path ⇒ NOT flagged (no false alarm).
         let filled = "# Spec\n\n## Files\n- src/util/a.ts\n";
