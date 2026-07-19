@@ -1,26 +1,26 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": "2026-07-19T02:42:24.064Z",
+  "checkpoint": "2026-07-19T03:42:19.203Z",
   "parent": "field-report-fix-package-sialia",
   "checklist": [
     {
       "label": "packages/core/src/domain/scan.rs",
       "path": "packages/core/src/domain/scan.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "packages/core/src/io/workspace.rs",
       "path": "packages/core/src/io/workspace.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/scan.rs",
       "path": "apps/rt/src/commands/scan.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/pipeline/dispatch_plan.rs",
@@ -40,7 +40,7 @@
     {
       "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
       "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
-      "done": false
+      "done": true
     }
   ]
 }

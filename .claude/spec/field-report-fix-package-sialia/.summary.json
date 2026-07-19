@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "spec": "field-report-fix-package-sialia",
+  "title": "Field-report fix package (sialia btw 2026-07-18), five fronts: (1) /spec picker 'ar' shortcut promises approve+execute inline but a Full plan structurally requires the observer-minted approval marker (ExitPlanMode/AskUserQuestion PostToolUse) plus the .clarified marker — reword the shortcut prose in plugin/commands/spec.md and refs/spec/resume-loop.md so 'r' means 'execute immediately after real approval', and make approve-spec report ALL missing gate requirements in one refusal instead of failing one gate at a time; (2) dispatch emits bare subagent_type strings (mustard-review) that the Agent tool rejects in consumer projects where plugin agents are namespaced mustard:mustard-review — apply the plugin namespace at the single resolver recommended_subagent_type in apps/rt/src/commands/agent/render/role.rs, normalize prefix-stripping in subagent_inject role_is_readonly (also add missing mustard-patterns there), sync the prose tables that hardcode the mapping; (3) qa-run judges an AC by exit code alone so a test command that runs ZERO tests passes green — add an optional Expect: evidence regex field to AcItem parsed from the AC block, pass requires exit 0 AND stdout/stderr match when declared, and extend analyze-validation weak-ac lint to WARN test-shaped ACs lacking Expect:; (4) wave traceability_gaps in wave_scaffold.rs only checks the plan's own acceptance lines so a parent-spec AC no wave satisfies slips through — extend defined set with the parent spec.md Acceptance Criteria ids and promote the coverage gap to a gated outcome with env mode; (5) submodule git boundary is detected (workspace is_git_repo_root, scan hollow_submodules, work_unit_open init_submodules) but never reaches the census Project model, DispatchItem/AdvanceItem, rendered agent prompts, or work_branch_gate — add an own-git-root flag to Project in packages/core/src/domain/scan.rs, thread it through dispatch_plan and wave_advance into agent-prompt-render output so implementer prompts state the boundary (separate commits, never bump the superproject gitlink), and make work_branch_gate resolve the work branch base from the submodule's own default branch when the edited file lives inside a nested git root",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "approval",
+      "summary": "approve-spec evaluates every Full-gate requirement and reports ALL missing ones in one refusal",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "agents",
+      "summary": "plugin-owned subagent_type strings gain the mustard: namespace at the single resolver; readonly denylist normalizes the prefix",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "evidence",
+      "summary": "qa-run gains an opt-in Expect: evidence regex per AC — exit 0 alone no longer proves a declared-evidence AC",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "trace",
+      "summary": "wave-scaffold traceability also covers the PARENT spec's Acceptance Criteria and gates on gaps",
+      "status": "in_progress"
+    },
+    {
+      "n": 5,
+      "role": "boundary",
+      "summary": "the git-boundary fact (subproject is its own git repo) flows census -> dispatch items -> rendered prompts -> branch-gate base",
+      "status": "in_progress"
+    },
+    {
+      "n": 6,
+      "role": "prose",
+      "summary": "plugin prose synced to the new behaviors: honest r shortcut, namespaced agent tables, Expect: in the AC schema, trace gate and boundary docs",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
