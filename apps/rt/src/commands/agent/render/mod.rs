@@ -410,6 +410,17 @@ pub(crate) fn render_prompt_at(
         eprintln!("agent-prompt-render: WARN: unfilled placeholder {token}");
     }
 
+    // Git boundary: when the target subproject is its OWN nested git repository
+    // (a submodule), the implementer must know it commits in a SEPARATE history
+    // and must never bump the superproject's gitlink pointer. Appended after the
+    // template (not a placeholder) so it rides in EVERY mode / role; EN by the
+    // agent-prompt policy regardless of the project locale.
+    let boundary = git_boundary_block(&project, &subproject_str);
+    if !boundary.is_empty() {
+        rendered.push_str("\n\n");
+        rendered.push_str(&boundary);
+    }
+
     rendered
 }
 
@@ -522,6 +533,29 @@ fn decision_events_block(project: &Path, spec: &str) -> String {
     }
     lines.dedup();
     format!("## DECISIONS\n{}", lines.join("\n"))
+}
+
+/// The fixed `## GIT BOUNDARY` block for a submodule subproject — appended to a
+/// rendered prompt when `subproject`'s own directory is a nested git repository
+/// root (`.git` dir or pointer file). Empty for the superproject root (`"."` /
+/// empty) or a plain subproject, so the block only appears where the boundary is
+/// real. Reuses the single git-root probe
+/// [`mustard_core::io::workspace::is_git_repo_root`] — the SAME fact the scan
+/// census records as `own_git_root` and dispatch threads onto the item — so the
+/// three surfaces can never disagree. EN by policy (agent prompts stay English).
+fn git_boundary_block(project: &Path, subproject: &str) -> String {
+    let sub = subproject.trim().trim_end_matches('/');
+    if sub.is_empty() || sub == "." {
+        return String::new();
+    }
+    if !mustard_core::io::workspace::is_git_repo_root(&project.join(sub)) {
+        return String::new();
+    }
+    format!(
+        "## GIT BOUNDARY\n\nThis subproject (`{sub}`) is its OWN git repository — it has a \
+         SEPARATE commit history. Commit INSIDE this subproject only; NEVER bump the \
+         superproject's gitlink pointer to it."
+    )
 }
 
 /// Read the spec's `change-log.md` (mid-pipeline requests) for the prompt's
@@ -911,5 +945,46 @@ mod tests {
             RenderMode::First, None, None, None,
         );
         assert!(!rendered.contains("## DECISIONS"), "{rendered}");
+    }
+
+    /// AC-5: when the target subproject is its OWN nested git repository (`.git`
+    /// FILE — the submodule shape), the rendered prompt states the git boundary
+    /// (separate commit history; never bump the superproject gitlink). A plain
+    /// subproject and the superproject root (`.`) get no such block.
+    #[test]
+    fn render_appends_own_git_root_boundary_for_nested_repo() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // Nested submodule at apps/sub (`.git` FILE).
+        let sub = dir.path().join("apps").join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), b"gitdir: ../../.git/modules/sub\n").unwrap();
+
+        let rendered = render_prompt_at(
+            dir.path(), None, None, "impl", Path::new("apps/sub"),
+            RenderMode::First, None, None, None,
+        );
+        assert!(rendered.contains("## GIT BOUNDARY"), "boundary heading present: {rendered}");
+        assert!(rendered.contains("its OWN git repository"), "boundary sentence present: {rendered}");
+        assert!(
+            rendered.contains("NEVER bump the superproject"),
+            "gitlink warning present: {rendered}"
+        );
+
+        // A plain subproject (no `.git`) gets NO boundary block.
+        let plain = render_prompt_at(
+            dir.path(), None, None, "impl", Path::new("apps/other"),
+            RenderMode::First, None, None, None,
+        );
+        assert!(!plain.contains("## GIT BOUNDARY"), "no boundary for a plain subproject: {plain}");
+
+        // The superproject root (`.`) is never a nested boundary, even though it
+        // is itself a git repository.
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let root = render_prompt_at(
+            dir.path(), None, None, "impl", Path::new("."),
+            RenderMode::First, None, None, None,
+        );
+        assert!(!root.contains("## GIT BOUNDARY"), "root `.` is never a nested boundary: {root}");
     }
 }

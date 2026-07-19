@@ -170,9 +170,21 @@ fn role_from_input(input: &HookInput) -> String {
 /// the small, stable set of harness/mustard read-only agent types — a denylist,
 /// so an unknown (likely code-producing) role still gets the pre-arm.
 fn role_is_readonly(role: &str) -> bool {
+    // Normalise a possibly namespaced plugin agent type (`mustard:mustard-review`)
+    // to its bare name by stripping the `<ns>:` prefix, so the denylist matches
+    // whether the caller passed the qualified form (`dispatch-plan` now emits it)
+    // or the bare name (an ad-hoc caller). `mustard-patterns` (the read-only mold
+    // author) is in the set — it authors no plan/diff the regression gate scores.
+    let lower = role.to_ascii_lowercase();
+    let bare = lower.split_once(':').map_or(lower.as_str(), |(_, rest)| rest);
     matches!(
-        role.to_ascii_lowercase().as_str(),
-        "explore" | "mustard-guards" | "mustard-review" | "claude-code-guide" | "statusline-setup"
+        bare,
+        "explore"
+            | "mustard-guards"
+            | "mustard-review"
+            | "mustard-patterns"
+            | "claude-code-guide"
+            | "statusline-setup"
     )
 }
 
@@ -1132,5 +1144,27 @@ mod tests {
         assert_eq!(titles.len(), 2, "{titles:?}");
         assert!(titles.contains(&"decision from wave 1".to_string()));
         assert!(titles.contains(&"decision from wave 2".to_string()));
+    }
+
+    /// `role_is_readonly` normalises a namespaced plugin agent type to its bare
+    /// name, so the qualified `mustard:mustard-review` that `dispatch-plan` now
+    /// emits is recognised exactly like the bare `mustard-review`. It also covers
+    /// `mustard-patterns` (the read-only mold author), previously absent from the
+    /// denylist — without it the pattern agent got the regression-vocab noise.
+    #[test]
+    fn role_is_readonly_normalises_namespaced_plugin_agents() {
+        // Bare and namespaced forms are equivalent.
+        assert!(role_is_readonly("mustard-review"));
+        assert!(role_is_readonly("mustard:mustard-review"));
+        assert!(role_is_readonly("mustard-guards"));
+        assert!(role_is_readonly("mustard:mustard-guards"));
+        // mustard-patterns is read-only (was missing) — both forms.
+        assert!(role_is_readonly("mustard-patterns"));
+        assert!(role_is_readonly("mustard:mustard-patterns"));
+        // Built-in read-only stays matched; a code author never does, even when
+        // namespaced (stripping the prefix must not flip a writer to read-only).
+        assert!(role_is_readonly("Explore"));
+        assert!(!role_is_readonly("general-purpose"));
+        assert!(!role_is_readonly("mustard:general-purpose"));
     }
 }

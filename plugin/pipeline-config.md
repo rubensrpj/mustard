@@ -51,7 +51,7 @@ Internal → re-dispatch SEQUENTIALLY, same prompt (max 1). Transient → retry 
 
 ## Token Budget per Agent
 
-Keyed on `subagent_type`; `qa` rides `mustard-review`, `guards` `mustard-guards`.
+Keyed on `subagent_type`; `qa` rides `mustard:mustard-review`, `guards` `mustard:mustard-guards` (plugin agents carry the `mustard:` namespace; builtins stay bare — canonical map: `refs/agent-prompt/agent-prompt.md § subagent_type by role`).
 
 | Agent | Max Context | Max Tool Uses | Max Return |
 |-------|-------------|---------------|------------|

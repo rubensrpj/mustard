@@ -59,6 +59,13 @@ notify = { workspace = true }
 # `mustard-core`, so the workspace stays on one `sha2` graph.
 sha2 = { workspace = true }
 
+# Regex engine for the `qa-run` `Expect:` evidence matcher: an AC may declare
+# `Expect: `<regex>`` and qa-run matches it against the command's own output, so
+# a green command that prints no expected evidence still fails. Declared inline
+# (mirrors `apps/scan`, the workspace's other regex user) — not yet a workspace
+# dependency; the `1` line is the one already resolved in Cargo.lock via scan.
+regex = "1"
+
 [dev-dependencies]
 # Byte-stable snapshot assertions for the `run orient` census renderer (inline
 # snapshots — no external `.snap` files). Shared workspace pin.

@@ -103,7 +103,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
     //    subcommand uses; idempotent, skip-if-present).
     let outcome = wave_scaffold::scaffold(spec_dir, plan_path);
     let (scaffold_json, scaffold_ok) = match outcome {
-        ScaffoldOutcome::Created { created, skipped } => (
+        // `trace_block` (strict MUSTARD_TRACE_GATE_MODE) is deliberately ignored
+        // here: the trace gate is on the standalone `wave-scaffold` command, not
+        // the pipeline composite — plan-materialize reports the scaffold and
+        // emits the PLAN transition regardless of an uncovered-criterion gap.
+        ScaffoldOutcome::Created { created, skipped, trace_block: _ } => (
             json!({ "created_files": created, "skipped": skipped }),
             true,
         ),

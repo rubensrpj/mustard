@@ -78,11 +78,43 @@ pub struct DispatchItem {
     pub prompt_cmd: String,
     /// The `subagent_type` the orchestrator must pass to `Task` for this role.
     /// Read-only roles resolve to tool-restricted agents (`explore` → `Explore`,
-    /// `review`/`qa` → `mustard-review`, `guards` → `mustard-guards`); writing
-    /// roles stay `general-purpose`. Picked by the tool — never by hand. See
-    /// [`crate::commands::agent::agent_prompt_render::recommended_subagent_type`].
+    /// `review`/`qa` → `mustard:mustard-review`, `guards` → `mustard:mustard-guards`);
+    /// writing roles stay `general-purpose`. Picked by the tool — never by hand.
+    /// See [`crate::commands::agent::agent_prompt_render::recommended_subagent_type`].
     #[serde(rename = "subagent_type")]
     pub subagent_type: String,
+    /// `true` when this item's subproject is its OWN nested git repository (a
+    /// submodule: `.git` dir/file at its dir) — the git-boundary fact the scan
+    /// census records for the matching `projects[]` entry. Threaded so the
+    /// rendered implementer prompt can state the boundary (separate commit
+    /// history; never bump the superproject gitlink pointer) and the branch gate
+    /// can base the work branch on the submodule's own default branch. Omitted
+    /// from the JSON when `false` so the dispatch output stays byte-stable for a
+    /// non-submodule subproject (the common case).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub own_git_root: bool,
+}
+
+/// serde `skip_serializing_if` for the additive [`DispatchItem::own_git_root`]:
+/// omit the field when `false` so the dispatch-plan JSON is byte-identical to
+/// the pre-flag shape for every non-submodule subproject.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The git-boundary FACT for an item's subproject: `true` when the subproject's
+/// own directory is a nested git repository root (`.git` dir or pointer file) —
+/// the SAME fact the census records for its matching `projects[]` entry (see
+/// [`mustard_core::mark_own_git_roots`]), derived here by the single shared
+/// probe [`mustard_core::io::workspace::is_git_repo_root`] so dispatch needs no
+/// census round-trip through the external scan tool. The superproject root
+/// (`"."` / empty) is never a nested boundary. Purely a filesystem probe.
+fn subproject_own_git_root(project: &Path, subproject: &str) -> bool {
+    let sub = subproject.trim();
+    if sub.is_empty() || sub == "." {
+        return false;
+    }
+    mustard_core::io::workspace::is_git_repo_root(&project.join(sub))
 }
 
 /// A wave row parsed out of `wave-plan.md` (pre-ordering).
@@ -147,8 +179,8 @@ pub(crate) fn build_plan(
                 prompt_cmd: render_prompt_cmd(spec, row.wave, &row.role, &subproject),
                 subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
                     &row.role,
-                )
-                .to_string(),
+                ),
+                own_git_root: subproject_own_git_root(project, &subproject),
             }
         })
         .collect();
@@ -212,8 +244,8 @@ fn single_spec_plan(project: &Path, spec_dir: &Path, spec: &str) -> Vec<Dispatch
         ),
         subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
             role,
-        )
-        .to_string(),
+        ),
+        own_git_root: subproject_own_git_root(project, &subproject),
     }]
 }
 
@@ -395,15 +427,22 @@ fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String
 }
 
 /// Resolve a dependency `[[…]]` token to a wave number. `[[1]]` → 1;
-/// `[[wave-1-general]]` → 1; a bare role token `[[backend]]` → the wave that
-/// carries that role (via `role_to_wave`); anything else → `None`.
+/// `[[wave-1-general]]` → 1 (hyphen dir form); `[[wave.<slug>.<N>-<role>]]` → N
+/// (the DOTTED wikilink `wave-scaffold` writes, e.g.
+/// `[[wave.field-report-fix-package-sialia.2-agents]]`); a bare role token
+/// `[[backend]]` → the wave that carries that role (via `role_to_wave`);
+/// anything else → `None`.
 ///
 /// The role fallback exists because the Plan agent sometimes authors deps as
 /// bare role names instead of the `wave-N-role` dir form `plan-from-spec`
 /// emits. Without it, `find_outgoing_links` yields `backend`, this returns
 /// `None`, the edge is silently dropped, and the whole DAG flattens to level 0
 /// (every wave "dispatch-parallel") — losing real ordering AND the genuine
-/// parallelism between truly independent waves.
+/// parallelism between truly independent waves. The dotted branch exists for the
+/// same failure: `wave-scaffold` writes `wave.<slug>.<N>-<role>`, on which
+/// `strip_prefix("wave-")` fails (the head is `wave.`, not `wave-`), so every
+/// dotted-dep DAG likewise flattened to level 0 — proven live 2026-07-18 on the
+/// field-report-fix-package-sialia pipeline (every wave dispatched in one round).
 fn wave_number_from_link(link: &str, role_to_wave: &BTreeMap<String, u32>) -> Option<u32> {
     let inner = link.trim();
     if let Ok(n) = inner.parse::<u32>() {
@@ -415,7 +454,39 @@ fn wave_number_from_link(link: &str, role_to_wave: &BTreeMap<String, u32>) -> Op
             return Some(n);
         }
     }
+    // Dotted form `wave.<slug>.<N>-<role>`. Split on '.', then read the wave
+    // number from the LAST segment (`<N>-<role>`); fall back to the segment
+    // right after the `wave` head when it is itself numeric (`wave.<N>` /
+    // `wave.<N>.<role>`). Last-segment-first so a slug with leading digits in a
+    // middle segment (`wave.2024-redesign.3-agents`) cannot hijack the number.
+    if let Some(rest) = inner.strip_prefix("wave.") {
+        let segs: Vec<&str> = rest.split('.').collect();
+        if let Some(n) = segs.last().and_then(|s| leading_wave_number(s)) {
+            return Some(n);
+        }
+        if let Some(n) = segs.first().and_then(|s| leading_wave_number(s)) {
+            return Some(n);
+        }
+    }
     role_to_wave.get(inner).copied()
+}
+
+/// Read the leading wave number from a `<N>-<role>` (or bare `<N>`) segment: the
+/// leading ASCII digits, but only when they stand alone or are immediately
+/// followed by `-` — so a real `2-agents` label matches while an arbitrary
+/// alphanumeric slug segment (`2fa-login`) does NOT masquerade as wave 2.
+fn leading_wave_number(seg: &str) -> Option<u32> {
+    let digits: String = seg.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    // `digits` are leading ASCII (1 byte each), so this is a valid char boundary.
+    let rest = &seg[digits.len()..];
+    if rest.is_empty() || rest.starts_with('-') {
+        digits.parse::<u32>().ok()
+    } else {
+        None
+    }
 }
 
 /// Fallback: derive wave rows from the `wave-N-{role}/` directories on disk.
@@ -705,6 +776,40 @@ mod tests {
         assert_eq!(wave_number_from_link("core", &roles), Some(2));
         // Unknown token (not a number, not wave-N, not a known role) → None.
         assert_eq!(wave_number_from_link("memory/foo", &roles), None);
+    }
+
+    /// FINDING #7 (live regression 2026-07-18): `wave-scaffold` writes the DOTTED
+    /// dependency wikilink `[[wave.<slug>.<N>-<role>]]`, on which the `wave-`
+    /// hyphen branch fails — the edge dropped and the whole DAG flattened to
+    /// level 0 (every wave dispatched in one parallel round). The dotted form
+    /// must resolve to its `<N>`, and a full table parse over a dotted
+    /// Depends-on cell must yield non-flat levels (the dependent wave ≥ 1).
+    #[test]
+    fn dotted_wikilink_resolves_wave() {
+        let roles: BTreeMap<String, u32> = BTreeMap::new();
+        // Direct: the dotted token resolves to its `<N>` without any role map.
+        assert_eq!(wave_number_from_link("wave.some-slug.2-agents", &roles), Some(2));
+        // A slug with leading digits in a MIDDLE segment must not hijack the
+        // number — the trailing `<N>-<role>` segment wins (last-segment-first).
+        assert_eq!(wave_number_from_link("wave.2024-redesign.3-agents", &roles), Some(3));
+        // The `wave.<N>` / `wave.<N>.<role>` shape resolves off the head segment.
+        assert_eq!(wave_number_from_link("wave.5.core", &roles), Some(5));
+
+        // Full table parse: a dotted Depends-on cell reconstructs the edge so the
+        // dependent wave lands at a non-flat level (>= 1) — not the flattened 0.
+        let plan = "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave.demo.1-rt]] | rt | — | base |
+| 2 | [[wave.demo.2-agents]] | agents | [[wave.demo.1-rt]] | uses base |
+";
+        let rows = parse_wave_plan_table(plan);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].depends_on.is_empty(), "wave 1 independent");
+        assert_eq!(rows[1].depends_on, vec![1], "wave 2 depends on wave 1 via the dotted link");
+        let levels = assign_levels(&rows);
+        assert_eq!(levels[&1], 0, "wave 1 at level 0");
+        assert!(levels[&2] >= 1, "dependent wave must not be flattened to level 0");
     }
 
     /// Regression for the sialia wave-plan: the Plan agent authored deps as bare
@@ -1009,5 +1114,48 @@ mod tests {
         assert_eq!(items[1].wave, 2);
         assert_eq!(items[1].depends_on, vec![1]);
         assert_eq!(items[1].level, 1);
+    }
+
+    /// AC-5: the git-boundary fact reaches the dispatch item. A subproject whose
+    /// own dir is a nested git root (`.git` FILE — the submodule shape) makes the
+    /// item carry `own_git_root: true`; a plain subproject stays false.
+    #[test]
+    fn dispatch_item_carries_own_git_root_for_nested_repo() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+
+        // A nested submodule: `.git` as a FILE (gitdir pointer) at apps/sub.
+        let sub = project.join("apps").join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), b"gitdir: ../../.git/modules/sub\n").unwrap();
+
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("bnd")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# B\n\n## Files\n- apps/sub/src/x.rs\n").unwrap();
+
+        let items = build_plan(project, &spec_dir, "bnd", None);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subproject, "apps/sub");
+        assert!(items[0].own_git_root, "nested `.git` subproject carries the boundary flag");
+
+        // A plain subproject (no `.git`) does not carry the flag.
+        let spec_dir2 = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("plain")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir2).unwrap();
+        std::fs::write(spec_dir2.join("spec.md"), "# P\n\n## Files\n- apps/rt/src/y.rs\n").unwrap();
+        let items2 = build_plan(project, &spec_dir2, "plain", None);
+        assert_eq!(items2.len(), 1);
+        assert_eq!(items2[0].subproject, "apps/rt");
+        assert!(!items2[0].own_git_root, "a plain subproject has no boundary flag");
     }
 }

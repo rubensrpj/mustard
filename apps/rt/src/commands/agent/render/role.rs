@@ -253,25 +253,44 @@ fn read_guards_facts(subproject_dir: &Path) -> String {
     String::new()
 }
 
+/// The Mustard plugin namespace — the `name` field of
+/// `plugin/.claude-plugin/plugin.json`. Claude Code registers plugin-owned
+/// agents under it as `mustard:<agent>`, so a `subagent_type` naming a plugin
+/// agent MUST carry this prefix or the dispatch silently falls back to
+/// `general-purpose`. Single source of truth: [`qualify_plugin_agent`] builds
+/// the qualified name from it and a drift test pins it to the manifest `name`.
+pub const PLUGIN_NAMESPACE: &str = "mustard";
+
+/// Qualify a plugin-owned agent name with [`PLUGIN_NAMESPACE`]:
+/// `mustard-review` → `mustard:mustard-review`. Only plugin-owned agents go
+/// through here; built-in harness agent types (`Explore`, `Plan`,
+/// `general-purpose`) are not plugin-registered and stay bare.
+fn qualify_plugin_agent(name: &str) -> String {
+    format!("{PLUGIN_NAMESPACE}:{name}")
+}
+
 /// Map a pipeline role to the `subagent_type` the orchestrator should dispatch.
 ///
 /// Read-only roles resolve to **tool-restricted** agents so they physically
 /// cannot write: `explore` → the built-in `Explore` (no Edit/Write), `plan` →
-/// the built-in `Plan` (no Edit/Write), `review`/`qa` → `mustard-review`
-/// (Read/Grep/Glob/Bash — Bash for tests only), `guards` → `mustard-guards`
-/// and `patterns` → `mustard-patterns` (Read/Grep/Glob only). Writing roles
-/// (`impl` and any other) stay `general-purpose`: they need Edit/Write and
-/// rely on the per-role contract + the `scope_guard` hook instead. Emitted by
-/// `dispatch-plan` so the orchestrator never picks the agent by hand.
+/// the built-in `Plan` (no Edit/Write), `review`/`qa` → `mustard:mustard-review`
+/// (Read/Grep/Glob/Bash — Bash for tests only), `guards` → `mustard:mustard-guards`
+/// and `patterns` → `mustard:mustard-patterns` (Read/Grep/Glob only). The
+/// plugin-owned agents carry the [`PLUGIN_NAMESPACE`] prefix (built-ins stay
+/// bare) — without it Claude Code cannot resolve the plugin agent and silently
+/// falls back to `general-purpose`. Writing roles (`impl` and any other) stay
+/// `general-purpose`: they need Edit/Write and rely on the per-role contract +
+/// the `scope_guard` hook instead. Emitted by `dispatch-plan` so the
+/// orchestrator never picks the agent by hand.
 #[must_use]
-pub fn recommended_subagent_type(role: &str) -> &'static str {
+pub fn recommended_subagent_type(role: &str) -> String {
     match role.trim().to_ascii_lowercase().as_str() {
-        "explore" => "Explore",
-        "plan" => "Plan",
-        "review" | "qa" => "mustard-review",
-        "guards" => "mustard-guards",
-        "patterns" => "mustard-patterns",
-        _ => "general-purpose",
+        "explore" => "Explore".to_string(),
+        "plan" => "Plan".to_string(),
+        "review" | "qa" => qualify_plugin_agent("mustard-review"),
+        "guards" => qualify_plugin_agent("mustard-guards"),
+        "patterns" => qualify_plugin_agent("mustard-patterns"),
+        _ => "general-purpose".to_string(),
     }
 }
 
@@ -367,10 +386,10 @@ mod tests {
         // general-purpose. Case/whitespace-insensitive.
         assert_eq!(recommended_subagent_type("explore"), "Explore");
         assert_eq!(recommended_subagent_type("plan"), "Plan");
-        assert_eq!(recommended_subagent_type("review"), "mustard-review");
-        assert_eq!(recommended_subagent_type("qa"), "mustard-review");
-        assert_eq!(recommended_subagent_type(" Guards "), "mustard-guards");
-        assert_eq!(recommended_subagent_type("patterns"), "mustard-patterns");
+        assert_eq!(recommended_subagent_type("review"), "mustard:mustard-review");
+        assert_eq!(recommended_subagent_type("qa"), "mustard:mustard-review");
+        assert_eq!(recommended_subagent_type(" Guards "), "mustard:mustard-guards");
+        assert_eq!(recommended_subagent_type("patterns"), "mustard:mustard-patterns");
         assert_eq!(recommended_subagent_type("impl"), "general-purpose");
         assert_eq!(recommended_subagent_type("backend"), "general-purpose");
     }
@@ -484,5 +503,64 @@ mod tests {
             .as_str()
             .to_string();
         assert!(!default_lang.is_empty(), "default locale must be non-empty");
+    }
+
+    /// The resolver qualifies plugin-owned agents with [`PLUGIN_NAMESPACE`]
+    /// (`mustard:mustard-*`) while built-in harness agent types stay bare. A
+    /// bare `mustard-review` would not resolve as a Claude Code plugin agent —
+    /// the dispatch would silently fall back to `general-purpose`.
+    #[test]
+    fn recommended_subagent_type_namespaces_plugin_agents_only() {
+        let ns = format!("{PLUGIN_NAMESPACE}:");
+        // Plugin-owned roles → qualified under the plugin namespace.
+        assert_eq!(recommended_subagent_type("review"), format!("{ns}mustard-review"));
+        assert_eq!(recommended_subagent_type("qa"), format!("{ns}mustard-review"));
+        assert_eq!(recommended_subagent_type("guards"), format!("{ns}mustard-guards"));
+        assert_eq!(recommended_subagent_type("patterns"), format!("{ns}mustard-patterns"));
+        // Built-in harness types are not plugin-owned → stay bare (no `<ns>:`).
+        for t in [
+            recommended_subagent_type("explore"),
+            recommended_subagent_type("plan"),
+            recommended_subagent_type("impl"),
+        ] {
+            assert!(!t.contains(':'), "built-in agent type must stay bare: {t}");
+        }
+    }
+
+    /// Drift guard: [`PLUGIN_NAMESPACE`] must equal the `name` field of the
+    /// plugin manifest (`plugin/.claude-plugin/plugin.json`). If the manifest is
+    /// renamed, the qualified `subagent_type`s (`mustard:mustard-*`) would name a
+    /// namespace Claude Code does not know and every plugin dispatch would
+    /// silently fall back to `general-purpose` — so pin the two together. Reads
+    /// outside the crate fail open (skip) per this codebase's test convention.
+    #[test]
+    fn plugin_namespace_matches_manifest_name() {
+        // apps/rt -> apps -> workspace root, then the committed manifest.
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let Some(workspace) = manifest_dir.parent().and_then(Path::parent) else {
+            eprintln!("[skip] cannot resolve workspace root from CARGO_MANIFEST_DIR");
+            return;
+        };
+        let manifest = workspace
+            .join("plugin")
+            .join(".claude-plugin")
+            .join("plugin.json");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            eprintln!(
+                "[skip] plugin manifest not found at {} — drift guard skipped",
+                manifest.display()
+            );
+            return;
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("plugin.json must be valid JSON");
+        let name = json
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .expect("plugin.json must carry a string `name`");
+        assert_eq!(
+            name, PLUGIN_NAMESPACE,
+            "PLUGIN_NAMESPACE ({PLUGIN_NAMESPACE}) drifted from plugin.json#name ({name})"
+        );
     }
 }

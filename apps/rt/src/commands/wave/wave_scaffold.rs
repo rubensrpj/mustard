@@ -60,6 +60,7 @@
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
+use crate::shared::gate_mode::{resolve_mode, GateMode};
 use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
 use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
@@ -406,27 +407,60 @@ fn build_ac_block(plan: &Plan, hd: &Headings<'_>) -> Option<String> {
     Some(format!("{}\n{}", hd.acceptance, lines.join("\n")))
 }
 
-/// Compute AC↔wave traceability gaps in the plan (the caller prints each as a
-/// non-blocking stderr WARN, like the empty-tasks WARN). Two gaps:
+/// The two AC↔wave traceability gap kinds, kept apart so [`scaffold`] can
+/// escalate ONLY the uncovered-criterion gap under `MUSTARD_TRACE_GATE_MODE`
+/// while the untraced-wave signal stays a non-blocking WARN in every mode.
+struct TraceGaps {
+    /// Gap 1 — a wave that does work (`tasks` non-empty) but satisfies NO
+    /// criterion. Always WARN-level: a wave can legitimately be plumbing /
+    /// scaffolding no single AC pins down, so this never blocks.
+    untraced_waves: Vec<String>,
+    /// Gap 2 — an acceptance criterion NO wave satisfies. `defined` is the
+    /// union of every wave's `acceptance` ids AND the parent spec.md
+    /// `## Acceptance Criteria` ids, so a criterion the plan forgot to route
+    /// onto a wave is caught. This is the escalatable gap.
+    uncovered_acs: Vec<String>,
+}
+
+/// Compute AC↔wave traceability gaps, splitting the untraced-wave signal
+/// (Gap 1, always WARN) from the uncovered-criterion signal (Gap 2,
+/// escalatable — see [`scaffold`]):
 ///
 /// 1. A wave that does work (`tasks` non-empty) but satisfies NO acceptance
 ///    criterion — its work traces to no criterion.
-/// 2. An AC the plan DEFINES (in some wave's `acceptance`) that NO wave claims
-///    to satisfy — an orphan criterion.
+/// 2. An AC in the `defined` set that NO wave claims to satisfy — an orphan
+///    criterion.
 ///
 /// A wave's satisfied set is its explicit `satisfies` ids, or — when that is
 /// empty (back-compat with pre-`satisfies` plans) — the ids parsed from its
-/// `acceptance` lines through the SAME `qa-run` parser QA executes (reusing the
-/// exposed `AcItem.id`), so the two can never drift. Gap 2 only ever fires once
-/// `satisfies` is used (with no `satisfies`, satisfied == acceptance ids), so a
-/// back-compat plan is never nagged about it.
-fn traceability_gaps(plan: &Plan) -> Vec<String> {
-    use crate::commands::review::qa_run::parse_ac_items;
+/// `acceptance` lines through the SAME `qa-run` parser QA executes ([`parse_ac_items`]),
+/// so the two can never drift.
+///
+/// The `defined` set (every id a wave must cover) is the union of every wave's
+/// `acceptance` ids AND the parent spec.md `## Acceptance Criteria` ids — the
+/// latter read through the SAME shared qa-run extractor + parser
+/// (`extract_ac_section` + `parse_ac_items`), never a forked reader.
+/// `parent_ac_md` is the monolithic parent spec markdown (`None` for a
+/// standalone scaffold with no parent, in which case only the plan's own
+/// `acceptance` ids define the set — the historical behaviour).
+fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
+    use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
     use std::collections::BTreeSet;
     let norm = |s: &str| s.trim().to_uppercase();
-    let mut gaps: Vec<String> = Vec::new();
+    let mut untraced_waves: Vec<String> = Vec::new();
     let mut defined: BTreeSet<String> = BTreeSet::new();
     let mut covered: BTreeSet<String> = BTreeSet::new();
+
+    // The parent spec's own criteria are authoritative — every one must be
+    // claimed by some wave. Read via the shared qa-run extractor + parser so
+    // this reader can never drift from the section QA actually executes. An
+    // absent parent / no AC section simply contributes nothing.
+    if let Some(section) = parent_ac_md.and_then(extract_ac_section) {
+        for it in parse_ac_items(&section) {
+            defined.insert(norm(&it.id));
+        }
+    }
+
     for w in &plan.waves {
         // The ACs this wave DEFINES, via the shared qa-run parser. Acceptance
         // lines may arrive without a leading bullet (the plan schema example
@@ -440,8 +474,7 @@ fn traceability_gaps(plan: &Plan) -> Vec<String> {
                 if t.starts_with('-') { t.to_string() } else { format!("- {t}") }
             })
             .collect::<Vec<_>>()
-            .join("
-");
+            .join("\n");
         let ac_ids: Vec<String> = parse_ac_items(&ac_text)
             .into_iter()
             .map(|it| norm(&it.id))
@@ -459,17 +492,31 @@ fn traceability_gaps(plan: &Plan) -> Vec<String> {
             covered.insert(id.clone());
         }
         if !w.tasks.is_empty() && satisfied.is_empty() {
-            gaps.push(format!(
+            untraced_waves.push(format!(
                 "wave-{n}-{role} has tasks but satisfies no AC — add `satisfies` ids or an `acceptance` line so its work traces to a criterion",
                 n = w.n,
                 role = w.role,
             ));
         }
     }
-    for id in defined.difference(&covered) {
-        gaps.push(format!("{id} is defined in the plan but no wave satisfies it (add it to a wave's `satisfies`)"));
+    let uncovered_acs: Vec<String> = defined
+        .difference(&covered)
+        .map(|id| format!("{id} — no wave satisfies it (add it to a wave's `satisfies` or `acceptance`)"))
+        .collect();
+    TraceGaps { untraced_waves, uncovered_acs }
+}
+
+/// The blocking gap list for a resolved `MUSTARD_TRACE_GATE_MODE`: `strict`
+/// carries every uncovered criterion through (so [`run`] exits non-zero),
+/// `warn`/`off` carry none — the WARN [`scaffold`] already printed is the whole
+/// signal in those modes. Pure: the env read stays in the caller, so the
+/// escalation is unit-testable without mutating the process environment.
+fn trace_block_for(mode: GateMode, uncovered_acs: Vec<String>) -> Vec<String> {
+    if mode == GateMode::Strict {
+        uncovered_acs
+    } else {
+        Vec::new()
     }
-    gaps
 }
 
 /// Seed the per-wave trackable checklist from the wave's file census — one
@@ -503,10 +550,16 @@ fn write_if_absent(path: &Path, content: &str) -> bool {
 /// Outcome of one scaffold pass — the miolo result [`run`] prints and
 /// `plan-materialize` folds into its composite report.
 pub(crate) enum ScaffoldOutcome {
-    /// The layout was materialised (idempotently).
+    /// The layout was materialised (idempotently). `trace_block` lists the
+    /// uncovered parent/plan acceptance criteria ONLY when `MUSTARD_TRACE_GATE_MODE`
+    /// is `strict` (empty in `warn`/`off`); a non-empty list makes the standalone
+    /// [`run`] exit non-zero so the orchestrator notices the untraced criterion.
+    /// The in-process caller (`plan-materialize`) ignores it — the trace gate is
+    /// on the `wave-scaffold` command, never the pipeline composite.
     Created {
         created: Vec<String>,
         skipped: Vec<String>,
+        trace_block: Vec<String>,
     },
     /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
     EmptyPlan,
@@ -609,7 +662,26 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             );
             std::process::exit(2);
         }
-        ScaffoldOutcome::Created { created, skipped } => {
+        ScaffoldOutcome::Created { created, skipped, trace_block } => {
+            // strict `MUSTARD_TRACE_GATE_MODE` + an uncovered parent/plan AC:
+            // the layout WAS materialised (idempotent), but the command fails so
+            // the orchestrator notices the untraced criterion. The gap ids are
+            // deterministic (no paths/timestamps), so listing them on stdout
+            // keeps `run` byte-stable; warn/off leave `trace_block` empty and
+            // fall through to the clean success output.
+            if !trace_block.is_empty() {
+                let out: Value = json!({
+                    "created_files": created,
+                    "skipped": skipped,
+                    "error": "uncovered acceptance criteria",
+                    "trace_gaps": trace_block,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
+                );
+                std::process::exit(2);
+            }
             let out: Value = json!({
                 "created_files": created,
                 "skipped": skipped,
@@ -719,11 +791,30 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         emit(&dir.join("spec.md"), render_wave_spec(&parent_name, w, &hd));
     }
 
-    // AC↔wave traceability (F6): warn on a wave that does work but satisfies no
-    // AC, and on an AC the plan defines that no wave claims. Non-blocking stderr.
-    for gap in traceability_gaps(&plan) {
+    // AC↔wave traceability (F6): the untraced-wave signal (Gap 1) stays a
+    // non-blocking WARN in every mode; the uncovered-criterion signal (Gap 2 —
+    // an AC of the plan OR the parent spec.md that no wave claims) escalates
+    // under `MUSTARD_TRACE_GATE_MODE` (default strict). The parent monolithic
+    // spec is `spec.md` at PLAN time, or `spec.original.md` once a rewave
+    // archived it; an absent parent contributes no ids (standalone scaffold).
+    let parent_ac_md = fs::read_to_string(spec_dir.join("spec.md"))
+        .or_else(|_| fs::read_to_string(spec_dir.join("spec.original.md")))
+        .ok();
+    let gaps = traceability_gaps(&plan, parent_ac_md.as_deref());
+    for gap in &gaps.untraced_waves {
         eprintln!("[wave-scaffold] WARN: {gap}");
     }
+    // off silences Gap 2 entirely; warn/strict print each as a WARN; only
+    // strict carries them into `trace_block` so the standalone `run` exits
+    // non-zero. `scaffold` itself never exits — it stays reusable in-process
+    // (plan-materialize), which is why the block travels back typed.
+    let trace_mode = resolve_mode("MUSTARD_TRACE_GATE_MODE", None, GateMode::Strict);
+    if trace_mode != GateMode::Off {
+        for gap in &gaps.uncovered_acs {
+            eprintln!("[wave-scaffold] WARN: {gap}");
+        }
+    }
+    let trace_block = trace_block_for(trace_mode, gaps.uncovered_acs);
 
     // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
@@ -784,7 +875,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // phase is materialised by code into `qa/report.md` / `review/verdict.md`
     // (D4), not tracked through a dead sidecar.
 
-    ScaffoldOutcome::Created { created, skipped }
+    ScaffoldOutcome::Created { created, skipped, trace_block }
 }
 
 /// Write a per-wave `meta.json` beside a scaffolded wave `spec.md`, only when
@@ -1494,30 +1585,178 @@ mod tests {
         };
         let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1), lang: None };
 
-        // (a) tasks but no AC → gap naming the wave.
-        let gaps = traceability_gaps(&plan(wave(vec!["do the thing"], vec![], vec![])));
+        // (a) tasks but no AC → untraced-wave gap naming the wave (Gap 1).
+        let gaps = traceability_gaps(&plan(wave(vec!["do the thing"], vec![], vec![])), None);
         assert!(
-            gaps.iter().any(|g| g.contains("wave-1-backend") && g.contains("satisfies no AC")),
-            "wave with tasks but no AC must be a gap: {gaps:?}"
+            gaps.untraced_waves.iter().any(|g| g.contains("wave-1-backend") && g.contains("satisfies no AC")),
+            "wave with tasks but no AC must be a gap: {:?}",
+            gaps.untraced_waves
         );
-        // (b) declares AND satisfies its own AC → clean.
-        let clean = plan(wave(
-            vec!["do it"],
-            vec!["**AC-1** — works. Command: `true`"],
-            vec!["AC-1"],
-        ));
-        assert!(traceability_gaps(&clean).is_empty(), "well-traced wave is clean");
-        // (c) defines AC-1 but satisfies only AC-2 → AC-1 is an orphan gap.
-        let orphan = plan(wave(
-            vec!["do it"],
-            vec!["**AC-1** — works. Command: `true`"],
-            vec!["AC-2"],
-        ));
-        let gaps = traceability_gaps(&orphan);
+        assert!(gaps.uncovered_acs.is_empty(), "no defined ACs → no uncovered gap");
+        // (b) declares AND satisfies its own AC → clean on both axes.
+        let clean = traceability_gaps(
+            &plan(wave(
+                vec!["do it"],
+                vec!["**AC-1** — works. Command: `true`"],
+                vec!["AC-1"],
+            )),
+            None,
+        );
+        assert!(clean.untraced_waves.is_empty() && clean.uncovered_acs.is_empty(), "well-traced wave is clean");
+        // (c) defines AC-1 but satisfies only AC-2 → AC-1 is an uncovered gap (Gap 2).
+        let orphan = traceability_gaps(
+            &plan(wave(
+                vec!["do it"],
+                vec!["**AC-1** — works. Command: `true`"],
+                vec!["AC-2"],
+            )),
+            None,
+        );
         assert!(
-            gaps.iter().any(|g| g.contains("AC-1") && g.contains("no wave satisfies it")),
-            "an AC defined but unsatisfied is an orphan gap: {gaps:?}"
+            orphan.uncovered_acs.iter().any(|g| g.contains("AC-1") && g.contains("no wave satisfies it")),
+            "an AC defined but unsatisfied is an orphan gap: {:?}",
+            orphan.uncovered_acs
         );
+    }
+
+    /// A parent spec.md `## Acceptance Criteria` id that NO wave claims (neither
+    /// `satisfies` nor an `acceptance` line) fires the uncovered-criterion gap —
+    /// even for a plan that carries no per-wave `acceptance` of its own. The
+    /// parent ACs are read through the shared qa-run `extract_ac_section` +
+    /// `parse_ac_items`, never a forked reader.
+    #[test]
+    fn traceability_gaps_parent_spec_ac_uncovered_fires_gap() {
+        let parent = "# Epic\n\n## Acceptance Criteria\n\
+- **AC-1** — first. Command: `true`\n\
+- **AC-2** — second. Command: `true`\n";
+        // One wave that claims only AC-1 (via an explicit satisfies).
+        let plan = Plan {
+            waves: vec![WavePlanEntry {
+                n: 1,
+                role: "backend".to_string(),
+                summary: "s".to_string(),
+                depends_on: vec![],
+                tasks: vec!["do it".to_string()],
+                files: vec![],
+                acceptance: vec![],
+                satisfies: vec!["AC-1".to_string()],
+            }],
+            total_waves: Some(1),
+            lang: None,
+        };
+        let gaps = traceability_gaps(&plan, Some(parent));
+        // AC-2 is defined by the parent but claimed by no wave → uncovered.
+        assert!(
+            gaps.uncovered_acs.iter().any(|g| g.contains("AC-2")),
+            "parent AC-2 absent from every wave must fire the gap: {:?}",
+            gaps.uncovered_acs
+        );
+        // AC-1 is covered → never flagged.
+        assert!(
+            !gaps.uncovered_acs.iter().any(|g| g.contains("AC-1")),
+            "the satisfied AC-1 must not be a gap: {:?}",
+            gaps.uncovered_acs
+        );
+    }
+
+    /// A parent spec.md AC id that a wave carries in its own `acceptance` line
+    /// (no explicit `satisfies`) counts as covered — the back-compat path where
+    /// a wave's satisfied set is derived from its acceptance ids. So a covered
+    /// criterion never escalates.
+    #[test]
+    fn traceability_gaps_parent_spec_ac_covered_via_acceptance_counts() {
+        let parent = "# Epic\n\n## Acceptance Criteria\n- **AC-1** — first. Command: `true`\n";
+        let plan = Plan {
+            waves: vec![WavePlanEntry {
+                n: 1,
+                role: "backend".to_string(),
+                summary: "s".to_string(),
+                depends_on: vec![],
+                tasks: vec!["do it".to_string()],
+                files: vec![],
+                // Same id via an acceptance line, NOT an explicit satisfies.
+                acceptance: vec!["**AC-1** — first. Command: `true`".to_string()],
+                satisfies: vec![],
+            }],
+            total_waves: Some(1),
+            lang: None,
+        };
+        let gaps = traceability_gaps(&plan, Some(parent));
+        assert!(
+            gaps.uncovered_acs.is_empty(),
+            "AC-1 covered via the wave's acceptance line must not fire the gap: {:?}",
+            gaps.uncovered_acs
+        );
+        // The wave does work AND traces a criterion → no untraced-wave gap.
+        assert!(gaps.untraced_waves.is_empty(), "wave traces AC-1 → not untraced");
+    }
+
+    /// End-to-end through `scaffold` under the DEFAULT mode (strict, env unset):
+    /// a parent spec.md whose AC-2 no wave claims makes `scaffold` return a
+    /// non-empty `trace_block` — the list [`run`] maps to a non-zero exit. The
+    /// layout is still materialised (idempotent); the block is the data the
+    /// caller actions.
+    #[test]
+    fn scaffold_parent_spec_ac_strict_blocks() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-trace");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // The parent monolithic spec defines two criteria.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Epic\n\n## Acceptance Criteria\n- **AC-1** — a. Command: `true`\n- **AC-2** — b. Command: `true`\n",
+        )
+        .unwrap();
+        // The plan routes only AC-1 onto a wave.
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "backend", "summary": "s", "tasks": ["do it"], "satisfies": ["AC-1"] }
+                ],
+                "total_waves": 1,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        match scaffold(&spec_dir, &plan_path) {
+            ScaffoldOutcome::Created { created, trace_block, .. } => {
+                // The layout was still materialised.
+                assert!(created.iter().any(|f| f == "wave-plan.md"), "created: {created:?}");
+                // strict (default) → the uncovered parent AC-2 blocks.
+                assert!(
+                    trace_block.iter().any(|g| g.contains("AC-2")),
+                    "strict mode must carry the uncovered AC-2 into trace_block: {trace_block:?}"
+                );
+                assert!(
+                    !trace_block.iter().any(|g| g.contains("AC-1")),
+                    "the covered AC-1 must not block: {trace_block:?}"
+                );
+            }
+            _ => panic!("expected ScaffoldOutcome::Created"),
+        }
+    }
+
+    /// warn / off modes do NOT block: `trace_block_for` returns an empty list
+    /// even when a parent AC is uncovered, so [`run`] exits 0. The gap is still
+    /// detected (`traceability_gaps` surfaces it — the stderr WARN `scaffold`
+    /// prints), it just no longer fails the command. strict is the only
+    /// escalating mode.
+    #[test]
+    fn trace_block_for_parent_spec_ac_warn_passes() {
+        let uncovered = vec!["AC-2 — no wave satisfies it".to_string()];
+        // strict escalates (blocks) — carries the uncovered AC through.
+        assert_eq!(
+            trace_block_for(GateMode::Strict, uncovered.clone()).len(),
+            1,
+            "strict carries the uncovered AC into the block"
+        );
+        // warn and off pass (no block), leaving the WARN as the only signal.
+        assert!(trace_block_for(GateMode::Warn, uncovered.clone()).is_empty(), "warn does not block");
+        assert!(trace_block_for(GateMode::Off, uncovered).is_empty(), "off does not block");
     }
 
     /// The `satisfies` field deserialises from a hand-authored plan.json and
