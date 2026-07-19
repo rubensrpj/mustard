@@ -15,7 +15,7 @@ source: manual
 | `analyze` | `explore` | `Explore` (read-only) |
 | `audit` | `explore` | `Explore` (read-only) |
 | `compare` | `explore` ×N → `plan` | `Explore` parallel → `Plan` |
-| `review` | `review` | `mustard-review` (read-only) |
+| `review` | `review` | `mustard:mustard-review` (read-only) |
 | `docs` | `impl` | `general-purpose` |
 | `refactor` | `plan` → `impl` | `Plan` → `general-purpose` |
 | `implement` | `impl` | `general-purpose` |

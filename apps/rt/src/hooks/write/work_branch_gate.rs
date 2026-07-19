@@ -48,8 +48,9 @@
 
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::io::workspace::is_git_repo_root;
 use mustard_core::ProjectConfig;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::shared::context;
@@ -223,6 +224,117 @@ fn is_protected(branch: &str, config: &ProjectConfig) -> bool {
     config.git.integration_bases().contains(branch)
 }
 
+/// Canonicalise `p`, falling back to the path as-given on error — so relative
+/// and absolute spellings of the same directory compare equal without panicking.
+fn canonicalize_or(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// The nearest ancestor of `start` (inclusive) that is a git repository root
+/// (`.git` dir or pointer file) AND a PROPER descendant of `state_root` — a
+/// nested repo sitting BETWEEN the superproject and the edited file. `None` when
+/// the first git root reached is the state root itself (the superproject) or no
+/// git root is found at/below it. Purely a filesystem walk (reuses the single
+/// [`is_git_repo_root`] probe); never climbs above the state root.
+fn nested_git_root_between(state_root: &Path, start: &Path) -> Option<PathBuf> {
+    let state = canonicalize_or(state_root);
+    for dir in start.ancestors() {
+        let here = canonicalize_or(dir);
+        if is_git_repo_root(dir) {
+            // A `.git` AT the state root is the SUPERproject — not a nested repo.
+            return (here != state).then(|| dir.to_path_buf());
+        }
+        if here == state {
+            return None; // reached the state root with no nested `.git` below it
+        }
+    }
+    None
+}
+
+/// The absolute `--git-common-dir` of the repo containing `root`. A LINKED
+/// worktree reports the MAIN checkout's common dir; a SUBMODULE reports its own
+/// — this is what tells the two apart. `None` on any git failure.
+fn git_common_dir(vcs: &str, root: &str) -> Option<PathBuf> {
+    let out = Command::new(vcs)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() { None } else { Some(PathBuf::from(s)) }
+}
+
+/// `true` when `nested` is a DISTINCT repository from the state root's — a real
+/// submodule, not a linked worktree of the SAME repo (which shares the main
+/// checkout's git-common-dir). Fail-closed to `false` (keep today's behavior)
+/// when either probe fails, so only a proven-distinct repo ever swaps the base.
+fn is_distinct_repo(vcs: &str, state_root: &str, nested: &Path) -> bool {
+    match (
+        git_common_dir(vcs, &nested.to_string_lossy()),
+        git_common_dir(vcs, state_root),
+    ) {
+        (Some(a), Some(b)) => canonicalize_or(&a) != canonicalize_or(&b),
+        _ => false,
+    }
+}
+
+/// The submodule's OWN integration base: its remote default branch
+/// (`git symbolic-ref --short refs/remotes/origin/HEAD`, `origin/` stripped),
+/// falling back to its current branch. `None` when neither resolves (detached
+/// HEAD / git failure) — the caller then keeps today's superproject base.
+fn nested_default_base(vcs: &str, root: &str) -> Option<String> {
+    if let Ok(out) = Command::new(vcs)
+        .args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+        .current_dir(root)
+        .output()
+    {
+        if out.status.success() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                let b = s.trim().trim_start_matches("origin/").trim();
+                if !b.is_empty() {
+                    return Some(b.to_string());
+                }
+            }
+        }
+    }
+    current_branch(vcs, root).filter(|b| b != "HEAD")
+}
+
+/// Resolve the effective `(target, base)` for a work branch when the edited
+/// file's LOCAL tree sits inside a DISTINCT nested git repository (a submodule)
+/// below the state root: the base becomes that repo's own default branch, and
+/// the `{base}_{slug}` NAME is re-prefixed with it (never the superproject's).
+///
+/// `None` — keep today's superproject-derived pair — for every non-submodule
+/// case: no nested root, a linked worktree of the same repo (shared
+/// git-common-dir), or an unresolvable submodule default branch. Fully
+/// fail-open, so a git-less / offline / detached submodule never breaks the cut.
+fn nested_work_target_base(
+    vcs: &str,
+    state_root: &str,
+    local: &str,
+    target: &str,
+    config: &ProjectConfig,
+) -> Option<(String, String)> {
+    let nested = nested_git_root_between(Path::new(state_root), Path::new(local))?;
+    if !is_distinct_repo(vcs, state_root, &nested) {
+        return None; // a linked worktree of the same repo — not a submodule
+    }
+    let sub_base = nested_default_base(vcs, &nested.to_string_lossy())?;
+    // Re-prefix the name with the submodule base: strip the superproject base
+    // recovered from the marker, re-attach the submodule's. When the marker does
+    // not carry that prefix, keep the name and only swap the cut base.
+    let super_base = base_for(target, config);
+    let effective_target = match target.strip_prefix(&format!("{super_base}_")) {
+        Some(slug) => format!("{sub_base}_{slug}"),
+        None => target.to_string(),
+    };
+    Some((effective_target, sub_base))
+}
+
 impl Check for WorkBranchGate {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         // Defensive: only PreToolUse(Write|Edit|MultiEdit) should reach us.
@@ -286,6 +398,14 @@ impl Check for WorkBranchGate {
             return Ok(Verdict::Allow);
         };
 
+        // Nested-git-root (submodule) base resolution: when the edited file's
+        // LOCAL tree sits inside a DISTINCT nested repo below the state root, the
+        // work branch must be based on the submodule's OWN default branch and its
+        // `{base}_{slug}` name must carry that base, never the superproject's.
+        // Fail-open to today's (target, prefix-recovered base) pair otherwise.
+        let (target, base) = nested_work_target_base(&vcs, &project, &local, &target, &config)
+            .unwrap_or_else(|| (target.clone(), base_for(&target, &config)));
+
         // 2. Already on the target branch → clear and allow.
         if current.as_deref() == Some(target.as_str()) {
             context::clear_pending_branch(&project, &sid);
@@ -297,10 +417,9 @@ impl Check for WorkBranchGate {
         //    non-ff never blocks the edit (see refresh_integration_bases).
         refresh_integration_bases(&vcs, &local, &config, current.as_deref());
 
-        // 4. Recover the base from the target's `{base}_` prefix and check out
-        //    IN THE LOCAL TREE (a per-session worktree is isolated; the shared
-        //    main checkout keeps the historical single-session behavior).
-        let base = base_for(&target, &config);
+        // 4. Check out the (possibly submodule-rebased) target IN THE LOCAL TREE
+        //    (a per-session worktree is isolated; the shared main checkout keeps
+        //    the historical single-session behavior).
         match checkout_work_branch(&vcs, &local, &target, &base) {
             Ok(()) => {
                 context::clear_pending_branch(&project, &sid);
@@ -875,5 +994,73 @@ mod tests {
         assert!(is_protected("master", &config), "bare integration base protected");
         assert!(!is_protected("develop_x", &config), "work branch not protected");
         assert!(!is_protected("main", &config), "not a base of THIS project");
+    }
+
+    /// AC-5 (submodule base): a marker consumed while editing a file INSIDE a
+    /// DISTINCT nested git repo (a submodule) cuts the work branch off the
+    /// SUBMODULE's own default branch and names it with the submodule's base —
+    /// never the superproject's. Here the superproject sits on `dev` but the
+    /// submodule's base is `main`, so `dev_thing` becomes `main_thing` off `main`,
+    /// and the superproject checkout is untouched.
+    #[test]
+    fn own_git_root_submodule_resolves_nested_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("super");
+        std::fs::create_dir_all(&main).unwrap();
+        let main_s = main.to_str().unwrap();
+        seed_flow(&main, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(&main, "dev"); // superproject sits on the bare integration base
+
+        // A DISTINCT nested repository (a submodule) whose OWN base branch is
+        // `main` (its own `.git` dir ⇒ a different git-common-dir than the super).
+        let sub = main.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let sub_s = sub.to_str().unwrap();
+        git(&sub, &["init"]);
+        git(&sub, &["config", "user.email", "t@example.com"]);
+        git(&sub, &["config", "user.name", "t"]);
+        git(&sub, &["checkout", "-b", "main"]);
+        std::fs::write(sub.join("f.txt"), "hi").unwrap();
+        git(&sub, &["add", "."]);
+        git(&sub, &["commit", "-m", "init"]);
+
+        // The router precomputed the SUPERPROJECT-named branch for the work unit.
+        let sid = "sess-submodule";
+        context::set_pending_branch(main_s, sid, "dev_thing");
+
+        // Edit a file INSIDE the submodule; the state root is the superproject.
+        let file_in_sub = sub.join("f.txt");
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": file_in_sub.to_str().unwrap(), "content": "x" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(sub_s.to_string()),
+            session_id: Some(sid.to_string()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: main_s.to_string(),
+            trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
+        };
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
+
+        // The work branch was cut IN THE SUBMODULE, named with the SUBMODULE's base.
+        assert_eq!(
+            current_branch("git", sub_s).as_deref(),
+            Some("main_thing"),
+            "the work branch uses the submodule's base `main`, not the superproject's `dev`",
+        );
+        // The superproject HEAD is untouched (still on its own base).
+        assert_eq!(
+            current_branch("git", main_s).as_deref(),
+            Some("dev"),
+            "the superproject checkout is untouched",
+        );
+        assert!(
+            context::pending_branch_for(main_s, sid).is_none(),
+            "marker consumed after the submodule checkout",
+        );
     }
 }

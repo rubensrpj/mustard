@@ -938,6 +938,7 @@ Keep me.
             dependencies: Vec::new(),
             scripts: Vec::new(),
             detected_stacks: Vec::new(),
+            own_git_root: false,
         }
     }
 

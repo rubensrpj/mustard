@@ -30,7 +30,7 @@ Once the slug exists, run `mustard-rt run digest-adherence-finalize --spec {slug
 
 ## 4. EXECUTE
 
-All prompts via `agent-prompt-render --emit ref` — never hand-craft; stub mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard-review`; the DIAGNOSE Explore already ran read-only). Browser/UI-layer bug → append to the render's `--task-text`: `First Read ${CLAUDE_PLUGIN_ROOT}/refs/stack-templates/browser-debug.md and follow its instrumentation protocol.` Validate: build/type-check passes, no regression (max 3 iterations).
+All prompts via `agent-prompt-render --emit ref` — never hand-craft; stub mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard:mustard-review`; the DIAGNOSE Explore already ran read-only). Browser/UI-layer bug → append to the render's `--task-text`: `First Read ${CLAUDE_PLUGIN_ROOT}/refs/stack-templates/browser-debug.md and follow its instrumentation protocol.` Validate: build/type-check passes, no regression (max 3 iterations).
 
 ## 5. Failure routing
 

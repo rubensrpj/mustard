@@ -1,0 +1,16 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-19T03:11:53.611Z",
+  "parent": "field-report-fix-package-sialia",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/approve_spec.rs",
+      "path": "apps/rt/src/commands/spec/approve_spec.rs",
+      "done": true
+    }
+  ]
+}

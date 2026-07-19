@@ -161,9 +161,50 @@ fn targets_running_crate(command: &str) -> bool {
     })
 }
 
+/// The verdict of evaluating an AC's optional `Expect:` evidence regex against
+/// a passing command's captured output. Pure and panic-free (SRP: no process,
+/// no I/O) so the matcher is unit-testable in isolation.
+enum ExpectVerdict {
+    /// No `Expect:` declared ⇒ the caller keeps the legacy exit-code verdict.
+    NoExpectation,
+    /// The pattern compiled and matched the output.
+    Matched,
+    /// The pattern compiled but did NOT match the output.
+    Missed,
+    /// The pattern is not a valid regex ⇒ fail-open to `skip`, never a panic.
+    InvalidPattern,
+}
+
+/// Evaluate an optional `Expect:` regex against a command's combined output.
+/// Total + pure: an absent expectation is [`ExpectVerdict::NoExpectation`], an
+/// uncompilable pattern is [`ExpectVerdict::InvalidPattern`] (never a panic),
+/// otherwise match/miss. The regex is compiled here (per-AC, once) — qa-run
+/// runs a handful of ACs, so there is no hot loop to cache for.
+fn evaluate_expect(expect: Option<&str>, output: &str) -> ExpectVerdict {
+    let Some(pattern) = expect else {
+        return ExpectVerdict::NoExpectation;
+    };
+    match regex::Regex::new(pattern) {
+        Ok(re) if re.is_match(output) => ExpectVerdict::Matched,
+        Ok(_) => ExpectVerdict::Missed,
+        Err(_) => ExpectVerdict::InvalidPattern,
+    }
+}
+
+/// First 100 chars of `s` — the bounded excerpt carried in `stderr_excerpt`.
+fn excerpt(s: &str) -> String {
+    s.chars().take(100).collect()
+}
+
 /// Run one AC command. Mirrors the JS classification: `pass` (exit 0), `fail`
 /// (non-zero exit), `skip` (timeout or spawn failure).
-pub(super) fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
+///
+/// `expect` is the AC's optional `Expect:` evidence regex. When present and the
+/// command exits 0, the regex must match the command's combined stdout+stderr
+/// or the "green" command is downgraded to `fail` (it printed no expected
+/// evidence); an uncompilable pattern degrades to `skip` (fail-open). When
+/// absent, the exit-code-only verdict is byte-for-byte the historical one.
+pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
     let t0 = Instant::now();
     // Self-invocation guard for the DIRECT `-p`/`--package` form: no rewrite
     // can save this command (unlike `--workspace`, which gets `--exclude`d in
@@ -219,29 +260,56 @@ pub(super) fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
                     })
                     .unwrap_or_default();
                 let duration_ms = t0.elapsed().as_millis();
-                if status.success() {
-                    return AcResult {
-                        id: String::new(),
-                        status: "pass".to_string(),
-                        exit: Some(0),
-                        duration_ms,
-                        stderr_excerpt: String::new(),
-                    };
-                }
-                let combined: String = [stderr, stdout]
+                // Full combined output (stderr first, then stdout): the haystack
+                // the optional `Expect:` regex matches against AND the source of
+                // the bounded excerpt shown on failure.
+                let combined_full = [stderr, stdout]
                     .into_iter()
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
-                    .join(" ")
-                    .chars()
-                    .take(100)
-                    .collect();
+                    .join(" ");
+                if status.success() {
+                    // Optional `Expect:` evidence gate. Absent ⇒ the legacy
+                    // exit-0 pass (byte-for-byte). Present ⇒ the regex must
+                    // match the command's own output, else the "green" command
+                    // proved nothing (fail); an uncompilable pattern degrades to
+                    // skip, never a panic (fail-open).
+                    let pattern = expect.unwrap_or_default();
+                    return match evaluate_expect(expect, &combined_full) {
+                        ExpectVerdict::NoExpectation | ExpectVerdict::Matched => AcResult {
+                            id: String::new(),
+                            status: "pass".to_string(),
+                            exit: Some(0),
+                            duration_ms,
+                            stderr_excerpt: String::new(),
+                        },
+                        ExpectVerdict::Missed => AcResult {
+                            id: String::new(),
+                            status: "fail".to_string(),
+                            exit: Some(0),
+                            duration_ms,
+                            stderr_excerpt: format!(
+                                "Expect `{pattern}` not found in command output: {}",
+                                excerpt(&combined_full)
+                            ),
+                        },
+                        ExpectVerdict::InvalidPattern => AcResult {
+                            id: String::new(),
+                            status: "skip".to_string(),
+                            exit: Some(0),
+                            duration_ms,
+                            stderr_excerpt: format!(
+                                "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
+                            ),
+                        },
+                    };
+                }
                 return AcResult {
                     id: String::new(),
                     status: "fail".to_string(),
                     exit: Some(status.code().map_or(1, i64::from)),
                     duration_ms,
-                    stderr_excerpt: combined,
+                    stderr_excerpt: excerpt(&combined_full),
                 };
             }
             Ok(None) => {
@@ -420,7 +488,7 @@ mod tests {
         let dir = tempdir().unwrap();
         // node one-liner: a regex test inside parentheses, double-quoted -e arg.
         let cmd = r#"node -e "process.exit(/^(foo|bar)$/.test('bar') ? 0 : 1)""#;
-        let res = run_ac_command(cmd, dir.path());
+        let res = run_ac_command(cmd, None, dir.path());
         assert_eq!(
             res.status, "pass",
             "quoted+parenthesized AC command must run verbatim (exit {:?}, stderr: {})",
@@ -437,7 +505,7 @@ mod tests {
     fn ac_command_echoes_parenthesized_string() {
         let dir = tempdir().unwrap();
         let cmd = r#"node -e "console.log('(ok)')""#;
-        let res = run_ac_command(cmd, dir.path());
+        let res = run_ac_command(cmd, None, dir.path());
         assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, Some(0));
     }
@@ -504,7 +572,7 @@ mod tests {
     fn qa_self_invoked_direct_p_self_crate_skips_immediately() {
         let dir = tempdir().unwrap();
         QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
-        let res = run_ac_command("cargo test -p mustard-rt qa_run", dir.path());
+        let res = run_ac_command("cargo test -p mustard-rt qa_run", None, dir.path());
         QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
         assert_eq!(res.status, "skip");
         assert_eq!(res.exit, None);
@@ -543,7 +611,7 @@ mod tests {
     fn qa_self_invoked_false_runs_command_untouched() {
         let dir = tempdir().unwrap();
         // Thread-local default: self_invoked = false.
-        let res = run_ac_command("cargo test -p mustard-rt --offline", dir.path());
+        let res = run_ac_command("cargo test -p mustard-rt --offline", None, dir.path());
         assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
         assert!(
             res.stderr_excerpt.contains("Cargo.toml"),
@@ -573,6 +641,76 @@ mod tests {
         assert_eq!(
             rewrite_self_invoked_cargo("cargo test --workspace"),
             "cargo test --workspace"
+        );
+    }
+
+    /// The pure `Expect:` matcher: absent ⇒ NoExpectation, a compiling pattern
+    /// that matches ⇒ Matched, that misses ⇒ Missed, an uncompilable pattern ⇒
+    /// InvalidPattern (never a panic). This is the SRP surface the exit-0 gate
+    /// in `run_ac_command` delegates to.
+    #[test]
+    fn expect_regex_matcher_verdicts() {
+        assert!(matches!(evaluate_expect(None, "anything"), ExpectVerdict::NoExpectation));
+        assert!(matches!(
+            evaluate_expect(Some("test result: ok"), "running 3 tests\ntest result: ok. 3 passed"),
+            ExpectVerdict::Matched
+        ));
+        assert!(matches!(
+            evaluate_expect(Some("0 passed"), "test result: ok. 3 passed"),
+            ExpectVerdict::Missed
+        ));
+        // Unclosed character class ⇒ not a valid regex ⇒ fail-open, no panic.
+        assert!(matches!(evaluate_expect(Some("[unterminated"), "x"), ExpectVerdict::InvalidPattern));
+    }
+
+    /// End-to-end: an exit-0 command whose output MATCHES the `Expect:` regex
+    /// passes. `echo` is a builtin in both `cmd.exe` and `sh`, so this is
+    /// cross-platform.
+    #[test]
+    fn expect_regex_exit0_match_passes() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command("echo evidence-token", Some("evidence-token"), dir.path());
+        assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
+        assert_eq!(res.exit, Some(0));
+        assert!(res.stderr_excerpt.is_empty());
+    }
+
+    /// End-to-end: an exit-0 command whose output does NOT match the `Expect:`
+    /// regex is downgraded to `fail` — a green command that printed no expected
+    /// evidence proved nothing. The excerpt names the pattern and the output.
+    #[test]
+    fn expect_regex_exit0_no_match_fails() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command("echo evidence-token", Some("MISSING-TOKEN"), dir.path());
+        assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
+        // The command genuinely exited 0; the fail is the evidence gate.
+        assert_eq!(res.exit, Some(0));
+        assert!(res.stderr_excerpt.contains("MISSING-TOKEN"), "names the pattern: {}", res.stderr_excerpt);
+        assert!(res.stderr_excerpt.contains("evidence-token"), "shows the output excerpt: {}", res.stderr_excerpt);
+    }
+
+    /// End-to-end: an exit-0 command with NO `Expect:` keeps the legacy pass,
+    /// byte-for-byte (empty excerpt) — the unchanged-behaviour guarantee.
+    #[test]
+    fn expect_regex_absent_keeps_legacy_pass() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command("echo whatever", None, dir.path());
+        assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
+        assert_eq!(res.exit, Some(0));
+        assert!(res.stderr_excerpt.is_empty(), "legacy pass carries an empty excerpt");
+    }
+
+    /// End-to-end: an exit-0 command whose `Expect:` is an INVALID regex skips
+    /// (fail-open) with a reason — never a panic, never a false pass/fail.
+    #[test]
+    fn expect_regex_invalid_pattern_skips() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command("echo whatever", Some("[unterminated"), dir.path());
+        assert_eq!(res.status, "skip", "stderr: {}", res.stderr_excerpt);
+        assert!(
+            res.stderr_excerpt.contains("not a valid regex"),
+            "skip reason states the invalid pattern: {}",
+            res.stderr_excerpt
         );
     }
 }

@@ -54,6 +54,7 @@
 //! [`Observer`]) and never mints a marker on uncertainty.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::io::fs;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
 use serde_json::Value;
@@ -71,12 +72,43 @@ const APPROVAL_STEMS: &[&str] = &["approv", "aprov"];
 
 /// Resolve the spec the current session is deciding on; `None` on any
 /// uncertainty (which the caller treats as "record nothing"). Prefers the
-/// session→spec binding (precise), then the newest-pipeline-state hint — the
-/// same two-tier resolution the other spec-scoped hooks use. Shared with
-/// [`super::plan_approval_observer`] (the plan-mode recorder).
+/// session→spec binding (precise), then the newest-pipeline-state hint, then —
+/// only when both are silent — the UNIQUE pending Full plan (see
+/// [`unique_pending_full_plan`]). Shared with [`super::plan_approval_observer`]
+/// (the plan-mode recorder).
 pub(crate) fn active_spec(cwd: &str, input: &HookInput) -> Option<String> {
     let sid = input.session_id.as_deref().unwrap_or("");
-    spec_for_session(cwd, sid).or_else(|| current_spec(cwd))
+    spec_for_session(cwd, sid)
+        .or_else(|| current_spec(cwd))
+        .or_else(|| unique_pending_full_plan(cwd))
+}
+
+/// Last-resort spec resolution for [`active_spec`] when neither the session→spec
+/// binding nor the legacy `.pipeline-states/` hint names a spec: the UNIQUE spec
+/// whose `meta.json` sits in the exact fact-1 window — `scope=full`, `stage=Plan`,
+/// and NOT yet approved. Exactly one such spec is unambiguous and IS the plan
+/// being approved; zero or MORE THAN ONE returns `None` (fail-closed), so a real
+/// approval is never attributed to the wrong spec.
+///
+/// Field evidence (2026-07-18): the emitter-side session bind raced to a dead
+/// session, so both approval observers went blind and a genuine user approval
+/// minted nothing. Reusing [`is_full_plan`] + [`already_approved`] — the same
+/// predicates the observer's fact 1 already trusts — keeps this fallback aligned
+/// with the gate and free of a second, driftable definition of "pending Full plan".
+fn unique_pending_full_plan(cwd: &str) -> Option<String> {
+    let spec_dir = ClaudePaths::for_project(Path::new(cwd)).ok()?.spec_dir();
+    let mut pending = fs::read_dir(&spec_dir)
+        .ok()?
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.file_name)
+        .filter(|name| is_full_plan(cwd, name) && !already_approved(cwd, name));
+    let first = pending.next()?;
+    // A second candidate makes attribution ambiguous → record nothing.
+    if pending.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 /// `true` when `spec` is a Full-scope spec still in stage `Plan` (from its
@@ -381,5 +413,65 @@ mod tests {
         let input = ask_input("s-1", json!({ "Decision": "Aprovar" }));
         ApprovalMarkerObserver.observe(&input, &ctx(dir.path().to_str().unwrap()));
         // Survival is the contract.
+    }
+
+    // ── The unbound fallback: the UNIQUE pending Full plan ────────────────────
+
+    #[test]
+    fn unique_pending_full_plan_resolves_without_binding() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        // One Full spec in PLAN, unapproved, and NO session binding at all — the
+        // field-incident shape (the emitter bound to a dead session).
+        seed_spec(root, "epic", "full (wave plan)", "Plan");
+
+        // Deterministic guarantee: the resolver finds the single pending Full plan
+        // with no binding, no env override, no pipeline-states hint.
+        assert_eq!(
+            unique_pending_full_plan(root_str).as_deref(),
+            Some("epic"),
+            "the unique full/Plan/unapproved spec resolves as the pending plan",
+        );
+
+        // End-to-end: an unbound session's genuine approval now mints the marker
+        // via the fallback. `active_spec` still consults `current_spec` first,
+        // which honours `MUSTARD_ACTIVE_SPEC`; skip the mint assertion when that
+        // override is inherited so the test never flakes on an ambient env.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
+            let input = ask_input("s-unbound", json!({ "Approve?": "Aprovar e implementar agora" }));
+            ApprovalMarkerObserver.observe(&input, &ctx(root_str));
+            assert!(
+                marker_exists(root, "epic"),
+                "an unbound session's real approval mints the marker via the fallback",
+            );
+        }
+    }
+
+    #[test]
+    fn two_pending_full_plans_stay_none() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        // TWO Full specs in PLAN, both unapproved → ambiguous.
+        seed_spec(root, "epic-a", "full", "Plan");
+        seed_spec(root, "epic-b", "full", "Plan");
+
+        // Deterministic guarantee: ambiguity resolves to nothing (fail-closed) —
+        // an approval is never attributed by guessing between candidates.
+        assert_eq!(
+            unique_pending_full_plan(root_str),
+            None,
+            "two pending Full plans are ambiguous → the fallback declines",
+        );
+
+        // End-to-end: an unbound approval mints NOTHING under ambiguity. Guarded
+        // against an ambient `MUSTARD_ACTIVE_SPEC` for the same reason as above.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
+            let input = ask_input("s-unbound", json!({ "Decision": "Aprovar" }));
+            ApprovalMarkerObserver.observe(&input, &ctx(root_str));
+            assert!(!marker_exists(root, "epic-a"), "no marker on ambiguity");
+            assert!(!marker_exists(root, "epic-b"), "no marker on ambiguity");
+        }
     }
 }

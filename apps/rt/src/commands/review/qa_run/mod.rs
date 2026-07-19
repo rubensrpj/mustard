@@ -37,6 +37,13 @@ pub(crate) struct AcItem {
     /// parser (single parser source, no drift).
     pub(crate) statement: String,
     pub(crate) command: String,
+    /// The optional `Expect:` evidence regex — a backtick-wrapped pattern
+    /// qa-run matches against the command's combined stdout+stderr once the
+    /// command exits 0. `None` ⇒ the historical exit-code-only verdict
+    /// (unchanged byte-for-byte). Parsed off the `Command:` line or a following
+    /// line, mirroring the `Command:` lookahead. Exposed so `analyze_validation`
+    /// can warn about a test-runner AC that declares no evidence regex.
+    pub(crate) expect: Option<String>,
 }
 
 /// One AC execution outcome.
@@ -100,30 +107,42 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
             i += 1;
             continue;
         };
-        // Prefer a same-line `Command:` marker (historical one-line form).
+        // Prefer a same-line `Command:` marker (historical one-line form). The
+        // optional `Expect:` may ride the same line after the command.
         if let Some(command) = extract_command(after_sep) {
-            items.push(AcItem { id, statement: statement_of(after_sep), command });
+            let expect = extract_expect(after_sep);
+            items.push(AcItem { id, statement: statement_of(after_sep), command, expect });
             i += 1;
             continue;
         }
-        // Lookahead: scan following lines for the first `Command:` marker,
-        // stopping at the next AC header, a blank-line gap, or a `## ` heading.
+        // Lookahead: scan following lines for the first `Command:` marker and
+        // the optional `Expect:` marker, stopping at the next AC header, a
+        // blank-line gap, or a `## ` heading. `Expect:` may ride the command's
+        // line or sit on a following line before the block ends.
         let mut j = i + 1;
         let mut command = None;
+        let mut expect = None;
         while j < lines.len() {
             let line = lines[j];
             if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
             {
                 break;
             }
-            if let Some(cmd) = extract_command(line) {
-                command = Some(cmd);
-                break;
+            if command.is_none() {
+                if let Some(cmd) = extract_command(line) {
+                    command = Some(cmd);
+                    expect = extract_expect(line); // same-line `Expect:`, if any
+                }
+            } else if expect.is_none() {
+                expect = extract_expect(line); // standalone `Expect:` line
+            }
+            if command.is_some() && expect.is_some() {
+                break; // both captured — nothing more to scan in this block
             }
             j += 1;
         }
         if let Some(command) = command {
-            items.push(AcItem { id, statement: statement_of(after_sep), command });
+            items.push(AcItem { id, statement: statement_of(after_sep), command, expect });
         }
         // Resume after the header line; the next header (if any) is re-parsed
         // on its own iteration regardless of where the lookahead landed.
@@ -143,7 +162,8 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
 fn parse_ac_line(line: &str) -> Option<AcItem> {
     let (id, after_sep) = parse_ac_header(line)?;
     let command = extract_command(after_sep)?;
-    Some(AcItem { id, statement: statement_of(after_sep), command })
+    let expect = extract_expect(after_sep);
+    Some(AcItem { id, statement: statement_of(after_sep), command, expect })
 }
 
 /// Parse the AC **header** part of a line: the bullet, an OPTIONAL `[ ]`/`[x]`
@@ -255,31 +275,45 @@ fn strip_separator(s: &str) -> Option<&str> {
     None
 }
 
-/// Extract the command from a fragment that may contain a `Command:` marker.
+/// Extract the value after the LAST occurrence of `marker` (a lowercase
+/// `"label:"`) in `fragment` — the shared spine of the `Command:` and `Expect:`
+/// readers so the two markers parse identically.
 ///
-/// Matches `command:` (colon attached) so embedded words like
-/// `commands/mustard/*` in a description don't false-positive on a bare
-/// "command" substring. Uses the LAST occurrence — defensive against
-/// descriptions that legitimately contain the literal `command:` before the
-/// real marker. When the command is backtick-quoted, takes only the text
-/// between the first pair of backticks and ignores any trailing parenthetical
-/// (e.g. "(entregue em W1)"); the bare form (`Command: cargo test`) keeps the
-/// historical behaviour. Returns `None` when no marker is present or the
-/// command is empty.
-fn extract_command(fragment: &str) -> Option<String> {
+/// Matches the colon-attached label so embedded words like `commands/mustard/*`
+/// in a description don't false-positive on a bare substring. Uses the LAST
+/// occurrence — defensive against a description that legitimately contains the
+/// literal label before the real marker. When the value is backtick-quoted,
+/// takes only the text between the first pair of backticks and ignores any
+/// trailing parenthetical (e.g. "(entregue em W1)"); the bare form
+/// (`Command: cargo test`) keeps the historical behaviour. Returns `None` when
+/// the marker is absent or the value is empty.
+fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
     let lower_seg = fragment.to_lowercase();
-    let cmd_idx = lower_seg.rfind("command:")?;
-    let cmd_tail = fragment[cmd_idx + "command:".len()..].trim();
-    let command = if let Some(rest) = cmd_tail.strip_prefix('`') {
+    let idx = lower_seg.rfind(marker)?;
+    let tail = fragment[idx + marker.len()..].trim();
+    let value = if let Some(rest) = tail.strip_prefix('`') {
         let close = rest.find('`').unwrap_or(rest.len());
         rest[..close].trim().to_string()
     } else {
-        cmd_tail.trim().to_string()
+        tail.trim().to_string()
     };
-    if command.is_empty() {
+    if value.is_empty() {
         return None;
     }
-    Some(command)
+    Some(value)
+}
+
+/// Extract the command from a fragment that may contain a `Command:` marker.
+/// Thin wrapper over [`extract_marker`] — see it for the exact quoting rules.
+fn extract_command(fragment: &str) -> Option<String> {
+    extract_marker(fragment, "command:")
+}
+
+/// Extract the optional `Expect:` evidence regex (backtick-wrapped) from a
+/// fragment. Same last-occurrence + backtick-quoting rules as
+/// [`extract_command`]; `None` when no `Expect:` marker is present.
+fn extract_expect(fragment: &str) -> Option<String> {
+    extract_marker(fragment, "expect:")
 }
 
 /// Extract the AC **statement** (the description) from the text after the id
@@ -432,11 +466,11 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     // The spec's OWN ACs — parsed exactly as before. An absent / unparseable
     // `## Acceptance Criteria` section yields none (it is no longer a hard skip
     // on its own, because the spec may still carry executable capability ACs).
-    let mut items: Vec<(String, String)> = extract_ac_section(&markdown)
+    let mut items: Vec<(String, String, Option<String>)> = extract_ac_section(&markdown)
         .map(|section| {
             parse_ac_items(&section)
                 .into_iter()
-                .map(|it| (it.id, it.command))
+                .map(|it| (it.id, it.command, it.expect))
                 .collect()
         })
         .unwrap_or_default();
@@ -444,8 +478,9 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
 
     // Append the executable ACs of every linked capability (F5). A spec with no
     // `## Capabilities` section adds nothing here, so its run is unchanged.
+    // Capability scenarios carry no `Expect:` regex — they gate on exit code.
     let capability_acs = runner::gather_capability_acs(cwd, spec);
-    items.extend(capability_acs);
+    items.extend(capability_acs.into_iter().map(|(id, command)| (id, command, None)));
 
     if items.is_empty() {
         // Nothing to run from either source ⇒ skip (preserves the historical
@@ -462,8 +497,8 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
 
     let mut criteria = Vec::new();
     let (mut fail_count, mut skip_count) = (0usize, 0usize);
-    for (id, command) in &items {
-        let mut res = runner::run_ac_command(command, cwd);
+    for (id, command, expect) in &items {
+        let mut res = runner::run_ac_command(command, expect.as_deref(), cwd);
         res.id.clone_from(id);
         if res.status == "fail" {
             fail_count += 1;

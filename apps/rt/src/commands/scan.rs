@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::Scan;
-use mustard_core::domain::scan::read_projects;
+use mustard_core::domain::scan::{mark_own_git_roots, read_projects};
 use serde_json::{json, Value};
 
 use super::scan_claude;
@@ -71,7 +71,13 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
 
     // Only run the CLAUDE.md pass when grain succeeded (model file is valid).
     if scan_result.is_ok() {
-        let projects = read_projects(&model_path);
+        let mut projects = read_projects(&model_path);
+        // The grain miner is git-blind; stamp the git-boundary FACT onto the
+        // census here (a `.git` dir/file at each subproject's dir) so the
+        // subproject list carries "this is its own repo" for every downstream
+        // consumer (dispatch / prompt render / branch gate re-derive it the
+        // same way from the same helper). See `mark_own_git_roots`.
+        mark_own_git_roots(root, &mut projects);
         let pass = scan_claude::run_pass(root, &projects, full);
 
         if full {

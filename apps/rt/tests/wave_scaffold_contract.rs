@@ -238,3 +238,97 @@ fn wave_scaffold_alignment_plan_materialize_unreadable_exits_2() {
     assert_eq!(json["scaffold"]["error"], Value::String("plan unreadable".into()));
     assert_eq!(json["events"], serde_json::json!([]), "no events for a failed scaffold");
 }
+
+/// Trace gate (strict, the default): a parent spec.md whose `## Acceptance
+/// Criteria` carries an id NO wave claims makes `wave-scaffold` exit non-zero,
+/// listing every uncovered id in `trace_gaps` on stdout. The layout is still
+/// materialised (idempotent) — but the orchestrator now notices the untraced
+/// criterion instead of a clean exit 0.
+#[test]
+fn wave_scaffold_parent_spec_ac_uncovered_strict_exits_2() {
+    let tmp = TempDir::new().expect("tempdir");
+    let spec_dir = tmp.path().join("epic");
+    std::fs::create_dir_all(&spec_dir).expect("spec dir");
+    // The parent monolithic spec defines AC-1 + AC-2.
+    std::fs::write(
+        spec_dir.join("spec.md"),
+        "# Epic\n\n## Acceptance Criteria\n- **AC-1** — a. Command: `true`\n- **AC-2** — b. Command: `true`\n",
+    )
+    .expect("write spec");
+    // The plan routes only AC-1 onto a wave — AC-2 is left uncovered.
+    let plan = tmp.path().join("plan.json");
+    std::fs::write(
+        &plan,
+        r#"{"waves":[{"n":1,"role":"backend","summary":"s","tasks":["do it"],"satisfies":["AC-1"]}],"total_waves":1,"lang":"en-US"}"#,
+    )
+    .expect("write plan");
+
+    let out = run_rt(
+        tmp.path(),
+        &[
+            "run",
+            "wave-scaffold",
+            "--spec-dir",
+            spec_dir.to_str().expect("utf8"),
+            "--plan",
+            plan.to_str().expect("utf8"),
+        ],
+    );
+
+    assert_eq!(out.status.code(), Some(2), "uncovered parent AC under strict must exit 2");
+    let json = stdout_json(&out);
+    assert_eq!(json["error"], Value::String("uncovered acceptance criteria".into()));
+    let gaps = json["trace_gaps"].as_array().expect("trace_gaps array");
+    assert!(
+        gaps.iter().any(|g| g.as_str().is_some_and(|s| s.contains("AC-2"))),
+        "the uncovered AC-2 is listed on stdout: {json}"
+    );
+    // The layout was still materialised despite the block (idempotent scaffold).
+    assert!(spec_dir.join("wave-plan.md").exists(), "scaffold still ran");
+}
+
+/// The trace gate honours `MUSTARD_TRACE_GATE_MODE=warn`: the same uncovered
+/// parent AC is surfaced on stderr but the command exits 0 with no `error` /
+/// `trace_gaps` keys — warn advises, only strict blocks.
+#[test]
+fn wave_scaffold_parent_spec_ac_uncovered_warn_exits_0() {
+    let tmp = TempDir::new().expect("tempdir");
+    let spec_dir = tmp.path().join("epic");
+    std::fs::create_dir_all(&spec_dir).expect("spec dir");
+    std::fs::write(
+        spec_dir.join("spec.md"),
+        "# Epic\n\n## Acceptance Criteria\n- **AC-1** — a. Command: `true`\n- **AC-2** — b. Command: `true`\n",
+    )
+    .expect("write spec");
+    let plan = tmp.path().join("plan.json");
+    std::fs::write(
+        &plan,
+        r#"{"waves":[{"n":1,"role":"backend","summary":"s","tasks":["do it"],"satisfies":["AC-1"]}],"total_waves":1,"lang":"en-US"}"#,
+    )
+    .expect("write plan");
+
+    let bin = env!("CARGO_BIN_EXE_mustard-rt");
+    let out = std::process::Command::new(bin)
+        .args([
+            "run",
+            "wave-scaffold",
+            "--spec-dir",
+            spec_dir.to_str().expect("utf8"),
+            "--plan",
+            plan.to_str().expect("utf8"),
+        ])
+        .current_dir(tmp.path())
+        .env("CLAUDE_PROJECT_DIR", tmp.path().to_string_lossy().as_ref())
+        .env("MUSTARD_TRACE_GATE_MODE", "warn")
+        .output()
+        .expect("run mustard-rt");
+
+    assert_eq!(out.status.code(), Some(0), "warn mode must exit 0");
+    let json = stdout_json(&out);
+    assert!(json.get("error").is_none(), "warn mode adds no error key: {json}");
+    assert!(json.get("trace_gaps").is_none(), "warn mode adds no trace_gaps key: {json}");
+    // The gap IS surfaced on stderr as a WARN even though the command passes.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("AC-2"), "warn surfaces the uncovered AC on stderr: {stderr}");
+    assert!(spec_dir.join("wave-plan.md").exists());
+}

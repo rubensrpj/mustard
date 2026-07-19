@@ -111,14 +111,19 @@ fn approval_sequence(wave_plan: bool, resume: bool) -> Vec<Step> {
 }
 
 // ---------------------------------------------------------------------------
-// T5 — the approval gate.
+// The approval gate — clarify (F6) + user-approval (T5), evaluated together.
 //
-// `approve-spec` may emit the `draft→approved` signal ONLY once a real user has
-// approved the plan. The `approval_marker_observer` records that human answer as
-// `<spec>/.approved-by-user` — a marker the model cannot author, since it is born
-// from the user's `AskUserQuestion` `tool_response`. Without the marker, `strict`
-// refuses: a gate the gated could open by running this very command is not a
-// gate. Mode reads exactly like the `MUSTARD_*_GATE_MODE` close-gate family.
+// `approve-spec` may emit the `draft→approved` signal ONLY once BOTH preconditions
+// hold: a Full plan is CLARIFIED (`<spec>/.clarified`, F6) and a real user has
+// APPROVED it (`<spec>/.approved-by-user`, T5). Each marker is born from an act the
+// model cannot author — the deliberate clarification finalize, and the user's own
+// `AskUserQuestion` / `ExitPlanMode` answer echoed in `tool_response`. A gate the
+// gated could open by running this very command is not a gate.
+//
+// The two preconditions are checked in ONE pass so a single refusal names EVERY
+// unmet marker with its minting path — the pre-refactor gate exited on the first
+// miss and hid the second, costing the user a second failed run to discover it.
+// Mode reads exactly like the `MUSTARD_*_GATE_MODE` close-gate family.
 // ---------------------------------------------------------------------------
 
 /// Three-state mode for the user-approval requirement.
@@ -175,24 +180,46 @@ fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
     }
 }
 
-/// Didactic refusal surfaced as the report `error` when strict mode finds no
-/// user-approval marker. The flow relays `{ok:false,error}` straight to the user.
-const APPROVAL_REQUIRED_MSG: &str = "approval must come from the user — present \
-the plan in plan mode and let the user accept it (ExitPlanMode), which records \
-the .approved-by-user marker; when plan mode is unavailable, ask via \
-AskUserQuestion (fallback — the user's own answer records the same marker). \
-approve-spec will not self-approve a Full plan (that is what the field \
-incident did). To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off.";
-
-/// Didactic refusal surfaced as the report `error` when a Full plan is not yet
-/// clarified. Mirrors [`APPROVAL_REQUIRED_MSG`] — clarify precedes approval (F6).
-const CLARIFY_REQUIRED_MSG: &str = "a Full plan must be CLARIFIED before approval \
-— run the clarification finalize (`mustard-rt run grill-capture --finalize --spec \
-<spec>`) after the ANALYZE glossary grill to record the `<spec>/.clarified` \
-marker. The glossary grill is optional; finalize marks clarification complete \
-even with zero terms, so a complete-glossary spec is never deadlocked. \
-approve-spec will not approve an unclarified Full plan. To temporarily relax, set \
-MUSTARD_APPROVAL_MODE=warn or off.";
+/// Build the aggregated refusal that names EVERY unmet approval precondition at
+/// once — clarify (F6, `<spec>/.clarified`) and/or user-approval (T5,
+/// `<spec>/.approved-by-user`) — each with the path that mints it. One message so
+/// the user sees everything missing in a single run, instead of the pre-refactor
+/// gate's first-miss-only refusal. `spec` is interpolated into the clarify
+/// finalize command. Returns `None` when nothing is missing — the caller then
+/// proceeds silently. Surfaced as the report `error`; the flow relays
+/// `{ok:false,error}` straight to the user.
+fn unmet_gate_message(spec: &str, clarify_missing: bool, approval_missing: bool) -> Option<String> {
+    let mut unmet: Vec<String> = Vec::new();
+    if clarify_missing {
+        unmet.push(format!(
+            "clarify — no `<spec>/.clarified`: run the clarification finalize \
+             `mustard-rt run grill-capture --finalize --spec {spec}` after the ANALYZE \
+             glossary grill (finalize completes clarification even with zero terms, so a \
+             clear-glossary spec is never deadlocked)"
+        ));
+    }
+    if approval_missing {
+        unmet.push(
+            "approval — no `<spec>/.approved-by-user`: the user accepts the plan in plan \
+             mode (ExitPlanMode) or answers the approval AskUserQuestion (fallback); the \
+             model cannot forge either"
+                .to_string(),
+        );
+    }
+    if unmet.is_empty() {
+        return None;
+    }
+    let list = unmet
+        .iter()
+        .map(|u| format!("- {u}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "approve-spec will not self-approve a Full plan (that is what the field incident \
+         did). Unmet precondition(s):\n{list}\nTo temporarily relax, set \
+         MUSTARD_APPROVAL_MODE=warn or off."
+    ))
+}
 
 /// `true` when `spec`'s `meta.json#scope` declares a Full-scope spec (starts with
 /// `full` after a case-insensitive trim — `"full"` or `"full (wave plan)"`). Only
@@ -212,17 +239,16 @@ fn spec_is_full(root: &str, spec: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Act on a resolved [`ApprovalGate`] for one precondition: `Block` prints the
-/// didactic `error` report and exits 1 (a gate the gated cannot open by running
-/// this very command); `Warn` emits the nudge to stderr and proceeds; `Proceed`
-/// is a no-op. Shared by the clarify (F6) and user-approval (T5) preconditions so
-/// both refuse identically.
-fn enforce_approval_gate(gate: ApprovalGate, block_error: &str, warn_msg: &str) {
+/// Act on the resolved combined gate with the aggregated `message` covering every
+/// unmet precondition: `Block` prints it as the `error` report and exits 1 (a gate
+/// the gated cannot open by running this very command); `Warn` echoes the SAME text
+/// to stderr and proceeds; `Proceed` is a no-op.
+fn enforce_gate(gate: ApprovalGate, message: &str) {
     match gate {
         ApprovalGate::Block => {
             let err = ApproveError {
                 ok: false,
-                error: block_error.to_string(),
+                error: message.to_string(),
             };
             println!(
                 "{}",
@@ -231,7 +257,7 @@ fn enforce_approval_gate(gate: ApprovalGate, block_error: &str, warn_msg: &str) 
             let _ = std::io::Write::flush(&mut std::io::stdout());
             std::process::exit(1);
         }
-        ApprovalGate::Warn => eprintln!("{warn_msg}"),
+        ApprovalGate::Warn => eprintln!("{message}"),
         ApprovalGate::Proceed => {}
     }
 }
@@ -255,53 +281,36 @@ pub fn run(opts: ApproveSpecOpts) {
         return;
     }
 
-    // T5 approval gate — refuse (strict) to emit the approval signal without a
-    // recorded HUMAN approval. The `<spec>/.approved-by-user` marker is written
-    // ONLY by `approval_marker_observer` from the user's real AskUserQuestion
-    // answer, so a background job (no user, no answer, no marker) halts cleanly
-    // here and the Full spec stays in PLAN instead of auto-approving.
+    // Approval gate — refuse (strict) to emit the approval signal until BOTH
+    // preconditions hold. Clarify (F6) precedes approval and applies only to Full
+    // specs; user-approval (T5) applies to every spec. Both markers are minted by
+    // acts the model cannot forge (the deliberate `grill-capture --finalize`, and
+    // the observer recording the user's real AskUserQuestion / ExitPlanMode
+    // answer). A background job (no user, no answer, no marker) halts cleanly here
+    // and the spec stays in PLAN instead of auto-approving. The two are evaluated
+    // TOGETHER so one refusal names every unmet marker with its minting path.
     let mode = resolve_approval_mode();
     if mode != ApprovalMode::Off {
         let cwd = crate::shared::context::cwd();
 
-        // Clarify precedes approval (F6). A Full plan must be CLARIFIED before it
-        // may be approved: `<spec>/.clarified` is minted by the deliberate
-        // clarification finalize (`grill-capture --finalize`). Only Full specs
-        // carry this gate — Light / task specs skip it. This is the natural gate
-        // boundary: the spec is known explicitly here via `--spec`, so there is
-        // no resolution problem (unlike the write-time `scope_guard`).
-        if spec_is_full(&cwd, &opts.spec) {
-            let clarified = crate::shared::context::clarified_marker_path(&cwd, &opts.spec)
+        // Clarify only gates Full specs — Light / task specs skip it. The spec is
+        // known explicitly here via `--spec`, so there is no resolution problem
+        // (unlike the write-time `scope_guard`).
+        let clarify_missing = spec_is_full(&cwd, &opts.spec)
+            && !crate::shared::context::clarified_marker_path(&cwd, &opts.spec)
                 .map(|p| p.exists())
                 .unwrap_or(false);
-            enforce_approval_gate(
-                approval_gate(mode, clarified),
-                CLARIFY_REQUIRED_MSG,
-                &format!(
-                    "[clarify] proceeding without a `.clarified` marker for Full spec '{}' \
-                     (MUSTARD_APPROVAL_MODE=warn) — the plan was not clarified; strict mode \
-                     would refuse this.",
-                    opts.spec
-                ),
-            );
-        }
-
-        // User-approval gate (T5): the plan must have been accepted by a human —
-        // the `.approved-by-user` marker the observer writes from the real
-        // AskUserQuestion / ExitPlanMode answer, which the model cannot forge.
-        let marker_present = crate::shared::context::approval_marker_path(&cwd, &opts.spec)
+        let approval_missing = !crate::shared::context::approval_marker_path(&cwd, &opts.spec)
             .map(|p| p.exists())
             .unwrap_or(false);
-        enforce_approval_gate(
-            approval_gate(mode, marker_present),
-            APPROVAL_REQUIRED_MSG,
-            &format!(
-                "[approval] proceeding without a user-approval marker for spec '{}' \
-                 (MUSTARD_APPROVAL_MODE=warn) — the plan was not confirmed by the user; \
-                 strict mode would refuse this.",
-                opts.spec
-            ),
-        );
+
+        // A single decision over both preconditions: any unmet marker yields an
+        // aggregated message; `approval_gate(mode, false)` then maps mode → Block
+        // (strict, exit 1) or Warn (stderr nudge, proceed). No unmet marker → the
+        // builder returns `None` and the flow proceeds silently.
+        if let Some(message) = unmet_gate_message(&opts.spec, clarify_missing, approval_missing) {
+            enforce_gate(approval_gate(mode, false), &message);
+        }
     }
 
     for (kind, payload) in approval_sequence(opts.wave_plan, opts.resume) {
@@ -645,5 +654,71 @@ mod tests {
             !spec_is_full(root_str, "small"),
             "a Light spec is not full → the clarify gate is skipped"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Combined gate — one refusal names EVERY unmet marker (clarify + approval)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn combined_refusal_lists_all_missing_gates() {
+        // Both markers absent → the single refusal names BOTH, each with its own
+        // minting path, instead of exiting on the first miss and hiding the second.
+        let msg = unmet_gate_message("epic", true, true).expect("both missing → a refusal");
+        assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
+        assert!(
+            msg.contains("grill-capture --finalize --spec epic"),
+            "names the clarify minting path with the spec: {msg}"
+        );
+        assert!(msg.contains(".approved-by-user"), "names the approval marker: {msg}");
+        assert!(
+            msg.contains("ExitPlanMode") && msg.contains("AskUserQuestion"),
+            "names the approval minting path: {msg}"
+        );
+        // Strict refuses (Block ⇒ exit≠0) when a marker is missing.
+        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
+    }
+
+    #[test]
+    fn clarify_only_missing_refuses_with_single_requirement() {
+        // Clarify absent, approval present → refuse, but name ONLY the clarify
+        // requirement (no stray approval line).
+        let msg =
+            unmet_gate_message("epic", true, false).expect("clarify missing → a refusal");
+        assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
+        assert!(
+            msg.contains("grill-capture --finalize --spec epic"),
+            "names the clarify minting path: {msg}"
+        );
+        assert!(
+            !msg.contains(".approved-by-user"),
+            "must NOT name the met approval marker: {msg}"
+        );
+        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
+    }
+
+    #[test]
+    fn approval_only_missing_refuses_with_single_requirement() {
+        // Approval absent, clarify present (or not a Full spec) → refuse, but name
+        // ONLY the approval requirement.
+        let msg =
+            unmet_gate_message("epic", false, true).expect("approval missing → a refusal");
+        assert!(msg.contains(".approved-by-user"), "names the approval marker: {msg}");
+        assert!(
+            msg.contains("ExitPlanMode") && msg.contains("AskUserQuestion"),
+            "names the approval minting path: {msg}"
+        );
+        assert!(
+            !msg.contains(".clarified"),
+            "must NOT name the met clarify marker: {msg}"
+        );
+        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
+    }
+
+    #[test]
+    fn both_present_approves() {
+        // Neither marker missing → no refusal message, and strict proceeds.
+        assert_eq!(unmet_gate_message("epic", false, false), None);
+        assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
     }
 }
