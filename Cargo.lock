@@ -1128,6 +1128,7 @@ dependencies = [
  "mustard-core",
  "mustard-mcp",
  "notify",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

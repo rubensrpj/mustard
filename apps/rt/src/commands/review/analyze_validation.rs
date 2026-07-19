@@ -257,6 +257,42 @@ fn cargo_test_has_filter(tokens: &[&str]) -> bool {
     false
 }
 
+/// Whether an AC `command` invokes a TEST RUNNER — the subset of the weak-AC
+/// vocabulary that runs a suite: `cargo test|t|nextest`, or
+/// `npm|pnpm|yarn|bun test|t` / `… run test`. A leading `rtk ` wrapper is
+/// transparent; a COMPOUND command (`&&`/`||`/`;`/`|`) is exempt (the author
+/// already chained an assertion). Language-agnostic — it keys off the runner
+/// verb, never the runner's output. Pure, total, never panics.
+///
+/// Used by the V6b lint to suggest a declared `Expect:` evidence regex for a
+/// test AC that has none: a green suite proves the tests ran, not that THIS
+/// feature's behaviour holds.
+fn is_test_shaped_command(command: &str) -> bool {
+    let cmd = command.trim();
+    if cmd.is_empty()
+        || cmd.contains("&&")
+        || cmd.contains("||")
+        || cmd.contains(';')
+        || cmd.contains('|')
+    {
+        return false;
+    }
+    let cmd = cmd.strip_prefix("rtk ").map_or(cmd, str::trim_start);
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let Some(&first) = tokens.first() else {
+        return false;
+    };
+    match first {
+        "cargo" => matches!(tokens.get(1).copied(), Some("test" | "t" | "nextest")),
+        "npm" | "pnpm" | "yarn" | "bun" => match tokens.get(1).copied() {
+            Some("test" | "t") => true,
+            Some("run") => tokens.get(2).copied() == Some("test"),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Run the validation. Returns the issues list.
 ///
 /// `pub(crate)` so `plan-materialize` composes the same checks in-process
@@ -406,6 +442,40 @@ pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
                 ),
             }));
         }
+
+        // Validation 6b: a TEST-RUNNER AC that declares no `Expect:` evidence
+        // regex. A green `cargo test` / `npm test` proves the suite ran, not
+        // that THIS feature's behaviour holds; a declared `Expect: `<regex>``
+        // (matched by qa-run against the command's own output) turns the pass
+        // into evidence. WARN-level, language-agnostic (keyed off the runner
+        // verb, never its output). Excludes the trailing safety AC, `<…>`
+        // skeletons, and ids already flagged weak (a tautology's fix is
+        // replacement, not an Expect line). Reuses the exposed `AcItem.expect`.
+        let no_expect: Vec<String> = ac_items
+            .iter()
+            .enumerate()
+            .filter(|(i, item)| {
+                *i != last
+                    && item.expect.is_none()
+                    && !item.command.contains('<')
+                    && is_test_shaped_command(&item.command)
+                    && !weak.contains(&item.id)
+            })
+            .map(|(_, item)| item.id.clone())
+            .collect();
+        if !no_expect.is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "test-ac-no-expect",
+                "message": format!(
+                    "Test-runner acceptance criteria with no declared `Expect:` evidence regex: \
+                     {}. A passing suite proves the tests ran, not that this feature's behaviour \
+                     holds — add an `Expect: `<regex>`` line so qa-run matches the expected \
+                     evidence in the command's output.",
+                    no_expect.join(", ")
+                ),
+            }));
+        }
     }
 
     // Validation 7: cross-artifact coherence (AC × task × file). Mirrors V5 — it
@@ -529,6 +599,42 @@ mod tests {
             .unwrap_or_default();
         assert!(msg.contains("AC-1"), "grep -q AC is weak: {issues:?}");
         assert!(!msg.contains("AC-2"), "filtered cargo test is strong: {issues:?}");
+    }
+
+    /// V6b: a FILTERED `cargo test` (strong, so NOT flagged weak) that declares
+    /// no `Expect:` line raises `test-ac-no-expect` — a green suite proves the
+    /// tests ran, not that this feature's behaviour holds. Adding an `Expect:`
+    /// regex line suppresses the warn (the `expect_regex` evidence contract).
+    #[test]
+    fn expect_regex_test_ac_without_expect_warns_and_expect_line_clears_it() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        // AC-1: filtered cargo test, no Expect ⇒ warns. AC-2: trailing safety,
+        // exempt.
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n\
+                    - **AC-2** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        let warn = issues
+            .iter()
+            .find(|i| i["type"] == json!("test-ac-no-expect"))
+            .unwrap_or_else(|| panic!("expected test-ac-no-expect WARN: {issues:?}"));
+        assert_eq!(warn["severity"], json!("WARN"));
+        let msg = warn["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("AC-1"), "the un-asserted test AC is named: {msg}");
+        assert!(!msg.contains("AC-2"), "the trailing safety AC is exempt: {msg}");
+
+        // Same spec, AC-1 now declares an `Expect:` regex ⇒ no warn.
+        let body2 = "# Spec\n\n## Acceptance Criteria\n\
+                     - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n  Expect: `test result: ok`\n\
+                     - **AC-2** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body2).unwrap();
+        let issues2 = validate(&path, body2);
+        assert!(
+            !issues2.iter().any(|i| i["type"] == json!("test-ac-no-expect")),
+            "a declared Expect line clears the warn: {issues2:?}"
+        );
     }
 
     /// V7: a PRESENT-but-unparseable AC section with agent task blocks →
