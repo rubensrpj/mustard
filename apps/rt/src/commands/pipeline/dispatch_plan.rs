@@ -83,6 +83,38 @@ pub struct DispatchItem {
     /// See [`crate::commands::agent::agent_prompt_render::recommended_subagent_type`].
     #[serde(rename = "subagent_type")]
     pub subagent_type: String,
+    /// `true` when this item's subproject is its OWN nested git repository (a
+    /// submodule: `.git` dir/file at its dir) — the git-boundary fact the scan
+    /// census records for the matching `projects[]` entry. Threaded so the
+    /// rendered implementer prompt can state the boundary (separate commit
+    /// history; never bump the superproject gitlink pointer) and the branch gate
+    /// can base the work branch on the submodule's own default branch. Omitted
+    /// from the JSON when `false` so the dispatch output stays byte-stable for a
+    /// non-submodule subproject (the common case).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub own_git_root: bool,
+}
+
+/// serde `skip_serializing_if` for the additive [`DispatchItem::own_git_root`]:
+/// omit the field when `false` so the dispatch-plan JSON is byte-identical to
+/// the pre-flag shape for every non-submodule subproject.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The git-boundary FACT for an item's subproject: `true` when the subproject's
+/// own directory is a nested git repository root (`.git` dir or pointer file) —
+/// the SAME fact the census records for its matching `projects[]` entry (see
+/// [`mustard_core::mark_own_git_roots`]), derived here by the single shared
+/// probe [`mustard_core::io::workspace::is_git_repo_root`] so dispatch needs no
+/// census round-trip through the external scan tool. The superproject root
+/// (`"."` / empty) is never a nested boundary. Purely a filesystem probe.
+fn subproject_own_git_root(project: &Path, subproject: &str) -> bool {
+    let sub = subproject.trim();
+    if sub.is_empty() || sub == "." {
+        return false;
+    }
+    mustard_core::io::workspace::is_git_repo_root(&project.join(sub))
 }
 
 /// A wave row parsed out of `wave-plan.md` (pre-ordering).
@@ -148,6 +180,7 @@ pub(crate) fn build_plan(
                 subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
                     &row.role,
                 ),
+                own_git_root: subproject_own_git_root(project, &subproject),
             }
         })
         .collect();
@@ -212,6 +245,7 @@ fn single_spec_plan(project: &Path, spec_dir: &Path, spec: &str) -> Vec<Dispatch
         subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
             role,
         ),
+        own_git_root: subproject_own_git_root(project, &subproject),
     }]
 }
 
@@ -1080,5 +1114,48 @@ mod tests {
         assert_eq!(items[1].wave, 2);
         assert_eq!(items[1].depends_on, vec![1]);
         assert_eq!(items[1].level, 1);
+    }
+
+    /// AC-5: the git-boundary fact reaches the dispatch item. A subproject whose
+    /// own dir is a nested git root (`.git` FILE — the submodule shape) makes the
+    /// item carry `own_git_root: true`; a plain subproject stays false.
+    #[test]
+    fn dispatch_item_carries_own_git_root_for_nested_repo() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+
+        // A nested submodule: `.git` as a FILE (gitdir pointer) at apps/sub.
+        let sub = project.join("apps").join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), b"gitdir: ../../.git/modules/sub\n").unwrap();
+
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("bnd")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# B\n\n## Files\n- apps/sub/src/x.rs\n").unwrap();
+
+        let items = build_plan(project, &spec_dir, "bnd", None);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subproject, "apps/sub");
+        assert!(items[0].own_git_root, "nested `.git` subproject carries the boundary flag");
+
+        // A plain subproject (no `.git`) does not carry the flag.
+        let spec_dir2 = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("plain")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir2).unwrap();
+        std::fs::write(spec_dir2.join("spec.md"), "# P\n\n## Files\n- apps/rt/src/y.rs\n").unwrap();
+        let items2 = build_plan(project, &spec_dir2, "plain", None);
+        assert_eq!(items2.len(), 1);
+        assert_eq!(items2[0].subproject, "apps/rt");
+        assert!(!items2[0].own_git_root, "a plain subproject has no boundary flag");
     }
 }

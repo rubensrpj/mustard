@@ -95,6 +95,20 @@ pub(crate) struct AdvanceItem {
     /// `MODE=off`) stays with the orchestrator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub precheck: Option<Value>,
+    /// `true` when this item's subproject is its OWN nested git repository (a
+    /// submodule) — carried through from the dispatch plan
+    /// ([`dispatch_plan::DispatchItem::own_git_root`]) so the rendered prompt
+    /// states the git boundary. Omitted from the JSON when `false` so the
+    /// advance output stays byte-stable for a non-submodule subproject.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub own_git_root: bool,
+}
+
+/// serde `skip_serializing_if` for the additive [`AdvanceItem::own_git_root`]:
+/// omit the field when `false` so the wave-advance JSON is byte-identical to
+/// the pre-flag shape for every non-submodule subproject.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// CLI entry — `mustard-rt run wave-advance --spec <slug>`.
@@ -158,6 +172,8 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
                 subagent_type: it.subagent_type,
                 prompt,
                 precheck,
+                // The git-boundary fact rides straight through from the plan.
+                own_git_root: it.own_git_root,
             }
         })
         .collect();
@@ -267,6 +283,11 @@ fn review_round(
     events: &[HarnessEvent],
 ) -> Vec<AdvanceItem> {
     let reviewed = reviewed_subprojects(events, spec);
+    // The git-boundary fact per subproject was already computed for the plan's
+    // impl items; reuse it for the review items of the same subprojects instead
+    // of re-probing (a review subproject is always one the plan touched).
+    let boundaries: std::collections::BTreeMap<String, bool> =
+        plan.iter().map(|it| (it.subproject.clone(), it.own_git_root)).collect();
     let touched: BTreeSet<String> = plan.iter().map(|it| it.subproject.clone()).collect();
     touched
         .into_iter()
@@ -280,6 +301,7 @@ fn review_round(
                 Path::new(&sub),
                 RenderMode::First,
             );
+            let own_git_root = boundaries.get(&sub).copied().unwrap_or(false);
             AdvanceItem {
                 wave: 0,
                 role: "review".to_string(),
@@ -288,6 +310,7 @@ fn review_round(
                 prompt,
                 // Review-round items have no `wave-N-{role}/spec.md` to precheck.
                 precheck: None,
+                own_git_root,
             }
         })
         .collect()
@@ -740,5 +763,44 @@ mod tests {
 
         record_review(project, "rev3", Some("apps/rt"), 1);
         assert!(advance(project, "rev3").is_empty());
+    }
+
+    /// AC-5: the git-boundary fact carried by the dispatch plan reaches the
+    /// advance item. A wave whose `## Files` live in a subproject that is its own
+    /// nested git repo (`.git` FILE) makes the advanced item carry
+    /// `own_git_root: true`.
+    #[test]
+    fn advance_item_carries_own_git_root_for_nested_repo() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+
+        // Nested submodule at apps/sub (`.git` FILE — the submodule shape).
+        let sub = project.join("apps").join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), b"gitdir: ../../.git/modules/sub\n").unwrap();
+
+        // A single-wave spec whose wave-1 files live in apps/sub.
+        let spec_dir = project.join(".claude").join("spec").join("bnd");
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-impl]] | impl | — | x |
+",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# w1\n\n## Files\n- apps/sub/src/x.rs\n\n## Tasks\n\n- [ ] t\n",
+        )
+        .unwrap();
+
+        let items = advance(project, "bnd");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subproject, "apps/sub");
+        assert!(items[0].own_git_root, "advance item carries the git-boundary flag");
     }
 }

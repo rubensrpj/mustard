@@ -306,7 +306,7 @@ pub struct Touchpoint {
 /// One compilation unit from grain's model (`grain.model.json` `projects[]`) —
 /// the subproject list. Replaces the deleted sync-detect discovery: grain mines
 /// the same build-manifest set deterministically.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Project {
     pub name: String,
     #[serde(default)]
@@ -331,6 +331,14 @@ pub struct Project {
     /// predates the field or nothing was inferred.
     #[serde(default)]
     pub detected_stacks: Vec<StackDetection>,
+    /// `true` when this subproject's own directory is a NESTED git repository
+    /// root (a submodule / linked repo: `.git` present as a directory OR a
+    /// pointer file at [`Self::dir`]). The grain miner is git-blind, so this is
+    /// stamped by Mustard ([`mark_own_git_roots`]) — never mined. Defaulted
+    /// `false` for back-compat with any census that predates the field and for
+    /// the superproject root itself (which is not a nested boundary).
+    #[serde(default)]
+    pub own_git_root: bool,
 }
 
 /// The small, stable FACTS the orchestrator consumes from a grain model — the
@@ -367,6 +375,27 @@ pub fn read_entity_names(model_path: &std::path::Path) -> Vec<String> {
         return Vec::new();
     }
     Scan::locate().facts(model_path).map(|f| f.entities).unwrap_or_default()
+}
+
+/// Stamp [`Project::own_git_root`] on each census entry by probing whether its
+/// directory is a NESTED git repository root (`.git` dir or pointer file),
+/// relative to `repo_root`. The grain miner is git-blind (it walks source
+/// only), so the git-boundary FACT — "this subproject is its own repo" — is
+/// Mustard's to add; the single owner of that probe is
+/// [`crate::io::workspace::is_git_repo_root`] (reused, not re-implemented).
+///
+/// The superproject root itself is never a nested boundary: an empty or `"."`
+/// `dir` is skipped (left `false`) so the root project — whose `.git` is the
+/// SUPERproject's — is not mistaken for a submodule. Purely a filesystem probe,
+/// fail-open: an unreadable / absent dir stays `false`.
+pub fn mark_own_git_roots(repo_root: &Path, projects: &mut [Project]) {
+    for project in projects.iter_mut() {
+        let dir = project.dir.trim();
+        if dir.is_empty() || dir == "." {
+            continue;
+        }
+        project.own_git_root = crate::io::workspace::is_git_repo_root(&repo_root.join(dir));
+    }
 }
 
 /// One ranked row of `scan rank` (`files[]`): the path plus the ADDITIVE
@@ -809,6 +838,44 @@ mod tests {
         let f: ModelFacts = serde_json::from_str("{}").expect("empty object ok");
         assert!(f.projects.is_empty());
         assert!(f.entities.is_empty());
+    }
+
+    #[test]
+    fn own_git_root_serde_defaults_false_and_roundtrips() {
+        // A census that predates the field (grain never mines it) deserialises
+        // with `own_git_root == false` — the git boundary is Mustard's to stamp.
+        let old = r#"{"name":"api","dir":"apps/api","kind":"node"}"#;
+        let p: Project = serde_json::from_str(old).expect("old payload without own_git_root");
+        assert!(!p.own_git_root, "absent field defaults false");
+
+        // A payload carrying the flag round-trips into the contract type.
+        let new = r#"{"name":"sub","dir":"backend/Sub","own_git_root":true}"#;
+        let p: Project = serde_json::from_str(new).expect("payload with own_git_root");
+        assert!(p.own_git_root);
+    }
+
+    #[test]
+    fn mark_own_git_roots_flags_dir_with_dot_git_file() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+        // A submodule carries `.git` as a FILE (a `gitdir:` pointer), NOT a dir —
+        // the exact sialia shape. It must be flagged its own git root.
+        let sub = root.path().join("backend").join("Sialia.Backend");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), b"gitdir: ../../.git/modules/Sialia.Backend\n").unwrap();
+        // A plain subproject (no `.git`) stays false.
+        std::fs::create_dir_all(root.path().join("apps").join("api")).unwrap();
+
+        let mut projects = vec![
+            Project { name: "backend".into(), dir: "backend/Sialia.Backend".into(), ..Default::default() },
+            Project { name: "api".into(), dir: "apps/api".into(), ..Default::default() },
+            // The superproject root itself (empty / ".") is never a nested boundary.
+            Project { name: "root".into(), dir: ".".into(), ..Default::default() },
+        ];
+        mark_own_git_roots(root.path(), &mut projects);
+        assert!(projects[0].own_git_root, "a `.git` FILE marks a nested git root");
+        assert!(!projects[1].own_git_root, "a plain subproject is not a nested git root");
+        assert!(!projects[2].own_git_root, "the superproject root `.` is never flagged");
     }
 
     #[test]
