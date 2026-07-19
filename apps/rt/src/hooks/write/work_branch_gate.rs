@@ -359,6 +359,17 @@ impl Check for WorkBranchGate {
                 // approved). Same contract as out-of-repo: allow, cut
                 // nothing, keep the marker.
                 Some(rel) if rel.starts_with(".claude/plans/") => return Ok(Verdict::Allow),
+                // Spec authoring (`.claude/spec/…`) is the pipeline's PLAN
+                // phase: the spec IS the plan, born before the work unit and
+                // gated by `/spec` before any code lands. Its state lives at the
+                // MAIN checkout (worktree redirect), so a `spec.md` edit is
+                // always judged against the main tree's branch — forcing a work
+                // branch here either denies (no marker yet) or collides with a
+                // worktree already holding `{base}_{slug}`: the PLAN-phase
+                // deadlock. Same contract as `.claude/plans/`: allow, cut
+                // nothing, keep the marker. The work branch is cut at EXECUTE,
+                // on the first SOURCE edit outside `.claude/`.
+                Some(rel) if rel.starts_with(".claude/spec/") => return Ok(Verdict::Allow),
                 Some(_) => {}
             }
         }
@@ -564,6 +575,39 @@ mod tests {
         assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
         assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_manual"));
         assert!(context::pending_branch_for(root_s, sid).is_none());
+    }
+
+    /// Spec authoring (`.claude/spec/…`) is carved out of branch protection like
+    /// `.claude/plans/`: the spec IS the pipeline's plan, authored during PLAN
+    /// (before the work unit) against the centralized main checkout. A `spec.md`
+    /// edit on a bare integration branch with NO marker must ALLOW and cut
+    /// nothing, even though a normal repo edit in the same state is denied.
+    #[test]
+    fn spec_authoring_allowed_on_protected_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        // Author a spec.md under the centralized `.claude/spec/…` (no marker).
+        let spec_dir = root.join(".claude").join("spec").join("notif");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# spec").unwrap();
+        let spec = spec_dir.join("spec.md");
+
+        let (input, ctx) = pre_edit_input_for(root_s, "sess-spec", spec.to_str().unwrap());
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "spec authoring is carved out on a protected branch: {verdict:?}",
+        );
+        // Cut nothing: HEAD stays on the integration branch.
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev"),
+            "no work branch was cut for a spec edit",
+        );
     }
 
     /// REGRESSION (nested worktree — the bug that false-blocked every edit):
