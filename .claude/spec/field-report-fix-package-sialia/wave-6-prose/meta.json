@@ -1,0 +1,66 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-19T02:42:24.070Z",
+  "parent": "field-report-fix-package-sialia",
+  "checklist": [
+    {
+      "label": "plugin/commands/spec.md",
+      "path": "plugin/commands/spec.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/spec/resume-loop.md",
+      "path": "plugin/refs/spec/resume-loop.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/agent-prompt/agent-prompt.md",
+      "path": "plugin/refs/agent-prompt/agent-prompt.md",
+      "done": false
+    },
+    {
+      "label": "plugin/pipeline-config.md",
+      "path": "plugin/pipeline-config.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/task.md",
+      "path": "plugin/commands/task.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/scan.md",
+      "path": "plugin/commands/scan.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/review.md",
+      "path": "plugin/commands/review.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/qa.md",
+      "path": "plugin/commands/qa.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/feature.md",
+      "path": "plugin/commands/feature.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/bugfix.md",
+      "path": "plugin/commands/bugfix.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/feature/full-plan.md",
+      "path": "plugin/refs/feature/full-plan.md",
+      "done": false
+    }
+  ]
+}
