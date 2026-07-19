@@ -32,7 +32,7 @@
 //!
 //! Once EVERY impl wave carries a `pipeline.wave.complete`, the advance does
 //! not terminate at `[]` yet: it emits one `role: review` item (subagent
-//! `mustard-review`) per **distinct subproject touched by the plan's waves**,
+//! `mustard:mustard-review`) per **distinct subproject touched by the plan's waves**,
 //! in alphabetical order, each with its prompt rendered inline (role `review`,
 //! root `spec.md` — wave-less, so `wave: 0`). The "already reviewed" signal is
 //! a `review.result` event of the spec whose payload names that subproject
@@ -257,7 +257,7 @@ fn reviewed_subprojects(events: &[HarnessEvent], spec: &str) -> BTreeSet<String>
 /// `agent-prompt-render` ref miolo the impl waves use — role `review`, wave-less
 /// (the root `spec.md`), so the item carries `wave: 0` like the single-spec
 /// fallback. `subagent_type` resolves through [`recommended_subagent_type`]
-/// (`review` → `mustard-review`), never picked by hand.
+/// (`review` → `mustard:mustard-review`), never picked by hand.
 ///
 /// [`recommended_subagent_type`]: agent_prompt_render::recommended_subagent_type
 fn review_round(
@@ -284,8 +284,7 @@ fn review_round(
                 wave: 0,
                 role: "review".to_string(),
                 subproject: sub,
-                subagent_type: agent_prompt_render::recommended_subagent_type("review")
-                    .to_string(),
+                subagent_type: agent_prompt_render::recommended_subagent_type("review"),
                 prompt,
                 // Review-round items have no `wave-N-{role}/spec.md` to precheck.
                 precheck: None,
@@ -654,7 +653,7 @@ mod tests {
 
     /// Post-impl review round: once every impl wave is complete, the advance
     /// emits one `role: review` item per distinct subproject, alphabetically,
-    /// each locked to `mustard-review` with a stub-referenced review prompt.
+    /// each locked to `mustard:mustard-review` with a stub-referenced review prompt.
     #[test]
     fn wave_advance_review_round_emitted_after_all_impl_complete() {
         let dir = tempdir().unwrap();
@@ -673,7 +672,7 @@ mod tests {
         let mut stub_paths = std::collections::BTreeSet::new();
         for item in &items {
             assert_eq!(item.role, "review");
-            assert_eq!(item.subagent_type, "mustard-review");
+            assert_eq!(item.subagent_type, "mustard:mustard-review");
             assert_eq!(item.wave, 0, "review round is wave-less (root spec render)");
             let body = stub_body(project, &item.prompt);
             assert!(
@@ -736,7 +735,7 @@ mod tests {
         let items = advance(project, "rev3");
         assert_eq!(items.len(), 1, "single spec gets exactly one review item");
         assert_eq!(items[0].role, "review");
-        assert_eq!(items[0].subagent_type, "mustard-review");
+        assert_eq!(items[0].subagent_type, "mustard:mustard-review");
         assert_eq!(items[0].subproject, "apps/rt");
 
         record_review(project, "rev3", Some("apps/rt"), 1);
