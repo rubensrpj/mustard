@@ -1,63 +1,48 @@
-//! `template_budget` — the leanness gate for the `.md` template corpus.
+//! `template_budget` — the leanness gate for the `.md` template corpus, aligned
+//! to Claude Code's OWN standards for command/skill/injectable markdown.
 //!
-//! The 2026-07-07 audit measured the template layer at 42k words with heavy
-//! emphasis inflation; the project's own history shows compliance comes from
-//! gates, not prose volume. This test makes "lean" an executable invariant:
-//! it FAILS when any template grows past its budget, so the fat cannot creep
-//! back one "important note" at a time. Rationale lives in
-//! `docs/TEMPLATE-RATIONALE.md`, never in the loaded templates.
+//! Claude Code does NOT cap the BODY of a command by word count. The published
+//! doctrine is "progressive disclosure": keep the primary file lean and push
+//! detail into reference files that load on demand
+//! (`code.claude.com/docs/en/skills`, `.../memory`). Mustard already follows
+//! that structurally — the LIGHT command body + the `refs/` tree that opens only
+//! when a flow reaches it. So this test does NOT re-impose a home-grown word
+//! budget; the 2026-07-07 audit's leanness intent is now anchored to the two
+//! places where Claude Code publishes a REAL, runtime-breaking limit:
 //!
-//! Mustard 2.0: the command/skill/ref corpus now ships in the `plugin/` tree;
-//! the harness seeds — notably the `mustard/` injectable instruction files the
-//! session hooks splice as `additionalContext` — live in
-//! `packages/core/templates/` (compiled into the binaries via `include_str!`).
-//! The budget scan therefore walks `plugin/` plus
-//! `packages/core/templates/mustard/`.
+//! 1. A command/skill `description` is truncated at **1,536 characters** in the
+//!    skill listing. Past that, the trigger text is cut mid-sentence and the
+//!    command mis-triggers.
+//! 2. An injectable spliced as `additionalContext` is truncated at **10,000
+//!    characters** by the harness — past that it is cut mid-sentence, silently.
+//!    9,500 leaves margin for the composition separator + siblings.
 //!
-//! Budgets (whitespace-separated words):
-//! - Dieted files: a strict per-file cap + an emphasis cap (bold pairs
-//!   <= 1 per 200 words).
-//! - Every other template: the global cap. New templates are born under it.
-//! - Injectables additionally get a CHARACTER cap: the harness truncates an
-//!   `additionalContext` payload at 10_000 characters, so each injectable must
-//!   stay under 9_500 (margin for the composition separator + siblings).
+//! Everything else (command / ref body size) is governed by structure
+//! (progressive disclosure) and human review, not a numeric tripwire — the
+//! rationale lives in `docs/TEMPLATE-RATIONALE.md`, never in the loaded
+//! templates.
 
 use std::path::{Path, PathBuf};
 
-/// Global word cap for any template not listed in [`STRICT_BUDGETS`].
-const GLOBAL_WORD_CAP: usize = 1_500;
-
-/// Per-file strict caps for the dieted templates. Paths are relative to the
-/// `plugin/` tree.
-const STRICT_BUDGETS: &[(&str, usize)] = &[
-    ("commands/feature.md", 1_200),
-    ("pipeline-config.md", 1_200),
-    ("refs/feature/spec-language.md", 700),
-];
-
-/// Bold-pair emphasis cap for dieted files: at most 1 per this many words.
-const WORDS_PER_BOLD: usize = 200;
+/// Hard cap on a command/skill `description` frontmatter field. Claude Code
+/// truncates `description` (combined with `when_to_use`) at 1,536 characters in
+/// the skill listing; past that the trigger text is cut mid-sentence.
+const DESCRIPTION_CHAR_CAP: usize = 1_536;
 
 /// Character cap per injectable template (`templates/mustard/*.md`). The real
-/// `additionalContext` ceiling is 10_000 characters; 9_500 leaves margin.
+/// `additionalContext` ceiling is 10,000 characters; 9,500 leaves margin for
+/// the composition separator + any sibling block injected in the same hook.
 const INJECTABLE_CHAR_CAP: usize = 9_500;
 
-/// The `plugin/` tree — home of the command/skill/ref corpus in Mustard 2.0.
+/// The `plugin/` tree — home of the command/ref corpus.
 fn plugin_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin")
 }
 
-/// The core seed tree — the compiled-in harness seeds (settings, `.gitignore`,
-/// and the `mustard/` injectables) moved from `apps/cli/templates/` to
-/// `packages/core/templates/` so both `mustard init` and `mustard-rt run
-/// upsert` embed them via `include_str!`.
+/// The core seed tree — the compiled-in harness seeds; the `mustard/`
+/// injectables are spliced as `additionalContext` by the session hooks.
 fn core_templates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core/templates")
-}
-
-/// Absolute path of a [`STRICT_BUDGETS`] entry — all live under `plugin/`.
-fn strict_path(name: &str) -> PathBuf {
-    plugin_dir().join(name)
 }
 
 fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -74,90 +59,84 @@ fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn word_count(text: &str) -> usize {
-    text.split_whitespace().count()
-}
-
-/// Bold pairs = occurrences of `**` divided by two (a `**bold**` span has two).
-fn bold_pairs(text: &str) -> usize {
-    text.matches("**").count() / 2
-}
-
-/// Budget name for a scanned file: its path relative to `plugin/`, or the bare
-/// file name when it lives outside the plugin (the seeded `templates/mustard/`
-/// injectables).
-fn budget_name(path: &Path, plugin_root: &Path) -> String {
-    match path.strip_prefix(plugin_root) {
-        Ok(rel) => rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"),
-        Err(_) => path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+/// Extract the `description:` value from a template's YAML frontmatter (the
+/// block between the leading `---` fences). Handles a single-line scalar and a
+/// folded/literal block (`>` / `|`). Returns `None` when the file has no
+/// frontmatter or no `description` key (refs, injectables) — those are skipped.
+fn frontmatter_description(text: &str) -> Option<String> {
+    let after_open = text.strip_prefix("---")?;
+    let end = after_open.find("\n---")?;
+    let lines: Vec<&str> = after_open[..end].lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix("description:") else {
+            continue;
+        };
+        let rest = rest.trim();
+        // Folded / literal scalar: the value is the indented lines that follow.
+        if matches!(rest, ">" | "|" | ">-" | "|-") {
+            let mut folded = String::new();
+            for cont in &lines[i + 1..] {
+                if cont.trim().is_empty() {
+                    continue;
+                }
+                // A non-indented line is the next key — the block ended.
+                if !cont.starts_with([' ', '\t']) {
+                    break;
+                }
+                if !folded.is_empty() {
+                    folded.push(' ');
+                }
+                folded.push_str(cont.trim());
+            }
+            return Some(folded);
+        }
+        // Single-line scalar (optionally quoted).
+        return Some(rest.trim_matches(['"', '\'']).to_string());
     }
+    None
 }
 
+/// A command whose `description` (the auto-trigger + `/` listing text) exceeds
+/// Claude Code's 1,536-character cut-off mis-triggers, because the harness
+/// truncates it mid-sentence. Scan every command `.md` and hold the cap.
 #[test]
-fn template_budget_word_caps_hold() {
-    let plugin = plugin_dir();
+fn command_descriptions_fit_the_listing_cap() {
     let mut files = Vec::new();
-    collect_md(&plugin, &mut files);
-    // The injectable templates ship under packages/core/templates/mustard/
-    // (compiled into the binaries; init/upsert seed them from there).
-    collect_md(&core_templates_dir().join("mustard"), &mut files);
-    assert!(!files.is_empty(), "no templates found under {}", plugin.display());
+    collect_md(&plugin_dir().join("commands"), &mut files);
+    assert!(
+        !files.is_empty(),
+        "no command templates found under {}/commands",
+        plugin_dir().display()
+    );
 
     let mut violations: Vec<String> = Vec::new();
     for path in &files {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
-        let name = budget_name(path, &plugin);
-        let words = word_count(&text);
-        let cap = STRICT_BUDGETS
-            .iter()
-            .find(|(f, _)| *f == name)
-            .map_or(GLOBAL_WORD_CAP, |(_, cap)| *cap);
-        if words > cap {
-            violations.push(format!("{name}: {words} words (cap {cap})"));
-        }
-    }
-    assert!(
-        violations.is_empty(),
-        "templates over their word budget - trim them (law -> checklist, how-to -> table, \
-         why -> docs/TEMPLATE-RATIONALE.md):\n{}",
-        violations.join("\n"),
-    );
-}
-
-#[test]
-fn template_budget_emphasis_cap_holds_on_dieted_files() {
-    let mut violations: Vec<String> = Vec::new();
-    for (name, _) in STRICT_BUDGETS {
-        let path = strict_path(name);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            violations.push(format!("{name}: missing dieted template"));
+        let Some(desc) = frontmatter_description(&text) else {
             continue;
         };
-        let words = word_count(&text);
-        let bolds = bold_pairs(&text);
-        let cap = (words / WORDS_PER_BOLD).max(1);
-        if bolds > cap {
+        let chars = desc.chars().count();
+        if chars > DESCRIPTION_CHAR_CAP {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
             violations.push(format!(
-                "{name}: {bolds} bold pairs for {words} words (cap {cap} - 1 per {WORDS_PER_BOLD})"
+                "{name}: description is {chars} chars (cap {DESCRIPTION_CHAR_CAP} — \
+                 Claude Code truncates it mid-sentence in the skill listing)"
             ));
         }
     }
     assert!(
         violations.is_empty(),
-        "dieted templates over the emphasis budget - when everything shouts, nothing does:\n{}",
+        "command descriptions over Claude Code's 1,536-char listing cap - shorten them:\n{}",
         violations.join("\n"),
     );
 }
 
 /// Every injectable template must fit the `additionalContext` payload with
-/// margin: the harness caps that payload at 10_000 characters, and an
+/// margin: the harness caps that payload at 10,000 characters, and an
 /// injectable that exceeds it would be truncated mid-sentence at runtime —
-/// silently. 9_500 leaves room for the composition separators and any sibling
+/// silently. 9,500 leaves room for the composition separators and any sibling
 /// block injected in the same hook response.
 #[test]
 fn injectable_templates_fit_the_additional_context_cap() {
@@ -179,7 +158,7 @@ fn injectable_templates_fit_the_additional_context_cap() {
         let chars = text.chars().count();
         if chars > INJECTABLE_CHAR_CAP {
             violations.push(format!(
-                "{}: {chars} characters (cap {INJECTABLE_CHAR_CAP} — the harness truncates additionalContext at 10_000)",
+                "{}: {chars} characters (cap {INJECTABLE_CHAR_CAP} — the harness truncates additionalContext at 10,000)",
                 path.display()
             ));
         }

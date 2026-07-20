@@ -1,6 +1,6 @@
 # Template Rationale
 
-> The WHY behind the rules in `CLAUDE.md`, `pipeline-config.md`, the SKILLs and the refs. This file is NEVER loaded into a session — it exists for maintainers. The loaded templates carry only the law and the how; when you need to know why a rule exists (or want to change one), look here. Enforced leanness: `apps/cli/tests/template_budget.rs` fails the build when a template grows past its word/emphasis budget (2026-07-07 audit: 42k words, 1 bold per ~52 words, 75 "NEVER" — emphasis inflation destroys signal, and compliance was repeatedly shown to come from gates, not prose volume).
+> The WHY behind the rules in `CLAUDE.md`, `pipeline-config.md`, the SKILLs and the refs. This file is NEVER loaded into a session — it exists for maintainers. The loaded templates carry only the law and the how; when you need to know why a rule exists (or want to change one), look here. Enforced leanness: `apps/cli/tests/template_budget.rs` holds the two limits Claude Code actually publishes — a command/skill `description` ≤ 1,536 chars (truncated mid-sentence in the skill listing past that) and an injectable ≤ 9,500 chars (the `additionalContext` truncation ceiling). It no longer gates command-BODY length by word count (Claude Code doesn't — the doctrine is progressive disclosure). The 2026-07-07 audit's leanness (42k words, emphasis inflation destroying signal) is now kept by STRUCTURE — a lean body with `refs/` opening on demand — plus review, not an arbitrary word tripwire.
 
 ## Routing (CLAUDE.md)
 
