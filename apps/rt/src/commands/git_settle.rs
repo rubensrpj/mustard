@@ -22,7 +22,11 @@
 //!    the process runs INSIDE the unit's worktree it cannot remove its own
 //!    floor: it verifies + updates and answers `action:"exit-and-rerun"` —
 //!    leave the worktree (`ExitWorktree`), then finish with
-//!    `git-settle --unit <branch>` from the main checkout.
+//!    `git-settle --unit <branch>` from the main checkout. An IN-PLACE unit
+//!    (cut by the work-branch gate on the MAIN checkout — no worktree) has no
+//!    floor to leave and no `ExitWorktree` to run: settle itself performs the
+//!    exit — check out the base (the ff advance above is the "pull"), then
+//!    delete the branch. A checkout git refuses degrades to `"partial"`.
 //!
 //! Output: one JSON report (sorted arrays, no timestamps). Fail-open
 //! everywhere: absent `gh`, no remote, or a locked path degrades to an
@@ -207,14 +211,26 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         });
     }
 
+    // Where the unit lives decides the exit. Read the worktree table BEFORE
+    // advancing the bases: an IN-PLACE unit (no worktree — the work-branch
+    // gate cut the branch on the MAIN checkout itself) has no ExitWorktree to
+    // hand the session back to its base, so settle performs the exit here:
+    // check out the base FIRST, so `update_bases` fast-forwards it (the
+    // "pull") and the branch becomes deletable below. A checkout git refuses
+    // (overlapping local changes) degrades honestly — nothing is ever forced.
+    let entries = git_out(&main, &["worktree", "list", "--porcelain"])
+        .map(|s| parse_worktrees(&s))
+        .unwrap_or_default();
+    let unit_entry = entries.iter().find(|e| e.branch == unit_branch);
+    let main_head = git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let in_place = unit_entry.is_none() && main_head == unit_branch;
+    let in_place_exited = in_place && git_ok(&main, &["checkout", &base]);
+
     // Merged confirmed → bring every local base up to date.
     let (base_report, other_bases) = update_bases(&main, &bases);
 
     // Prune the unit. Inside its own worktree the process cannot remove its
     // floor — verify+update happened; hand back the finish step.
-    let entries = git_out(&main, &["worktree", "list", "--porcelain"])
-        .map(|s| parse_worktrees(&s))
-        .unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().replace('\\', "/");
     // Prune in three steps, each tried and reported on its OWN field. The only
     // real coupling: git refuses to delete a branch a worktree still checks out,
@@ -223,7 +239,6 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // and runs either way — a worktree the OS still locks must never strand the
     // server branch. `worktreeRemoved` stays true only when WE removed it (an
     // already-absent worktree reports false, matching the prior happy path).
-    let unit_entry = entries.iter().find(|e| e.branch == unit_branch);
     let (action, worktree_removed, branch_deleted, remote_deleted) =
         if unit_entry.is_some_and(|e| cwd.starts_with(&e.path)) {
             // Inside our own worktree we cannot remove our floor; verify+update
@@ -235,6 +250,9 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
                     let removed = git_ok(&main, &["worktree", "remove", &e.path]);
                     (removed, removed)
                 }
+                // In-place: the "floor" is the unit branch checked out on the
+                // MAIN checkout — clear only once the exit above landed.
+                None if in_place => (false, in_place_exited),
                 None => (false, true), // never removed by us, but already free to delete
             };
             let branch_deleted = floor_clear && git_ok(&main, &["branch", "-D", &unit_branch]);
@@ -262,6 +280,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "branch": unit_branch,
             "base": base,
             "merged": true,
+            "inPlace": in_place,
             "action": action,
             "worktreeRemoved": worktree_removed,
             "branchDeleted": branch_deleted,
@@ -422,5 +441,50 @@ mod tests {
             git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"]).unwrap_or_default().is_empty(),
             "remote branch deleted independently of the worktree"
         );
+    }
+
+    /// The IN-PLACE unit (cut by the work-branch gate on the main checkout —
+    /// no worktree): `--unit` invoked while the checkout still SITS on the
+    /// unit branch must perform the whole exit — check out the base,
+    /// fast-forward it, delete the local branch. Before the fix this answered
+    /// baseCheckout `not-on-a-base` and `branchDeleted:false` (git refuses to
+    /// delete a checked-out branch), stranding the session on the dead branch.
+    #[test]
+    fn in_place_unit_settles_by_checking_out_base_and_deleting_branch() {
+        let (_dir, main) = fixture();
+        // Re-align local dev with origin (the shared fixture rewound it), then
+        // cut the unit ON the main checkout, merge it into origin/dev, rewind
+        // local dev again, and leave the checkout sitting on the unit branch —
+        // the exact post-merge state of an in-place unit.
+        git(&main, &["merge", "--ff-only", "origin/dev"]);
+        git(&main, &["checkout", "-b", "dev_inplace"]);
+        std::fs::write(main.join("inplace.txt"), "z").expect("file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "in-place work"]);
+        git(&main, &["checkout", "dev"]);
+        git(&main, &["merge", "--no-ff", "dev_inplace", "-m", "merge dev_inplace"]);
+        git(&main, &["push", "origin", "dev"]);
+        git(&main, &["reset", "--hard", "HEAD~1"]);
+        git(&main, &["checkout", "dev_inplace"]);
+
+        let v = settle_at(&main, Some("dev_inplace"));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"]["inPlace"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
+        assert_eq!(
+            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("dev"),
+            "main checkout handed back to the base"
+        );
+        assert_eq!(v["baseCheckout"]["branch"], json!("dev"), "{v}");
+        assert_eq!(v["baseCheckout"]["updated"], json!(true), "base pulled (ff): {v}");
+        assert!(
+            git_out(&main, &["branch", "--list", "dev_inplace"]).unwrap_or_default().is_empty(),
+            "in-place unit branch deleted after the exit"
+        );
+        let local = git_out(&main, &["rev-parse", "dev"]).expect("local");
+        let remote = git_out(&main, &["rev-parse", "origin/dev"]).expect("remote");
+        assert_eq!(local, remote, "base fast-forwarded to origin");
     }
 }

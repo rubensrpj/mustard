@@ -7,6 +7,11 @@
 //! 1. **Pending work-unit marker** → cut `{base}_{slug}` off a freshly
 //!    fetched base and check it out (fail-open: any git failure warns, never
 //!    blocks — unless staying would leave the edit on a protected branch).
+//!    A cut that lands IN-PLACE on the MAIN checkout answers `Warn` with the
+//!    isolation hint (`EnterWorktree name=…`) — informative only, the edit
+//!    proceeds; a cut inside a linked worktree (already isolated) or a
+//!    submodule (a superproject-scoped hint would be wrong there) stays a
+//!    silent `Allow`.
 //!    The router pre-computed the branch name and stored it as the session's
 //!    `pending-work-branch` marker via `emit-pipeline --kind pipeline.kind`
 //!    (see [`crate::commands::event::emit_pipeline`]); this hook is the
@@ -251,12 +256,14 @@ fn nested_git_root_between(state_root: &Path, start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// The absolute `--git-common-dir` of the repo containing `root`. A LINKED
-/// worktree reports the MAIN checkout's common dir; a SUBMODULE reports its own
-/// — this is what tells the two apart. `None` on any git failure.
-fn git_common_dir(vcs: &str, root: &str) -> Option<PathBuf> {
+/// The absolute path `git rev-parse` reports for `flag` (`--git-dir`,
+/// `--git-common-dir`, …) in `root`. A LINKED worktree's common dir is the
+/// MAIN checkout's while a SUBMODULE reports its own — and a linked worktree's
+/// git-dir differs from its common dir — these two probes tell every tree
+/// shape apart. `None` on any git failure.
+fn git_abs_path(vcs: &str, root: &str, flag: &str) -> Option<PathBuf> {
     let out = Command::new(vcs)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .args(["rev-parse", "--path-format=absolute", flag])
         .current_dir(root)
         .output()
         .ok()?;
@@ -273,10 +280,25 @@ fn git_common_dir(vcs: &str, root: &str) -> Option<PathBuf> {
 /// when either probe fails, so only a proven-distinct repo ever swaps the base.
 fn is_distinct_repo(vcs: &str, state_root: &str, nested: &Path) -> bool {
     match (
-        git_common_dir(vcs, &nested.to_string_lossy()),
-        git_common_dir(vcs, state_root),
+        git_abs_path(vcs, &nested.to_string_lossy(), "--git-common-dir"),
+        git_abs_path(vcs, state_root, "--git-common-dir"),
     ) {
         (Some(a), Some(b)) => canonicalize_or(&a) != canonicalize_or(&b),
+        _ => false,
+    }
+}
+
+/// `true` when `root` hosts the repository's MAIN checkout: `--git-dir` and
+/// `--git-common-dir` resolve to the SAME path (a linked worktree's git-dir
+/// lives under `<common>/worktrees/<name>`, so they differ). Fail-closed to
+/// `false` when a probe fails — the in-place nudge is informative only and
+/// must never fire on guesswork.
+fn is_main_checkout(vcs: &str, root: &str) -> bool {
+    match (
+        git_abs_path(vcs, root, "--git-dir"),
+        git_abs_path(vcs, root, "--git-common-dir"),
+    ) {
+        (Some(a), Some(b)) => canonicalize_or(&a) == canonicalize_or(&b),
         _ => false,
     }
 }
@@ -414,8 +436,10 @@ impl Check for WorkBranchGate {
         // work branch must be based on the submodule's OWN default branch and its
         // `{base}_{slug}` name must carry that base, never the superproject's.
         // Fail-open to today's (target, prefix-recovered base) pair otherwise.
-        let (target, base) = nested_work_target_base(&vcs, &project, &local, &target, &config)
-            .unwrap_or_else(|| (target.clone(), base_for(&target, &config)));
+        let nested = nested_work_target_base(&vcs, &project, &local, &target, &config);
+        let in_submodule = nested.is_some();
+        let (target, base) =
+            nested.unwrap_or_else(|| (target.clone(), base_for(&target, &config)));
 
         // 2. Already on the target branch → clear and allow.
         if current.as_deref() == Some(target.as_str()) {
@@ -434,6 +458,22 @@ impl Check for WorkBranchGate {
         match checkout_work_branch(&vcs, &local, &target, &base) {
             Ok(()) => {
                 context::clear_pending_branch(&project, &sid);
+                // The cut landed IN-PLACE when the hosting tree is the MAIN
+                // checkout — legitimate (cheap, off the protected base), but
+                // un-isolated: say so ONCE, naming the native step that
+                // isolates the unit. A linked worktree is already isolated; a
+                // submodule cut would name a branch the superproject-scoped
+                // EnterWorktree cannot attach. Informative only — Warn lets
+                // the edit through; never a mode, never a block.
+                if !in_submodule && is_main_checkout(&vcs, &local) {
+                    return Ok(Verdict::Warn {
+                        message: format!(
+                            "branch '{target}' criada in-place no checkout principal — o \
+                             trabalho segue aqui. Para isolar esta unidade numa worktree \
+                             própria: EnterWorktree name={target}"
+                        ),
+                    });
+                }
                 Ok(Verdict::Allow)
             }
             Err(e) => {
@@ -539,10 +579,12 @@ mod tests {
         let sid = "sess-branch-test";
         context::set_pending_branch(root_s, sid, "dev_my-thing");
 
-        // First Write of the work unit fires the gate.
+        // First Write of the work unit fires the gate. The cut lands in-place
+        // on the MAIN checkout → the informative Warn nudge (EnterWorktree
+        // hint); the edit still proceeds.
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
+        assert!(matches!(verdict, Verdict::Warn { .. }), "in-place cut nudges: {verdict:?}");
 
         // HEAD is now on the target branch, created off `dev` (from the prefix)...
         assert_eq!(
@@ -739,8 +781,8 @@ mod tests {
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
-            matches!(verdict, Verdict::Allow),
-            "a failing `git fetch origin` must not block the edit: {verdict:?}",
+            matches!(verdict, Verdict::Warn { .. }),
+            "a failing `git fetch origin` must not block the edit (in-place cut → nudge): {verdict:?}",
         );
         assert_eq!(
             current_branch("git", root_s).as_deref(),
@@ -807,7 +849,7 @@ mod tests {
         context::set_pending_branch(proj_s, sid, "dev_new-thing");
         let (input, ctx) = pre_edit_input(proj_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(matches!(verdict, Verdict::Allow), "edit proceeds: {verdict:?}");
+        assert!(matches!(verdict, Verdict::Warn { .. }), "edit proceeds with nudge: {verdict:?}");
         assert_eq!(
             current_branch("git", proj_s).as_deref(),
             Some("dev_new-thing"),
@@ -843,7 +885,7 @@ mod tests {
 
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
+        assert!(matches!(verdict, Verdict::Warn { .. }), "in-place cut nudges: {verdict:?}");
         assert_eq!(
             current_branch("git", root_s).as_deref(),
             Some("develop_feature"),
@@ -1106,5 +1148,36 @@ mod tests {
             context::pending_branch_for(main_s, sid).is_none(),
             "marker consumed after the submodule checkout",
         );
+    }
+
+    /// The in-place nudge: a cut that lands on the MAIN checkout answers Warn
+    /// naming the exact isolation step (`EnterWorktree name=<target>`) — and
+    /// the edit still proceeds (branch cut, marker consumed). The two carved
+    /// exemptions stay silent Allows: a linked worktree
+    /// (`nested_worktree_marker_cuts_branch_locally`) and a submodule
+    /// (`own_git_root_submodule_resolves_nested_base`).
+    #[test]
+    fn in_place_cut_warns_with_enter_worktree_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        let sid = "sess-nudge";
+        context::set_pending_branch(root_s, sid, "dev_nudged-thing");
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        let Verdict::Warn { message } = verdict else {
+            panic!("in-place cut on the main checkout must Warn, got {verdict:?}");
+        };
+        assert!(
+            message.contains("EnterWorktree name=dev_nudged-thing"),
+            "the nudge names the exact native isolation step: {message}",
+        );
+        assert!(message.contains("in-place"), "the nudge says why it fired: {message}");
+        // Informative, not a refusal: the cut happened and the marker is gone.
+        assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_nudged-thing"));
+        assert!(context::pending_branch_for(root_s, sid).is_none(), "marker consumed");
     }
 }
