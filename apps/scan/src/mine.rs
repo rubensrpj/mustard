@@ -826,8 +826,8 @@ fn slice_conf(recur: usize, nroles: usize) -> f32 {
 /// The family's contract: the winning supertype, kept ONLY when a MAJORITY of the
 /// family's `family` members share it. `per_supertype` maps each candidate base to
 /// the DISTINCT entities that extend it, so the winner is weighed apples-to-apples
-/// against the family size — a supertype held by a minority (a couple of migration
-/// classes lodged in a large mixed suffix family) never speaks for the whole family.
+/// against the family size — a supertype held by a lodged minority of a large,
+/// mixed suffix family never speaks for the whole family.
 /// Entity-named supertypes are excluded so a domain type can't masquerade as a
 /// contract. Agnostic: pure recurrence, no language named.
 fn majority_supertype(
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn minority_supertype_does_not_speak_for_the_family() {
         // A base held by 3 of a 10-member family (a lodged minority) is dropped —
-        // the "migration class in a mixed suffix family" case, language-agnostic.
+        // it must not speak for the whole family. Language-agnostic.
         let mut per = HashMap::new();
         per.insert("SomeBase".to_string(), ents(&["a", "b", "c"]));
         assert_eq!(majority_supertype(&per, 10, &HashSet::new()), None);
