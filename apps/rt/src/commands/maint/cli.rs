@@ -156,7 +156,7 @@ pub enum MaintCmd {
     /// user file is preserved, only what is missing is created or backfilled;
     /// the legacy planted-orchestrator footprint is migrated away. Emits the
     /// `UpsertReport` as deterministic pretty JSON.
-    #[command(display_order = 79)]
+    #[command(display_order = 44)]
     Upsert {},
 }
 
