@@ -47,6 +47,10 @@ const MAX_EXEMPLARS: usize = 3;
 /// (It once claimed to resolve exemplars by filename ONLY, and that a
 /// declaration affix "must not spawn a mold" — while the fallback right below
 /// exists precisely to let it. Both halves of that claim were false.)
+///
+/// The same floor re-earns a role's `implements` hint per house
+/// ([`confirm_implements`]): fewer than two evidencing files cannot show a
+/// shared contract either.
 const MIN_EXEMPLARS: usize = 2;
 
 /// Path segments that mark a cluster as test/fixture terrain — a mold teaches
@@ -109,6 +113,9 @@ struct Role {
     /// densest one.
     dirs: Vec<String>,
     decl_kind: String,
+    /// The FAMILY's contract — the supertype a repo-wide majority of the role
+    /// shares (the miner's majority gate). Re-earned against each house's own
+    /// files before it reaches a candidate ([`confirm_implements`]).
     implements: Option<String>,
 }
 
@@ -127,11 +134,14 @@ struct Mod {
     declarations: Vec<Decl>,
 }
 
-/// One mined declaration (only the name matters here).
+/// One mined declaration — the name (the declaration-affix exemplar signal) and
+/// the supertypes it builds on (the house-local evidence a role's `implements`
+/// hint is validated against — [`confirm_implements`]).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Decl {
     name: String,
+    supertypes: Vec<String>,
 }
 
 /// A workspace subproject (one per build manifest).
@@ -165,6 +175,10 @@ pub(crate) struct Candidate {
     pub(crate) affix_kind: String,
     #[serde(rename = "declKind")]
     pub(crate) decl_kind: String,
+    /// The family's `implements` hint validated against THIS house
+    /// ([`confirm_implements`]): `None` when fewer than [`MIN_EXEMPLARS`] of the
+    /// house's own files build on it; kept untouched when the model carries no
+    /// inheritance data to judge with.
     pub(crate) implements: Option<String>,
     /// How many hand-written files of this role live in THIS subproject — not
     /// the role's repo-wide tally. A role spread over several subprojects would
@@ -365,6 +379,10 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
     // One mold path, one candidate — see [`fold_collisions`].
     let mut candidates = fold_collisions(candidates);
 
+    // The family hint is re-earned against each house's own files — after the
+    // fold, so a folded candidate is judged on its unified file set.
+    confirm_implements(&mut candidates, &model.modules);
+
     // Byte-stable order, now rank-first: within a subproject the agent reads the
     // strongest convention first (highest slice recurrence), and an unranked role
     // reads last WITHOUT being excluded. Slug breaks ties, so the order stays
@@ -424,6 +442,9 @@ fn fold_variants(mut group: Vec<Candidate>) -> Option<Candidate> {
         folded.affix = join_distinct(&folded.affix, &v.affix, "/");
         folded.affix_kind = join_distinct(&folded.affix_kind, &v.affix_kind, ", ");
         folded.decl_kind = join_distinct(&folded.decl_kind, &v.decl_kind, ", ");
+        // First non-empty hint wins here; [`confirm_implements`] then judges it
+        // against the folded file union, so a hint no variant's house earns
+        // does not survive on collision order.
         folded.implements = folded.implements.or(v.implements);
         for f in v.files {
             if !folded.files.contains(&f) {
@@ -448,6 +469,58 @@ fn join_distinct(acc: &str, add: &str, sep: &str) -> String {
         return add.to_string();
     }
     format!("{acc}{sep}{add}")
+}
+
+/// Validate each candidate's repo-global `implements` hint against ITS house.
+///
+/// `roles[].implements` is the FAMILY's contract — the miner keeps it only when
+/// a majority of the repo-wide family shares it. But a house is not the family:
+/// the majority can live entirely in another subproject, and handing the global
+/// hint to every house has the agent author a mold teaching a contract this
+/// house never wrote (a unit whose types build on nothing, told to implement
+/// the base contract a sibling unit's majority follows). So the hint is re-earned
+/// locally: it survives only when at least [`MIN_EXEMPLARS`] of the candidate's
+/// own files declare something building on it (union of each file's
+/// declarations' supertypes). A demotion never drops the candidate — the house
+/// keeps its mold; the agent just isn't handed a contract its files refute.
+///
+/// Demotion requires EVIDENCE, twice over:
+/// - a model with no declarations anywhere (an older grain) skips the pass —
+///   the global hint is all the data there is;
+/// - a candidate none of whose files carries a known declaration (a language
+///   the miner only walked textually) keeps its hint. A file WITH declarations
+///   and an empty supertype union is the opposite case — a parsed type that
+///   builds on nothing — and that absence IS evidence against.
+///
+/// Runs AFTER [`fold_collisions`]: the folded candidate's `files` union is
+/// final there, so the hint is judged against every file the agent will be told
+/// about, not one variant's half.
+fn confirm_implements(candidates: &mut [Candidate], modules: &[Mod]) {
+    if modules.iter().all(|m| m.declarations.is_empty()) {
+        return; // older grain: no inheritance data exists to judge against.
+    }
+    // path -> that file's declared supertypes. Keyed only for files with at
+    // least one declaration: key presence means "the miner parsed this file",
+    // and an empty value means "parsed, builds on nothing".
+    let mut supers: HashMap<&str, Vec<&str>> = HashMap::new();
+    for m in modules.iter().filter(|m| !m.declarations.is_empty()) {
+        supers
+            .entry(m.path.as_str())
+            .or_default()
+            .extend(m.declarations.iter().flat_map(|d| d.supertypes.iter().map(String::as_str)));
+    }
+    for c in candidates.iter_mut() {
+        let Some(hint) = c.implements.as_deref() else { continue };
+        let known: Vec<&Vec<&str>> =
+            c.files.iter().filter_map(|f| supers.get(f.as_str())).collect();
+        if known.is_empty() {
+            continue; // no parsed file in this house — nothing to judge with.
+        }
+        let evidencing = known.iter().filter(|ss| ss.iter().any(|s| *s == hint)).count();
+        if evidencing < MIN_EXEMPLARS {
+            c.implements = None;
+        }
+    }
 }
 
 /// Highest slice recurrence per role affix (lowercased), from the miner's
@@ -891,6 +964,116 @@ mod tests {
         uniq.sort();
         uniq.dedup();
         assert_eq!(uniq.len(), folded.exemplars.len(), "no file is offered twice");
+    }
+
+    #[test]
+    fn implements_hint_must_be_re_earned_by_each_house() {
+        // One family, one repo-wide hint. The first house really writes the
+        // contract (2 evidencing files); the second holds plain classes (one
+        // building on nothing, one on an unrelated contract). The hint must
+        // reach only the house that earns it — and the demoted house keeps its
+        // candidate, just without the line.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [
+                {"name":"api","dir":"apps/api"},
+                {"name":"gateway","dir":"apps/gateway"}
+              ],
+              "roles": [{"affix":"Service","kind":"suffix","count":6,"common_dir":"apps/api/services","dirs":["apps/gateway/services"],"decl_kind":"class","implements":"BaseService"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.x","declarations":[{"name":"UserService","supertypes":["BaseService"]}]},
+                {"path":"apps/api/services/OrderService.x","declarations":[{"name":"OrderService","supertypes":["BaseService"]}]},
+                {"path":"apps/gateway/services/EmailService.x","declarations":[{"name":"EmailService","supertypes":[]}]},
+                {"path":"apps/gateway/services/QueueService.x","declarations":[{"name":"QueueService","supertypes":["IAlpha"]}]}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 2, "both houses keep their candidate: {:?}", got.iter().map(|c| &c.slug).collect::<Vec<_>>());
+        let api = got.iter().find(|c| c.subproject == "apps/api").unwrap();
+        let gateway = got.iter().find(|c| c.subproject == "apps/gateway").unwrap();
+        assert_eq!(api.implements.as_deref(), Some("BaseService"), "the house that writes the contract keeps the hint");
+        assert_eq!(gateway.implements, None, "the house that never writes it is not told to");
+        assert!(collect_rejected(root).is_empty(), "a demotion is not a drop");
+    }
+
+    #[test]
+    fn implements_hint_survives_a_model_without_declarations() {
+        // An older grain carries no declarations at all — there is no
+        // inheritance data to judge with, so the global hint stays untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services","decl_kind":"class","implements":"BaseService"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].implements.as_deref(), Some("BaseService"));
+    }
+
+    #[test]
+    fn implements_hint_survives_a_house_without_structural_evidence() {
+        // The model DOES carry declarations (so the pass runs), but none of the
+        // cluster's own files has any — a language the miner only walked
+        // textually. Demoting needs evidence; the hint stays.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services","decl_kind":"class","implements":"BaseService"}],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"apps/api/other/Widget.ts","declarations":[{"name":"Widget","supertypes":["Base"]}]}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].implements.as_deref(), Some("BaseService"), "no local evidence — the hint is kept, not demoted");
+    }
+
+    #[test]
+    fn a_folded_hint_is_validated_against_the_union_of_files() {
+        // Two variants of one role fold into one mold path. EACH variant alone
+        // holds ONE evidencing file (< MIN_EXEMPLARS — a pre-fold pass would
+        // demote both); their union holds two. The hint must survive, proving
+        // the validation runs on the folded file set.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "roles": [
+                {"affix":"Report","kind":"suffix","decl_kind":"typedecl","count":8,"common_dir":"apps/api/reports","implements":"IReport"},
+                {"affix":"Report","kind":"prefix","decl_kind":"class","count":8,"common_dir":"apps/api/reporting"}
+              ],
+              "modules": [
+                {"path":"apps/api/reports/DriftReport.x","declarations":[{"name":"DriftReport","supertypes":["IReport"]}]},
+                {"path":"apps/api/reports/PathReport.x","declarations":[{"name":"PathReport","supertypes":[]}]},
+                {"path":"apps/api/reporting/ReportDrift.x","declarations":[{"name":"ReportDrift","supertypes":["IReport"]}]},
+                {"path":"apps/api/reporting/ReportPath.x","declarations":[{"name":"ReportPath","supertypes":[]}]}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "one mold path, one folded candidate: {:?}", got.iter().map(|c| &c.slug).collect::<Vec<_>>());
+        assert_eq!(got[0].count, 4, "the union carries all four files");
+        assert_eq!(got[0].implements.as_deref(), Some("IReport"), "two evidencing files across the union re-earn the hint");
     }
 
     #[test]
