@@ -146,7 +146,7 @@ pub fn mine(
     let mut role_kinds: HashMap<String, HashMap<String, usize>> = HashMap::new();
     let mut entity_roles: HashMap<String, BTreeSet<String>> = HashMap::new();
     // supertype accumulators (populated only when AST parsing supplies them)
-    let mut role_supertypes: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    let mut role_supertypes: HashMap<String, HashMap<String, BTreeSet<String>>> = HashMap::new();
     let mut contract_entities: HashMap<String, BTreeSet<String>> = HashMap::new();
     // collaborator accumulators: which namespaces each role pulls in, per entity
     let imports_by_path: HashMap<&str, &Vec<String>> =
@@ -195,7 +195,7 @@ pub fn mine(
         entity_roles.entry(key.clone()).or_default().insert(role.clone());
 
         for st in &s.supertypes {
-            *role_supertypes.entry(role.clone()).or_default().entry(st.clone()).or_default() += 1;
+            role_supertypes.entry(role.clone()).or_default().entry(st.clone()).or_default().insert(key.clone());
             contract_entities.entry(st.clone()).or_default().insert(key.clone());
         }
         if let Some(imps) = imports_by_path.get(s.path.as_str()) {
@@ -227,13 +227,12 @@ pub fn mine(
 
     // Entity keys, used to keep domain types from masquerading as contracts.
     let entity_keys: HashSet<String> = entity_display.keys().cloned().collect();
-    let top_supertype = |r: &str| -> Option<String> {
-        let m = role_supertypes.get(r)?;
-        m.iter()
-            .filter(|(name, _)| !entity_keys.contains(&canonical_key(name)))
-            .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
-            .filter(|(_, c)| **c >= 2)
-            .map(|(name, _)| name.clone())
+    // The family's contract lives in `majority_supertype` (below) so it can be
+    // unit-tested in isolation: the winning base type is kept only when a MAJORITY
+    // of the family shares it. `role_supertypes` counts DISTINCT entities per
+    // supertype, so the winner is weighed apples-to-apples against the family size.
+    let top_supertype = |r: &str, family: usize| -> Option<String> {
+        majority_supertype(role_supertypes.get(r)?, family, &entity_keys)
     };
     // Collaborators: namespaces this role pulls in across many of its entities,
     // excluding ones imported by most *roles* (framework/base noise like System).
@@ -277,7 +276,7 @@ pub fn mine(
             common_dir: top_key(role_dirs.get(r)),
             dirs: recurring_dirs(role_dirs.get(r)),
             decl_kind: top_key(role_kinds.get(r)),
-            implements: top_supertype(r),
+            implements: top_supertype(r, ents.len()),
             collaborators: collaborators_for(r),
         })
         .collect();
@@ -822,4 +821,72 @@ fn slice_conf(recur: usize, nroles: usize) -> f32 {
         _ => 0.9,
     };
     (base + 0.02 * nroles as f32).min(0.97)
+}
+
+/// The family's contract: the winning supertype, kept ONLY when a MAJORITY of the
+/// family's `family` members share it. `per_supertype` maps each candidate base to
+/// the DISTINCT entities that extend it, so the winner is weighed apples-to-apples
+/// against the family size — a supertype held by a lodged minority of a large,
+/// mixed suffix family never speaks for the whole family.
+/// Entity-named supertypes are excluded so a domain type can't masquerade as a
+/// contract. Agnostic: pure recurrence, no language named.
+fn majority_supertype(
+    per_supertype: &HashMap<String, BTreeSet<String>>,
+    family: usize,
+    entity_keys: &HashSet<String>,
+) -> Option<String> {
+    per_supertype
+        .iter()
+        .filter(|(name, _)| !entity_keys.contains(&canonical_key(name)))
+        .max_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| b.0.cmp(a.0)))
+        .filter(|(_, ents)| ents.len() >= 2 && ents.len() * 2 > family)
+        .map(|(name, _)| name.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ents(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn minority_supertype_does_not_speak_for_the_family() {
+        // A base held by 3 of a 10-member family (a lodged minority) is dropped —
+        // it must not speak for the whole family. Language-agnostic.
+        let mut per = HashMap::new();
+        per.insert("SomeBase".to_string(), ents(&["a", "b", "c"]));
+        assert_eq!(majority_supertype(&per, 10, &HashSet::new()), None);
+    }
+
+    #[test]
+    fn exactly_half_is_not_a_majority() {
+        let mut per = HashMap::new();
+        per.insert("SomeBase".to_string(), ents(&["a", "b", "c", "d", "e"]));
+        assert_eq!(majority_supertype(&per, 10, &HashSet::new()), None);
+    }
+
+    #[test]
+    fn strict_majority_is_the_family_contract() {
+        let mut per = HashMap::new();
+        per.insert("SomeBase".to_string(), ents(&["a", "b", "c", "d", "e", "f"]));
+        assert_eq!(
+            majority_supertype(&per, 10, &HashSet::new()),
+            Some("SomeBase".to_string())
+        );
+    }
+
+    #[test]
+    fn stronger_supertype_wins_by_distinct_entities() {
+        // Two candidates; the one shared by more DISTINCT entities wins and must
+        // still clear majority. 6 vs 3 of an 8-member family -> the 6 wins.
+        let mut per = HashMap::new();
+        per.insert("Weak".to_string(), ents(&["a", "b", "c"]));
+        per.insert("Strong".to_string(), ents(&["a", "b", "c", "d", "e", "f"]));
+        assert_eq!(
+            majority_supertype(&per, 8, &HashSet::new()),
+            Some("Strong".to_string())
+        );
+    }
 }

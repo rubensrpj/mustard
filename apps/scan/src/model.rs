@@ -245,7 +245,9 @@ pub struct RoleStat {
     /// A representative declaration kind (class/function/const/...).
     pub decl_kind: String,
     /// The base type these files most often extend/implement, if any (from
-    /// supertypes; populated when AST parsing is available). The role's contract.
+    /// supertypes; populated when AST parsing is available). The role's contract —
+    /// set only when a MAJORITY of the family shares it, so a minority's supertype
+    /// never speaks for a large mixed family.
     #[serde(default)]
     pub implements: Option<String>,
     /// Namespaces/modules files of this role commonly pull in — its collaborators.
