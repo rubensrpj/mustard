@@ -94,7 +94,6 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "wave-dependency",
     "wave-done",
     "wave-files",
-    "wave-scaffold",
     "wave-size-check",
     "wave-tree",
     "work-unit-open",
