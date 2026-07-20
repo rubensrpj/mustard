@@ -60,14 +60,13 @@
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
-use crate::shared::gate_mode::{resolve_mode, GateMode};
 use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
 use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// One wave entry inside the plan JSON.
 ///
@@ -408,8 +407,8 @@ fn build_ac_block(plan: &Plan, hd: &Headings<'_>) -> Option<String> {
 }
 
 /// The two AC↔wave traceability gap kinds, kept apart so [`scaffold`] can
-/// escalate ONLY the uncovered-criterion gap under `MUSTARD_TRACE_GATE_MODE`
-/// while the untraced-wave signal stays a non-blocking WARN in every mode.
+/// surface the uncovered-criterion gap (the coverage gate `plan-materialize`
+/// enforces) while the untraced-wave signal stays a non-blocking WARN.
 struct TraceGaps {
     /// Gap 1 — a wave that does work (`tasks` non-empty) but satisfies NO
     /// criterion. Always WARN-level: a wave can legitimately be plumbing /
@@ -506,19 +505,6 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
     TraceGaps { untraced_waves, uncovered_acs }
 }
 
-/// The blocking gap list for a resolved `MUSTARD_TRACE_GATE_MODE`: `strict`
-/// carries every uncovered criterion through (so [`run`] exits non-zero),
-/// `warn`/`off` carry none — the WARN [`scaffold`] already printed is the whole
-/// signal in those modes. Pure: the env read stays in the caller, so the
-/// escalation is unit-testable without mutating the process environment.
-fn trace_block_for(mode: GateMode, uncovered_acs: Vec<String>) -> Vec<String> {
-    if mode == GateMode::Strict {
-        uncovered_acs
-    } else {
-        Vec::new()
-    }
-}
-
 /// Seed the per-wave trackable checklist from the wave's file census — one
 /// item per target file (`{label, path, done: false}`), reusing the core
 /// [`ChecklistItem`]. The path doubles as the label (deterministic, no
@@ -550,16 +536,15 @@ fn write_if_absent(path: &Path, content: &str) -> bool {
 /// Outcome of one scaffold pass — the miolo result [`run`] prints and
 /// `plan-materialize` folds into its composite report.
 pub(crate) enum ScaffoldOutcome {
-    /// The layout was materialised (idempotently). `trace_block` lists the
-    /// uncovered parent/plan acceptance criteria ONLY when `MUSTARD_TRACE_GATE_MODE`
-    /// is `strict` (empty in `warn`/`off`); a non-empty list makes the standalone
-    /// [`run`] exit non-zero so the orchestrator notices the untraced criterion.
-    /// The in-process caller (`plan-materialize`) ignores it — the trace gate is
-    /// on the `wave-scaffold` command, never the pipeline composite.
+    /// The layout was materialised (idempotently). `uncovered_acs` lists the
+    /// parent/plan acceptance criteria that no wave covers — the coverage gate
+    /// `plan-materialize` enforces (a non-empty list blocks the PLAN transition
+    /// so the orchestrator notices the untraced criterion). Always the real
+    /// list; there is no mode knob.
     Created {
         created: Vec<String>,
         skipped: Vec<String>,
-        trace_block: Vec<String>,
+        uncovered_acs: Vec<String>,
     },
     /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
     EmptyPlan,
@@ -567,132 +552,6 @@ pub(crate) enum ScaffoldOutcome {
     Unreadable(String),
 }
 
-/// Run `mustard-rt run wave-scaffold --spec-dir <dir> --plan <json-file>`.
-///
-/// Idempotent. Stdout is `{"created_files":[...],"skipped":[...]}`; operator
-/// errors (empty plan, unreadable/unparseable plan) add an `error` field —
-/// plus an actionable `hint` for the missing-`n`/`role` case — and exit 2 so
-/// the orchestrator notices.
-pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
-    let Some(spec_dir_arg) = spec_dir_arg else {
-        eprintln!("Usage: wave-scaffold --spec-dir <dir> --plan <json-file>");
-        return;
-    };
-    let Some(plan_arg) = plan_arg else {
-        eprintln!("Usage: wave-scaffold --spec-dir <dir> --plan <json-file>");
-        return;
-    };
-    let spec_dir = if Path::new(spec_dir_arg).is_absolute() {
-        PathBuf::from(spec_dir_arg)
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(spec_dir_arg)
-    };
-    let plan_path = if Path::new(plan_arg).is_absolute() {
-        PathBuf::from(plan_arg)
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(plan_arg)
-    };
-
-    match scaffold(&spec_dir, &plan_path) {
-        ScaffoldOutcome::Unreadable(msg) => {
-            eprintln!("{msg}");
-            // Same rationale as the EmptyPlan arm below: an unreadable /
-            // unparseable plan is operator error — express it on stdout too
-            // (the orchestrator parses the JSON, not stderr) and exit non-zero
-            // so it notices, instead of the old `created_files: []` + exit 0
-            // that looked like a clean no-op.
-            let summary = msg.strip_prefix("[wave-scaffold] ").unwrap_or(msg.as_str());
-            // A read failure embeds the absolutized (cwd-dependent) plan path
-            // plus the OS-specific io message — both volatile, and `run`
-            // stdout must stay byte-stable (crate guard). The full message
-            // already went to stderr above; stdout keeps the deterministic
-            // prefix only, mirroring plan-materialize's scrubbed
-            // `plan unreadable` constant (the EmptyPlan arm below likewise
-            // keeps the path on stderr).
-            let summary = if summary.starts_with("cannot read plan") {
-                "cannot read plan"
-            } else {
-                summary
-            };
-            // The failure measured in production (≥6× in 6 days on the sialia
-            // telemetry) is a hand-authored plan omitting the required
-            // `n`/`role` — serde reports it as `missing field`. Attach the
-            // actionable fix, not just the symptom.
-            let out = if msg.contains("missing field") {
-                json!({
-                    "created_files": [],
-                    "skipped": [],
-                    "error": summary,
-                    "hint": "every waves[] entry requires \"n\" (1-based wave number) and \
-                             \"role\"; generate the plan with `mustard-rt run \
-                             plan-materialize` (the pipeline entry)",
-                })
-            } else {
-                json!({
-                    "created_files": [],
-                    "skipped": [],
-                    "error": summary,
-                })
-            };
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
-            );
-            std::process::exit(2);
-        }
-        // W10.T10.3 — hard gate: an empty plan is operator error, not "scaffold
-        // nothing". Print to stderr and exit non-zero so the orchestrator notices.
-        ScaffoldOutcome::EmptyPlan => {
-            eprintln!(
-                "[wave-scaffold] ERROR: plan.waves is empty — nothing to scaffold ({})",
-                plan_path.display()
-            );
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "created_files": [],
-                    "skipped": [],
-                    "error": "plan.waves is empty",
-                }))
-                .unwrap_or_else(|_| "{}".to_string())
-            );
-            std::process::exit(2);
-        }
-        ScaffoldOutcome::Created { created, skipped, trace_block } => {
-            // strict `MUSTARD_TRACE_GATE_MODE` + an uncovered parent/plan AC:
-            // the layout WAS materialised (idempotent), but the command fails so
-            // the orchestrator notices the untraced criterion. The gap ids are
-            // deterministic (no paths/timestamps), so listing them on stdout
-            // keeps `run` byte-stable; warn/off leave `trace_block` empty and
-            // fall through to the clean success output.
-            if !trace_block.is_empty() {
-                let out: Value = json!({
-                    "created_files": created,
-                    "skipped": skipped,
-                    "error": "uncovered acceptance criteria",
-                    "trace_gaps": trace_block,
-                });
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
-                );
-                std::process::exit(2);
-            }
-            let out: Value = json!({
-                "created_files": created,
-                "skipped": skipped,
-            });
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
-            );
-        }
-    }
-}
 
 /// Materialise the wave layout for an already-resolved `spec_dir` + `plan_path`.
 ///
@@ -792,11 +651,11 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     }
 
     // AC↔wave traceability (F6): the untraced-wave signal (Gap 1) stays a
-    // non-blocking WARN in every mode; the uncovered-criterion signal (Gap 2 —
-    // an AC of the plan OR the parent spec.md that no wave claims) escalates
-    // under `MUSTARD_TRACE_GATE_MODE` (default strict). The parent monolithic
-    // spec is `spec.md` at PLAN time, or `spec.original.md` once a rewave
-    // archived it; an absent parent contributes no ids (standalone scaffold).
+    // non-blocking WARN; the uncovered-criterion signal (Gap 2 — an AC of the
+    // plan OR the parent spec.md that no wave claims) is the coverage gate,
+    // ENFORCED by `plan-materialize` (the pipeline entry) — no env knob. The
+    // parent monolithic spec is `spec.md` at PLAN time, or `spec.original.md`
+    // once a rewave archived it; an absent parent contributes no ids.
     let parent_ac_md = fs::read_to_string(spec_dir.join("spec.md"))
         .or_else(|_| fs::read_to_string(spec_dir.join("spec.original.md")))
         .ok();
@@ -804,17 +663,12 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     for gap in &gaps.untraced_waves {
         eprintln!("[wave-scaffold] WARN: {gap}");
     }
-    // off silences Gap 2 entirely; warn/strict print each as a WARN; only
-    // strict carries them into `trace_block` so the standalone `run` exits
-    // non-zero. `scaffold` itself never exits — it stays reusable in-process
-    // (plan-materialize), which is why the block travels back typed.
-    let trace_mode = resolve_mode("MUSTARD_TRACE_GATE_MODE", None, GateMode::Strict);
-    if trace_mode != GateMode::Off {
-        for gap in &gaps.uncovered_acs {
-            eprintln!("[wave-scaffold] WARN: {gap}");
-        }
+    for gap in &gaps.uncovered_acs {
+        eprintln!("[wave-scaffold] WARN: {gap}");
     }
-    let trace_block = trace_block_for(trace_mode, gaps.uncovered_acs);
+    // `scaffold` never exits — it stays reusable in-process (plan-materialize),
+    // which blocks the PLAN transition when this list is non-empty.
+    let uncovered_acs = gaps.uncovered_acs;
 
     // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
@@ -875,7 +729,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // phase is materialised by code into `qa/report.md` / `review/verdict.md`
     // (D4), not tracked through a dead sidecar.
 
-    ScaffoldOutcome::Created { created, skipped, trace_block }
+    ScaffoldOutcome::Created { created, skipped, uncovered_acs }
 }
 
 /// Write a per-wave `meta.json` beside a scaffolded wave `spec.md`, only when
@@ -937,6 +791,7 @@ fn write_parent_meta(dir: &Path, fresh: Meta) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn sample_plan() -> Plan {
@@ -1062,10 +917,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         // 3 files for a 2-wave plan: wave-plan + 2× wave-N/spec.md. qa/ and
         // review/ are event-driven phases — NOT scaffolded here.
@@ -1091,10 +943,7 @@ mod tests {
         assert!(spec_dir.join("meta.json").exists());
 
         // Second run is idempotent — no overwrites, no errors.
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
         // File still exists, still has draft content (not overwritten).
         let s1_again =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
@@ -1125,10 +974,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         let plan_md = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
         // The deps column of wave 2 carries the wikilink (not "—") — proves the
@@ -1164,10 +1010,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         // Parent orchestrator artefacts.
         assert!(spec_dir.join("wave-plan.md").exists());
@@ -1187,10 +1030,7 @@ mod tests {
         assert_eq!(root_meta.is_wave_plan, Some(true));
 
         // Idempotent.
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
         let again =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         let first =
@@ -1234,10 +1074,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
         // The stale estimate is corrected to the real wave count.
@@ -1277,10 +1114,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
         assert_eq!(root.total_waves, Some(4), "actual entry count wins over declared");
@@ -1483,10 +1317,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         let s1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
         assert!(!s1.contains("- [ ] - [ ]"), "doubled checkbox on disk: {s1}");
@@ -1520,10 +1351,7 @@ mod tests {
         )
         .unwrap();
 
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
 
         let wave_meta =
             mustard_core::read_meta(&spec_dir.join("wave-1-rt").join("meta.json")).unwrap();
@@ -1542,10 +1370,7 @@ mod tests {
         let mut marked = wave_meta.clone();
         marked.checklist[0].done = true;
         mustard_core::write_meta(&wave_meta_path, &marked).unwrap();
-        run(
-            Some(spec_dir.to_str().unwrap()),
-            Some(plan_path.to_str().unwrap()),
-        );
+        let _ = scaffold(&spec_dir, &plan_path);
         let again = mustard_core::read_meta(&wave_meta_path).unwrap();
         assert!(again.checklist[0].done, "re-scaffold must preserve done state");
     }
@@ -1691,13 +1516,12 @@ mod tests {
         assert!(gaps.untraced_waves.is_empty(), "wave traces AC-1 → not untraced");
     }
 
-    /// End-to-end through `scaffold` under the DEFAULT mode (strict, env unset):
-    /// a parent spec.md whose AC-2 no wave claims makes `scaffold` return a
-    /// non-empty `trace_block` — the list [`run`] maps to a non-zero exit. The
-    /// layout is still materialised (idempotent); the block is the data the
-    /// caller actions.
+    /// End-to-end through `scaffold`: a parent spec.md whose AC-2 no wave claims
+    /// makes `scaffold` return a non-empty `uncovered_acs` — the list
+    /// `plan-materialize` maps to a blocked PLAN + non-zero exit. The layout is
+    /// still materialised (idempotent); the list is the data the caller actions.
     #[test]
-    fn scaffold_parent_spec_ac_strict_blocks() {
+    fn scaffold_flags_uncovered_parent_ac() {
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-trace");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -1723,41 +1547,23 @@ mod tests {
         .unwrap();
 
         match scaffold(&spec_dir, &plan_path) {
-            ScaffoldOutcome::Created { created, trace_block, .. } => {
+            ScaffoldOutcome::Created { created, uncovered_acs, .. } => {
                 // The layout was still materialised.
                 assert!(created.iter().any(|f| f == "wave-plan.md"), "created: {created:?}");
-                // strict (default) → the uncovered parent AC-2 blocks.
+                // The uncovered parent AC-2 is flagged (plan-materialize blocks on it).
                 assert!(
-                    trace_block.iter().any(|g| g.contains("AC-2")),
-                    "strict mode must carry the uncovered AC-2 into trace_block: {trace_block:?}"
+                    uncovered_acs.iter().any(|g| g.contains("AC-2")),
+                    "the uncovered AC-2 must be flagged: {uncovered_acs:?}"
                 );
                 assert!(
-                    !trace_block.iter().any(|g| g.contains("AC-1")),
-                    "the covered AC-1 must not block: {trace_block:?}"
+                    !uncovered_acs.iter().any(|g| g.contains("AC-1")),
+                    "the covered AC-1 must not be flagged: {uncovered_acs:?}"
                 );
             }
             _ => panic!("expected ScaffoldOutcome::Created"),
         }
     }
 
-    /// warn / off modes do NOT block: `trace_block_for` returns an empty list
-    /// even when a parent AC is uncovered, so [`run`] exits 0. The gap is still
-    /// detected (`traceability_gaps` surfaces it — the stderr WARN `scaffold`
-    /// prints), it just no longer fails the command. strict is the only
-    /// escalating mode.
-    #[test]
-    fn trace_block_for_parent_spec_ac_warn_passes() {
-        let uncovered = vec!["AC-2 — no wave satisfies it".to_string()];
-        // strict escalates (blocks) — carries the uncovered AC through.
-        assert_eq!(
-            trace_block_for(GateMode::Strict, uncovered.clone()).len(),
-            1,
-            "strict carries the uncovered AC into the block"
-        );
-        // warn and off pass (no block), leaving the WARN as the only signal.
-        assert!(trace_block_for(GateMode::Warn, uncovered.clone()).is_empty(), "warn does not block");
-        assert!(trace_block_for(GateMode::Off, uncovered).is_empty(), "off does not block");
-    }
 
     /// The `satisfies` field deserialises from a hand-authored plan.json and
     /// defaults to empty for a plan that predates it (retrocompat).

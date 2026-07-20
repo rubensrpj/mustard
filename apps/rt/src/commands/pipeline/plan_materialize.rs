@@ -61,12 +61,17 @@ pub struct PlanMaterializeOpts {
 /// string keeps the JSON field and the exit mapping in lockstep.
 const ERR_PLAN_UNREADABLE: &str = "plan unreadable";
 
+/// Stdout `scaffold.error` marker for a scaffold that materialised but left a
+/// parent/plan acceptance criterion uncovered by every wave. [`run`] maps it to
+/// exit 2 and [`materialize`] withholds the PLAN transition — the coverage gate,
+/// enforced unconditionally in the pipeline (no env knob).
+const ERR_UNCOVERED_ACS: &str = "uncovered acceptance criteria";
+
 /// CLI entry — resolves the paths against the cwd and prints the composite
 /// report. Exit code: 0 on success and on advisory failures (validation is
 /// WARN-level; failures are expressed in the JSON), 2 when the plan file
-/// could not be read/parsed (`scaffold.error: "plan unreadable"`) — aligned
-/// with the standalone `wave-scaffold` contract (operator error → non-zero
-/// exit so the orchestrator notices).
+/// could not be read/parsed, or an uncovered acceptance criterion tripped the
+/// coverage gate — either way a non-zero exit so the orchestrator notices.
 pub fn run(opts: PlanMaterializeOpts) {
     let project = PathBuf::from(crate::shared::context::project_dir());
     let spec_dir = absolutize(&project, &opts.spec_dir);
@@ -76,7 +81,8 @@ pub fn run(opts: PlanMaterializeOpts) {
         "{}",
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
     );
-    if report["scaffold"]["error"].as_str() == Some(ERR_PLAN_UNREADABLE) {
+    let scaffold_err = report["scaffold"]["error"].as_str();
+    if scaffold_err == Some(ERR_PLAN_UNREADABLE) || scaffold_err == Some(ERR_UNCOVERED_ACS) {
         std::process::exit(2);
     }
 }
@@ -103,13 +109,22 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
     //    subcommand uses; idempotent, skip-if-present).
     let outcome = wave_scaffold::scaffold(spec_dir, plan_path);
     let (scaffold_json, scaffold_ok) = match outcome {
-        // `trace_block` (strict MUSTARD_TRACE_GATE_MODE) is deliberately ignored
-        // here: the trace gate is on the standalone `wave-scaffold` command, not
-        // the pipeline composite — plan-materialize reports the scaffold and
-        // emits the PLAN transition regardless of an uncovered-criterion gap.
-        ScaffoldOutcome::Created { created, skipped, trace_block: _ } => (
+        // Coverage gate (unconditional — no env knob): a parent/plan acceptance
+        // criterion that no wave covers BLOCKS the PLAN transition. The layout
+        // was materialised (idempotent), but `scaffold_ok=false` withholds the
+        // events and `run` exits non-zero, so the gap is fixed before EXECUTE.
+        ScaffoldOutcome::Created { created, skipped, uncovered_acs } if uncovered_acs.is_empty() => (
             json!({ "created_files": created, "skipped": skipped }),
             true,
+        ),
+        ScaffoldOutcome::Created { created, skipped, uncovered_acs } => (
+            json!({
+                "created_files": created,
+                "skipped": skipped,
+                "error": ERR_UNCOVERED_ACS,
+                "uncovered_acs": uncovered_acs,
+            }),
+            false,
         ),
         ScaffoldOutcome::EmptyPlan => (
             json!({
@@ -371,5 +386,54 @@ mod tests {
         assert_eq!(report["events"], json!([]), "{report}");
         // The drafted spec.md is still validated (advisory step is independent).
         assert_eq!(report["validation"]["ok"], json!(true), "{report}");
+    }
+
+    /// Coverage gate (unconditional — no env knob): a parent spec.md AC that no
+    /// wave claims BLOCKS — the scaffold carries the `error` marker, `scaffold_ok`
+    /// is false so NO events are emitted, and `run` maps it to exit 2.
+    #[test]
+    fn composite_plan_materialize_uncovered_parent_ac_blocks() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let spec_dir = project.join(".claude").join("spec").join("demo-cov");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // Parent declares two ACs; the plan routes only AC-1 onto a wave.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Demo\n\n## Files\n- `a.rs` (create)\n\n## Acceptance Criteria\n- **AC-1** — a. Command: `true`\n- **AC-2** — b. Command: `true`\n",
+        )
+        .unwrap();
+        let plan_path = project.join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"], "satisfies": ["AC-1"] }
+                ],
+                "total_waves": 1,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = materialize(project, &spec_dir, &plan_path);
+
+        // Blocked: error marker + the uncovered AC-2 listed.
+        assert_eq!(
+            report["scaffold"]["error"],
+            json!("uncovered acceptance criteria"),
+            "{report}"
+        );
+        assert!(
+            report["scaffold"]["uncovered_acs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g.as_str().unwrap_or_default().contains("AC-2")),
+            "AC-2 must be listed as uncovered: {report}"
+        );
+        // No PLAN transition on a blocked scaffold.
+        assert_eq!(report["events"], json!([]), "blocked scaffold emits nothing: {report}");
     }
 }
