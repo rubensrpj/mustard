@@ -7,6 +7,10 @@ source: manual
 
 `/scan [--root <dir>] [--out <path>]`. **Enrichment is STANDARD** — no `--full`/`--enrich` flag, no spend prompt. Every `/scan` does the deterministic model, the subproject maps, and both enrichment passes (Guards + pattern molds).
 
+**Git hygiene — the refresh is its OWN unit.** Everything `/scan` writes is **versioned**: the grain model, every `scan-map.md`, the `## Guards` of every subproject `CLAUDE.md`, and the `{role}-pattern` molds (`.claude/.gitignore` covers only runtime scratch). So:
+- **Before:** run it on a CLEAN tree — `scan-clean-gate` refuses otherwise, because under the `/git` `add -A` law the regenerated model could not be committed apart from your work.
+- **After:** if it produced changes, commit + push them as their own unit (`/git pr`). A re-scan over unchanged code is byte-stable and leaves the tree clean — no diff, nothing to push.
+
 ## 1. Deterministic model + maps (no AI, you do NOT read source)
 
 ```bash
