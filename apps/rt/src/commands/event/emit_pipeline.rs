@@ -491,7 +491,11 @@ fn echo_success(kind: &str, spec: &str, work_branch: Option<String>) {
 /// is the opposite of telemetry-style fail-open: we are guarding a verdict, so
 /// the conservative outcome on missing data is to block (not allow). Callers
 /// can opt out via `--allow-no-qa`.
-fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
+/// `pub(crate)` so the Bash-family `pr_qa_gate` advisory consults the SAME
+/// source of truth as this module's hard `pipeline.complete` gate — an advisory
+/// that could disagree with the gate that actually blocks would be worse than
+/// none.
+pub(crate) fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
     let events_dir = ClaudePaths::spec_dir_or_unchecked(cwd, spec).join(".events");
     let mut events =
         mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);

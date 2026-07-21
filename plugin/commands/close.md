@@ -8,6 +8,8 @@ source: manual
 
 **Iron law: NO close without `qa.result=pass` — the close-gate refuses.** `/close`.
 
+**Where this sits relative to git.** CLOSE runs while the unit is still **live on its work branch — BEFORE the PR is merged**. The `/git` flow is a separate subsystem and never triggers it (nothing sequences `close-pipeline` after `pr close`). Merging first does not bypass this gate — CLOSE still refuses — but it integrates unverified work, which is why `pr-qa-gate` warns at `gh pr create`/`merge` time. → `${CLAUDE_PLUGIN_ROOT}/commands/git.md`
+
 ## Verification gate + auto-finalize (deterministic)
 
 One command runs every gate and, on pass, finalizes in-process:
