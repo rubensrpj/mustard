@@ -37,7 +37,7 @@
         ]
       },
       {
-        "matcher": "compact|resume",
+        "matcher": "clear|compact|resume",
         "hooks": [
           {
             "type": "command",

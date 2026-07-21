@@ -1,5 +1,6 @@
 ---
 description: Use when the user runs /qa or asks to run QA, validate AC, or check acceptance criteria. Executes the QA gate — runs each AC and reports pass/fail. Blocks CLOSE on failure.
+argument-hint: [--spec <name>]
 source: manual
 ---
 <!-- mustard:generated -->

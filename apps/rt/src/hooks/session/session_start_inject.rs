@@ -19,13 +19,13 @@
 //!   `spec/{name}/` (flat layout — lifecycle status lives in each spec's
 //!   `meta.json` sidecar, no bucket moves).
 //! - declared injectables (orchestrator-redesign) — the `mustard.json#inject`
-//!   entries with `on: sessionStart` (canonically the response style in
-//!   `.claude/mustard/response-style.md`) are appended AFTER the terrain
-//!   census, blank-line separated, in the same single `Inject` verdict. On a
-//!   post-compaction `SessionStart` (`source == "compact"`) the session's
-//!   `injected-*` markers are cleared first — so the `once` entries of
-//!   `userPromptSubmit` re-deliver on the next prompt — and the `sessionStart`
-//!   entries re-inject immediately (markers ignored): the compacted window
+//!   entries with `on: sessionStart` are appended AFTER the terrain census,
+//!   blank-line separated, in the same single `Inject` verdict. On a
+//!   window-refreshing `SessionStart` — `source == "compact"` (auto-compaction)
+//!   or `source == "clear"` (the user ran `/clear`) — the session's
+//!   `injected-*` markers are cleared first (so the `once` entries of
+//!   `userPromptSubmit` re-deliver on the next prompt) and the `sessionStart`
+//!   entries re-inject immediately (markers ignored): the refreshed window
 //!   lost them, so they must ride back in.
 //! - version drift advisory — an installed project (`mustard.json` present)
 //!   whose `version` stamp differs from the running harness gets a one-line
@@ -346,25 +346,29 @@ impl Check for SessionStartInject {
             terrain_lang,
         );
         // Declared injectables (`mustard.json#inject`, `on: sessionStart`).
-        // A post-compaction SessionStart (`source == "compact"`) first clears
-        // the session's `injected-*` markers — the compacted window lost every
-        // earlier injection, so the `once` userPromptSubmit entries must
-        // re-deliver on the next prompt — and then re-injects the sessionStart
-        // entries immediately, markers ignored. Fail-open throughout.
+        // A window-refreshing SessionStart first clears the session's
+        // `injected-*` markers, then re-injects the sessionStart entries
+        // immediately (markers ignored). Two sources refresh the window:
+        // `compact` (auto-compaction) and `clear` (the user ran `/clear`) —
+        // both drop every earlier injection, so the `once` userPromptSubmit
+        // entries must re-deliver on the next prompt and the sessionStart
+        // entries must ride back in. Fail-open throughout.
         let session = current_session_id(input);
-        let is_compact = input
+        let source_refreshes_window = input
             .raw
             .get("source")
             .and_then(|v| v.as_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("compact"));
-        if is_compact {
+            .is_some_and(|s| {
+                s.eq_ignore_ascii_case("compact") || s.eq_ignore_ascii_case("clear")
+            });
+        if source_refreshes_window {
             crate::hooks::session::injectables::clear_markers(&cwd, Some(session.as_str()));
         }
         let injected = crate::hooks::session::injectables::collect(
             &cwd,
             Some(session.as_str()),
             "sessionstart",
-            is_compact,
+            source_refreshes_window,
         );
         // Version drift advisory: an installed project whose `mustard.json`
         // stamp differs from the running harness gets a one-paragraph nudge
@@ -696,6 +700,45 @@ mod tests {
         assert!(
             !session.join("injected-orchestrator.md").exists(),
             "compact clears the prompt-side once markers"
+        );
+        assert!(
+            session.join("injected-response-style.md").is_file(),
+            "the re-delivered sessionStart entry re-records its marker"
+        );
+    }
+
+    #[test]
+    fn clear_resets_markers_and_reinjects() {
+        // A `/clear` refreshes the window exactly like a compaction: the
+        // sessionStart entries must ride back in and the prompt-side `once`
+        // markers must be cleared so the orchestrator re-delivers next prompt.
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        seed_session_injectable(dir.path(), "STYLE-BODY\n");
+        let session = dir.path().join(".claude/.session/s1");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("injected-orchestrator.md"), "x").unwrap();
+
+        // First startup burns the sessionStart marker.
+        let _ = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
+            .unwrap();
+        assert!(session.join("injected-response-style.md").is_file());
+
+        // Clear: prompt-side marker cleared AND the sessionStart entry
+        // re-injects despite its (now cleared) marker.
+        let v = SessionStartInject
+            .evaluate(&session_input_with_source("s1", "clear"), &ctx(project))
+            .unwrap();
+        match v {
+            Verdict::Inject { context } => {
+                assert!(context.contains("STYLE-BODY"), "clear must re-inject: {context}");
+            }
+            other => panic!("expected re-inject on clear, got {other:?}"),
+        }
+        assert!(
+            !session.join("injected-orchestrator.md").exists(),
+            "clear clears the prompt-side once markers"
         );
         assert!(
             session.join("injected-response-style.md").is_file(),
