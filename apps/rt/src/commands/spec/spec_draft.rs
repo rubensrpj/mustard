@@ -106,6 +106,37 @@ pub struct SpecDraftOpts {
     pub force_scope: bool,
 }
 
+/// Scan existing spec directories under `spec_parent` for a NEAR-duplicate of
+/// `slug` — a sibling whose hyphen-token set overlaps `slug`'s by a high ratio
+/// (Jaccard >= 0.6 with >= 2 shared tokens). Catches a re-draft of the same
+/// intent that slugged slightly differently before it silently creates a second
+/// directory. Returns the first near-duplicate name. Fail-open: an unreadable
+/// directory or a too-short slug yields `None`.
+fn find_near_duplicate(spec_parent: &std::path::Path, slug: &str) -> Option<String> {
+    use std::collections::BTreeSet;
+    let cand: BTreeSet<&str> = slug.split('-').filter(|t| !t.is_empty()).collect();
+    if cand.len() < 2 {
+        return None;
+    }
+    for entry in std::fs::read_dir(spec_parent).ok()?.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == slug {
+            continue; // exact match is handled by the output.exists() check.
+        }
+        let other: BTreeSet<&str> = name.split('-').filter(|t| !t.is_empty()).collect();
+        let shared = cand.intersection(&other).count();
+        let union = cand.union(&other).count();
+        // Jaccard >= 0.6, i.e. shared/union >= 3/5, computed in integers.
+        if shared >= 2 && shared * 5 >= union * 3 {
+            return Some(name);
+        }
+    }
+    None
+}
+
 /// Entry point.
 pub fn run(opts: SpecDraftOpts) {
     let Some(scope) = Scope::parse(&opts.scope) else {
@@ -122,6 +153,7 @@ pub fn run(opts: SpecDraftOpts) {
         return;
     }
 
+    let auto_output = opts.output.is_none();
     let output = opts.output.unwrap_or_else(|| {
         let project = PathBuf::from(project_dir());
         ClaudePaths::for_project(&project)
@@ -137,6 +169,22 @@ pub fn run(opts: SpecDraftOpts) {
     if output.exists() && !opts.force {
         emit_error("output exists; pass --force to overwrite", &output.display().to_string());
         return;
+    }
+    // Near-duplicate guard (auto-slug only): a re-draft of the same intent can
+    // slug slightly differently and silently create a SECOND spec directory
+    // beside the first. Block on a high hyphen-token overlap with an existing
+    // sibling; --force or an explicit --output overrides. Same language is
+    // implicit — token overlap is near-zero across languages.
+    if auto_output && !opts.force {
+        if let Some(parent) = output.parent() {
+            if let Some(dup) = find_near_duplicate(parent, &slug) {
+                emit_error(
+                    "a near-duplicate spec already exists; pass --force or --output to override",
+                    &dup,
+                );
+                return;
+            }
+        }
     }
     if let Err(e) = mfs::create_dir_all(&output) {
         emit_error("could not create output directory", &e.to_string());
@@ -804,6 +852,24 @@ mod tests {
         );
         assert_eq!(s, "espelhar-contas-pagar-visao-listagem");
         assert!(!s.ends_with('-'));
+    }
+
+    #[test]
+    fn near_duplicate_flags_high_overlap_only() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path();
+        std::fs::create_dir_all(parent.join("refatoracao-global-tratamento-erro")).unwrap();
+        std::fs::create_dir_all(parent.join("unrelated-login-flow")).unwrap();
+
+        // High token overlap with the existing PT spec → flagged.
+        assert_eq!(
+            find_near_duplicate(parent, "refatoracao-global-tratamento-erro-handler").as_deref(),
+            Some("refatoracao-global-tratamento-erro"),
+        );
+        // A genuinely different spec is not blocked.
+        assert!(find_near_duplicate(parent, "add-dark-mode-toggle").is_none());
+        // Cross-language: an EN slug shares too few tokens with the PT dir → None.
+        assert!(find_near_duplicate(parent, "error-handling-global-refactor").is_none());
     }
 
     /// Count `pipeline.phase` events with a given `to` value under `cwd`'s spec.

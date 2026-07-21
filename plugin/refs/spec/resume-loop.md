@@ -17,6 +17,8 @@ The binary owns every deterministic decision (wave order, routing, prompts, mode
 
 A spec has two layers — `## PRD` (what & why) + `## Plan` (how). Approving approves **both at once** — no separate PRD gate.
 
+**Already approved — skip re-approval (avoids the double gesture).** If `resume-bootstrap` returned `approvedByUser: true`, the plan was already approved in `/feature` (or a prior `/spec`): the `<spec>/.approved-by-user` marker exists and `approve-spec` passes on its presence. Do **NOT** re-present the plan or re-ask the approval — that is the redundant second gesture. Skip straight to the *implement now vs approve only* choice (a single lightweight `AskUserQuestion`, or a letter-mode `r` that pre-answers *implement now*), then emit the relay below (`--resume` when implementing now). Everything else in §A below is for a plan **not yet** approved.
+
 **Is it a wave plan?** Check for `.claude/spec/{spec}/wave-plan.md`.
 
 **Wave plan exists:**

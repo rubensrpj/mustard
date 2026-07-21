@@ -118,6 +118,7 @@ fn project_from_events(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
             "pipeline.status" => apply_status(&mut view, ev),
             "pipeline.phase" => apply_phase(&mut view, ev),
             "pipeline.task.complete" => apply_task_complete(ev, &mut files),
+            "pipeline.wave.start" => apply_wave_start(&mut view),
             "pipeline.wave.complete" => apply_wave_complete(&mut view, ev),
             "pipeline.wave.failed" => apply_wave_failed(&mut view, ev),
             // `pipeline.complete` is a temporal audit marker emitted by
@@ -233,6 +234,21 @@ fn apply_task_complete(ev: &HarnessEvent, files: &mut BTreeSet<String>) {
     };
     if let Some(modified) = payload.files_modified {
         files.extend(modified);
+    }
+}
+
+/// `pipeline.wave.start` — a wave began executing, so the spec has entered
+/// EXECUTE. Advance `view.state` to `Execute` **forward-only**: only from
+/// `Analyze`/`Plan`, never regressing a spec already in `QaReview`/`Close`.
+/// Without this the event fold sat at `Plan` (from the last `pipeline.status:
+/// approved`) through the whole first wave — the projection twin of the parent
+/// `meta.json` gap that `emit_wave_start` / `sync_parent_started` closes.
+fn apply_wave_start(view: &mut SpecView) {
+    if !matches!(view.state.stage, Stage::Analyze | Stage::Plan) {
+        return; // already Execute or later — never regress.
+    }
+    if let Ok(state) = SpecState::new(Stage::Execute, view.state.outcome, view.state.flags.clone()) {
+        view.state = state;
     }
 }
 
@@ -563,6 +579,24 @@ mod tests {
         assert_eq!(view.model.as_deref(), Some("opus"));
         assert!(view.is_wave_plan);
         assert_eq!(view.total_waves, Some(4));
+    }
+
+    #[test]
+    fn wave_start_advances_stage_to_execute_forward_only() {
+        // `approved` leaves the fold at Plan; a `wave.start` means EXECUTE began,
+        // so the fold must reflect it (the projection twin of the parent-meta fix).
+        let events = vec![
+            event("feat", "2026-05-20T10:00:00Z", "pipeline.status", json!({ "to": "approved" })),
+            event("feat", "2026-05-20T10:01:00Z", "pipeline.wave.start", json!({ "wave": 1 })),
+        ];
+        assert_eq!(project_spec_view("feat", &events).state.stage, Stage::Execute);
+
+        // Forward-only: a wave.start must never regress a later stage.
+        let events = vec![
+            event("feat", "2026-05-20T10:00:00Z", "pipeline.status", json!({ "to": "reviewing" })),
+            event("feat", "2026-05-20T10:01:00Z", "pipeline.wave.start", json!({ "wave": 2 })),
+        ];
+        assert_eq!(project_spec_view("feat", &events).state.stage, Stage::QaReview);
     }
 
     #[test]

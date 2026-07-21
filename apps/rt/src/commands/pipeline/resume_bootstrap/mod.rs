@@ -108,6 +108,13 @@ pub struct ResumeBootstrap {
     /// `true` when the operational spec is a stub (Stage: Plan + no `## Files`/`## Tasks`).
     #[serde(rename = "isStub")]
     pub is_stub: bool,
+    /// `true` when `<spec>/.approved-by-user` already exists — the plan was
+    /// approved in `/feature` (or a prior `/spec`). The `/spec` picker reads
+    /// this to SKIP re-presenting the plan for approval (the `approve-spec` gate
+    /// already passes on the present marker); it then asks only *implement now*
+    /// vs *approve only*. Avoids soliciting the same approval twice.
+    #[serde(rename = "approvedByUser")]
+    pub approved_by_user: bool,
     /// Most recent unrecovered dispatch failure (if any, within 10 min).
     #[serde(rename = "lastDispatchFailure", skip_serializing_if = "Option::is_none")]
     pub last_dispatch_failure: Option<serde_json::Value>,
@@ -247,6 +254,14 @@ pub fn run(spec: &str, json_flag: bool) {
         .unwrap_or_default();
     out.stage = detect_stage(&op_path, &head, view.as_ref());
     out.is_stub = detect_stub(&op_path, &head);
+
+    // Approval marker: the plan-approval gesture already happened (in /feature
+    // or a prior /spec) when `<spec>/.approved-by-user` exists. The /spec picker
+    // reads this to skip a redundant SECOND approval presentation — the
+    // approve-spec gate already passes on the present marker.
+    out.approved_by_user =
+        crate::shared::context::approval_marker_path(&project.to_string_lossy(), spec)
+            .is_some_and(|p| p.exists());
 
     // --- specSummary: first non-empty line of `## Resumo` / `## Summary`. ---
     let body = op_path
