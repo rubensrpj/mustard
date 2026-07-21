@@ -275,10 +275,20 @@ pub fn run(spec_dir_arg: Option<&str>) {
         return;
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let spec_dir = if Path::new(spec_dir_arg).is_absolute() {
-        std::path::PathBuf::from(spec_dir_arg)
+    // Accept the three spec-dir spellings (a directory, a `…/spec.md` path, a
+    // bare slug) through the shared normaliser before the cwd join.
+    // Root resolution matches the sibling call sites (`wave_tree`,
+    // `pipeline_summary`, `plan_materialize`): `project_dir()` honours
+    // `CLAUDE_PROJECT_DIR`, so a bare slug resolves identically across all four
+    // commands the normaliser exists to unify.
+    let resolved = crate::shared::context::normalise_spec_dir(
+        Path::new(&crate::shared::context::project_dir()),
+        spec_dir_arg,
+    );
+    let spec_dir = if resolved.is_absolute() {
+        resolved
     } else {
-        cwd.join(spec_dir_arg)
+        cwd.join(resolved)
     };
     if !spec_dir.exists() {
         emit(json!({

@@ -164,3 +164,24 @@ fn spec_path_flag_aliases_are_interchangeable() {
         assert!(accepts(&["run", "qa-run", flag, "x"]), "qa-run {flag}");
     }
 }
+
+/// Same friction, the other half of the family: the four `--spec-dir` commands
+/// were left out of the earlier alias fix, so the habit the interface teaches
+/// (`--spec` / `--from-spec`) was punished here by a hard clap error and a
+/// burned retry. `--spec-dir` stays canonical; the two siblings are hidden
+/// aliases.
+#[test]
+fn spec_dir_flag_aliases_are_interchangeable() {
+    let tree = run_command_tree();
+    let accepts = |args: &[&str]| tree.clone().try_get_matches_from(args).is_ok();
+
+    for flag in ["--spec-dir", "--spec", "--from-spec"] {
+        assert!(
+            accepts(&["run", "plan-materialize", flag, "d", "--plan", "p.json"]),
+            "plan-materialize {flag}"
+        );
+        assert!(accepts(&["run", "pipeline-summary", flag, "d"]), "pipeline-summary {flag}");
+        assert!(accepts(&["run", "wave-tree", flag, "d"]), "wave-tree {flag}");
+        assert!(accepts(&["run", "wave-size-check", flag, "d"]), "wave-size-check {flag}");
+    }
+}

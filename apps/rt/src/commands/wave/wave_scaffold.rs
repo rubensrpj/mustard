@@ -1,8 +1,13 @@
-//! `mustard-rt run wave-scaffold` — render the canonical SDD wave layout for
-//! a spec from a declarative JSON plan.
+//! The wave-scaffold renderer — the canonical SDD wave layout for a spec,
+//! rendered from a declarative JSON plan.
+//!
+//! NOT a `run` subcommand: it was absorbed into
+//! [`crate::commands::pipeline::plan_materialize`], which is the ONLY published
+//! entry point (`mustard-rt run plan-materialize --spec-dir <dir> --plan
+//! plan.json`) and calls [`scaffold`] in-process.
 //!
 //! Part of the wave-network spec (`2026-05-20-mustard-wave-network-standard`).
-//! The SKILL `/feature` generates the plan JSON during PLAN; this subcommand
+//! The SKILL `/feature` generates the plan JSON during PLAN; this renderer
 //! materialises every wave-N spec file and the top-level `wave-plan.md` index.
 //! `qa/` and `review/` are NOT scaffolded — they are event-driven phases;
 //! `qa-run` / `review-result` create `qa/report.md` / `review/verdict.md` on
@@ -47,7 +52,8 @@
 //!
 //! Each is `#[serde(default)]`: a plan that predates these fields (summary-only)
 //! still deserialises, and a wave that omits them materialises with no task /
-//! file block (the empty-tasks case emits a visible stderr WARN — see [`run`]).
+//! file block (the empty-tasks case emits a visible stderr WARN — see
+//! [`scaffold`]).
 //!
 //! `lang` accepts BCP-47 (`pt-BR` / `en-US`); the legacy short forms
 //! (`pt` / `en`) are tolerated on read for back-compat with old plan JSON
@@ -57,14 +63,21 @@
 //! standalone scaffold. Every generated artefact (headings, placeholders) is
 //! rendered in that effective language per the i18n rule.
 //!
-//! Idempotent: each output file is only created when absent. The stdout JSON
-//! reports which were created vs skipped.
+//! Idempotent, in both write modes (see [`WriteMode`]): re-running an UNCHANGED
+//! plan creates, refreshes and removes nothing. Before the user approves the
+//! spec the layout is reconciled onto the plan (a differing file is rewritten,
+//! a wave the plan dropped is deleted); once `.approved-by-user` exists it is
+//! frozen — skip-if-present, with ONE stderr WARN when a file would have
+//! changed. `plan-materialize` reports `created_files` / `skipped` /
+//! `refreshed` / `removed` on stdout.
 
+use crate::shared::context::APPROVED_BY_USER_MARKER;
 use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
 use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -98,8 +111,8 @@ pub(crate) struct WavePlanEntry {
     /// lines in the wave's `spec.md` (read back by `agent-prompt-render`).
     /// `#[serde(default)]` is an explicit retrocompat affordance: a
     /// summary-only plan (pre-dating this field) still deserialises, and the
-    /// empty case is surfaced by a visible stderr WARN in [`run`] rather than a
-    /// silent empty heading.
+    /// empty case is surfaced by a visible stderr WARN in [`scaffold`] rather
+    /// than a silent empty heading.
     #[serde(default)]
     pub(crate) tasks: Vec<String>,
     /// File census for this wave. Materialised as a `## Files`/`## Arquivos`
@@ -303,7 +316,7 @@ fn wave_self_link(parent: &str, w: &WavePlanEntry) -> String {
 ///
 /// Pure: returns the rendered String, no IO. The empty-`tasks` signal (a wave
 /// the Plan agent left without a checklist) is surfaced by the caller in
-/// [`run`] via a stderr WARN, not here — an empty task block emits **no**
+/// [`scaffold`] via a stderr WARN, not here — an empty task block emits **no**
 /// `## Tasks` heading (a bare heading is noise; `agent-prompt-render` falls
 /// back to an empty TASK block, which the WARN makes visible).
 pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
@@ -444,7 +457,6 @@ struct TraceGaps {
 /// `acceptance` ids define the set — the historical behaviour).
 fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
     use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
-    use std::collections::BTreeSet;
     let norm = |s: &str| s.trim().to_uppercase();
     let mut untraced_waves: Vec<String> = Vec::new();
     let mut defined: BTreeSet<String> = BTreeSet::new();
@@ -524,17 +536,250 @@ fn checklist_from_files(files: &[String]) -> Vec<ChecklistItem> {
         .collect()
 }
 
-/// Write `content` to `path` only when the file does not already exist.
-/// Returns `true` when the file was created, `false` when it was skipped.
-fn write_if_absent(path: &Path, content: &str) -> bool {
-    if fs::exists(path) {
-        return false;
-    }
-    fs::write_atomic(path, content.as_bytes()).is_ok()
+/// Write mode for one scaffold pass, decided by the canonical per-spec approval
+/// marker (`.approved-by-user`) — never by a flag or an env knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteMode {
+    /// No approval marker yet: the layout is still the Plan agent's draft, so
+    /// every artefact is a pure function of the plan. A rendered body that
+    /// differs from disk is REWRITTEN (reported under `refreshed`) and a
+    /// `wave-N-*` directory the plan no longer declares is DELETED (reported
+    /// under `removed`) — so re-running `plan-materialize` after fixing
+    /// `plan.json` repairs the scaffold instead of leaving stale files behind.
+    Reconcile,
+    /// The user already approved this plan (the marker exists): the layout is
+    /// FROZEN. Skip-if-present, byte-for-byte the historical behaviour, and
+    /// nothing is ever deleted — a would-be change surfaces as ONE stderr WARN
+    /// naming the change-request route.
+    Frozen,
 }
 
-/// Outcome of one scaffold pass — the miolo result [`run`] prints and
-/// `plan-materialize` folds into its composite report.
+/// Decide the write mode from the canonical approval marker
+/// [`APPROVED_BY_USER_MARKER`] beside the spec. The marker can only be born
+/// from the user's real approval answer, so it — and nothing else — decides
+/// whether the scaffold may still be rewritten.
+fn write_mode(spec_dir: &Path) -> WriteMode {
+    if fs::exists(spec_dir.join(APPROVED_BY_USER_MARKER)) {
+        WriteMode::Frozen
+    } else {
+        WriteMode::Reconcile
+    }
+}
+
+/// The exact bytes [`write_meta`] would put on disk for `meta` — pretty JSON
+/// plus the trailing newline.
+///
+/// Used ONLY to decide whether a sidecar already matches the plan;
+/// [`write_meta`] stays the single writer. If the two shapes ever drift, the
+/// idempotency test (`composite_plan_materialize_scaffolds_validates_and_emits`,
+/// which asserts an unchanged plan refreshes nothing) is the alarm.
+fn render_meta(meta: &Meta) -> Option<String> {
+    serde_json::to_string_pretty(meta).ok().map(|mut s| {
+        s.push('\n');
+        s
+    })
+}
+
+/// `true` when `name` is a scaffolded wave directory (`wave-<n>-<role>`) — the
+/// `wave-` prefix followed by a digit, the same shape `wave-size-check` and the
+/// review-role derivation enumerate. Everything else under the spec root (the
+/// root `spec.md` / `meta.json` / `wave-plan.md`, plus the `.events/`, `qa/`
+/// and `review/` phase folders) is therefore invisible to the pruner.
+fn is_wave_dir(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .strip_prefix("wave-")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// Per-file bookkeeping for one scaffold pass — the lists [`ScaffoldOutcome`]
+/// carries, plus the frozen-plan drift flag [`scaffold`] turns into its single
+/// stderr WARN.
+struct Ledger<'a> {
+    /// Spec root every recorded path is made relative to.
+    spec_dir: &'a Path,
+    mode: WriteMode,
+    created: Vec<String>,
+    skipped: Vec<String>,
+    refreshed: Vec<String>,
+    removed: Vec<String>,
+    /// [`WriteMode::Frozen`] only: at least one artefact WOULD have changed.
+    drift: bool,
+}
+
+impl<'a> Ledger<'a> {
+    fn new(spec_dir: &'a Path, mode: WriteMode) -> Self {
+        Self {
+            spec_dir,
+            mode,
+            created: Vec::new(),
+            skipped: Vec::new(),
+            refreshed: Vec::new(),
+            removed: Vec::new(),
+            drift: false,
+        }
+    }
+
+    /// `path` relative to the spec root, forward-slashed so the JSON report is
+    /// identical on every platform.
+    fn rel(&self, path: &Path) -> String {
+        path.strip_prefix(self.spec_dir).map_or_else(
+            |_| path.to_string_lossy().to_string(),
+            |p| p.to_string_lossy().replace('\\', "/"),
+        )
+    }
+
+    /// Materialise one rendered markdown artefact.
+    ///
+    /// Absent → written, recorded under `created` (both modes). Present and
+    /// byte-identical → `skipped`. Present and DIFFERENT → rewritten +
+    /// `refreshed` under [`WriteMode::Reconcile`]; left untouched + `skipped`
+    /// with the drift flag raised under [`WriteMode::Frozen`]. A write failure
+    /// degrades to `skipped` — the historical `write_if_absent` contract.
+    fn emit(&mut self, path: &Path, body: &str) {
+        let rel = self.rel(path);
+        if !fs::exists(path) {
+            if fs::write_atomic(path, body.as_bytes()).is_ok() {
+                self.created.push(rel);
+            } else {
+                self.skipped.push(rel);
+            }
+            return;
+        }
+        // An existing file that cannot be read counts as "differs": Reconcile
+        // rewrites it from the plan, Frozen still leaves it alone.
+        if fs::read_to_string(path).ok().as_deref() == Some(body) {
+            self.skipped.push(rel);
+            return;
+        }
+        match self.mode {
+            WriteMode::Reconcile if fs::write_atomic(path, body.as_bytes()).is_ok() => {
+                self.refreshed.push(rel);
+            }
+            WriteMode::Reconcile => self.skipped.push(rel),
+            WriteMode::Frozen => {
+                self.drift = true;
+                self.skipped.push(rel);
+            }
+        }
+    }
+
+    /// Materialise one per-wave `meta.json` sidecar, mirroring [`Self::emit`]'s
+    /// reconcile-vs-freeze decision.
+    ///
+    /// The sidecars stay OUT of `created`/`skipped` — those two lists have only
+    /// ever carried the markdown artefacts and `plan-materialize` publishes them
+    /// verbatim. A sidecar therefore only ever appears under `refreshed`, when
+    /// an unapproved plan actually rewrote it (resetting a `done` flag the
+    /// auto-mark hook flipped is the point: before approval the checklist is a
+    /// function of the plan's file census, and EXECUTE cannot have started).
+    fn emit_meta(&mut self, dir: &Path, meta: &Meta) {
+        let path = dir.join("meta.json");
+        let _ = fs::create_dir_all(dir);
+        let write = |path: &Path| {
+            if let Err(e) = write_meta(path, meta) {
+                eprintln!(
+                    "[wave-scaffold] WARN: could not write {} ({e})",
+                    path.display()
+                );
+                return false;
+            }
+            true
+        };
+        if !fs::exists(&path) {
+            write(&path);
+            return;
+        }
+        // No renderable form → cannot prove a difference; leave the sidecar be.
+        let Some(body) = render_meta(meta) else {
+            return;
+        };
+        if fs::read_to_string(&path).ok().as_deref() == Some(body.as_str()) {
+            return;
+        }
+        match self.mode {
+            WriteMode::Reconcile => {
+                if write(&path) {
+                    let rel = self.rel(&path);
+                    self.refreshed.push(rel);
+                }
+            }
+            WriteMode::Frozen => self.drift = true,
+        }
+    }
+
+    /// Delete `wave-N-*` directories present on disk but absent from `planned`,
+    /// recording each under `removed`.
+    ///
+    /// [`WriteMode::Reconcile`] only — an approved layout is never pruned. Only
+    /// wave DIRECTORIES are considered ([`is_wave_dir`]), so the root `spec.md`,
+    /// `meta.json`, `wave-plan.md`, `.events/`, `qa/` and `review/` can never be
+    /// touched. Fail-open: a directory that refuses to go warns and is not
+    /// reported as removed.
+    fn prune_stale_waves(&mut self, planned: &BTreeSet<String>) {
+        if self.mode != WriteMode::Reconcile {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(self.spec_dir) else {
+            return;
+        };
+        for entry in entries {
+            if !entry.is_dir
+                || !is_wave_dir(&entry.file_name)
+                || planned.contains(&entry.file_name)
+            {
+                continue;
+            }
+            if fs::remove_dir_all(&entry.path).is_ok() {
+                self.removed.push(entry.file_name.clone());
+            } else {
+                eprintln!(
+                    "[wave-scaffold] WARN: could not remove stale wave dir {}",
+                    entry.path.display()
+                );
+            }
+        }
+        self.removed.sort();
+    }
+}
+
+/// The single stderr WARN a FROZEN pass emits when the plan renders something
+/// the approved layout does not carry.
+///
+/// It names the route that DOES accept a change on an approved spec — stating
+/// it in chat, which the change-request observer records in the spec's
+/// `change-log.md` — because silently re-planning an approved spec is exactly
+/// what the approval marker exists to prevent. Composed here (rather than
+/// inlined at the `eprintln!`) so the wording is assertable.
+fn frozen_plan_warn() -> String {
+    format!(
+        "[wave-scaffold] WARN: the plan renders content that differs from the approved layout, \
+         but {APPROVED_BY_USER_MARKER} exists — the scaffold is FROZEN and nothing was \
+         rewritten. Route the change through a change request (state it in chat; it is recorded \
+         in the spec's change-log.md), never through a silent re-plan."
+    )
+}
+
+/// The minimal valid plan appended to BOTH unreadable-plan messages, plus the
+/// pointer to the authoritative schema. stderr only — the `plan-materialize`
+/// stdout keeps its stable `error: "plan unreadable"` marker.
+const PLAN_SCHEMA_HINT: &str = concat!(
+    "[wave-scaffold] the minimal plan JSON this command accepts:\n",
+    "{\n",
+    "  \"waves\": [\n",
+    "    { \"n\": 1, \"role\": \"general\", \"summary\": \"one line\",\n",
+    "      \"depends_on\": [],\n",
+    "      \"tasks\": [\"wire the contract\"], \"files\": [\"src/api/handler.rs\"],\n",
+    "      \"acceptance\": [\"**AC-1** - handler returns 200. Command: `curl -sf ...`\"],\n",
+    "      \"satisfies\": [\"AC-1\"] }\n",
+    "  ],\n",
+    "  \"total_waves\": 1, \"lang\": \"en-US\"\n",
+    "}\n",
+    "[wave-scaffold] full schema: the /feature reference full-plan.md, \
+     section `Plan JSON schema`",
+);
+
+/// Outcome of one scaffold pass — the miolo result `plan-materialize` folds
+/// into its composite report.
 pub(crate) enum ScaffoldOutcome {
     /// The layout was materialised (idempotently). `uncovered_acs` lists the
     /// parent/plan acceptance criteria that no wave covers — the coverage gate
@@ -544,27 +789,40 @@ pub(crate) enum ScaffoldOutcome {
     Created {
         created: Vec<String>,
         skipped: Vec<String>,
+        /// Artefacts whose rendered body differed from disk and were REWRITTEN
+        /// from the plan ([`WriteMode::Reconcile`] only). Sorted, and always
+        /// present (empty when nothing changed) so stdout stays byte-stable.
+        refreshed: Vec<String>,
+        /// `wave-N-*` directories deleted because the plan no longer declares
+        /// them ([`WriteMode::Reconcile`] only). Sorted, and always present.
+        removed: Vec<String>,
         uncovered_acs: Vec<String>,
     },
     /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
     EmptyPlan,
-    /// The plan file could not be read or parsed; carries the stderr message.
+    /// The plan file could not be read or parsed; carries the stderr message
+    /// (which teaches [`PLAN_SCHEMA_HINT`]).
     Unreadable(String),
 }
 
 
 /// Materialise the wave layout for an already-resolved `spec_dir` + `plan_path`.
 ///
-/// The non-printing miolo of [`run`], reused in-process by
-/// [`crate::commands::pipeline::plan_materialize`] (no subprocess). Warnings
-/// (declared-total mismatch, empty-tasks waves) still go to stderr; the result
-/// is returned typed instead of printed.
+/// The non-printing renderer behind
+/// [`crate::commands::pipeline::plan_materialize`], called in-process (no
+/// subprocess). Warnings (declared-total mismatch, empty-tasks waves, a frozen
+/// plan that would have changed) go to stderr; the result is returned typed
+/// instead of printed.
+///
+/// Write mode follows the spec's approval marker — see [`WriteMode`]: an
+/// UNAPPROVED layout is reconciled onto the plan (rewrite what differs, prune
+/// waves the plan dropped), an APPROVED one is frozen.
 pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     let raw = match fs::read_to_string(plan_path) {
         Ok(t) => t,
         Err(e) => {
             return ScaffoldOutcome::Unreadable(format!(
-                "[wave-scaffold] cannot read plan {}: {e}",
+                "[wave-scaffold] cannot read plan {}: {e}\n{PLAN_SCHEMA_HINT}",
                 plan_path.display()
             ));
         }
@@ -573,7 +831,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         Ok(p) => p,
         Err(e) => {
             return ScaffoldOutcome::Unreadable(format!(
-                "[wave-scaffold] plan JSON parse error: {e}"
+                "[wave-scaffold] plan JSON parse error: {e}\n{PLAN_SCHEMA_HINT}"
             ));
         }
     };
@@ -606,21 +864,13 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
 
     let _ = fs::create_dir_all(spec_dir);
 
-    let mut created: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    let mut emit = |path: &Path, body: String| {
-        let rel = path
-            .strip_prefix(spec_dir)
-            .map_or_else(
-                |_| path.to_string_lossy().to_string(),
-                |p| p.to_string_lossy().replace('\\', "/"),
-            );
-        if write_if_absent(path, &body) {
-            created.push(rel);
-        } else {
-            skipped.push(rel);
-        }
-    };
+    let mut ledger = Ledger::new(spec_dir, write_mode(spec_dir));
+
+    // Before rendering anything, drop the wave directories this plan no longer
+    // declares (Reconcile only) — the repair path the field report asked for:
+    // fix `plan.json`, re-run `plan-materialize`, no hand deletion.
+    let planned: BTreeSet<String> = plan.waves.iter().map(wave_name).collect();
+    ledger.prune_stale_waves(&planned);
 
     // Synthesize the global Acceptance Criteria block from the per-wave
     // `acceptance` arrays. When any wave carries AC, their union is written into
@@ -632,7 +882,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
 
     // wave-plan.md.
     let wave_plan_md = render_wave_plan(&plan, &hd, ac_block.as_deref(), &parent_name);
-    emit(&spec_dir.join("wave-plan.md"), wave_plan_md);
+    ledger.emit(&spec_dir.join("wave-plan.md"), &wave_plan_md);
 
     // Per-wave spec. A wave the Plan agent left with no `tasks` is a visible
     // signal — emit a stderr WARN so the operator notices the gap instead of it
@@ -647,7 +897,10 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
             );
         }
         let dir = spec_dir.join(wave_name(w));
-        emit(&dir.join("spec.md"), render_wave_spec(&parent_name, w, &hd));
+        ledger.emit(
+            &dir.join("spec.md"),
+            &render_wave_spec(&parent_name, w, &hd),
+        );
     }
 
     // AC↔wave traceability (F6): the untraced-wave signal (Gap 1) stays a
@@ -701,9 +954,9 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     );
     for w in &plan.waves {
         let wave_dir = spec_dir.join(wave_name(w));
-        write_scaffold_meta(
+        ledger.emit_meta(
             &wave_dir,
-            Meta {
+            &Meta {
                 stage: Some("Plan".into()),
                 outcome: Some("Active".into()),
                 phase: None,
@@ -715,9 +968,11 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
                 total_waves: None,
                 flags: MetaFlags::default(),
                 // Events-first per-wave progress: one trackable item per
-                // target file. `write_scaffold_meta` is skip-if-absent, so a
-                // re-scaffold never resets `done` flags already flipped by
-                // the auto-mark hook / `mark-checklist-item`.
+                // target file. Once the plan is approved the sidecar is FROZEN,
+                // so a re-scaffold never resets `done` flags already flipped by
+                // the auto-mark hook / `mark-checklist-item`; before approval it
+                // is reconciled back onto the plan's census (EXECUTE cannot have
+                // started, so there is no progress to lose).
                 checklist: checklist_from_files(&w.files),
                 raw: Value::Null,
             },
@@ -729,40 +984,32 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // phase is materialised by code into `qa/report.md` / `review/verdict.md`
     // (D4), not tracked through a dead sidecar.
 
-    ScaffoldOutcome::Created { created, skipped, uncovered_acs }
-}
-
-/// Write a per-wave `meta.json` beside a scaffolded wave `spec.md`, only when
-/// one is absent. Skip-if-absent so a hand/agent edit to a wave's lifecycle
-/// survives a re-scaffold. (The PARENT root is reconciled instead — see
-/// [`write_parent_meta`].) Fail-open: a write failure warns on stderr and never
-/// panics.
-fn write_scaffold_meta(dir: &Path, meta: Meta) {
-    let path = dir.join("meta.json");
-    if fs::exists(&path) {
-        return;
+    let Ledger { created, skipped, mut refreshed, removed, drift, .. } = ledger;
+    // An APPROVED plan is frozen: say so ONCE, and name the route that does
+    // accept a change.
+    if drift {
+        eprintln!("{}", frozen_plan_warn());
     }
-    let _ = fs::create_dir_all(dir);
-    if let Err(e) = write_meta(&path, &meta) {
-        eprintln!(
-            "[wave-scaffold] WARN: could not write {} ({e})",
-            path.display()
-        );
-    }
+    // Sorted so stdout stays byte-stable regardless of directory-read order.
+    refreshed.sort();
+    ScaffoldOutcome::Created { created, skipped, refreshed, removed, uncovered_acs }
 }
 
 /// Write / reconcile the wave-plan PARENT `meta.json` (the wave-plan root).
 ///
-/// Unlike the per-wave sidecars ([`write_scaffold_meta`], skip-if-absent), the
-/// parent typically already exists: `spec-draft` creates it at PLAN time with an
-/// *estimated* `total_waves` (the Full floor of ≥1, before the real plan is
-/// known). `wave-scaffold` is the authoritative source of the real wave count,
-/// so it must reconcile `total_waves` + `isWavePlan` onto whatever the pipeline
-/// has advanced the file to — preserving every lifecycle field
+/// Unlike the per-wave sidecars ([`Ledger::emit_meta`]), the parent typically
+/// already exists: `spec-draft` creates it at PLAN time with an *estimated*
+/// `total_waves` (the Full floor of ≥1, before the real plan is known). The
+/// scaffold is the authoritative source of the real wave count, so it must
+/// reconcile `total_waves` + `isWavePlan` onto whatever the pipeline has
+/// advanced the file to — preserving every lifecycle field
 /// (`stage` / `outcome` / `phase` / `scope` / `lang` / `checkpoint` / `flags` /
-/// `raw`). Skipping (the old behaviour, inherited from `write_scaffold_meta`)
-/// left a stale `totalWaves: 1` on multi-wave epics, mis-rendering the
-/// dashboard / `status` wave count.
+/// `raw`). Skipping it (the old behaviour) left a stale `totalWaves: 1` on
+/// multi-wave epics, mis-rendering the dashboard / `status` wave count.
+///
+/// Mode-independent by design: this reconcile touches ONLY the two structural
+/// wave-plan fields, so it is safe on an approved spec too — the root sidecar is
+/// explicitly out of the pure-function-of-the-plan set ([`WriteMode`]).
 ///
 /// Fail-open: a write failure warns on stderr and never panics.
 fn write_parent_meta(dir: &Path, fresh: Meta) {
@@ -1328,8 +1575,10 @@ mod tests {
     /// Task 1 (checklist-progresso-por-onda W2): the scaffold seeds each
     /// wave's `meta.json#checklist` with one `{label, path, done:false}` item
     /// per target file; the PARENT root meta carries NO checklist (explicit
-    /// OUT). Skip-if-absent keeps an already-marked wave sidecar intact on
-    /// re-scaffold.
+    /// OUT). The sidecar follows the write mode: reconciled back onto the plan
+    /// while the spec is unapproved (EXECUTE cannot have started, so no
+    /// progress is lost), FROZEN once `.approved-by-user` exists — which is
+    /// what keeps a `done` flag flipped by the auto-mark hook intact.
     #[test]
     fn scaffold_seeds_wave_meta_checklist_from_files() {
         let dir = tempdir().unwrap();
@@ -1365,14 +1614,31 @@ mod tests {
         let root_text = std::fs::read_to_string(spec_dir.join("meta.json")).unwrap();
         assert!(!root_text.contains("\"checklist\""), "{root_text}");
 
-        // Re-scaffold must not reset a flipped `done` (skip-if-absent).
+        // BEFORE approval the sidecar is a pure function of the plan, so a
+        // re-scaffold reconciles it back (and says so under `refreshed`).
         let wave_meta_path = spec_dir.join("wave-1-rt").join("meta.json");
         let mut marked = wave_meta.clone();
         marked.checklist[0].done = true;
         mustard_core::write_meta(&wave_meta_path, &marked).unwrap();
+        let (.., refreshed, _) = lists(scaffold(&spec_dir, &plan_path));
+        assert!(
+            refreshed.contains(&"wave-1-rt/meta.json".to_string()),
+            "an unapproved sidecar that drifted is refreshed: {refreshed:?}"
+        );
+        assert!(
+            !mustard_core::read_meta(&wave_meta_path).unwrap().checklist[0].done,
+            "before approval the checklist is re-derived from the plan"
+        );
+
+        // AFTER approval the sidecar is frozen — a `done` flipped by the
+        // auto-mark hook during EXECUTE survives any re-scaffold.
+        let mut marked = wave_meta.clone();
+        marked.checklist[0].done = true;
+        mustard_core::write_meta(&wave_meta_path, &marked).unwrap();
+        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
         let _ = scaffold(&spec_dir, &plan_path);
         let again = mustard_core::read_meta(&wave_meta_path).unwrap();
-        assert!(again.checklist[0].done, "re-scaffold must preserve done state");
+        assert!(again.checklist[0].done, "an approved sidecar preserves done state");
     }
 
     /// The empty-`tasks` retrocompat path: a wave with no checklist materialises
@@ -1564,6 +1830,239 @@ mod tests {
         }
     }
 
+
+    // -----------------------------------------------------------------------
+    // Write mode: reconcile before approval, freeze after
+    // -----------------------------------------------------------------------
+
+    /// Write a plan.json with `waves` verbatim; returns the path.
+    fn write_plan(dir: &Path, waves: Value) -> std::path::PathBuf {
+        let plan_path = dir.join("plan.json");
+        let total = waves.as_array().map_or(0, Vec::len);
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": waves,
+                "total_waves": total,
+                "lang": "en-US",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        plan_path
+    }
+
+    /// Destructure a `Created` outcome into `(created, skipped, refreshed, removed)`.
+    fn lists(outcome: ScaffoldOutcome) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+        match outcome {
+            ScaffoldOutcome::Created { created, skipped, refreshed, removed, .. } => {
+                (created, skipped, refreshed, removed)
+            }
+            _ => panic!("expected ScaffoldOutcome::Created"),
+        }
+    }
+
+    /// AC-1 — a spec that carries NO `.approved-by-user` marker is still the
+    /// Plan agent's draft, so re-running the scaffold after editing `plan.json`
+    /// REWRITES what differs and reports it under `refreshed`. This is the
+    /// repair path the field report asked for: fix the plan, re-run, done — no
+    /// hand deletion, no guard workaround.
+    #[test]
+    fn reconciles_scaffold_before_approval() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-reconcile");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([{ "n": 1, "role": "rt", "summary": "first take",
+                     "tasks": ["do it"], "files": ["src/a.rs"] }]),
+        );
+        let (created, ..) = lists(scaffold(&spec_dir, &plan_path));
+        assert!(created.contains(&"wave-plan.md".to_string()), "{created:?}");
+
+        // The Plan agent sharpens the wave: new summary, new task, new census.
+        let plan_path = write_plan(
+            dir.path(),
+            json!([{ "n": 1, "role": "rt", "summary": "sharpened take",
+                     "tasks": ["do it properly"], "files": ["src/b.rs"] }]),
+        );
+        let (created, _skipped, refreshed, removed) = lists(scaffold(&spec_dir, &plan_path));
+
+        assert!(created.is_empty(), "nothing is new on a re-run: {created:?}");
+        assert!(removed.is_empty(), "no wave was dropped: {removed:?}");
+        for expected in ["wave-plan.md", "wave-1-rt/spec.md", "wave-1-rt/meta.json"] {
+            assert!(
+                refreshed.contains(&expected.to_string()),
+                "{expected} must be reported refreshed: {refreshed:?}"
+            );
+        }
+        assert_eq!(
+            refreshed.clone().iter().collect::<BTreeSet<_>>().len(),
+            refreshed.len(),
+            "no duplicate entries: {refreshed:?}"
+        );
+        let mut sorted = refreshed.clone();
+        sorted.sort();
+        assert_eq!(refreshed, sorted, "refreshed must be sorted for byte-stable stdout");
+
+        // Disk actually carries the new plan, not the stale first take.
+        let wave_spec =
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        assert!(wave_spec.contains("sharpened take"), "{wave_spec}");
+        assert!(wave_spec.contains("- [ ] do it properly"), "{wave_spec}");
+        assert!(!wave_spec.contains("first take"), "stale body survived: {wave_spec}");
+        let wave_meta =
+            mustard_core::read_meta(&spec_dir.join("wave-1-rt").join("meta.json")).unwrap();
+        assert_eq!(wave_meta.checklist[0].path.as_deref(), Some("src/b.rs"));
+    }
+
+    /// AC-2 — once `.approved-by-user` exists the layout is FROZEN: a plan that
+    /// renders something else leaves every file byte-identical, reports nothing
+    /// refreshed or removed, and raises the single stderr WARN that names the
+    /// change-request route.
+    #[test]
+    fn approved_plan_scaffold_is_frozen() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-frozen");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([{ "n": 1, "role": "rt", "summary": "approved take",
+                     "tasks": ["do it"], "files": ["src/a.rs"] }]),
+        );
+        let _ = scaffold(&spec_dir, &plan_path);
+        let before_plan = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
+        let before_spec =
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        let before_meta =
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("meta.json")).unwrap();
+
+        // The user approves — and only then does the plan change underneath.
+        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([{ "n": 1, "role": "rt", "summary": "a late rewrite",
+                     "tasks": ["something else"], "files": ["src/z.rs"] }]),
+        );
+        let (created, skipped, refreshed, removed) = lists(scaffold(&spec_dir, &plan_path));
+
+        assert!(created.is_empty(), "{created:?}");
+        assert!(refreshed.is_empty(), "an approved layout is never rewritten: {refreshed:?}");
+        assert!(removed.is_empty(), "an approved layout is never pruned: {removed:?}");
+        assert!(skipped.contains(&"wave-1-rt/spec.md".to_string()), "{skipped:?}");
+        assert_eq!(
+            std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap(),
+            before_plan,
+            "wave-plan.md must stay byte-identical"
+        );
+        assert_eq!(
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap(),
+            before_spec,
+            "the wave spec must stay byte-identical"
+        );
+        assert_eq!(
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("meta.json")).unwrap(),
+            before_meta,
+            "the wave sidecar must stay byte-identical"
+        );
+
+        // The drift signal that drives the single stderr WARN, and its wording.
+        let mut ledger = Ledger::new(&spec_dir, WriteMode::Frozen);
+        ledger.emit(&spec_dir.join("wave-plan.md"), "a different body\n");
+        assert!(ledger.drift, "a would-be change must raise the frozen-plan drift flag");
+        assert_eq!(
+            std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap(),
+            before_plan,
+            "the frozen emit must not write"
+        );
+        let warn = frozen_plan_warn();
+        assert!(warn.contains("change request"), "the WARN must name the route: {warn}");
+        assert!(warn.contains("change-log.md"), "the WARN must name the record: {warn}");
+        assert!(warn.contains(APPROVED_BY_USER_MARKER), "the WARN must name the marker: {warn}");
+    }
+
+    /// AC-3 — before approval, a wave dropped from `plan.json` has its
+    /// directory deleted and listed under `removed`. The root `spec.md` /
+    /// `meta.json` and the `.events/`, `qa/` and `review/` phase folders are
+    /// never touched — only `wave-N-*` directories are in scope.
+    #[test]
+    fn removes_wave_dropped_from_plan() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-prune");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Epic\n").unwrap();
+        for phase in [".events", "qa", "review"] {
+            std::fs::create_dir_all(spec_dir.join(phase)).unwrap();
+            std::fs::write(spec_dir.join(phase).join("keep.md"), "keep me\n").unwrap();
+        }
+        let plan_path = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "a", "tasks": ["t1"] },
+                { "n": 2, "role": "cli", "summary": "b", "depends_on": ["wave-1-rt"],
+                  "tasks": ["t2"] }
+            ]),
+        );
+        let _ = scaffold(&spec_dir, &plan_path);
+        assert!(spec_dir.join("wave-2-cli").join("spec.md").exists());
+
+        // The plan drops wave 2.
+        let plan_path = write_plan(
+            dir.path(),
+            json!([{ "n": 1, "role": "rt", "summary": "a", "tasks": ["t1"] }]),
+        );
+        let (_, _, _, removed) = lists(scaffold(&spec_dir, &plan_path));
+
+        assert_eq!(removed, vec!["wave-2-cli".to_string()], "{removed:?}");
+        assert!(!spec_dir.join("wave-2-cli").exists(), "the stale wave dir must be gone");
+        assert!(spec_dir.join("wave-1-rt").join("spec.md").exists(), "the planned wave stays");
+        // Untouchables.
+        assert!(spec_dir.join("spec.md").exists());
+        assert!(spec_dir.join("meta.json").exists());
+        for phase in [".events", "qa", "review"] {
+            assert!(
+                spec_dir.join(phase).join("keep.md").exists(),
+                "{phase}/ must never be pruned"
+            );
+        }
+    }
+
+    /// AC-8 — a plan that cannot be read OR cannot be parsed answers with a
+    /// stderr message that carries a minimal valid plan and points at the
+    /// authoritative schema, so the operator does not have to go find it after
+    /// failing.
+    #[test]
+    fn unreadable_plan_message_teaches_schema() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-schema");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+
+        let assert_teaches = |msg: &str| {
+            for token in ["\"waves\"", "\"role\"", "\"total_waves\"", "full-plan.md", "Plan JSON schema"] {
+                assert!(msg.contains(token), "message must carry {token}: {msg}");
+            }
+        };
+
+        // 1. The file is not there at all.
+        match scaffold(&spec_dir, &dir.path().join("nope.json")) {
+            ScaffoldOutcome::Unreadable(msg) => {
+                assert!(msg.contains("cannot read plan"), "{msg}");
+                assert_teaches(&msg);
+            }
+            _ => panic!("a missing plan must be Unreadable"),
+        }
+
+        // 2. The file is there but is not valid plan JSON.
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{ this is not json }").unwrap();
+        match scaffold(&spec_dir, &broken) {
+            ScaffoldOutcome::Unreadable(msg) => {
+                assert!(msg.contains("parse error"), "{msg}");
+                assert_teaches(&msg);
+            }
+            _ => panic!("a malformed plan must be Unreadable"),
+        }
+    }
 
     /// The `satisfies` field deserialises from a hand-authored plan.json and
     /// defaults to empty for a plan that predates it (retrocompat).

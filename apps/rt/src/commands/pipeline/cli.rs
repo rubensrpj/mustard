@@ -66,8 +66,10 @@ pub enum PipelineCmd {
     /// `cargo run -p mustard-rt -- run pipeline-summary --self-test` in AC-1A-1.
     #[command(display_order = 34)]
     PipelineSummary {
-        /// Path to the spec directory (must contain `spec.md`).
-        #[arg(long = "spec-dir")]
+        /// Path to the spec directory (must contain `spec.md`). Also accepts a
+        /// `.../spec.md` path or a bare slug. `--spec` / `--from-spec` are
+        /// hidden aliases, so the sibling commands' spelling parses here too.
+        #[arg(long = "spec-dir", alias = "spec", alias = "from-spec")]
         spec_dir: Option<String>,
         /// Output format: `markdown` (default) or `json`.
         #[arg(long, default_value = "markdown")]
@@ -121,18 +123,30 @@ pub enum PipelineCmd {
         #[arg(long = "skip-docs")]
         skip_docs: bool,
     },
-    /// Composite PLAN materialisation: wave-scaffold + analyze-validation +
-    /// `pipeline.scope` (full) + `pipeline.phase` PLAN, all in-process.
-    /// Pressupposes `spec.md`/`meta.json` already drafted by `spec-draft`.
-    /// Output: `{"events":[...],"scaffold":{created_files,skipped},`
-    /// `"validation":{ok,issues}}` — byte-stable, ordered.
+    /// Composite PLAN materialisation: the wave-scaffold renderer +
+    /// analyze-validation + `pipeline.scope` (full) + `pipeline.phase` PLAN,
+    /// all in-process. Pressupposes `spec.md`/`meta.json` already drafted by
+    /// `spec-draft`. Re-runnable: before the spec is approved it reconciles the
+    /// layout onto the plan (rewriting what differs, deleting waves the plan
+    /// dropped); after approval the layout is frozen.
+    /// Output: `"events"`, `"scaffold"` (created_files, skipped, refreshed,
+    /// removed) and `"validation"` (ok, issues) — byte-stable, ordered.
     #[command(name = "plan-materialize")]
     #[command(display_order = 73)]
     PlanMaterialize {
-        /// Target spec directory.
-        #[arg(long = "spec-dir")]
+        /// Target spec directory. Also accepts a `.../spec.md` path or a bare
+        /// slug. `--spec` / `--from-spec` are hidden aliases.
+        #[arg(long = "spec-dir", alias = "spec", alias = "from-spec")]
         spec_dir: String,
         /// Path to the plan JSON file.
+        ///
+        /// Shape: a `waves` array whose entries carry `n`, `role`, `summary`,
+        /// `depends_on` (always the `wave-N-role` form), `tasks`, `files`,
+        /// `acceptance` and `satisfies`, plus a top-level `total_waves` and
+        /// `lang`. Every parent acceptance criterion MUST be claimed by some
+        /// wave — an uncovered one refuses the PLAN. Full schema with a worked
+        /// example: the /feature reference full-plan.md, section
+        /// `Plan JSON schema`.
         #[arg(long)]
         plan: String,
     },

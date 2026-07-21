@@ -455,7 +455,13 @@ pub fn run(spec_dir: Option<&str>, format: &str, self_test: bool) {
         eprintln!("pipeline-summary: missing --spec-dir flag");
         std::process::exit(1);
     };
-    let (model, header) = match build_for_dir(Path::new(spec_dir)) {
+    // Accept the three spec-dir spellings (a directory, a `…/spec.md` path, a
+    // bare slug) through the shared normaliser.
+    let spec_dir = crate::shared::context::normalise_spec_dir(
+        Path::new(&crate::shared::context::project_dir()),
+        spec_dir,
+    );
+    let (model, header) = match build_for_dir(&spec_dir) {
         Ok(pair) => pair,
         Err(msg) => {
             eprintln!("{msg}");
