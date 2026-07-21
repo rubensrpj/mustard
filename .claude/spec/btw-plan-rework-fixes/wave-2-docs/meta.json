@@ -1,26 +1,26 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": null,
+  "checkpoint": "2026-07-21T16:51:19.835Z",
   "parent": "btw-plan-rework-fixes",
   "checklist": [
     {
       "label": "apps/dashboard/src/components/DoctorBadge/index.tsx",
       "path": "apps/dashboard/src/components/DoctorBadge/index.tsx",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/refs/feature/full-plan.md",
       "path": "plugin/refs/feature/full-plan.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/refs/feature/spec-language.md",
       "path": "plugin/refs/feature/spec-language.md",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/tests/run_command_surface.rs",
