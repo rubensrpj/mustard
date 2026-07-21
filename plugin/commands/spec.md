@@ -35,7 +35,7 @@ rtk mustard-rt run resume-bootstrap --spec {specName} --json
 
 Route on the returned `stage` — the whole procedure lives in **`${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md`**:
 
-- **`Plan`** → resume-loop **§A Approve** (owns the single-spec render + the approval: plan mode first, the approve/implement `AskUserQuestion` as fallback). A letter-mode `r` pre-answers only the *implement now* continuation — never the approval: the user still accepts via `ExitPlanMode` (or answers the approval `AskUserQuestion`), and on a Full spec `.clarified` must precede it. The picker mints neither marker.
+- **`Plan`** → resume-loop **§A Approve** (owns the single-spec render + the approval: plan mode first, the approve/implement `AskUserQuestion` as fallback). A letter-mode `r` pre-answers only the *implement now* continuation — never the approval: the user still accepts via `ExitPlanMode` (or answers the approval `AskUserQuestion`), and on a Full spec `.clarified` must precede it. The picker mints neither marker. **But if `approvedByUser:true` (already approved in `/feature`), §A skips the re-approval and asks only implement-now vs approve-only** — no second gesture.
 - **`Execute` / `Analyze` / `QaReview` / `QaPending` / `ReviewPending` / `Close`** → resume-loop **§B Loop** (the `wave-advance` relay — routing, order and prompts are decided by Rust; the LLM only relays). In focused mode, first print a one-line header (`{specName} — retomando (EXEC)`; precise wave numbering comes from `wave-tree`) and ask a single **"Implementar agora?"** confirm before dispatch; letter mode (and a letter-mode `r`) skip that resume confirm — an EXEC-stage spec is already past approval, so nothing is bypassed; `r` carries no approval meaning here.
 
 ## 4. Edge cases

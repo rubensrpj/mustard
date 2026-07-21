@@ -134,6 +134,24 @@ fn count_tasks(block: &str) -> usize {
     count
 }
 
+/// Common source/config/doc file extensions — the "is this token a real file?"
+/// allowlist for [`backtick_file_refs`]. A backtick token without a path
+/// separator must end in one of these to count as a file ref; otherwise dotted
+/// prose (`extensions.code`, `err.message`) reads as a path to the char-class
+/// check and is wrongly flagged as a missing file.
+const KNOWN_FILE_EXTS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "svelte", "py", "go", "cs",
+    "java", "kt", "swift", "dart", "rb", "php", "c", "h", "cpp", "hpp", "scala",
+    "ex", "exs", "html", "css", "scss", "sass", "less", "json", "jsonc", "toml",
+    "yaml", "yml", "xml", "ini", "env", "lock", "sql", "prisma", "graphql", "proto",
+    "md", "mdx", "txt", "sh", "bash", "ps1", "bat",
+];
+
+/// `true` when `ext` (no leading dot) is a recognised file extension.
+fn is_known_file_ext(ext: &str) -> bool {
+    KNOWN_FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
 /// Scan a string for `` `path.ext` `` tokens (backtick-wrapped file refs).
 fn backtick_file_refs(text: &str) -> Vec<String> {
     let mut refs = Vec::new();
@@ -142,16 +160,19 @@ fn backtick_file_refs(text: &str) -> Vec<String> {
         let after = &rest[open + 1..];
         if let Some(close) = after.find('`') {
             let token = &after[..close];
-            // `[\w./-]+\.\w+` — path chars then a dotted extension.
+            // `[\w./-]+\.\w+` — path chars then a dotted extension, AND a real
+            // path shape: a separator `/` OR a known file extension. The extra
+            // gate rejects dotted-identifier prose (`extensions.code`,
+            // `err.message`) that passes the char-class check but is not a file.
+            let ext = token.rsplit('.').next().unwrap_or("");
             let ok = !token.is_empty()
                 && token.contains('.')
                 && token
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '-' | '_'))
-                && token
-                    .rsplit('.')
-                    .next()
-                    .is_some_and(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+                && !ext.is_empty()
+                && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && (token.contains('/') || is_known_file_ext(ext));
             if ok {
                 refs.push(token.to_string());
             }
@@ -202,8 +223,11 @@ fn is_weak_ac_command(command: &str) -> bool {
         return false;
     };
     match first {
-        // A pure source search asserts textual presence, not behaviour.
-        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" => true,
+        // A pure source PRESENCE search asserts textual presence, not
+        // behaviour — weak. But an ABSENCE search (`--files-without-match`,
+        // `grep -L`, `rg -v`) is a genuine post-condition that `qa-run` runs
+        // and grades by exit code, so it is exempt.
+        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" => !is_absence_search(cmd),
         // A bare build word / whole-project type-check with no target.
         "build" | "tsc" | "make" if tokens.len() == 1 => true,
         "cargo" => match tokens.get(1).copied() {
@@ -221,6 +245,19 @@ fn is_weak_ac_command(command: &str) -> bool {
         },
         _ => false,
     }
+}
+
+/// Whether a search command is an ABSENCE / negation assertion rather than a
+/// presence one. `rg --files-without-match PATTERN FILE` / `grep -L` / `rg -v`
+/// exit non-zero when the string is STILL present, so they verify a real
+/// post-condition (e.g. "the deprecated call is gone") — `qa-run` runs and
+/// grades exactly these. (`-L` also means follow-symlinks in `rg`; treating
+/// such a command as non-weak only drops a false-positive WARN — the safe
+/// direction.) Pure, total.
+fn is_absence_search(cmd: &str) -> bool {
+    cmd.contains("--files-without-match")
+        || cmd.contains("--invert-match")
+        || cmd.split_whitespace().any(|t| t == "-L" || t == "-v")
 }
 
 /// Whether a `cargo test …` invocation carries a positional test-name filter
@@ -599,6 +636,27 @@ mod tests {
             .unwrap_or_default();
         assert!(msg.contains("AC-1"), "grep -q AC is weak: {issues:?}");
         assert!(!msg.contains("AC-2"), "filtered cargo test is strong: {issues:?}");
+    }
+
+    #[test]
+    fn backtick_refs_reject_dotted_prose_keep_real_paths() {
+        // Dotted-identifier prose in code spans is NOT a file path.
+        assert!(backtick_file_refs("see `extensions.code` and `.message`").is_empty());
+        assert!(backtick_file_refs("`error.extensions.code` / `err.message`").is_empty());
+        // A path (separator) and a bare known-extension file ARE captured.
+        let refs = backtick_file_refs("edit `src/foo.rs` and `Cargo.toml`");
+        assert!(refs.contains(&"src/foo.rs".to_string()), "{refs:?}");
+        assert!(refs.contains(&"Cargo.toml".to_string()), "{refs:?}");
+    }
+
+    #[test]
+    fn absence_search_is_not_weak() {
+        // A presence search is weak; an absence search (files-without-match /
+        // grep -L / rg -v) is a real post-condition that `qa-run` grades.
+        assert!(is_weak_ac_command("rg -q Foo src/lib.rs"));
+        assert!(!is_weak_ac_command("rg --files-without-match Foo src/lib.rs"));
+        assert!(!is_weak_ac_command("grep -L Foo src/lib.rs"));
+        assert!(!is_weak_ac_command("rg -v Foo src/lib.rs"));
     }
 
     /// V6b: a FILTERED `cargo test` (strong, so NOT flagged weak) that declares
