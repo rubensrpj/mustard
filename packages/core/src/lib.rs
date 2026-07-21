@@ -59,7 +59,7 @@ pub use platform::project_seed::{
     SeedOutcome, UpsertReport,
 };
 pub use platform::harness::harness_version;
-pub use platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, RESPONSE_STYLE_MD, SETTINGS_SEED};
+pub use platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
 
 pub use domain::model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,

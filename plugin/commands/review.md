@@ -1,5 +1,6 @@
 ---
 description: Use when the user runs /review or asks to review, code-review, or audit a pull request. Auto-detects current branch PR or accepts PR number/URL.
+argument-hint: [pr-number-or-url]
 source: manual
 ---
 <!-- mustard:generated -->

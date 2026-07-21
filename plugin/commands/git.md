@@ -1,5 +1,6 @@
 ---
 description: Use when the user runs /git or asks to commit, push, sync, or open a PR. Reads mustard.json for branch flow. Reversible operations only — never destructive filesystem or history rewrites.
+argument-hint: <action> [--scope=all|staged|<path>]
 source: manual
 disable-model-invocation: true
 ---

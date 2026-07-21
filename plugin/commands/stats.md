@@ -1,5 +1,6 @@
 ---
 description: Use when the user runs /stats or asks for pipeline metrics, token savings, performance stats, or DORA-style PR metrics. Single command for all metrics views.
+argument-hint: [--hooks] [--since <ISO>] [--event <type>] [--compare <from> <to>] [--pr] [--days <n>]
 source: manual
 ---
 <!-- mustard:generated -->
