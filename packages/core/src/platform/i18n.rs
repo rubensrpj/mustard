@@ -616,7 +616,13 @@ pub fn slugify(text: &str, lang: Locale) -> String {
         Locale::EnUs => text.to_string(),
     };
     let stopwords: &[&str] = match lang {
-        Locale::PtBr => &["a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em"],
+        Locale::PtBr => &[
+            "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em",
+            // Contractions of `em`/`a` + article — otherwise a trailing `no`
+            // ("em o") eats a token slot and pushes the meaningful next word
+            // (`nome`) out of the capped slug, leaving a `...-erro-no` tail.
+            "no", "na", "nos", "nas", "ao", "aos",
+        ],
         Locale::EnUs => &["a", "an", "the", "of", "and", "or", "in"],
     };
     // 1. lowercase + split on non-alphanumeric.
@@ -932,6 +938,15 @@ mod tests {
         assert_eq!(slugify("Configuração do Idioma", Locale::PtBr), "configuracao-idioma");
         assert_eq!(slugify("São Paulo é grande", Locale::PtBr), "sao-paulo-grande");
         assert_eq!(slugify("ç ã õ", Locale::PtBr), "c-a-o");
+    }
+
+    #[test]
+    fn slugify_pt_drops_em_a_contractions() {
+        // `no` ("em o") is a stopword now: it must not eat a token slot and leave
+        // a `...-erro-no` tail — the meaningful word (`nome`) survives instead.
+        assert_eq!(slugify("erro no nome", Locale::PtBr), "erro-nome");
+        assert_eq!(slugify("tratamento na base", Locale::PtBr), "tratamento-base");
+        assert_eq!(slugify("volta ao topo", Locale::PtBr), "volta-topo");
     }
 
     #[test]

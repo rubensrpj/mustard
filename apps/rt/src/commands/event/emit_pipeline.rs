@@ -970,6 +970,45 @@ fn sync_wave_started(cwd: &Path, spec: &str, wave: u64, ts: &str) {
     }
 }
 
+/// On a `pipeline.wave.start`, advance the PARENT spec's `meta.json` to
+/// `Execute`/`EXECUTE` — **forward-only**. [`sync_wave_started`] flips only the
+/// started wave's OWN sidecar; without this the parent stays `stage:"Plan"`
+/// (written at approval) until the first `pipeline.wave.complete`
+/// ([`bump_parent_progress`]), so every parent-level reader — the dashboard's
+/// phase label included — shows PLANEJANDO through the whole first wave. Mirrors
+/// the forward-only guard there: an already-`Execute`-or-later stage is left
+/// untouched, never regressed. Fail-open.
+fn sync_parent_started(cwd: &Path, spec: &str, ts: &str) {
+    let Some(spec_dir) = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.dir().to_path_buf())
+    else {
+        return;
+    };
+    if !spec_dir.is_dir() {
+        return;
+    }
+    let path = spec_dir.join("meta.json");
+    let mut meta = read_meta(&path).unwrap_or_default();
+    let advance = match meta.stage.as_deref().and_then(Stage::parse) {
+        None => true,
+        Some(stage) => stage_rank(stage) < stage_rank(Stage::Execute),
+    };
+    if !advance {
+        return;
+    }
+    meta.stage = Some(stage_label(Stage::Execute).to_string());
+    meta.phase = Some(phase_token_for_stage(Stage::Execute).to_string());
+    meta.checkpoint = Some(ts.to_string());
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); parent meta.json may be stale",
+            path.display()
+        );
+    }
+}
+
 /// Backfill a wave's checklist on completion: mark `done = true` for any item
 /// whose target `path` exists on disk (relative to `cwd`). A wave's checklist
 /// items are its planned files, so existence at completion == the work landed —
@@ -1032,6 +1071,11 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
     };
     let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
     sync_wave_started(project, spec, u64::from(wave), &ts);
+    // Forward the PARENT stage to Execute on the first wave.start — otherwise the
+    // parent sits at Plan until the first wave.complete and every parent-level
+    // reader (the dashboard phase label included) shows PLANEJANDO through the
+    // whole first wave.
+    sync_parent_started(project, spec, &ts);
 }
 
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
@@ -1805,6 +1849,42 @@ mod tests {
         // phase still tracks the interior wave (advisory), but stage stays QaReview.
         assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
         assert_eq!(v["stage"], json!("QaReview"), "stage not regressed: {v}");
+    }
+
+    /// Wave.start twin of DEFECT 1: the PARENT stage advances to Execute on the
+    /// FIRST `wave.start` (not only `wave.complete`), so the dashboard leaves
+    /// PLANEJANDO when execution actually begins — not ~15 min later. Forward-only.
+    #[test]
+    fn wave_start_advances_parent_stage_to_execute() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("foo");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let meta_path = spec_dir.join("meta.json");
+        // Parent as written at approval: stage=Plan, phase=PLAN.
+        std::fs::write(
+            &meta_path,
+            br#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":"full","lang":"pt-BR","checkpoint":null,"isWavePlan":true,"totalWaves":3}"#,
+        )
+        .unwrap();
+
+        super::sync_parent_started(dir.path(), "foo", "2026-07-20T00:00:00Z");
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["stage"], json!("Execute"), "parent enters EXECUTE at wave.start: {v}");
+        assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
+        assert_eq!(v["outcome"], json!("Active"), "outcome untouched: {v}");
+
+        // Forward-only: a straggling wave.start must not regress a later stage.
+        std::fs::write(
+            &meta_path,
+            br#"{"stage":"QaReview","outcome":"Active","phase":"QA","isWavePlan":true,"totalWaves":3}"#,
+        )
+        .unwrap();
+        super::sync_parent_started(dir.path(), "foo", "2026-07-20T00:01:00Z");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["stage"], json!("QaReview"), "not regressed: {v}");
     }
 
     /// FINAL-WAVE AUTO-SETTLE — no acceptance criteria (the case `qa-run` would
