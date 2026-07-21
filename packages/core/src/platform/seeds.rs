@@ -30,10 +30,6 @@ pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 /// `userPromptSubmit` once per session.
 pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestrator.md");
 
-/// The response-style injectable (`.claude/mustard/response-style.md`) —
-/// canonically injected on `sessionStart` once per session.
-pub const RESPONSE_STYLE_MD: &str = include_str!("../../templates/mustard/response-style.md");
-
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
 /// (caches, pipeline states, per-spec event logs, worktrees).
 pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
@@ -54,10 +50,6 @@ mod tests {
         assert!(
             ORCHESTRATOR_MD.starts_with("# Orchestrator Rules"),
             "orchestrator seed keeps its marker heading"
-        );
-        assert!(
-            RESPONSE_STYLE_MD.starts_with("# Response Style"),
-            "response-style seed keeps its heading"
         );
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }

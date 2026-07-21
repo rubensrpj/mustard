@@ -835,10 +835,6 @@ mod tests {
             ".claude/mustard/orchestrator.md seeded"
         );
         assert!(
-            claude.join("mustard").join("response-style.md").exists(),
-            ".claude/mustard/response-style.md seeded"
-        );
-        assert!(
             !claude.join("CLAUDE.md").exists(),
             "init must NOT plant .claude/CLAUDE.md — the orchestrator is injected now"
         );
@@ -903,21 +899,17 @@ mod tests {
         assert!(cfg.get("git").is_some(), "git-flow block written");
         assert_eq!(cfg.get("specLang").and_then(|v| v.as_str()), Some("pt-BR"));
         assert_eq!(cfg.get("tone").and_then(|v| v.as_str()), Some("didactic"));
-        // The default inject declarations are seeded (orchestrator on prompt,
-        // response style on session start — both once).
+        // The default inject declaration is seeded (orchestrator on the first
+        // prompt, once). The response style is a plugin output-style now, not a
+        // per-project injectable.
         let inject = cfg.get("inject").and_then(|v| v.as_array()).expect("inject seeded");
-        assert_eq!(inject.len(), 2, "two default inject entries: {inject:?}");
+        assert_eq!(inject.len(), 1, "one default inject entry: {inject:?}");
         assert_eq!(
             inject[0].get("file").and_then(|v| v.as_str()),
             Some(".claude/mustard/orchestrator.md")
         );
         assert_eq!(inject[0].get("on").and_then(|v| v.as_str()), Some("userPromptSubmit"));
         assert_eq!(inject[0].get("once").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(
-            inject[1].get("file").and_then(|v| v.as_str()),
-            Some(".claude/mustard/response-style.md")
-        );
-        assert_eq!(inject[1].get("on").and_then(|v| v.as_str()), Some("sessionStart"));
         assert!(
             !claude.join("mustard.json").exists(),
             "no .claude/mustard.json — config lives only at the project root"
@@ -997,10 +989,10 @@ mod tests {
             "USER EDIT",
             "merge must not overwrite a user-customised injectable"
         );
-        // …while a template file the user does not have is backfilled…
+        // …while a seed the user does not have is backfilled…
         assert!(
-            claude.join("mustard/response-style.md").exists(),
-            "merge backfills the missing injectable"
+            claude.join(".gitignore").exists(),
+            "merge backfills a missing seed"
         );
         // …and no plugin enablement is planted on the merge path either.
         let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));

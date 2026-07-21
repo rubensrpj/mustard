@@ -1,5 +1,6 @@
 ---
 description: Use when the user runs /knowledge or asks about the project knowledge base, patterns, conventions, memory audit, or progress reports.
+argument-hint: <action> [args]
 source: manual
 ---
 <!-- mustard:generated -->

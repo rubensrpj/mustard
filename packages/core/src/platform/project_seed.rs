@@ -37,7 +37,7 @@ use crate::domain::command_detect::detect_commands;
 use crate::domain::config::{Injectable, ProjectConfig, Runtime};
 use crate::io::fs;
 use crate::platform::error::Result;
-use crate::platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, RESPONSE_STYLE_MD, SETTINGS_SEED};
+use crate::platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
 
 // ---------------------------------------------------------------------------
 // Report types
@@ -109,7 +109,7 @@ impl UpsertReport {
 /// 2. `.claude/settings.json` — seed when absent, backfill missing top-level
 ///    keys when present, always passing through
 ///    [`retire_planted_plugin_enablement`];
-/// 3. `.claude/mustard/{orchestrator,response-style}.md` — created when
+/// 3. `.claude/mustard/orchestrator.md` — created when
 ///    absent, a user-customised copy survives;
 /// 4. `.claude/.gitignore` — created when absent;
 /// 5. `mustard.json` (via [`ProjectConfig`], the single owner) — created with
@@ -281,10 +281,7 @@ fn parse_json_object(raw: &str) -> Map<String, Value> {
 
 /// The injectable instruction files seeded under `.claude/mustard/`:
 /// `(basename, compiled-in body)`.
-const INJECTABLE_SEEDS: &[(&str, &str)] = &[
-    ("orchestrator.md", ORCHESTRATOR_MD),
-    ("response-style.md", RESPONSE_STYLE_MD),
-];
+const INJECTABLE_SEEDS: &[(&str, &str)] = &[("orchestrator.md", ORCHESTRATOR_MD)];
 
 /// Seed the injectable instruction files into `.claude/mustard/`.
 ///
@@ -347,23 +344,20 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 // ---------------------------------------------------------------------------
 
 /// The default `mustard.json#inject` declarations: the orchestrator rides
-/// every session's first prompt, the response style rides the session start —
-/// both once per session. Written in the same casing the docs use; the config
-/// accessor lowercases `on` at read time.
+/// every session's first prompt, once per session. Written in the same casing
+/// the docs use; the config accessor lowercases `on` at read time.
+///
+/// The didactic response style used to ride `sessionStart` here; it is now the
+/// `mustard-didactic` plugin output-style (survives `/clear` natively), so it
+/// no longer needs a per-project injectable. [`migrate_response_style_inject`]
+/// retires the stale entry from projects installed before the move.
 #[must_use]
 pub fn default_inject_entries() -> Vec<Injectable> {
-    vec![
-        Injectable {
-            on: "userPromptSubmit".to_string(),
-            file: ".claude/mustard/orchestrator.md".to_string(),
-            once: true,
-        },
-        Injectable {
-            on: "sessionStart".to_string(),
-            file: ".claude/mustard/response-style.md".to_string(),
-            once: true,
-        },
-    ]
+    vec![Injectable {
+        on: "userPromptSubmit".to_string(),
+        file: ".claude/mustard/orchestrator.md".to_string(),
+        once: true,
+    }]
 }
 
 /// Create or minimally update the project-root `mustard.json` through
@@ -456,7 +450,9 @@ pub struct MigrationOutcome {
 /// (including line endings) is preserved verbatim, and the file is only
 /// rewritten when something actually changed. Fail-open throughout: an
 /// unreadable file or a failed write degrades to "not migrated", never an
-/// error.
+/// error. It also retires the legacy response-style injectable (the
+/// `sessionStart` → `.claude/mustard/response-style.md` entry and its file),
+/// now shipped as the `mustard-didactic` plugin output-style.
 pub fn migrate_orchestrator_footprint(root: &Path, claude_dir: &Path) -> MigrationOutcome {
     let mut outcome = MigrationOutcome::default();
 
@@ -474,6 +470,17 @@ pub fn migrate_orchestrator_footprint(root: &Path, claude_dir: &Path) -> Migrati
         }
     }
 
+    // response-style injectable → output-style. The didactic style moved to the
+    // `mustard-didactic` plugin output-style (part of the system prompt, so it
+    // survives `/clear`), so the legacy per-project `sessionStart` inject entry
+    // and its file are retired. Runs before the root-`CLAUDE.md` step below,
+    // which returns early when the root file is absent. Idempotent + fail-open.
+    if retire_response_style_inject(root, claude_dir) {
+        outcome
+            .migrated
+            .push("mustard.json (response-style → output-style)".to_string());
+    }
+
     // (b) the root CLAUDE.md — give the file back to the user.
     let root_md = root.join("CLAUDE.md");
     let Ok(text) = fs::read_to_string(&root_md) else {
@@ -487,6 +494,38 @@ pub fn migrate_orchestrator_footprint(root: &Path, claude_dir: &Path) -> Migrati
         outcome.migrated.push("CLAUDE.md".to_string());
     }
     outcome
+}
+
+/// Retire the legacy `sessionStart` → `.claude/mustard/response-style.md`
+/// injectable: drop the `mustard.json#inject` entry and delete the orphaned
+/// instruction file. The didactic response style now ships as the
+/// `mustard-didactic` plugin output-style (part of the system prompt, so it
+/// survives `/clear`), which no per-project injectable can match.
+///
+/// Returns `true` when something was retired. Idempotent — a project already
+/// migrated (or a fresh one) returns `false`. Fail-open: an unreadable or
+/// unwritable config degrades to `false`, never an error.
+fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
+    const LEGACY_FILE: &str = ".claude/mustard/response-style.md";
+    let mut changed = false;
+
+    // Drop the stale inject entry via the config owner (single source of truth).
+    if ProjectConfig::exists(root) {
+        let mut config = ProjectConfig::load(root);
+        let before = config.inject.len();
+        config.inject.retain(|e| e.file != LEGACY_FILE);
+        if config.inject.len() != before && config.write(root).is_ok() {
+            changed = true;
+        }
+    }
+
+    // Delete the orphaned instruction file under this project's `.claude/`.
+    let orphan = claude_dir.join("mustard").join("response-style.md");
+    if orphan.is_file() && fs::remove_file(&orphan).is_ok() {
+        changed = true;
+    }
+
+    changed
 }
 
 /// Remove the Mustard-owned lines from a root `CLAUDE.md` body: the exact
@@ -533,7 +572,6 @@ mod tests {
             vec![
                 ".claude/settings.json",
                 ".claude/mustard/orchestrator.md",
-                ".claude/mustard/response-style.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -554,7 +592,6 @@ mod tests {
                 .unwrap()
                 .starts_with("# Orchestrator Rules")
         );
-        assert!(root.join(".claude/mustard/response-style.md").is_file());
         assert!(
             std_fs::read_to_string(root.join(".claude/.gitignore"))
                 .unwrap()
@@ -594,7 +631,6 @@ mod tests {
             vec![
                 ".claude/settings.json",
                 ".claude/mustard/orchestrator.md",
-                ".claude/mustard/response-style.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -625,12 +661,12 @@ mod tests {
         let report = upsert_project(root, Some("9.9.9")).unwrap();
 
         assert!(report.installed_before);
-        // The customised injectable survives; only the missing one is created.
+        // The customised injectable survives; only the missing seed is created.
         assert_eq!(
             std_fs::read_to_string(root.join(".claude/mustard/orchestrator.md")).unwrap(),
             "USER EDIT",
         );
-        assert!(report.created.contains(&".claude/mustard/response-style.md".to_string()));
+        assert!(report.created.contains(&".claude/.gitignore".to_string()));
         assert!(report.preserved.contains(&".claude/mustard/orchestrator.md".to_string()));
         // settings.json: user key kept, missing seed keys backfilled.
         let settings: Value = serde_json::from_str(
@@ -705,6 +741,40 @@ mod tests {
         assert!(root_md.contains("# (root)"), "user content survives: {root_md}");
         assert!(root_md.contains("- keep"), "user guard survives: {root_md}");
         assert_eq!(report.migrated, vec![".claude/CLAUDE.md", "CLAUDE.md"]);
+    }
+
+    #[test]
+    fn migration_retires_legacy_response_style_injectable() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let claude = root.join(".claude");
+        std_fs::create_dir_all(claude.join("mustard")).unwrap();
+        // A project installed before the output-style move: the response style
+        // rides sessionStart in #inject and its file sits under .claude/mustard/.
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},{"on":"sessionStart","file":".claude/mustard/response-style.md","once":true}]}"#,
+        )
+        .unwrap();
+        std_fs::write(claude.join("mustard/response-style.md"), "# Response Style\n").unwrap();
+
+        let report = upsert_project(root, None).unwrap();
+
+        // The stale inject entry is gone; only the orchestrator entry remains.
+        let config = ProjectConfig::load(root);
+        assert_eq!(config.inject.len(), 1, "response-style entry retired: {:?}", config.inject);
+        assert_eq!(config.inject[0].file, ".claude/mustard/orchestrator.md");
+        // The orphaned instruction file is deleted.
+        assert!(
+            !claude.join("mustard/response-style.md").exists(),
+            "orphan response-style.md removed"
+        );
+        // And the migration is reported.
+        assert!(
+            report.migrated.iter().any(|m| m.contains("response-style")),
+            "migration reported: {:?}",
+            report.migrated
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 ---
 description: Use when the user runs /skills or asks about installing, creating, listing, removing, optimizing, or evaluating skills. Handles install/create/list/remove/optimize/eval/update actions.
+argument-hint: <action> [args]
 source: manual
 ---
 <!-- mustard:generated -->
