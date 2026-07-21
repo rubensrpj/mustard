@@ -547,23 +547,62 @@ enum WriteMode {
     /// under `removed`) — so re-running `plan-materialize` after fixing
     /// `plan.json` repairs the scaffold instead of leaving stale files behind.
     Reconcile,
-    /// The user already approved this plan (the marker exists): the layout is
-    /// FROZEN. Skip-if-present, byte-for-byte the historical behaviour, and
-    /// nothing is ever deleted — a would-be change surfaces as ONE stderr WARN
-    /// naming the change-request route.
+    /// The plan left the authoring window: the layout is FROZEN. Skip-if-present,
+    /// byte-for-byte the historical behaviour, and nothing is ever deleted — a
+    /// would-be change surfaces as ONE stderr WARN naming the change-request
+    /// route.
     Frozen,
 }
 
-/// Decide the write mode from the canonical approval marker
-/// [`APPROVED_BY_USER_MARKER`] beside the spec. The marker can only be born
-/// from the user's real approval answer, so it — and nothing else — decides
-/// whether the scaffold may still be rewritten.
+/// Decide the write mode. [`WriteMode::Reconcile`] requires the pass to be
+/// inside the PLAN AUTHORING window — all three facts, each read from state the
+/// orchestrator cannot assert by hand:
+///
+/// 1. No `.approved-by-user` ([`APPROVED_BY_USER_MARKER`]). The marker can only
+///    be born from the user's real approval answer.
+/// 2. The root `meta.json#stage` has not advanced past `Plan`. A spec already in
+///    EXECUTE has agents editing against these wave dirs and `done` flags the
+///    auto-mark hook flipped — rewriting them from a plan is never repair there.
+///    An ABSENT sidecar is the fresh-scaffold case and stays reconcilable.
+/// 3. No `scopeOverride: "user-rejected-waves"` — `wave-collapse` stamps that
+///    when the user explicitly REJECTED the decomposition and merged the waves
+///    back down by hand. Reconciling from the pre-collapse plan would delete
+///    exactly the merge the user asked for.
+///
+/// Rewriting and pruning are destructive; anything short of all three facts
+/// falls back to the historical skip-if-present behaviour.
+///
+/// This governs the CONTENT (bodies, sidecars, the pruner). The root sidecar's
+/// structural wave count is a narrower question — see [`write_parent_meta`],
+/// which freezes on fact 1 alone.
 fn write_mode(spec_dir: &Path) -> WriteMode {
-    if fs::exists(spec_dir.join(APPROVED_BY_USER_MARKER)) {
+    if is_approved(spec_dir) {
+        return WriteMode::Frozen;
+    }
+    let Some(meta) = read_meta(&spec_dir.join("meta.json")) else {
+        // No sidecar yet — a fresh scaffold, nothing to protect.
+        return WriteMode::Reconcile;
+    };
+    let past_plan = meta
+        .stage
+        .as_deref()
+        .is_some_and(|s| !s.trim().eq_ignore_ascii_case("Plan"));
+    let waves_rejected = meta
+        .raw
+        .get("scopeOverride")
+        .and_then(Value::as_str)
+        .is_some_and(|s| s == "user-rejected-waves");
+    if past_plan || waves_rejected {
         WriteMode::Frozen
     } else {
         WriteMode::Reconcile
     }
+}
+
+/// `true` when the user really approved this spec ([`APPROVED_BY_USER_MARKER`]
+/// beside it). The one fact the orchestrator cannot assert by hand.
+fn is_approved(spec_dir: &Path) -> bool {
+    fs::exists(spec_dir.join(APPROVED_BY_USER_MARKER))
 }
 
 /// The exact bytes [`write_meta`] would put on disk for `meta` — pretty JSON
@@ -630,17 +669,25 @@ impl<'a> Ledger<'a> {
 
     /// Materialise one rendered markdown artefact.
     ///
-    /// Absent → written, recorded under `created` (both modes). Present and
-    /// byte-identical → `skipped`. Present and DIFFERENT → rewritten +
-    /// `refreshed` under [`WriteMode::Reconcile`]; left untouched + `skipped`
-    /// with the drift flag raised under [`WriteMode::Frozen`]. A write failure
-    /// degrades to `skipped` — the historical `write_if_absent` contract.
+    /// Absent → written, recorded under `created` (both modes — restoring a
+    /// missing artefact is what the dashboard's broken-wave-link hint asks for;
+    /// under [`WriteMode::Frozen`] it also raises the drift flag, because a file
+    /// appearing under an approved plan CHANGES that layout and the operator
+    /// must hear about it). Present and byte-identical → `skipped`. Present and
+    /// DIFFERENT → rewritten + `refreshed` under [`WriteMode::Reconcile`]; left
+    /// untouched + `skipped` with drift raised under [`WriteMode::Frozen`]. A
+    /// write failure degrades to `skipped` — the historical `write_if_absent`
+    /// contract — but says so on stderr instead of leaving a silent gap.
     fn emit(&mut self, path: &Path, body: &str) {
         let rel = self.rel(path);
         if !fs::exists(path) {
             if fs::write_atomic(path, body.as_bytes()).is_ok() {
+                if self.mode == WriteMode::Frozen {
+                    self.drift = true;
+                }
                 self.created.push(rel);
             } else {
+                eprintln!("[wave-scaffold] WARN: could not write {}", path.display());
                 self.skipped.push(rel);
             }
             return;
@@ -655,7 +702,13 @@ impl<'a> Ledger<'a> {
             WriteMode::Reconcile if fs::write_atomic(path, body.as_bytes()).is_ok() => {
                 self.refreshed.push(rel);
             }
-            WriteMode::Reconcile => self.skipped.push(rel),
+            WriteMode::Reconcile => {
+                eprintln!(
+                    "[wave-scaffold] WARN: could not rewrite {} — it stays STALE relative to the plan",
+                    path.display()
+                );
+                self.skipped.push(rel);
+            }
             WriteMode::Frozen => {
                 self.drift = true;
                 self.skipped.push(rel);
@@ -752,10 +805,12 @@ impl<'a> Ledger<'a> {
 /// inlined at the `eprintln!`) so the wording is assertable.
 fn frozen_plan_warn() -> String {
     format!(
-        "[wave-scaffold] WARN: the plan renders content that differs from the approved layout, \
-         but {APPROVED_BY_USER_MARKER} exists — the scaffold is FROZEN and nothing was \
-         rewritten. Route the change through a change request (state it in chat; it is recorded \
-         in the spec's change-log.md), never through a silent re-plan."
+        "[wave-scaffold] WARN: the plan does not match the layout on disk, which is FROZEN \
+         ({APPROVED_BY_USER_MARKER} exists, or the spec left PLAN, or the waves were \
+         user-rejected). No existing file was rewritten, no wave was pruned and the wave count \
+         was left as approved; only artefacts missing from disk were restored. Route the change \
+         through a change request (state it in chat; it is recorded in the spec's \
+         change-log.md), never through a silent re-plan."
     )
 }
 
@@ -864,7 +919,10 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
 
     let _ = fs::create_dir_all(spec_dir);
 
-    let mut ledger = Ledger::new(spec_dir, write_mode(spec_dir));
+    // Decided ONCE, before anything is written: the same mode governs the
+    // markdown, the per-wave sidecars, the pruner and the root sidecar.
+    let mode = write_mode(spec_dir);
+    let mut ledger = Ledger::new(spec_dir, mode);
 
     // Before rendering anything, drop the wave directories this plan no longer
     // declares (Reconcile only) — the repair path the field report asked for:
@@ -932,8 +990,9 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // plan that declares a stale total must not poison the sidecar the dashboard
     // and `status` render the wave count from.
     let total_waves = plan.waves.len() as u32;
-    write_parent_meta(
+    let parent_drift = write_parent_meta(
         spec_dir,
+        is_approved(spec_dir),
         Meta {
             stage: Some("Plan".into()),
             outcome: Some("Active".into()),
@@ -985,9 +1044,10 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // (D4), not tracked through a dead sidecar.
 
     let Ledger { created, skipped, mut refreshed, removed, drift, .. } = ledger;
-    // An APPROVED plan is frozen: say so ONCE, and name the route that does
+    // A frozen plan says so ONCE — for any kind of divergence, including a wave
+    // count the approved layout does not carry — and names the route that does
     // accept a change.
-    if drift {
+    if drift || parent_drift {
         eprintln!("{}", frozen_plan_warn());
     }
     // Sorted so stdout stays byte-stable regardless of directory-read order.
@@ -1007,17 +1067,34 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
 /// `raw`). Skipping it (the old behaviour) left a stale `totalWaves: 1` on
 /// multi-wave epics, mis-rendering the dashboard / `status` wave count.
 ///
-/// Mode-independent by design: this reconcile touches ONLY the two structural
-/// wave-plan fields, so it is safe on an approved spec too — the root sidecar is
-/// explicitly out of the pure-function-of-the-plan set ([`WriteMode`]).
+/// Frozen by the APPROVAL MARKER ALONE (`approved`), not by the full
+/// [`write_mode`] window: once the user approved, the stored count is the count
+/// they approved and stays put (returning `true` — drift — instead of writing).
+/// Bumping it there produced a spec whose `wave-plan.md` listed N waves while
+/// the sidecar every consumer reads (`wave-advance`, `status`, the dashboard)
+/// claimed N+1 — an approved spec silently growing a wave, the mirror of what
+/// the marker exists to prevent.
+///
+/// The narrower gate is deliberate. This reconcile is STRUCTURAL and
+/// non-destructive (two fields; no body, no deletion), and skipping it is itself
+/// a known defect: a stale `totalWaves: 1` on a multi-wave epic mis-renders the
+/// dashboard and `status`. So an unapproved spec that already left PLAN — frozen
+/// for content, because agents are editing there — still gets its count
+/// corrected.
 ///
 /// Fail-open: a write failure warns on stderr and never panics.
-fn write_parent_meta(dir: &Path, fresh: Meta) {
+fn write_parent_meta(dir: &Path, approved: bool, fresh: Meta) -> bool {
     let path = dir.join("meta.json");
     let meta = match read_meta(&path) {
         // Reconcile ONLY the structural wave-plan fields; the lifecycle the
         // pipeline owns (and may have advanced past Plan) is preserved as-is.
         Some(mut existing) => {
+            if approved
+                && (existing.total_waves != fresh.total_waves
+                    || existing.is_wave_plan != fresh.is_wave_plan)
+            {
+                return true;
+            }
             existing.is_wave_plan = fresh.is_wave_plan;
             existing.total_waves = fresh.total_waves;
             existing
@@ -1033,6 +1110,7 @@ fn write_parent_meta(dir: &Path, fresh: Meta) {
             path.display()
         );
     }
+    false
 }
 
 #[cfg(test)]
@@ -1979,6 +2057,98 @@ mod tests {
         assert!(warn.contains("change request"), "the WARN must name the route: {warn}");
         assert!(warn.contains("change-log.md"), "the WARN must name the record: {warn}");
         assert!(warn.contains(APPROVED_BY_USER_MARKER), "the WARN must name the marker: {warn}");
+    }
+
+    /// AC-2 (the half the freeze first missed) — an APPROVED spec must not grow
+    /// a wave. A later plan that adds one still materialises the missing dir
+    /// (the dashboard's broken-link repair depends on absent artefacts being
+    /// restored), but the root sidecar every consumer reads — `wave-advance`,
+    /// `status`, the dashboard — keeps the APPROVED `totalWaves`, and the
+    /// divergence is announced instead of applied silently.
+    ///
+    /// Field-review finding: bumping it produced a spec whose `wave-plan.md`
+    /// listed one wave while `meta.json` claimed two — an approved plan quietly
+    /// acquiring work the user never saw, which is exactly what the marker
+    /// exists to prevent.
+    #[test]
+    fn approved_plan_keeps_its_wave_count() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-grow");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([{ "n": 1, "role": "rt", "summary": "one", "tasks": ["t"] }]),
+        );
+        let _ = scaffold(&spec_dir, &plan_path);
+        assert_eq!(read_meta(&spec_dir.join("meta.json")).unwrap().total_waves, Some(1));
+
+        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "one", "tasks": ["t"] },
+                { "n": 2, "role": "cli", "summary": "smuggled in", "tasks": ["t"] },
+            ]),
+        );
+        let (created, _, refreshed, removed) = lists(scaffold(&spec_dir, &plan_path));
+
+        assert_eq!(
+            read_meta(&spec_dir.join("meta.json")).unwrap().total_waves,
+            Some(1),
+            "the approved wave count is authoritative — a later plan cannot move it",
+        );
+        assert!(refreshed.is_empty(), "{refreshed:?}");
+        assert!(removed.is_empty(), "{removed:?}");
+        // The absent artefact is still restored (the doctor-repair path)…
+        assert!(created.contains(&"wave-2-cli/spec.md".to_string()), "{created:?}");
+        // …and `wave-plan.md`, which the user approved, still lists only wave 1.
+        let table = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
+        assert!(!table.contains("2-cli"), "the approved table must not gain a row: {table}");
+    }
+
+    /// The reconcile window is the PLAN AUTHORING window, not merely "no marker".
+    /// Two states outside it must fall back to skip-if-present, because
+    /// rewriting and pruning there destroy real work:
+    ///
+    /// - `stage` past `Plan`: EXECUTE agents are already editing these dirs.
+    /// - `scopeOverride: "user-rejected-waves"`: `wave-collapse` merged the
+    ///   waves down BECAUSE the user rejected the decomposition; reconciling
+    ///   from the pre-collapse plan would delete exactly that merge.
+    #[test]
+    fn write_mode_freezes_outside_the_plan_authoring_window() {
+        let dir = tempdir().unwrap();
+
+        // No sidecar at all → a fresh scaffold, reconcilable.
+        let fresh = dir.path().join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        assert_eq!(write_mode(&fresh), WriteMode::Reconcile);
+
+        let stage_meta = |dir: &Path, stage: &str, raw: Value| {
+            std::fs::create_dir_all(dir).unwrap();
+            let mut meta = Meta { stage: Some(stage.into()), ..Meta::default() };
+            meta.raw = raw;
+            write_meta(&dir.join("meta.json"), &meta).unwrap();
+        };
+
+        let planning = dir.path().join("planning");
+        stage_meta(&planning, "Plan", Value::Null);
+        assert_eq!(write_mode(&planning), WriteMode::Reconcile, "PLAN stays reconcilable");
+
+        let executing = dir.path().join("executing");
+        stage_meta(&executing, "Execute", Value::Null);
+        assert_eq!(
+            write_mode(&executing),
+            WriteMode::Frozen,
+            "a spec in EXECUTE has agents working against these dirs",
+        );
+
+        let rejected = dir.path().join("rejected");
+        stage_meta(&rejected, "Plan", json!({ "scopeOverride": "user-rejected-waves" }));
+        assert_eq!(
+            write_mode(&rejected),
+            WriteMode::Frozen,
+            "a user-rejected decomposition is never re-exploded from the stale plan",
+        );
     }
 
     /// AC-3 — before approval, a wave dropped from `plan.json` has its

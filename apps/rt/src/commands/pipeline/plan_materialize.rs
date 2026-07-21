@@ -40,8 +40,10 @@
 //! changed) and `refreshed` / `removed` are sorted, so re-running an unchanged
 //! plan prints the same bytes. `refreshed` / `removed` are non-empty only before
 //! the user approves the spec — see
-//! [`crate::commands::wave::wave_scaffold`]'s write modes. Keys serialize sorted
-//! (serde_json default map); no timestamps or volatile paths appear on stdout.
+//! [`crate::commands::wave::wave_scaffold`]'s write modes. Keys serialize in
+//! insertion order (the workspace enables serde_json's `preserve_order`), which
+//! is fixed by this module, so the document is byte-stable either way; no
+//! timestamps or volatile paths appear on stdout.
 
 use crate::commands::event::emit_phase;
 use crate::commands::review::analyze_validation;

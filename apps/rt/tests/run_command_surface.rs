@@ -107,8 +107,9 @@ const RUN_SUBCOMMANDS: &[&str] = &[
 /// the file extension each one is scanned through (`None` = every file).
 ///
 /// `plugin/**/*.md` is what the agent loads at runtime (commands, refs, agent
-/// prompts); `apps/dashboard/src` is what the UI prints in its hints. A surface
-/// missing from the checkout is skipped, not failed.
+/// prompts); `apps/dashboard/src` is what the UI prints in its hints. Each entry
+/// is ASSERTED to exist and to yield files — a surface that silently disappears
+/// would turn this guard into a green no-op.
 const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md")), ("apps/dashboard/src", None)];
 
 /// The repo root, resolved from this crate (`apps/rt`) so the scan does not
@@ -144,7 +145,8 @@ fn collect_files(dir: &Path, ext: Option<&str>, out: &mut Vec<PathBuf>) {
 /// Every `mustard-rt run <name>` token in `text`, in order of appearance.
 ///
 /// All three invocation spellings are recognised — the same set
-/// `template_parity::instructed_run_names` scans. Recognising only the bare one
+/// `template_parity`'s `CALLER_PREFIXES` feeds to its `extract_run_names`.
+/// Recognising only the bare one
 /// would let a Windows-flavoured hint (`mustard-rt.exe run …`) or a packaging
 /// script (`$RtExe run …`) name a dead command and still pass.
 ///
@@ -287,6 +289,38 @@ fn every_documented_run_command_exists() {
          no way to tell. Fix the surface or register the command:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The guard above is only as good as its tokenizer, and a tokenizer that
+/// silently stops matching turns the whole test green-and-blind. Pin the three
+/// spellings it must catch and the placeholder shapes it must ignore.
+#[test]
+fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
+    let found = documented_run_tokens(
+        "run `mustard-rt run status` first.\n\
+         On Windows: `mustard-rt.exe run doctor`.\n\
+         Packaging uses `$RtExe run upsert`.\n\
+         Shapes teach nothing: `mustard-rt run <name>`, `mustard-rt run {kind}`, \
+         `mustard-rt run $Cmd`.\n",
+    );
+    assert_eq!(
+        found,
+        vec!["status", "doctor", "upsert"],
+        "all three invocation spellings must be caught, in order, and every \
+         placeholder skipped",
+    );
+    // Every name it caught here is real — the guard flags exactly the ones that
+    // are not.
+    for name in &found {
+        assert!(RUN_SUBCOMMANDS.contains(&name.as_str()), "{name} should be a real command");
+    }
+    assert_eq!(
+        documented_run_tokens("`mustard-rt run wave-scaffold` (the shipped defect)"),
+        vec!["wave-scaffold"],
+        "the absorbed command must still be recognised as a name — that is what \
+         makes the guard fail when a surface names it",
+    );
+    assert!(!RUN_SUBCOMMANDS.contains(&"wave-scaffold"));
 }
 
 /// The `--spec` / `--from-spec` flags are interchangeable on the spec-path

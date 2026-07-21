@@ -42,6 +42,12 @@ Repairing a weak acceptance criterion costs two actions (edit `plan.json`, re-ru
 - **AC-2** — when the spec already carries `.approved-by-user`, then existing scaffold files are left byte-identical and a frozen-plan warning naming the change-request route is written to stderr
   Command: `cargo test -p mustard-rt approved_plan_scaffold_is_frozen`
   Expect: `1 passed`
+- **AC-2b** — when an approved spec is re-materialised from a plan that adds a wave, then the approved `totalWaves` in the root sidecar does not move and the divergence is announced instead of applied
+  Command: `cargo test -p mustard-rt approved_plan_keeps_its_wave_count`
+  Expect: `1 passed`
+- **AC-2c** — when a spec has left PLAN, or `wave-collapse` recorded `scopeOverride: "user-rejected-waves"`, then the scaffold falls back to skip-if-present (no rewrite, no prune) even with no approval marker
+  Command: `cargo test -p mustard-rt write_mode_freezes_outside_the_plan_authoring_window`
+  Expect: `1 passed`
 - **AC-3** — when a wave present on disk is dropped from `plan.json` before approval, then its directory is deleted and listed under `removed`
   Command: `cargo test -p mustard-rt removes_wave_dropped_from_plan`
   Expect: `1 passed`
@@ -62,6 +68,9 @@ Repairing a weak acceptance criterion costs two actions (edit `plan.json`, re-ru
   Expect: `1 passed`
 - **AC-9** — when the shipped instruction surfaces (plugin references, dashboard hints) are scanned for `mustard-rt run <name>`, then every name found exists in the published CLI surface
   Command: `cargo test -p mustard-rt --test run_command_surface every_documented_run_command_exists`
+  Expect: `1 passed`
+- **AC-9b** — when the guard's tokenizer meets each invocation spelling (bare, `.exe`, `$RtExe`) it reports the name, and when it meets a placeholder it reports nothing
+  Command: `cargo test -p mustard-rt documented_run_tokens_catches_every_spelling`
   Expect: `1 passed`
 - **AC-10** — the harness test suite stays green
   Command: `cargo test -p mustard-rt`
@@ -88,4 +97,6 @@ Repairing a weak acceptance criterion costs two actions (edit `plan.json`, re-ru
 ## Boundaries
 
 IN: the four verified defects above, their tests, and the instruction surfaces that name the absorbed command.
-OUT: the AC linter's severity; new flags, modes or environment knobs; prompt-side guards; the pre-existing edge where re-running with a stale plan after `wave-collapse` resurrects waves (unchanged behaviour); any change to `spec-draft`, to the root `spec.md`, or to the approval and coverage gates themselves.
+OUT: the AC linter's severity; new flags, modes or environment knobs; prompt-side guards; any change to `spec-draft`, to the root `spec.md`, or to the approval and coverage gates themselves.
+
+Corrected during REVIEW (this spec first claimed the `wave-collapse` edge stayed unchanged — that was wrong, and reconciling made it destructive rather than merely resurrecting directories). The reconcile window is therefore the PLAN AUTHORING window, and all three facts must hold: no approval marker, `stage` still `Plan`, and no `scopeOverride: "user-rejected-waves"`. Anything else falls back to skip-if-present. The root sidecar's wave count is the one exception: it is structural and non-destructive, so it is frozen by the approval marker alone — freezing it more widely would resurrect the known stale-`totalWaves` defect that mis-renders the dashboard.
