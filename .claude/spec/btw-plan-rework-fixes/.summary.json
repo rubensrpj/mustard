@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "btw-plan-rework-fixes",
+  "title": "btw plan rework fixes: reconcile the wave scaffold before approval, unify spec-dir flags, purge the absorbed wave-scaffold command, surface the plan JSON schema",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "rt",
+      "summary": "Harness engine: reconcile-vs-freeze scaffold writes, spec-dir flag aliases plus normalisation, schema-teaching plan errors, and the resume-gate token rename.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "docs",
+      "summary": "Instruction surfaces: stop telling readers to run the absorbed command, and lock that with a guard test derived from the published CLI surface.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
