@@ -126,6 +126,24 @@ rtk git -C "<SUB_ABS>" add $SCOPE_EXPR && rtk git -C "<SUB_ABS>" commit -m "<mes
 
 `staged` scope → skip the `add`. The commit lands on the work branch, never the base.
 
+### Then return to the parent — the gitlink step (MANDATORY)
+
+Once every submodule agent has committed, the parent's pointer to each submodule is **stale**: the
+parent still references the OLD commit, and that shows up as a lone ` M <sub>` line — the "only
+dirt left". Re-sample and stage it **explicitly**; never rely on `add -A` catching it as a side
+effect (a `staged`/pattern scope misses it entirely, and the pre-commit analysis at the top of this
+section ran BEFORE the submodule commits, so it never saw the moved pointer):
+
+```bash
+rtk git submodule status; \
+rtk git add -- "<SUB_PATH>" ["<SUB_PATH>"…]
+```
+
+Then include it in the parent's commit. **The parent may have nothing of its own to change and
+STILL owe this commit — the moved gitlink IS the change**; in that case commit it alone
+(`chore(submodule): sincroniza ponteiro do submodulo`). Skipping it leaves the super-repo pointing
+at a commit that no longer reflects the submodule's published work.
+
 ## PR per repo — submodules before parent
 
 `/git pr` opens ONE PR per repo, **submodules FIRST**: the parent commit bumps each submodule's gitlink to a submodule-work-branch commit, so merging the submodule PR first lands that commit on its base and the parent pointer never dangles.
@@ -153,6 +171,10 @@ done
 ```
 
 Legend: `[ephemeral]` runtime state, safe to ignore; `[pending]` real change still in the worktree; `[untracked]` new file not yet added. Omit empty categories; all repos clean → `All repos clean.`
+
+**Read a lone ` M <submodule-path>` in the PARENT as a MISSED gitlink step**, not as ordinary
+pending work: it means the submodule committed but the parent was never re-pointed. Go back and run
+the gitlink step above before declaring the action done.
 
 ## Forbidden operations
 

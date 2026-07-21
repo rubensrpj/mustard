@@ -16,6 +16,7 @@ use crate::hooks::task::delegation_advisory::DelegationAdvisory;
 use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::mold_gate::MoldGate;
+use crate::hooks::write::scan_clean_gate::ScanCleanGate;
 use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::scope_guard::ScopeGuard;
 use crate::hooks::write::secret_files::SecretFiles;
@@ -276,6 +277,19 @@ impl Registry {
                 // `scan-gate` — PreToolUse(Skill) pre-pipeline gate (grain model).
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
                 check: Some(Box::new(ScanGate)),
+                observer: None,
+            },
+            Module {
+                id: "scan_clean_gate",
+                // `scan-clean-gate` — PreToolUse(Skill) sibling of `scan_gate`:
+                // /scan rewrites VERSIONED artifacts repo-wide (grain model,
+                // scan-map.md, CLAUDE.md Guards, {role}-pattern skills), so it
+                // refuses to run on a dirty tree — under the `/git` `add -A` law
+                // the refresh could not be committed apart from the user's work.
+                // Always strict (no knob, like `scan_gate`); fail-open on any
+                // unknown (no git, not a repo).
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
+                check: Some(Box::new(ScanCleanGate)),
                 observer: None,
             },
             // F4-d item 1 — hard cap on concurrently active pipelines. A
@@ -735,6 +749,7 @@ mod tests {
             "boundary_gate",
             "close_gate",
             "scan_gate",
+            "scan_clean_gate",
             "scope_guard",
             "work_branch_gate",
             "active_spec_limit_gate",

@@ -14,6 +14,8 @@
 //! - [`review_gate`] — validate before `git commit` (its own
 //!   `MUSTARD_COMMIT_GATE_MODE`, default `warn`).
 //! - [`pr_detect`] — DORA telemetry on `gh pr` commands (PostToolUse).
+//! - [`pr_qa_gate`] — advisory when a `gh pr create`/`merge` integrates a spec
+//!   with no passing `qa.result` (the QA ↔ integration coupling).
 //!
 //! This module is the ORCHESTRATION face only: it implements [`Check`] for
 //! PreToolUse(Bash) and [`Observer`] for PostToolUse(Bash), calling the
@@ -30,7 +32,9 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use mustard_core::time::now_iso8601;
 use serde_json::json;
 
-use super::{native_redirect, pr_detect, review_gate, rtk_rewrite, safety, windows_redirect};
+use super::{
+    native_redirect, pr_detect, pr_qa_gate, review_gate, rtk_rewrite, safety, windows_redirect,
+};
 
 /// The consolidated Bash-tool enforcement module (dispatcher).
 pub struct BashCommandGate;
@@ -149,6 +153,13 @@ impl Check for BashCommandGate {
             return Ok(verdict);
         }
         if let Some(verdict) = review_gate::review_gate(&cmd, ctx, review_gate::commit_gate_mode()) {
+            return Ok(verdict);
+        }
+        // `pr-qa-gate` runs LAST: it must see the command AFTER `rtk_rewrite`
+        // had its say (an unprefixed `gh pr …` is rewritten first, and the
+        // re-issued `rtk gh pr …` reaches here — `classify_pr` sees through the
+        // wrapper). Advisory only; never blocks integration.
+        if let Some(verdict) = pr_qa_gate::pr_qa_gate(&cmd, &ctx.project_dir) {
             return Ok(verdict);
         }
         Ok(Verdict::Allow)

@@ -412,7 +412,9 @@ pub(crate) fn render_prompt_at(
 
     // Git boundary: when the target subproject is its OWN nested git repository
     // (a submodule), the implementer must know it commits in a SEPARATE history
-    // and must never bump the superproject's gitlink pointer. Appended after the
+    // and must not bump the superproject's gitlink pointer itself — the `/git`
+    // parent step owns that sync (the prohibition alone left the pointer stale
+    // forever, since nobody was named as its owner). Appended after the
     // template (not a placeholder) so it rides in EVERY mode / role; EN by the
     // agent-prompt policy regardless of the project locale.
     let boundary = git_boundary_block(&project, &subproject_str);
@@ -553,8 +555,9 @@ fn git_boundary_block(project: &Path, subproject: &str) -> String {
     }
     format!(
         "## GIT BOUNDARY\n\nThis subproject (`{sub}`) is its OWN git repository — it has a \
-         SEPARATE commit history. Commit INSIDE this subproject only; NEVER bump the \
-         superproject's gitlink pointer to it."
+         SEPARATE commit history. Commit INSIDE this subproject only; never bump the \
+         superproject's gitlink pointer YOURSELF — the `/git` parent step owns that sync, right \
+         after your commit lands."
     )
 }
 
@@ -949,8 +952,9 @@ mod tests {
 
     /// AC-5: when the target subproject is its OWN nested git repository (`.git`
     /// FILE — the submodule shape), the rendered prompt states the git boundary
-    /// (separate commit history; never bump the superproject gitlink). A plain
-    /// subproject and the superproject root (`.`) get no such block.
+    /// (separate commit history; do not bump the superproject gitlink yourself —
+    /// the `/git` parent step owns that sync). A plain subproject and the
+    /// superproject root (`.`) get no such block.
     #[test]
     fn render_appends_own_git_root_boundary_for_nested_repo() {
         let dir = tempdir().unwrap();
@@ -967,8 +971,12 @@ mod tests {
         assert!(rendered.contains("## GIT BOUNDARY"), "boundary heading present: {rendered}");
         assert!(rendered.contains("its OWN git repository"), "boundary sentence present: {rendered}");
         assert!(
-            rendered.contains("NEVER bump the superproject"),
+            rendered.contains("never bump the superproject's gitlink pointer YOURSELF"),
             "gitlink warning present: {rendered}"
+        );
+        assert!(
+            rendered.contains("`/git` parent step owns that sync"),
+            "the warning names WHO re-points the parent (the prohibition is not the whole rule): {rendered}"
         );
 
         // A plain subproject (no `.git`) gets NO boundary block.
