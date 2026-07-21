@@ -10,6 +10,14 @@
 # mecanismo garante que o commit de bump não re-dispara este workflow nem a CI;
 # o guard por mensagem abaixo é cinto-e-suspensório para o caso de um humano
 # empurrar um commit `chore(release):` manualmente.
+#
+# O selo vai para AS DUAS pernas. O bump nasce na main; o último passo o
+# propaga para o `dev`. Sem isso o `dev` nunca aprende a própria versão
+# publicada: fica N commits atrás para sempre (DOIS por release — o merge de
+# promoção + este bump) e todo binário compilado dele sai carimbado com uma
+# versão velha, fazendo o aviso de version-drift do harness resmungar sozinho.
+# A propagação SETA o valor (não faz cherry-pick), então é idempotente e
+# converge mesmo depois de divergência acumulada.
 name: Bump on main
 
 on:
@@ -33,7 +41,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Bump PATCH do plugin.json, tag e despacho do Release
+      - name: Bump PATCH do plugin.json, tag, despacho do Release e selo no dev
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -59,3 +67,27 @@ jobs:
 
           gh workflow run release.yml --ref "v$nv"
           echo "Release despachado no ref v$nv"
+
+          # --- Propagar o selo para o dev ---------------------------------
+          # Por último de propósito: se esta parte falhar, o release já está
+          # publicado e íntegro. SETAMOS o valor (não cherry-pick) para ser
+          # idempotente e imune à divergência já acumulada — o dev converge
+          # para $nv venha de onde vier.
+          git fetch origin dev
+          git checkout -B dev-sync "origin/dev"
+          dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
+          if [ "$dv" = "$nv" ]; then
+            echo "dev já está em v$nv — nada a propagar"
+          else
+            sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
+            grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
+            git add "$manifest"
+            git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
+            if git push origin "dev-sync:dev"; then
+              echo "dev sincronizado: $dv -> $nv"
+            else
+              # Corrida com um push humano no dev. Não falha o job: o release
+              # já saiu, e o próximo bump re-sincroniza sozinho (SETA o valor).
+              echo "::warning::não consegui propagar v$nv para o dev (corrida?); o próximo release re-sincroniza"
+            fi
+          fi
