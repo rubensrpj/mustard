@@ -156,6 +156,34 @@ mod tests {
         assert!(md.contains("boom \\| pipe"));
     }
 
+    /// The `timeout` class is a first-class verdict in the human-readable
+    /// report: both the overall header and the criterion's row name it, so a
+    /// run killed by its deadline can never be read as a green or skipped one.
+    #[test]
+    fn qa_report_md_renders_the_timeout_class() {
+        let dir = tempdir().unwrap();
+        let criteria = vec![AcResult {
+            id: "AC-1".into(),
+            status: "timeout".into(),
+            exit: None,
+            duration_ms: 600_000,
+            stderr_excerpt: "timeout after 600000ms".into(),
+        }];
+        write_qa_report_md(dir.path(), "slow", "timeout", &criteria);
+
+        let report_path = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .for_spec("slow")
+            .unwrap()
+            .dir()
+            .join("qa")
+            .join("report.md");
+        let md = std::fs::read_to_string(&report_path).unwrap();
+        assert!(md.contains("Overall: **TIMEOUT**"), "{md}");
+        assert!(md.contains("| AC-1 | TIMEOUT |"), "{md}");
+        assert!(md.contains("timeout after 600000ms"), "{md}");
+    }
+
     #[test]
     fn html_report_is_standalone() {
         let dir = tempdir().unwrap();

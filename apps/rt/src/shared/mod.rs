@@ -14,7 +14,9 @@
 //!   and the append-only writer ([`events::writer_ndjson`]).
 //! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
 //!   port, liveness probe) shared by the collector-spawning hook and the
-//!   collector-stopping `run` command.
+//!   collector-stopping `run` command, plus [`proc::run_shell_with_deadline`]
+//!   — the ONE shell-command runner that drains both pipes concurrently and
+//!   waits under a deadline, shared by `verify-pipeline` and `qa-run`.
 //! - [`translate`] — fail-open client for the optional `mustard-translate`
 //!   sidecar (local MT), shared by the `feature` auto-gloss and the
 //!   `scan-equivalences` artifact generation.

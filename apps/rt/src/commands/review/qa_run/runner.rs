@@ -3,7 +3,7 @@
 //! `qa.result` event and metric. Split out of `qa_run` (F3 PERF-D).
 
 use crate::shared::context::session_id;
-use crate::util::platform;
+use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::time::now_iso8601;
@@ -11,7 +11,7 @@ use mustard_core::platform::metrics::{emit_metric, MetricLine};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use super::{AcResult, QaRunOptions};
 
 /// Default per-AC timeout (2 min) for non-cargo commands, matching
@@ -196,8 +196,12 @@ fn excerpt(s: &str) -> String {
     s.chars().take(100).collect()
 }
 
-/// Run one AC command. Mirrors the JS classification: `pass` (exit 0), `fail`
-/// (non-zero exit), `skip` (timeout or spawn failure).
+/// Run one AC command under its resolved per-AC timeout ([`ac_timeout_secs`],
+/// computed from the ORIGINAL command so a self-invoked rewrite cannot shift
+/// the ceiling).
+///
+/// Classification: `pass` (exit 0), `fail` (non-zero exit), `timeout` (killed
+/// by the deadline), `skip` (the criterion could not be attempted at all).
 ///
 /// `expect` is the AC's optional `Expect:` evidence regex. When present and the
 /// command exits 0, the regex must match the command's combined stdout+stderr
@@ -205,6 +209,21 @@ fn excerpt(s: &str) -> String {
 /// evidence); an uncompilable pattern degrades to `skip` (fail-open). When
 /// absent, the exit-code-only verdict is byte-for-byte the historical one.
 pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
+    let timeout = Duration::from_secs(ac_timeout_secs(command));
+    run_ac_command_with_timeout(command, expect, cwd, timeout)
+}
+
+/// Deterministic core of [`run_ac_command`]: the deadline is injected as a
+/// parameter instead of being read from env inside, so the timeout branch is
+/// unit-testable in a second rather than in two minutes (env mutation would
+/// need `unsafe` under Rust 2024 — forbidden in this crate). Mirrors the same
+/// injected-override seam [`ac_timeout_secs_with_override`] already uses.
+fn run_ac_command_with_timeout(
+    command: &str,
+    expect: Option<&str>,
+    cwd: &Path,
+    timeout: Duration,
+) -> AcResult {
     let t0 = Instant::now();
     // Self-invocation guard for the DIRECT `-p`/`--package` form: no rewrite
     // can save this command (unlike `--workspace`, which gets `--exclude`d in
@@ -222,120 +241,96 @@ pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) ->
                     .to_string(),
         };
     }
-    // POSIX-style AC commands assume a shell; use the platform shell. Windows
-    // AC are documented to be cross-shell-safe (`node -e`, `bash -c`).
-    // Self-invoked rewrite first — see `rewrite_self_invoked_cargo` for why.
+    // POSIX-style AC commands assume a shell; the shared runner uses the
+    // platform shell. Windows AC are documented to be cross-shell-safe
+    // (`node -e`, `bash -c`). Self-invoked rewrite first — see
+    // `rewrite_self_invoked_cargo` for why.
     let rewritten = rewrite_self_invoked_cargo(command);
-    let mut cmd = platform::build_shell_command(&rewritten);
-    cmd.current_dir(cwd);
-
-    // No native wait-with-timeout in std; spawn + poll.
-    let child = cmd
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-    let Ok(mut child) = child else {
-        return AcResult {
-            id: String::new(),
-            status: "skip".to_string(),
-            exit: None,
-            duration_ms: t0.elapsed().as_millis(),
-            stderr_excerpt: "command not found".to_string(),
-        };
+    // The spawn + concurrent pipe drain + deadline poll live in ONE place
+    // ([`crate::shared::proc::run_shell_with_deadline`]), shared with
+    // `verify-pipeline`. The drain is load-bearing here too: an AC whose
+    // command prints more than the ~64 KB OS pipe buffer used to block writing
+    // and burn its whole timeout despite having already finished its work.
+    let (status, stdout, stderr) = match run_shell_with_deadline(&rewritten, cwd, timeout) {
+        ShellOutcome::Exited { status, stdout, stderr } => (status, stdout, stderr),
+        // Killed by its deadline: a class of its own, NEVER `skip`. The
+        // criterion WAS attempted and simply never finished, so it verified
+        // nothing — `skip` (warn-and-allow) would let the run read green.
+        ShellOutcome::TimedOut { after } => {
+            return AcResult {
+                id: String::new(),
+                status: "timeout".to_string(),
+                exit: None,
+                duration_ms: t0.elapsed().as_millis(),
+                stderr_excerpt: format!("timeout after {}ms", after.as_millis()),
+            };
+        }
+        // Never ran ⇒ the criterion could not be attempted at all ⇒ `skip`.
+        // Never attempted, or attempted and no status can ever arrive. Carry the
+        // OS error instead of asserting "command not found": that reason is a
+        // guess, and a criterion reported `skip` for the wrong cause is exactly
+        // the misleading verdict this spec exists to remove.
+        ShellOutcome::SpawnFailed { error } => {
+            return AcResult {
+                id: String::new(),
+                status: "skip".to_string(),
+                exit: None,
+                duration_ms: t0.elapsed().as_millis(),
+                stderr_excerpt: format!("could not run the command: {error}"),
+            };
+        }
     };
 
-    let timeout_secs = ac_timeout_secs(command);
-    let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let out = child.wait_with_output().ok();
-                let (stderr, stdout) = out
-                    .map(|o| {
-                        (
-                            String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                            String::from_utf8_lossy(&o.stdout).trim().to_string(),
-                        )
-                    })
-                    .unwrap_or_default();
-                let duration_ms = t0.elapsed().as_millis();
-                // Full combined output (stderr first, then stdout): the haystack
-                // the optional `Expect:` regex matches against AND the source of
-                // the bounded excerpt shown on failure.
-                let combined_full = [stderr, stdout]
-                    .into_iter()
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if status.success() {
-                    // Optional `Expect:` evidence gate. Absent ⇒ the legacy
-                    // exit-0 pass (byte-for-byte). Present ⇒ the regex must
-                    // match the command's own output, else the "green" command
-                    // proved nothing (fail); an uncompilable pattern degrades to
-                    // skip, never a panic (fail-open).
-                    let pattern = expect.unwrap_or_default();
-                    return match evaluate_expect(expect, &combined_full) {
-                        ExpectVerdict::NoExpectation | ExpectVerdict::Matched => AcResult {
-                            id: String::new(),
-                            status: "pass".to_string(),
-                            exit: Some(0),
-                            duration_ms,
-                            stderr_excerpt: String::new(),
-                        },
-                        ExpectVerdict::Missed => AcResult {
-                            id: String::new(),
-                            status: "fail".to_string(),
-                            exit: Some(0),
-                            duration_ms,
-                            stderr_excerpt: format!(
-                                "Expect `{pattern}` not found in command output: {}",
-                                excerpt(&combined_full)
-                            ),
-                        },
-                        ExpectVerdict::InvalidPattern => AcResult {
-                            id: String::new(),
-                            status: "skip".to_string(),
-                            exit: Some(0),
-                            duration_ms,
-                            stderr_excerpt: format!(
-                                "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
-                            ),
-                        },
-                    };
-                }
-                return AcResult {
-                    id: String::new(),
-                    status: "fail".to_string(),
-                    exit: Some(status.code().map_or(1, i64::from)),
-                    duration_ms,
-                    stderr_excerpt: excerpt(&combined_full),
-                };
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return AcResult {
-                        id: String::new(),
-                        status: "skip".to_string(),
-                        exit: None,
-                        duration_ms: t0.elapsed().as_millis(),
-                        stderr_excerpt: format!("timeout after {}ms", timeout_secs * 1000),
-                    };
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(_) => {
-                return AcResult {
-                    id: String::new(),
-                    status: "skip".to_string(),
-                    exit: None,
-                    duration_ms: t0.elapsed().as_millis(),
-                    stderr_excerpt: "wait failed".to_string(),
-                };
-            }
-        }
+    let duration_ms = t0.elapsed().as_millis();
+    // Full combined output (stderr first, then stdout): the haystack the
+    // optional `Expect:` regex matches against AND the source of the bounded
+    // excerpt shown on failure.
+    let combined_full = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if status.success() {
+        // Optional `Expect:` evidence gate. Absent ⇒ the legacy exit-0 pass
+        // (byte-for-byte). Present ⇒ the regex must match the command's own
+        // output, else the "green" command proved nothing (fail); an
+        // uncompilable pattern degrades to skip, never a panic (fail-open).
+        let pattern = expect.unwrap_or_default();
+        return match evaluate_expect(expect, &combined_full) {
+            ExpectVerdict::NoExpectation | ExpectVerdict::Matched => AcResult {
+                id: String::new(),
+                status: "pass".to_string(),
+                exit: Some(0),
+                duration_ms,
+                stderr_excerpt: String::new(),
+            },
+            ExpectVerdict::Missed => AcResult {
+                id: String::new(),
+                status: "fail".to_string(),
+                exit: Some(0),
+                duration_ms,
+                stderr_excerpt: format!(
+                    "Expect `{pattern}` not found in command output: {}",
+                    excerpt(&combined_full)
+                ),
+            },
+            ExpectVerdict::InvalidPattern => AcResult {
+                id: String::new(),
+                status: "skip".to_string(),
+                exit: Some(0),
+                duration_ms,
+                stderr_excerpt: format!(
+                    "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
+                ),
+            },
+        };
+    }
+    AcResult {
+        id: String::new(),
+        status: "fail".to_string(),
+        exit: Some(status.code().map_or(1, i64::from)),
+        duration_ms,
+        stderr_excerpt: excerpt(&combined_full),
     }
 }
 
@@ -361,12 +356,13 @@ pub(super) fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[V
 
 /// Emit the `qa` metric (fail-silent).
 pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) {
-    let (mut pass, mut fail, mut skip) = (0, 0, 0);
+    let (mut pass, mut fail, mut skip, mut timeout) = (0, 0, 0, 0);
     for c in criteria {
         match c.status.as_str() {
             "pass" => pass += 1,
             "fail" => fail += 1,
             "skip" => skip += 1,
+            "timeout" => timeout += 1,
             _ => {}
         }
     }
@@ -376,6 +372,7 @@ pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[
         "passCount": pass,
         "failCount": fail,
         "skipCount": skip,
+        "timeoutCount": timeout,
         "category": "verification",
     }));
     let _ = emit_metric(cwd, &line);
@@ -698,6 +695,56 @@ mod tests {
         assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, Some(0));
         assert!(res.stderr_excerpt.is_empty(), "legacy pass carries an empty excerpt");
+    }
+
+    /// A shell command that prints ~90 KB — far past the ~64 KB OS pipe buffer
+    /// — and then exits 3. Per-platform because the AC shell is `cmd.exe` on
+    /// Windows and `sh` elsewhere.
+    #[cfg(windows)]
+    const BIG_OUTPUT_EXIT_3: &str =
+        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
+    #[cfg(not(windows))]
+    const BIG_OUTPUT_EXIT_3: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
+         while [ $i -lt 12 ]; do s=\"$s$s\"; i=$((i+1)); done; echo \"$s\"; exit 3";
+
+    /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
+    #[cfg(windows)]
+    const SLEEPS_SECONDS: &str = "ping -n 4 127.0.0.1";
+    #[cfg(not(windows))]
+    const SLEEPS_SECONDS: &str = "sleep 3";
+
+    /// THE regression that must never come back: an AC printing far more than
+    /// the OS pipe buffer still completes and is judged by its EXIT CODE. Under
+    /// the old `wait_with_output`-after-`try_wait` shape the child blocked
+    /// writing into a full pipe, never exited, and the AC degraded to a bogus
+    /// timeout — a green-looking `skip` for a criterion that had already failed.
+    #[test]
+    fn ac_command_past_the_pipe_buffer_is_judged_by_exit_code() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command(BIG_OUTPUT_EXIT_3, None, dir.path());
+        assert_eq!(
+            res.status, "fail",
+            "verdict comes from the exit code, stderr: {}",
+            res.stderr_excerpt
+        );
+        assert_eq!(res.exit, Some(3), "the command's own code, not a timeout");
+    }
+
+    /// An AC killed by its deadline reports `timeout` — its OWN class, never
+    /// `skip`. `skip` keeps meaning "could not be attempted at all"; a timed-out
+    /// AC WAS attempted and simply verified nothing.
+    #[test]
+    fn ac_command_killed_by_deadline_reports_timeout_not_skip() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command_with_timeout(
+            SLEEPS_SECONDS,
+            None,
+            dir.path(),
+            Duration::from_secs(1),
+        );
+        assert_eq!(res.status, "timeout", "stderr: {}", res.stderr_excerpt);
+        assert_eq!(res.exit, None, "a killed command has no exit code");
+        assert_eq!(res.stderr_excerpt, "timeout after 1000ms");
     }
 
     /// End-to-end: an exit-0 command whose `Expect:` is an INVALID regex skips

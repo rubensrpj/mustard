@@ -37,8 +37,8 @@ use mustard_core::domain::model::event::ActorKind;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use crate::shared::context;
 use crate::shared::events::economy;
+use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 use crate::report::{table, Report};
-use crate::util::platform;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
@@ -382,68 +382,22 @@ fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
     } else {
         command.to_string()
     };
-    let mut cmd = platform::build_shell_command(&rewritten);
-    cmd.current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-
-    // Drain stdout/stderr on dedicated threads. A `cargo test --workspace` can
-    // emit far more than the OS pipe buffer (~64 KB); reading only after the
-    // child exits would let a full pipe block the writer forever — the child
-    // never finishes, `try_wait` never returns `Some`, and the gate burns the
-    // whole timeout on a process that already did its work. Concurrent readers
-    // keep the pipes empty so the child always makes progress.
-    let out_pipe = child.stdout.take();
-    let err_pipe = child.stderr.take();
-    let out_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut p) = out_pipe {
-            let _ = std::io::Read::read_to_end(&mut p, &mut buf);
-        }
-        buf
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut p) = err_pipe {
-            let _ = std::io::Read::read_to_end(&mut p, &mut buf);
-        }
-        buf
-    });
-
-    let timeout_secs = effective_timeout(&rewritten);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = out_reader.join().unwrap_or_default();
-                let stderr = err_reader.join().unwrap_or_default();
-                if status.success() {
-                    return Ok(());
-                }
-                let s = String::from_utf8_lossy(&stderr).to_string();
-                let combined = if s.trim().is_empty() {
-                    String::from_utf8_lossy(&stdout).to_string()
-                } else {
-                    s
-                };
-                return Err(combined.chars().take(500).collect());
+    // The spawn/drain/deadline machinery lives in ONE place
+    // ([`crate::shared::proc::run_shell_with_deadline`]) — including the
+    // concurrent pipe drain that keeps a `cargo test --workspace` from
+    // deadlocking on a full ~64 KB OS pipe buffer. `qa-run` runs its ACs
+    // through the same helper, so the two can no longer drift.
+    let timeout = std::time::Duration::from_secs(effective_timeout(&rewritten));
+    match run_shell_with_deadline(&rewritten, cwd, timeout) {
+        ShellOutcome::Exited { status, stdout, stderr } => {
+            if status.success() {
+                return Ok(());
             }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    // Killing closes the pipes → the readers hit EOF and finish;
-                    // join so the threads don't outlive this call.
-                    let _ = out_reader.join();
-                    let _ = err_reader.join();
-                    return Err(format!("timeout after {}ms", timeout_secs * 1000));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return Err(e.to_string()),
+            let combined = if stderr.trim().is_empty() { stdout } else { stderr };
+            Err(combined.chars().take(500).collect())
         }
+        ShellOutcome::TimedOut { after } => Err(format!("timeout after {}ms", after.as_millis())),
+        ShellOutcome::SpawnFailed { error } => Err(error),
     }
 }
 
@@ -818,6 +772,19 @@ mod tests {
         let once = exclude_orchestrator_crate("cargo test");
         assert_eq!(once, "cargo test --workspace --exclude mustard-rt");
         assert_eq!(exclude_orchestrator_crate(&once), once);
+    }
+
+    /// Behaviour lock across the extraction to `shared::proc`: exit 0 is `Ok`,
+    /// a non-zero exit is `Err` carrying the command's own diagnostic excerpt.
+    /// `cd` is a builtin of BOTH `cmd.exe` and `sh`, so this is cross-platform.
+    #[test]
+    fn run_command_maps_exit_status_to_ok_or_excerpt() {
+        let dir = tempdir().unwrap();
+        assert!(run_command("cd .", dir.path()).is_ok(), "exit 0 is Ok");
+        let err = run_command("cd no-such-dir-xyz", dir.path())
+            .expect_err("a non-zero exit must be Err");
+        assert!(!err.is_empty(), "the failure carries the command's own output");
+        assert!(err.chars().count() <= 500, "excerpt stays bounded at 500 chars");
     }
 
     #[test]
