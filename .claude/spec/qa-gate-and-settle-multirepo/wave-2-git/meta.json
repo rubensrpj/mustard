@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "qa-gate-and-settle-multirepo",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/git_settle.rs",
+      "path": "apps/rt/src/commands/git_settle.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/git.md",
+      "path": "plugin/commands/git.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/git/submodule-rules.md",
+      "path": "plugin/refs/git/submodule-rules.md",
+      "done": false
+    }
+  ]
+}

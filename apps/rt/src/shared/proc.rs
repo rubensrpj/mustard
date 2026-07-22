@@ -12,9 +12,15 @@
 //! / `false` value. None of them panic. The crate forbids `unsafe`, so none of
 //! these use raw OS signal APIs — they shell out to `netstat`/`lsof`/`taskkill`/
 //! `kill`/`tasklist` instead.
+//!
+//! [`run_shell_with_deadline`] additionally depends on [`crate::util::platform`]
+//! for the platform shell. That is a sideways edge, not a layering inversion:
+//! `util` is a leaf like `shared` and depends on neither face.
 
+use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 /// Spawn `exe args…` as a detached, long-lived background daemon whose open
 /// handles are NOT inherited from this process.
@@ -82,6 +88,114 @@ pub fn spawn_detached(exe: &Path, args: &[&str]) -> std::io::Result<()> {
             .spawn()
             .map(|_| ())
     }
+}
+
+/// Poll cadence of [`run_shell_with_deadline`]'s wait loop. `std` has no
+/// native wait-with-timeout, so the child is polled with `try_wait`; 50 ms is
+/// the historical cadence of both call sites this helper absorbed.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// What became of a shell command run under a deadline.
+#[derive(Debug)]
+pub enum ShellOutcome {
+    /// The child exited on its own. `stdout` / `stderr` are the FULL drained
+    /// streams, lossily decoded and NOT trimmed — each caller applies its own
+    /// trimming and excerpt policy.
+    Exited {
+        status: ExitStatus,
+        stdout: String,
+        stderr: String,
+    },
+    /// The deadline elapsed first and the child was killed. Its partial output
+    /// is dropped: a command that never finished proved nothing.
+    TimedOut { after: Duration },
+    /// The child never ran, or the wait itself failed. No verdict is possible.
+    SpawnFailed { error: String },
+}
+
+/// Run `command` through the platform shell in `cwd`, draining stdout AND
+/// stderr concurrently, and wait for it until `timeout` elapses.
+///
+/// **Why the drain threads are not optional.** A verbose command (a
+/// `cargo test --workspace`, a chatty AC) can emit far more than the OS pipe
+/// buffer (~64 KB). Reading the pipes only after the child exits lets a full
+/// buffer block the writer forever: the child never finishes, `try_wait` never
+/// returns `Some`, and the caller burns its whole timeout on a process that
+/// already did its work — reported as a bogus timeout. Two dedicated reader
+/// threads keep the pipes empty so the child always makes progress. This is the
+/// one home for that fix; a second copy is how the two call sites drifted apart
+/// in the first place.
+///
+/// Fail-open by construction: every failure mode is a [`ShellOutcome`] variant,
+/// never a panic. On timeout the child is killed and reaped before returning.
+#[must_use]
+pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> ShellOutcome {
+    let mut cmd = crate::util::platform::build_shell_command(command);
+    cmd.current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return ShellOutcome::SpawnFailed { error: e.to_string() },
+    };
+
+    let out_reader = drain(child.stdout.take());
+    let err_reader = drain(child.stderr.take());
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = out_reader.join().unwrap_or_default();
+                let stderr = err_reader.join().unwrap_or_default();
+                return ShellOutcome::Exited {
+                    status,
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                };
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    reap(&mut child, out_reader, err_reader);
+                    return ShellOutcome::TimedOut { after: timeout };
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            // The wait itself failed (the OS lost the child): no exit status
+            // will ever arrive, so this is as un-attemptable as a failed spawn.
+            Err(e) => {
+                reap(&mut child, out_reader, err_reader);
+                return ShellOutcome::SpawnFailed { error: e.to_string() };
+            }
+        }
+    }
+}
+
+/// Spawn a thread that drains one child pipe to EOF, returning whatever bytes
+/// arrived. Best-effort: an absent pipe or a read error yields what it has.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// Kill + reap a child whose output no longer matters, then join its readers.
+/// Killing closes the pipes, so the reader threads hit EOF and finish instead
+/// of outliving this call.
+fn reap(
+    child: &mut std::process::Child,
+    out_reader: std::thread::JoinHandle<Vec<u8>>,
+    err_reader: std::thread::JoinHandle<Vec<u8>>,
+) {
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = out_reader.join();
+    let _ = err_reader.join();
 }
 
 /// Free the given OTLP port: find whatever process is listening on
@@ -265,6 +379,55 @@ pub fn is_process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell command that prints ~90 KB — far past the ~64 KB OS pipe buffer
+    /// — and then exits 3. Per-platform because the shell is `cmd.exe` on
+    /// Windows and `sh` elsewhere.
+    #[cfg(windows)]
+    const BIG_OUTPUT_EXIT_3: &str =
+        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
+    #[cfg(not(windows))]
+    const BIG_OUTPUT_EXIT_3: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
+         while [ $i -lt 12 ]; do s=\"$s$s\"; i=$((i+1)); done; echo \"$s\"; exit 3";
+
+    /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
+    #[cfg(windows)]
+    const SLEEPS_SECONDS: &str = "ping -n 4 127.0.0.1";
+    #[cfg(not(windows))]
+    const SLEEPS_SECONDS: &str = "sleep 3";
+
+    /// THE regression this helper exists for: a command that overflows the OS
+    /// pipe buffer must still finish and be judged by its exit code. Before the
+    /// concurrent drain, the child blocked writing into a full pipe, `try_wait`
+    /// never saw it exit, and the caller reported a bogus timeout.
+    #[test]
+    fn shell_drains_beyond_the_pipe_buffer_and_reports_exit_code() {
+        let dir = std::env::temp_dir();
+        let outcome = run_shell_with_deadline(BIG_OUTPUT_EXIT_3, &dir, Duration::from_secs(60));
+        match outcome {
+            ShellOutcome::Exited { status, stdout, .. } => {
+                assert_eq!(status.code(), Some(3), "judged by its own exit code");
+                assert!(
+                    stdout.len() > 64 * 1024,
+                    "the whole stream is drained, not just a pipe buffer's worth ({} bytes)",
+                    stdout.len()
+                );
+            }
+            other => panic!("a completed command must report Exited, got {other:?}"),
+        }
+    }
+
+    /// A command that outlives its deadline is killed and reported as
+    /// `TimedOut` — a class of its own, never a silent success.
+    #[test]
+    fn shell_reports_timed_out_when_the_deadline_fires_first() {
+        let dir = std::env::temp_dir();
+        let outcome = run_shell_with_deadline(SLEEPS_SECONDS, &dir, Duration::from_secs(1));
+        match outcome {
+            ShellOutcome::TimedOut { after } => assert_eq!(after, Duration::from_secs(1)),
+            other => panic!("a command past its deadline must report TimedOut, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_netstat_pid_from_listening_row() {
