@@ -1,10 +1,10 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": null,
   "scope": null,
   "lang": "en-US",
-  "checkpoint": null,
+  "checkpoint": "2026-07-22T12:47:52.987Z",
   "parent": "qa-gate-and-settle-multirepo",
   "checklist": [
     {
