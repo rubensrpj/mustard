@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "qa-gate-and-settle-multirepo",
+  "title": "qa gate stops silently under-verifying chatty criteria and git-settle reports every repo of the work unit",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "qa",
+      "summary": "Stop the QA gate from reporting success over criteria it never ran: drain the child's pipes, tell a timeout apart from a benign skip, and never record a verdict a self-invoked run did not earn.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "git",
+      "summary": "Make the exit ritual honest in a monorepo with a submodule: resolve bases from the superproject, say what was resolved when refusing, and report one entry per repository instead of a half-'settled'.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
