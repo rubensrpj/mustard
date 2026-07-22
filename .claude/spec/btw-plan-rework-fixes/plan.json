@@ -1,0 +1,51 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "rt",
+      "summary": "Harness engine: reconcile-vs-freeze scaffold writes, spec-dir flag aliases plus normalisation, schema-teaching plan errors, and the resume-gate token rename.",
+      "depends_on": [],
+      "tasks": [
+        "In `wave_scaffold::scaffold`, decide the write mode from the canonical approval marker `<spec_dir>/.approved-by-user` (reuse `shared::context::APPROVED_BY_USER_MARKER`; do NOT add a flag or env knob). Unapproved: every scaffold artefact (`wave-plan.md`, each `wave-N-{role}/spec.md`, each wave `meta.json`) becomes a pure function of the plan — rewrite whenever the rendered content differs from disk, and record the relative path under `refreshed`. Approved: keep today's skip-if-present semantics byte-for-byte, and emit ONE stderr WARN naming the change-request route when a file WOULD have changed.",
+        "Unapproved only: delete `wave-N-*` directories present on disk but absent from the plan, recording each under `removed`. Never touch the root `spec.md`, `meta.json`, `.events/`, `qa/` or `review/`.",
+        "Extend `ScaffoldOutcome::Created` with `refreshed` and `removed`, and surface both arrays in the `plan-materialize` report. Both keys are ALWAYS present (empty when nothing changed) and sorted, so stdout stays deterministic and byte-stable per the rt Guards.",
+        "Teach both `ScaffoldOutcome::Unreadable` messages (read failure and JSON parse failure) the minimal one-wave plan example plus a pointer to the `/feature` reference `full-plan.md § Plan JSON schema`. stderr only — stdout must not change.",
+        "Add hidden `--spec` and `--from-spec` aliases to the four `--spec-dir` arguments (`plan-materialize`, `pipeline-summary` in `commands/pipeline/cli.rs`; `wave-tree`, `wave-size-check` in `commands/wave/cli.rs`), mirroring the existing alias pattern on the spec-path commands. `--spec-dir` stays canonical.",
+        "Add a shared spec-dir normalisation helper next to the existing spec-path helpers in `shared/context.rs` and call it from the four commands. Precedence: an existing directory resolves unchanged (today's behaviour); a path ending in a file (`.../spec.md`) resolves to its parent; a bare slug with an existing `.claude/spec/{slug}` resolves to that directory.",
+        "Rename the post-Execute gate token `await-wave-scaffold` to `await-plan-materialize` and update its blocked message to name `plan-materialize`. Update the existing test that asserts the old token.",
+        "Update doc comments that call `wave-scaffold` a subcommand (its own module header, the `standalone subcommand` phrase in `plan_materialize.rs`) to describe it as the scaffold renderer inside `plan-materialize`.",
+        "Tests: reconcile before approval (rewrites what differs, reports `refreshed`); frozen after approval (byte-identical files plus the WARN); stale wave directory removal; unchanged-plan re-run stays fully idempotent (extend the existing composite test); spec-dir normalisation precedence; the renamed gate token; the schema-teaching parse error; and alias acceptance for the four commands in `tests/run_command_surface.rs`."
+      ],
+      "files": [
+        "apps/rt/src/commands/wave/wave_scaffold.rs",
+        "apps/rt/src/commands/pipeline/plan_materialize.rs",
+        "apps/rt/src/commands/pipeline/cli.rs",
+        "apps/rt/src/commands/wave/cli.rs",
+        "apps/rt/src/shared/context.rs",
+        "apps/rt/src/commands/pipeline/resume_bootstrap/post_execute_gate.rs",
+        "apps/rt/tests/run_command_surface.rs"
+      ],
+      "satisfies": ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7", "AC-8", "AC-10"]
+    },
+    {
+      "n": 2,
+      "role": "docs",
+      "summary": "Instruction surfaces: stop telling readers to run the absorbed command, and lock that with a guard test derived from the published CLI surface.",
+      "depends_on": ["wave-1-rt"],
+      "tasks": [
+        "`apps/dashboard/src/components/DoctorBadge/index.tsx`: the broken-wave-link hint must point at `mustard-rt run plan-materialize` (noting it consumes the plan via `--plan`), never at the absorbed `wave-scaffold`.",
+        "`plugin/refs/feature/full-plan.md` and `plugin/refs/feature/spec-language.md`: keep every existing rule intact, but describe `wave-scaffold` as the scaffold renderer INSIDE `plan-materialize` rather than as an invocable command. Do not restate protocol that lives elsewhere and do not change any prescribed sequence.",
+        "Add `every_documented_run_command_exists` to `apps/rt/tests/run_command_surface.rs`: scan the shipped instruction surfaces (`plugin/**/*.md` and `apps/dashboard/src`) for the literal `mustard-rt run <token>` and assert every token appears in `RUN_SUBCOMMANDS`. Skip placeholder tokens (those starting with `<`, `{`, `$` or a backtick). Resolve paths from `CARGO_MANIFEST_DIR` so the test is cwd-independent, and skip cleanly when a surface directory is absent."
+      ],
+      "files": [
+        "apps/dashboard/src/components/DoctorBadge/index.tsx",
+        "plugin/refs/feature/full-plan.md",
+        "plugin/refs/feature/spec-language.md",
+        "apps/rt/tests/run_command_surface.rs"
+      ],
+      "satisfies": ["AC-9"]
+    }
+  ],
+  "total_waves": 2,
+  "lang": "en-US"
+}

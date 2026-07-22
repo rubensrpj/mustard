@@ -157,7 +157,7 @@ pub(super) fn block_unapproved_execute(spec_dir: &Path, out: &mut ResumeBootstra
 /// [`mustard_core::domain::spec::contract::ContractViolation::FullScopeNoWaves`])
 /// is that every Full spec decomposes into a parent *orchestrator* doc plus at
 /// least one executing *wave* subagent — there is no "Full with zero waves".
-/// `spec-draft` already floors `total_waves` to 1 and `wave-scaffold`
+/// `spec-draft` already floors `total_waves` to 1 and `plan-materialize`
 /// materialises the wave dirs, so a wave-less Full reaching Execute is a defect
 /// (a hand-edited / legacy "limbo" spec). This gate exercises the invariant at
 /// the resume/Execute boundary at runtime.
@@ -165,7 +165,9 @@ pub(super) fn block_unapproved_execute(spec_dir: &Path, out: &mut ResumeBootstra
 /// On violation it **BLOCKS** (it does NOT silently auto-scaffold — blocking is
 /// explicit and surfaces operator action) and resets the bootstrap toward
 /// `Plan` with an actionable `next_action` so the orchestrator runs
-/// `wave-scaffold` before Execute.
+/// `plan-materialize` before Execute. The token names the PUBLISHED command:
+/// `wave-scaffold` was absorbed into `plan-materialize` and no longer exists on
+/// the CLI surface, so an obedient agent following the old token called nothing.
 ///
 /// Wave evidence is read from `out` (already resolved from events + the FS
 /// earlier in `run`): a wave-plan (`is_wave_plan`) OR `total_waves >= 1`. A
@@ -216,9 +218,9 @@ pub(super) fn block_full_without_wave(spec_dir: &Path, out: &mut ResumeBootstrap
 
     // Wave-less Full trying to execute → BLOCK and route back to decompose.
     out.stage = Some("Plan".to_string());
-    out.next_action = Some("await-wave-scaffold".to_string());
+    out.next_action = Some("await-plan-materialize".to_string());
     out.spec_summary =
-        "BLOCKED: Full scope requires ≥1 wave — decompose via wave-scaffold before Execute"
+        "BLOCKED: Full scope requires ≥1 wave — decompose via plan-materialize before Execute"
             .to_string();
 }
 
@@ -550,10 +552,12 @@ mod tests {
     // --- Invariant safety-net: Full scope ⇒ ≥1 wave -----------------------
 
     /// DENY: a Full spec resolved to Execute with ZERO waves (no wave-plan,
-    /// `total_waves == 0`) is reset to `Plan` / `await-wave-scaffold` with the
-    /// actionable BLOCKED message.
+    /// `total_waves == 0`) is reset to `Plan` / `await-plan-materialize` with
+    /// the actionable BLOCKED message. The token and the message must name the
+    /// PUBLISHED command — `wave-scaffold` was absorbed into `plan-materialize`
+    /// and is not on the CLI surface.
     #[test]
-    fn full_requires_wave() {
+    fn blocked_full_spec_awaits_plan_materialize() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
         seed_meta_scope(spec_dir, "full");
@@ -565,11 +569,16 @@ mod tests {
         };
         block_full_without_wave(spec_dir, &mut out);
         assert_eq!(out.stage.as_deref(), Some("Plan"));
-        assert_eq!(out.next_action.as_deref(), Some("await-wave-scaffold"));
+        assert_eq!(out.next_action.as_deref(), Some("await-plan-materialize"));
         assert!(
             out.spec_summary.contains("BLOCKED")
-                && out.spec_summary.contains("wave-scaffold"),
+                && out.spec_summary.contains("plan-materialize"),
             "block message must be actionable: {}",
+            out.spec_summary
+        );
+        assert!(
+            !out.spec_summary.contains("wave-scaffold"),
+            "the message must not name the absorbed command: {}",
             out.spec_summary
         );
     }

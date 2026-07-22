@@ -62,7 +62,9 @@ function fixHintFor(checkName: string): string | null {
     case "nerd-font":
       return "Run `mustard install-nerd-font` (statusline tofu fix).";
     case "wave-integrity":
-      return "A `[[wave-N-role]]` link points to a missing dir — regenerate via `mustard-rt run wave-scaffold`.";
+      // `wave-scaffold` is a renderer INSIDE `plan-materialize`, not a
+      // published subcommand — the composite reads the plan JSON via `--plan`.
+      return "A `[[wave-N-role]]` link points to a missing dir — regenerate via `mustard-rt run plan-materialize --spec-dir <spec-dir> --plan <plan.json>`.";
     case "skill-discovery":
       return "Edit SKILL.md frontmatter (`description` clauses below threshold).";
     case "residue":

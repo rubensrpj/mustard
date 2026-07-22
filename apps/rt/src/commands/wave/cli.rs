@@ -21,8 +21,10 @@ pub enum WaveCmd {
     /// Render a spec's wave structure as an ASCII or JSON tree.
     #[command(display_order = 18)]
     WaveTree {
-        /// Path to the spec directory.
-        #[arg(long = "spec-dir")]
+        /// Path to the spec directory. Also accepts a `.../spec.md` path or a
+        /// bare slug. `--spec` / `--from-spec` are hidden aliases, so the
+        /// sibling commands' spelling parses here too.
+        #[arg(long = "spec-dir", alias = "spec", alias = "from-spec")]
         spec_dir: String,
         /// Output format: `ascii` (default) or `json`.
         #[arg(long, default_value = "ascii")]
@@ -65,8 +67,9 @@ pub enum WaveCmd {
     /// Audit per-wave file/layer counts inside a wave-plan.
     #[command(display_order = 26)]
     WaveSizeCheck {
-        /// Path to the spec directory.
-        #[arg(long = "spec-dir")]
+        /// Path to the spec directory. Also accepts a `.../spec.md` path or a
+        /// bare slug. `--spec` / `--from-spec` are hidden aliases.
+        #[arg(long = "spec-dir", alias = "spec", alias = "from-spec")]
         spec_dir: Option<String>,
     },
     // The folder name is spelled `wave-<n>-<role>` (angle brackets) throughout

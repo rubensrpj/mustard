@@ -4,8 +4,10 @@
 //! orchestrator used to relay one by one after the Plan agent produced the
 //! plan JSON:
 //!
-//! 1. `wave-scaffold` — [`crate::commands::wave::wave_scaffold::scaffold`]
-//!    materialises `wave-plan.md` + every `wave-N-{role}/spec.md` + sidecars.
+//! 1. the wave-scaffold renderer —
+//!    [`crate::commands::wave::wave_scaffold::scaffold`] materialises
+//!    `wave-plan.md` + every `wave-N-{role}/spec.md` + sidecars. It is NOT a
+//!    published subcommand; this composite is its only entry point.
 //! 2. `analyze-validation` — [`crate::commands::review::analyze_validation::validate`]
 //!    (WARN-level, includes the wave-2 AC-parseability check) over the root
 //!    `spec.md`.
@@ -25,14 +27,22 @@
 //! ```json
 //! {
 //!   "events": ["pipeline.scope", "pipeline.phase"],
-//!   "scaffold": { "created_files": [...], "skipped": [...] },
+//!   "scaffold": {
+//!     "created_files": [], "skipped": [], "refreshed": [], "removed": []
+//!   },
 //!   "validation": { "ok": true, "issues": [] }
 //! }
 //! ```
 //!
 //! `events` lists the composed emission steps that ran (empty when the
 //! scaffold failed — no phase transition is recorded for a plan that did not
-//! materialise). Keys serialize sorted (serde_json default map); no
+//! materialise). The four scaffold lists are ALWAYS present (empty when nothing
+//! changed) and `refreshed` / `removed` are sorted, so re-running an unchanged
+//! plan prints the same bytes. `refreshed` / `removed` are non-empty only before
+//! the user approves the spec — see
+//! [`crate::commands::wave::wave_scaffold`]'s write modes. Keys serialize in
+//! insertion order (the workspace enables serde_json's `preserve_order`), which
+//! is fixed by this module, so the document is byte-stable either way; no
 //! timestamps or volatile paths appear on stdout.
 
 use crate::commands::event::emit_phase;
@@ -74,7 +84,12 @@ const ERR_UNCOVERED_ACS: &str = "uncovered acceptance criteria";
 /// coverage gate — either way a non-zero exit so the orchestrator notices.
 pub fn run(opts: PlanMaterializeOpts) {
     let project = PathBuf::from(crate::shared::context::project_dir());
-    let spec_dir = absolutize(&project, &opts.spec_dir);
+    // Accept the three spec-dir spellings (a directory, a `…/spec.md` path, a
+    // bare slug) through the shared normaliser before absolutizing.
+    let spec_dir = absolutize(
+        &project,
+        crate::shared::context::normalise_spec_dir(&project, &opts.spec_dir),
+    );
     let plan_path = absolutize(&project, &opts.plan);
     let report = materialize(&project, &spec_dir, &plan_path);
     println!(
@@ -88,9 +103,10 @@ pub fn run(opts: PlanMaterializeOpts) {
 }
 
 /// Join a possibly-relative CLI path onto the project root.
-fn absolutize(project: &Path, raw: &str) -> PathBuf {
-    if Path::new(raw).is_absolute() {
-        PathBuf::from(raw)
+fn absolutize(project: &Path, raw: impl AsRef<Path>) -> PathBuf {
+    let raw = raw.as_ref();
+    if raw.is_absolute() {
+        raw.to_path_buf()
     } else {
         project.join(raw)
     }
@@ -105,22 +121,34 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // 1. wave-scaffold (in-process miolo — same renderer the standalone
-    //    subcommand uses; idempotent, skip-if-present).
+    // 1. the wave-scaffold renderer (called in-process — this composite is its
+    //    only entry point). Idempotent; reconciled before approval, frozen
+    //    after (see `wave_scaffold::WriteMode`).
     let outcome = wave_scaffold::scaffold(spec_dir, plan_path);
     let (scaffold_json, scaffold_ok) = match outcome {
         // Coverage gate (unconditional — no env knob): a parent/plan acceptance
         // criterion that no wave covers BLOCKS the PLAN transition. The layout
         // was materialised (idempotent), but `scaffold_ok=false` withholds the
         // events and `run` exits non-zero, so the gap is fixed before EXECUTE.
-        ScaffoldOutcome::Created { created, skipped, uncovered_acs } if uncovered_acs.is_empty() => (
-            json!({ "created_files": created, "skipped": skipped }),
-            true,
-        ),
-        ScaffoldOutcome::Created { created, skipped, uncovered_acs } => (
+        ScaffoldOutcome::Created { created, skipped, refreshed, removed, uncovered_acs }
+            if uncovered_acs.is_empty() =>
+        {
+            (
+                json!({
+                    "created_files": created,
+                    "skipped": skipped,
+                    "refreshed": refreshed,
+                    "removed": removed,
+                }),
+                true,
+            )
+        }
+        ScaffoldOutcome::Created { created, skipped, refreshed, removed, uncovered_acs } => (
             json!({
                 "created_files": created,
                 "skipped": skipped,
+                "refreshed": refreshed,
+                "removed": removed,
                 "error": ERR_UNCOVERED_ACS,
                 "uncovered_acs": uncovered_acs,
             }),
@@ -130,6 +158,8 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             json!({
                 "created_files": [],
                 "skipped": [],
+                "refreshed": [],
+                "removed": [],
                 "error": "plan.waves is empty",
             }),
             false,
@@ -140,6 +170,8 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                 json!({
                     "created_files": [],
                     "skipped": [],
+                    "refreshed": [],
+                    "removed": [],
                     "error": ERR_PLAN_UNREADABLE,
                 }),
                 false,
@@ -282,6 +314,10 @@ mod tests {
     /// Happy path: scaffold materialises the layout, validation passes, and
     /// both events (`pipeline.scope` then `pipeline.phase` PLAN) land in the
     /// spec's `.events/` log.
+    ///
+    /// AC-4 rides along: re-running with an UNCHANGED plan must create,
+    /// refresh and remove nothing (the four scaffold lists are always present,
+    /// so stdout stays byte-stable) and must not re-emit the PLAN phase.
     #[test]
     fn composite_plan_materialize_scaffolds_validates_and_emits() {
         let dir = tempdir().unwrap();
@@ -302,6 +338,9 @@ mod tests {
         assert!(created.contains(&"wave-2-cli/spec.md".to_string()), "{report}");
         assert!(spec_dir.join("wave-plan.md").exists());
         assert!(spec_dir.join("wave-1-rt").join("spec.md").exists());
+        // The two reconcile lists are always published, empty on a first pass.
+        assert_eq!(report["scaffold"]["refreshed"], json!([]), "{report}");
+        assert_eq!(report["scaffold"]["removed"], json!([]), "{report}");
 
         // Validation: the seeded spec is clean.
         assert_eq!(report["validation"]["ok"], json!(true), "{report}");
@@ -327,10 +366,24 @@ mod tests {
             .expect("pipeline.phase landed");
         assert_eq!(phase.payload["to"], json!("PLAN"), "{:?}", phase.payload);
 
-        // Idempotent re-run: nothing re-created, phase emit skipped inside
-        // run_at (last phase already PLAN), report stays coherent.
+        // Idempotent re-run on an UNCHANGED plan: nothing created, nothing
+        // rewritten, nothing pruned — the whole report stays byte-stable — and
+        // the phase emit is skipped inside run_at (last phase already PLAN).
         let again = materialize(project, &spec_dir, &plan_path);
         assert!(again["scaffold"]["created_files"].as_array().unwrap().is_empty());
+        assert_eq!(again["scaffold"]["refreshed"], json!([]), "{again}");
+        assert_eq!(again["scaffold"]["removed"], json!([]), "{again}");
+        assert!(
+            !again["scaffold"]["skipped"].as_array().unwrap().is_empty(),
+            "an unchanged plan skips every artefact: {again}"
+        );
+        // Byte-stable: a third pass prints exactly what the second did.
+        let third = materialize(project, &spec_dir, &plan_path);
+        assert_eq!(
+            serde_json::to_string_pretty(&again).unwrap(),
+            serde_json::to_string_pretty(&third).unwrap(),
+            "re-running an unchanged plan must be byte-identical on stdout"
+        );
         let phases = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
             &events_dir,
         )

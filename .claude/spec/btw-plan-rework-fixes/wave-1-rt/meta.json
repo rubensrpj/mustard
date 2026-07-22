@@ -1,0 +1,46 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-21T16:51:14.135Z",
+  "parent": "btw-plan-rework-fixes",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/wave/wave_scaffold.rs",
+      "path": "apps/rt/src/commands/wave/wave_scaffold.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/plan_materialize.rs",
+      "path": "apps/rt/src/commands/pipeline/plan_materialize.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/cli.rs",
+      "path": "apps/rt/src/commands/pipeline/cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/wave/cli.rs",
+      "path": "apps/rt/src/commands/wave/cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/shared/context.rs",
+      "path": "apps/rt/src/shared/context.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/post_execute_gate.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/post_execute_gate.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": true
+    }
+  ]
+}
