@@ -10,6 +10,7 @@
 - sync / push per-repo procedures
 - Commit: submodule steps
 - PR per repo
+- Close per repo
 - Final status report
 - Forbidden operations
 - Performance budget & rules
@@ -153,6 +154,14 @@ at a commit that no longer reflects the submodule's published work.
 3. No return to base — every repo stays live on its work branch; a later `push`/`pr` re-targets the SAME PR until `pr close`.
 
 A base→base `pr` opens its single PR only — no push, no submodule branches, no return.
+
+## Close per repo — submodules before parent
+
+`pr close` is the exit ritual of ONE unit, and the unit lives in every repo it touched. It closes the same way it opened: **submodules FIRST**, then the parent — merging the submodule PR first is what keeps the parent's gitlink pointing at a commit that exists on the submodule's base.
+
+1. **Each submodule whose own PR already merged** — from `<SUB_ABS>`: `mustard-rt run git-settle --unit "$SUB_WORK"` (confirm merged, advance `$SUB_BASE`, delete the local + remote branch). Not merged → it refuses and touches NOTHING; merge that PR first. A submodule carries no `mustard.json`, so settle reads the bases from the superproject's `git.flow` — a `$SUB_BASE` that flow never names is refused with `no-base-prefix`, and the refusal prints the root, the config root and the bases it knows.
+2. **Then the parent** — the `pr close` procedure in `${CLAUDE_PLUGIN_ROOT}/commands/git.md`.
+3. **Read the report, not the action.** `git-settle` acts ONLY on the repo it was pointed at, but `repos` carries one entry per repo of the unit (`settled` + `reason`) and `complete` stays false while any repo still holds it. `complete:false` with a submodule entry means step 1 was skipped for that repo — go do it; a bare `"action":"settled"` no longer means the unit is gone.
 
 ## Final status report
 
