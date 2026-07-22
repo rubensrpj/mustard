@@ -194,8 +194,13 @@ fn render_ascii(root: &str, waves: &[Wave]) -> String {
 
 /// Dispatch `mustard-rt run wave-tree`.
 pub fn run(spec_dir: &str, format: &str) {
-    let dir = fs::canonicalize(spec_dir)
-        .unwrap_or_else(|_| std::path::PathBuf::from(spec_dir));
+    // Accept the three spec-dir spellings (a directory, a `…/spec.md` path, a
+    // bare slug) through the shared normaliser before canonicalizing.
+    let resolved = crate::shared::context::normalise_spec_dir(
+        Path::new(&crate::shared::context::project_dir()),
+        spec_dir,
+    );
+    let dir = fs::canonicalize(&resolved).unwrap_or(resolved);
     if !dir.exists() {
         println!("(no spec at {spec_dir})");
         return;

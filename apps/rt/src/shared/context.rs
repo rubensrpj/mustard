@@ -576,6 +576,66 @@ pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathB
     )
 }
 
+/// Normalise a `--spec-dir` argument onto the spec DIRECTORY it names.
+///
+/// The four `--spec-dir` commands (`plan-materialize`, `pipeline-summary`,
+/// `wave-tree`, `wave-size-check`) are driven both by hand and by orchestrator
+/// prompts, where the argument arrives in three shapes. This is the single home
+/// for resolving them, so the four can never drift — the sibling of
+/// [`approval_marker_path`] / [`clarified_marker_path`] for the argument side.
+///
+/// Precedence (first match wins):
+///
+/// 1. An existing DIRECTORY — as given (absolute / cwd-relative) or under
+///    `project`. Returned unchanged: today's behaviour, preserved exactly.
+/// 2. A path that names a FILE (`…/spec.md`) — resolves to the directory
+///    holding it, so pointing at the spec markdown works like pointing at the
+///    spec.
+/// 3. A bare slug whose `.claude/spec/{slug}` exists — resolves to that
+///    directory.
+///
+/// Fail-open: nothing matched → the raw argument as a [`PathBuf`], so each
+/// command's own absolutize/join and its existing "not found" message still
+/// apply.
+#[must_use]
+pub fn normalise_spec_dir(project: &Path, raw: &str) -> PathBuf {
+    let as_given = PathBuf::from(raw);
+    // `join` on an absolute `raw` yields `raw`, so the two candidates collapse
+    // to one for an absolute argument.
+    let candidates = [as_given.clone(), project.join(raw)];
+
+    // 1. An existing directory wins as-is.
+    if let Some(dir) = candidates.iter().find(|c| c.is_dir()) {
+        return dir.clone();
+    }
+    // 2. A path that names a file resolves to its parent. Only an EXISTING file
+    //    or an explicit `.md` document qualifies — a bare slug (which has no
+    //    extension) must never be mistaken for a filename.
+    for candidate in &candidates {
+        let names_file = candidate.is_file()
+            || candidate
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+        if names_file {
+            if let Some(parent) = candidate.parent().filter(|p| p.is_dir()) {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    // 3. A bare slug under `.claude/spec/`. `for_spec` rejects any name
+    //    carrying a separator or a traversal, so a real path never lands here
+    //    by accident.
+    if let Some(dir) = ClaudePaths::for_project(project)
+        .and_then(|p| p.for_spec(raw))
+        .ok()
+        .map(|s| s.dir().to_path_buf())
+        .filter(|d| d.is_dir())
+    {
+        return dir;
+    }
+    as_given
+}
+
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the
 /// harness sets on every wave dispatch and that `route` already stamps on each
 /// emitted event. Co-located with [`current_spec`] so a hook (e.g. the
@@ -615,6 +675,49 @@ mod tests {
         let approval =
             approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
         assert_eq!(p.parent(), approval.parent());
+    }
+
+    // -----------------------------------------------------------------------
+    // normalise_spec_dir — the three `--spec-dir` argument shapes
+    // -----------------------------------------------------------------------
+
+    /// The precedence contract: an existing directory resolves UNCHANGED, a
+    /// path ending in a file resolves to its parent, and a bare slug resolves
+    /// through `.claude/spec/{slug}`. Anything unresolvable falls back to the
+    /// raw argument so each command's own "not found" path still fires.
+    #[test]
+    fn normalise_spec_dir_resolves_directory_file_and_slug() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let spec_dir = project.join(".claude").join("spec").join("my-spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# demo\n").unwrap();
+
+        // 1. An existing directory is returned unchanged (today's behaviour).
+        let as_dir = normalise_spec_dir(project, &spec_dir.to_string_lossy());
+        assert_eq!(as_dir, spec_dir, "an existing directory resolves unchanged");
+
+        // 2. A path ending in a file resolves to the directory holding it.
+        let as_file = normalise_spec_dir(project, &spec_dir.join("spec.md").to_string_lossy());
+        assert_eq!(as_file, spec_dir, "`…/spec.md` resolves to its parent");
+        // Even when the `.md` does not exist yet (pre-draft), the parent wins.
+        let as_missing_md =
+            normalise_spec_dir(project, &spec_dir.join("wave-plan.md").to_string_lossy());
+        assert_eq!(as_missing_md, spec_dir, "an absent `.md` still resolves to its parent");
+
+        // 3. A bare slug resolves through `.claude/spec/{slug}`.
+        assert_eq!(
+            normalise_spec_dir(project, "my-spec"),
+            spec_dir,
+            "a bare slug resolves through .claude/spec/"
+        );
+
+        // Fail-open: an unknown slug comes back verbatim.
+        assert_eq!(
+            normalise_spec_dir(project, "ghost-spec"),
+            PathBuf::from("ghost-spec"),
+            "an unresolvable argument is returned untouched"
+        );
     }
 
     // -----------------------------------------------------------------------
