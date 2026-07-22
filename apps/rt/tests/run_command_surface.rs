@@ -8,8 +8,16 @@
 //! guards against by hand — this test guards it mechanically, straight off the
 //! clap `Command` tree.
 //!
+//! It also reads the SHIPPED instruction surfaces (`plugin/**`) from disk: the
+//! CLI tree alone cannot catch a ritual that promises something the reader will
+//! not find, and a wrong instruction fails just as silently as a dropped
+//! registration.
+//!
 //! Adding a command: append its name here (sorted) in the same change. Renaming
 //! or removing one: update every caller first — this list is the contract.
+
+use std::fs;
+use std::path::Path;
 
 use clap::{Command, Subcommand};
 use mustard_rt::commands::RunCmd;
@@ -140,6 +148,39 @@ fn every_declared_command_keeps_its_help_slot() {
 
     let expected: Vec<usize> = (0..RUN_SUBCOMMANDS.len() - 1).collect();
     assert_eq!(orders, expected, "display_order slots must stay a gapless permutation");
+}
+
+/// The shipped `pr close` ritual must NAME submodules.
+///
+/// `plugin/commands/git.md` declares "Submodules before parent, always" as an
+/// iron rule, and its `commit`, `push` and `pr` steps each obey it — while
+/// `pr close`, three lines below that rule, described a single-repo exit. The
+/// tool followed the doc: it settled the parent, answered `settled`, and left
+/// the submodule sitting on the work branch. `git-settle` now reports one entry
+/// per repo (`repos` / `complete`); this keeps the instruction surface from
+/// drifting back away from it.
+#[test]
+fn pr_close_ritual_names_submodules() {
+    let git_md = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/commands/git.md");
+    let text = fs::read_to_string(&git_md).expect("plugin/commands/git.md is the shipped ritual");
+
+    let row = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("| `pr close"))
+        .expect("the actions table still describes `pr close`");
+    assert!(
+        row.to_lowercase().contains("submodule"),
+        "the `pr close` action must state the submodule-first order its own iron rule promises: {row}"
+    );
+
+    let step = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("- **pr close**"))
+        .expect("the procedure still spells out `pr close`");
+    assert!(
+        step.to_lowercase().contains("submodule"),
+        "the `pr close` procedure must close each repo of the unit, submodules first: {step}"
+    );
 }
 
 /// The `--spec` / `--from-spec` flags are interchangeable on the spec-path

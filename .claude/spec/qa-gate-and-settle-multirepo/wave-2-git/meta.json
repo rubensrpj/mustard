@@ -10,22 +10,22 @@
     {
       "label": "apps/rt/src/commands/git_settle.rs",
       "path": "apps/rt/src/commands/git_settle.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/tests/run_command_surface.rs",
       "path": "apps/rt/tests/run_command_surface.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/git.md",
       "path": "plugin/commands/git.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/refs/git/submodule-rules.md",
       "path": "plugin/refs/git/submodule-rules.md",
-      "done": false
+      "done": true
     }
   ]
 }

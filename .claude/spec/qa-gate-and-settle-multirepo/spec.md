@@ -98,6 +98,7 @@ A criterion that prints megabytes is verified and reported by its real exit code
 - `apps/rt/tests/run_command_surface.rs` (modify) — the `pr close` ritual doc guard
 - `plugin/commands/git.md` (modify) — `pr close` states the submodule-first order
 - `plugin/refs/git/submodule-rules.md` (modify) — the close ritual per repository
+- `MUSTARD-COMMANDS.md` (modify) — added during REVIEW: the third instruction surface still described `pr close` as a single-repo ritual, fourteen lines under its own "submodules before parent" iron rule
 
 ## Boundaries
 

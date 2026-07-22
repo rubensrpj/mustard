@@ -28,7 +28,12 @@
 //!    exit — check out the base (the ff advance above is the "pull"), then
 //!    delete the branch. A checkout git refuses degrades to `"partial"`.
 //!
-//! Output: one JSON report (sorted arrays, no timestamps). Fail-open
+//! Output: one JSON report (sorted arrays, no timestamps), including `repos` —
+//! one entry per repository the unit lives in (the repo settle acted on, plus
+//! every submodule that still carries the unit branch) and the global
+//! `complete`. Settle ACTS on the repository it was pointed at; the report
+//! tells the truth about all of them, because the exit ritual is per repo just
+//! like `commit`/`push`/`pr`. Fail-open
 //! everywhere: absent `gh`, no remote, or a locked path degrades to an
 //! honest field, exit 0 — but the MERGE VERIFICATION itself is a hard gate,
 //! never fail-open (guarding a verdict: missing evidence blocks).
@@ -69,6 +74,49 @@ pub(crate) fn main_checkout_root(from: &Path) -> Option<PathBuf> {
     }
 }
 
+/// A path as the report shows it: forward slashes, so one JSON shape reads the
+/// same on every platform.
+fn show(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// The immediate SUPERPROJECT of `repo` — `None` outside a submodule. Asked of
+/// git itself, never derived from a filesystem walk, so a `.git` FILE, a linked
+/// worktree or a nested submodule resolve exactly the way git resolves them.
+fn superproject_of(repo: &Path) -> Option<PathBuf> {
+    let out = git_out(repo, &["rev-parse", "--show-superproject-working-tree"])?;
+    let out = out.trim();
+    (!out.is_empty()).then(|| PathBuf::from(out))
+}
+
+/// How far [`config_root`] climbs before giving up — nested submodules are rare
+/// and shallow; the bound only guarantees the climb terminates.
+const MAX_SUPERPROJECT_HOPS: usize = 8;
+
+/// The root whose `mustard.json` declares the integration bases, paired with the
+/// immediate superproject (`None` outside a submodule).
+///
+/// A submodule is an independent repository and carries no harness config of its
+/// own: read there, `git.flow` is absent and the bases silently degrade to the
+/// built-in `{main, master}` last resort — which then refuses a perfectly valid
+/// `dev_` unit with `no-base-prefix`, blaming the branch name for a problem of
+/// location. The bases of a submodule's unit live in the SUPERPROJECT, so climb
+/// while the config is still missing.
+fn config_root(repo: &Path) -> (PathBuf, Option<PathBuf>) {
+    let superproject = superproject_of(repo);
+    let mut root = repo.to_path_buf();
+    let mut up = superproject.clone();
+    for _ in 0..MAX_SUPERPROJECT_HOPS {
+        if mustard_core::ProjectConfig::exists(&root) {
+            break;
+        }
+        let Some(parent) = up else { break };
+        up = superproject_of(&parent);
+        root = parent;
+    }
+    (root, superproject)
+}
+
 /// The base a work branch integrates into, read from its `{base}_` prefix
 /// (tolerating the harness's `worktree-` prefix). `None` when the prefix names
 /// no known base — such a branch is never settled.
@@ -106,6 +154,136 @@ pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     }
     out.sort_by(|a, b| a.branch.cmp(&b.branch));
     out
+}
+
+/// The unit's identity ACROSS repositories: everything after the first `_` of a
+/// work-branch name (the harness's `worktree-` prefix stripped first). Every
+/// repo the unit touches cuts `{its own base}_{slug}` — `submodule-rules.md`
+/// derives a submodule's branch exactly this way — so the slug travels while the
+/// prefix does not.
+fn unit_slug(branch: &str) -> Option<&str> {
+    let name = branch.strip_prefix("worktree-").unwrap_or(branch);
+    name.split_once('_').map(|(_, slug)| slug).filter(|s| !s.is_empty())
+}
+
+/// Paths of the INITIALIZED submodules in `git submodule status` output, sorted.
+/// Each line is `<status><sha> <path>[ (<describe>)]`; the `-` status marks a
+/// submodule with no checkout — there is no working tree to inspect there, so it
+/// is skipped rather than reported as if it had been examined.
+pub(crate) fn parse_submodule_paths(status: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in status.lines() {
+        // Marker-AGNOSTIC on purpose. `git submodule status` marks a CLEAN
+        // submodule with a leading SPACE, and `git_out` trims the whole stdout —
+        // so the first line reaches here already stripped of its marker. Keying
+        // on the marker made a clean single-submodule monorepo (this project's
+        // own shape, right after `commit` stages the gitlink) report NO
+        // submodule at all, which is precisely the blind spot this command was
+        // changed to remove. Only `-` (uninitialized) is load-bearing, and it
+        // survives trimming because it is not whitespace.
+        let mut fields = line.split_whitespace();
+        let Some(sha) = fields.next() else { continue };
+        if sha.starts_with('-') {
+            continue; // not initialized — no working tree to inspect
+        }
+        let Some(path) = fields.next() else { continue };
+        if !path.is_empty() {
+            out.push(path.replace('\\', "/"));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// What `repo` still holds of the unit — `None` when it carries no trace of it
+/// (a repository the unit never touched is not part of the unit's report).
+/// Purely observational: every command here reads, none writes.
+///
+/// "Carries" means the work branch is checked out, exists locally, or is still
+/// alive on `origin` — the three states the field incident showed a submodule
+/// sitting in while the parent's report already read `settled`.
+fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value> {
+    let slug = unit_slug(unit_branch);
+    let same_unit = |branch: &str| branch == unit_branch || (slug.is_some() && unit_slug(branch) == slug);
+    let refs_of = |namespace: &str| -> Vec<String> {
+        git_out(repo, &["for-each-ref", "--format=%(refname:short)", namespace])
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+
+    let head = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let on_unit_branch = same_unit(&head);
+    let mut branches: Vec<String> =
+        refs_of("refs/heads").into_iter().filter(|b| same_unit(b)).collect();
+    if on_unit_branch && !branches.iter().any(|b| b == &head) {
+        branches.push(head.clone());
+    }
+    branches.sort();
+
+    // Local refs decide FIRST, and they are free: a repo with no trace of the
+    // unit — not on its branch, no branch, no tracking ref — is not part of it
+    // and answers without touching the network. In a monorepo most submodules
+    // are strangers to the unit being settled; they must not each cost a probe.
+    let tracked: Vec<String> = refs_of("refs/remotes/origin")
+        .into_iter()
+        .filter_map(|r| r.strip_prefix("origin/").map(str::to_string))
+        .filter(|b| same_unit(b))
+        .collect();
+    if !on_unit_branch && branches.is_empty() && tracked.is_empty() {
+        return None;
+    }
+
+    // Only then ask the SERVER about each candidate: a tracking ref outlives the
+    // branch it followed, so believing it would report a closed repo as open.
+    let mut candidates: Vec<&str> = branches.iter().map(String::as_str).collect();
+    candidates.extend(tracked.iter().map(String::as_str));
+    candidates.sort_unstable();
+    candidates.dedup();
+    let mut remote_branches: Vec<String> = Vec::new();
+    let mut probe_failed = false;
+    for branch in candidates {
+        match git_out(repo, &["ls-remote", "--heads", "origin", branch]) {
+            Some(out) if !out.trim().is_empty() => remote_branches.push(branch.to_string()),
+            Some(_) => {}
+            None => probe_failed = true,
+        }
+    }
+    if probe_failed {
+        // Unreachable remote: keep what this repo last knew rather than let an
+        // unanswered probe read as "already gone" — `remoteProbe` marks the list
+        // unconfirmed.
+        for name in &tracked {
+            if !remote_branches.contains(name) {
+                remote_branches.push(name.clone());
+            }
+        }
+    }
+    remote_branches.sort();
+
+    if !on_unit_branch && branches.is_empty() && remote_branches.is_empty() {
+        return None; // the tracking ref outlived the branch — nothing left here
+    }
+    let reason = if on_unit_branch {
+        "on-unit-branch"
+    } else if branches.is_empty() {
+        "remote-branch-alive"
+    } else {
+        "branch-alive"
+    };
+    Some(json!({
+        "repo": label,
+        "settled": false,
+        "reason": reason,
+        "head": head,
+        "branches": branches,
+        "remoteBranches": remote_branches,
+        "remoteProbe": if probe_failed { "unavailable" } else { "ok" },
+    }))
 }
 
 /// Whether `branch` already landed on `origin/<base>`: true ancestry first;
@@ -166,10 +344,20 @@ fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
 /// when that is an integration base). Never panics.
 pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let Some(main) = main_checkout_root(start) else {
-        return json!({ "ok": false, "reason": "not-a-git-repo" });
+        // Echo the path that failed: the field incident behind this message was
+        // a `--root` that did not exist, and a bare "not-a-git-repo" let the
+        // submodule take the blame.
+        return json!({
+            "ok": false,
+            "reason": "not-a-git-repo",
+            "path": show(start),
+            "exists": start.exists(),
+            "hint": "git não resolveu repositório nesse caminho — confira o --root antes de suspeitar de submódulo",
+        });
     };
+    let (cfg_root, superproject) = config_root(&main);
     let bases: Vec<String> =
-        mustard_core::ProjectConfig::load(&main).git.integration_bases().into_iter().collect();
+        mustard_core::ProjectConfig::load(&cfg_root).git.integration_bases().into_iter().collect();
 
     // The user's contract: bare settle NEVER runs from a base — it is the
     // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
@@ -189,7 +377,31 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         }
     };
     let Some(base) = base_of_branch(&unit_branch, &bases) else {
-        return json!({ "ok": false, "reason": "no-base-prefix", "branch": unit_branch });
+        // Name WHAT was resolved, not just the branch: the prefix only looks
+        // wrong from a root whose config was never read (a submodule reads its
+        // superproject's `git.flow` — say where that is).
+        //
+        // Deliberate exception to the crate's byte-stable-stdout Guard: absolute
+        // machine paths appear ONLY on a refusal (`ok: false`), never on the
+        // success report that gets diffed or snapshotted. A refusal whose whole
+        // job is to say WHERE the command looked cannot omit the path and still
+        // do that job — the field incident was a `--root` that did not exist,
+        // and the old message let the submodule take the blame for it.
+        let hint = if superproject.is_some() {
+            "prefixo não bate com base conhecida — este repo é submódulo: as bases vêm do git.flow em configRoot"
+        } else {
+            "prefixo não bate com base conhecida — confira git.flow no mustard.json de configRoot"
+        };
+        return json!({
+            "ok": false,
+            "reason": "no-base-prefix",
+            "branch": unit_branch,
+            "root": show(&main),
+            "configRoot": show(&cfg_root),
+            "superproject": superproject.as_deref().map(show),
+            "bases": bases,
+            "hint": hint,
+        });
     };
 
     // One fetch for every base — fail-open (offline still verifies against
@@ -265,6 +477,39 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             (action, worktree_removed, branch_deleted, remote_deleted)
         };
 
+    // One entry per repository the unit lives in. Settle still ACTS only on the
+    // repo it was pointed at — this is the report refusing to claim the unit is
+    // gone while a submodule still sits on its work branch. The acting repo is
+    // reported from the outcome just produced; each submodule from what it still
+    // carries. An untouched submodule yields no entry: it is not part of the
+    // unit.
+    let repo_report = if action == "settled" {
+        json!({ "repo": ".", "branch": unit_branch, "settled": true })
+    } else {
+        json!({ "repo": ".", "branch": unit_branch, "settled": false, "reason": action })
+    };
+    let mut repos = vec![repo_report];
+    let submodules = git_out(&main, &["submodule", "status"])
+        .map(|s| parse_submodule_paths(&s))
+        .unwrap_or_default();
+    for rel in submodules {
+        if let Some(entry) = repo_settlement(&main.join(&rel), &rel, &unit_branch) {
+            repos.push(entry);
+        }
+    }
+    // Look UP as well as down. `submodule-rules.md` makes the SUBMODULE side
+    // step 1 of the close ritual, so the first report of every multi-repo unit
+    // is produced from inside a submodule — and a report that only enumerates
+    // its own children would answer `complete: true` there while the parent
+    // still holds the unit. That is the same half-settled "done" this command
+    // was changed to stop printing, reached from the other end.
+    if let Some(parent) = superproject.as_deref() {
+        if let Some(entry) = repo_settlement(parent, "..", &unit_branch) {
+            repos.push(entry);
+        }
+    }
+    let complete = repos.iter().all(|r| r["settled"] == json!(true));
+
     // Other merged harness worktrees — informative only (settle acts on ONE
     // unit; the user decides about the rest, each via its own settle).
     let also_mergeable: Vec<String> = entries
@@ -286,6 +531,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "branchDeleted": branch_deleted,
             "remoteDeleted": remote_deleted,
         },
+        "repos": repos,
+        "complete": complete,
         "baseCheckout": base_report,
         "otherBases": other_bases,
         "alsoMergeable": also_mergeable,
@@ -373,6 +620,84 @@ mod tests {
         std::fs::write(wt2.join("open.txt"), "y").expect("wt file");
         git(&wt2, &["add", "-A"]);
         git(&wt2, &["commit", "-m", "open work"]);
+
+        (dir, main)
+    }
+
+    /// The monorepo fixture: the same parent as [`fixture`] plus a REAL git
+    /// submodule at `sub` (added with `protocol.file.allow=always` — git refuses
+    /// a local-path submodule otherwise). The unit `dev_done` is merged into
+    /// origin/dev in the PARENT and still fully live in the SUBMODULE: work
+    /// branch checked out, local and remote alive. That is the exact field state
+    /// where the report used to answer `settled` with `alsoMergeable: []`.
+    fn fixture_with_submodule() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().expect("tempdir");
+        let bare = dir.path().join("origin.git");
+        let sub_bare = dir.path().join("sub-origin.git");
+        let seed = dir.path().join("sub-seed");
+        let main = dir.path().join("repo");
+        for p in [&bare, &sub_bare, &seed, &main] {
+            std::fs::create_dir_all(p).expect("mkdir");
+        }
+        git(&bare, &["init", "--bare", "."]);
+        git(&sub_bare, &["init", "--bare", "."]);
+        // The submodule's own default branch — a clone must find something to
+        // check out, and `dev` keeps parent and submodule on the same base name.
+        git(&sub_bare, &["symbolic-ref", "HEAD", "refs/heads/dev"]);
+
+        git(&seed, &["init", "."]);
+        git(&seed, &["config", "user.email", "t@t"]);
+        git(&seed, &["config", "user.name", "t"]);
+        git(&seed, &["checkout", "-b", "dev"]);
+        std::fs::write(seed.join("s.txt"), "s").expect("seed");
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-m", "sub seed"]);
+        git(&seed, &["remote", "add", "origin", sub_bare.to_string_lossy().as_ref()]);
+        git(&seed, &["push", "-u", "origin", "dev"]);
+
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-b", "dev"]);
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev"}}}"#).expect("cfg");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("a.txt"), "a").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "seed"]);
+        git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
+        git(&main, &["push", "-u", "origin", "dev"]);
+        git(&main, &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            sub_bare.to_string_lossy().as_ref(),
+            "sub",
+        ]);
+        git(&main, &["commit", "-m", "add submodule"]);
+        git(&main, &["push", "origin", "dev"]);
+
+        // The unit in the PARENT: worked in its worktree, merged into origin/dev,
+        // local dev rewound one merge so settle has something to fast-forward.
+        git(&main, &["worktree", "add", ".claude/worktrees/dev_done", "-b", "dev_done"]);
+        let wt = main.join(".claude").join("worktrees").join("dev_done");
+        std::fs::write(wt.join("done.txt"), "x").expect("wt file");
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-m", "done work"]);
+        git(&main, &["merge", "--no-ff", "dev_done", "-m", "merge dev_done"]);
+        git(&main, &["push", "origin", "dev"]);
+        git(&main, &["reset", "--hard", "HEAD~1"]);
+
+        // The SAME unit in the SUBMODULE — never closed: branch checked out,
+        // pushed, remote alive.
+        let sub = main.join("sub");
+        git(&sub, &["config", "user.email", "t@t"]);
+        git(&sub, &["config", "user.name", "t"]);
+        git(&sub, &["checkout", "-b", "dev_done"]);
+        std::fs::write(sub.join("w.txt"), "w").expect("sub file");
+        git(&sub, &["add", "-A"]);
+        git(&sub, &["commit", "-m", "sub work"]);
+        git(&sub, &["push", "-u", "origin", "dev_done"]);
 
         (dir, main)
     }
@@ -486,5 +811,182 @@ mod tests {
         let local = git_out(&main, &["rev-parse", "dev"]).expect("local");
         let remote = git_out(&main, &["rev-parse", "origin/dev"]).expect("remote");
         assert_eq!(local, remote, "base fast-forwarded to origin");
+    }
+
+    #[test]
+    fn parse_submodule_paths_keeps_initialized_entries_sorted() {
+        let status = " 1111111 packages/one (heads/dev)\n\
+                      +2222222 apps/two (v1.0-2-g2222222)\n\
+                      -3333333 not/initialized\n\
+                      U4444444 conflicted/three\n";
+        assert_eq!(
+            parse_submodule_paths(status),
+            vec!["apps/two", "conflicted/three", "packages/one"],
+            "the `-` entry has no checkout to inspect and is skipped"
+        );
+        assert!(parse_submodule_paths("").is_empty(), "a repo with no submodules yields none");
+    }
+
+    /// The shape the ONLY caller can actually deliver. `git_out` trims the whole
+    /// stdout, so a CLEAN submodule — marked by a leading SPACE — arrives with
+    /// that marker already gone from the FIRST line. The previous test fed a
+    /// leading space the parser never sees in production and stayed green while
+    /// a clean single-submodule monorepo reported no submodule at all.
+    #[test]
+    fn parse_submodule_paths_survives_the_trim_its_caller_applies() {
+        let raw = " 1111111 sub (heads/dev)\n";
+        assert_eq!(
+            parse_submodule_paths(raw.trim()),
+            vec!["sub"],
+            "a clean lone submodule must survive the caller's trim",
+        );
+        // Two clean entries: the first loses its marker, the second keeps it.
+        let two = " aaaaaaa first (heads/dev)\n aaaaaaa second (heads/dev)\n";
+        assert_eq!(parse_submodule_paths(two.trim()), vec!["first", "second"]);
+        // The `-` marker is not whitespace, so it still survives and still means
+        // "no checkout to inspect".
+        assert!(parse_submodule_paths("-3333333 not/initialized".trim()).is_empty());
+    }
+
+    /// A submodule carries no `mustard.json` of its own, so the bases of a unit
+    /// settled there live in the SUPERPROJECT. Before the fix the config lookup
+    /// stopped at the submodule root, fell back to the built-in `{main, master}`
+    /// and refused this `dev_` unit with `no-base-prefix` — the branch blamed for
+    /// a problem of location.
+    #[test]
+    fn settle_resolves_bases_from_superproject() {
+        let (_dir, main) = fixture_with_submodule();
+        let sub = main.join("sub");
+        assert!(!sub.join("mustard.json").exists(), "the submodule has no config of its own");
+
+        let v = settle_at(&sub, Some("dev_done"));
+        assert_eq!(v["base"], json!("dev"), "base read from the superproject's git.flow: {v}");
+        assert_eq!(v["reason"], json!("not-merged"), "recognised the unit, then gated on merge: {v}");
+    }
+
+    /// The refusal must say what it RESOLVED — root, config root and the bases it
+    /// knows — instead of naming only the branch, which reads as "your branch is
+    /// wrong" when the real answer is "I read the wrong config".
+    #[test]
+    fn no_base_prefix_names_root_and_known_bases() {
+        let (_dir, main) = fixture();
+        let v = settle_at(&main, Some("feature_x"));
+        assert_eq!(v["reason"], json!("no-base-prefix"), "{v}");
+        assert_eq!(v["branch"], json!("feature_x"));
+        assert_eq!(v["bases"], json!(["dev"]), "the bases it knows: {v}");
+        let root = v["root"].as_str().unwrap_or_default();
+        assert!(root.ends_with("/repo"), "names the root it resolved: {v}");
+        assert_eq!(v["configRoot"], v["root"], "config came from the repo itself: {v}");
+        assert_eq!(v["superproject"], json!(null), "not a submodule: {v}");
+    }
+
+    /// The `--root` that does not exist — the actual trigger of the field
+    /// incident — must be visible in the answer, not hidden behind a bare
+    /// "not-a-git-repo" that let the submodule take the blame.
+    #[test]
+    fn not_a_git_repo_echoes_the_path_it_tried() {
+        let dir = tempdir().expect("tempdir");
+        let missing = dir.path().join("nope");
+        let v = settle_at(&missing, None);
+        assert_eq!(v["reason"], json!("not-a-git-repo"), "{v}");
+        assert!(
+            v["path"].as_str().unwrap_or_default().ends_with("/nope"),
+            "echoes the path it tried: {v}"
+        );
+        assert_eq!(v["exists"], json!(false), "and says the path is not even there: {v}");
+    }
+
+    /// The unit spans parent AND submodule: settling the parent must not answer
+    /// "done" while the submodule still sits on the work branch with its local
+    /// and remote branches alive. One entry per repository, plus the global
+    /// `complete` that stays false until every repo is settled.
+    #[test]
+    fn settle_reports_every_repo_of_the_unit() {
+        let (_dir, main) = fixture_with_submodule();
+
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("settled"), "the parent really settled: {v}");
+        assert_eq!(v["complete"], json!(false), "a repo of the unit is still open: {v}");
+
+        let repos = v["repos"].as_array().expect("repos array");
+        assert_eq!(repos.len(), 2, "one entry per repository of the unit: {v}");
+        assert_eq!(repos[0]["repo"], json!("."), "{v}");
+        assert_eq!(repos[0]["settled"], json!(true), "{v}");
+        assert_eq!(repos[1]["repo"], json!("sub"), "{v}");
+        assert_eq!(repos[1]["settled"], json!(false), "{v}");
+        assert_eq!(repos[1]["reason"], json!("on-unit-branch"), "{v}");
+        assert_eq!(repos[1]["branches"], json!(["dev_done"]), "{v}");
+        assert_eq!(repos[1]["remoteBranches"], json!(["dev_done"]), "remote still alive: {v}");
+    }
+
+    /// The state the field actually reaches: `commit` stages the moved gitlink
+    /// in the parent (its own documented procedure), which makes the submodule
+    /// CLEAN — and `git submodule status` marks clean entries with a leading
+    /// SPACE that `git_out`'s trim removes from the first line. Keyed on that
+    /// marker, the lone submodule of a monorepo disappeared from `repos` and the
+    /// report answered `complete: true` over an open repository.
+    #[test]
+    fn clean_submodule_still_appears_in_the_report() {
+        let (_dir, main) = fixture_with_submodule();
+        // Stage the gitlink: the submodule now reports clean (leading space).
+        git(&main, &["add", "--", "sub"]);
+        let status = git_out(&main, &["submodule", "status"]).expect("status");
+        assert!(
+            !status.starts_with(['+', 'U']),
+            "the fixture must reproduce the CLEAN shape, got: {status:?}",
+        );
+
+        let v = settle_at(&main, Some("dev_done"));
+        let repos = v["repos"].as_array().expect("repos array");
+        assert_eq!(repos.len(), 2, "the clean submodule must still be reported: {v}");
+        assert_eq!(repos[1]["repo"], json!("sub"), "{v}");
+        assert_eq!(repos[1]["settled"], json!(false), "{v}");
+        assert_eq!(v["complete"], json!(false), "an open repo forbids `complete`: {v}");
+    }
+
+    /// `submodule-rules.md` makes the SUBMODULE side step 1 of the close ritual,
+    /// so the first report of a multi-repo unit is produced from inside a
+    /// submodule. Enumerating only its own children would answer `complete:
+    /// true` there while the parent still holds the unit — the same half-settled
+    /// "done", entered from the other end. The report must look UP too.
+    #[test]
+    fn settle_inside_a_submodule_reports_the_parent_too() {
+        let (_dir, main) = fixture_with_submodule();
+        let sub = main.join("sub");
+        // Step 1 of the ritual runs AFTER the submodule's own PR merged, so put
+        // the fixture in that state: the unit is on the submodule's base, and
+        // the submodule is still standing on the unit branch. The parent has
+        // merged nothing — it is the repository that must keep `complete` false.
+        git(&sub, &["checkout", "dev"]);
+        git(&sub, &["merge", "--ff-only", "dev_done"]);
+        git(&sub, &["push", "origin", "dev"]);
+        git(&sub, &["checkout", "dev_done"]);
+
+        let v = settle_at(&sub, Some("dev_done"));
+        assert_eq!(v["ok"], json!(true), "bases resolve from the superproject: {v}");
+
+        let repos = v["repos"].as_array().expect("repos array");
+        let parent = repos
+            .iter()
+            .find(|r| r["repo"] == json!(".."))
+            .unwrap_or_else(|| panic!("the superproject must be reported: {v}"));
+        assert_eq!(parent["settled"], json!(false), "the parent still holds the unit: {v}");
+        assert_eq!(
+            v["complete"],
+            json!(false),
+            "`complete` must not claim the unit is gone while the parent holds it: {v}",
+        );
+    }
+
+    /// The single-repo project keeps exactly one entry and a `complete` that
+    /// mirrors the action — the new fields must not invent an unsettled repo
+    /// where there is none.
+    #[test]
+    fn single_repo_unit_reports_itself_complete() {
+        let (_dir, main) = fixture();
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["complete"], json!(true), "{v}");
+        assert_eq!(v["repos"], json!([{ "repo": ".", "branch": "dev_done", "settled": true }]), "{v}");
     }
 }
