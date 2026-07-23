@@ -66,7 +66,16 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
              that SKILL.md and verify the file follows it — folder, naming, shape, must/must-not \
              rules; an unjustified deviation is a finding. Deliver: your \
              final message is a ≤60-line verdict — pass/fail per claim, each backed by the command \
-             you ran and its real output."
+             you ran and its real output. End that message with ONE machine-readable line so a \
+             SubagentStop hook records the gate result without a human re-reading your prose: \
+             `<VERDICT>{{\"verdict\":\"approved\"|\"rejected\",\"critical\":N,\"findings\":[…]}}</VERDICT>`. \
+             `verdict` is `rejected` when any blocking finding exists, else `approved` (only those two \
+             values); `critical` (N) counts BLOCKING findings ONLY — a violated `## Guards` rule, a \
+             violated `{{role}}-pattern` mold, or a correctness defect (never style or nits) — and it \
+             MUST equal the number of `\"severity\":\"critical\"` entries in `findings`; `findings` is \
+             an array of `{{\"severity\":\"critical\"|\"major\"|\"minor\",\"location\":\"<file>:<line>\",\"summary\":\"<one line>\"}}`. \
+             Emit exactly one valid-JSON block on a single line; if you cannot, omit it and the manual \
+             review-result path still records the verdict."
         ),
         "qa" => format!(
             "ROLE: qa\n\
@@ -367,6 +376,25 @@ mod tests {
         );
         assert!(block.contains("never refute a symptom"), "symptom rule missing: {block}");
         assert!(block.contains("coverage footer"), "coverage footer missing: {block}");
+    }
+
+    #[test]
+    fn review_role_block_carries_verdict_contract() {
+        // W1 of structured-review-verdict-capture: the rendered review block must
+        // instruct the agent to end with a machine-readable `<VERDICT>` line so the
+        // SubagentStop hook records the gate result without a human reading prose.
+        // It must name the JSON shape (verdict approved|rejected, critical N,
+        // findings array) and that `critical` counts BLOCKING (Guard / mold /
+        // correctness) findings only. Mirrors the plugin `mustard-review.md` contract.
+        let dir = tempdir().unwrap();
+        let block = build_role_block("review", dir.path(), "apps/rt", "en-US");
+        assert!(block.contains("<VERDICT>"), "VERDICT block missing: {block}");
+        assert!(block.contains("\"critical\":N"), "critical field missing: {block}");
+        assert!(block.contains("\"findings\""), "findings field missing: {block}");
+        assert!(block.contains("approved") && block.contains("rejected"), "verdict values missing: {block}");
+        assert!(block.contains("BLOCKING findings ONLY"), "blocking-only rule missing: {block}");
+        // Read-only role → still no MEMORY contract (that guard must not regress).
+        assert!(!block.contains("<MEMORY>"), "review must not carry MEMORY: {block}");
     }
 
     #[test]
