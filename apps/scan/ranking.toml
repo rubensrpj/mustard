@@ -27,8 +27,11 @@ b = 0.75
 # domain it does not implement stays in `hubs`, never here (its grouped evidence
 # still rides in `report.terms[].files`). Each candidate scores the Σ over the
 # matched terms of:
-#     idf(term) * BM25( path_boost * in-path + in-declarations , doc_len )
-# i.e. two fields — the module's DECLARATIONS and its PATH/filename. Fielding the
+#     idf(term) * BM25( path_boost * in-path + SITUATING_BOOST * in-situating + in-declarations , doc_len )
+# i.e. THREE fields — the module's DECLARATIONS, its PATH/filename, and its
+# SITUATING contracts (the supertypes it implements — a query naming a contract
+# lifts its implementers; SITUATING_BOOST is a FIXED constant in rank.rs, not a
+# knob here). Fielding the
 # path lets a query that NAMES a path segment lift the files under that path,
 # while BM25's length-normalization + tf saturation stop a sprawling god/seed
 # file that merely mentions many common terms from compounding (the field bug the
