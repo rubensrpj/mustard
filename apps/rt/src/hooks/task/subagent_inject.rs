@@ -154,14 +154,42 @@ fn prompt_declares_skill(prompt: &str) -> bool {
         || lower.starts_with("skill:")
 }
 
-/// Pick the role from a Task input. The harness passes `subagent_type`; if
-/// missing, fall back to `description` or `"general-purpose"`.
+/// Pick the role from a **dispatch** Task input — the Pre/PostToolUse(Task)
+/// path, where the harness carries the child's type as `tool_input.subagent_type`.
+/// Falls back to `"general-purpose"`. This is NOT valid on a `SubagentStop`
+/// (there is no `tool_input` there): the returning agent's type arrives at the
+/// top level — use [`role_from_stop_input`] for that.
 fn role_from_input(input: &HookInput) -> String {
     let tool_input = &input.tool_input;
     tool_input
         .get("subagent_type")
         .and_then(|v| v.as_str())
         .map_or_else(|| "general-purpose".to_string(), str::to_string)
+}
+
+/// Pick the returning child's role on a `SubagentStop`. Unlike
+/// [`role_from_input`] (the dispatch-path reader), a stop event carries the
+/// agent type at the TOP LEVEL: real harness JSON deserialises `agent_type`
+/// into the typed [`HookInput::agent_type`] field — serde's `#[serde(flatten)]`
+/// routes that key to the typed field and leaves it OUT of `raw` — so the typed
+/// field is the primary source. Raw `agent_type` / `subagent_type` are
+/// secondary fallbacks for a manually-built input or an alternate harness key.
+/// Mirrors [`HookInput::is_subagent`] / [`child_id_from_input`] in reading
+/// stop-shaped fields, never the dispatch-shaped `tool_input` (which a stop
+/// does not carry — reading it there made the verdict gate a silent no-op on
+/// every real review return).
+fn role_from_stop_input(input: &HookInput) -> String {
+    if let Some(t) = input.agent_type.as_deref().filter(|s| !s.is_empty()) {
+        return t.to_string();
+    }
+    for key in ["agent_type", "subagent_type"] {
+        if let Some(v) = input.raw.get(key).and_then(serde_json::Value::as_str) {
+            if !v.is_empty() {
+                return v.to_string();
+            }
+        }
+    }
+    "general-purpose".to_string()
 }
 
 /// `true` for a read-only dispatch role — one that searches, audits or reviews
@@ -434,7 +462,7 @@ fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookI
         event: "decision".to_string(),
         payload: json!({
             "title": memory,
-            "role": role_from_input(input),
+            "role": role_from_stop_input(input),
             "source": "memory-block",
         }),
         spec: Some(spec),
@@ -473,7 +501,7 @@ fn capture_review_verdict(project: &Path, cwd: &str, input: &HookInput) {
 /// (`unsafe` under Rust 2024, forbidden in this crate), mirroring the
 /// [`capture_memory_decision_with_session`] split.
 fn capture_review_verdict_with_session(project: &Path, cwd: &str, input: &HookInput, sid: &str) {
-    if !role_is_review(&role_from_input(input)) {
+    if !role_is_review(&role_from_stop_input(input)) {
         return;
     }
     let Some(verdict) = extract_verdict_block(&final_output_text(input)) else {
@@ -985,12 +1013,25 @@ mod tests {
         (dir, wave_dir)
     }
 
+    /// Build a realistic `SubagentStop` payload — the shape a real stop carries,
+    /// not the dispatch/PostToolUse hybrid this helper used to fabricate. A stop
+    /// delivers the returning agent's TYPE at the top level (`agent_type`, the
+    /// field real harness JSON deserialises into) and its final text as
+    /// `last_assistant_message`. The old shape (`tool_input.subagent_type` +
+    /// `raw.result`) made the role gate and the output reader look at fields a
+    /// stop never has — the false-positive shape that let the broken verdict gate
+    /// pass review. `agent_id` is mirrored into `raw` too so `child_id_from_input`
+    /// (which reads `raw`, not the typed field) still resolves the child id.
     fn stop_input(child: &str, output_text: &str) -> HookInput {
         HookInput {
             tool_name: None,
-            tool_input: serde_json::json!({ "subagent_type": child }),
             hook_event_name: Some("SubagentStop".to_string()),
-            raw: serde_json::json!({ "result": output_text }),
+            agent_type: Some(child.to_string()),
+            agent_id: Some(child.to_string()),
+            raw: serde_json::json!({
+                "agent_id": child,
+                "last_assistant_message": output_text,
+            }),
             ..HookInput::default()
         }
     }
@@ -1000,13 +1041,9 @@ mod tests {
     /// `last_assistant_message` (Claude Code hook contract), NOT via the
     /// PostToolUse-shaped `result`/`output` keys. `final_output_text` must read
     /// it — otherwise the whole capture family (memory / span-eval / verdict)
-    /// silently no-ops on every real subagent return.
-    ///
-    /// NOTE: the `stop_input` helper above still fabricates the OLD
-    /// (`result` + `tool_input.subagent_type`) shape; migrating it — and the
-    /// span-eval / memory tests that use it — to `last_assistant_message` +
-    /// top-level `agent_type` is the test-hygiene follow-up that removes the
-    /// remaining false positives.
+    /// silently no-ops on every real subagent return. The shared `stop_input`
+    /// helper above now builds this same real shape, so the memory / span-eval /
+    /// verdict tests exercise the production path rather than a fabricated one.
     #[test]
     fn final_output_text_reads_last_assistant_message() {
         let real_stop = HookInput {
@@ -1363,6 +1400,47 @@ mod tests {
         assert_eq!(results.len(), 1, "exactly one review.result: {results:?}");
         assert_eq!(results[0]["verdict"], json!("rejected"));
         assert_eq!(results[0]["criticalCount"], json!(2));
+        assert_eq!(results[0]["spec"], json!(spec));
+    }
+
+    /// AC-1 (faithful shape): the SAME capture, but driven from a payload
+    /// DESERIALISED from the exact stdin JSON a real `SubagentStop` delivers —
+    /// `agent_type` at the top level (serde routes it to the TYPED field, not
+    /// `raw`) and the output as `last_assistant_message`. This is precisely the
+    /// shape the previous gate — `role_from_input`, a `tool_input.subagent_type`-
+    /// only reader — silently no-op'd on, making the whole feature inert in
+    /// production while the struct-built test above still passed. Proves
+    /// `capture_review_verdict` fires end to end on the real deserialisation path.
+    #[test]
+    fn capture_review_verdict_fires_on_deserialized_stop_json() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "structured-review-verdict-capture-via";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r-json", spec);
+
+        // The exact stdin shape: top-level `agent_type` + `last_assistant_message`.
+        let stdin = r#"{
+            "hook_event_name": "SubagentStop",
+            "agent_type": "mustard:mustard-review",
+            "agent_id": "rev-json-1",
+            "last_assistant_message": "audit done.\n<VERDICT>{\"verdict\":\"rejected\",\"critical\":1,\"findings\":[{\"severity\":\"critical\",\"location\":\"x.rs:3\",\"summary\":\"guard\"}]}</VERDICT>"
+        }"#;
+        let input: HookInput = serde_json::from_str(stdin).expect("deserialize stop json");
+        // Serde routes `agent_type` into the TYPED field and `flatten` leaves it
+        // OUT of `raw` — exactly why the dispatch-path reader missed it on a stop.
+        assert_eq!(input.agent_type.as_deref(), Some("mustard:mustard-review"));
+        assert!(
+            input.raw.get("agent_type").is_none(),
+            "flatten must not duplicate agent_type into raw"
+        );
+
+        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r-json");
+
+        let results = review_results(dir.path(), spec);
+        assert_eq!(results.len(), 1, "one review.result on the real stop shape: {results:?}");
+        assert_eq!(results[0]["verdict"], json!("rejected"));
+        assert_eq!(results[0]["criticalCount"], json!(1));
         assert_eq!(results[0]["spec"], json!(spec));
     }
 
