@@ -108,18 +108,34 @@ pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     mustard_core::domain::ranking::bm25_x1024(tf, dl, avgdl_x1024, p.k1_x1024, p.b_x1024)
 }
 
+/// How many declaration-occurrences one SITUATING-field match is worth in the
+/// anchor TF. A module that merely IMPLEMENTS a contract (the term lives only in
+/// its supertypes) is weaker evidence than one that DECLARES the term or NAMES it
+/// in its path, so this sits BELOW the default `path_boost` (5). A FIXED constant,
+/// deliberately NOT a `ranking.toml` knob — the scan law forbids gratuitous
+/// config, and (like `path_boost`) the ranking is not sensitive to the exact
+/// value; a small integer >= 1 is plenty.
+const SITUATING_BOOST: usize = 2;
+
 /// BM25F anchor term-contribution ×1024 for ONE matched term in ONE module:
 /// the term's inverse document frequency times the BM25 saturation of its
-/// BOOSTED field term-frequency. The module is a two-field document
-/// (declarations + path/filename); a path/filename match is worth `path_boost`
-/// declaration-occurrences (`ranking.toml [anchors]`). Fielding the path lets a
-/// query that NAMES a path segment lift the files under it, while BM25's length-
-/// normalization keeps a sprawling god/seed file that only mentions many terms
-/// from compounding — the flat Σ-idf field bug. `idf_x1024` is the caller's
-/// `core::domain::ranking::idf_x1024`; the corpus stays owned by `digest`. Pure
+/// BOOSTED field term-frequency. The module is a THREE-field document —
+/// DECLARATIONS + PATH/filename + SITUATING (the contracts it implements, i.e.
+/// its supertypes): a path/filename match is worth `path_boost`
+/// declaration-occurrences (`ranking.toml [anchors]`) and a situating match
+/// `SITUATING_BOOST` (a fixed constant, weaker than either). Fielding the path
+/// lets a query that NAMES a path segment lift the files under it; fielding the
+/// situating lets a query that NAMES a contract lift the modules that IMPLEMENT
+/// it even when the contract name is absent from the declaration names and the
+/// path; and BM25's length-normalization keeps a sprawling god/seed file that
+/// only mentions many terms from compounding — the flat Σ-idf field bug.
+/// `idf_x1024` is the caller's `core::domain::ranking::idf_x1024` (over the
+/// term's document frequency ACROSS the fields, so a ubiquitous base type is
+/// down-weighted by corpus rarity); the corpus stays owned by `digest`. Pure
 /// fixed-point: idf (×1024) · bm25 (×1024) / SCALE → contribution ×1024.
-pub fn bm25f_contribution_x1024(idf_x1024: u64, tf_decl: usize, in_path: bool, dl: usize, avgdl_x1024: u64) -> u64 {
-    let boosted_tf = tf_decl + if in_path { params().path_boost } else { 0 };
+pub fn bm25f_contribution_x1024(idf_x1024: u64, tf_decl: usize, in_path: bool, in_situating: bool, dl: usize, avgdl_x1024: u64) -> u64 {
+    let boosted_tf =
+        tf_decl + if in_path { params().path_boost } else { 0 } + if in_situating { SITUATING_BOOST } else { 0 };
     idf_x1024.saturating_mul(bm25_x1024(boosted_tf, dl, avgdl_x1024)) / SCALE
 }
 
