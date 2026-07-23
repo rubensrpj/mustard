@@ -1061,11 +1061,14 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
 /// already exists: `spec-draft` creates it at PLAN time with an *estimated*
 /// `total_waves` (the Full floor of ≥1, before the real plan is known). The
 /// scaffold is the authoritative source of the real wave count, so it must
-/// reconcile `total_waves` + `isWavePlan` onto whatever the pipeline has
-/// advanced the file to — preserving every lifecycle field
-/// (`stage` / `outcome` / `phase` / `scope` / `lang` / `checkpoint` / `flags` /
-/// `raw`). Skipping it (the old behaviour) left a stale `totalWaves: 1` on
-/// multi-wave epics, mis-rendering the dashboard / `status` wave count.
+/// reconcile `total_waves` + `isWavePlan` — and UPGRADE a non-Full `scope` to
+/// the wave-plan scope (a wave-plan parent is Full by construction) — onto
+/// whatever the pipeline has advanced the file to, preserving every OTHER
+/// lifecycle field (`stage` / `outcome` / `phase` / `lang` / `checkpoint` /
+/// `flags` / `raw`). Skipping the count reconcile (the old behaviour) left a
+/// stale `totalWaves: 1` on multi-wave epics; skipping the scope upgrade left a
+/// `light` parent (drafted before `plan-prepare` bumped it Full) that
+/// `scope_guard`'s Full gate never recognised.
 ///
 /// Frozen by the APPROVAL MARKER ALONE (`approved`), not by the full
 /// [`write_mode`] window: once the user approved, the stored count is the count
@@ -1086,17 +1089,32 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
 fn write_parent_meta(dir: &Path, approved: bool, fresh: Meta) -> bool {
     let path = dir.join("meta.json");
     let meta = match read_meta(&path) {
-        // Reconcile ONLY the structural wave-plan fields; the lifecycle the
-        // pipeline owns (and may have advanced past Plan) is preserved as-is.
+        // Reconcile the structural wave-plan fields; the OTHER lifecycle fields
+        // the pipeline owns (and may have advanced past Plan) are preserved.
         Some(mut existing) => {
+            // A wave-plan parent is Full-scope BY CONSTRUCTION. When the pipeline
+            // left a non-Full scope on it — e.g. `spec-draft` drafted `light`
+            // before `plan-prepare` bumped the unit to Full — upgrade it, else
+            // `scope_guard`'s Full gate (which matches the `full` /
+            // `full (wave plan)` string) never engages on the parent and the
+            // "no code before /approve" hard-gate silently opens. An already-Full
+            // scope is left untouched — no churn, no false drift.
+            let scope_upgrade = existing
+                .scope
+                .as_deref()
+                .map_or(true, |s| !s.starts_with("full"));
             if approved
                 && (existing.total_waves != fresh.total_waves
-                    || existing.is_wave_plan != fresh.is_wave_plan)
+                    || existing.is_wave_plan != fresh.is_wave_plan
+                    || scope_upgrade)
             {
                 return true;
             }
             existing.is_wave_plan = fresh.is_wave_plan;
             existing.total_waves = fresh.total_waves;
+            if scope_upgrade {
+                existing.scope = fresh.scope;
+            }
             existing
         }
         // No draft pre-created it (standalone scaffold / migration) → write the
@@ -1411,6 +1429,55 @@ mod tests {
         assert_eq!(root.phase.as_deref(), Some("EXECUTE"));
         assert_eq!(root.checkpoint.as_deref(), Some("2026-06-03T00:00:00Z"));
         assert!(root.flags.0.blocked, "qualifier flag survives reconciliation");
+    }
+
+    /// Regression (light→full recovery): when `spec-draft` drafted the parent at
+    /// `light` and `plan-prepare` then classified the unit Full, `plan-materialize`
+    /// builds a multi-wave plan onto a `light` parent. The scaffold MUST upgrade
+    /// the parent `scope` to `full (wave plan)` — else `scope_guard`'s Full gate
+    /// (which matches the `full` string) never engages and the "no code before
+    /// /approve" hard-gate silently opens. Other lifecycle fields survive; an
+    /// already-`full` scope is left untouched (covered by the stale-total test).
+    #[test]
+    fn upgrades_light_parent_scope_to_full_wave_plan() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-light-draft");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // A parent `spec-draft` wrote at `light` (unapproved), before
+        // `plan-prepare` bumped the unit to Full and a 2-wave plan was authored.
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":"light","lang":"en-US","isWavePlan":true,"totalWaves":2}"#,
+        )
+        .unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "backend", "summary": "a", "depends_on": [] },
+                    { "n": 2, "role": "backend", "summary": "b", "depends_on": ["wave-1-backend"] }
+                ],
+                "total_waves": 2,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let _ = scaffold(&spec_dir, &plan_path);
+
+        let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+        // The `light` draft is upgraded so `scope_guard`'s Full gate recognises it.
+        assert_eq!(
+            root.scope.as_deref(),
+            Some("full (wave plan)"),
+            "a light-drafted wave-plan parent must be upgraded to Full"
+        );
+        // Other lifecycle fields survive the reconcile.
+        assert_eq!(root.stage.as_deref(), Some("Plan"));
+        assert_eq!(root.is_wave_plan, Some(true));
+        assert_eq!(root.total_waves, Some(2));
     }
 
     /// Regression (Cause 2 — declared total ignored): a plan that DECLARES
