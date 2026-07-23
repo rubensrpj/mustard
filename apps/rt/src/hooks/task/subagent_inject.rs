@@ -293,6 +293,22 @@ fn child_id_from_input(input: &HookInput) -> String {
 /// the lookup in `stop_observer::final_output` so the span-level eval sees
 /// the same body the reinforcement observer does.
 fn final_output_text(input: &HookInput) -> String {
+    // Stop / SubagentStop deliver the returning agent's final text as
+    // `last_assistant_message` (the Claude Code hook contract says to prefer it
+    // over reading the transcript). The `result` / `output` keys below are
+    // PostToolUse-shaped and ABSENT on a Stop event — reading only those left the
+    // whole SubagentStop-capture family (memory / span-eval / verdict) inert in
+    // production (zero `<MEMORY>` decisions, zero `_review-spans.md` ledgers).
+    // Prefer it, then fall back to the inline keys for the PostToolUse path.
+    if let Some(s) = input
+        .raw
+        .get("last_assistant_message")
+        .and_then(|v| v.as_str())
+    {
+        if !s.is_empty() {
+            return s.to_string();
+        }
+    }
     for key in ["result", "final_output", "output", "tool_response", "tool_result"] {
         if let Some(v) = input.raw.get(key) {
             if let Some(s) = v.as_str() {
@@ -883,6 +899,43 @@ mod tests {
             raw: serde_json::json!({ "result": output_text }),
             ..HookInput::default()
         }
+    }
+
+    /// Regression (SubagentStop-capture family was inert in production): a real
+    /// `SubagentStop` delivers the returning agent's final text as
+    /// `last_assistant_message` (Claude Code hook contract), NOT via the
+    /// PostToolUse-shaped `result`/`output` keys. `final_output_text` must read
+    /// it — otherwise the whole capture family (memory / span-eval / verdict)
+    /// silently no-ops on every real subagent return.
+    ///
+    /// NOTE: the `stop_input` helper above still fabricates the OLD
+    /// (`result` + `tool_input.subagent_type`) shape; migrating it — and the
+    /// span-eval / memory tests that use it — to `last_assistant_message` +
+    /// top-level `agent_type` is the test-hygiene follow-up that removes the
+    /// remaining false positives.
+    #[test]
+    fn final_output_text_reads_last_assistant_message() {
+        let real_stop = HookInput {
+            hook_event_name: Some("SubagentStop".to_string()),
+            agent_type: Some("general-purpose".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            raw: serde_json::json!({
+                "agent_id": "agent-1",
+                "last_assistant_message": "did the work <MEMORY>a real decision</MEMORY>"
+            }),
+            ..HookInput::default()
+        };
+        assert_eq!(
+            final_output_text(&real_stop),
+            "did the work <MEMORY>a real decision</MEMORY>",
+            "SubagentStop last_assistant_message must be the output source"
+        );
+        // Backward-compat: the PostToolUse inline shape still resolves via fallback.
+        let post_tool = HookInput {
+            raw: serde_json::json!({ "tool_response": { "text": "inline body" } }),
+            ..HookInput::default()
+        };
+        assert_eq!(final_output_text(&post_tool), "inline body");
     }
 
     /// AC-A-5 + AC-A-7 — three sequential children fire `SubagentStop` and
