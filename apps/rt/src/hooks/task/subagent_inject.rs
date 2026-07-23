@@ -33,6 +33,7 @@ use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
+use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +41,7 @@ use crate::commands::agent::context_inject;
 use crate::commands::review::gate_regression_check::{
     check_after_child_return, GateError, GateInput, RegressionVerdict,
 };
+use crate::commands::review::review_result;
 use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
 
@@ -152,14 +154,42 @@ fn prompt_declares_skill(prompt: &str) -> bool {
         || lower.starts_with("skill:")
 }
 
-/// Pick the role from a Task input. The harness passes `subagent_type`; if
-/// missing, fall back to `description` or `"general-purpose"`.
+/// Pick the role from a **dispatch** Task input — the Pre/PostToolUse(Task)
+/// path, where the harness carries the child's type as `tool_input.subagent_type`.
+/// Falls back to `"general-purpose"`. This is NOT valid on a `SubagentStop`
+/// (there is no `tool_input` there): the returning agent's type arrives at the
+/// top level — use [`role_from_stop_input`] for that.
 fn role_from_input(input: &HookInput) -> String {
     let tool_input = &input.tool_input;
     tool_input
         .get("subagent_type")
         .and_then(|v| v.as_str())
         .map_or_else(|| "general-purpose".to_string(), str::to_string)
+}
+
+/// Pick the returning child's role on a `SubagentStop`. Unlike
+/// [`role_from_input`] (the dispatch-path reader), a stop event carries the
+/// agent type at the TOP LEVEL: real harness JSON deserialises `agent_type`
+/// into the typed [`HookInput::agent_type`] field — serde's `#[serde(flatten)]`
+/// routes that key to the typed field and leaves it OUT of `raw` — so the typed
+/// field is the primary source. Raw `agent_type` / `subagent_type` are
+/// secondary fallbacks for a manually-built input or an alternate harness key.
+/// Mirrors [`HookInput::is_subagent`] / [`child_id_from_input`] in reading
+/// stop-shaped fields, never the dispatch-shaped `tool_input` (which a stop
+/// does not carry — reading it there made the verdict gate a silent no-op on
+/// every real review return).
+fn role_from_stop_input(input: &HookInput) -> String {
+    if let Some(t) = input.agent_type.as_deref().filter(|s| !s.is_empty()) {
+        return t.to_string();
+    }
+    for key in ["agent_type", "subagent_type"] {
+        if let Some(v) = input.raw.get(key).and_then(serde_json::Value::as_str) {
+            if !v.is_empty() {
+                return v.to_string();
+            }
+        }
+    }
+    "general-purpose".to_string()
 }
 
 /// `true` for a read-only dispatch role — one that searches, audits or reviews
@@ -344,6 +374,41 @@ fn extract_memory_block(text: &str) -> Option<String> {
     }
 }
 
+/// A review subagent's machine-readable `<VERDICT>` block — the review twin of
+/// the `<MEMORY>` capture. The reviewer's role contract
+/// (`render::role::build_role_block`, the `"review"` arm, and the plugin
+/// `mustard-review.md`) instructs it to end with
+/// `<VERDICT>{"verdict":"approved"|"rejected","critical":N,"findings":[…]}</VERDICT>`.
+/// Only the two gate-bearing fields are deserialized: [`review_result::record_review`]
+/// consumes `verdict` + `criticalCount` and nothing else, so `findings`
+/// (human/audit-facing) is deliberately dropped — serde skips the unknown field.
+#[derive(Debug, PartialEq, Deserialize)]
+struct ReviewVerdict {
+    verdict: String,
+    critical: i64,
+}
+
+/// Extract and validate the FIRST `<VERDICT>...</VERDICT>` block. Byte-wise scan
+/// (no regex crate in this workspace), mirroring [`extract_memory_block`].
+/// `None` — the hook then falls open — when the tag is absent, empty, its body
+/// is not valid JSON, a required field is missing, or `verdict` is anything
+/// other than `approved`/`rejected`. That whitelist mirrors the manual CLI
+/// path's own check in [`review_result::run`], so the auto and manual paths
+/// accept exactly the same verdict vocabulary.
+fn extract_verdict_block(text: &str) -> Option<ReviewVerdict> {
+    let start = text.find("<VERDICT>")? + "<VERDICT>".len();
+    let end_rel = text[start..].find("</VERDICT>")?;
+    let inner = text[start..start + end_rel].trim();
+    if inner.is_empty() {
+        return None;
+    }
+    let parsed: ReviewVerdict = serde_json::from_str(inner).ok()?;
+    if parsed.verdict != "approved" && parsed.verdict != "rejected" {
+        return None;
+    }
+    Some(parsed)
+}
+
 /// Harvest a `<MEMORY>` block from a returning subagent's final output and
 /// persist it as a `decision` harness event — the durable, queryable home
 /// for cross-wave lessons. Closes the gap the field trace found: the `impl`
@@ -397,12 +462,63 @@ fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookI
         event: "decision".to_string(),
         payload: json!({
             "title": memory,
-            "role": role_from_input(input),
+            "role": role_from_stop_input(input),
             "source": "memory-block",
         }),
         spec: Some(spec),
     };
     let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+}
+
+/// `true` for the review agent's `subagent_type`. Normalises a namespaced
+/// plugin agent type (`mustard:mustard-review`) to its bare name — mirroring
+/// [`role_is_readonly`] — so the qualified form `dispatch-plan` emits and a bare
+/// ad-hoc caller both match. `qa` shares the same agent but never emits a
+/// `<VERDICT>` block, so gating on this type is exact in practice.
+fn role_is_review(role: &str) -> bool {
+    let lower = role.to_ascii_lowercase();
+    let bare = lower.split_once(':').map_or(lower.as_str(), |(_, rest)| rest);
+    bare == "mustard-review"
+}
+
+/// Harvest a review subagent's `<VERDICT>` block from its final output and
+/// record it as a `review.result` event + `review` metric — the review twin of
+/// [`capture_memory_decision`]. It emits through the SAME recorder the manual
+/// `review-result` CLI uses ([`review_result::record_review`]), so the machine
+/// now writes the gate's input verbatim and the orchestrator no longer reads the
+/// reviewer's prose to decide `approved`/`rejected` + the critical count.
+///
+/// Fail-open at every step: a non-review role, an absent/empty/malformed block,
+/// or no resolvable spec all degrade to a silent no-op — the manual CLI path
+/// stays the fallback source of the verdict. Telemetry only, never a blocking
+/// path (called from the `SubagentStop` side effect below, never a `Check`).
+fn capture_review_verdict(project: &Path, cwd: &str, input: &HookInput) {
+    capture_review_verdict_with_session(project, cwd, input, &crate::shared::context::session_id());
+}
+
+/// Session-explicit worker for [`capture_review_verdict`] — takes `session_id`
+/// directly so a test can drive it without mutating `MUSTARD_SESSION_ID`
+/// (`unsafe` under Rust 2024, forbidden in this crate), mirroring the
+/// [`capture_memory_decision_with_session`] split.
+fn capture_review_verdict_with_session(project: &Path, cwd: &str, input: &HookInput, sid: &str) {
+    if !role_is_review(&role_from_stop_input(input)) {
+        return;
+    }
+    let Some(verdict) = extract_verdict_block(&final_output_text(input)) else {
+        return;
+    };
+    // Spec attribution mirrors the memory twin: the session-bound `active-spec`
+    // marker first, then the legacy/env `current_spec`. No spec ⇒ no-op.
+    let spec = crate::shared::context::spec_for_session(cwd, sid)
+        .or_else(|| crate::shared::context::current_spec(cwd));
+    let Some(spec) = spec else {
+        return;
+    };
+    // Reuse the manual recorder: identical `review.result` event + `review`
+    // metric, parsed straight from the block (zero orchestrator interpretation).
+    // The block carries neither a subproject nor a findings *file*, so both are
+    // `None` — its `findings` array is audit-facing and not a gate input.
+    let _ = review_result::record_review(project, &spec, &verdict.verdict, verdict.critical, None, None);
 }
 
 /// Run the W4 span-level gate (Moment 3) for the returning child and append
@@ -489,11 +605,17 @@ impl Check for SubagentInject {
         // (if the child emitted one) into a durable `decision` event — see
         // `capture_memory_decision`. Independent of the span-level eval;
         // either can no-op without affecting the other.
+        //
+        // Verdict capture rides it too: for a review child, harvest a
+        // `<VERDICT>` block into a `review.result` event — see
+        // `capture_review_verdict`. Also independent + fail-open; a non-review
+        // child or an absent/malformed block is a silent no-op.
         if ctx.trigger == Some(Trigger::SubagentStop) {
             let cwd = ctx.project_dir_or_cwd(input);
             let project = PathBuf::from(&cwd);
             let _ = span_level_eval_and_append(&project, input, &cwd);
             capture_memory_decision(&project, &cwd, input);
+            capture_review_verdict(&project, &cwd, input);
             return Ok(Verdict::Allow);
         }
 
@@ -891,12 +1013,25 @@ mod tests {
         (dir, wave_dir)
     }
 
+    /// Build a realistic `SubagentStop` payload — the shape a real stop carries,
+    /// not the dispatch/PostToolUse hybrid this helper used to fabricate. A stop
+    /// delivers the returning agent's TYPE at the top level (`agent_type`, the
+    /// field real harness JSON deserialises into) and its final text as
+    /// `last_assistant_message`. The old shape (`tool_input.subagent_type` +
+    /// `raw.result`) made the role gate and the output reader look at fields a
+    /// stop never has — the false-positive shape that let the broken verdict gate
+    /// pass review. `agent_id` is mirrored into `raw` too so `child_id_from_input`
+    /// (which reads `raw`, not the typed field) still resolves the child id.
     fn stop_input(child: &str, output_text: &str) -> HookInput {
         HookInput {
             tool_name: None,
-            tool_input: serde_json::json!({ "subagent_type": child }),
             hook_event_name: Some("SubagentStop".to_string()),
-            raw: serde_json::json!({ "result": output_text }),
+            agent_type: Some(child.to_string()),
+            agent_id: Some(child.to_string()),
+            raw: serde_json::json!({
+                "agent_id": child,
+                "last_assistant_message": output_text,
+            }),
             ..HookInput::default()
         }
     }
@@ -906,13 +1041,9 @@ mod tests {
     /// `last_assistant_message` (Claude Code hook contract), NOT via the
     /// PostToolUse-shaped `result`/`output` keys. `final_output_text` must read
     /// it — otherwise the whole capture family (memory / span-eval / verdict)
-    /// silently no-ops on every real subagent return.
-    ///
-    /// NOTE: the `stop_input` helper above still fabricates the OLD
-    /// (`result` + `tool_input.subagent_type`) shape; migrating it — and the
-    /// span-eval / memory tests that use it — to `last_assistant_message` +
-    /// top-level `agent_type` is the test-hygiene follow-up that removes the
-    /// remaining false positives.
+    /// silently no-ops on every real subagent return. The shared `stop_input`
+    /// helper above now builds this same real shape, so the memory / span-eval /
+    /// verdict tests exercise the production path rather than a fabricated one.
     #[test]
     fn final_output_text_reads_last_assistant_message() {
         let real_stop = HookInput {
@@ -1197,6 +1328,179 @@ mod tests {
         assert_eq!(titles.len(), 2, "{titles:?}");
         assert!(titles.contains(&"decision from wave 1".to_string()));
         assert!(titles.contains(&"decision from wave 2".to_string()));
+    }
+
+    // --- <VERDICT> capture (SubagentStop → `review.result` event) -----------
+
+    /// Read every `review.result` event's payload for `spec` under `cwd`, in the
+    /// order the NDJSON files sort. Test-only mirror of [`decision_titles`].
+    fn review_results(cwd: &Path, spec: &str) -> Vec<serde_json::Value> {
+        let events_dir = ClaudePaths::for_project(cwd)
+            .and_then(|p| p.for_spec(spec))
+            .unwrap()
+            .events_dir();
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+            .into_iter()
+            .filter(|e| e.event == "review.result")
+            .map(|e| e.payload)
+            .collect()
+    }
+
+    #[test]
+    fn extract_verdict_block_parses_validates_and_rejects_malformed() {
+        // Well-formed approved / rejected → parsed, `findings` ignored.
+        assert_eq!(
+            extract_verdict_block(
+                "prose <VERDICT>{\"verdict\":\"approved\",\"critical\":0,\"findings\":[]}</VERDICT> tail"
+            ),
+            Some(ReviewVerdict { verdict: "approved".to_string(), critical: 0 })
+        );
+        assert_eq!(
+            extract_verdict_block(
+                "<VERDICT>{\"verdict\":\"rejected\",\"critical\":3,\"findings\":[{\"severity\":\"critical\",\"location\":\"a.rs:1\",\"summary\":\"x\"}]}</VERDICT>"
+            ),
+            Some(ReviewVerdict { verdict: "rejected".to_string(), critical: 3 })
+        );
+        // Absent / empty / unterminated / non-JSON / missing field / bad verdict
+        // → None (each a malformed block the hook falls open on).
+        assert_eq!(extract_verdict_block("no tag at all"), None);
+        assert_eq!(extract_verdict_block("<VERDICT>   </VERDICT>"), None, "blank body");
+        assert_eq!(extract_verdict_block("<VERDICT>{\"verdict\":\"approved\",\"critical\":0}"), None, "unterminated");
+        assert_eq!(extract_verdict_block("<VERDICT>{not json}</VERDICT>"), None, "non-JSON");
+        assert_eq!(extract_verdict_block("<VERDICT>{\"verdict\":\"approved\"}</VERDICT>"), None, "missing critical");
+        assert_eq!(
+            extract_verdict_block("<VERDICT>{\"verdict\":\"maybe\",\"critical\":0,\"findings\":[]}</VERDICT>"),
+            None,
+            "verdict outside approved/rejected"
+        );
+    }
+
+    /// AC-1 — a review subagent returns a `<VERDICT>` block; the SubagentStop
+    /// hook parses it and emits ONE `review.result` event whose `verdict` and
+    /// `criticalCount` equal the block's values, with no orchestrator call to
+    /// `review-result`.
+    #[test]
+    fn capture_review_verdict_emits_review_result() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "structured-review-verdict-capture-via";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r1", spec);
+
+        let input = stop_input(
+            "mustard:mustard-review",
+            "pass/fail per claim — tests run with the feature enabled.\n\
+             <VERDICT>{\"verdict\":\"rejected\",\"critical\":2,\"findings\":[\
+             {\"severity\":\"critical\",\"location\":\"a.rs:1\",\"summary\":\"guard broken\"},\
+             {\"severity\":\"critical\",\"location\":\"b.rs:9\",\"summary\":\"mold violated\"}]}</VERDICT>",
+        );
+        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r1");
+
+        let results = review_results(dir.path(), spec);
+        assert_eq!(results.len(), 1, "exactly one review.result: {results:?}");
+        assert_eq!(results[0]["verdict"], json!("rejected"));
+        assert_eq!(results[0]["criticalCount"], json!(2));
+        assert_eq!(results[0]["spec"], json!(spec));
+    }
+
+    /// AC-1 (faithful shape): the SAME capture, but driven from a payload
+    /// DESERIALISED from the exact stdin JSON a real `SubagentStop` delivers —
+    /// `agent_type` at the top level (serde routes it to the TYPED field, not
+    /// `raw`) and the output as `last_assistant_message`. This is precisely the
+    /// shape the previous gate — `role_from_input`, a `tool_input.subagent_type`-
+    /// only reader — silently no-op'd on, making the whole feature inert in
+    /// production while the struct-built test above still passed. Proves
+    /// `capture_review_verdict` fires end to end on the real deserialisation path.
+    #[test]
+    fn capture_review_verdict_fires_on_deserialized_stop_json() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "structured-review-verdict-capture-via";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r-json", spec);
+
+        // The exact stdin shape: top-level `agent_type` + `last_assistant_message`.
+        let stdin = r#"{
+            "hook_event_name": "SubagentStop",
+            "agent_type": "mustard:mustard-review",
+            "agent_id": "rev-json-1",
+            "last_assistant_message": "audit done.\n<VERDICT>{\"verdict\":\"rejected\",\"critical\":1,\"findings\":[{\"severity\":\"critical\",\"location\":\"x.rs:3\",\"summary\":\"guard\"}]}</VERDICT>"
+        }"#;
+        let input: HookInput = serde_json::from_str(stdin).expect("deserialize stop json");
+        // Serde routes `agent_type` into the TYPED field and `flatten` leaves it
+        // OUT of `raw` — exactly why the dispatch-path reader missed it on a stop.
+        assert_eq!(input.agent_type.as_deref(), Some("mustard:mustard-review"));
+        assert!(
+            input.raw.get("agent_type").is_none(),
+            "flatten must not duplicate agent_type into raw"
+        );
+
+        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r-json");
+
+        let results = review_results(dir.path(), spec);
+        assert_eq!(results.len(), 1, "one review.result on the real stop shape: {results:?}");
+        assert_eq!(results[0]["verdict"], json!("rejected"));
+        assert_eq!(results[0]["criticalCount"], json!(1));
+        assert_eq!(results[0]["spec"], json!(spec));
+    }
+
+    /// AC-2 — no `<VERDICT>` block, or a malformed / out-of-vocabulary one, is a
+    /// silent no-op (fail-open): the hook emits nothing and the manual
+    /// `review-result` path stays the source of the verdict.
+    #[test]
+    fn verdict_block_absent_is_noop() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "no-verdict-here";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r2", spec);
+
+        // Absent — prose only, no machine-readable block.
+        capture_review_verdict_with_session(
+            dir.path(), &cwd,
+            &stop_input("mustard:mustard-review", "Looks good overall. Approving this."),
+            "sess-r2",
+        );
+        // Malformed — the tag is present but its body is not valid JSON.
+        capture_review_verdict_with_session(
+            dir.path(), &cwd,
+            &stop_input("mustard:mustard-review", "<VERDICT>{verdict: rejected, critical: 2</VERDICT>"),
+            "sess-r2",
+        );
+        // Out-of-vocabulary — valid JSON, but `verdict` is not approved/rejected.
+        capture_review_verdict_with_session(
+            dir.path(), &cwd,
+            &stop_input("mustard:mustard-review", "<VERDICT>{\"verdict\":\"maybe\",\"critical\":0,\"findings\":[]}</VERDICT>"),
+            "sess-r2",
+        );
+
+        assert!(
+            review_results(dir.path(), spec).is_empty(),
+            "absent/malformed block must emit no review.result"
+        );
+    }
+
+    /// The role gate: a NON-review agent whose output happens to carry a
+    /// `<VERDICT>`-shaped block must NOT emit a `review.result` — verdict
+    /// capture is scoped to the review role only.
+    #[test]
+    fn review_verdict_wrong_role_is_noop() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "wrong-role-spec";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r3", spec);
+
+        let input = stop_input(
+            "general-purpose",
+            "<VERDICT>{\"verdict\":\"approved\",\"critical\":0,\"findings\":[]}</VERDICT>",
+        );
+        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r3");
+
+        assert!(
+            review_results(dir.path(), spec).is_empty(),
+            "non-review role must not emit review.result"
+        );
     }
 
     /// `role_is_readonly` normalises a namespaced plugin agent type to its bare
