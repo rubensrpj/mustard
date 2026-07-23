@@ -27,7 +27,13 @@ use std::path::{Path, PathBuf};
 /// into the re-dispatched implementer's `## RETRY CONTEXT`. Absent ⇒ no findings
 /// file is written (backward-compatible). The `review.result` event and its
 /// payload are unaffected either way.
-fn record_review(
+///
+/// `pub(crate)` so the SubagentStop verdict-capture hook
+/// (`hooks::task::subagent_inject::capture_review_verdict`) records a parsed
+/// `<VERDICT>` block through the SAME path the manual CLI uses — one recorder,
+/// identical event + metric shape whether the verdict came from the machine or
+/// the operator.
+pub(crate) fn record_review(
     cwd: &Path,
     spec: &str,
     verdict: &str,
