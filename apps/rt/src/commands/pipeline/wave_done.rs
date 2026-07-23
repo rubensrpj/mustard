@@ -7,15 +7,16 @@
 //!      and the parent's progress bump). Reused **verbatim** through
 //!      [`emit_pipeline::run`] so the event, its legacy-alias fan-out, and the
 //!      meta sync stay byte-identical to the hand-emitted form.
-//!   2. caching the wave's diff stat into `wave-{N}-{role}/diff.md` for the next
+//!   2. caching the wave's SIGNATURE digest into `wave-{N}-{role}/diff.md` for the next
 //!      round's render. This was a shell redirect (`rtk git diff … > diff.md`)
 //!      in the orchestrator prose — fragile on Windows (CRLF, and the bash gate
 //!      rejects absolute-path redirect targets). Here it is an atomic LF write
 //!      through [`fs::write_atomic`], generated with the same fail-open,
 //!      rtk-aware git helper the rest of the pipeline uses.
 //!
-//! Pure consolidation — same event, same meta sync, same diff content (`git diff
-//! HEAD~1 HEAD --stat`), same path. Only the orchestrator's turn count drops
+//! Pure consolidation of the emit + cache steps — same event, same meta sync,
+//! same path. The cached diff is a deterministic SIGNATURE digest
+//! ([`diff_digest`]) rather than a `--stat` line-count. Only the orchestrator's turn count drops
 //! (commit + `wave-done`, not commit + emit + redirect) and the redirect footgun
 //! disappears. Fail-open: a diff-cache failure never blocks the completion emit
 //! (which already ran first).
@@ -24,7 +25,6 @@ use std::path::Path;
 
 use mustard_core::domain::model::event::EVENT_PIPELINE_WAVE_COMPLETE;
 use mustard_core::io::fs;
-use mustard_core::platform::process::rtk_command;
 use serde_json::json;
 
 use crate::commands::event::emit_pipeline::{self, EmitPipelineOpts};
@@ -57,7 +57,8 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
     );
 }
 
-/// Generate `git diff HEAD~1 HEAD --stat` and write it to the wave's `diff.md`,
+/// Generate the wave's SIGNATURE digest (added/removed declarations per changed
+/// file, via [`super::diff_digest`]) and write it to the wave's `diff.md`,
 /// atomically (LF). Returns the repo-relative path written, or `None` when the
 /// wave directory cannot be resolved or the write fails — fail-open, the diff
 /// cache is render context and never load-bearing.
@@ -66,17 +67,13 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
 /// are unit-testable without mutating the process working directory.
 fn cache_wave_diff(cwd: &Path, spec: &str, wave: u64) -> Option<String> {
     let wave_dir = emit_pipeline::wave_spec_path(cwd, spec, wave)?;
-    // Same content the orchestrator prose produced (`git diff HEAD~1 HEAD
-    // --stat`), via the fail-open rtk-aware helper — no shell redirect, no
-    // CRLF/absolute-path footgun. A failed/absent git degrades to an empty stat.
-    let stat = rtk_command("git", &["diff", "HEAD~1", "HEAD", "--stat"])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-    let body = format!("{}\n", stat.trim_end());
+    // Pilar 3c: a deterministic SIGNATURE digest (added/removed declarations per
+    // changed file) instead of the old `git diff --stat` line-count — higher
+    // signal for the next wave's implementer/reviewer, "never a file dump". Same
+    // fail-open contract: any git error degrades to an empty digest, so `diff.md`
+    // is still written (possibly empty) and never load-bearing.
+    let digest = super::diff_digest::build_signature_diff(cwd, "HEAD~1", "HEAD");
+    let body = format!("{}\n", digest.trim_end());
     let dest = wave_dir.join("diff.md");
     fs::write_atomic(&dest, body.as_bytes()).ok()?;
     Some(

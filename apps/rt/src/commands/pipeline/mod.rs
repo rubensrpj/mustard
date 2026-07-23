@@ -11,4 +11,5 @@ pub mod wave_advance;
 pub mod status;
 pub mod resume_bootstrap;
 pub mod diff_context;
+pub mod diff_digest;
 pub mod wave_done;

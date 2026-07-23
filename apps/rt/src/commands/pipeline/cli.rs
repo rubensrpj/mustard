@@ -35,11 +35,11 @@ pub enum PipelineCmd {
     /// Finalize a completed wave in ONE call (token-economy composite): emit
     /// `pipeline.wave.complete` (the completion event + the wave's
     /// `meta.json`/`spec.md` → Close + the parent progress bump, reusing
-    /// `emit-pipeline` verbatim) AND cache the wave diff
-    /// (`git diff HEAD~1 HEAD --stat` → `wave-{N}-{role}/diff.md`, atomic LF
-    /// write). Folds the two bookkeeping steps the orchestrator did by hand
-    /// after a committed wave; the diff cache replaces a fragile shell redirect
-    /// (no CRLF / absolute-path-redirect footgun).
+    /// `emit-pipeline` verbatim) AND cache the wave diff (a deterministic
+    /// SIGNATURE digest — added/removed declarations per changed file — written
+    /// to `wave-{N}-{role}/diff.md`, atomic LF). Folds the two bookkeeping steps
+    /// the orchestrator did by hand after a committed wave; the diff cache
+    /// replaces a fragile shell redirect (no CRLF / absolute-path-redirect footgun).
     #[command(display_order = 11)]
     WaveDone {
         /// Spec the completed wave belongs to.
