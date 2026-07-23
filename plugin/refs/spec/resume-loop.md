@@ -24,7 +24,9 @@ A spec has two layers — `## PRD` (what & why) + `## Plan` (how). Approving app
 **Wave plan exists:**
 1. `mustard-rt run event-projections --view pipeline-state --spec {spec}` → snapshot (`isWavePlan:true`, `totalWaves`, `currentWave`, `completedWaves`).
 2. Print the full `wave-plan.md` as a fenced block; list each wave-spec path below.
-3. **Advisory size audit:** `mustard-rt run wave-size-check --spec-dir .claude/spec/{spec}`. On `action:"audited"` + `oversizedCount>0`, print one `⚠ Wave {N} ({folder}) — {files} files, {layers} layer(s)` per oversized wave; **does not block**. Silent otherwise.
+3. **Advisory audits (non-blocking).** Two deterministic wave-plan lints; each WARNS, neither blocks:
+   - **Size:** `mustard-rt run wave-size-check --spec-dir .claude/spec/{spec}`. On `action:"audited"` + `oversizedCount>0`, print one `⚠ Wave {N} ({folder}) — {files} files, {layers} layer(s)` per oversized wave. Silent otherwise.
+   - **Overlap:** `mustard-rt run wave-overlap-check --spec-dir .claude/spec/{spec}`. On `action:"audited"` + `overlapCount>0`, print one `⚠ Waves {a}+{b} (level {level}) both edit: {files}` per overlap — dispatch-parallel waves declaring the same file. Silent otherwise.
 4. **[you]** Present for approval. **Plan mode is PRIMARY**: plan-file body = the full `wave-plan.md` + wave-spec paths; the user accepting `ExitPlanMode` mints `<spec>/.approved-by-user` (you cannot author it) and means *approve + implement now* (`implementNow=true`; chat "only approve" ⇒ `false`). Rejection keeps plan mode on — adjust and re-present.
    **Fallback (plan mode unavailable):** `AskUserQuestion` — ONE question, primary first. **Attach `wave-plan.md` as the `preview`** of the approval option (never ask approval for a plan the user cannot see); the answer mints the same marker. A letter-mode `r` pre-answers only the EXECUTE continuation (*implement now* vs *approve only*), never the approval itself — the user still answers this question, and that answer mints `<spec>/.approved-by-user` (a picker letter cannot):
    - **Approve and implement now — wave 1** (recommended) → `implementNow=true`.
