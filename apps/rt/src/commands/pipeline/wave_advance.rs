@@ -34,17 +34,21 @@
 //! not terminate at `[]` yet: it emits one `role: review` item (subagent
 //! `mustard:mustard-review`) per **distinct subproject touched by the plan's waves**,
 //! in alphabetical order, each with its prompt rendered inline (role `review`,
-//! root `spec.md` — wave-less, so `wave: 0`). The "already reviewed" signal is
-//! a `review.result` event of the spec whose payload names that subproject
-//! (recorded by `mustard-rt run review-result --subproject <sub>`); an
-//! absent/null payload `subproject` counts as `"."` — a whole-project review.
+//! root `spec.md` — wave-less, so `wave: 0`). The "cleared" signal is an
+//! **`approved`** `review.result` event of the spec whose payload names that
+//! subproject (recorded by `mustard-rt run review-result --subproject <sub>`);
+//! an absent/null payload `subproject` counts as `"."` — a whole-project review.
+//! A `rejected` verdict does NOT clear the subproject — the round re-emits it
+//! until an approving review lands (see [`approved_subprojects`]), the
+//! deterministic backstop that keeps a rejected review from satisfying the
+//! terminal `[]` on the orchestrator's §B fix-loop discipline alone.
 //!
 //! Re-invocation semantics mirror the impl waves: calling `wave-advance` again
 //! after dispatching the review round but BEFORE the verdicts are recorded
 //! returns the same pending review items — the caller owns not
-//! double-dispatching within a session. Each recorded `review.result` removes
-//! its subproject from the round; once every touched subproject carries one,
-//! the advance returns `[]` (terminal).
+//! double-dispatching within a session. A subproject whose LATEST
+//! `review.result` is `approved` drops from the round; once every touched
+//! subproject carries an approving verdict, the advance returns `[]` (terminal).
 //!
 //! ## Output
 //!
@@ -215,7 +219,7 @@ fn started_waves(events: &[HarnessEvent], spec: &str) -> BTreeSet<u32> {
 /// Read the spec's per-spec NDJSON event log. Fail-open: a missing/unreadable
 /// events dir yields the empty vec (every wave pending, nothing reviewed —
 /// the conservative read). Single resolution shared by [`completed_waves`]
-/// and [`reviewed_subprojects`].
+/// and [`approved_subprojects`].
 fn spec_events(project: &Path, spec: &str) -> Vec<HarnessEvent> {
     let events_dir = ClaudePaths::for_project(project)
         .and_then(|p| p.for_spec(spec))
@@ -247,22 +251,46 @@ fn completed_waves(events: &[HarnessEvent], spec: &str) -> BTreeSet<u32> {
         .collect()
 }
 
-/// Subprojects already covered by a `review.result` event of `spec`. The
-/// payload's `subproject` field is the key; an absent/null/empty subproject
-/// counts as `"."` (a whole-project review covers the root-level round item).
-fn reviewed_subprojects(events: &[HarnessEvent], spec: &str) -> BTreeSet<String> {
-    events
+/// Subprojects whose MOST RECENT `review.result` verdict is `approved`. The
+/// payload's `subproject` field is the key (absent/null/empty → `"."`, a
+/// whole-project review); when a subproject accrues several review results the
+/// latest by `ts` wins. A subproject whose latest review is `rejected` is
+/// deliberately EXCLUDED, so [`review_round`] keeps re-emitting it until an
+/// approving review lands — the deterministic backstop that stops a rejected
+/// verdict from satisfying the terminal `[]` (previously only the orchestrator's
+/// §B fix-loop discipline held that line). A hook-captured `<VERDICT>` records
+/// `subproject = None` → the `"."` group, which only ever clears a `"."`
+/// (whole-project) round item; per-subproject rounds key on the
+/// `review-result --subproject` records the orchestrator writes.
+fn approved_subprojects(events: &[HarnessEvent], spec: &str) -> BTreeSet<String> {
+    let mut ordered: Vec<&HarnessEvent> = events
         .iter()
         .filter(|e| e.event == "review.result" && e.spec.as_deref() == Some(spec))
-        .map(|e| {
-            e.payload
-                .get("subproject")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(".")
-                .to_string()
-        })
+        .collect();
+    ordered.sort_by(|a, b| a.ts.cmp(&b.ts));
+    // Latest verdict per subproject — a later `ts` overwrites the earlier one.
+    let mut latest: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for e in ordered {
+        let sub = e
+            .payload
+            .get("subproject")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(".")
+            .to_string();
+        let verdict = e
+            .payload
+            .get("verdict")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        latest.insert(sub, verdict);
+    }
+    latest
+        .into_iter()
+        .filter(|(_, v)| v == "approved")
+        .map(|(k, _)| k)
         .collect()
 }
 
@@ -282,7 +310,7 @@ fn review_round(
     plan: &[dispatch_plan::DispatchItem],
     events: &[HarnessEvent],
 ) -> Vec<AdvanceItem> {
-    let reviewed = reviewed_subprojects(events, spec);
+    let approved = approved_subprojects(events, spec);
     // The git-boundary fact per subproject was already computed for the plan's
     // impl items; reuse it for the review items of the same subprojects instead
     // of re-probing (a review subproject is always one the plan touched).
@@ -291,7 +319,7 @@ fn review_round(
     let touched: BTreeSet<String> = plan.iter().map(|it| it.subproject.clone()).collect();
     touched
         .into_iter()
-        .filter(|sub| !reviewed.contains(sub))
+        .filter(|sub| !approved.contains(sub))
         .map(|sub| {
             let prompt = agent_prompt_render::render_prompt_ref_at(
                 project,
@@ -494,8 +522,14 @@ mod tests {
     }
 
     /// Emit a `review.result` for `spec` into the spec's events log, optionally
-    /// naming a subproject (mirrors `review-result --subproject`).
-    fn record_review(project: &Path, spec: &str, subproject: Option<&str>, ts_suffix: u32) {
+    /// naming a subproject (mirrors `review-result --subproject --verdict`).
+    fn record_review(
+        project: &Path,
+        spec: &str,
+        subproject: Option<&str>,
+        verdict: &str,
+        ts_suffix: u32,
+    ) {
         use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
@@ -510,7 +544,7 @@ mod tests {
             event: "review.result".to_string(),
             payload: json!({
                 "spec": spec,
-                "verdict": "approved",
+                "verdict": verdict,
                 "criticalCount": 0,
                 "subproject": subproject,
             }),
@@ -549,10 +583,38 @@ mod tests {
         assert_eq!(items.len(), 1, "review round expected after all impl waves");
         assert_eq!(items[0].role, "review");
 
-        // A recorded review.result (no subproject → covers ".") drains it.
-        record_review(project, "adv2", None, 1);
+        // An APPROVED review.result (no subproject → covers ".") drains it.
+        record_review(project, "adv2", None, "approved", 1);
         let items = advance(project, "adv2");
         assert!(items.is_empty(), "reviewed spec returns the empty list");
+    }
+
+    /// Pilar 1b — the round is verdict-aware: a `rejected` review does NOT drain
+    /// the round (a rejected verdict can no longer satisfy the terminal `[]`);
+    /// the review item is re-emitted until an `approved` verdict lands.
+    #[test]
+    fn rejected_review_keeps_round_open_until_approved() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves(project, "adv3");
+        complete_wave(project, "adv3", 1);
+        complete_wave(project, "adv3", 2);
+        complete_wave(project, "adv3", 3);
+        assert_eq!(advance(project, "adv3").len(), 1, "review round expected");
+
+        // A REJECTED review must NOT clear the subproject — the round stays open.
+        record_review(project, "adv3", None, "rejected", 1);
+        let items = advance(project, "adv3");
+        assert_eq!(items.len(), 1, "rejected review must NOT drain the round");
+        assert_eq!(items[0].role, "review");
+
+        // A later APPROVED review clears it (latest verdict per subproject wins).
+        record_review(project, "adv3", None, "approved", 5);
+        assert!(
+            advance(project, "adv3").is_empty(),
+            "an approving review after a rejection drains the round"
+        );
     }
 
     /// Count `pipeline.wave.start` events for `spec` in its NDJSON log.
@@ -723,7 +785,7 @@ mod tests {
         }
 
         // Partial coverage: apps/rt reviewed → only the other two remain.
-        record_review(project, "rev2", Some("apps/rt"), 1);
+        record_review(project, "rev2", Some("apps/rt"), "approved", 1);
         let items = advance(project, "rev2");
         let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
         assert_eq!(subs, vec!["apps/cli", "packages/core"]);
@@ -734,8 +796,8 @@ mod tests {
         assert_eq!(subs_again, subs, "pending review items must be stable");
 
         // Full coverage → terminal empty array.
-        record_review(project, "rev2", Some("apps/cli"), 2);
-        record_review(project, "rev2", Some("packages/core"), 3);
+        record_review(project, "rev2", Some("apps/cli"), "approved", 2);
+        record_review(project, "rev2", Some("packages/core"), "approved", 3);
         assert!(advance(project, "rev2").is_empty());
     }
 
@@ -761,7 +823,7 @@ mod tests {
         assert_eq!(items[0].subagent_type, "mustard:mustard-review");
         assert_eq!(items[0].subproject, "apps/rt");
 
-        record_review(project, "rev3", Some("apps/rt"), 1);
+        record_review(project, "rev3", Some("apps/rt"), "approved", 1);
         assert!(advance(project, "rev3").is_empty());
     }
 
