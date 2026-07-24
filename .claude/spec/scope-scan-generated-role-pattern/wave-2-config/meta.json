@@ -1,0 +1,46 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "scope-scan-generated-role-pattern",
+  "checklist": [
+    {
+      "label": "plugin/commands/knowledge.md",
+      "path": "plugin/commands/knowledge.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/maint.md",
+      "path": "plugin/commands/maint.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/skills.md",
+      "path": "plugin/commands/skills.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/stats.md",
+      "path": "plugin/commands/stats.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/status.md",
+      "path": "plugin/commands/status.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/upsert.md",
+      "path": "plugin/commands/upsert.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/review.md",
+      "path": "plugin/commands/review.md",
+      "done": false
+    }
+  ]
+}

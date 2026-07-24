@@ -237,4 +237,25 @@ mod tests {
             "a canonical mold must pass"
         );
     }
+
+    /// A mold whose authored body carries `paths:` must reach disk with the key
+    /// and its glob intact. The command writes the agent's block verbatim, so
+    /// this is a regression guard rather than new behaviour — but the scoping
+    /// key is the whole reason the mold is scoped, and a normalisation added
+    /// later that dropped an unknown key would silently unscope every mold.
+    #[test]
+    fn run_preserves_the_paths_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
+        run(
+            &path,
+            "---\nname: api-service-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - apps/api/services/**\nsource: scan\n---\n\n## Purpose\nbody",
+        );
+        let written = std::fs::read_to_string(&path).expect("mold written");
+        assert!(written.contains("paths:"), "the scoping key must survive: {written}");
+        assert!(
+            written.contains("apps/api/services/**"),
+            "the glob itself must survive: {written}"
+        );
+    }
 }

@@ -8,14 +8,14 @@
 
 | ID | Status | Exit | Duration | Detail |
 |----|--------|------|----------|--------|
-| AC-1 | PASS | 0 | 6.9s |  |
-| AC-2 | PASS | 0 | 1.0s |  |
-| AC-3 | PASS | 0 | 1.0s |  |
-| AC-4 | PASS | 0 | 0.8s |  |
-| AC-5 | PASS | 0 | 184.2s |  |
-| AC-6 | PASS | 0 | 13.4s |  |
-| AC-7 | PASS | 0 | 1.2s |  |
-| AC-8 | PASS | 0 | 1.7s |  |
-| AC-9 | PASS | 0 | 2.4s |  |
-| AC-10 | PASS | 0 | 0.8s |  |
+| AC-1 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-2 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-3 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-4 | PASS | 0 | 0.1s |  |
+| AC-5 | PASS | 0 | 44.9s |  |
+| AC-6 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-7 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-8 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-9 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-10 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 

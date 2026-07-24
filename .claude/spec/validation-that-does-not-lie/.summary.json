@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "validation-that-does-not-lie",
+  "title": "The Files validation answers about a project it is not looking at",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "review",
+      "summary": "The Files check looks at the right project, sees framework route paths, and stops calling prose a missing file",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "doctor",
+      "summary": "The uncurated-scaffold census reaches a health report and a dispatched agent stops receiving a placeholder as its rules",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

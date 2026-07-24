@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "scope-scan-generated-role-pattern",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/scan_patterns/list.rs",
+      "path": "apps/rt/src/commands/scan_patterns/list.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/agent/render/role.rs",
+      "path": "apps/rt/src/commands/agent/render/role.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/scan_patterns/apply.rs",
+      "path": "apps/rt/src/commands/scan_patterns/apply.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/domain/skill/frontmatter.rs",
+      "path": "packages/core/src/domain/skill/frontmatter.rs",
+      "done": true
+    }
+  ]
+}
