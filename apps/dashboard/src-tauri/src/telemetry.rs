@@ -1597,6 +1597,16 @@ pub enum EconomyScopeDto {
     Spec { project: String, spec: String },
     Wave { project: String, spec: String, wave: String },
     AllProjects { projects: Vec<String> },
+    /// A time window composed onto an inner selector — the JS-side mirror of
+    /// `EconomyScope::Windowed`. The window restricts which events are folded
+    /// (by timestamp); `inner` keeps deciding which project/spec/wave slice
+    /// they belong to. Composition, not replacement — `inner` may be any other
+    /// variant, including `AllProjects`. Deserialized from
+    /// `{ kind: "windowed", window: { from, to }, inner: { … } }`.
+    Windowed {
+        window: mustard_core::domain::economy::TimeWindow,
+        inner: Box<EconomyScopeDto>,
+    },
 }
 
 // ── Tauri-command surface ────────────────────────────────────────────────────
@@ -1655,6 +1665,15 @@ impl EconomyScopeDto {
                 let cores: Vec<CoreProjectPath> =
                     projects.iter().map(CoreProjectPath::new).collect();
                 (root, CoreScope::AllProjects(cores))
+            }
+            EconomyScopeDto::Windowed { window, inner } => {
+                // Compose the window onto the inner selector, mirroring the core
+                // `EconomyScope::Windowed` wrapper. The root comes from `inner`
+                // (a window never relocates the project); each reader peels the
+                // window back off via `into_parts()`, so the project/spec/wave
+                // selection is preserved and only the event timestamps narrow.
+                let (root, core_inner) = inner.to_core();
+                (root, core_inner.with_window(window.clone()))
             }
         }
     }
@@ -2047,6 +2066,41 @@ fn parse_ndjson_file(path: &Path) -> Vec<Value> {
     out
 }
 
+/// Epoch-ms of a raw NDJSON `Value`, mirroring
+/// `mustard_core::domain::economy::reader::event_ts_ms`: the top-level `ts_ms`
+/// integer first, then `payload.ts_bucket` / `payload.updated_at`, then the
+/// top-level ISO `ts` string (a `0` from the ISO parse is treated as "no
+/// timestamp", matching the core sentinel guard). `None` when none resolve.
+fn value_ts_ms(record: &Value) -> Option<i64> {
+    if let Some(v) = record.get("ts_ms").and_then(Value::as_i64) {
+        return Some(v);
+    }
+    if let Some(v) = record
+        .get("payload")
+        .and_then(|p| p.get("ts_bucket").or_else(|| p.get("updated_at")))
+        .and_then(Value::as_i64)
+    {
+        return Some(v);
+    }
+    record
+        .get("ts")
+        .and_then(Value::as_str)
+        .and_then(iso_to_ms)
+        .filter(|ms| *ms != 0)
+}
+
+/// Whether a raw event falls inside the inclusive `[from_ms, to_ms]` window,
+/// mirroring the core `event_in_window`. Fail-open on both axes: an event with
+/// no parseable timestamp is KEPT (a window never drops an event it cannot
+/// place), and an absent bound imposes no constraint on that side — so a fully
+/// unbounded window `(None, None)` keeps every event, exactly as before.
+fn value_in_window(record: &Value, from_ms: Option<i64>, to_ms: Option<i64>) -> bool {
+    let Some(ts) = value_ts_ms(record) else {
+        return true;
+    };
+    from_ms.is_none_or(|f| ts >= f) && to_ms.is_none_or(|t| ts <= t)
+}
+
 /// `dashboard_prompt_economy` — aggregates three independently-measured blocks
 /// from the NDJSON event channels:
 ///
@@ -2062,7 +2116,13 @@ fn parse_ndjson_file(path: &Path) -> Vec<Value> {
 #[tauri::command]
 #[must_use]
 pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
-    let (root, _core_scope) = scope.to_core();
+    use mustard_core::domain::economy::TimeWindow;
+    let (root, core_scope) = scope.to_core();
+    // Peel any composed time window so this hand-rolled fold honours the period
+    // exactly like the core readers do (which apply it via `into_parts()`). An
+    // unwindowed scope yields `(None, None)` bounds — no behaviour change.
+    let (window, _selector) = core_scope.into_parts();
+    let (from_ms, to_ms) = window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
     let events = walk_ndjson_events_cached(&root);
 
     // ── cost block ──
@@ -2074,6 +2134,9 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
         std::collections::HashSet::new();
     let mut active_seconds = 0.0f64;
     for ev in events.iter() {
+        if !value_in_window(ev, from_ms, to_ms) {
+            continue;
+        }
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if ev_name != "pipeline.telemetry.metric" {
             continue;
@@ -2114,6 +2177,9 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
     let mut subtractions_by_wave: HashMap<String, (i64, i64)> = HashMap::new();
     let mut last_subtraction_ts: Option<String> = None;
     for ev in events.iter() {
+        if !value_in_window(ev, from_ms, to_ms) {
+            continue;
+        }
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if !ev_name.starts_with("pipeline.economy.savings.") {
             continue;
@@ -4926,5 +4992,64 @@ mod tests {
             std::sync::Arc::ptr_eq(&first, &second),
             "a non-ndjson write must not invalidate the snapshot"
         );
+    }
+
+    // ── Economy time-window plumbing (Onda 2 — dashboard layer) ──────────────
+
+    #[test]
+    fn economy_windowed_dto_to_core_composes_window() {
+        use mustard_core::domain::economy::{EconomyScope, ProjectPath, TimeWindow};
+        // A windowed DTO wraps a base Project selector.
+        let window = TimeWindow::new(
+            Some("2026-05-05T00:00:00.000Z".to_string()),
+            Some("2026-05-15T00:00:00.000Z".to_string()),
+        );
+        let dto = EconomyScopeDto::Windowed {
+            window: window.clone(),
+            inner: Box::new(EconomyScopeDto::Project {
+                project: "/repo".to_string(),
+            }),
+        };
+        let (root, core_scope) = dto.to_core();
+        // The window never relocates the project root — it comes from `inner`.
+        assert_eq!(root, PathBuf::from("/repo"));
+        // to_core composes (never replaces): peeling yields the window back plus
+        // the untouched inner selector, so every windowed reader filters by the
+        // period while still deciding the project/spec/wave slice.
+        let (got_window, inner) = core_scope.into_parts();
+        assert_eq!(got_window, Some(window));
+        assert_eq!(inner, EconomyScope::Project(ProjectPath::new("/repo")));
+    }
+
+    #[test]
+    fn dashboard_prompt_economy_filters_by_period() {
+        use mustard_core::domain::economy::TimeWindow;
+        let tmp = TempDir::new().unwrap();
+        // Two MEASURED cost metrics: one inside the window, one after it.
+        let lines = concat!(
+            r#"{"event":"pipeline.telemetry.metric","kind":"pipeline","ts":"2026-05-10T00:00:00.000Z","spec":"alpha","payload":{"metric":"claude_code.cost.usage","sum":1.0,"session_id":"s-in","model":"m"}}"#, "\n",
+            r#"{"event":"pipeline.telemetry.metric","kind":"pipeline","ts":"2026-05-20T00:00:00.000Z","spec":"alpha","payload":{"metric":"claude_code.cost.usage","sum":9.0,"session_id":"s-out","model":"m"}}"#, "\n",
+        );
+        write_event(tmp.path(), "alpha", "metrics.ndjson", lines);
+        let project = tmp.path().to_string_lossy().into_owned();
+
+        // Unwindowed: both events fold in → $10 total across two sessions.
+        let all = dashboard_prompt_economy(EconomyScopeDto::Project {
+            project: project.clone(),
+        });
+        assert_eq!(all["cost"]["usd_total"].as_f64(), Some(10.0));
+        assert_eq!(all["claude_events"]["session_count"].as_i64(), Some(2));
+
+        // Windowed [2026-05-05, 2026-05-15]: only the in-window $1 event survives.
+        let window = TimeWindow::new(
+            Some("2026-05-05T00:00:00.000Z".to_string()),
+            Some("2026-05-15T00:00:00.000Z".to_string()),
+        );
+        let scoped = dashboard_prompt_economy(EconomyScopeDto::Windowed {
+            window,
+            inner: Box::new(EconomyScopeDto::Project { project }),
+        });
+        assert_eq!(scoped["cost"]["usd_total"].as_f64(), Some(1.0));
+        assert_eq!(scoped["claude_events"]["session_count"].as_i64(), Some(1));
     }
 }
