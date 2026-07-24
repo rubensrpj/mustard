@@ -8,7 +8,9 @@
 //!
 //! - **wiring** — every `mustard-rt on <event>` / `run <cmd>` command string
 //!   referenced in `.claude/settings.json` resolves to a known event or
-//!   registered run subcommand. FAIL on unresolved references.
+//!   registered run subcommand. FAIL on unresolved references. Both known-sets
+//!   are *derived*, never declared: events from the shipped
+//!   `plugin/hooks/hooks.json` manifest, subcommands from the live clap tree.
 //! - **residue** (`--residue` only) — scan `settings.json`, SKILL.md files,
 //!   and refs for mentions of paths/commands that no longer exist (dead `.js`
 //!   names, `scripts/` entries with no resolvable target). WARN per hit.
@@ -91,17 +93,32 @@ impl CheckResult {
 // Known valid events and run subcommands
 // ---------------------------------------------------------------------------
 
-/// All hook event names `mustard-rt on <event>` recognizes.
-const KNOWN_EVENTS: &[&str] = &[
-    "PreToolUse",
-    "PostToolUse",
-    "SessionStart",
-    "PreCompact",
-    "SessionEnd",
-    "SubagentStart",
-    "SubagentStop",
-    "UserPromptSubmit",
-];
+/// The shipped hook manifest (`plugin/hooks/hooks.json`), embedded at build
+/// time. That file is the only thing that decides which `<event>` names the
+/// harness ever hands to `mustard-rt on`; embedding it makes the doctor read
+/// the same artefact the harness reads, the way `known_run_subcommands` below
+/// reads the same clap tree the binary dispatches on. A hand-kept copy drifted
+/// in both directions (it carried `PreCompact`, which nothing registers, and
+/// omitted `Stop` and `WorktreeCreate`, which are registered).
+const SHIPPED_HOOKS_MANIFEST: &str = include_str!("../../../../../plugin/hooks/hooks.json");
+
+/// All hook event names `mustard-rt on <event>` recognizes — the keys of the
+/// shipped manifest's `hooks` object.
+///
+/// Degrades to an empty set when the manifest cannot be parsed. An empty set
+/// means "cannot judge", and [`validate_command_string`] treats it that way:
+/// it reports nothing rather than declaring every wired event unknown.
+#[must_use]
+pub fn known_hook_events() -> std::collections::BTreeSet<String> {
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(SHIPPED_HOOKS_MANIFEST) else {
+        return std::collections::BTreeSet::new();
+    };
+    manifest
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+        .map(|hooks| hooks.keys().cloned().collect())
+        .unwrap_or_default()
+}
 
 /// All `mustard-rt run <subcommand>` names recognized by the binary — derived
 /// from the live clap tree, so the set can never drift from `RunCmd` again.
@@ -187,7 +204,10 @@ fn validate_command_string(cmd: &str, broken: &mut Vec<String>) {
     match parts[1] {
         "on" => {
             let event = parts[2];
-            if !KNOWN_EVENTS.contains(&event) {
+            let known = known_hook_events();
+            // An empty set means the shipped manifest did not parse — the check
+            // cannot judge, so it stays silent instead of flagging every event.
+            if !known.is_empty() && !known.contains(event) {
                 broken.push(format!("unknown hook event: '{event}' in command '{cmd}'"));
             }
         }

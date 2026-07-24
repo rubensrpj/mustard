@@ -1,9 +1,21 @@
 //! `mustard-rt run unhook` — kill-switch for the harness.
 //!
-//! Disables the Claude Code hook layer by renaming `.claude/settings.json` to
-//! `settings.json.disabled-<timestamp>` and wiping volatile harness state
+//! Disables the Claude Code hook layer by writing `"disableAllHooks": true`
+//! into `.claude/settings.json` and wiping volatile harness state
 //! (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). Restore with
 //! `mustard-rt run rehook`.
+//!
+//! ## Why a surgical write and not a rename
+//!
+//! Mustard's hooks ship in `plugin/hooks/hooks.json`; `settings.json` carries
+//! no `hooks` block at all. Renaming the file therefore left every hook firing
+//! while removing what the file *does* carry — the `permissions.deny` safety
+//! net (recursive deletes, force pushes, hard resets, key/credential reads),
+//! `permissions.allow`, `statusLine` and the telemetry `env` block. Asking to
+//! stop being observed must not silently drop the safety net. `disableAllHooks`
+//! is the single lever the platform exposes that also reaches plugin hooks, so
+//! setting it is both the switch that actually works and the one that keeps the
+//! rest of the file intact.
 //!
 //! Scope selection:
 //!
@@ -16,11 +28,16 @@
 //!
 //! Fail-open: a missing `settings.json` lands in the report as
 //! `state: "missing"` instead of erroring; per-entry IO failures are captured
-//! in `state: "error"` so the rest of the sweep still completes.
+//! in `state: "error"` so the rest of the sweep still completes. A
+//! `settings.json` that cannot be read or parsed is reported as `error` and
+//! left byte-for-byte untouched — a blind overwrite would destroy the very
+//! safety net this command now exists to preserve.
 
+use mustard_core::io::fs as mfs;
 use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -42,8 +59,12 @@ pub struct UnhookOpts {
 pub(crate) struct DisabledEntry {
     /// The settings.json path we targeted.
     pub settings_path: String,
-    /// The disabled path (`Some` only when state == "disabled").
+    /// Where the settings file was moved to. Always `None` since the switch
+    /// stopped renaming: the file stays where it is. Kept so the report shape
+    /// does not change under consumers that already read it.
     pub moved_to: Option<String>,
+    /// `true` once `"disableAllHooks": true` is persisted in `settings_path`.
+    pub hooks_disabled: bool,
     /// `disabled` | `missing` | `skipped` | `error`.
     pub state: String,
     /// Volatile state paths we wiped (recursive contents, then the dir/file).
@@ -148,11 +169,60 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// settings.json surgery (shared with `rehook`)
+// ---------------------------------------------------------------------------
+
+/// The one settings key that silences plugin hooks as well as the ones declared
+/// in `settings.json` itself. Mustard registers its hooks through
+/// `plugin/hooks/hooks.json`, and the platform exposes no way to disable a
+/// single plugin's hooks — this flag is the whole kill-switch.
+pub(crate) const DISABLE_ALL_HOOKS_KEY: &str = "disableAllHooks";
+
+/// Read `settings.json` as its top-level JSON object.
+///
+/// `Err` carries a human-readable reason destined for the report's `error`
+/// field. Callers must not write anything back on `Err`: the file holds the
+/// developer's `permissions.deny` rules, so a file we could not understand is
+/// left exactly as found.
+pub(crate) fn read_settings_object(
+    settings: &Path,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let raw = mfs::read_to_string(settings).map_err(|e| format!("read failed: {e}"))?;
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => Err("settings.json is not a JSON object".to_string()),
+        Err(e) => Err(format!("parse failed: {e}")),
+    }
+}
+
+/// Write `obj` back over `settings.json` as pretty JSON with a trailing
+/// newline, through the atomic seam (temp file + rename) so an interrupted
+/// write cannot leave the developer with a truncated settings file.
+pub(crate) fn write_settings_object(
+    settings: &Path,
+    obj: serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let mut serialized = serde_json::to_string_pretty(&Value::Object(obj))
+        .map_err(|e| format!("serialize failed: {e}"))?;
+    serialized.push('\n');
+    mfs::write_atomic(settings, serialized.as_bytes()).map_err(|e| format!("write failed: {e}"))
+}
+
+/// Set `disableAllHooks: true` in `settings`, preserving every other key —
+/// `permissions.allow`, `permissions.deny`, `statusLine` and the `env` block
+/// all survive verbatim.
+fn set_disable_all_hooks(settings: &Path) -> Result<(), String> {
+    let mut obj = read_settings_object(settings)?;
+    obj.insert(DISABLE_ALL_HOOKS_KEY.to_string(), Value::Bool(true));
+    write_settings_object(settings, obj)
+}
+
+// ---------------------------------------------------------------------------
 // Per-directory disable
 // ---------------------------------------------------------------------------
 
-/// Disable one `.claude/` directory's settings + wipe its volatile state.
-fn disable_one(claude_dir: &Path, kind: ScopeKind, timestamp_tag: &str) -> DisabledEntry {
+/// Disable one `.claude/` directory's hooks + wipe its volatile state.
+fn disable_one(claude_dir: &Path, kind: ScopeKind) -> DisabledEntry {
     let settings = claude_dir.join("settings.json");
     let settings_path = settings.display().to_string();
 
@@ -160,6 +230,7 @@ fn disable_one(claude_dir: &Path, kind: ScopeKind, timestamp_tag: &str) -> Disab
         return DisabledEntry {
             settings_path,
             moved_to: None,
+            hooks_disabled: false,
             state: "skipped".into(),
             cleared: Vec::new(),
             error: Some("user-global target requires --confirm".into()),
@@ -172,27 +243,29 @@ fn disable_one(claude_dir: &Path, kind: ScopeKind, timestamp_tag: &str) -> Disab
         return DisabledEntry {
             settings_path,
             moved_to: None,
+            hooks_disabled: false,
             state: "missing".into(),
             cleared,
             error: None,
         };
     }
 
-    let disabled = claude_dir.join(format!("settings.json.disabled-{timestamp_tag}"));
-    if let Err(e) = std::fs::rename(&settings, &disabled) {
+    if let Err(e) = set_disable_all_hooks(&settings) {
         return DisabledEntry {
             settings_path,
             moved_to: None,
+            hooks_disabled: false,
             state: "error".into(),
             cleared: Vec::new(),
-            error: Some(format!("rename failed: {e}")),
+            error: Some(e),
         };
     }
 
     let cleared = wipe_volatile_state(claude_dir);
     DisabledEntry {
         settings_path,
-        moved_to: Some(disabled.display().to_string()),
+        moved_to: None,
+        hooks_disabled: true,
         state: "disabled".into(),
         cleared,
         error: None,
@@ -223,13 +296,6 @@ fn wipe_volatile_state(claude_dir: &Path) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Timestamp helper
-// ---------------------------------------------------------------------------
-
-/// Filename-safe variant of [`now_iso8601`] — `:` is illegal on NTFS, so
-/// `2026-05-24T12:34:56.789Z` becomes `2026-05-24T12-34-56`.
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -245,12 +311,11 @@ pub fn run(opts: UnhookOpts) {
         std::process::exit(1);
     }
 
-    let timestamp_tag = mustard_core::time::filename_safe_now();
     let dirs = collect_claude_dirs(&repo, scope, opts.confirm);
 
     let entries: Vec<DisabledEntry> = dirs
         .iter()
-        .map(|(dir, kind)| disable_one(dir, *kind, &timestamp_tag))
+        .map(|(dir, kind)| disable_one(dir, *kind))
         .collect();
 
     let report = UnhookReport {
@@ -265,13 +330,15 @@ pub fn run(opts: UnhookOpts) {
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
     );
 
-    // Mustard 2.0 ships as a Claude Code plugin; the native toggle is the real
-    // kill-switch now. This settings.json rename stays as the legacy fallback
-    // (it also wipes volatile state). Guidance on stderr keeps stdout pure JSON.
+    // Mustard 2.0 ships as a Claude Code plugin; the native toggle disables
+    // that one plugin, which is the narrower and usually preferable action.
+    // `disableAllHooks` is broader — it silences EVERY hook the harness would
+    // fire, Mustard's and anyone else's. Guidance on stderr keeps stdout pure
+    // JSON.
     eprintln!();
-    eprintln!("Mustard now ships as a Claude Code plugin. Primary way to turn it OFF: claude plugin disable mustard");
-    eprintln!("The settings.json rename above is the legacy fallback; it also wiped volatile state (.agent-state/, .cluster-cache.json, .worktrees/).");
-    eprintln!("Re-enable with: claude plugin enable mustard   (or restore this snapshot: mustard-rt run rehook).");
+    eprintln!("Mustard now ships as a Claude Code plugin. To turn only Mustard OFF: claude plugin disable mustard");
+    eprintln!("The `disableAllHooks: true` written above silences EVERY hook, not just Mustard's; it also wiped volatile state (.agent-state/, .cluster-cache.json, .worktrees/). Your permissions and statusLine were left intact.");
+    eprintln!("Re-enable with: claude plugin enable mustard   (or clear the flag: mustard-rt run rehook).");
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +357,9 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
+    /// `unhook` no longer mints these names, but `rehook` still restores a
+    /// `settings.json.disabled-<ts>` snapshot left by an older build, so the
+    /// shape of that stamp remains load-bearing for the legacy path.
     #[test]
     fn filename_safe_timestamp_has_no_colons() {
         let ts = mustard_core::time::filename_safe_now();
@@ -324,18 +394,24 @@ mod tests {
     }
 
     #[test]
-    fn disable_renames_settings_and_clears_state() {
+    fn disable_sets_the_flag_in_place_and_clears_state() {
         let dir = tempdir().unwrap();
         let claude = dir.path().join(".claude");
         write(&claude.join("settings.json"), r#"{"hooks":{}}"#);
         write(&claude.join(".agent-state/counter.json"), "1");
         write(&claude.join(".cluster-cache.json"), "[]");
 
-        let entry = disable_one(&claude, ScopeKind::Repo, "2026-05-24T12-00-00");
+        let entry = disable_one(&claude, ScopeKind::Repo);
 
         assert_eq!(entry.state, "disabled");
-        assert!(entry.moved_to.unwrap().ends_with(".disabled-2026-05-24T12-00-00"));
-        assert!(!claude.join("settings.json").exists());
+        assert!(entry.hooks_disabled);
+        assert!(entry.moved_to.is_none(), "the file is no longer moved");
+        // The settings file survives, carrying the flag.
+        let settings = claude.join("settings.json");
+        assert!(settings.exists(), "settings.json must stay in place");
+        let obj = read_settings_object(&settings).unwrap();
+        assert_eq!(obj.get(DISABLE_ALL_HOOKS_KEY), Some(&Value::Bool(true)));
+        // Volatile state is still wiped.
         assert!(!claude.join(".agent-state").exists());
         assert!(!claude.join(".cluster-cache.json").exists());
         assert_eq!(entry.cleared.len(), 2);
@@ -346,16 +422,38 @@ mod tests {
         let dir = tempdir().unwrap();
         let claude = dir.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
-        let entry = disable_one(&claude, ScopeKind::Repo, "ts");
+        let entry = disable_one(&claude, ScopeKind::Repo);
         assert_eq!(entry.state, "missing");
         assert!(entry.moved_to.is_none());
+        assert!(!entry.hooks_disabled);
+    }
+
+    /// A settings.json we cannot parse is reported, never rewritten — it is the
+    /// file that carries `permissions.deny`.
+    #[test]
+    fn disable_leaves_unparseable_settings_untouched() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        let settings = claude.join("settings.json");
+        write(&settings, "{ not json at all");
+
+        let entry = disable_one(&claude, ScopeKind::Repo);
+
+        assert_eq!(entry.state, "error");
+        assert!(!entry.hooks_disabled);
+        assert_eq!(
+            std::fs::read_to_string(&settings).unwrap(),
+            "{ not json at all",
+            "the original bytes must survive"
+        );
     }
 
     #[test]
     fn global_without_confirm_is_skipped() {
         let dir = tempdir().unwrap();
-        let entry = disable_one(&dir.path().join(".claude"), ScopeKind::GlobalSkipped, "ts");
+        let entry = disable_one(&dir.path().join(".claude"), ScopeKind::GlobalSkipped);
         assert_eq!(entry.state, "skipped");
+        assert!(!entry.hooks_disabled);
         assert!(entry.error.unwrap().contains("--confirm"));
     }
 }

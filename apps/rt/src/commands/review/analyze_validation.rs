@@ -194,6 +194,61 @@ fn ref_resolves(r: &str, spec_dir: &Path, project_roots: &[PathBuf]) -> bool {
         || project_roots.iter().any(|root| fs::exists(root.join(r)))
 }
 
+/// `true` when a bare (un-backticked) token reads as a file path: it either
+/// carries a path separator or ends in a recognised source extension. Requiring
+/// a KNOWN extension is what keeps prose out — "3.5", "e.g." and
+/// "https://example.com" all fail, while `src/list.rs` and `Cargo.toml` pass.
+fn looks_like_file_path(token: &str) -> bool {
+    let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '/'
+        && c != '\\' && c != '-' && c != '_');
+    if token.is_empty() || !token.contains('.') {
+        return false;
+    }
+    let ext = token.rsplit('.').next().unwrap_or("");
+    is_known_file_ext(ext)
+}
+
+/// The prose-only violations in the PRD `## Context` section, as human-readable
+/// fragments. Empty when the section is absent or clean.
+///
+/// The shipped spec law (`plugin/refs/feature/spec-language.md`, "Contexto
+/// rules") makes the PRD layer prose-only: `## Context` briefs a human
+/// rediscovering the work next week, so file paths, line numbers, identifiers
+/// and bullet lists belong to `## Root cause` / `## Files` / `## Tasks`. The law
+/// shipped but nothing enforced it, and the drafter itself violated it — it
+/// spliced the scan digest's anchors into Context as a bullet list of paths.
+/// Checked here so the violation is caught wherever it comes from.
+fn context_prose_violations(content: &str) -> Vec<String> {
+    let Some(block) = crate::commands::spec::spec_sections::section_block(content, "context")
+    else {
+        return Vec::new();
+    };
+    let mut violations = Vec::new();
+    // Skip the heading line itself; a `##` heading is not section body.
+    for line in block.lines().skip(1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+            violations.push(format!("bullet list (`{}`)", truncate_for_message(trimmed)));
+        }
+        for token in trimmed.split_whitespace() {
+            if looks_like_file_path(token) {
+                violations.push(format!("file path (`{}`)", truncate_for_message(token)));
+            }
+        }
+    }
+    violations
+}
+
+/// Clip a quoted fragment so one long line cannot flood the issue message.
+fn truncate_for_message(s: &str) -> String {
+    const MAX: usize = 48;
+    if s.chars().count() <= MAX {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(MAX).collect();
+    format!("{head}…")
+}
+
 /// Whether an AC `command` is a TAUTOLOGY — it exits 0 whether or not the
 /// feature was actually built, so it verifies nothing. These are the rubber
 /// stamps F6 kills: a bare `cargo build`/`cargo check`, a `cargo test` with no
@@ -332,10 +387,11 @@ fn is_test_shaped_command(command: &str) -> bool {
 
 /// Run the validation. Returns the issues list.
 ///
-/// `pub(crate)` so `plan-materialize` composes the same checks in-process
-/// (single validator source — no subprocess, no drift) while the CLI entry
-/// [`run`] keeps the stdout/exit contract.
-pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
+/// `pub` so `plan-materialize` composes the same checks in-process (single
+/// validator source — no subprocess, no drift) and the acceptance-criteria
+/// tests can assert a verdict without shelling out, while the CLI entry [`run`]
+/// keeps the stdout/exit contract.
+pub fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut issues: Vec<Value> = Vec::new();
 
@@ -547,6 +603,23 @@ pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
                             lists no files to implement them.",
             }));
         }
+    }
+
+    // Validation 8: the PRD layer is PROSE-ONLY. A `## Context` carrying file
+    // paths or a bullet list is agent input pasted into a human briefing — the
+    // shipped spec law forbids it, and until now nothing checked.
+    let context_violations = context_prose_violations(content);
+    if !context_violations.is_empty() {
+        issues.push(json!({
+            "severity": "WARN",
+            "type": "context-not-prose",
+            "message": format!(
+                "The Context section is prose-only — it briefs a human rediscovering the work, \
+                 so file paths, line numbers and bullet lists belong to Root cause / Files / \
+                 Tasks. Found: {}.",
+                context_violations.join(", ")
+            ),
+        }));
     }
 
     issues

@@ -12,7 +12,7 @@ source: manual
 
 ## Description
 
-Disables hooks by renaming `.claude/settings.json` to `settings.json.disabled-<timestamp>` and wiping volatile state (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). Reversible via `/mustard:rehook`.
+Disables hooks by setting `"disableAllHooks": true` in `.claude/settings.json` and wiping volatile state (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). The rest of the file — `permissions.deny`, `permissions.allow`, `statusLine`, `env` — is left untouched, so silencing the harness never removes the safety rules. Plugin-provided hooks are covered too. Reversible via `/mustard:rehook`.
 
 Use when: harness misbehavior + clean baseline; handing project to someone without `mustard-rt`; sensitive operation without hook overhead.
 
@@ -36,7 +36,7 @@ Without `--confirm`, `all`-scope reports the global target as `state: "skipped"`
 
 ## INVIOLABLE RULES
 
-- Always delegate to `mustard-rt run unhook` — never rename by hand. The binary owns the timestamp format `rehook` reads back.
+- Always delegate to `mustard-rt run unhook` — never edit `settings.json` by hand. An unparseable settings file is reported as `error` and left byte-for-byte untouched; that file is the safety net, so a blind overwrite is the one outcome worse than not acting.
 - Report each entry's `state` field (`disabled`/`missing`/`skipped`/`error`).
 - After `unhook`, suggest `/mustard:rehook --scope <same>` as the reversal.
 - Never pass `--confirm` automatically — user types it for `--scope all`.

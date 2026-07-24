@@ -25,7 +25,7 @@ Summary (5-8 lines, pipelines/orphans/Pass@1/RTK/top alert) → Active+Orphaned 
 
 ## DORA event sources (auto-emitted)
 
-`pr.opened` / `pr.merged` from `gh pr create` / `gh pr merge` (via `bash_command_gate` PostToolUse(Bash) observer). `review.start` / `review.complete` from `/mustard:review` (inline emit). Pairing by `payload.spec` (preferred) or `payload.branch` within the window.
+`pr.opened` from `gh pr create` (via the PostToolUse(Bash) observer, which sees each segment of a chained command). **Merges are read from git history**, not from events: a merge clicked in the provider's web UI never passes through a Bash observer, so the event log alone under-reports it — the report names its source in `mergedSource` (`git` | `events`). `review.start` / `review.complete` from `/mustard:review` (inline emit). Pairing matches on `payload.spec` **or** `payload.branch` (null keys ignored) within the window.
 
 ## Examples
 

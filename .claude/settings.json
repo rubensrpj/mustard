@@ -30,8 +30,6 @@
     "allow": [
       "Read",
       "Edit",
-      "Edit(.claude/**)",
-      "Edit(**/.claude/**)",
       "Write",
       "Edit(CLAUDE.md)",
       "Edit(*/CLAUDE.md)",
