@@ -10,7 +10,7 @@
     {
       "label": "apps/rt/src/registry.rs",
       "path": "apps/rt/src/registry.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/dispatch.rs",
@@ -20,7 +20,7 @@
     {
       "label": "apps/rt/src/main.rs",
       "path": "apps/rt/src/main.rs",
-      "done": false
+      "done": true
     }
   ]
 }

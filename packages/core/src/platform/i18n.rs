@@ -538,6 +538,24 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              automatically once `tree-sitter generate` finishes."
         }
 
+        // Stop gate (close-the-qa-verification-loop) — the text of the block
+        // returned to Claude when the active+approved spec's QA criteria do not
+        // pass. Config-language (it is user-facing feedback, not a machine log),
+        // so it lives here rather than embedded in the gate code. `{ac}` is the
+        // id of the first failing criterion, interpolated by the caller.
+        ("stopgate.block.reason", Locale::PtBr) => {
+            "Verificação de QA não passou: o critério {ac} ainda falha."
+        }
+        ("stopgate.block.reason", Locale::EnUs) => {
+            "QA verification did not pass: criterion {ac} still fails."
+        }
+        ("stopgate.block.guidance", Locale::PtBr) => {
+            "Corrija-o e finalize o turno — eu re-executo os critérios e só libero a parada quando todos passarem."
+        }
+        ("stopgate.block.guidance", Locale::EnUs) => {
+            "Fix it and end the turn — I re-run the criteria and only release the stop once all pass."
+        }
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
@@ -902,6 +920,22 @@ mod tests {
         assert_eq!(translate("wave.label", Locale::EnUs), "W");
         assert_eq!(translate("ac.label", Locale::PtBr), "CA");
         assert_eq!(translate("ac.label", Locale::EnUs), "AC");
+    }
+
+    /// The Stop gate's block text is catalogue-driven (config-language), never
+    /// embedded in the gate code — both locales carry the `{ac}` slot the gate
+    /// interpolates with the failing criterion id.
+    #[test]
+    fn i18n_translates_stopgate_keys() {
+        assert!(translate("stopgate.block.reason", Locale::PtBr).contains("{ac}"));
+        assert!(translate("stopgate.block.reason", Locale::EnUs).contains("{ac}"));
+        assert_ne!(
+            translate("stopgate.block.reason", Locale::PtBr),
+            translate("stopgate.block.reason", Locale::EnUs),
+            "the block reason must differ per locale (proof it is catalogue-driven)"
+        );
+        assert_ne!(translate("stopgate.block.guidance", Locale::PtBr), "<missing-key>");
+        assert_ne!(translate("stopgate.block.guidance", Locale::EnUs), "<missing-key>");
     }
 
     #[test]

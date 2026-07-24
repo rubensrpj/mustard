@@ -576,6 +576,32 @@ pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathB
     )
 }
 
+/// Filename of the per-spec **Stop-gate consecutive-block counter** (see
+/// [`stop_gate_counter_path`]).
+pub(crate) const STOP_GATE_COUNTER_MARKER: &str = ".stop-gate-blocks";
+
+/// Compose the per-spec Stop-gate block-counter marker path:
+/// `<project>/.claude/spec/<spec>/.stop-gate-blocks`.
+///
+/// Sibling of [`approval_marker_path`] / [`clarified_marker_path`], with the
+/// same single-home discipline so the Stop gate's writer and reader cannot
+/// drift. The file holds the number of CONSECUTIVE Stop blocks the gate has
+/// issued for this spec: the gate removes it (== zero) the moment the criteria
+/// pass, and releases the stop once the count reaches its documented ceiling —
+/// so the verification loop is bounded by a counter the Mustard owns, not by an
+/// unverified platform promise. `None` on an I1 guard rejection of the project
+/// root or an invalid spec name.
+#[must_use]
+pub fn stop_gate_counter_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .and_then(|p| p.for_spec(spec))
+            .ok()?
+            .dir()
+            .join(STOP_GATE_COUNTER_MARKER),
+    )
+}
+
 /// Provenance recorded INSIDE an approval / clarification marker — the typed
 /// read-back of what [`marker_body`] writes.
 ///
@@ -742,6 +768,24 @@ mod tests {
             "marker must live under the spec dir, got {shown}"
         );
         // Sibling of the approval marker in the SAME directory.
+        let approval =
+            approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
+        assert_eq!(p.parent(), approval.parent());
+    }
+
+    #[test]
+    fn stop_gate_counter_path_has_expected_shape() {
+        let dir = tempdir().unwrap();
+        let p = stop_gate_counter_path(dir.path().to_str().unwrap(), "my-spec")
+            .expect("a valid project + spec name resolves a marker path");
+        // Ends in the counter filename and lives beside the approval /
+        // clarification markers, in the spec's own directory.
+        assert!(p.ends_with(STOP_GATE_COUNTER_MARKER));
+        let shown = p.to_string_lossy().replace('\\', "/");
+        assert!(
+            shown.contains("/.claude/spec/my-spec/"),
+            "counter must live under the spec dir, got {shown}"
+        );
         let approval =
             approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
         assert_eq!(p.parent(), approval.parent());

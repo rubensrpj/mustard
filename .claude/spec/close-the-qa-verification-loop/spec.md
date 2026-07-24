@@ -151,9 +151,9 @@ OUT: o `/qa`, o `/goal`, o Fix Loop de review (`resume-loop` §B); um segundo pa
 
 ## Checklist
 
-- [ ] T1 — o Check de Stop em `stop_gate.rs`: auto-restrição, execução via `run_for_spec_with_options`,
+- [x] T1 — o Check de Stop em `stop_gate.rs`: auto-restrição, execução via `run_for_spec_with_options`,
       veredito de bloqueio nomeando o critério que falhou.
-- [ ] T2 — o contador próprio por-spec (marcador em `context.rs`), que zera quando os critérios
+- [x] T2 — o contador próprio por-spec (marcador em `context.rs`), que zera quando os critérios
       passam, mais a honra a `stop_hook_active`; ao teto, libera.
 - [ ] T3 — a fiação: `registry` (check no módulo Stop) + `dispatch`/`emit_outcome` emitindo
       `decision:block`+`reason` no evento Stop.
