@@ -1302,7 +1302,9 @@ mod tests {
                 ac_headings, 1,
                 "{scope}/{lang}: exactly ONE AC heading expected:\n{body}"
             );
-            let issues = crate::commands::review::analyze_validation::validate(&spec_md, &body);
+            let root = std::path::PathBuf::from(crate::shared::context::project_dir());
+            let issues =
+                crate::commands::review::analyze_validation::validate(&root, &spec_md, &body);
             assert!(
                 issues.is_empty(),
                 "{scope}/{lang}: virgin draft must validate ok:true — {issues:?}\n{body}"

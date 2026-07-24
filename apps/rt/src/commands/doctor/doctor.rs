@@ -1326,7 +1326,12 @@ pub fn run(opts: DoctorOpts) {
         // is the only output.
         if matches!(
             check_name.as_str(),
-            "claude-paths" | "workspace-leaks" | "i1" | "superseded" | "capability-drift"
+            "claude-paths"
+                | "workspace-leaks"
+                | "i1"
+                | "superseded"
+                | "capability-drift"
+                | "guards-scaffold"
         ) {
             run_typed_check(check_name, &cwd, opts.format == "json");
             economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
@@ -1340,7 +1345,7 @@ pub fn run(opts: DoctorOpts) {
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, git-flow"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, git-flow"
                 );
                 std::process::exit(1);
             }
@@ -1390,6 +1395,11 @@ pub fn run(opts: DoctorOpts) {
     // the grain model + emits `capability.drift` events. `None` when there is
     // no grain model (cannot judge drift → silent no-op).
     let drift_report = crate::commands::doctor::capability_drift_check::run(&cwd);
+    // Uncurated-rules advisory. ADVISORY ONLY (WARN at most): names the
+    // subprojects whose `## Guards` block is still the `/scan` scaffold, so an
+    // agent dispatched there is silently handed no rules. `None` when there is
+    // no scan census (nothing could carry the sentinel → silent no-op).
+    let scaffold_report = crate::commands::doctor::guards_scaffold_check::run(&cwd);
 
     if opts.format == "json" {
         render_combined_json(
@@ -1399,6 +1409,7 @@ pub fn run(opts: DoctorOpts) {
             &i1_report,
             &sup_report,
             drift_report.as_ref(),
+            scaffold_report.as_ref(),
         );
     } else {
         results.push(claude_paths_to_check_result(&cp_report));
@@ -1407,6 +1418,9 @@ pub fn run(opts: DoctorOpts) {
         results.push(superseded_to_check_result(&sup_report));
         if let Some(ref drift) = drift_report {
             results.push(capability_drift_to_check_result(drift));
+        }
+        if let Some(ref scaffold) = scaffold_report {
+            results.push(guards_scaffold_to_check_result(scaffold));
         }
         render_report(&results);
     }
@@ -1445,6 +1459,17 @@ fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
                 })),
             }
         }
+        "guards-scaffold" => {
+            // Advisory: `None` when there is no scan census — nothing seeds a
+            // pending block without Wave 1, so an "all clear" would be vacuous.
+            match crate::commands::doctor::guards_scaffold_check::run(cwd) {
+                Some(report) => serde_json::to_value(report),
+                None => Ok(json!({
+                    "ok": true,
+                    "skipped": "no grain.model.json — no scan census to judge guards scaffolds",
+                })),
+            }
+        }
         "i1" => {
             let report = crate::commands::doctor::doctor_i1::run(cwd);
             let exit_non_zero = !report.ok;
@@ -1480,6 +1505,7 @@ fn render_combined_json(
     i1: &crate::commands::doctor::doctor_i1::I1Report,
     sup: &crate::commands::doctor::superseded_check::SupersededReport,
     drift: Option<&crate::commands::doctor::capability_drift_check::CapabilityDriftReport>,
+    scaffold: Option<&crate::commands::doctor::guards_scaffold_check::GuardsScaffoldReport>,
 ) {
     let checks: Vec<serde_json::Value> = legacy
         .iter()
@@ -1502,13 +1528,16 @@ fn render_combined_json(
         .collect();
 
     let any_fail = legacy.iter().any(|r| r.status == Status::Fail) || !i1.ok;
-    // Capability drift is ADVISORY: it can raise WARN but NEVER FAIL.
+    // Capability drift and uncurated guards are ADVISORY: they can raise WARN
+    // but NEVER FAIL.
     let drift_warn = drift.is_some_and(|d| !d.ok);
+    let scaffold_warn = scaffold.is_some_and(|s| !s.ok);
     let any_warn = legacy.iter().any(|r| r.status == Status::Warn)
         || !cp.divergences.is_empty()
         || !wl.leaks.is_empty()
         || !sup.ok
-        || drift_warn;
+        || drift_warn
+        || scaffold_warn;
     let overall = if any_fail { "fail" } else if any_warn { "warn" } else { "ok" };
 
     let violations: Vec<String> = legacy
@@ -1537,6 +1566,17 @@ fn render_combined_json(
             map.insert(
                 "capability_drift".to_string(),
                 serde_json::to_value(d).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+    // Uncurated-rules advisory, keyed verbatim. Same rule: present only when
+    // there is a scan census, so consumers can tell "no census" from "no
+    // uncurated scaffold".
+    if let Some(s) = scaffold {
+        if let serde_json::Value::Object(ref mut map) = body {
+            map.insert(
+                "guards_scaffold".to_string(),
+                serde_json::to_value(s).unwrap_or(serde_json::Value::Null),
             );
         }
     }
@@ -1631,6 +1671,32 @@ fn capability_drift_to_check_result(
         .map(|d| format!("drift {} covers {} (no longer in grain)", d.id, d.entity))
         .collect();
     CheckResult::warn("capability-drift", details)
+}
+
+/// Project a `GuardsScaffoldReport` onto the legacy `CheckResult` envelope. The
+/// uncurated-rules advisory is ADVISORY: a scaffold becomes WARN, never FAIL.
+/// OK when every subproject's `## Guards` block has been enriched.
+fn guards_scaffold_to_check_result(
+    report: &crate::commands::doctor::guards_scaffold_check::GuardsScaffoldReport,
+) -> CheckResult {
+    if report.ok {
+        let mut r = CheckResult::ok("guards-scaffold");
+        r.details
+            .push("every subproject carries curated Guards".to_string());
+        return r;
+    }
+    let mut details: Vec<String> = report
+        .uncurated
+        .iter()
+        .map(|u| {
+            format!(
+                "{} still carries the uncurated Guards scaffold — agents dispatched there get no rules",
+                u.subproject
+            )
+        })
+        .collect();
+    details.push("fix: re-run the `/scan` guards enrich for the subprojects above".to_string());
+    CheckResult::warn("guards-scaffold", details)
 }
 
 /// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard

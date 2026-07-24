@@ -54,7 +54,7 @@ fn drafted_context_is_prose_only() {
         let spec_md = out.join("spec.md");
         let body = std::fs::read_to_string(&spec_md)
             .unwrap_or_else(|e| panic!("{scope}/{lang}: draft not written: {e}"));
-        let issues = validate(&spec_md, &body);
+        let issues = validate(tmp.path(), &spec_md, &body);
         assert!(
             context_issue(&issues).is_none(),
             "{scope}/{lang}: a virgin draft must carry a prose-only Context: {issues:?}\n{body}",
@@ -71,7 +71,7 @@ fn drafted_context_is_prose_only() {
                 - apps/rt/src/commands/economy/metrics.rs (metrics, collect)\n\
                 - apps/rt/src/shared/context.rs (spec)\n";
     std::fs::write(&planted, body).unwrap();
-    let issues = validate(&planted, body);
+    let issues = validate(tmp.path(), &planted,body);
     let issue = context_issue(&issues)
         .unwrap_or_else(|| panic!("a bullet list of paths in Context must be flagged: {issues:?}"));
     assert_eq!(issue["severity"], json!("WARN"), "advisory, never blocking");
@@ -92,7 +92,7 @@ fn drafted_context_is_prose_only() {
                  The switch silenced the safety net instead of the harness, and version 2.1 \
                  of the platform documents why at https://code.claude.com/docs.\n";
     std::fs::write(&planted, prose).unwrap();
-    let issues = validate(&planted, prose);
+    let issues = validate(tmp.path(), &planted,prose);
     assert!(
         context_issue(&issues).is_none(),
         "plain prose with a version and a URL is not a path list: {issues:?}",
