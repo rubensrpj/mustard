@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "close-the-qa-verification-loop",
+  "checklist": [
+    {
+      "label": "apps/rt/src/registry.rs",
+      "path": "apps/rt/src/registry.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/dispatch.rs",
+      "path": "apps/rt/src/dispatch.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/main.rs",
+      "path": "apps/rt/src/main.rs",
+      "done": false
+    }
+  ]
+}
