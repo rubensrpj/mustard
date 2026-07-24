@@ -1,0 +1,36 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-24T01:11:24.759Z",
+  "parent": "fase-1-pilar-2-2a",
+  "checklist": [
+    {
+      "label": "apps/dashboard/src/lib/types/economy.ts",
+      "path": "apps/dashboard/src/lib/types/economy.ts",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/features/economy/ScopeBar/index.tsx",
+      "path": "apps/dashboard/src/features/economy/ScopeBar/index.tsx",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/pages/Economia.tsx",
+      "path": "apps/dashboard/src/pages/Economia.tsx",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/lib/dashboard.ts",
+      "path": "apps/dashboard/src/lib/dashboard.ts",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/hooks/useEconomySummary.ts",
+      "path": "apps/dashboard/src/hooks/useEconomySummary.ts",
+      "done": true
+    }
+  ]
+}
