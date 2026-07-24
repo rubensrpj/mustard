@@ -1,36 +1,36 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-07-24T18:53:45.432Z",
   "parent": "scope-scan-generated-role-pattern",
   "checklist": [
     {
       "label": "plugin/commands/knowledge.md",
       "path": "plugin/commands/knowledge.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/maint.md",
       "path": "plugin/commands/maint.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/skills.md",
       "path": "plugin/commands/skills.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/stats.md",
       "path": "plugin/commands/stats.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/status.md",
       "path": "plugin/commands/status.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/upsert.md",
@@ -40,7 +40,7 @@
     {
       "label": "plugin/commands/review.md",
       "path": "plugin/commands/review.md",
-      "done": false
+      "done": true
     }
   ]
 }

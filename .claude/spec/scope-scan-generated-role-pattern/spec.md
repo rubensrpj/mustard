@@ -58,38 +58,52 @@ puxar os moldes que descrevem outras áreas de `rt`.
 - **`context: fork` no `/qa`.** A lei do exit code observado não é negociável.
 - **`effort: low` no `/scan`.** A mineração é binário; o único trabalho de modelo ali é a prosa de
   enriquecimento, justamente o que seria degradado.
+- **`disable-model-invocation` no `/upsert`.** O plano original listava seis utilitários. Ao ler os
+  arquivos, o `upsert` se revelou diferente dos outros cinco: a própria descrição dele define um
+  gatilho automático — é a porta de bootstrap, alcançada quando outro `/mustard:*` é bloqueado
+  porque o Mustard não está instalado. Desligar a invocação pelo modelo fecharia exatamente a porta
+  que precisa abrir sem o usuário saber o nome do comando. Ficam **cinco**, e o teste de ratchet
+  afirma a ausência no sexto, para que uma mudança futura de "vamos completar a lista" tenha de
+  discutir com ele.
 
 ## Critérios de Aceitação
 
+> **Nota sobre a forma dos critérios.** Cada `Command:` abaixo aponta um teste **pelo nome**, e cada
+> `Expect:` exige uma contagem **maior que zero**. A razão está registrada na onda anterior: um
+> filtro que não casa nenhum teste faz o `cargo test` sair 0 com `0 passed`, e um critério que só
+> lesse o código de saída aprovaria o vazio. Isso não é hipótese — aconteceu ao escrever esta spec,
+> com um filtro que parecia certo e selecionou zero testes.
+
 - **AC-1** — when o censo registra os diretórios de um cluster de papel, then a worklist de moldes
   entrega o glob daquele cluster derivado **apenas** desses diretórios, sem caminho escrito à mão
-  Command: `cargo test -p mustard-rt scan_patterns::list`
-  Expect: `test result: ok`
+  Command: `cargo test -p mustard-rt globs_for`
+  Expect: `[1-9][0-9]* passed`
 - **AC-2** — when o prompt do papel `patterns` é renderizado, then o contrato do molde exige a chave
-  `paths:` com o glob que a worklist entregou
-  Command: `cargo test -p mustard-rt render::role`
-  Expect: `test result: ok`
+  `paths:` ao lado das três chaves de ranqueamento, sem substituí-las
+  Command: `cargo test -p mustard-rt patterns_contract_requires_paths`
+  Expect: `[1-9][0-9]* passed`
 - **AC-3** — when um molde traz `paths:` no frontmatter, then o parser o reconhece como campo tipado
-  e não como chave desconhecida jogada em `extra`
-  Command: `cargo test -p mustard-core frontmatter`
-  Expect: `test result: ok`
+  e não como chave desconhecida jogada em `extra`, nas duas formas que a plataforma documenta
+  Command: `cargo test -p mustard-core paths_parses_as_a_typed_field`
+  Expect: `[1-9][0-9]* passed`
 - **AC-4** — when `scan-patterns-apply` grava um molde cujo corpo autorado traz `paths:`, then a
-  chave sobrevive à gravação
-  Command: `cargo test -p mustard-rt scan_patterns::apply`
-  Expect: `test result: ok`
-- **AC-5** — when o frontmatter dos comandos do plugin é auditado, then os seis utilitários carregam
-  `disable-model-invocation: true`, o `review` carrega `context: fork` com `agent:` e
-  `background: false`, e o `qa` não carrega chave de fork nenhuma
-  Command: `cargo test -p mustard-rt command_frontmatter`
-  Expect: `test result: ok`
+  chave e o glob sobrevivem à gravação
+  Command: `cargo test -p mustard-rt run_preserves_the_paths_key`
+  Expect: `[1-9][0-9]* passed`
+- **AC-5** — when o frontmatter dos comandos do plugin é auditado, then os cinco utilitários carregam
+  `disable-model-invocation: true`, o `upsert` continua invocável pelo modelo por ser a porta de
+  bootstrap, o `review` carrega `context: fork` com `agent:` e `background: false`, e o `qa` não
+  carrega chave de fork nenhuma
+  Command: `cargo test -p mustard-rt command_frontmatter_`
+  Expect: `[1-9][0-9]* passed`
 - **AC-6** — when o prompt do papel `patterns` é renderizado para um subprojeto real deste
   repositório, then o contrato do molde na saída exige a chave `paths:`
   Command: `mustard-rt run agent-prompt-render --role patterns --subproject rt`
   Expect: `paths:`
 - **AC-7** — when `dependency-precheck` não consegue ler a spec que lhe indicaram, then ele responde
   `ok: false` em vez de aprovar em silêncio, mantendo o campo de erro explícito
-  Command: `cargo test -p mustard-rt dependency_precheck`
-  Expect: `test result: ok`
+  Command: `cargo test -p mustard-rt unreadable_spec_is_not_a_pass`
+  Expect: `[1-9][0-9]* passed`
 
 > **Extensão de escopo registrada durante o EXECUTE.** O AC-7 não estava no plano aprovado. Ele
 > entrou porque, ao rodar o precheck desta própria spec, o comando respondeu `ok: true` e saiu 0
@@ -113,8 +127,8 @@ puxar os moldes que descrevem outras áreas de `rt`.
 - `plugin/commands/skills.md` — `disable-model-invocation`
 - `plugin/commands/stats.md` — `disable-model-invocation`
 - `plugin/commands/status.md` — `disable-model-invocation`
-- `plugin/commands/upsert.md` — `disable-model-invocation`
 - `plugin/commands/review.md` — `context: fork` + `agent:` + `background: false`
+- `apps/rt/tests/command_frontmatter.rs` — o ratchet que tranca as decisões acima
 
 ## Limites
 

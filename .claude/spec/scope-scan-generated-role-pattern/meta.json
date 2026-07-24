@@ -1,10 +1,14 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": "PLAN",
+  "phase": "EXECUTE",
   "scope": "full",
   "lang": "pt-BR",
-  "checkpoint": "2026-07-24T18:36:19.680Z",
+  "checkpoint": "2026-07-24T18:53:43.060Z",
   "isWavePlan": true,
-  "totalWaves": 2
+  "totalWaves": 2,
+  "currentWave": 1,
+  "completedWaves": [
+    1
+  ]
 }

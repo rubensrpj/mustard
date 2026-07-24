@@ -1,10 +1,10 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": null,
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-07-24T18:53:43.106Z",
   "parent": "scope-scan-generated-role-pattern",
   "checklist": [
     {

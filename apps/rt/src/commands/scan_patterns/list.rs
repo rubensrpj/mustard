@@ -1773,7 +1773,7 @@ mod tests {
     /// would be the agent's invention — exactly what the census exists to
     /// prevent.
     #[test]
-    fn candidate_carries_the_cluster_glob() {
+    fn globs_for_reaches_the_candidate_worklist() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_model(
