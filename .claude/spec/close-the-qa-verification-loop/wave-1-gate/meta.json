@@ -1,10 +1,10 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": null,
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-07-24T22:19:22.367Z",
   "parent": "close-the-qa-verification-loop",
   "checklist": [
     {
@@ -30,7 +30,7 @@
     {
       "label": "packages/core/src/domain/model/contract.rs",
       "path": "packages/core/src/domain/model/contract.rs",
-      "done": false
+      "done": true
     }
   ]
 }

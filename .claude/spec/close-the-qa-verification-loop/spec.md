@@ -155,7 +155,7 @@ OUT: o `/qa`, o `/goal`, o Fix Loop de review (`resume-loop` §B); um segundo pa
       veredito de bloqueio nomeando o critério que falhou.
 - [x] T2 — o contador próprio por-spec (marcador em `context.rs`), que zera quando os critérios
       passam, mais a honra a `stop_hook_active`; ao teto, libera.
-- [ ] T3 — a fiação: `registry` (check no módulo Stop) + `dispatch`/`emit_outcome` emitindo
+- [x] T3 — a fiação: `registry` (check no módulo Stop) + `dispatch`/`emit_outcome` emitindo
       `decision:block`+`reason` no evento Stop.
-- [ ] T4 — as chaves `stopgate.*` no i18n; nenhuma prosa embarcada no código do gate.
-- [ ] T5 — testes dos 7 comportamentos, incluindo a paridade com o `qa-run` e o teto do contador.
+- [x] T4 — as chaves `stopgate.*` no i18n; nenhuma prosa embarcada no código do gate.
+- [x] T5 — testes dos 7 comportamentos, incluindo a paridade com o `qa-run` e o teto do contador.
