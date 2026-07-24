@@ -15,6 +15,8 @@
 //! stderr. The JS script printed markdown; the JSON form is the new default
 //! contract for the Rust port (markdown is a human concern, JSON is consumable).
 
+use crate::commands::event::event_projections::pipeline::build_pipeline_state;
+use crate::commands::event::event_projections::read_workspace_events;
 use crate::report::{table, Report};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
@@ -152,46 +154,111 @@ fn agg_to_json(agg: &BTreeMap<String, EventAgg>) -> Value {
     })
 }
 
-/// Read pipeline-state files into a list of `{ name, metrics }`.
-fn collect_specs(claude_dir: &Path) -> Vec<Value> {
+/// Published in place of a pipeline counter that no readable source supports —
+/// either the spec history could not be read at all, or the value it would be
+/// derived from is absent. "no specs" and "I could not look" are different
+/// answers, and a report that renders the second as `0` is trusted precisely
+/// because it looks like a measurement.
+const UNKNOWN: &str = "unknown";
+
+/// Project every spec that appears in the live event log into
+/// `{ name, metrics, isOrphaned }`.
+///
+/// Source of truth is `.claude/spec/*/.events/*.ndjson`, read through the
+/// canonical walker and folded by the same `pipeline-state` projection
+/// `event-projections --view pipeline-state` publishes — one reader, so the two
+/// commands can never disagree. The predecessor read `.pipeline-states/`, a
+/// directory the harness stopped writing, and reported `0` for every project.
+///
+/// Returns `None` when the log's own root (`.claude/spec/`) cannot be read:
+/// that is "cannot look", and the caller must say so rather than publish a
+/// zero it never measured.
+fn collect_specs(project_root: &Path) -> Option<Vec<Value>> {
+    let paths = ClaudePaths::for_project(project_root).ok()?;
+    let spec_root = paths.spec_dir();
+    // Probe the root before folding: an absent/unreadable spec dir is the one
+    // case where an empty result would be a lie rather than a measurement.
+    fs::read_dir(&spec_root).ok()?;
+
+    let events = read_workspace_events(project_root);
+    let names: BTreeSet<String> = events.iter().filter_map(|e| e.spec.clone()).collect();
+
     let mut out = Vec::new();
-    let Some(paths) = claude_dir
-        .parent()
-        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
-        .and_then(|root| ClaudePaths::for_project(root).ok())
-    else {
-        return out;
-    };
-    let states_dir = paths.pipeline_states_dir();
-    let Ok(entries) = fs::read_dir(&states_dir) else {
-        return out;
-    };
-    for entry in entries {
-        let name = entry.file_name.clone();
-        if !name.ends_with(".json") || name.ends_with(".metrics.json") {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&entry.path) else {
-            continue;
-        };
-        let Ok(state) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        let metrics = state.get("metrics").cloned();
-        let Some(metrics) = metrics else { continue };
-        let spec_name = name.trim_end_matches(".json").to_string();
-        let spec_dir = paths.spec_dir().join(&spec_name);
+    for name in names {
+        let state = build_pipeline_state(&events, Some(&name));
+        let metrics = state
+            .get("metrics")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         out.push(json!({
-            "name": spec_name,
+            "name": name,
             "metrics": metrics,
-            "isOrphaned": !spec_dir.exists(),
+            "isOrphaned": !spec_root.join(&name).exists(),
         }));
     }
-    out
+    Some(out)
+}
+
+/// The `pipelines` block for a spec list that was actually read.
+///
+/// `pub`: the acceptance test drives the counter rules directly, and building a
+/// spec whose projection omits `retries` is only reachable from here.
+///
+/// First-pass honesty: a spec counts as pass-1 when its projection reports
+/// `retries == 0` — a *read* zero. A spec whose projection carries no `retries`
+/// at all was never measured, and one unmeasured spec makes the total a guess,
+/// so `pass1` / `pass1Pct` fall back to [`UNKNOWN`]. The predecessor coerced the
+/// missing key to `0` with `unwrap_or(0)`, which reported "100% first-pass" on
+/// every project in existence because the projection never filled the field.
+#[must_use]
+pub fn pipelines_from_specs(specs: Vec<Value>) -> Value {
+    let active = specs.iter().filter(|s| s["isOrphaned"] == json!(false)).count();
+    let orphaned = specs.iter().filter(|s| s["isOrphaned"] == json!(true)).count();
+    let total_specs = specs.len();
+
+    let retries: Vec<Option<i64>> = specs
+        .iter()
+        .map(|s| s["metrics"].get("retries").and_then(Value::as_i64))
+        .collect();
+    let all_derived = retries.iter().all(Option::is_some);
+    let pass1_count = retries.iter().flatten().filter(|n| **n == 0).count();
+    // A rate over an empty denominator is undefined, not zero.
+    let (pass1, pass1_pct) = match (all_derived, total_specs) {
+        (false, _) => (json!(UNKNOWN), json!(UNKNOWN)),
+        (true, 0) => (json!(0), json!(UNKNOWN)),
+        (true, n) => (json!(pass1_count), json!((pass1_count * 100 / n) as i64)),
+    };
+
+    json!({
+        "source": "events",
+        "tracked": total_specs,
+        "active": active,
+        "orphaned": orphaned,
+        "pass1": pass1,
+        "pass1Pct": pass1_pct,
+        "specs": specs,
+    })
+}
+
+/// The `pipelines` block when no spec history was read — `source` names why
+/// (`unreadable` = the log root could not be opened, `skipped` = the caller
+/// asked for `--hooks-only`). Every counter carries the [`UNKNOWN`] marker so a
+/// consumer cannot mistake "not measured" for "measured zero".
+fn pipelines_unknown(source: &str) -> Value {
+    json!({
+        "source": source,
+        "tracked": UNKNOWN,
+        "active": UNKNOWN,
+        "orphaned": UNKNOWN,
+        "pass1": UNKNOWN,
+        "pass1Pct": UNKNOWN,
+        "specs": [],
+    })
 }
 
 /// Build the `collect` JSON document.
-fn build_collect(cwd: &Path, hooks_only: bool) -> Value {
+#[must_use]
+pub fn build_collect(cwd: &Path, hooks_only: bool) -> Value {
     let paths = ClaudePaths::for_project(cwd).ok();
     let claude_dir = paths
         .as_ref()
@@ -202,26 +269,16 @@ fn build_collect(cwd: &Path, hooks_only: bool) -> Value {
         .map(ClaudePaths::metrics_dir)
         .unwrap_or_else(|| claude_dir.clone());
     let hook_events = aggregate_metrics(&metrics_dir, None, None);
-    let specs = if hooks_only { Vec::new() } else { collect_specs(&claude_dir) };
 
-    let active: Vec<&Value> = specs.iter().filter(|s| s["isOrphaned"] == json!(false)).collect();
-    let orphaned: Vec<&Value> = specs.iter().filter(|s| s["isOrphaned"] == json!(true)).collect();
-    let total_specs = specs.len();
-    let pass1 = specs
-        .iter()
-        .filter(|s| s["metrics"].get("retries").and_then(Value::as_i64).unwrap_or(0) == 0)
-        .count();
+    let pipelines = if hooks_only {
+        pipelines_unknown("skipped")
+    } else {
+        collect_specs(cwd).map_or_else(|| pipelines_unknown("unreadable"), pipelines_from_specs)
+    };
 
     json!({
         "hookEvents": agg_to_json(&hook_events),
-        "pipelines": {
-            "tracked": total_specs,
-            "active": active.len(),
-            "orphaned": orphaned.len(),
-            "pass1": pass1,
-            "pass1Pct": (pass1 * 100).checked_div(total_specs).map_or(0, |v| v as i64),
-            "specs": specs,
-        },
+        "pipelines": pipelines,
     })
 }
 

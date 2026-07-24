@@ -61,9 +61,11 @@ pub enum MaintCmd {
         #[arg(long)]
         apply: bool,
     },
-    /// Kill-switch: rename `.claude/settings.json` → `.disabled-<ts>` and wipe
-    /// volatile harness state (`.agent-state/`, `.cluster-cache.json`,
-    /// `.worktrees/`). Restore with [`Self::Rehook`].
+    /// Kill-switch: set `"disableAllHooks": true` in `.claude/settings.json`
+    /// and wipe volatile harness state (`.agent-state/`,
+    /// `.cluster-cache.json`, `.worktrees/`). Everything else in the file —
+    /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved.
+    /// Restore with [`Self::Rehook`].
     ///
     /// `--scope this` (default) acts on the current repo's `.claude/` only.
     /// `--scope monorepo` also sweeps every `apps/*/.claude/` +
@@ -83,10 +85,11 @@ pub enum MaintCmd {
         #[arg(long)]
         confirm: bool,
     },
-    /// Reverse [`Self::Unhook`]: in each `.claude/` in scope, rename the
-    /// newest `settings.json.disabled*` snapshot back to `settings.json`.
-    /// Volatile state directories that `unhook` wiped are left alone — the
-    /// runtime regenerates them on the next run. Emits a pretty JSON report.
+    /// Reverse [`Self::Unhook`]: in each `.claude/` in scope, remove
+    /// `"disableAllHooks"` from `settings.json` — or, for a project unhooked
+    /// by an older build, rename the newest `settings.json.disabled*` snapshot
+    /// back. Volatile state directories that `unhook` wiped are left alone —
+    /// the runtime regenerates them on the next run. Emits a pretty JSON report.
     #[command(display_order = 56)]
     Rehook {
         #[arg(long)]

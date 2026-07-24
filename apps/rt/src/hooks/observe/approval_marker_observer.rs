@@ -47,11 +47,21 @@
 //! before every question) would add surface without adding a signal the model
 //! could not equally influence.
 //!
-//! ## Fail-closed by construction
+//! ## Fail-closed, but never silent
 //!
 //! Every branch that cannot PROVE all three facts records nothing, and every IO
 //! step degrades to a no-op — the observer never blocks (it is a pure
 //! [`Observer`]) and never mints a marker on uncertainty.
+//!
+//! Fact 3 is the one condition the *author of the question* controls and could
+//! not previously discover. A plan awaiting approval, answered "Sim, pode ir",
+//! recorded nothing and said nothing; the run then died at `approve-spec`'s
+//! refusal, which names the missing marker but not the reason it is missing.
+//! The stem requirement was documented only here, in the source. So when facts
+//! 1 and 2 hold and only fact 3 fails, the observer now NAMES that condition on
+//! stderr ([`unrecognised_answer_notice`]). This changes nothing about what the
+//! gate accepts — the stems and the fail-closed default are untouched — only
+//! about what it explains when it declines.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::io::fs;
@@ -193,6 +203,46 @@ fn is_affirmative(label: &str) -> bool {
         .any(|w| APPROVAL_STEMS.iter().any(|&stem| w.starts_with(stem)))
 }
 
+/// Explain a decline the author of the question could not otherwise discover.
+///
+/// Returns the advisory text for the ONE case worth explaining: a real answer
+/// arrived (`labels` is non-empty) while an approval was genuinely pending, yet
+/// no selected label carries an approval stem — so nothing was recorded. It
+/// names the condition, the labels that failed it, and the stems that satisfy
+/// it, because the requirement is invisible from outside this module.
+///
+/// `None` when there is nothing to explain: an empty `labels` is a cancelled or
+/// dismissed dialog, which answers no question and therefore fails no condition.
+///
+/// A deliberate rejection also lands here and is told the same thing. That is
+/// the honest trade: distinguishing "the user said no" from "the user said yes
+/// in words we do not recognise" would take a hand-curated multilingual
+/// negation dictionary — exactly what the corpus-over-curation rule forbids —
+/// so the notice states the condition and leaves the reading to the human.
+fn unrecognised_answer_notice(spec: &str, labels: &[String]) -> Option<String> {
+    if labels.is_empty() {
+        return None;
+    }
+    let selected = labels
+        .iter()
+        .map(|l| format!("{:?}", l.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let stems = APPROVAL_STEMS
+        .iter()
+        .map(|s| format!("`{s}`"))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    Some(format!(
+        "[approval] `{spec}` awaits approval, but NOTHING was recorded: no word in the \
+         selected option ({selected}) begins with {stems} — the stem this recorder requires \
+         to tell an approval from a rejection. If that answer WAS an approval, phrase the \
+         option label with that stem (\"Approve …\" / \"Aprovar …\") and ask again; \
+         `approve-spec` will keep refusing until `.approved-by-user` exists. If it was a \
+         rejection, nothing is wrong."
+    ))
+}
+
 impl Observer for ApprovalMarkerObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = ctx.project_dir_or_cwd(input);
@@ -205,8 +255,16 @@ impl Observer for ApprovalMarkerObserver {
             return;
         }
 
-        // Facts 2 + 3 — a real user answer that is affirmative.
-        if !selected_labels(input).iter().any(|l| is_affirmative(l)) {
+        // Facts 2 + 3 — a real user answer that is affirmative. A decline is
+        // still fail-closed (nothing is written), but it no longer happens in
+        // silence: the unmet condition is named on stderr. Advisory only — an
+        // `eprintln!` is a pure side-effect and can never turn this Observer
+        // into a verdict.
+        let labels = selected_labels(input);
+        if !labels.iter().any(|l| is_affirmative(l)) {
+            if let Some(notice) = unrecognised_answer_notice(&spec, &labels) {
+                eprintln!("{notice}");
+            }
             return;
         }
 
@@ -319,6 +377,26 @@ mod tests {
         ] {
             assert!(!is_affirmative(no), "should NOT be affirmative: {no}");
         }
+    }
+
+    // ── The decline notice (unit) ────────────────────────────────────────────
+
+    #[test]
+    fn notice_names_the_condition_the_label_failed() {
+        let labels = vec!["Sim, pode ir".to_string()];
+        let msg = unrecognised_answer_notice("epic", &labels).expect("a real answer is explained");
+        // The spec, the label that failed, and BOTH stems that would satisfy it.
+        assert!(msg.contains("epic"), "names the spec: {msg}");
+        assert!(msg.contains("Sim, pode ir"), "quotes the selected label: {msg}");
+        assert!(msg.contains("approv") && msg.contains("aprov"), "names the stems: {msg}");
+        // And that the consequence is nothing recorded, not something rejected.
+        assert!(msg.contains(".approved-by-user"), "names the marker: {msg}");
+    }
+
+    #[test]
+    fn notice_stays_silent_on_a_dismissed_dialog() {
+        // No answer was given, so no condition was failed — nothing to explain.
+        assert_eq!(unrecognised_answer_notice("epic", &[]), None);
     }
 
     // ── The observer (integration over a tempdir) ────────────────────────────

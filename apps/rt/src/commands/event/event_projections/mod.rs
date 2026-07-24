@@ -30,7 +30,9 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 mod agent;
-mod pipeline;
+/// `pub(crate)` so `run metrics collect` folds the same pipeline-state
+/// projection this view publishes instead of keeping a second reader.
+pub(crate) mod pipeline;
 mod session;
 mod epic;
 mod spec_tree;

@@ -106,6 +106,36 @@ pub struct SpecDraftOpts {
     pub force_scope: bool,
 }
 
+/// Directory entries the harness writes into a spec directory BEFORE the spec
+/// itself is drafted: the per-spec NDJSON event log and the dispatch sidecar.
+/// Opening a work unit emits the first event, which creates `<spec>/.events/`;
+/// the draft then arrives to find "its own" directory already there.
+const HARNESS_STATE_ENTRIES: &[&str] = &[".events", ".dispatch"];
+
+/// `true` when `dir` exists but holds NOTHING except the harness state listed in
+/// [`HARNESS_STATE_ENTRIES`] — i.e. no spec has been drafted into it yet.
+///
+/// Creating the work unit and drafting its spec are two steps of one sequence,
+/// and the first used to block the second: the event log landed in the spec
+/// directory, `output.exists()` fired, and the draft refused with "pass
+/// `--force` to overwrite" — an overwrite flag demanded for a directory holding
+/// nothing to overwrite. Anything else present (a `spec.md`, a `meta.json`, a
+/// wave dir, a stray file) is a REAL draft the guard must still protect.
+fn holds_only_harness_state(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Unreadable: treat as occupied — refusing is the safe direction when
+        // we cannot prove the directory is empty of drafted work.
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !HARNESS_STATE_ENTRIES.contains(&name.as_str()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Scan existing spec directories under `spec_parent` for a NEAR-duplicate of
 /// `slug` — a sibling whose hyphen-token set overlaps `slug`'s by a high ratio
 /// (Jaccard >= 0.6 with >= 2 shared tokens). Catches a re-draft of the same
@@ -166,7 +196,9 @@ pub fn run(opts: SpecDraftOpts) {
             })
     });
 
-    if output.exists() && !opts.force {
+    // A directory holding only the harness's own event log is not a drafted
+    // spec — see [`holds_only_harness_state`]. Everything else still refuses.
+    if output.exists() && !opts.force && !holds_only_harness_state(&output) {
         emit_error("output exists; pass --force to overwrite", &output.display().to_string());
         return;
     }
@@ -198,20 +230,21 @@ pub fn run(opts: SpecDraftOpts) {
     let build_command =
         mustard_core::ProjectConfig::load(&project_root).build_command_or_fallback();
 
-    // ---- Enrich the Context section with the scan digest (the same insumos
-    // `feature::run` emits). Deterministic, token-free, fail-open: a missing
-    // model or empty match degrades to the plain placeholder. A low-confidence
-    // answer (`weak`/`none`) materialises NOTHING (no labelled noise in the
-    // artifact). `--query-terms` lets the orchestrator pass the repo-vocabulary
-    // terms that produced a strong report (a PT intent re-tokenised raw repeats
-    // the weak query). The digest does NOT seed the `## Checklist`: an anchor is
-    // a READ candidate (evidence), never an implementation target — the
-    // checklist drafts as a single hand-trackable task and the real file census
-    // is authored in ANALYZE/PLAN (`## Files`). ----
+    // ---- Query the scan digest (the same insumos `feature::run` emits).
+    // Deterministic, token-free, fail-open: a missing model or empty match
+    // yields nothing. A low-confidence answer (`weak`/`none`) yields nothing
+    // either (no labelled noise). `--query-terms` lets the orchestrator pass the
+    // repo-vocabulary terms that produced a strong report (a PT intent
+    // re-tokenised raw repeats the weak query). The anchors are REPORTED on
+    // stdout, never written into the spec: they are read candidates for the
+    // orchestrator, and the PRD layer is prose-only (see
+    // [`render_scan_anchors`]). The digest does NOT seed the `## Checklist`
+    // either — an anchor is evidence, never an implementation target; the real
+    // file census is authored in ANALYZE/PLAN (`## Files`). ----
     let digest = scan_digest(&opts.intent, opts.query_terms.as_deref());
-    let context_block = digest
+    let scan_anchors = digest
         .as_ref()
-        .and_then(|q| render_context_block(q, lang_locale));
+        .and_then(|q| render_scan_anchors(q, lang_locale));
 
     // ---- Build the canonical input + validate before writing. ----
     let input = build_input(
@@ -222,7 +255,6 @@ pub fn run(opts: SpecDraftOpts) {
         opts.waves,
         lang_locale,
         &build_command,
-        context_block.as_deref(),
     );
     if let Err(violations) = mustard_core::domain::spec::contract::validate(&input) {
         let detail = violations
@@ -298,6 +330,11 @@ pub fn run(opts: SpecDraftOpts) {
     });
     if let (Some(obj), Some(downgrade)) = (report.as_object_mut(), scope_downgraded) {
         obj.insert("scopeDowngraded".to_string(), downgrade);
+    }
+    // The scan anchors ride the REPORT, not the artifact — the orchestrator
+    // reads them to decide what to open, and `## Context` stays prose.
+    if let (Some(obj), Some(anchors)) = (report.as_object_mut(), scan_anchors) {
+        obj.insert("scanAnchors".to_string(), json!(anchors));
     }
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
 }
@@ -477,7 +514,6 @@ fn build_input(
     waves: u32,
     lang_locale: Locale,
     build_command: &str,
-    context_block: Option<&str>,
 ) -> SpecInput {
     SpecInput {
         slug: slug.to_string(),
@@ -502,7 +538,7 @@ fn build_input(
             .iter()
             .map(|n| SectionBody {
                 name: (*n).to_string(),
-                body: prd_section_default(n, intent, lang_locale, context_block),
+                body: prd_section_default(n, intent, lang_locale),
             })
             .collect(),
         plan_sections: if matches!(scope, Scope::Full) {
@@ -577,8 +613,8 @@ fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<Acceptance
 /// `checklist-auto-mark` hook tracks whatever ` → <path>` items land there —
 /// keyed off the files DECIDED, not the files the digest guessed. The single
 /// fallback item keeps the contract's `ChecklistEmpty` rule and the close-gate
-/// checklist gate satisfied. Anchors still ride the draft as READ evidence in
-/// the Context block ([`render_context_block`]).
+/// checklist gate satisfied. Anchors still ride the RUN as READ evidence — on
+/// the stdout report, not in the artifact ([`render_scan_anchors`]).
 fn build_checklist(lang: Locale) -> Vec<ChecklistItem> {
     vec![ChecklistItem {
         label: translate("checklist.first_task", lang).to_string(),
@@ -591,18 +627,17 @@ fn build_checklist(lang: Locale) -> Vec<ChecklistItem> {
 /// language-agnostic EN identifier from [`PRD_SECTIONS`] (`"context"`,
 /// `"users"`, …). The returned body is fully localised via the catalogue
 /// (the body is part of the spec-facing narrative; only the keys are EN).
-fn prd_section_default(
-    name: &str,
-    intent: &str,
-    lang: Locale,
-    context_block: Option<&str>,
-) -> String {
+///
+/// `"context"` is PROSE ONLY — the intent sentence plus the why-now prompt.
+/// The scan anchors the drafter used to splice in here were a bullet list of
+/// file paths, which the shipped spec law (`refs/feature/spec-language.md`)
+/// forbids in the PRD layer: `## Context` briefs a human rediscovering the work,
+/// so paths, identifiers and lists belong to `## Root cause` / `## Files`. They
+/// now ride the command's stdout report instead (see [`render_scan_anchors`]).
+fn prd_section_default(name: &str, intent: &str, lang: Locale) -> String {
     let fill_why_now = translate("placeholder.fill_why_now", lang);
     match name {
-        "context" => match context_block {
-            Some(block) => format!("{intent}.\n\n{block}\n\n{fill_why_now}"),
-            None => format!("{intent}.\n\n{fill_why_now}"),
-        },
+        "context" => format!("{intent}.\n\n{fill_why_now}"),
         "users" => translate("placeholder.fill_beneficiary", lang).to_string(),
         "metric" => translate("placeholder.fill_metric", lang).to_string(),
         "non-goals" => translate("placeholder.fill_excluded", lang).to_string(),
@@ -641,10 +676,10 @@ const ANCHOR_TERM_CAP: usize = 4;
 
 /// Query the scan digest for the intent — the same deterministic insumos
 /// `feature::run` emits, recomputed here. It costs no tokens (a local query
-/// against `grain.model.json`, not an AI call). The answer feeds the Context
-/// enrichment block ([`render_context_block`]). Returns `None` when the model
-/// is absent or the query failed (fail-open: the consumer degrades to its
-/// placeholder).
+/// against `grain.model.json`, not an AI call). The answer feeds the reported
+/// anchor briefing ([`render_scan_anchors`]). Returns `None` when the model
+/// is absent or the query failed (fail-open: the report simply omits the
+/// briefing).
 fn scan_digest(intent: &str, query_terms: Option<&str>) -> Option<DigestQuery> {
     let model = PathBuf::from(project_dir())
         .join(".claude")
@@ -688,8 +723,13 @@ fn anchor_terms<'a>(q: &'a DigestQuery, file: &str) -> &'a [String] {
         .map_or(&[], |d| d.terms.as_slice())
 }
 
-/// Render the Context enrichment markdown from a digest answer. Pure (no I/O)
-/// so it is unit-testable. Returns `None` when there is nothing to show.
+/// Render the scan-anchor briefing from a digest answer — the read candidates
+/// the orchestrator should open before deciding. Pure (no I/O) so it is
+/// unit-testable. Returns `None` when there is nothing to show.
+///
+/// This markdown goes to the command's stdout report (`scanAnchors`), NEVER
+/// into the spec: it is a bullet list of file paths, and the shipped spec law
+/// (`refs/feature/spec-language.md`) keeps the PRD layer prose-only.
 ///
 /// Confidence rule (tightened after the field case where a PT intent's
 /// internal re-query came back `weak` and seeded the scaffold with 12
@@ -701,7 +741,7 @@ fn anchor_terms<'a>(q: &'a DigestQuery, file: &str) -> &'a [String] {
 /// repo-vocabulary terms that produced a strong report. On a confident
 /// answer each anchor is annotated with the matched terms that carried it
 /// (`files_detail`, capped at [`ANCHOR_TERM_CAP`]).
-fn render_context_block(q: &DigestQuery, lang: Locale) -> Option<String> {
+fn render_scan_anchors(q: &DigestQuery, lang: Locale) -> Option<String> {
     if digest_low_confidence(q) {
         return None;
     }
@@ -935,13 +975,13 @@ mod tests {
     }
 
     #[test]
-    fn render_context_block_lists_anchors_and_slices() {
+    fn render_scan_anchors_lists_anchors_and_slices() {
         let q = digest(
             r#"{"query":["list"],"slices":[{"label":"List","recurrence":3}],
                 "files":["src/list.rs","src/view.rs"],"miss":false,
                 "report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
         );
-        let s = render_context_block(&q, Locale::PtBr).unwrap();
+        let s = render_scan_anchors(&q, Locale::PtBr).unwrap();
         assert!(s.contains("Âncoras (do scan):"));
         assert!(s.contains("- src/list.rs"));
         assert!(s.contains("Fatias recorrentes"));
@@ -949,19 +989,19 @@ mod tests {
     }
 
     #[test]
-    fn render_context_block_none_when_empty() {
+    fn render_scan_anchors_none_when_empty() {
         let q = digest(r#"{"miss":true}"#);
-        assert!(render_context_block(&q, Locale::EnUs).is_none());
+        assert!(render_scan_anchors(&q, Locale::EnUs).is_none());
     }
 
     #[test]
-    fn render_context_block_caps_anchors_and_uses_en_heading() {
+    fn render_scan_anchors_caps_anchors_and_uses_en_heading() {
         let files: Vec<String> = (0..20).map(|i| format!("f{i}.rs")).collect();
         let q = digest(&format!(
             r#"{{"files":{},"miss":false}}"#,
             serde_json::to_string(&files).unwrap()
         ));
-        let s = render_context_block(&q, Locale::EnUs).unwrap();
+        let s = render_scan_anchors(&q, Locale::EnUs).unwrap();
         assert!(s.contains("Anchors (from scan):"));
         assert_eq!(s.matches("- f").count(), SCAN_ANCHOR_CAP);
     }
@@ -971,7 +1011,7 @@ mod tests {
     /// materialises NO Context block at all (noise never enters the artifact,
     /// labelled or not). `none` behaves identically.
     #[test]
-    fn roundtrip_weak_digest_materialises_no_context_block() {
+    fn roundtrip_weak_digest_reports_no_anchors() {
         let weak = digest(
             r#"{"query":["payables"],
                 "files":["src/financial/accounts.rs","src/financial/codes.rs"],
@@ -984,14 +1024,14 @@ mod tests {
         // Context: NOTHING — anchors AND slices from a weak answer are noise
         // the orchestrator would have to overwrite by hand (field case).
         assert!(
-            render_context_block(&weak, Locale::PtBr).is_none(),
+            render_scan_anchors(&weak, Locale::PtBr).is_none(),
             "weak answer must materialise no Context block"
         );
-        assert!(render_context_block(&weak, Locale::EnUs).is_none());
+        assert!(render_scan_anchors(&weak, Locale::EnUs).is_none());
 
         let none = digest(r#"{"files":["src/x.rs"],"miss":true,"report":{"matched":0,"total":2,"reason":"none","terms":[]}}"#);
         assert!(digest_low_confidence(&none));
-        assert!(render_context_block(&none, Locale::PtBr).is_none());
+        assert!(render_scan_anchors(&none, Locale::PtBr).is_none());
     }
 
     /// Roundtrip (robustez-ancoras fase 2) — a `strong` answer keeps the plain
@@ -1011,7 +1051,7 @@ mod tests {
                 "report":{"matched":2,"total":2,"reason":"strong","terms":[]}}"#,
         );
         assert!(!digest_low_confidence(&strong));
-        let s = render_context_block(&strong, Locale::EnUs).unwrap();
+        let s = render_scan_anchors(&strong, Locale::EnUs).unwrap();
         assert!(s.contains("Anchors (from scan):"), "plain label on strong:\n{s}");
         assert!(!s.contains("LOW CONFIDENCE"), "no weak label on strong:\n{s}");
         // Term annotation, capped at ANCHOR_TERM_CAP (5th term dropped).
@@ -1028,12 +1068,12 @@ mod tests {
         // Context block still renders (legacy compat).
         let old = digest(r#"{"files":["src/a.rs"],"miss":false}"#);
         assert!(!digest_low_confidence(&old));
-        assert!(render_context_block(&old, Locale::EnUs).is_some());
+        assert!(render_scan_anchors(&old, Locale::EnUs).is_some());
     }
 
     #[test]
     fn build_input_validates() {
-        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build", None);
+        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build");
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
@@ -1047,8 +1087,7 @@ mod tests {
     fn full_draft_never_zero_waves_or_non_wave_plan() {
         for waves in [0u32, 1, 2, 7] {
             let input = build_input(
-                "demo", "Demo", Scope::Full, "pt-BR", waves, Locale::PtBr,
-                "rtk cargo build", None,
+                "demo", "Demo", Scope::Full, "pt-BR", waves, Locale::PtBr, "rtk cargo build",
             );
             // total_waves is floored to ≥ 1 for Full.
             assert_eq!(
@@ -1072,8 +1111,7 @@ mod tests {
         }
         // Light: no waves, no wave-plan flag (invariant is Full-only).
         let light = build_input(
-            "demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs,
-            "rtk cargo build", None,
+            "demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "rtk cargo build",
         );
         assert_eq!(light.total_waves, None, "Light carries no waves");
         let light_meta = build_meta_from_input(&light);
@@ -1084,7 +1122,7 @@ mod tests {
     #[test]
     fn build_input_validates_in_en_us() {
         // Section *keys* are canonical EN identifiers; bodies are localised.
-        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build", None);
+        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build");
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
         // Body strings should be EN, not PT.
         let users = input
@@ -1100,7 +1138,7 @@ mod tests {
         // The build command flows into the trailing build-green SAFETY AC (the
         // LAST criterion), not `rtk cargo build` as the only AC; the leading ACs
         // are EARS behaviour skeletons, never a lone build tautology.
-        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build", None);
+        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build");
         let acs = &input.acceptance_criteria;
         assert!(acs.len() >= 2, "seed carries behaviour ACs + a safety AC, got {}", acs.len());
         assert_eq!(acs.last().unwrap().command, "pnpm build", "build command is the trailing safety AC");
@@ -1119,7 +1157,6 @@ mod tests {
             0,
             Locale::EnUs,
             mustard_core::BUILD_COMMAND_FALLBACK,
-            None,
         );
         assert_eq!(
             input2.acceptance_criteria.last().unwrap().command,
@@ -1336,7 +1373,7 @@ mod tests {
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("spec.md"), spec_body).unwrap();
         let full_input = build_input(
-            slug, "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None,
+            slug, "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build",
         );
         let meta = build_meta_from_input(&full_input);
         spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();
@@ -1499,7 +1536,7 @@ mod tests {
         let spec_dir = dir.path().join(".claude").join("spec").join("ghost");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let full_input = build_input(
-            "ghost", "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None,
+            "ghost", "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build",
         );
         let meta = build_meta_from_input(&full_input);
         spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();

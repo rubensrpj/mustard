@@ -1,31 +1,43 @@
 //! `pr_detect` — DORA telemetry on `gh pr` commands (PostToolUse(Bash)).
 //!
 //! Pure telemetry — classification plus a best-effort `pr.opened` /
-//! `pr.merged` harness event. Never affects a verdict. 1:1 port of
-//! `pr-detect.js`.
+//! `pr.merged` harness event. Never affects a verdict. Ported from
+//! `pr-detect.js`, since corrected where the port faithfully carried the
+//! original's blind spots: a command chain hid the PR verb, and spec
+//! attribution read a directory the harness stopped writing.
 
-use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::HookInput;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::time::now_iso8601;
 use serde_json::json;
-use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::lex::truncate;
 
-/// Classify a command as a PR event. Mirrors `classify` in `pr-detect.js`:
-/// a conservative match at the start of the token sequence, tolerating a
-/// leading `rtk` wrapper.
+/// Classify a command as a PR event.
+///
+/// The predecessor read only the FIRST token of the whole command string, so it
+/// saw `gh pr create` alone and nothing else: `git push && gh pr create --fill`,
+/// a `cd`-prefixed invocation, or a merge on the second line of a multi-line
+/// command all classified to `None` and vanished from the DORA report. Every
+/// segment is now classified — the command is split on shell separators exactly
+/// as bash reads them (via [`super::lex::is_cmd_separator`], with quoted
+/// operators masked first so a `-m "a || b"` message cannot forge a boundary),
+/// and each segment is judged on ITS first token.
+///
+/// Still conservative in the way that matters: the verb must be the segment's
+/// leading word, so `echo gh pr create` is not a PR event.
 pub(super) fn classify_pr(command: &str) -> Option<&'static str> {
-    let cleaned = command.trim();
-    // Strip a leading `rtk ` wrapper (case-insensitive).
-    // .get() keeps this panic-proof on multi-byte UTF-8 near the boundary.
-    let cleaned = if cleaned.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("rtk ")) {
-        cleaned[4..].trim_start()
-    } else {
-        cleaned
-    };
+    let masked = super::lex::mask_quoted_operators(command);
+    masked
+        .split(super::lex::is_cmd_separator)
+        .find_map(classify_pr_segment)
+}
+
+/// Classify ONE shell segment (no separators inside). A leading `rtk ` wrapper
+/// is transparent — the project routes every command through it.
+fn classify_pr_segment(segment: &str) -> Option<&'static str> {
+    let cleaned = super::lex::strip_leading_rtk(segment.trim()).trim_start();
     let tokens: Vec<&str> = cleaned.split_whitespace().collect();
     if tokens.len() >= 3 && tokens[0].eq_ignore_ascii_case("gh") && tokens[1] == "pr" {
         match tokens[2] {
@@ -53,30 +65,20 @@ fn detect_branch(project_dir: &str) -> Option<String> {
     if branch.is_empty() { None } else { Some(branch) }
 }
 
-/// The most recently modified `.pipeline-states/*.json` (excluding
-/// `*.metrics.json`), by mtime. Mirrors `detectMostRecentSpec` in
-/// `pr-detect.js`. Fail-open `None`.
-fn detect_recent_spec(project_dir: &str) -> Option<String> {
-    let paths = ClaudePaths::for_project(Path::new(project_dir)).ok()?;
-    let dir = paths.pipeline_states_dir();
-    let entries = std::fs::read_dir(&dir).ok()?;
-    let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !std::path::Path::new(&name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || name.ends_with(".metrics.json") {
-            continue;
-        }
-        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            let spec = name.trim_end_matches(".json").to_string();
-            best = Some((mtime, spec));
-        }
-    }
-    best.map(|(_, spec)| spec)
+/// The spec this PR belongs to, for the DORA pairing key.
+///
+/// The predecessor scanned `.claude/.pipeline-states/*.json` by mtime — a
+/// directory the harness stopped writing, so every `pr.opened` / `pr.merged`
+/// event was born with `spec: null` and the report could only ever pair by
+/// branch. Resolution now goes through the SAME cascade the approval observers
+/// use ([`crate::shared::context::spec_for_session`] then `current_spec`): the
+/// session→spec marker the router persists is precise and O(1), and there is one
+/// definition of "which spec is this session on" rather than two. Fail-open
+/// `None` — a PR with no resolvable spec still pairs by branch.
+fn detect_recent_spec(project_dir: &str, session_id: Option<&str>) -> Option<String> {
+    session_id
+        .and_then(|sid| crate::shared::context::spec_for_session(project_dir, sid))
+        .or_else(|| crate::shared::context::current_spec(project_dir))
 }
 
 /// `true` when the Bash tool reported a non-zero exit code. Mirrors the
@@ -99,7 +101,7 @@ pub(super) fn emit_pr_event(
     command: &str,
 ) {
     let branch = detect_branch(project_dir);
-    let spec = detect_recent_spec(project_dir);
+    let spec = detect_recent_spec(project_dir, session_id);
     let command_field = if command.len() > 200 {
         format!("{}...", truncate(command, 200))
     } else {
@@ -147,5 +149,28 @@ mod tests {
         assert_eq!(classify_pr("git commit -m x"), None);
         assert_eq!(classify_pr("gh issue list"), None);
         assert_eq!(classify_pr("echo gh pr create"), None);
+    }
+
+    /// A PR command CHAINED after another command is still a PR event. The
+    /// first-token-only reader saw none of these, which is how a report can
+    /// under-count what opened and show nothing merged over a period that had
+    /// merges — every `gh pr` issued as part of a chain was invisible.
+    #[test]
+    fn pr_detect_sees_through_command_chains() {
+        assert_eq!(
+            classify_pr("git push -u origin dev && gh pr create --fill"),
+            Some("pr.opened"),
+        );
+        assert_eq!(classify_pr("cd apps/rt; gh pr merge 103 --squash"), Some("pr.merged"));
+        // Multi-line commands: bash treats the newline like `;`, so must we.
+        assert_eq!(
+            classify_pr("echo opening\nrtk gh pr create --fill --base main"),
+            Some("pr.opened"),
+        );
+        // A quoted operator inside a commit message is not a segment boundary,
+        // and the quoted text is not a command.
+        assert_eq!(classify_pr("git commit -m \"gh pr create || nope\""), None);
+        // The verb must still LEAD its own segment — a mention is not an event.
+        assert_eq!(classify_pr("echo run && echo gh pr create"), None);
     }
 }
