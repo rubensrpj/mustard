@@ -33,7 +33,7 @@ use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use serde_json::Value;
 
 use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};
-use crate::shared::context::approval_marker_path;
+use crate::shared::context::{approval_marker_path, marker_body};
 
 /// The PostToolUse(ExitPlanMode) approval recorder.
 pub struct PlanApprovalObserver;
@@ -79,9 +79,11 @@ impl Observer for PlanApprovalObserver {
 
         // Both facts hold → record the genuine approval, best-effort.
         if let Some(marker) = approval_marker_path(&cwd, &spec) {
-            let body = format!(
-                "spec={spec}\nvia=ExitPlanMode\nsession={}\n",
-                input.session_id.as_deref().unwrap_or("unknown")
+            let body = marker_body(
+                &spec,
+                "ExitPlanMode",
+                input.session_id.as_deref().unwrap_or("unknown"),
+                &mustard_core::time::now_iso8601(),
             );
             let _ = mustard_core::io::fs::write_atomic(&marker, body.as_bytes());
         }
@@ -188,6 +190,28 @@ mod tests {
         assert!(body.contains("via=ExitPlanMode"), "provenance recorded: {body}");
         assert!(body.contains("spec=epic"));
         assert!(body.contains("session=s-1"));
+    }
+
+    /// This door's half of the shared-body claim: what it minted reads back as
+    /// typed provenance carrying an instant — a field only `marker_body` emits,
+    /// so a door that went back to composing its own text fails here.
+    #[test]
+    fn marker_body_is_the_single_writer_for_exit_plan_mode() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full", "Plan");
+        bind_session(root, "s-7", "epic");
+        PlanApprovalObserver.observe(
+            &exit_plan_input("s-7", json!({ "plan": "# Approved plan" })),
+            &ctx(root.to_str().unwrap()),
+        );
+        let marker = approval_marker_path(root.to_str().unwrap(), "epic").unwrap();
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the minted body must read back as provenance");
+        assert_eq!(p.via, "ExitPlanMode");
+        assert_eq!(p.spec, "epic");
+        assert_eq!(p.session, "s-7");
+        assert!(!p.at.is_empty(), "the door must record an instant");
     }
 
     #[test]

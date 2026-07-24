@@ -1,21 +1,21 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": null,
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-07-24T20:35:25.877Z",
   "parent": "give-the-approval-markers-timestamp",
   "checklist": [
     {
       "label": "apps/rt/src/commands/spec/approve_spec.rs",
       "path": "apps/rt/src/commands/spec/approve_spec.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/pipeline/status.rs",
       "path": "apps/rt/src/commands/pipeline/status.rs",
-      "done": false
+      "done": true
     }
   ]
 }

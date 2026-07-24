@@ -70,7 +70,7 @@ use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::path::Path;
 
-use crate::shared::context::{approval_marker_path, current_spec, spec_for_session};
+use crate::shared::context::{approval_marker_path, current_spec, marker_body, spec_for_session};
 
 /// The PostToolUse(AskUserQuestion) approval recorder.
 pub struct ApprovalMarkerObserver;
@@ -270,9 +270,11 @@ impl Observer for ApprovalMarkerObserver {
 
         // All three facts hold → record the genuine approval, best-effort.
         if let Some(marker) = approval_marker_path(&cwd, &spec) {
-            let body = format!(
-                "spec={spec}\nvia=AskUserQuestion\nsession={}\n",
-                input.session_id.as_deref().unwrap_or("unknown")
+            let body = marker_body(
+                &spec,
+                "AskUserQuestion",
+                input.session_id.as_deref().unwrap_or("unknown"),
+                &mustard_core::time::now_iso8601(),
             );
             let _ = mustard_core::io::fs::write_atomic(&marker, body.as_bytes());
         }
@@ -422,6 +424,26 @@ mod tests {
         let input = ask_input("s-1", json!({ "Decision": ["Approve only — new session"] }));
         ApprovalMarkerObserver.observe(&input, &ctx(root.to_str().unwrap()));
         assert!(marker_exists(root, "epic"));
+    }
+
+    /// This door's half of the shared-body claim: what it minted reads back as
+    /// typed provenance carrying an instant — a field only `marker_body` emits,
+    /// so a door that went back to composing its own text fails here.
+    #[test]
+    fn marker_body_is_the_single_writer_for_ask_user_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full", "Plan");
+        bind_session(root, "s-7", "epic");
+        let input = ask_input("s-7", json!({ "Decision": "Aprovar e implementar agora" }));
+        ApprovalMarkerObserver.observe(&input, &ctx(root.to_str().unwrap()));
+        let marker = approval_marker_path(root.to_str().unwrap(), "epic").unwrap();
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the minted body must read back as provenance");
+        assert_eq!(p.via, "AskUserQuestion");
+        assert_eq!(p.spec, "epic");
+        assert_eq!(p.session, "s-7");
+        assert!(!p.at.is_empty(), "the door must record an instant");
     }
 
     #[test]

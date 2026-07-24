@@ -44,6 +44,8 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::shared::context::MarkerProvenance;
+
 /// Options for `mustard-rt run approve-spec`.
 #[derive(Debug, Clone)]
 pub struct ApproveSpecOpts {
@@ -58,12 +60,33 @@ pub struct ApproveSpecOpts {
 }
 
 /// JSON success report. Mirrors the `tactical-fix-create` style (flat, typed).
+///
+/// `approvedVia` / `approvedAt` echo the provenance the approval marker already
+/// records — the door the approval came through and when. Both are omitted (not
+/// null) when the marker's body is unreadable or predates those keys: the marker
+/// EXISTENCE is what governed the gate above, so a missing echo degrades the
+/// report to silence, never to a failure.
 #[derive(Debug, Serialize)]
 struct ApproveReport {
     ok: bool,
     spec: String,
     approved: bool,
     resumed: bool,
+    #[serde(rename = "approvedVia", skip_serializing_if = "Option::is_none")]
+    approved_via: Option<String>,
+    #[serde(rename = "approvedAt", skip_serializing_if = "Option::is_none")]
+    approved_at: Option<String>,
+}
+
+/// The approval provenance to echo, read through the single reader in
+/// [`crate::shared::context::read_marker_provenance`].
+///
+/// `None` when the marker is absent OR its body is unreadable — the gate in
+/// [`run`] already decided approval from the marker's EXISTENCE, so this read is
+/// purely informative and can never itself refuse a spec.
+fn approval_provenance(cwd: &str, spec: &str) -> Option<MarkerProvenance> {
+    let path = crate::shared::context::approval_marker_path(cwd, spec)?;
+    crate::shared::context::read_marker_provenance(&path)
 }
 
 /// JSON failure report.
@@ -329,11 +352,20 @@ pub fn run(opts: ApproveSpecOpts) {
         );
     }
 
+    // Echo the provenance the marker already recorded. Read AFTER the gate, and
+    // independent of it: an unreadable body yields `None` here but never changes
+    // `approved`, which the existence check above already settled.
+    let prov = approval_provenance(&crate::shared::context::cwd(), &opts.spec);
     let report = ApproveReport {
         ok: true,
         spec: opts.spec.clone(),
         approved: true,
         resumed: opts.resume,
+        approved_via: prov.as_ref().map(|p| p.via.clone()),
+        approved_at: prov
+            .as_ref()
+            .map(|p| p.at.clone())
+            .filter(|s| !s.is_empty()),
     };
     println!(
         "{}",
@@ -720,5 +752,85 @@ mod tests {
         // Neither marker missing → no refusal message, and strict proceeds.
         assert_eq!(unmet_gate_message("epic", false, false), None);
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Provenance echo — the report surfaces the door + instant the marker holds
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn approve_spec_echoes_provenance() {
+        // A marker written by the shared body writer reads back as the door and
+        // the instant, and the report serialises both under stable keys.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = "epic";
+        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
+        let marker =
+            crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec).unwrap();
+        std::fs::write(
+            &marker,
+            crate::shared::context::marker_body(
+                spec,
+                "AskUserQuestion",
+                "s-1",
+                "2026-07-24T10:00:00.000Z",
+            ),
+        )
+        .unwrap();
+
+        let prov = approval_provenance(root.to_str().unwrap(), spec).expect("provenance reads back");
+        assert_eq!(prov.via, "AskUserQuestion");
+        assert_eq!(prov.at, "2026-07-24T10:00:00.000Z");
+
+        let report = ApproveReport {
+            ok: true,
+            spec: spec.to_string(),
+            approved: true,
+            resumed: false,
+            approved_via: Some(prov.via.clone()),
+            approved_at: Some(prov.at.clone()),
+        };
+        let json: Value = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+        assert_eq!(json["approvedVia"], "AskUserQuestion");
+        assert_eq!(json["approvedAt"], "2026-07-24T10:00:00.000Z");
+    }
+
+    #[test]
+    fn unreadable_marker_body_still_approves() {
+        // The marker EXISTS (so the gate proceeds) but its body has no `via=`
+        // line: the provenance read degrades to `None` and the echoed keys are
+        // omitted — never a rejection, and never a null key.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = "epic";
+        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
+        let marker =
+            crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec).unwrap();
+        std::fs::write(&marker, b"garbage with no via line\n").unwrap();
+
+        // Existence still governs the gate.
+        assert!(marker.exists());
+        assert_eq!(
+            approval_gate(ApprovalMode::Strict, marker.exists()),
+            ApprovalGate::Proceed
+        );
+        // But the provenance read degrades to nothing.
+        assert!(approval_provenance(root.to_str().unwrap(), spec).is_none());
+
+        // The report a degraded read produces: approved, with the echo keys
+        // simply absent (skip_serializing_if), not present-and-null.
+        let report = ApproveReport {
+            ok: true,
+            spec: spec.to_string(),
+            approved: true,
+            resumed: false,
+            approved_via: None,
+            approved_at: None,
+        };
+        let json: Value = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+        assert_eq!(json["approved"], true);
+        assert!(json.get("approvedVia").is_none(), "no null key: {json}");
+        assert!(json.get("approvedAt").is_none(), "no null key: {json}");
     }
 }

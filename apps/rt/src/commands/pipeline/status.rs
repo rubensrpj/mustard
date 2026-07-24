@@ -13,6 +13,7 @@
 //! Every IO/parse failure produces a graceful fallback value. The process
 //! always exits 0 — a status command must never block work.
 
+use crate::shared::context::MarkerProvenance;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -302,9 +303,25 @@ fn last_build(root: &Path) -> Option<BuildResult> {
     Some(BuildResult { at, ok })
 }
 
+/// An active pipeline's spec name plus the approval provenance its marker holds
+/// (the door + instant), or `None` when the spec carries no readable marker.
+struct ActiveSpec {
+    name: String,
+    approval: Option<MarkerProvenance>,
+}
+
 struct PipelineSummary {
-    active: Vec<String>,
+    active: Vec<ActiveSpec>,
     orphaned: Vec<String>,
+}
+
+/// The approval provenance for one active spec, read through the single reader
+/// in `context`. `None` for an un-approved spec or an unreadable marker body —
+/// on the status line the provenance only decorates; its absence is silence,
+/// never an error.
+fn approval_provenance(root: &Path, spec: &str) -> Option<MarkerProvenance> {
+    let path = crate::shared::context::approval_marker_path(root.to_str()?, spec)?;
+    crate::shared::context::read_marker_provenance(&path)
 }
 
 fn pipeline_summary(root: &Path) -> PipelineSummary {
@@ -359,7 +376,10 @@ fn pipeline_summary(root: &Path) -> PipelineSummary {
         });
 
         if outcome_active && stage_ok {
-            active.push(entry.file_name.clone());
+            active.push(ActiveSpec {
+                approval: approval_provenance(root, &entry.file_name),
+                name: entry.file_name.clone(),
+            });
         } else if outcome_active {
             orphaned.push(entry.file_name.clone());
         }
@@ -396,8 +416,18 @@ fn render_default_table(
     lines.push(String::new());
     lines.push("## Pipelines\n".to_string());
     lines.push(format!("  Active   : {}", pipelines.active.len()));
-    for name in &pipelines.active {
-        lines.push(format!("    - {name}"));
+    for spec in &pipelines.active {
+        match &spec.approval {
+            // Echo the door + instant the marker recorded; a legacy marker with
+            // no instant still names its door.
+            Some(p) if !p.at.is_empty() => {
+                lines.push(format!("    - {} (approved via {} at {})", spec.name, p.via, p.at));
+            }
+            Some(p) => {
+                lines.push(format!("    - {} (approved via {})", spec.name, p.via));
+            }
+            None => lines.push(format!("    - {}", spec.name)),
+        }
     }
     if !pipelines.orphaned.is_empty() {
         lines.push(format!("  Orphaned : {}", pipelines.orphaned.len()));
@@ -491,7 +521,19 @@ fn render_default_json(
             }
         },
         "pipelines": {
-            "active": pipelines.active,
+            "active": pipelines.active.iter().map(|s| {
+                // `name` always present; the provenance keys appear only when the
+                // marker read back — omitted, never null, on a missing/legacy read.
+                let mut obj = serde_json::Map::new();
+                obj.insert("name".to_string(), json!(s.name));
+                if let Some(p) = &s.approval {
+                    obj.insert("approvedVia".to_string(), json!(p.via));
+                    if !p.at.is_empty() {
+                        obj.insert("approvedAt".to_string(), json!(p.at));
+                    }
+                }
+                Value::Object(obj)
+            }).collect::<Vec<_>>(),
             "orphaned": pipelines.orphaned,
         },
         "build": match build {
@@ -612,6 +654,59 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert!(parsed.get("hooks").is_some());
         assert_eq!(parsed["hooks"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn status_shows_approval_provenance() {
+        // An active spec whose approval marker records a door + instant surfaces
+        // BOTH: the summary carries the typed provenance, and the human table
+        // line names the door and the date.
+        let td = tempdir().unwrap();
+        let root = td.path();
+        let spec = "epic";
+        let sdir = root.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&sdir).unwrap();
+        // The legacy header `pipeline_summary` keys off (outcome + stage).
+        std::fs::write(
+            sdir.join("spec.md"),
+            "### Outcome: Active\n### Stage: Execute\n# Epic\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sdir.join(".approved-by-user"),
+            crate::shared::context::marker_body(
+                spec,
+                "AskUserQuestion",
+                "s-1",
+                "2026-07-24T10:00:00.000Z",
+            ),
+        )
+        .unwrap();
+
+        let summary = pipeline_summary(root);
+        let active = summary
+            .active
+            .iter()
+            .find(|a| a.name == spec)
+            .expect("the seeded spec is active");
+        let prov = active.approval.as_ref().expect("provenance reads back");
+        assert_eq!(prov.via, "AskUserQuestion");
+        assert_eq!(prov.at, "2026-07-24T10:00:00.000Z");
+
+        let git = GitStatus {
+            branch: "b".to_string(),
+            modified: Vec::new(),
+            last_commit_hash: String::new(),
+            last_commit_subject: String::new(),
+        };
+        let registry = ModelMeta {
+            version: "missing".to_string(),
+            generated_at: String::new(),
+            entity_count: 0,
+        };
+        let table = render_default_table(&git, &summary, &None, &registry);
+        assert!(table.contains("AskUserQuestion"), "table names the door: {table}");
+        assert!(table.contains("2026-07-24T10:00:00.000Z"), "table names the date: {table}");
     }
 
     #[test]
