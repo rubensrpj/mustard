@@ -64,6 +64,24 @@ pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
     out
 }
 
+/// One `anchorsDetail` row.
+///
+/// On a STRONG report the matched `terms` are dropped: every anchor is also a
+/// candidate (measured on this repository: 12 of 12), and each candidate's
+/// evidence line already carries the same terms. `scoreX1024` is the field's
+/// only exclusive information, so it always stays — the relevance ORDER and the
+/// drop-off survive, the duplication does not.
+///
+/// A weak/none report keeps the terms: there `candidates` is not the menu the
+/// reader works from, so nothing else would carry them.
+fn anchor_detail_row(d: &FileDetail, strong: bool) -> Value {
+    if strong {
+        json!({ "file": d.file, "scoreX1024": d.score_x1024 })
+    } else {
+        json!({ "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms })
+    }
+}
+
 /// `true` when the report's reason forbids planning on top of this payload.
 /// The `weak`/`none` notes steer the orchestrator to a re-query, so rendering
 /// the planning fields (anchors, anchorsDetail, slices, contracts, hubs,
@@ -188,9 +206,16 @@ fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::V
         // drop-off — picking what to read without opening the scan JSON. The
         // score is live again: the anchor ranking is BM25F (fielded, path-
         // boosted), not the old score-less insumo union.
-        "anchorsDetail": if withhold { Vec::new() } else { q.files_detail.iter().map(|d| json!({
-            "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms,
-        })).collect::<Vec<_>>() },
+        // On a STRONG report the `terms` are dropped here: every anchor is also
+        // a candidate (measured on this repository: 12 of 12), and each
+        // candidate's evidence line already carries the same matched terms.
+        // `scoreX1024` is the field's only exclusive information, so it stays —
+        // the relevance ORDER and the drop-off survive, the duplication does
+        // not. A weak/none report keeps the terms: there `candidates` is not the
+        // menu the reader works from, so nothing else would carry them.
+        "anchorsDetail": if withhold { Vec::new() } else {
+            q.files_detail.iter().map(|d| anchor_detail_row(d, q.report.reason == "strong")).collect::<Vec<_>>()
+        },
         // The honest per-term match report (scan's tier ladder) — the truth
         // about what matched. Per term: the tier that carried it (exact |
         // fold | stem | lexicon | none), the natural-language evidence and
@@ -485,6 +510,11 @@ fn attach_retrieval(
     detail: &[FileDetail],
     rank_rows: &[RankFile],
     equiv: &std::collections::BTreeMap<String, Vec<String>>,
+    // `reason`: the report's strength (`strong` | `weak` | `none`), threaded in
+    // rather than re-read from `v`. The caller already holds it, and a function
+    // that digs its own inputs back out of the payload it is writing is exactly
+    // the hidden dependency this codebase has paid to remove elsewhere.
+    reason: &str,
 ) {
     // The bundle already ran the ranker; slice its pool into the two shapes the
     // fusion consumes: the top-INSUMOS_MAX file list (insumos) and the full rows
@@ -497,8 +527,21 @@ fn attach_retrieval(
         rank_rows.iter().map(|r| (r.file.clone(), r.terms.clone())).collect();
     let rows = feature_retrieval::insumos_rows(&insumos_rank, detail);
     let pool = feature_retrieval::build_pool(&pool_rank, detail);
+    // ORDER MATTERS: `uncovered` is computed from the WHOLE pool, before any
+    // narrowing. It is the absence radar the flow treats as a gate — every
+    // concept with no candidate must be settled by enumeration before planning.
+    // Narrowing the pool first would make genuinely covered concepts report as
+    // blind spots, turning a context saving into a broken check.
     let uncovered = uncovered_terms(intent, equiv, &pool);
-    let pool_rows = feature_retrieval::candidates_rows(&pool);
+    let mut pool_rows = feature_retrieval::candidates_rows(&pool);
+    // Only the PUBLISHED slice narrows, and only on a strong report. The
+    // instruction that consumes this field says to pick 5-10 files and "never
+    // all ~25", so on the common path the window was paying for rows the
+    // contract forbids using. A weak/none report is left alone: there the
+    // planning fields are withheld anyway, so there is nothing to save.
+    if reason == "strong" {
+        pool_rows.truncate(feature_retrieval::STRONG_POOL_MAX);
+    }
     if let Some(obj) = v.as_object_mut() {
         obj.insert("insumos".to_string(), json!(rows));
         obj.insert("candidates".to_string(), json!(pool_rows));
@@ -619,7 +662,7 @@ pub fn run(intent: &str, root: &Path) {
             // Additive retrieval fields: the RRF-fused `insumos` short-list + the
             // wide `candidates` selection pool (+ `gloss` when the auto-gloss
             // fired), fused IN-SESSION from the bundle rank pool - no spawn.
-            attach_retrieval(&mut v, intent, gloss.as_deref(), &q.files_detail, &bundle.rank, &equiv);
+            attach_retrieval(&mut v, intent, gloss.as_deref(), &q.files_detail, &bundle.rank, &equiv, q.report.reason.as_str());
             v
         }
         Err(err) => {
@@ -645,7 +688,7 @@ pub fn run(intent: &str, root: &Path) {
             // `insumos` + `candidates` are part of the stable shape — attached
             // on the fallback too (an unavailable digest usually means an
             // unavailable ranker, so both degrade to empty lists, honestly).
-            attach_retrieval(&mut v, intent, gloss.as_deref(), &[], &[], &equiv);
+            attach_retrieval(&mut v, intent, gloss.as_deref(), &[], &[], &equiv, "none");
             v
         }
     };
@@ -763,11 +806,15 @@ mod tests {
     #[test]
     fn feature_payload_exposes_anchors_detail_audit() {
         // `files_detail` passes through as `anchorsDetail` — per anchor, the
-        // BM25F relevance `scoreX1024` + the matched terms that carry it
-        // (file→terms provenance), so the orchestrator sees WHY each anchor is
-        // in the set AND its relevance order/drop-off, without opening the scan
-        // JSON. The score is live again (the ranking is BM25F, not the old
-        // score-less insumo union).
+        // BM25F relevance `scoreX1024`, so the orchestrator sees the relevance
+        // order and the drop-off without opening the scan JSON.
+        //
+        // The matched `terms` ride along only on a WEAK/none report. On a strong
+        // one they are dropped, because every anchor is also a candidate and the
+        // candidate's evidence line already carries them — measured on this
+        // repository at 12 of 12. This test asserts BOTH halves: the strong
+        // payload below must not carry them, and the weak payload at the end
+        // must.
         let q: DigestQuery = serde_json::from_str(
             r#"{"query":["refund"],"files":["src/refund.cs","src/tail.cs"],"files_detail":[{"file":"src/refund.cs","score_x1024":2048,"terms":["refund"]},{"file":"src/tail.cs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
         )
@@ -776,12 +823,28 @@ mod tests {
         let detail = v["anchorsDetail"].as_array().expect("anchorsDetail array");
         assert_eq!(detail.len(), 2, "one provenance row per anchor: {v}");
         assert_eq!(detail[0]["file"], "src/refund.cs");
-        assert_eq!(detail[0]["terms"], json!(["refund"]));
         assert_eq!(detail[0]["scoreX1024"], 2048, "the BM25F relevance score rides along: {v}");
         assert_eq!(detail[1]["scoreX1024"], 0, "tail anchor's score is honest: {v}");
-        assert_eq!(detail[1]["terms"], json!([]), "tail anchor shows no carrying terms: {v}");
+        assert!(
+            detail[0].get("terms").is_none() && detail[1].get("terms").is_none(),
+            "a strong report drops the terms the candidate evidence already carries: {v}"
+        );
         // The reason rides in the same payload.
         assert_eq!(v["report"]["reason"], "strong");
+
+        // The other half of the contract: a weak report KEEPS the terms, since
+        // there `candidates` is not the menu the reader works from.
+        let weak: DigestQuery = serde_json::from_str(
+            r#"{"query":["refund"],"files":["src/refund.cs"],"files_detail":[{"file":"src/refund.cs","score_x1024":2048,"terms":["refund"]}],"miss":false,"report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[]}}"#,
+        )
+        .expect("weak digest payload");
+        let wv = payload("refund", &weak, &[]);
+        let wdetail = wv["anchorsDetail"].as_array().expect("anchorsDetail array");
+        assert_eq!(
+            wdetail[0]["terms"],
+            json!(["refund"]),
+            "a weak report keeps the carrying terms: {wv}"
+        );
 
         // Old scan binary (no files_detail): the field degrades to an empty
         // array, mirroring the miss-fallback payload's shape.
@@ -1195,7 +1258,7 @@ mod tests {
         )
         .expect("detail rows");
         let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new());
+        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
         assert_eq!(
             v["insumos"],
             json!([
@@ -1210,7 +1273,7 @@ mod tests {
         // Empty digest too → the fields STILL render, as empty arrays; a
         // fired gloss rides along as the additive `gloss` key.
         let mut v = json!({});
-        attach_retrieval(&mut v, "x", Some("where is it done"), &[], &[], &std::collections::BTreeMap::new());
+        attach_retrieval(&mut v, "x", Some("where is it done"), &[], &[], &std::collections::BTreeMap::new(), "none");
         assert_eq!(v["insumos"], json!([]), "insumos always present: {v}");
         assert_eq!(v["candidates"], json!([]), "candidates always present: {v}");
         assert_eq!(v["gloss"], json!("where is it done"));
@@ -1226,7 +1289,7 @@ mod tests {
         let detail: Vec<FileDetail> =
             serde_json::from_str(r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]}]"#).expect("detail rows");
         let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new());
+        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
         assert!(v.get("insumosMode").is_none(), "insumosMode never emitted: {v}");
         assert!(v.get("hop").is_none(), "the hop audit never emitted: {v}");
         let mut keys: Vec<&str> = v.as_object().expect("object").keys().map(String::as_str).collect();
@@ -1251,7 +1314,7 @@ mod tests {
         )
         .expect("detail rows");
         let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new());
+        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
         assert_eq!(
             v["candidates"],
             json!([
@@ -1262,7 +1325,7 @@ mod tests {
         );
         // Byte-stable: two identical attaches serialize to the same bytes.
         let mut v2 = json!({ "intent": "x" });
-        attach_retrieval(&mut v2, "x", None, &detail, &[], &std::collections::BTreeMap::new());
+        attach_retrieval(&mut v2, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
         let a = serde_json::to_string(&v).expect("ser");
         let b = serde_json::to_string(&v2).expect("ser");
         assert_eq!(a, b, "candidates payload is byte-stable across runs");
@@ -1277,7 +1340,7 @@ mod tests {
             })
             .collect();
         let mut vm = json!({});
-        attach_retrieval(&mut vm, "x", None, &many, &[], &std::collections::BTreeMap::new());
+        attach_retrieval(&mut vm, "x", None, &many, &[], &std::collections::BTreeMap::new(), "none");
         let pool = vm["candidates"].as_array().expect("candidates array");
         assert_eq!(pool.len(), feature_retrieval::POOL_MAX, "pool bounded at POOL_MAX: {}", pool.len());
         assert_eq!(vm["insumos"].as_array().expect("insumos").len(), feature_retrieval::INSUMOS_MAX, "insumos stays top-10");
@@ -1327,4 +1390,103 @@ mod tests {
         assert_eq!(terms, vec!["reajuste", "vencimento"], "sorted ascending");
     }
 
+    /// Build `n` rank rows, each matching one distinct term, so a pool of a
+    /// known width can be produced without touching the ranker.
+    fn rank_rows_for(n: usize) -> Vec<RankFile> {
+        (0..n)
+            .map(|i| {
+                serde_json::from_str::<RankFile>(&format!(
+                    r#"{{"file":"src/f{i:02}.rs","score_x1024":{},"terms":["t{i:02}"]}}"#,
+                    1000 - i
+                ))
+                .expect("rank row")
+            })
+            .collect()
+    }
+
+    /// A strong report publishes the narrowed slice, not the whole pool. The
+    /// instruction that consumes this field says to pick 5-10 files and "never
+    /// all ~25", so the window was paying for rows the contract forbids using.
+    #[test]
+    fn strong_pool_is_narrowed() {
+        let rows = rank_rows_for(25);
+        let mut v = json!({ "intent": "x" });
+        attach_retrieval(&mut v, "x", None, &[], &rows, &std::collections::BTreeMap::new(), "strong");
+        let published = v["candidates"].as_array().expect("candidates array").len();
+        assert_eq!(
+            published,
+            feature_retrieval::STRONG_POOL_MAX,
+            "a strong report publishes the narrowed slice: {v}"
+        );
+        assert!(
+            published < feature_retrieval::POOL_MAX,
+            "the narrowed slice must actually be narrower than the pool"
+        );
+    }
+
+    /// A weak/none report is left alone. There the planning fields are withheld
+    /// anyway, so narrowing would save nothing and only add a second behaviour
+    /// to reason about.
+    #[test]
+    fn non_strong_pool_is_untouched() {
+        let rows = rank_rows_for(25);
+        for reason in ["weak", "none", ""] {
+            let mut v = json!({ "intent": "x" });
+            attach_retrieval(&mut v, "x", None, &[], &rows, &std::collections::BTreeMap::new(), reason);
+            assert_eq!(
+                v["candidates"].as_array().expect("candidates array").len(),
+                feature_retrieval::POOL_MAX,
+                "reason {reason:?} must publish the full pool: {v}"
+            );
+        }
+    }
+
+    /// THE constraint of this unit. `uncovered` is the absence radar the flow
+    /// treats as a gate — every request concept with no candidate must be
+    /// settled by enumeration before planning. It is computed from the WHOLE
+    /// pool, so narrowing the published slice must not change it. If this test
+    /// ever fails, the trim moved above the computation and a context saving
+    /// became a broken check: concepts genuinely covered by candidates 13-25
+    /// would start reporting as blind spots.
+    #[test]
+    fn uncovered_is_computed_before_the_trim() {
+        // A term carried ONLY by a row past the strong cut-off.
+        let rows = rank_rows_for(25);
+        let late_term = "t20";
+        let mut strong = json!({ "intent": late_term });
+        attach_retrieval(&mut strong, late_term, None, &[], &rows, &std::collections::BTreeMap::new(), "strong");
+        let mut full = json!({ "intent": late_term });
+        attach_retrieval(&mut full, late_term, None, &[], &rows, &std::collections::BTreeMap::new(), "none");
+        assert_eq!(
+            strong["uncovered"], full["uncovered"],
+            "the absence radar must not notice the publication trim: {strong}"
+        );
+        // And the row carrying it really is outside the published slice, or the
+        // assertion above would hold vacuously.
+        let published: Vec<&str> = strong["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .filter_map(|c| c["file"].as_str())
+            .collect();
+        assert!(
+            !published.iter().any(|f| f.contains("f20")),
+            "the probe row must sit past the cut for this test to mean anything"
+        );
+    }
+
+    /// A strong report drops the anchor `terms`, which the candidate evidence
+    /// already carries, and keeps `scoreX1024`, which nothing else carries.
+    #[test]
+    fn anchors_detail_drops_duplicated_terms() {
+        let d: FileDetail =
+            serde_json::from_str(r#"{"file":"src/a.rs","score_x1024":90,"terms":["x","y"]}"#)
+                .expect("detail row");
+        let strong = anchor_detail_row(&d, true);
+        assert!(strong.get("terms").is_none(), "strong drops the duplicated terms: {strong}");
+        assert_eq!(strong["scoreX1024"], json!(90), "the exclusive field survives");
+        assert_eq!(strong["file"], json!("src/a.rs"));
+        let weak = anchor_detail_row(&d, false);
+        assert_eq!(weak["terms"], json!(["x", "y"]), "weak keeps them: {weak}");
+    }
 }
