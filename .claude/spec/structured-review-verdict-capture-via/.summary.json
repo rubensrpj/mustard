@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "structured-review-verdict-capture-via",
+  "title": "structured review verdict capture via SubagentStop hook",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "contract",
+      "summary": "Emit the structured <VERDICT> block from the review agent",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "capture",
+      "summary": "Parse <VERDICT> on SubagentStop and auto-emit review.result, mirroring the <MEMORY> capture",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
