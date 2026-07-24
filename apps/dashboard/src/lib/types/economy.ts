@@ -22,6 +22,34 @@ export type EconomyScope =
 /** Stable scope kinds used by UI components for switch/match. */
 export type EconomyScopeKind = EconomyScope["kind"];
 
+/**
+ * Mirror of `mustard_core::domain::economy::TimeWindow` (serde). Both bounds are
+ * optional ISO-8601 strings; an absent bound is unbounded on that side. We OMIT
+ * a bound (rather than send `null`) to match serde's
+ * `skip_serializing_if = "Option::is_none"`, so `{ from }` alone is the wire
+ * shape for a "last N days" window — unbounded above means "up to now".
+ */
+export interface TimeWindow {
+  from?: string;
+  to?: string;
+}
+
+/** The four fixed periods the Economia time-window selector offers. */
+export type EconomyWindowPeriod = "1d" | "7d" | "15d" | "30d";
+
+/**
+ * Wire shape for an economy `invoke`: a base `EconomyScope` optionally wrapped
+ * in a time window, mirroring `EconomyScopeDto::Windowed { window, inner }` on
+ * the Rust side. Composition, not replacement — `inner` still decides the
+ * project/spec/wave slice; `window` only narrows which events fold in (each
+ * backend reader peels it back off via `into_parts()`). Built at the invoke
+ * boundary via `windowedScope`; the base `EconomyScope` that `<ScopeBar>` drives
+ * never carries a window itself, so the scope switch/match sites stay total.
+ */
+export type EconomyScopeWire =
+  | EconomyScope
+  | { kind: "windowed"; window: TimeWindow; inner: EconomyScope };
+
 /** Per-agent cost row. Matches `mustard_core::economy::AgentCost`. */
 export interface AgentCost {
   /** Agent id. Backed by `AgentId(String)` which serializes transparently. */
@@ -169,6 +197,16 @@ export function waveScope(project: string, spec: string, wave: string): EconomyS
 
 export function allProjectsScope(projects: string[]): EconomyScope {
   return { kind: "all_projects", projects };
+}
+
+/**
+ * Wrap a base scope in a time window for the wire (mirrors the Rust
+ * `EconomyScopeDto::Windowed` composition). Kept a constructor like the others
+ * so callers don't hand-build the `{ kind: "windowed", … }` literal — the base
+ * scope stays untouched and only the events narrow by timestamp.
+ */
+export function windowedScope(window: TimeWindow, inner: EconomyScope): EconomyScopeWire {
+  return { kind: "windowed", window, inner };
 }
 
 // ── Display helpers ─────────────────────────────────────────────────────────
