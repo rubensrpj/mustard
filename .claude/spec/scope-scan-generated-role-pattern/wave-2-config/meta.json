@@ -1,10 +1,10 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": "2026-07-24T18:53:45.432Z",
+  "checkpoint": "2026-07-24T19:06:55.825Z",
   "parent": "scope-scan-generated-role-pattern",
   "checklist": [
     {
@@ -35,7 +35,7 @@
     {
       "label": "plugin/commands/upsert.md",
       "path": "plugin/commands/upsert.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/review.md",
