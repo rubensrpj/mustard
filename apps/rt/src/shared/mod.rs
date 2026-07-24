@@ -12,6 +12,9 @@
 //!   cascade resolver, shared by the size gates and the close-gate engine.
 //! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`])
 //!   and the append-only writer ([`events::writer_ndjson`]).
+//! - [`prompt`] — tells a person's prompt apart from the runtime's own notices,
+//!   which reach the session through the same `UserPromptSubmit` channel. One
+//!   owner for the rule, shared by every observer on that trigger.
 //! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
 //!   port, liveness probe) shared by the collector-spawning hook and the
 //!   collector-stopping `run` command, plus [`proc::run_shell_with_deadline`]
@@ -25,4 +28,5 @@ pub mod context;
 pub mod events;
 pub mod gate_mode;
 pub mod proc;
+pub mod prompt;
 pub mod translate;
