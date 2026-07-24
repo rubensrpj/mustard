@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "give-the-approval-markers-timestamp",
+  "title": "give the approval markers a timestamp and one writer, and make approve-spec and status read the provenance they already record",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "Um escritor so para o corpo do marcador, agora com data",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "report",
+      "summary": "Os leitores passam a mostrar a proveniencia que ja era gravada",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

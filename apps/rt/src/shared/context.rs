@@ -576,6 +576,76 @@ pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathB
     )
 }
 
+/// Provenance recorded INSIDE an approval / clarification marker — the typed
+/// read-back of what [`marker_body`] writes.
+///
+/// `session` and `at` may be empty: a marker minted before those keys existed
+/// still names its door, and a partial read is worth more to a reader than no
+/// read at all (see [`read_marker_provenance`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerProvenance {
+    /// Spec slug the marker belongs to.
+    pub spec: String,
+    /// The door the approval came through (`ExitPlanMode`, `AskUserQuestion`,
+    /// `grill-finalize`).
+    pub via: String,
+    /// Session that recorded it, or empty when the marker predates the key.
+    pub session: String,
+    /// ISO-8601 instant the marker was minted, or empty on a legacy marker.
+    pub at: String,
+}
+
+/// Compose the BODY every approval / clarification marker carries.
+///
+/// The body sibling of [`approval_marker_path`] / [`clarified_marker_path`]:
+/// those two are the single home for the marker PATH, this is the single home
+/// for its TEXT, so the three doors that mint markers cannot drift the way they
+/// already had (the `grill-finalize` door was writing two lines while the other
+/// two wrote three).
+///
+/// Format is `key=value`, one per line, trailing newline — deliberately not
+/// JSON, because the file is read by humans with `cat`. The caller supplies the
+/// instant rather than this function reading the clock, so a test can assert a
+/// byte-exact body.
+#[must_use]
+pub fn marker_body(spec: &str, via: &str, session: &str, at: &str) -> String {
+    format!("spec={spec}\nvia={via}\nsession={session}\nat={at}\n")
+}
+
+/// Read a marker file back into typed [`MarkerProvenance`].
+///
+/// NEVER fails hard — every failure path (absent file, unreadable file, body
+/// with no recognisable `via=` line) collapses to `None`, which every caller
+/// renders as "no provenance". The marker's EXISTENCE is what governs the
+/// approval gate; this read is informative only, so a corrupt body must never
+/// become a new way for an approved spec to be refused.
+///
+/// `via` is the one required key — it is what names the door, and without it
+/// the read carries no meaning. `spec`, `session` and `at` degrade to empty
+/// strings so a marker minted before [`marker_body`] existed still reports the
+/// door it came through.
+#[must_use]
+pub fn read_marker_provenance(path: &Path) -> Option<MarkerProvenance> {
+    let text = fs::read_to_string(path).ok()?;
+    let field = |key: &str| -> String {
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix(&format!("{key}=")))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let via = field("via");
+    if via.is_empty() {
+        return None;
+    }
+    Some(MarkerProvenance {
+        spec: field("spec"),
+        via,
+        session: field("session"),
+        at: field("at"),
+    })
+}
+
 /// Normalise a `--spec-dir` argument onto the spec DIRECTORY it names.
 ///
 /// The four `--spec-dir` commands (`plan-materialize`, `pipeline-summary`,
@@ -675,6 +745,61 @@ mod tests {
         let approval =
             approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
         assert_eq!(p.parent(), approval.parent());
+    }
+
+    // -----------------------------------------------------------------------
+    // marker_body / read_marker_provenance — the marker BODY seam
+    // -----------------------------------------------------------------------
+
+    /// The format contract the three minting doors now share: four `key=value`
+    /// lines, in a fixed order, with the instant the caller supplied. The
+    /// per-door halves of this claim live beside each writer, under the same
+    /// test-name prefix.
+    #[test]
+    fn marker_body_is_the_single_writer_shape() {
+        let body = marker_body("my-spec", "ExitPlanMode", "s-1", "2026-07-24T10:00:00.000Z");
+        assert_eq!(
+            body,
+            "spec=my-spec\nvia=ExitPlanMode\nsession=s-1\nat=2026-07-24T10:00:00.000Z\n"
+        );
+    }
+
+    /// Round-trip, then the three degradations that must NEVER surface as an
+    /// error: an absent file, a body with no `via=` line, and a legacy body
+    /// written before `session=` / `at=` existed.
+    #[test]
+    fn read_marker_provenance_round_trips_and_degrades() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".approved-by-user");
+
+        // Round-trip: what `marker_body` wrote comes back typed.
+        std::fs::write(
+            &path,
+            marker_body("my-spec", "AskUserQuestion", "s-9", "2026-07-24T10:00:00.000Z"),
+        )
+        .unwrap();
+        let p = read_marker_provenance(&path).expect("a well-formed body reads back");
+        assert_eq!(p.spec, "my-spec");
+        assert_eq!(p.via, "AskUserQuestion");
+        assert_eq!(p.session, "s-9");
+        assert_eq!(p.at, "2026-07-24T10:00:00.000Z");
+
+        // Absent file → no provenance, never an error.
+        assert!(read_marker_provenance(&dir.path().join("nope")).is_none());
+
+        // Unreadable body (no `via=` line, the one required key) → no provenance.
+        std::fs::write(&path, "not a marker at all\n").unwrap();
+        assert!(read_marker_provenance(&path).is_none());
+        std::fs::write(&path, "").unwrap();
+        assert!(read_marker_provenance(&path).is_none());
+
+        // A LEGACY body still names its door; the keys it never had read empty
+        // rather than voiding the whole record.
+        std::fs::write(&path, "spec=old\nvia=grill-finalize\n").unwrap();
+        let legacy = read_marker_provenance(&path).expect("a legacy body still names its door");
+        assert_eq!(legacy.via, "grill-finalize");
+        assert_eq!(legacy.session, "");
+        assert_eq!(legacy.at, "");
     }
 
     // -----------------------------------------------------------------------
