@@ -4,6 +4,33 @@
 //! coverage, file-reference resolvability, task-count sanity, and the
 //! extended-light scope ↔ model constraint. Emits one JSON line:
 //! `{ "ok": bool, "issues": [{ severity, type, message, file? }] }`.
+//!
+//! The project root is a PARAMETER of [`validate`], never re-derived from the
+//! process working directory. This tool cuts a worktree per work unit, so the
+//! validator runs off-root as a matter of course; a hidden `current_dir()`
+//! would quietly answer about a different project (and could not be tested
+//! without mutating the process).
+//!
+//! # What counts as a file reference
+//!
+//! `## Files` entries are read as backtick-wrapped tokens. A token is a
+//! reference to ONE concrete file — and so gets existence-checked — when:
+//!
+//! 1. every character is a path character: `[A-Za-z0-9./_-]` plus the routing
+//!    punctuation `(`, `)`, `[`, `]`, `{`, `}` and `*`;
+//! 2. it carries no PATTERN metacharacter (`*`, `{`, `}`), no `//`, and no
+//!    elision segment (`...`) — `plugin/**/*.md`, `wave-N-{role}/spec.md` and
+//!    `.../spec.md` name a SET, a shape or an omission, not a file. Brackets
+//!    are NOT patterns: `app/[slug]` is a literal directory a routing
+//!    convention puts on disk;
+//! 3. its last segment splits into a non-empty stem and a clean extension — a
+//!    stem-less token (`.tsx`) names an extension, not a file;
+//! 4. that extension is known (`KNOWN_FILE_EXTS`) or the token carries a `/`.
+//!
+//! Rules 2-4 are the price of rule 1: widening the character set admits more
+//! prose, so the reference test tightened in the same pass. A token the rule
+//! rejects is simply not checked — the validator stays silent about it instead
+//! of warning about a file nobody wrote.
 
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs;
@@ -152,7 +179,62 @@ fn is_known_file_ext(ext: &str) -> bool {
     KNOWN_FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str())
 }
 
-/// Scan a string for `` `path.ext` `` tokens (backtick-wrapped file refs).
+/// Characters allowed inside a backtick-wrapped path token.
+///
+/// Beyond the plain `[A-Za-z0-9./_-]` set this admits routing punctuation:
+/// `(`/`)` (route groups), `[`/`]` (dynamic segments), `{`/`}` (template
+/// placeholders) and `*` (glob wildcards). They occur in the paths specs
+/// genuinely list, so one of them must not disqualify — and silently drop —
+/// the whole token; whether the token names one concrete file is decided
+/// afterwards by [`is_file_reference`].
+fn is_path_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '.' | '/' | '-' | '_' | '(' | ')' | '[' | ']' | '{' | '}' | '*')
+}
+
+/// THE REFERENCE RULE (stated in full in the module docs): `true` when `token`
+/// names ONE concrete file, so its absence on disk is worth a WARN.
+///
+/// Widening [`is_path_token_char`] admits more prose, so the two changes were
+/// designed together: a PATTERN (`plugin/**/*.md`), a TEMPLATE
+/// (`wave-N-{role}/spec.md`), an ELISION (`.../spec.md`) and a bare EXTENSION
+/// (`.tsx`) all read as paths to a character class, yet none of them is a file
+/// anybody wrote. Brackets are deliberately not pattern characters — a dynamic
+/// segment such as `app/[slug]` is a literal directory on disk. Pure, total.
+fn is_file_reference(token: &str) -> bool {
+    if token.is_empty() || !token.chars().all(is_path_token_char) {
+        return false;
+    }
+    // A glob or a `{placeholder}` names a set or a shape, never one file.
+    if token.contains(['*', '{', '}']) {
+        return false;
+    }
+    // `//` is malformed; a run of three-or-more dots is a documentation elision
+    // (`.../spec.md`), not a directory name.
+    if token.contains("//")
+        || token
+            .split('/')
+            .any(|seg| seg.len() >= 3 && seg.chars().all(|c| c == '.'))
+    {
+        return false;
+    }
+    // The file name must split into a non-empty stem and a clean extension.
+    let name = token.rsplit('/').next().unwrap_or(token);
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    if stem.is_empty()
+        || ext.is_empty()
+        || !ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return false;
+    }
+    // A known extension, or a path separator — a path shape speaks for itself.
+    is_known_file_ext(ext) || token.contains('/')
+}
+
+/// Scan a string for `` `path.ext` `` tokens (backtick-wrapped file refs),
+/// keeping the ones [`is_file_reference`] accepts.
 fn backtick_file_refs(text: &str) -> Vec<String> {
     let mut refs = Vec::new();
     let mut rest = text;
@@ -160,20 +242,7 @@ fn backtick_file_refs(text: &str) -> Vec<String> {
         let after = &rest[open + 1..];
         if let Some(close) = after.find('`') {
             let token = &after[..close];
-            // `[\w./-]+\.\w+` — path chars then a dotted extension, AND a real
-            // path shape: a separator `/` OR a known file extension. The extra
-            // gate rejects dotted-identifier prose (`extensions.code`,
-            // `err.message`) that passes the char-class check but is not a file.
-            let ext = token.rsplit('.').next().unwrap_or("");
-            let ok = !token.is_empty()
-                && token.contains('.')
-                && token
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '-' | '_'))
-                && !ext.is_empty()
-                && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && (token.contains('/') || is_known_file_ext(ext));
-            if ok {
+            if is_file_reference(token) {
                 refs.push(token.to_string());
             }
             rest = &after[close + 1..];
@@ -184,14 +253,18 @@ fn backtick_file_refs(text: &str) -> Vec<String> {
     refs
 }
 
-/// Whether a `## Files` ref resolves on disk: under the spec dir, the cwd, or
-/// any subproject root. The subproject roots quiet false "missing" WARNs for
-/// existing-but-extended files declared with a subproject-relative or
+/// Whether a `## Files` ref resolves on disk: under the spec dir, the PROJECT
+/// ROOT, or any subproject root. The subproject roots quiet false "missing"
+/// WARNs for existing-but-extended files declared with a subproject-relative or
 /// abbreviated path (e.g. a git-submodule backend).
-fn ref_resolves(r: &str, spec_dir: &Path, project_roots: &[PathBuf]) -> bool {
+///
+/// `root` is the caller's project root, never the process working directory —
+/// off-root (a worktree, a nested cwd) the two differ and the bare relative
+/// path would be tested against the wrong tree.
+fn ref_resolves(r: &str, spec_dir: &Path, root: &Path, project_roots: &[PathBuf]) -> bool {
     fs::exists(spec_dir.join(r))
-        || fs::exists(Path::new(r))
-        || project_roots.iter().any(|root| fs::exists(root.join(r)))
+        || fs::exists(root.join(r))
+        || project_roots.iter().any(|sub| fs::exists(sub.join(r)))
 }
 
 /// `true` when a bare (un-backticked) token reads as a file path: it either
@@ -385,13 +458,20 @@ fn is_test_shaped_command(command: &str) -> bool {
     }
 }
 
-/// Run the validation. Returns the issues list.
+/// Run the validation against an explicit project `root`. Returns the issues
+/// list.
+///
+/// `root` is UNCONDITIONAL on purpose — an `Option` with an internal
+/// `current_dir()` fallback would keep the hidden dependency and make the
+/// off-root defect conditional on the caller remembering to pass it. Callers
+/// hand over `crate::shared::context::project_dir()` (or, in tests, the root
+/// they built).
 ///
 /// `pub` so `plan-materialize` composes the same checks in-process (single
 /// validator source — no subprocess, no drift) and the acceptance-criteria
 /// tests can assert a verdict without shelling out, while the CLI entry [`run`]
 /// keeps the stdout/exit contract.
-pub fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
+pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut issues: Vec<Value> = Vec::new();
 
@@ -422,11 +502,10 @@ pub fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     // reported as false "missing" WARNs. An absent model yields no extra roots,
     // so resolution matches the historical two-path behaviour when no model is
     // present.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let model = cwd.join(".claude").join("grain.model.json");
+    let model = root.join(".claude").join("grain.model.json");
     let project_roots: Vec<PathBuf> = mustard_core::read_projects(&model)
         .into_iter()
-        .map(|p| cwd.join(p.dir))
+        .map(|p| root.join(p.dir))
         .collect();
     for r in backtick_file_refs(&files_text) {
         let line_with_ref = file_lines
@@ -439,7 +518,7 @@ pub fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
         // the marker synonyms — instead of the historical EN-only literal
         // (which flagged every pt-BR net-new file as `missing-file`).
         let is_create = i18n::line_has_file_marker(line_with_ref, i18n::FileMarker::Create);
-        let resolved = ref_resolves(&r, spec_dir, &project_roots);
+        let resolved = ref_resolves(&r, spec_dir, root, &project_roots);
         if !is_create && !resolved {
             let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
             issues.push(json!({
@@ -469,8 +548,8 @@ pub fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     if let Some(scope) = extract_kv(content, "scope") {
         if scope.eq_ignore_ascii_case("extended-light") {
             if let Some(entity) = extract_kv(content, "entity") {
-                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let model = cwd.join(".claude").join("grain.model.json");
+                // The SAME model path as validation 2 — one project root, one
+                // model, no second notion of "here".
                 let known = mustard_core::read_entity_names(&model);
                 if !known.iter().any(|k| k.eq_ignore_ascii_case(entity)) {
                     let message = if known.is_empty() {
@@ -639,7 +718,8 @@ pub fn run(spec: Option<&str>) {
         Ok(c) => c,
         Err(e) => crash(&format!("{e}")),
     };
-    let issues = validate(&abs_path, &content);
+    let root = PathBuf::from(crate::shared::context::project_dir());
+    let issues = validate(&root, &abs_path, &content);
     let out = json!({ "ok": issues.is_empty(), "issues": issues });
     println!("{out}");
 }
@@ -661,7 +741,7 @@ mod tests {
                     - **AC-2** — build green.\n  Command: `cargo build`\n";
         std::fs::write(&path, body).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        let issues = validate(&path, &content);
+        let issues = validate(dir.path(), &path,&content);
         assert!(issues.is_empty(), "{issues:?}");
     }
 
@@ -677,7 +757,7 @@ mod tests {
                     - **AC-2** — endpoint responds.\n  Command: `curl -sf localhost/health`\n\
                     - **AC-3** — build green.\n  Command: `rtk cargo build`\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         let weak = issues
             .iter()
             .find(|i| i["type"] == json!("weak-ac"))
@@ -701,7 +781,7 @@ mod tests {
                     - **AC-2** — the new unit passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n\
                     - **AC-3** — build green.\n  Command: `cargo build`\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         let msg = issues
             .iter()
             .find(|i| i["type"] == json!("weak-ac"))
@@ -720,6 +800,28 @@ mod tests {
         let refs = backtick_file_refs("edit `src/foo.rs` and `Cargo.toml`");
         assert!(refs.contains(&"src/foo.rs".to_string()), "{refs:?}");
         assert!(refs.contains(&"Cargo.toml".to_string()), "{refs:?}");
+    }
+
+    /// The reference rule, both directions: routing punctuation keeps a real
+    /// path IN, and the prose shapes that the widened character set would
+    /// otherwise let in stay OUT.
+    #[test]
+    fn reference_rule_admits_routing_punctuation_and_rejects_prose_shapes() {
+        // Route groups and dynamic segments are literal directories on disk.
+        for token in ["app/(marketing)/page.tsx", "app/[slug]/route.ts", "app/[[...all]]/x.ts"] {
+            assert!(is_file_reference(token), "routing punctuation is a path: {token}");
+        }
+        // Patterns, templates, elisions and bare extensions are not files.
+        for token in [
+            "plugin/**/*.md",           // glob — a set, not a file
+            "wave-N-{role}/spec.md",    // template placeholder
+            ".../spec.md",              // documentation elision
+            ".tsx",                     // an extension being named
+            "plugin//spec.md",          // malformed
+            "apps/rt/src/commands/doctor/", // a directory
+        ] {
+            assert!(!is_file_reference(token), "prose/pattern is not a file ref: {token}");
+        }
     }
 
     #[test]
@@ -746,7 +848,7 @@ mod tests {
                     - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n\
                     - **AC-2** — build green.\n  Command: `cargo build`\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         let warn = issues
             .iter()
             .find(|i| i["type"] == json!("test-ac-no-expect"))
@@ -761,7 +863,7 @@ mod tests {
                      - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n  Expect: `test result: ok`\n\
                      - **AC-2** — build green.\n  Command: `cargo build`\n";
         std::fs::write(&path, body2).unwrap();
-        let issues2 = validate(&path, body2);
+        let issues2 = validate(dir.path(), &path,body2);
         assert!(
             !issues2.iter().any(|i| i["type"] == json!("test-ac-no-expect")),
             "a declared Expect line clears the warn: {issues2:?}"
@@ -778,7 +880,7 @@ mod tests {
         let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n\n\
                     ## Acceptance Criteria\nfree prose, no parseable AC line here\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         assert!(
             issues.iter().any(|i| i["type"] == json!("ac-task-gap")),
             "agent tasks with a broken AC section must warn: {issues:?}"
@@ -798,12 +900,12 @@ mod tests {
         let roots = vec![backend.clone()];
 
         // Resolves via the subproject root — no false "missing".
-        assert!(ref_resolves("src/Payable.cs", &spec_dir, &roots));
+        assert!(ref_resolves("src/Payable.cs", &spec_dir, dir.path(), &roots));
         // A genuinely-absent file still does NOT resolve — the fix must not mask
         // true misses/typos.
-        assert!(!ref_resolves("src/Ghost.cs", &spec_dir, &roots));
-        // With no subproject roots it falls back to the historical two paths.
-        assert!(!ref_resolves("src/Payable.cs", &spec_dir, &[]));
+        assert!(!ref_resolves("src/Ghost.cs", &spec_dir, dir.path(), &roots));
+        // With no subproject roots it falls back to the spec dir + the root.
+        assert!(!ref_resolves("src/Payable.cs", &spec_dir, dir.path(), &[]));
     }
 
     #[test]
@@ -812,7 +914,7 @@ mod tests {
         let path = dir.path().join("spec.md");
         std::fs::write(&path, "### Backend Agent\n- [ ] only one\n").unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        let issues = validate(&path, &content);
+        let issues = validate(dir.path(), &path,&content);
         assert!(issues.iter().any(|i| i["type"] == json!("task-count")));
     }
 
@@ -826,7 +928,7 @@ mod tests {
                     - **AC-1** — workspace builds green.\n  Command: `cargo build`\n\
                     - **AC-2** — tests pass.\n  Command: `cargo test`\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         assert!(
             !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
             "{issues:?}"
@@ -844,7 +946,7 @@ mod tests {
                     - AC um: roda os testes sem comando declarado\n\
                     - criterio solto sem id\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         let issue = issues
             .iter()
             .find(|i| i["type"] == json!("unparseable-ac"))
@@ -869,7 +971,7 @@ mod tests {
                     - `ghost_c.rs` (create)\n\
                     ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         assert!(
             !issues.iter().any(|i| i["type"] == json!("missing-file")),
             "localized markers recognised: {issues:?}"
@@ -879,7 +981,7 @@ mod tests {
         let body2 = "# Spec\n## Arquivos\n- `ghost.rs`\n- `gone.rs` (editar)\n\
                      ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
         std::fs::write(&path, body2).unwrap();
-        let issues2 = validate(&path, body2);
+        let issues2 = validate(dir.path(), &path,body2);
         let missing: Vec<&Value> = issues2
             .iter()
             .filter(|i| i["type"] == json!("missing-file"))
@@ -903,7 +1005,7 @@ mod tests {
                     ## Critérios de Aceitação\n\n\
                     - **AC-1** — workspace builds green.\n  Command: `cargo build`\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         assert!(
             !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
             "legacy duplicated AC section parses: {issues:?}"
@@ -918,7 +1020,7 @@ mod tests {
         let path = dir.path().join("spec.md");
         let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n";
         std::fs::write(&path, body).unwrap();
-        let issues = validate(&path, body);
+        let issues = validate(dir.path(), &path,body);
         assert!(
             !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
             "{issues:?}"
@@ -937,7 +1039,7 @@ mod tests {
         )
         .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        let issues = validate(&path, &content);
+        let issues = validate(dir.path(), &path,&content);
         assert!(issues.iter().any(|i| i["type"] == json!("layer-gap")));
     }
 }

@@ -181,7 +181,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
 
     // 2. analyze-validation over the root spec.md (the spec-draft output).
     //    WARN-level by contract — never blocks the scaffold or the events.
-    let validation = validate_root_spec(spec_dir);
+    let validation = validate_root_spec(project, spec_dir);
 
     // 3 + 4. Events — only for a plan that actually materialised (no PLAN
     //    transition for a spec whose scaffold failed) and a resolvable slug.
@@ -209,7 +209,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
 /// task counts, AC parseability). A missing/unreadable `spec.md` degrades to
 /// `ok: false` with a single ERROR issue — `plan-materialize` pressupposes the
 /// draft already ran, so the gap is surfaced, not silently skipped.
-fn validate_root_spec(spec_dir: &Path) -> Value {
+///
+/// `project` is the root [`run`] already resolved, handed down so the file-ref
+/// check resolves against the SAME tree this composite works in (off-root — a
+/// worktree — the process working directory is a different project).
+fn validate_root_spec(project: &Path, spec_dir: &Path) -> Value {
     let spec_md = spec_dir.join("spec.md");
     if !fs::exists(&spec_md) {
         return json!({
@@ -223,7 +227,7 @@ fn validate_root_spec(spec_dir: &Path) -> Value {
     }
     match fs::read_to_string(&spec_md) {
         Ok(content) => {
-            let issues = analyze_validation::validate(&spec_md, &content);
+            let issues = analyze_validation::validate(project, &spec_md, &content);
             json!({ "ok": issues.is_empty(), "issues": issues })
         }
         Err(e) => json!({

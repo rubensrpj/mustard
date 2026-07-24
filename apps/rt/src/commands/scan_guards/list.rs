@@ -9,6 +9,13 @@
 //!
 //! Output: a JSON array `[{path, subproject, kind, frameworks}]` to stdout.
 //! Fail-open: any IO error degrades to `[]` and exit 0.
+//!
+//! The walk itself is NOT owned by this command: [`collect_pending`] performs
+//! it ONCE and returns the raw census ([`PendingScaffolds`]), which two callers
+//! project — this command into the enrich worklist, and
+//! [`crate::commands::doctor::guards_scaffold_check`] into a doctor advisory. A
+//! second traversal with its own ignore list would be the third copy of this
+//! walk in the crate and would drift from the first two silently.
 
 use std::path::Path;
 
@@ -29,30 +36,54 @@ const IGNORE_DIRS: &[&str] = &[
 const MAX_DEPTH: usize = 12;
 
 /// One pending-guards worklist entry.
-struct Pending {
+pub(crate) struct Pending {
     /// Path to the `CLAUDE.md`, as a string (lossy on non-UTF-8).
-    path: String,
+    pub(crate) path: String,
     /// Subproject directory relative to `root` (forward-slashed). Empty for the
     /// root unit — but the root is excluded, so this is always non-empty here.
-    subproject: String,
+    pub(crate) subproject: String,
     /// Project kind mined by Wave 1 (e.g. `rust`).
-    kind: String,
+    pub(crate) kind: String,
     /// Frameworks mined by Wave 1, in caller order. Empty when none.
-    frameworks: Vec<String>,
+    pub(crate) frameworks: Vec<String>,
     /// Stack detections mined by Wave 1, as the raw `name(confidence)` tokens
     /// of the facts line (e.g. `laravel(0.95)`). Kept verbatim — no float
     /// re-parse/re-serialize churn — so the worklist round-trips the generator
     /// byte-for-byte. Empty when the line predates the segment / none inferred.
-    stacks: Vec<String>,
+    pub(crate) stacks: Vec<String>,
+}
+
+/// The result of ONE walk of the working copy: every pending subproject
+/// `CLAUDE.md`, plus the fail-open evidence of what the walk could not read.
+///
+/// Both vectors are already sorted by [`collect_pending`], so no projection
+/// re-sorts (and none can drift from another's order).
+pub(crate) struct PendingScaffolds {
+    /// Pending entries, sorted by `path`.
+    pub(crate) entries: Vec<Pending>,
+    /// Repo-relative descriptions of what was skipped (unreadable directory /
+    /// `CLAUDE.md`), sorted. Never absolute — a consumer may serialize these.
+    pub(crate) errors: Vec<String>,
+}
+
+/// Walk `root` ONCE and collect every subproject `CLAUDE.md` still carrying the
+/// pending sentinel. The shared core of `scan-guards-list` and the doctor
+/// `guards-scaffold` advisory — see the module docs on why there is exactly one
+/// walk. Fail-open: nothing here propagates an error or panics.
+pub(crate) fn collect_pending(root: &Path) -> PendingScaffolds {
+    let mut out = PendingScaffolds { entries: Vec::new(), errors: Vec::new() };
+    walk(root, root, &mut out, 0);
+    // Stable order so every projection is deterministic across runs.
+    out.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    out.errors.sort();
+    out
 }
 
 /// Run `scan-guards-list`. Prints a JSON array to stdout; exit 0 always.
 pub fn run(root: &Path) {
-    let mut out: Vec<Pending> = Vec::new();
-    walk(root, root, &mut out, 0);
-    // Stable order so the worklist is deterministic across runs.
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    let arr: Vec<Value> = out
+    let census = collect_pending(root);
+    let arr: Vec<Value> = census
+        .entries
         .iter()
         .map(|p| {
             json!({
@@ -69,12 +100,13 @@ pub fn run(root: &Path) {
 }
 
 /// Recursively walk `dir`, collecting pending subproject `CLAUDE.md` files.
-/// Fail-open: an unreadable directory is skipped, never propagated.
-fn walk(dir: &Path, root: &Path, out: &mut Vec<Pending>, depth: usize) {
+/// Fail-open: an unreadable directory is skipped and recorded, never propagated.
+fn walk(dir: &Path, root: &Path, out: &mut PendingScaffolds, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
+        out.errors.push(format!("{}: unreadable directory (skipped)", rel_of(dir, root)));
         return;
     };
     for entry in entries {
@@ -90,33 +122,53 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<Pending>, depth: usize) {
             }
             walk(&entry.path, root, out, depth + 1);
         } else if entry.file_name == "CLAUDE.md" {
-            if let Some(p) = classify(&entry.path, root) {
-                out.push(p);
-            }
+            classify(&entry.path, root, out);
         }
     }
 }
 
-/// Classify a `CLAUDE.md`: returns a [`Pending`] entry iff the file carries the
-/// pending marker AND is NOT the workspace-root unit. `None` otherwise.
-fn classify(path: &Path, root: &Path) -> Option<Pending> {
+/// Classify a `CLAUDE.md`: pushes a [`Pending`] entry iff the file carries the
+/// pending marker AND is NOT the workspace-root unit. A file that cannot be read
+/// is recorded in `errors` — its guards state is unknown, and dropping it
+/// silently would let a scaffold hide behind an IO failure.
+fn classify(path: &Path, root: &Path, out: &mut PendingScaffolds) {
     // The root `CLAUDE.md` (directly under `root`) is excluded from enrich.
     let subproject = subproject_of(path, root);
     if subproject.is_empty() {
-        return None;
+        return;
     }
-    let text = fs::read_to_string(path).ok()?;
+    let Ok(text) = fs::read_to_string(path) else {
+        out.errors
+            .push(format!("{subproject}/CLAUDE.md: unreadable (guards state unknown)"));
+        return;
+    };
     if !text.contains(GUARDS_PENDING_OPEN) {
-        return None;
+        return;
     }
     let (kind, frameworks, stacks) = parse_facts(&text);
-    Some(Pending {
+    out.entries.push(Pending {
         path: path.to_string_lossy().into_owned(),
         subproject,
         kind,
         frameworks,
         stacks,
-    })
+    });
+}
+
+/// `dir` relative to `root`, forward-slashed; `.` for `root` itself. Used for
+/// the fail-open error lines so a consumer that serializes them never carries an
+/// absolute (machine-specific, byte-unstable) path.
+fn rel_of(dir: &Path, root: &Path) -> String {
+    let rel = match dir.strip_prefix(root) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        // Outside `root` (should not happen for a tree walked from `root`).
+        Err(_) => dir.to_string_lossy().replace('\\', "/"),
+    };
+    if rel.is_empty() {
+        ".".to_string()
+    } else {
+        rel
+    }
 }
 
 /// The subproject directory of a `CLAUDE.md`, relative to `root`, forward-
@@ -183,16 +235,6 @@ fn parse_facts(text: &str) -> (String, Vec<String>, Vec<String>) {
     (kind, frameworks, stacks)
 }
 
-/// Collect (without printing) the pending worklist — the testable core of
-/// [`run`]. Kept private to the module's tests.
-#[cfg(test)]
-fn run_collect(root: &Path) -> Vec<Pending> {
-    let mut out: Vec<Pending> = Vec::new();
-    walk(root, root, &mut out, 0);
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,7 +274,7 @@ mod tests {
         std::fs::create_dir_all(&ignored).unwrap();
         std::fs::write(ignored.join("CLAUDE.md"), pending_block("rust", "x")).unwrap();
 
-        let found = run_collect(root);
+        let found = collect_pending(root).entries;
         assert_eq!(found.len(), 1, "exactly the pending subproject: {:?}", found.iter().map(|p| &p.path).collect::<Vec<_>>());
         let p = &found[0];
         assert_eq!(p.subproject, "apps/rt");
@@ -248,7 +290,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("CLAUDE.md"), pending_block("rust", "(none)")).unwrap();
 
-        let found = run_collect(root);
+        let found = collect_pending(root).entries;
         assert_eq!(found.len(), 1);
         assert!(found[0].frameworks.is_empty(), "(none) sentinel must yield an empty vec");
         assert_eq!(found[0].kind, "rust");
@@ -260,7 +302,30 @@ mod tests {
         let root = dir.path();
         // Only the root carries a pending marker → excluded → empty worklist.
         std::fs::write(root.join("CLAUDE.md"), pending_block("rust", "serde")).unwrap();
-        assert!(run_collect(root).is_empty());
+        assert!(collect_pending(root).entries.is_empty());
+    }
+
+    /// A `CLAUDE.md` that cannot be read is skipped AND recorded (repo-relative)
+    /// — the walk continues and the healthy sibling still lands on the worklist.
+    /// Dropping it silently would let a scaffold hide behind an IO failure.
+    #[test]
+    fn unreadable_claude_md_is_skipped_and_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Invalid UTF-8 — `read_to_string` fails on it on every platform (a
+        // permission bit would not be portable).
+        let broken = root.join("apps").join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("CLAUDE.md"), [0xF0, 0x9F, 0x92]).unwrap();
+        let ok = root.join("apps").join("fine");
+        std::fs::create_dir_all(&ok).unwrap();
+        std::fs::write(ok.join("CLAUDE.md"), pending_block("rust", "serde")).unwrap();
+
+        let census = collect_pending(root);
+        assert_eq!(census.entries.len(), 1, "the healthy sibling must still be collected");
+        assert_eq!(census.entries[0].subproject, "apps/fine");
+        assert_eq!(census.errors.len(), 1, "the unreadable file must be recorded: {:?}", census.errors);
+        assert!(census.errors[0].starts_with("apps/broken/CLAUDE.md"), "{:?}", census.errors);
     }
 
     #[test]
@@ -328,7 +393,7 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("CLAUDE.md"), pending_block("rust", "serde")).unwrap();
 
-        let found = run_collect(root);
+        let found = collect_pending(root).entries;
         assert_eq!(found.len(), 2);
         // Sorted by path: apps/old before apps/web.
         assert!(found[0].stacks.is_empty(), "legacy entry must keep an empty stacks list");

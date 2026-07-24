@@ -49,7 +49,10 @@ mod prompt_ref;
 mod reference;
 mod retry;
 mod role;
-mod sections;
+// `pub` (not `mod`) only so the `dispatch_warns_on_uncurated_rules` integration
+// test can call `read_guards_block` through the lib face; every other item in it
+// stays `pub(crate)`.
+pub mod sections;
 mod skills;
 
 // Re-exports that preserve the historical public surface so the compatibility
