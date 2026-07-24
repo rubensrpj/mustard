@@ -9,23 +9,30 @@
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchEconomySummary } from "@/lib/dashboard";
-import type { EconomyScope, EconomySummary } from "@/lib/types/economy";
+import { economyWindow } from "@/lib/time";
+import type {
+  EconomyScope,
+  EconomySummary,
+  EconomyWindowPeriod,
+} from "@/lib/types/economy";
 
 /**
- * Fetch the economy summary for `scope`. Pass `null` to disable the query
- * (e.g. while the workspace is still being resolved). Polls at the same 30s
- * cadence as `usePromptEconomy` so the Economia page
- * refreshes coherently across panels.
+ * Fetch the economy summary for `scope`, restricted to the `period` time window
+ * (1d/7d/15d/30d). Pass a `null` scope to disable the query (e.g. while the
+ * workspace is still being resolved). Polls at the same 30s cadence as
+ * `usePromptEconomy` so the Economia page refreshes coherently across panels.
  */
 export function useEconomySummary(
   scope: EconomyScope | null,
+  period: EconomyWindowPeriod,
 ): UseQueryResult<EconomySummary> {
   return useQuery<EconomySummary>({
-    // Stable key — JSON-stringify is fine for our discriminated union shape:
-    // every variant has a small fixed field set with primitive values, no
-    // ordering surprises across rerenders.
-    queryKey: ["economy-summary", scope && stableScopeKey(scope)],
-    queryFn: () => fetchEconomySummary(scope as EconomyScope),
+    // Stable key — the base scope fragment plus the period. We key on the period
+    // (not the derived window), because `economyWindow` reads "now" and its
+    // `from` bound would move every render; the concrete window is derived once
+    // per fetch inside the queryFn so "last N days" stays honest at fetch time.
+    queryKey: ["economy-summary", scope && stableScopeKey(scope), period],
+    queryFn: () => fetchEconomySummary(scope as EconomyScope, economyWindow(period)),
     enabled: !!scope,
     // staleTime aligned with the global 60s default; the 30s refetchInterval
     // remains the live fallback (same cadence as the other Economia panels).
