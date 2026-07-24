@@ -75,7 +75,7 @@ chaves, mesmos tipos, mesma ordem. A medição de referência desta sessão é 8
   Expect: `[1-9][0-9]* passed`
 - **AC-5** — when o conjunto de chaves do relatório é comparado, then ele permanece exatamente o
   mesmo de antes: nenhuma chave somiu, nenhuma nasceu
-  Command: `cargo test -p mustard-rt payload_key_set`
+  Command: `cargo test -p mustard-rt stdout_never_carries_subprocess_keys`
   Expect: `[1-9][0-9]* passed`
 - **AC-6** — when o localizador roda numa intenção real deste repositório, then o stdout do caso
   forte fica abaixo de 6.500 caracteres (era 8.605)
