@@ -1,6 +1,6 @@
 # Pipeline Config
 
-> Static orchestrator reference, pulled via `§ section` pointers — never injected whole. Rationale: `docs/TEMPLATE-RATIONALE.md`; maintainer-only sections moved to `docs/PIPELINE-CONFIG-REFERENCE.md`.
+> Static orchestrator reference, pulled via `§ section` pointers — never injected whole.
 
 ## Pipeline Phases
 
