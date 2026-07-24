@@ -4,8 +4,8 @@
 //! `feature` retrieval feeds to `scan rank` (the measured C2 winner —
 //! query = raw PT + these EN tokens).
 //!
-//! Direct port of the `equivalences-mt` generator in
-//! `benchmarks/sialia/compare-equiv.ps1`: ONE `mustard-translate batch` over
+//! Direct port of the measured `equivalences-mt` generator: ONE
+//! `mustard-translate batch` over
 //! every dictionary term (positional 1:1 contract); a term the sidecar
 //! detects as already-English gets no alias; the translation is tokenized
 //! (non-alphanumeric split, ≥3 chars, lowercased), the term's own folded form

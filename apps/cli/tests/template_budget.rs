@@ -18,9 +18,8 @@
 //!    9,500 leaves margin for the composition separator + siblings.
 //!
 //! Everything else (command / ref body size) is governed by structure
-//! (progressive disclosure) and human review, not a numeric tripwire — the
-//! rationale lives in `docs/TEMPLATE-RATIONALE.md`, never in the loaded
-//! templates.
+//! (progressive disclosure) and human review, not a numeric tripwire — and
+//! that rationale never rides inside the loaded templates.
 
 use std::path::{Path, PathBuf};
 
