@@ -1,0 +1,21 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "give-the-approval-markers-timestamp",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/approve_spec.rs",
+      "path": "apps/rt/src/commands/spec/approve_spec.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/status.rs",
+      "path": "apps/rt/src/commands/pipeline/status.rs",
+      "done": false
+    }
+  ]
+}
