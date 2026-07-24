@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "harness-safety-instruments",
+  "title": "The harness kill-switch destroys what it should keep, and two instruments report on sources nothing writes",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "rt",
+      "summary": "Kill-switch keeps the safety net and actually stops the hooks; the shipped allowlist drops the grant the platform refuses",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "rt",
+      "summary": "The health check and the reporting command stop validating against sources nothing writes",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

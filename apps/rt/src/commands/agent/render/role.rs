@@ -152,7 +152,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
          worklist; do NOT write any file — the caller pipes each block to \
          scan-patterns-apply. Canonical mold format (frontmatter first): name = the \
          worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
-         ...\" (one concrete sentence); `tags: [add, refactor]`; `appliesTo: [<label>]`; \
+         ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
+         `paths` value (a YAML list — this is the one key the platform reads to decide when \
+         the mold loads; never widen it, never invent a folder, and omit the key only when \
+         the worklist gave no value); `tags: [add, refactor]`; `appliesTo: [<label>]`; \
          `scope: [code-editing]`; `source: scan`; `metadata.generated_by: scan` + \
          `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` \
          (folder / extension / file count), `## How to apply` (where a new member goes and \
@@ -229,6 +232,10 @@ fn render_patterns_worklist(
         }
         out.push('\n');
         let _ = writeln!(out, "  moldPath: {}", c.mold_path);
+        // The glob is computed from the census, not authored: the agent copies
+        // it verbatim into `paths:`. Emitted even when empty, so a missing
+        // value reads as "this cluster has none" rather than as a dropped line.
+        let _ = writeln!(out, "  paths (copy verbatim into the frontmatter): {}", c.paths.join(", "));
         let _ = writeln!(out, "  exemplars (read these first):");
         for e in &c.exemplars {
             let _ = writeln!(out, "    - {e}");
@@ -590,5 +597,27 @@ mod tests {
             name, PLUGIN_NAMESPACE,
             "PLUGIN_NAMESPACE ({PLUGIN_NAMESPACE}) drifted from plugin.json#name ({name})"
         );
+    }
+
+    /// The mold contract must name `paths:` — the ONE frontmatter key Claude
+    /// Code itself reads to decide when a mold loads. Without it in the
+    /// contract, the agent writes three keys the platform ignores and none it
+    /// honours, and every mold the scan produces stays unscoped.
+    ///
+    /// The three Mustard-owned keys must survive alongside it: `skill-resolve`
+    /// ranks on them, so dropping them would trade one cost for another.
+    #[test]
+    fn patterns_contract_requires_paths_and_keeps_the_ranking_keys() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let block = build_role_block("patterns", dir.path(), "api", "en-US");
+        assert!(block.starts_with("ROLE: patterns"));
+        assert!(
+            block.contains("`paths:`"),
+            "the mold contract must require the platform's own scoping key: {block}"
+        );
+        for key in ["tags:", "appliesTo:", "scope:"] {
+            assert!(block.contains(key), "ranking key {key} must survive: {block}");
+        }
     }
 }

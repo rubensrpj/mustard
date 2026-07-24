@@ -1,6 +1,7 @@
 ---
 description: Use when the user runs /skills or asks about installing, creating, listing, removing, optimizing, or evaluating skills. Handles install/create/list/remove/optimize/eval/update actions.
 argument-hint: <action> [args]
+disable-model-invocation: true
 source: manual
 ---
 <!-- mustard:generated -->

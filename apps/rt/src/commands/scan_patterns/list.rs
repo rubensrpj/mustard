@@ -187,6 +187,12 @@ pub(crate) struct Candidate {
     pub(crate) count: usize,
     /// 1-3 real hand-written files of the cluster the agent must read.
     pub(crate) exemplars: Vec<String>,
+    /// Globs for the mold's `paths:` frontmatter — the ONE key the platform
+    /// honours to scope when a skill is loaded. Derived by [`globs_for`] from
+    /// the cluster's real files, never from the role's `common_dir` (the miner
+    /// abstracts that one, so it can carry a `<name>` placeholder no glob
+    /// engine understands) and never from a folder name this code recognises.
+    pub(crate) paths: Vec<String>,
     /// Every hand-written file of the cluster in this house, in resolution
     /// order — the set `count`/`exemplars` are derived from. Not serialised:
     /// it exists so [`fold_collisions`] can UNION two case-variants' files and
@@ -214,6 +220,43 @@ pub(crate) struct Rejection {
     pub(crate) subproject: String,
     /// Closed vocabulary — one per drop point in [`collect_inner`].
     pub(crate) reason: &'static str,
+}
+
+/// Collapse a cluster's real files into the smallest set of directory globs
+/// that covers them — the value the mold carries as `paths:`.
+///
+/// Agnostic by construction: the only input is the list of files the census
+/// already resolved for the cluster, so no folder name is recognised, inferred
+/// or hardcoded here. A file at the repository root contributes nothing (a
+/// root-wide glob would scope the mold to everything, which is the same as not
+/// scoping it).
+///
+/// Deterministic: deduplicated, ancestor-collapsed (a parent directory absorbs
+/// every descendant it already matches, so `a/**` and `a/b/**` never both ship)
+/// and sorted — the worklist stays byte-stable, as the `run` output contract
+/// requires.
+pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
+    let mut dirs: Vec<String> = files
+        .iter()
+        .filter_map(|f| {
+            let norm = f.replace('\\', "/");
+            let cut = norm.rfind('/')?;
+            let dir = &norm[..cut];
+            (!dir.is_empty()).then(|| dir.to_string())
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    // Ancestor-collapse: keep a dir only when no ALREADY-KEPT dir is a parent
+    // of it. Sorted order guarantees a parent is visited before its children.
+    let mut kept: Vec<String> = Vec::new();
+    for d in dirs {
+        if kept.iter().any(|k| d.starts_with(&format!("{k}/"))) {
+            continue;
+        }
+        kept.push(d);
+    }
+    kept.into_iter().map(|d| format!("{d}/**")).collect()
 }
 
 /// Run `scan-patterns-list`. Prints a JSON array to stdout; exit 0 always.
@@ -366,6 +409,7 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 implements: role.implements.clone(),
                 count: house.count(),
                 exemplars: house.exemplars(),
+                paths: globs_for(&house.files),
                 files: house.files.clone(),
                 rank: rank_of.get(&role.affix.to_lowercase()).copied().unwrap_or(0),
             });
@@ -1687,5 +1731,67 @@ mod tests {
         assert_eq!(a, b, "two runs must produce identical bytes");
         // Sorted by slug: api-repository before api-service.
         assert!(a.find("api-repository").unwrap() < a.find("api-service").unwrap());
+    }
+
+    /// The mold's `paths:` glob is derived from the cluster's REAL files — the
+    /// only derivation that stays agnostic (a role's `common_dir` is abstracted
+    /// by the miner and can carry a `<name>` placeholder; a folder name matched
+    /// in code would be detecting role by name, which apps/scan forbids).
+    ///
+    /// Four ways this could silently go wrong, asserted together: a repeated
+    /// directory must collapse to one glob; a descendant must be absorbed by an
+    /// ancestor already kept (else `a/**` and `a/b/**` both ship and the second
+    /// is dead weight); a Windows separator must normalise (a `\` in a
+    /// versioned glob is a platform leak); and a root-level file must
+    /// contribute nothing, because a root-wide glob scopes the mold to
+    /// everything, which is the same as not scoping it at all.
+    #[test]
+    fn globs_for_derives_from_real_files_and_collapses() {
+        let files = vec![
+            "apps/api/services/user.rs".to_string(),
+            "apps/api/services/order.rs".to_string(),
+            "apps/api/services/deep/nested.rs".to_string(),
+            "apps/gateway/services/edge.rs".to_string(),
+            "README.md".to_string(),
+        ];
+        assert_eq!(
+            globs_for(&files),
+            vec![
+                "apps/api/services/**".to_string(),
+                "apps/gateway/services/**".to_string()
+            ]
+        );
+        assert_eq!(
+            globs_for(&[r"apps\api\services\user.rs".to_string()]),
+            vec!["apps/api/services/**".to_string()]
+        );
+        assert!(globs_for(&[]).is_empty(), "no files must mean no glob, never a root-wide one");
+    }
+
+    /// The worklist entry carries the glob, so the dispatched agent copies a
+    /// computed value instead of authoring one. Without this the `paths:` key
+    /// would be the agent's invention — exactly what the census exists to
+    /// prevent.
+    #[test]
+    fn globs_for_reaches_the_candidate_worklist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "roles": [{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services","decl_kind":"class"}],
+              "modules": [
+                {"path":"apps/api/services/user_service.rs"},
+                {"path":"apps/api/services/order_service.rs"},
+                {"path":"apps/api/services/mail_service.rs"}
+              ],
+              "projects": [{"dir":"apps/api","kind":"cargo"}]
+            }"#,
+        );
+        let out = collect(root);
+        let c = out.first().expect("one candidate");
+        assert_eq!(c.paths, vec!["apps/api/services/**".to_string()]);
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(json.contains("\"paths\""), "the glob must reach the worklist JSON: {json}");
     }
 }
