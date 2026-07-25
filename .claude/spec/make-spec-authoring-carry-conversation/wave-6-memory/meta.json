@@ -1,0 +1,21 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-spec-authoring-carry-conversation",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/pipeline/wave_done.rs",
+      "path": "apps/rt/src/commands/pipeline/wave_done.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/agent/context_inject.rs",
+      "path": "apps/rt/src/commands/agent/context_inject.rs",
+      "done": false
+    }
+  ]
+}

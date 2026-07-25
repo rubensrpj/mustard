@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-spec-authoring-carry-conversation",
+  "checklist": [
+    {
+      "label": "plugin/commands/feature.md",
+      "path": "plugin/commands/feature.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/feature/glossary-grill.md",
+      "path": "plugin/refs/feature/glossary-grill.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/agent-prompt/agent-prompt.md",
+      "path": "plugin/refs/agent-prompt/agent-prompt.md",
+      "done": false
+    }
+  ]
+}

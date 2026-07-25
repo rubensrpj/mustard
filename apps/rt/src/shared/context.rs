@@ -560,11 +560,12 @@ pub(crate) const CLARIFIED_MARKER: &str = ".clarified";
 ///
 /// The clarify-gate sibling of [`approval_marker_path`], with the same
 /// single-home discipline so its producer and consumer cannot drift: the
-/// glossary grill (`grill-capture`, which WRITES it when a Full spec's ANALYZE
-/// clarification loop completes) and `scope_guard` (which REQUIRES it before an
-/// unapproved Full spec still in PLAN may touch production code — clarify
-/// precedes approval). `None` on an I1 guard rejection of the project root or an
-/// invalid spec name.
+/// glossary grill (`grill-capture --finalize`, which WRITES it when a Full
+/// spec's ANALYZE clarification loop completes) and `approve-spec` (which
+/// REQUIRES it before a Full plan may be approved — clarify precedes approval).
+/// The consumer reads what the marker RECORDS, not merely that it exists: see
+/// [`clarify_marker_body`] and [`MarkerProvenance::records_substance`]. `None`
+/// on an I1 guard rejection of the project root or an invalid spec name.
 #[must_use]
 pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
     Some(
@@ -619,6 +620,27 @@ pub struct MarkerProvenance {
     pub session: String,
     /// ISO-8601 instant the marker was minted, or empty on a legacy marker.
     pub at: String,
+    /// Terms the clarification grill settled, in the order they were recorded.
+    /// Always empty on an approval marker (which grills nothing) and on a
+    /// clarification marker minted before the key existed.
+    pub terms: Vec<String>,
+    /// The stated sentence explaining why no grill applied — the honest decline
+    /// (see [`clarify_marker_body`]). Empty when none was stated.
+    pub reason: String,
+}
+
+impl MarkerProvenance {
+    /// `true` when the marker RECORDS what was settled — at least one captured
+    /// term, or a stated reason why no grill applied.
+    ///
+    /// This is what separates a record from a decoration: a marker that names
+    /// only its spec and its door proves that the finalize ran, and nothing
+    /// about the clarification it claims to close. The clarify gate in
+    /// `approve-spec` refuses on `false`.
+    #[must_use]
+    pub fn records_substance(&self) -> bool {
+        !self.terms.is_empty() || !self.reason.is_empty()
+    }
 }
 
 /// Compose the BODY every approval / clarification marker carries.
@@ -636,6 +658,52 @@ pub struct MarkerProvenance {
 #[must_use]
 pub fn marker_body(spec: &str, via: &str, session: &str, at: &str) -> String {
     format!("spec={spec}\nvia={via}\nsession={session}\nat={at}\n")
+}
+
+/// The door name every clarification marker records under `via=`.
+pub const CLARIFY_VIA: &str = "grill-finalize";
+
+/// Compose the body of a **clarification** marker: [`marker_body`] plus the
+/// RECORD of what the clarification settled.
+///
+/// The clarify marker is the one marker whose existence is not enough — it
+/// unlocks a Full plan's approval, so it must say what it settled: the terms the
+/// glossary grill confirmed (`terms=`), or the stated sentence explaining why no
+/// grill applied (`reason=`). Both keys are OMITTED when empty, so a body that
+/// carries neither reads back as [`MarkerProvenance::records_substance`] ==
+/// `false` and the approval gate refuses it.
+///
+/// Values are folded onto ONE line (a `key=value` body has no escaping), and the
+/// terms are joined with `, ` — the split [`read_marker_provenance`] undoes.
+#[must_use]
+pub fn clarify_marker_body(
+    spec: &str,
+    session: &str,
+    at: &str,
+    terms: &[String],
+    reason: &str,
+) -> String {
+    let mut body = marker_body(spec, CLARIFY_VIA, session, at);
+    let terms: Vec<String> = terms
+        .iter()
+        .map(|t| one_line(t))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if !terms.is_empty() {
+        body.push_str(&format!("terms={}\n", terms.join(", ")));
+    }
+    let reason = one_line(reason);
+    if !reason.is_empty() {
+        body.push_str(&format!("reason={reason}\n"));
+    }
+    body
+}
+
+/// Fold a value onto one line so a caller's newline cannot split the `key=value`
+/// body into a bogus key. Internal runs of whitespace collapse to one space, so
+/// an ordinary sentence survives unchanged.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Read a marker file back into typed [`MarkerProvenance`].
@@ -669,6 +737,15 @@ pub fn read_marker_provenance(path: &Path) -> Option<MarkerProvenance> {
         via,
         session: field("session"),
         at: field("at"),
+        // The record half (clarification markers only — see
+        // `clarify_marker_body`). Absent keys read back as "recorded nothing".
+        terms: field("terms")
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        reason: field("reason"),
     })
 }
 
@@ -844,6 +921,48 @@ mod tests {
         assert_eq!(legacy.via, "grill-finalize");
         assert_eq!(legacy.session, "");
         assert_eq!(legacy.at, "");
+        // ...and a legacy clarify marker recorded NOTHING — which is exactly
+        // what the approval gate now refuses.
+        assert!(!legacy.records_substance());
+    }
+
+    /// The clarify body carries the RECORD on top of the shared four lines, and
+    /// reads back through the same single reader.
+    #[test]
+    fn clarify_marker_body_round_trips_terms_and_reason() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".clarified");
+        let terms = vec!["Payable".to_string(), "Tenant".to_string()];
+
+        let body = clarify_marker_body("my-spec", "s-1", "2026-07-24T10:00:00.000Z", &terms, "");
+        assert_eq!(
+            body,
+            "spec=my-spec\nvia=grill-finalize\nsession=s-1\nat=2026-07-24T10:00:00.000Z\nterms=Payable, Tenant\n"
+        );
+        std::fs::write(&path, &body).unwrap();
+        let p = read_marker_provenance(&path).expect("the clarify body reads back");
+        assert_eq!(p.terms, terms);
+        assert_eq!(p.reason, "");
+        assert!(p.records_substance());
+
+        // The decline: a stated sentence, kept verbatim on its own line.
+        let stated = "the glossary already defines every matched term";
+        std::fs::write(
+            &path,
+            clarify_marker_body("my-spec", "s-1", "2026-07-24T10:00:00.000Z", &[], stated),
+        )
+        .unwrap();
+        let p = read_marker_provenance(&path).expect("a stated decline reads back");
+        assert_eq!(p.reason, stated);
+        assert!(p.terms.is_empty());
+        assert!(p.records_substance());
+
+        // Neither → the keys are omitted and the marker records nothing.
+        let hollow = clarify_marker_body("my-spec", "s-1", "2026-07-24T10:00:00.000Z", &[], "  ");
+        assert!(!hollow.contains("terms=") && !hollow.contains("reason="));
+        std::fs::write(&path, &hollow).unwrap();
+        let p = read_marker_provenance(&path).expect("the shared four lines still read back");
+        assert!(!p.records_substance());
     }
 
     // -----------------------------------------------------------------------

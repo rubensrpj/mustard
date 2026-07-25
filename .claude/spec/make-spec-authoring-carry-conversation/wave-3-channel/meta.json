@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-spec-authoring-carry-conversation",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/spec_draft.rs",
+      "path": "apps/rt/src/commands/spec/spec_draft.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/spec/cli.rs",
+      "path": "apps/rt/src/commands/spec/cli.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/spec/spec_sections.rs",
+      "path": "apps/rt/src/commands/spec/spec_sections.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/review/analyze_validation.rs",
+      "path": "apps/rt/src/commands/review/analyze_validation.rs",
+      "done": false
+    }
+  ]
+}

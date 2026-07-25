@@ -1,0 +1,16 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-spec-authoring-carry-conversation",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/glossary_coverage.rs",
+      "path": "apps/rt/src/commands/glossary_coverage.rs",
+      "done": false
+    }
+  ]
+}

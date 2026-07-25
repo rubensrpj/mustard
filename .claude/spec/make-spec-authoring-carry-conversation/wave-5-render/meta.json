@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-spec-authoring-carry-conversation",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/agent/render/sections.rs",
+      "path": "apps/rt/src/commands/agent/render/sections.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/agent/render/mod.rs",
+      "path": "apps/rt/src/commands/agent/render/mod.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/agent/agent_prompt_template.md",
+      "path": "apps/rt/src/commands/agent/agent_prompt_template.md",
+      "done": false
+    }
+  ]
+}
