@@ -41,7 +41,13 @@ const LOG_FILE: &str = "change-requests.ndjson";
 
 /// Filename of the human-readable change-log rendered beside the spec — the
 /// VISIBLE record ("documentada na spec") whose machine twin is [`LOG_FILE`].
-const CHANGE_LOG_MD: &str = "change-log.md";
+///
+/// `pub(crate)` alongside the two appenders below: `run change-request`
+/// (the orchestrator's DELIBERATE record) writes the same two files, in the same
+/// shape, by CALLING them — a second copy of the format there would drift from
+/// what the per-wave renderer filters on, which is the exact silent loss that
+/// command exists to remove.
+pub(crate) const CHANGE_LOG_MD: &str = "change-log.md";
 
 /// The mid-pipeline change-request recorder.
 pub struct ChangeRequestLog;
@@ -81,7 +87,7 @@ fn read_outcome_stage(project_dir: &str, spec: &str) -> Option<(Option<String>, 
 
 /// Append one change-request line to `.claude/spec/{id}/change-requests.ndjson`.
 /// Best-effort: a missing spec dir is created; any IO error is dropped.
-fn append_change_request(
+pub(crate) fn append_change_request(
     project_dir: &str,
     spec: &str,
     session_id: &str,
@@ -149,7 +155,12 @@ fn last_byte_is_not_newline(path: &std::path::Path) -> bool {
 /// `spec.md` narrative is never touched; this is a separate, append-only doc, so
 /// SDD purity holds while the request is still documented in the spec folder.
 /// Best-effort, fail-open.
-fn append_change_log_md(project_dir: &str, spec: &str, stage: Option<&str>, prompt: &str) {
+pub(crate) fn append_change_log_md(
+    project_dir: &str,
+    spec: &str,
+    stage: Option<&str>,
+    prompt: &str,
+) {
     let Ok(cp) = ClaudePaths::for_project(project_dir) else {
         return;
     };
