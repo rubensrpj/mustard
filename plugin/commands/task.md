@@ -16,9 +16,9 @@ source: manual
 | `audit` | `explore` | `Explore` (read-only) |
 | `compare` | `explore` ×N → `plan` | `Explore` parallel → `Plan` |
 | `review` | `review` | `mustard:mustard-review` (read-only) |
-| `docs` | `impl` | `general-purpose` |
-| `refactor` | `plan` → `impl` | `Plan` → `general-purpose` |
-| `implement` | `impl` | `general-purpose` |
+| `docs` | `impl` | `mustard:mustard-impl` (own worktree) |
+| `refactor` | `plan` → `impl` | `Plan` → `mustard:mustard-impl` (own worktree) |
+| `implement` | `impl` | `mustard:mustard-impl` (own worktree) |
 
 Roles are the render's canonical vocabulary (`explore`, `plan`, `impl`, `review`) — an unknown role falls through to the impl contract, so never pass the action name as `--role`.
 

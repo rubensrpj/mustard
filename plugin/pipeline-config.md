@@ -55,7 +55,7 @@ Keyed on `subagent_type`; `qa` rides `mustard:mustard-review`, `guards` `mustard
 
 | Agent | Max Context | Max Tool Uses | Max Return |
 |-------|-------------|---------------|------------|
-| `impl` (general-purpose) | ≤30K | — | 40 lines |
+| `impl` (`mustard:mustard-impl`) | ≤30K | — | 40 lines |
 | `explore` | ≤10K | ≤15 (warn 12) | 30 lines |
 | `review` / `qa` | ≤12K | — | 60 lines |
 | `plan` | — | — | 80 lines |

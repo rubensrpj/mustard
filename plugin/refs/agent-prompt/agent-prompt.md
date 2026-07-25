@@ -4,7 +4,7 @@
 
 ## subagent_type by role
 
-The dispatch planner (`wave-advance` items carry the field) picks the agent per role via `recommended_subagent_type` — read-only roles run tool-restricted so they physically cannot write; writing roles rely on the per-role contract + the `scope_guard` hook. Agents inherit the session model (no routing table).
+The dispatch planner (`wave-advance` items carry the field) picks the agent per role via `recommended_subagent_type` — read-only roles run tool-restricted so they physically cannot write; writing roles resolve to `mustard:mustard-impl`, which declares `isolation: worktree`, so each dispatch runs in its OWN checkout (the per-role contract + the `scope_guard` hook still apply on top). Two consequences a reader needs: the wave's commit boundary IS that checkout — `git add -A` inside it stages that wave and nothing else, even with sibling waves running — and the work does not arrive on the work-unit branch by itself: `wave-done` folds it back via `run wave-reclaim` before emitting the completion, and a fold that cannot complete blocks the wave instead of reporting it done. Agents inherit the session model (no routing table).
 
 | Role | `subagent_type` | Tools |
 |---|---|---|
@@ -13,9 +13,9 @@ The dispatch planner (`wave-advance` items carry the field) picks the agent per 
 | `review` / `qa` | `mustard:mustard-review` | Read/Grep/Glob/Bash (tests only) |
 | `guards` | `mustard:mustard-guards` | Read/Grep/Glob |
 | `patterns` | `mustard:mustard-patterns` | Read/Grep/Glob |
-| `impl` / any other | `general-purpose` | Edit/Write (+ `scope_guard`) |
+| `impl` / any other | `mustard:mustard-impl` | Edit/Write in its own worktree (`isolation: worktree`, + `scope_guard`) |
 
-This is the canonical role→`subagent_type` map — other command refs point here rather than repeat it. Plugin-owned agents carry the `mustard:` namespace (Claude Code registers them under the `plugin.json` `name`; a bare `mustard-review` silently falls back to `general-purpose`). Built-in agents (`Explore`, `Plan`, `general-purpose`) stay unprefixed.
+This is the canonical role→`subagent_type` map — other command refs point here rather than repeat it. Plugin-owned agents carry the `mustard:` namespace (Claude Code registers them under the `plugin.json` `name`; a bare `mustard-review` silently falls back to `general-purpose`, and a bare `mustard-impl` falls back to `general-purpose` too — i.e. to a SHARED checkout, losing the isolation without a single error). Built-in agents (`Explore`, `Plan`) stay unprefixed; `general-purpose` is no longer dispatched by any role — it is only what a mis-namespaced type degrades into.
 
 ## Placeholders (filled by the binary)
 
