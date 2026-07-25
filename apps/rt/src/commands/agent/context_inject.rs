@@ -422,6 +422,214 @@ pub(crate) fn extract_memory_summary(text: &str) -> String {
     String::new()
 }
 
+// ---------------------------------------------------------------------------
+// The PRODUCING side of the same channel
+// ---------------------------------------------------------------------------
+//
+// HISTORY — why this side is written the way it is. This project HAD a memory
+// injection and REMOVED it (PR #30), because what it produced was CONFABULATED
+// provenance: a general "what I have learned" summary that read as fact and
+// could not be traced to anything that actually happened. The consumer above
+// survived that removal; the producer did not, and nothing replaced it — so
+// `memory/*.md` never existed and the `## SPEC MEMORY` block rendered empty on
+// every dispatch, always.
+//
+// Restoring the producer without restoring the defect is the whole point of the
+// two functions below:
+//
+//   * [`lesson_qualifies`] is the VALUE FILTER — the producing-side twin of the
+//     bar the role contract already states at EMISSION time ("emit a `<MEMORY>`
+//     block ONLY IF there was a real choice AND a future agent would decide
+//     worse without knowing it"). Stating a bar at the source and never checking
+//     it downstream is exactly how the clarification marker became decoration:
+//     a filter that accepts everything is the same as no filter.
+//   * [`memory_file_stem`] names the file so its provenance is legible AND so
+//     the recall matcher above can actually find it — the name is the primary
+//     relevance signal, so the two must be written together or they drift.
+//
+// Everything here is deterministic and LLM-free: no model decides what is worth
+// remembering, so nothing can be invented.
+
+/// Minimum informative length of a lesson, in characters.
+///
+/// Not the filter — a supporting bound. A real lesson names an alternative AND
+/// its consequence, which does not fit in a handful of characters; a recap
+/// ("Fixed the bug in foo.rs") does. Applied on the whitespace-normalised text.
+const MIN_LESSON_CHARS: usize = 30;
+
+/// Process residue — text that describes the RUN rather than a decision. These
+/// are the categories the emission contract names verbatim as disqualifying
+/// ("a recap of what you did", "context you read", "a file list",
+/// "'interrupted'"), so a hit is a hard veto regardless of anything else.
+const RESIDUE_MARKERS: &[&str] = &[
+    "interrupted",
+    "interruption",
+    "no changes",
+    "nothing to do",
+    "nothing changed",
+    "as requested",
+    "as instructed",
+    "as described",
+    "files changed",
+    "file list",
+    "recap",
+];
+
+/// Clause (a) of the bar — evidence that ALTERNATIVES EXISTED and the other way
+/// was possible. A lesson with no alternative in it is a statement of what is,
+/// not of a choice, and the reader has nothing to decide differently.
+const CHOICE_MARKERS: &[&str] = &[
+    "chose", "chosen", "choose", "opted", "decided", "instead", "rather",
+    "over", "versus", "vs", "but", "not", "prefer", "preferred", "picked",
+];
+
+/// Clause (b) of the bar — evidence that a future agent would DECIDE WORSE
+/// without this: the consequence of going the other way. A choice stated with
+/// no consequence ("chose A over B") is a fact about this task, not a lesson.
+const CONSEQUENCE_MARKERS: &[&str] = &[
+    "because", "since", "otherwise", "would", "will", "never", "always",
+    "avoid", "avoids", "prevent", "prevents", "break", "breaks", "broke",
+    "corrupt", "corrupts", "fail", "fails", "silently", "cannot", "risk",
+    "stale", "wrong", "reproduce", "reproduces", "defect", "deadlock",
+    "lose", "loses", "so",
+];
+
+/// The VALUE FILTER: does this captured lesson deserve to become a memory file?
+///
+/// Mirrors the emission contract's own bar, evaluated deterministically over the
+/// text: a lesson qualifies only when BOTH clauses are visible in it — an
+/// alternative that existed ([`CHOICE_MARKERS`]) AND the consequence of taking
+/// it ([`CONSEQUENCE_MARKERS`]) — and it is not one of the residue shapes the
+/// contract disqualifies by name ([`RESIDUE_MARKERS`], a bare file list, or text
+/// too short to carry either clause).
+///
+/// Deliberately conservative: this gates what becomes DURABLE context injected
+/// into every later dispatch, so a false accept costs every future agent while a
+/// false reject costs only this one lesson — which is still on the event log and
+/// still reaches the next wave through `## DECISIONS`. Erring toward rejection
+/// is the right side of that asymmetry.
+///
+/// Matching is word-boundary anchored (see [`contains_marker`]) so `not` does
+/// not fire inside `notice` and `so` does not fire inside `source`.
+#[must_use]
+pub(crate) fn lesson_qualifies(lesson: &str) -> bool {
+    let text = normalize_lesson(lesson);
+    if text.chars().count() < MIN_LESSON_CHARS {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    if RESIDUE_MARKERS.iter().any(|m| contains_marker(&lower, m)) {
+        return false;
+    }
+    if looks_like_a_file_list(&text) {
+        return false;
+    }
+    let has_choice = CHOICE_MARKERS.iter().any(|m| contains_marker(&lower, m));
+    let has_consequence = CONSEQUENCE_MARKERS
+        .iter()
+        .any(|m| contains_marker(&lower, m));
+    has_choice && has_consequence
+}
+
+/// Collapse every whitespace run to a single space and trim — the canonical
+/// one-line form of a lesson. A `<MEMORY>` block may arrive wrapped across
+/// lines; the memory file's frontmatter `description:` is a single line by
+/// construction, so normalising here keeps the filter, the file name, the
+/// frontmatter and the de-duplication all keyed on the SAME string.
+#[must_use]
+pub(crate) fn normalize_lesson(lesson: &str) -> String {
+    lesson.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Word-boundary-anchored substring test over an already-lowercased haystack.
+///
+/// The markers are short function words, so a naive `contains` would fire on
+/// `not` inside `notice`, `so` inside `source`, `vs` inside `vsync`. A match
+/// counts only when neither neighbouring byte is ASCII-alphanumeric; every
+/// marker is ASCII, and any non-ASCII byte (an em dash, an accent) is a
+/// boundary, which is what we want.
+fn contains_marker(haystack_lower: &str, marker: &str) -> bool {
+    let hay = haystack_lower.as_bytes();
+    let needle = marker.as_bytes();
+    if needle.is_empty() || needle.len() > hay.len() {
+        return false;
+    }
+    for i in 0..=(hay.len() - needle.len()) {
+        if &hay[i..i + needle.len()] != needle {
+            continue;
+        }
+        let before_ok = i == 0 || !hay[i - 1].is_ascii_alphanumeric();
+        let after = i + needle.len();
+        let after_ok = after == hay.len() || !hay[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// `true` when the text is mostly paths — the "a file list" the contract
+/// disqualifies. A token counts as path-shaped when it carries a `/` or a
+/// short trailing extension (`foo.rs`, `mod.ts`). A real lesson may well cite
+/// a file or two, so the veto needs a MAJORITY, not a single hit.
+fn looks_like_a_file_list(text: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    let pathish = tokens
+        .iter()
+        .filter(|tok| {
+            tok.contains('/')
+                || tok
+                    .rsplit_once('.')
+                    .is_some_and(|(head, ext)| {
+                        !head.is_empty()
+                            && (1..=4).contains(&ext.len())
+                            && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                    })
+        })
+        .count();
+    pathish * 2 > tokens.len()
+}
+
+/// Segments kept from the lesson slug in a memory file's name. Enough to make
+/// the file legible and to give the recall matcher several stems to score on,
+/// short enough that the name stays a name.
+const MEMORY_STEM_SEGMENTS: usize = 6;
+
+/// The file-name stem for a lesson materialised at the close of `wave` —
+/// `<lesson-slug…>-wave{N}`, without the `.md`.
+///
+/// Two constraints meet here, which is why this lives beside [`name_stems`]
+/// rather than in the writer:
+///
+/// 1. **Provenance is in the name.** The wave is part of the identifier, so the
+///    `[[wikilink]]` the prompt renders says which wave produced the line. The
+///    file's frontmatter carries the run too; the name carries the wave because
+///    the name is what a reader sees.
+/// 2. **The name must stay a relevance signal.** [`name_stems`] drops tokens
+///    under 3 chars, and the wave marker is written `wave{N}` (one token) rather
+///    than `wave-{N}` precisely so it does NOT contribute the stem `wave` —
+///    which, being in almost every dispatch intent, would score every memory
+///    file equally and collapse the relevance ranking into "inject everything".
+///
+/// Kebab-casing goes through the project's single slug maker
+/// ([`i18n::slugify`]) so there is no second, hand-rolled stopword list.
+#[must_use]
+pub(crate) fn memory_file_stem(lesson: &str, wave: u64) -> String {
+    let slug = i18n::slugify(&normalize_lesson(lesson), Locale::EnUs);
+    let kept: Vec<&str> = slug
+        .split('-')
+        .filter(|seg| seg.chars().count() >= 3)
+        .take(MEMORY_STEM_SEGMENTS)
+        .collect();
+    if kept.is_empty() {
+        return format!("lesson-wave{wave}");
+    }
+    format!("{}-wave{wave}", kept.join("-"))
+}
+
 /// Render a `## SPEC MEMORY` block from matched principle files.
 ///
 /// `with_summary` mirrors [`match_spec_memory`]: when `true`, each line is
@@ -687,6 +895,71 @@ mod tests {
         }];
         assert!(render_spec_memory_block(&without).contains("- [[tabs-routing]]\n"));
         assert!(render_spec_memory_block(&[]).is_empty());
+    }
+
+    #[test]
+    fn lesson_qualifies_needs_both_an_alternative_and_a_consequence() {
+        // Both clauses present — the shape the emission contract asks for.
+        assert!(lesson_qualifies(
+            "Chose atomic_md write over direct fs::write because a mid-write crash corrupts the file"
+        ));
+        // An alternative with no consequence is a fact about this task only.
+        assert!(!lesson_qualifies(
+            "Chose the porcelain parser over the plumbing parser for this module"
+        ));
+        // A consequence with no alternative leaves nothing to decide.
+        assert!(!lesson_qualifies(
+            "The shared git helper trims the whole output before returning it"
+        ));
+    }
+
+    #[test]
+    fn lesson_qualifies_vetoes_the_residue_shapes_by_name() {
+        // Recap — the contract's own "Bad" example, and a longer one that
+        // clears the length bound and is still only a report of what was done.
+        assert!(!lesson_qualifies("Fixed the bug in foo.rs"));
+        assert!(!lesson_qualifies(
+            "Fixed the wave-done regression and updated the tests that covered it"
+        ));
+        // Interruption — vetoed even though it carries a consequence word.
+        assert!(!lesson_qualifies(
+            "Interrupted before the build finished, so not everything was verified"
+        ));
+        // A file list, vetoed by shape even when the marker words are present.
+        assert!(looks_like_a_file_list("src/a.rs src/b.rs tests/c.rs"));
+        assert!(!lesson_qualifies(
+            "Not src/a.rs but src/b.rs, src/c.rs, tests/d.rs, so tests/e.rs"
+        ));
+        // A lesson may still cite a file or two without being a file list.
+        assert!(lesson_qualifies(
+            "Chose wave_done.rs over close_pipeline.rs because closing the spec runs too late"
+        ));
+    }
+
+    #[test]
+    fn marker_match_is_word_boundary_anchored() {
+        // `not` inside `notice`, `so` inside `source` — neither may fire.
+        assert!(!contains_marker("a notice about the source", "not"));
+        assert!(!contains_marker("a notice about the source", "so"));
+        assert!(contains_marker("this is not the source", "not"));
+        assert!(contains_marker("fs::write, so a crash corrupts", "so"));
+    }
+
+    #[test]
+    fn memory_file_stem_carries_the_wave_without_a_generic_wave_stem() {
+        let stem = memory_file_stem(
+            "Chose the porcelain parser over slicing fixed columns because the helper trims",
+            1,
+        );
+        assert!(stem.ends_with("-wave1"), "the wave is part of the name: {stem}");
+        assert!(stem.contains("porcelain"), "{stem}");
+        // The whole point of `wave1` over `wave-1`: no bare `wave` stem, which
+        // would fire in nearly every dispatch intent and flatten the ranking.
+        let stems = name_stems(&stem);
+        assert!(!stems.iter().any(|s| s == "wave"), "got {stems:?}");
+        assert!(stems.iter().any(|s| s == "porcelain"), "got {stems:?}");
+        // Segment cap holds, so the name stays a name.
+        assert!(stem.split('-').count() <= 7, "{stem}");
     }
 
     #[test]
