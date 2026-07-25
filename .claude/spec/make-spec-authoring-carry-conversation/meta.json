@@ -4,7 +4,12 @@
   "phase": "EXECUTE",
   "scope": "full",
   "lang": "en-US",
-  "checkpoint": "2026-07-25T12:18:40.273Z",
+  "checkpoint": "2026-07-25T12:37:15.247Z",
   "isWavePlan": true,
-  "totalWaves": 7
+  "totalWaves": 7,
+  "currentWave": 2,
+  "completedWaves": [
+    1,
+    2
+  ]
 }

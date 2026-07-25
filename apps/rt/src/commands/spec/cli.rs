@@ -153,6 +153,14 @@ pub enum SpecCmd {
         /// Output directory (default `.claude/spec/{slug}/`).
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Path to the conversation-material JSON: `{ "definitions": [{term,
+        /// meaning}], "decisions": [{decision, reason}], "findings":
+        /// [{statement, file, line?}] }`. Each kind lands in a section of its
+        /// own. A FILE, not a flag value — the payload carries newlines,
+        /// quotes and non-ASCII that a shell argument would mangle. Omitted
+        /// (or carrying nothing): the draft is byte-identical to today's.
+        #[arg(long)]
+        material: Option<PathBuf>,
         /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
         /// The wave dirs themselves are materialised by `wave-scaffold`.
         #[arg(long, default_value_t = 1)]
@@ -278,6 +286,7 @@ pub fn dispatch(cmd: SpecCmd) {
             lang,
             signals,
             output,
+            material,
             waves,
             force,
             query_terms,
@@ -289,6 +298,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 lang,
                 signals,
                 output,
+                material,
                 waves,
                 force,
                 query_terms,

@@ -31,6 +31,7 @@ fn opts(output: &Path) -> SpecDraftOpts {
         lang: "en-US".into(),
         signals: None,
         output: Some(output.to_path_buf()),
+        material: None,
         waves: 0,
         force: false,
         query_terms: None,

@@ -39,6 +39,13 @@ fn variants(key: &str) -> Option<&'static [&'static str]> {
         "non-goals" | "nongoals" => &["Non-Goals", "Não-Objetivos"],
         "concerns" => &["Concerns", "Preocupações"],
         "decisions" => &["Decisions", "Decisões não-óbvias"],
+        // The conversation channel (`spec-draft --material`). The drafter emits
+        // the EN display heading — language-agnostic, exactly like
+        // `## Checklist` — so every reader keys off one literal; the PT variant
+        // is registered so a hand-authored PT spec still resolves through THIS
+        // resolver instead of growing a second parser.
+        "definitions" => &["Definitions", "Definições"],
+        "evidence" => &["Evidence", "Evidências"],
         "dependencies" => &["Dependencies", "Dependências"],
         "entityinfo" => &["Entity Info", "Informações da Entidade"],
         "symptom" => &["Symptom", "Sintoma"],
@@ -193,6 +200,27 @@ mod tests {
     #[test]
     fn unknown_key_never_matches() {
         assert!(!is_heading("## Files", "nonsense"));
+    }
+
+    /// The conversation channel's three sections resolve through the SAME
+    /// resolver as every other section — in both spellings — so the QA
+    /// extractor, the per-wave renderer and the boundary gate read them with
+    /// `section_block`, never with a second parser of their own.
+    #[test]
+    fn conversation_material_sections_resolve_through_the_shared_resolver() {
+        for (key, en, pt) in [
+            ("definitions", "## Definitions", "## Definições"),
+            ("decisions", "## Decisions", "## Decisões não-óbvias"),
+            ("evidence", "## Evidence", "## Evidências"),
+        ] {
+            assert!(is_heading(en, key), "{key}: EN heading must resolve");
+            assert!(is_heading(pt, key), "{key}: PT heading must resolve");
+        }
+        // The block extractor reaches them too, and stops at the next `## `.
+        let md = "## Context\n\nprose\n\n## Evidence\n\n- checked\n  Evidence: `src/a.rs:12`\n\n## Files\n\n- `a.rs`\n";
+        let block = section_block(md, "evidence").expect("evidence section found");
+        assert!(block.contains("src/a.rs:12"), "{block}");
+        assert!(!block.contains("Files"), "stops at the next `## `: {block}");
     }
 
     /// Roundtrip (legacy corpus): a spec drafted by a pre-fix binary carries

@@ -287,10 +287,14 @@ fn looks_like_file_path(token: &str) -> bool {
 /// The shipped spec law (`plugin/refs/feature/spec-language.md`, "Contexto
 /// rules") makes the PRD layer prose-only: `## Context` briefs a human
 /// rediscovering the work next week, so file paths, line numbers, identifiers
-/// and bullet lists belong to `## Root cause` / `## Files` / `## Tasks`. The law
-/// shipped but nothing enforced it, and the drafter itself violated it — it
-/// spliced the scan digest's anchors into Context as a bullet list of paths.
-/// Checked here so the violation is caught wherever it comes from.
+/// and bullet lists belong to `## Root cause` / `## Files` / `## Tasks` — and a
+/// VERIFIED FINDING to `## Evidence`, the section the conversation channel
+/// (`spec-draft --material`) materialises. The rule is unchanged; what changed
+/// is that the message now names where a finding actually goes, because a rule
+/// that rejects without naming the destination is how the material ends up
+/// nowhere. The law shipped but nothing enforced it, and the drafter itself
+/// violated it — it spliced the scan digest's anchors into Context as a bullet
+/// list of paths. Checked here so the violation is caught wherever it comes from.
 fn context_prose_violations(content: &str) -> Vec<String> {
     let Some(block) = crate::commands::spec::spec_sections::section_block(content, "context")
     else {
@@ -693,9 +697,10 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
             "severity": "WARN",
             "type": "context-not-prose",
             "message": format!(
-                "The Context section is prose-only — it briefs a human rediscovering the work, \
-                 so file paths, line numbers and bullet lists belong to Root cause / Files / \
-                 Tasks. Found: {}.",
+                "The Context section is prose-only — it briefs a human rediscovering the work. \
+                 A VERIFIED FINDING, with the file and line it was checked at, belongs to the \
+                 Evidence section (carried in by `spec-draft --material`); other paths and \
+                 lists belong to Root cause / Files / Tasks. Found: {}.",
                 context_violations.join(", ")
             ),
         }));
