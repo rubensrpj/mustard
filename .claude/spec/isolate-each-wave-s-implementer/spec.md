@@ -66,7 +66,7 @@ Every criterion below is verified by a NAMED test and demands a non-zero pass co
   Command: `cargo test -p mustard-rt agent_worktree_refuses_dirty_tree`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-4** — when the plugin's implementer subagent is loaded, then its frontmatter declares `isolation: worktree`, so every dispatch of a writing role lands in its own checkout.
-  Command: `cargo test -p mustard-rt impl_agent_declares_worktree_isolation`
+  Command: `cargo test -p mustard-rt --test plugin_agents impl_agent_declares_worktree_isolation`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-5** — when a wave finishes in its own checkout, then its commit is folded back onto the work-unit branch, so the next wave starts from a tree that contains it.
   Command: `cargo test -p mustard-rt wave_reclaim_folds_commit_onto_unit_branch`
@@ -78,7 +78,7 @@ Every criterion below is verified by a NAMED test and demands a non-zero pass co
   Command: `cargo test -p mustard-rt recommended_subagent_type_routes_writing_roles_to_impl`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-8** — when the documented role-to-subagent map is compared with the code, then the two agree, so a reader is never told that writing roles dispatch to `general-purpose` after they stopped doing so.
-  Command: `cargo test -p mustard-rt agent_prompt_ref_matches_subagent_map`
+  Command: `cargo test -p mustard-rt --test plugin_agents agent_prompt_ref_matches_subagent_map`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-9** — the workspace builds green.
   Command: `cargo build --workspace`

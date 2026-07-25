@@ -36,6 +36,16 @@ use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_wor
 /// it, leaving the layout to whoever replaces the native `git worktree add`.
 const WORKTREES_RELDIR: &str = ".claude/worktrees";
 
+/// The name prefix Claude Code gives a SUBAGENT's isolated worktree
+/// (`agent-<id>`) — the same prefix `worktree-gc` collects by. It is the ONLY
+/// non-unit shape that carries a wave: a desktop/background worktree has no
+/// dispatched work depending on the tree's state, so the clean-tree
+/// precondition applies here and nowhere else.
+const AGENT_NAME_PREFIX: &str = "agent-";
+
+/// How many dirty paths the refusal message spells out before summarising.
+const MAX_DIRTY_SHOWN: usize = 20;
+
 /// Options for `mustard-rt run work-unit-open`.
 pub struct WorkUnitOpenOpts {
     /// Any directory inside the repo (worktrees welcome — the command resolves
@@ -66,6 +76,109 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<(), String> {
 /// Whether a git ref exists (branch or remote-tracking), quiet.
 fn ref_exists(dir: &Path, full_ref: &str) -> bool {
     git_ok(dir, &["rev-parse", "--verify", "--quiet", full_ref])
+}
+
+/// The work-unit branch the INVOKING tree sits on, `None` when it sits on
+/// anything else (an integration base, a detached HEAD, an unreadable repo).
+///
+/// Read from the TREE, never from the requested worktree name: an `agent-*`
+/// name carries no base and no slug, so the unit can only come from where the
+/// hook was invoked. The shape and the longest-match rule mirror
+/// `work_branch_gate::base_for` — the parser of what
+/// [`super::event::work_branch`] produces.
+fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String> {
+    let branch = git_out(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim();
+    // `HEAD` is git's answer for a detached checkout — not a branch name.
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+    bases
+        .iter()
+        .any(|b| branch.starts_with(&format!("{b}_")))
+        .then(|| branch.to_string())
+}
+
+/// Start ref for a NON-UNIT worktree name (`agent-*`, desktop names), as an
+/// explicit cascade — each step tried ONLY when the one before it does not
+/// resolve:
+///
+/// 1. the CURRENT work unit's HEAD, when the invoking tree sits on one. A wave
+///    dispatched from inside a unit must see that unit's commits; cutting from
+///    an integration base would silently hand the agent older code.
+/// 2. `origin/{primary_base}` from `mustard.json#git.flow`. `origin/HEAD` is
+///    the REMOTE's opinion of a default (`origin/main` here) while the project
+///    declares `"*": "dev"` — the declared flow is the authority, and it is
+///    already loaded config, not a new source of truth.
+/// 3. `origin/HEAD` when resolvable, else the local `HEAD` — today's behaviour,
+///    kept verbatim for a project that declares no flow.
+///
+/// Freshness is best-effort exactly like `work_branch_gate`'s
+/// `refresh_integration_bases`: the fetch may fail (offline, no remote,
+/// diverged) and the cut then degrades to the LOCAL base. A stale-but-local
+/// base is a worse cut, never a failure — a non-zero exit here would ABORT the
+/// worktree creation.
+fn non_unit_start(
+    main: &Path,
+    cwd: &Path,
+    config: &mustard_core::ProjectConfig,
+    bases: &[String],
+) -> String {
+    if let Some(unit) = current_unit_branch(cwd, bases) {
+        return unit;
+    }
+    // An ABSENT `git.flow` has no declared primary — `primary_base()` would
+    // answer its hardcoded last resort, which is exactly the guess step 3
+    // already makes better. Only a DECLARED flow speaks here.
+    if !config.git.flow.is_empty() {
+        let primary = config.git.primary_base();
+        git_ok(main, &["fetch", "origin", &primary]);
+        if ref_exists(main, &format!("refs/remotes/origin/{primary}")) {
+            return format!("origin/{primary}");
+        }
+        if ref_exists(main, &format!("refs/heads/{primary}")) {
+            return primary;
+        }
+    }
+    git_ok(main, &["fetch", "origin"]);
+    git_out(main, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "HEAD".to_string())
+}
+
+/// Working-tree paths `git add -A` would stage, EXCLUDING `.claude/`.
+///
+/// `.claude/` is redirected state, not code (`io::workspace` remaps it to the
+/// MAIN checkout from inside any worktree), so its dirt never belongs to the
+/// code a wave runs against — the same carve-out the harness's other gates
+/// make. Untracked files DO count: a new source file that never travels is the
+/// same defect as a modified one.
+///
+/// Fail-open: no git, not a repository, or a failed probe yields an EMPTY list
+/// (read as "clean"). The refusal only ever stands on a positive observation.
+fn dirty_paths(dir: &Path) -> Vec<String> {
+    let Some(out) = git_out(dir, &["status", "--porcelain"]) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for line in out.lines() {
+        // `XY <path>`, but NEVER sliced at a fixed column: `git_out` trims the
+        // whole output, so the FIRST entry loses its leading status space
+        // (`" M a.txt"` arrives as `"M a.txt"`). Split on the first space
+        // instead — the status codes never contain one, the path may.
+        let Some((code, rest)) = line.trim_start().split_once(' ') else { continue };
+        if code.len() > 2 || !code.chars().all(|c| "MADRCU?!".contains(c)) {
+            continue; // not a status entry we understand — skip, never guess
+        }
+        // A rename reports `old -> new`; the destination is the live path.
+        let rest = rest.trim_start();
+        let path = rest.rsplit(" -> ").next().unwrap_or(rest).trim().trim_matches('"');
+        if path.is_empty() || path == ".claude" || path.starts_with(".claude/") {
+            continue;
+        }
+        paths.push(path.to_string());
+    }
+    paths
 }
 
 /// The open pass — the testable core of [`run`]. Never panics.
@@ -208,9 +321,21 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
 ///   `origin/{base}` (attach the branch if it already exists).
 /// - `prefix_…` with an UNDECLARED prefix → `Err` (didactic — almost certainly
 ///   a mistyped base; silent coercion is the disease this crate just cured).
-/// - no `_` at all (`agent-*`, desktop names) → replicate the native cut:
-///   `origin/HEAD` when resolvable, else the local `HEAD` — background
-///   isolation must never break.
+/// - no `_` at all (`agent-*`, desktop names) → [`non_unit_start`]'s cascade:
+///   the current work unit's HEAD, else `origin/{primary_base}` from the
+///   DECLARED `git.flow`, else the historical `origin/HEAD`/local `HEAD`.
+///   Background isolation must never break.
+///
+/// An `agent-*` name additionally requires a CLEAN tree. A fresh checkout
+/// carries only COMMITTED code, so uncommitted work in the invoking tree would
+/// not travel and the wave would run against the older version — most visibly
+/// after `/scan`, which rewrites each subproject's `CLAUDE.md` `## Guards` and
+/// its `{role}-pattern` skills next to the code. This is the ONE place here
+/// that blocks, and it blocks by `Err`: a non-zero exit ABORTS creation with
+/// stderr shown to the user, which IS this event's protocol (the same way a
+/// `Deny` is a gate's). It mirrors `scan_clean_gate`, which already refuses
+/// `/scan` on a dirty tree for the `add -A` reason. Unit worktrees and
+/// background-session worktrees are untouched — no wave depends on their tree.
 ///
 /// The event hands over a NAME, never a path (`worktree_path` is the *Remove*
 /// twin's field), so placing the worktree is this engine's call: it mirrors the
@@ -253,6 +378,30 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         .max_by_key(|c| c.len())
         .cloned();
 
+    // Clean-tree precondition — AGENT worktrees only, and the one refusal in
+    // this engine that is deliberate. Checked on the INVOKING tree, which is
+    // the tree the cascade derives the cut from.
+    if name.starts_with(AGENT_NAME_PREFIX) {
+        let dirty = dirty_paths(cwd);
+        if !dirty.is_empty() {
+            let shown: Vec<&str> = dirty.iter().take(MAX_DIRTY_SHOWN).map(String::as_str).collect();
+            let more = dirty.len().saturating_sub(shown.len());
+            let tail =
+                if more == 0 { String::new() } else { format!("\n  … and {more} more path(s)") };
+            return Err(format!(
+                "WorktreeCreate: refusing to cut the agent worktree '{name}' — the working tree \
+                 has uncommitted changes:\n  {}{tail}\n\
+                 A fresh worktree carries only COMMITTED code, so this work would NOT travel and \
+                 the wave would run against the older version — most visibly after /scan, which \
+                 rewrites each subproject's CLAUDE.md ## Guards and its {{role}}-pattern skills \
+                 next to the code.\n\
+                 Commit or stash the paths above, then re-run. (`.claude/` is exempt — it is \
+                 redirected state, not code.)",
+                shown.join("\n  ")
+            ));
+        }
+    }
+
     let start = if let Some(base) = unit_base {
         // Work unit: freshness first (network is the one forgiving step).
         git_ok(&main, &["fetch", "origin", &base]);
@@ -270,11 +419,7 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
             bases.join(", ")
         ));
     } else {
-        // Native-equivalent cut for non-unit names (agent-*, desktop).
-        git_ok(&main, &["fetch", "origin"]);
-        git_out(&main, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "HEAD".to_string())
+        non_unit_start(&main, cwd, &config, &bases)
     };
 
     let add = if ref_exists(&main, &format!("refs/heads/{name}")) {
@@ -506,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn hook_create_non_unit_name_falls_back_to_native_cut() {
+    fn hook_create_non_unit_name_still_cuts_its_own_branch() {
         // `agent-*` (no underscore) must never break — background isolation.
         let (_dir, main) = fixture();
         let got = hook_create("agent-bg1", &main).expect("creates");
@@ -516,6 +661,143 @@ mod tests {
             "agent-bg1",
             "own branch, native-style"
         );
+    }
+
+    #[test]
+    fn agent_worktree_cuts_from_unit_head() {
+        // Step 1 of the cascade: a wave dispatched from INSIDE a work unit must
+        // see that unit's commits. Cutting from the integration base would hand
+        // the agent code that predates the unit — silently.
+        let (_dir, main) = fixture();
+        git(&main, &["checkout", "-b", "dev_unit"]);
+        std::fs::write(main.join("unit.txt"), "unit work").expect("unit file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "unit work"]);
+        let unit_head = git_out(&main, &["rev-parse", "HEAD"]).expect("unit head");
+
+        let got = hook_create("agent-w1", &main).expect("creates");
+        let wt_head = git_out(Path::new(&got), &["rev-parse", "HEAD"]).expect("wt head");
+        assert_eq!(wt_head, unit_head, "cut from the CURRENT unit's HEAD");
+        assert!(Path::new(&got).join("unit.txt").is_file(), "the unit's commit travelled");
+        let origin_dev = git_out(&main, &["rev-parse", "origin/dev"]).expect("origin/dev");
+        assert_ne!(wt_head, origin_dev, "the unit beats the integration base");
+    }
+
+    /// Bare origin carrying BOTH `main` and `dev` at DIFFERENT tips, with
+    /// `origin/HEAD` pointing at `main` (the remote's opinion of a default),
+    /// and a main checkout parked on `dev` — which is an integration base, so
+    /// no work unit is in play. `flow` is the `mustard.json` body, so the same
+    /// shape serves the declared and the undeclared case.
+    fn fixture_remote_head_on_main(flow: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().expect("tempdir");
+        let bare = dir.path().join("origin.git");
+        let main = dir.path().join("repo");
+        std::fs::create_dir_all(&bare).expect("mkdir bare");
+        std::fs::create_dir_all(&main).expect("mkdir main");
+        git(&bare, &["init", "--bare", "."]);
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-b", "main"]);
+        std::fs::write(main.join("mustard.json"), flow).expect("cfg");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("a.txt"), "on main").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "main seed"]);
+        git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
+        git(&main, &["push", "-u", "origin", "main"]);
+        git(&main, &["checkout", "-b", "dev"]);
+        std::fs::write(main.join("a.txt"), "on dev").expect("dev file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "dev commit"]);
+        git(&main, &["push", "-u", "origin", "dev"]);
+        // Explicit, offline: `set-head <remote> <branch>` never contacts origin.
+        git(&main, &["remote", "set-head", "origin", "main"]);
+        (dir, main)
+    }
+
+    #[test]
+    fn agent_worktree_falls_back_to_primary_base_not_remote_head() {
+        // Step 2: `origin/HEAD` is the REMOTE's opinion of a default; the
+        // project's DECLARED flow is the authority.
+        let (_dir, main) =
+            fixture_remote_head_on_main(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        assert_eq!(
+            git_out(&main, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+                .expect("origin/HEAD"),
+            "origin/main",
+            "the fixture really does point origin/HEAD at main",
+        );
+        let got = hook_create("agent-declared", &main).expect("creates");
+        let wt_head = git_out(Path::new(&got), &["rev-parse", "HEAD"]).expect("wt head");
+        assert_eq!(
+            wt_head,
+            git_out(&main, &["rev-parse", "origin/dev"]).expect("origin/dev"),
+            "cut from the DECLARED primary base",
+        );
+        assert_ne!(
+            wt_head,
+            git_out(&main, &["rev-parse", "origin/main"]).expect("origin/main"),
+            "never from origin/HEAD when a flow is declared",
+        );
+    }
+
+    #[test]
+    fn agent_worktree_without_declared_flow_keeps_the_remote_head_base() {
+        // Companion of the test above: with NO `git.flow`, step 2 is silent and
+        // the historical `origin/HEAD` cut stands, byte for byte.
+        let (_dir, main) = fixture_remote_head_on_main("{}");
+        let got = hook_create("agent-undeclared", &main).expect("creates");
+        let wt_head = git_out(Path::new(&got), &["rev-parse", "HEAD"]).expect("wt head");
+        assert_eq!(
+            wt_head,
+            git_out(&main, &["rev-parse", "origin/main"]).expect("origin/main"),
+            "undeclared flow → today's origin/HEAD behaviour",
+        );
+    }
+
+    #[test]
+    fn agent_worktree_refuses_dirty_tree() {
+        // A fresh checkout carries only COMMITTED code: uncommitted work would
+        // not travel and the wave would run against the older version.
+        let (_dir, main) = fixture();
+        std::fs::write(main.join("a.txt"), "uncommitted").expect("dirty");
+        let err = hook_create("agent-dirty", &main).unwrap_err();
+        assert!(err.contains("a.txt"), "names the offending path: {err}");
+        assert!(
+            !main.join(".claude").join("worktrees").join("agent-dirty").exists(),
+            "nothing created on refusal",
+        );
+    }
+
+    #[test]
+    fn agent_worktree_ignores_dirt_confined_to_dot_claude() {
+        // `.claude/` is redirected state, not code — the same carve-out the
+        // harness's other gates make.
+        let (_dir, main) = fixture();
+        std::fs::create_dir_all(main.join(".claude")).expect("mkdir .claude");
+        std::fs::write(main.join(".claude").join("settings.json"), "{}").expect("seed state");
+        git(&main, &["add", "-f", ".claude/settings.json"]);
+        git(&main, &["commit", "-m", "track harness state"]);
+        std::fs::write(main.join(".claude").join("settings.json"), "{\"x\":1}").expect("edit");
+        assert!(
+            git_out(&main, &["status", "--porcelain"])
+                .expect("status")
+                .contains(".claude/settings.json"),
+            "git really does report the change — the carve-out is what excludes it",
+        );
+        let got = hook_create("agent-stateonly", &main).expect("`.claude/` dirt never blocks");
+        assert!(Path::new(&got).is_dir(), "worktree materialized");
+    }
+
+    #[test]
+    fn dirty_tree_still_opens_a_unit_worktree() {
+        // The precondition is scoped to AGENT worktrees: a unit worktree has no
+        // wave depending on the tree's state, so its behaviour is untouched.
+        let (_dir, main) = fixture();
+        std::fs::write(main.join("a.txt"), "uncommitted").expect("dirty");
+        let got = hook_create("dev_stillopens", &main).expect("unit worktrees keep behaviour");
+        assert!(Path::new(&got).is_dir(), "worktree materialized");
     }
 
     #[test]

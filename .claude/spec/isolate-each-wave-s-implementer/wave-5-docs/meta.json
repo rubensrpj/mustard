@@ -20,7 +20,7 @@
     {
       "label": "apps/rt/tests/plugin_agents.rs",
       "path": "apps/rt/tests/plugin_agents.rs",
-      "done": false
+      "done": true
     }
   ]
 }
