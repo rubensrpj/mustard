@@ -576,6 +576,49 @@ pub fn run(plan: Option<&str>) {
     println!("{}", compute_waves(&files, &root));
 }
 
+/// Validate the dependency DAG of a plan's file union, without a separate
+/// `wave-dependency` call: read the plan JSON, union its per-wave files (the
+/// same [`files_from_value`] the command uses), and run the import-DAG builder
+/// to detect a cycle. Returns `{ ok, issues }` — a single WARN `cyclic-dependency`
+/// issue (carrying the stuck `cycle` files) when the plan's files import-cycle,
+/// else `{ ok: true, issues: [] }`.
+///
+/// The in-process seam [`crate::commands::pipeline::plan_materialize`] reuses so
+/// the cycle check runs as part of materialisation instead of depending on the
+/// orchestrator relaying a `wave-dependency` call first (which it may skip).
+/// Advisory only: a cycle is a WARN — the planner's explicit wave boundaries
+/// still materialise; this names a split the imports say is not executable in
+/// order. Fail-open at every step: an unreadable / unparseable / fileless plan
+/// makes NO DAG claim (`ok: true`), never an error — a validation seam must not
+/// become a new failure mode.
+#[must_use]
+pub fn validate_plan_dag(plan_path: &Path, project_root: &Path) -> Value {
+    let Ok(raw) = fs::read_to_string(plan_path) else {
+        return json!({ "ok": true, "issues": [] });
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
+        return json!({ "ok": true, "issues": [] });
+    };
+    let files = files_from_value(&parsed);
+    if files.is_empty() {
+        return json!({ "ok": true, "issues": [] });
+    }
+    let dag = compute_waves(&files, project_root);
+    if dag.get("error").and_then(Value::as_str) == Some("cyclic-dependency") {
+        let cycle = dag.get("cycle").cloned().unwrap_or_else(|| json!([]));
+        return json!({
+            "ok": false,
+            "issues": [{
+                "severity": "WARN",
+                "type": "cyclic-dependency",
+                "cycle": cycle,
+                "message": "the plan's files import-cycle — the declared wave order may not be executable",
+            }],
+        });
+    }
+    json!({ "ok": true, "issues": [] })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,5 +770,46 @@ mod tests {
     fn files_from_value_empty_for_unknown_shape() {
         assert!(files_from_value(&json!({ "foo": 1 })).is_empty());
         assert!(files_from_value(&json!({ "waves": [] })).is_empty());
+    }
+
+    /// A plan whose files import each other must surface a WARN `cyclic-dependency`
+    /// — the seam `plan-materialize` folds in so the check always runs.
+    #[test]
+    fn validate_plan_dag_flags_a_cyclic_plan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // a ⇄ b: an import cycle.
+        std::fs::write(root.join("a.ts"), "import './b';\nexport const a = 1;").unwrap();
+        std::fs::write(root.join("b.ts"), "import './a';\nexport const b = 2;").unwrap();
+        let plan = root.join("plan.json");
+        std::fs::write(&plan, r#"{"waves":[{"files":["a.ts","b.ts"]}]}"#).unwrap();
+
+        let out = validate_plan_dag(&plan, root);
+        assert_eq!(out["ok"], json!(false), "a cyclic plan is not ok: {out}");
+        assert_eq!(out["issues"][0]["type"].as_str(), Some("cyclic-dependency"));
+        assert_eq!(out["issues"][0]["severity"].as_str(), Some("WARN"));
+    }
+
+    /// An acyclic plan (a linear import chain) passes with no issue.
+    #[test]
+    fn validate_plan_dag_passes_an_acyclic_plan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.ts"), "export const a = 1;").unwrap();
+        std::fs::write(root.join("b.ts"), "import './a';\nexport const b = 2;").unwrap();
+        let plan = root.join("plan.json");
+        std::fs::write(&plan, r#"{"waves":[{"files":["a.ts","b.ts"]}]}"#).unwrap();
+
+        let out = validate_plan_dag(&plan, root);
+        assert_eq!(out["ok"], json!(true), "an acyclic plan is ok: {out}");
+        assert!(out["issues"].as_array().is_some_and(|a| a.is_empty()));
+    }
+
+    /// A missing / unreadable plan makes NO DAG claim — fail-open, never an error.
+    #[test]
+    fn validate_plan_dag_fails_open_on_unreadable_plan() {
+        let dir = tempdir().unwrap();
+        let out = validate_plan_dag(&dir.path().join("nope.json"), dir.path());
+        assert_eq!(out["ok"], json!(true), "an unreadable plan makes no claim: {out}");
     }
 }
