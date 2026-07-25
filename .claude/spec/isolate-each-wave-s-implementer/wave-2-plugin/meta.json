@@ -1,0 +1,21 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "isolate-each-wave-s-implementer",
+  "checklist": [
+    {
+      "label": "plugin/agents/mustard-impl.md (new)",
+      "path": "plugin/agents/mustard-impl.md (new)",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/plugin_agents.rs (new)",
+      "path": "apps/rt/tests/plugin_agents.rs (new)",
+      "done": false
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "isolate-each-wave-s-implementer",
+  "checklist": [
+    {
+      "label": "plugin/refs/agent-prompt/agent-prompt.md",
+      "path": "plugin/refs/agent-prompt/agent-prompt.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/feature.md",
+      "path": "plugin/commands/feature.md",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/plugin_agents.rs",
+      "path": "apps/rt/tests/plugin_agents.rs",
+      "done": false
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "isolate-each-wave-s-implementer",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/wave/wave_reclaim.rs (new)",
+      "path": "apps/rt/src/commands/wave/wave_reclaim.rs (new)",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/wave/cli.rs",
+      "path": "apps/rt/src/commands/wave/cli.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/wave/mod.rs",
+      "path": "apps/rt/src/commands/wave/mod.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/wave_done.rs",
+      "path": "apps/rt/src/commands/pipeline/wave_done.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": false
+    }
+  ]
+}
