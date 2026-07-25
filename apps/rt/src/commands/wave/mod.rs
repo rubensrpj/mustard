@@ -8,6 +8,7 @@ pub mod wave_size_check;
 pub mod wave_overlap_check;
 pub mod wave_scaffold;
 pub mod wave_collapse;
+pub mod wave_reclaim;
 pub mod wave_lib;
 pub mod exec_rewave_check;
 pub mod epic_fold;

@@ -35,7 +35,7 @@ E **seis defeitos que o levantamento não viu** apareceram no cruzamento (seçã
 |---|---|---|---|---|
 | **R1** | varrer também os pacotes vizinhos pelo mapa de exports | varre a string `export X` dentro do subprojeto — `apps/rt/src/commands/review/dependency_precheck.rs:576` | *"finding where a symbol is defined or used can cost many file reads and grep calls → code intelligence plugins connect Claude to a language server"* (large-codebases). O gatilho aparece literal na tabela de features-overview | **Reescrito.** A doc rejeita os dois lados: nem varrer o subprojeto, nem ampliar a varredura. O oráculo de símbolo é o language server. Alcance entre pacotes: `permissions.additionalDirectories` |
 | **R2** | executar o critério antes da implementação e exigir que reprove | linter **estático** de tautologia — `apps/rt/src/commands/review/analyze_validation.rs:336` | *"Have Claude show evidence rather than asserting success"* (best-practices). `/goal` exige *"a stated check: how Claude should prove it"*. Cookbook `evaluator_optimizer`: quem julga é separado de quem produz | **Confirmado**, e a causa foi localizada (achado 6) |
-| **R3** | normalizar caminhos hostis (parênteses, colchetes, acentos) | matcher byte-a-byte, sem regex e já normalizando separador — `apps/rt/src/hooks/write/boundary_gate.rs:341,366` | *"Put guardrails in hooks. An instruction is a request, not a guarantee. A PreToolUse hook that blocks the edit is enforcement"* (features-overview) — endossa o portão como hook | **Causa refutada.** A hipótese não tem onde morder. Duas causas melhores nos achados 4 e 5 |
+| **R3** | normalizar caminhos hostis (parênteses, colchetes, acentos) | matcher byte-a-byte, sem regex e já normalizando separador — `apps/rt/src/hooks/write/boundary_gate.rs:341,366` | *"Put guardrails in hooks. An instruction is a request, not a guarantee. A PreToolUse hook that blocks the edit is enforcement"* (features-overview) — endossa o portão como hook | **Confirmado; mecanismo diferente do suposto.** Os parênteses **são** parte da causa, mas não por escape mal feito: chegam numa anotação ` (new)` que nunca foi retirada do campo de caminho (achado 7). O conserto não é no casador. Ver seção 5 |
 | **R4** | verificar isolamento no orquestrador, antes do primeiro despacho | portão age na **primeira edição** — `apps/rt/src/hooks/write/work_branch_gate.rs:361` | `isolation: worktree` no frontmatter do subagente; desde v2.1.216 um comando git apontado para fora da cópia **falha com erro** (`git -C`, `--git-dir`, `GIT_DIR`, `GIT_WORK_TREE`, `cd` antes) | **Confirmado, implementação reescrita.** Não é verificação no orquestrador: é declaração no agente + enforcement da plataforma |
 | **R5** | escopar `git add` pela lista de arquivos da onda | lei `add -A` — `plugin/refs/git/git-flow.md:67`, *"NEVER infer a partial scope"* | *"Do the tasks touch the same files? Isolate the work with worktrees"* (agents) | **Rejeitado.** A doc resolve por isolamento, não por escopo de commit. Com árvore própria, `add -A` **é** a fronteira da onda; a lei do projeto sobrevive intacta |
 | **R6** | classificar o lock (idade, tamanho, processo dono) em vez de insistir | nenhum tratamento de lock em todo o `apps/rt` | `PostToolUseFailure` — dispara **após a falha** da chamada, com `decision: block` e `reason` | **Confirmado, com evento melhor.** Reativo e automático, em vez de receita no prompt |
@@ -84,18 +84,41 @@ Hoje os passos 4 e 5 são **gratuitos por acidente**: como todos os agentes escr
 | 4 | O portão de fronteira só extrai caminho **entre crases**; o outro leitor da mesma seção `## Files` aceita com ou sem crase. Dois parsers, um contrato | `apps/rt/src/hooks/write/boundary_gate.rs:211` vs `apps/rt/src/commands/review/dependency_precheck.rs:263` | R3 |
 | 5 | Com ondas paralelas, o portão resolve a spec por `wave-{current_wave}-*` — **um** número por spec. Quatro agentes simultâneos são todos julgados contra o `## Files` de uma onda só | `apps/rt/src/hooks/write/boundary_gate.rs:163` | R3 |
 | 6 | O linter de critério **isenta** busca por ausência (`--files-without-match`, `grep -L`, `rg -v`) por considerá-la uma pós-condição real. É justamente a que casa zero e sai verde quando o padrão não bate nada | `apps/rt/src/commands/review/analyze_validation.rs:385` | R2 |
+| 7 | **A causa-raiz do R3.** O checklist da onda guarda a anotação DENTRO do campo de caminho: `"path": "plugin/agents/mustard-impl.md (new)"`. O portão compara um caminho de disco contra uma string que não pode existir — e avisa sobre arquivos corretamente declarados. Pior: a anotação foi **exigida** por outro verificador, que recusa o plano quando um arquivo novo não está marcado `(new)`. Um pede a marca, outro não a retira | `.claude/spec/*/wave-*/meta.json`, campo `path` | R3 |
 
-O achado 6 é a causa-raiz precisa do sintoma que abriu o levantamento: dois de dez critérios verdes antes de qualquer trabalho existir.
+O achado 6 é a causa-raiz precisa do sintoma que abriu o levantamento: dois de dez critérios verdes antes de qualquer trabalho existir. O achado 7 foi encontrado por um agente implementador **durante a execução da onda 2** — fora do seu papel e do seu escopo, exatamente a classe de achado que o R8 quer rotear.
 
 ---
 
-## 5. Uma correção de rumo registrada
+## 5. Duas correções de rumo registradas
+
+### 5.1 — A auditoria de sobreposição não garante o que parecia garantir
 
 No meio desta análise argumentou-se que a auditoria de sobreposição (`wave-overlap-check`) já garantiria arquivos disjuntos entre ondas paralelas, e isso foi usado para relativizar o R4.
 
 **O argumento estava errado e foi retirado.** Aquela auditoria compara **listas declaradas**, não edições reais, e emite aviso sem bloquear. O portão de fronteira existe justamente porque agentes editam fora da lista declarada — e roda em modo aviso. Foi usar garantia de papel para dispensar garantia de execução, que é o oposto do que a documentação prega.
 
-Fica registrado porque a conclusão inicial (rebaixar o R4) chegou a ser apresentada antes de ser corrigida.
+### 5.2 — A causa do R3 foi refutada cedo demais
+
+O levantamento suspeitou que parênteses e acentos quebravam o casamento de caminhos. Esta revisão refutou a hipótese mostrando que o casador é byte-a-byte, sem regex e sem escape — e ofereceu duas causas alternativas (achados 4 e 5).
+
+**A refutação foi apressada.** Durante a execução da onda 2, um agente implementador encontrou a causa real (achado 7): os parênteses **estão** envolvidos, porque chegam dentro de uma anotação ` (new)` que é copiada para o campo de caminho e nunca retirada. O levantamento estava mais perto do alvo do que esta revisão.
+
+A lição vale além do R3: refutar um mecanismo proposto não refuta o sintoma, e "a hipótese está errada" não é o mesmo que "a causa é outra". Os achados 4 e 5 continuam válidos e independentes.
+
+---
+
+## 5.3 Evidência colhida durante a execução
+
+A implementação da primeira spec produziu três demonstrações ao vivo de requisitos ainda abertos:
+
+| Requisito | O que aconteceu |
+|---|---|
+| **R2** | O critério AC-4 desta própria spec foi escrito como `cargo test -p mustard-rt <nome>`. O teste vive num alvo de integração separado, então o filtro casou **zero** — e `cargo` saiu **0**. Um critério aprovaria sem executar nada. O que impediu o falso-verde foi a linha `Expect: ok\. [1-9][0-9]* passed`, porque `0 passed` não casa `[1-9]`. Evidência direta de que tornar o `Expect:` obrigatório entrega parte do R2 sem custo |
+| **R5** | A onda 2 terminou enquanto a onda 1 ainda escrevia na mesma árvore. Commitar a onda 2 sozinha, sob a lei `add -A`, teria varrido o trabalho em voo da onda 1. Foi feito um commit por **rodada**, não por onda — a mitigação que este documento recomenda na seção 2 |
+| **R9** | Emendar os critérios AC-4 e AC-8 exigiu editar o arquivo congelado à mão, porque não existe operação de emenda. A emenda ficou registrada como evento `decision` — que é rastro, não caminho oficial |
+
+Nenhuma dessas foi provocada de propósito. Todas apareceram na primeira execução real depois da revisão, o que reforça a fila da seção 6 em vez de alterá-la.
 
 ---
 

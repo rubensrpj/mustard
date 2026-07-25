@@ -102,6 +102,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          report)",
     ),
     (
+        "wave-reclaim",
+        "the way back from an isolated wave: run in-process by wave-done as its \
+         FIRST step (commands/pipeline/wave_done.rs -> wave_reclaim::reclaim_at, \
+         which gates the pipeline.wave.complete emit); the CLI face is the \
+         standalone re-run after the operator resolves a blocked fold",
+    ),
+    (
         "worktree-gc",
         "SessionStart probe runs it in-process (hooks/session/\
          session_start_inject.rs -> worktree_gc::session_start_probe) and the \

@@ -41,7 +41,7 @@ const WORKTREES_RELDIR: &str = ".claude/worktrees";
 /// non-unit shape that carries a wave: a desktop/background worktree has no
 /// dispatched work depending on the tree's state, so the clean-tree
 /// precondition applies here and nowhere else.
-const AGENT_NAME_PREFIX: &str = "agent-";
+pub(crate) const AGENT_NAME_PREFIX: &str = "agent-";
 
 /// How many dirty paths the refusal message spells out before summarising.
 const MAX_DIRTY_SHOWN: usize = 20;
@@ -156,7 +156,7 @@ fn non_unit_start(
 ///
 /// Fail-open: no git, not a repository, or a failed probe yields an EMPTY list
 /// (read as "clean"). The refusal only ever stands on a positive observation.
-fn dirty_paths(dir: &Path) -> Vec<String> {
+pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
     let Some(out) = git_out(dir, &["status", "--porcelain"]) else {
         return Vec::new();
     };
