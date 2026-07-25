@@ -565,10 +565,20 @@ const CONSEQUENCE_MARKERS: &[&str] = &[
 /// 4. nothing but a path — a filename with no sentence around it;
 /// 5. missing either clause of the bar.
 ///
-/// Deliberately conservative: this gates DURABLE context injected into every
-/// later dispatch, so a false accept costs every future agent while a false
-/// reject costs one lesson — which is still on the event log and still reaches
-/// the next wave through `## DECISIONS`.
+/// The asymmetry that shapes the design: this gates DURABLE context injected
+/// into every later dispatch, so a false accept costs every future agent while a
+/// false reject costs one lesson — which is still on the event log and still
+/// reaches the next wave through `## DECISIONS`.
+///
+/// Calibration, stated plainly rather than claimed: this bar is NOT tight.
+/// Review measured it — the marker lists carry very common words (`not`, `but`,
+/// `so`, `will`), so most sentences of a few clauses clear both. The real
+/// rigour lives in the emission contract, with the agent that saw the
+/// alternatives; what runs here is a floor that catches the shapes the contract
+/// disqualifies by name. Tightening it means picking rarer words, which is how
+/// the English-only version came to drop every Portuguese lesson — so the honest
+/// next step is to measure what actually gets accepted before narrowing it, not
+/// to describe it as strict and hope.
 ///
 /// The asymmetry that shaped the old comment still holds and still points the
 /// same way: this gates DURABLE context injected into every later dispatch, so a

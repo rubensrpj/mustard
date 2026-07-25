@@ -15,8 +15,20 @@
 //! Because the cut descends from the unit's HEAD, the common case is a
 //! fast-forward. Two waves of the same round diverge from a shared point, so the
 //! second one needs a real merge — `git merge` picks whichever applies. The
-//! merge runs in the MAIN checkout, on the unit branch, one checkout at a time
-//! (`wave-done` calls this per wave, in completion order).
+//! merge runs on the unit branch, one checkout at a time (`wave-done` calls this
+//! per wave, in completion order).
+//!
+//! ## Which unit, and in which tree
+//!
+//! The unit is read from the INVOKING tree, through the very same
+//! [`crate::commands::work_unit_open::current_unit_branch`] the way IN uses —
+//! never from whatever the main checkout happens to have out. `orchestrator.md`
+//! puts the session inside `.claude/worktrees/{base}_{slug}` for the whole of
+//! EXECUTE, so the main checkout is somewhere else entirely: reading it would
+//! refuse every fold when it sits on an integration base, and would silently
+//! land a wave's work on a BYSTANDER work unit when it sits on another one.
+//! The merge then runs in that same invoking tree, which is by construction the
+//! tree holding the branch we just read.
 //!
 //! ## Posture: fail CLOSED
 //!
@@ -25,9 +37,9 @@
 //! `{ok:false, reason, files:[…]}` and `wave-done` refuses to emit the
 //! completion: a conflict (the unmerged paths are named), an agent checkout
 //! carrying UNCOMMITTED work (it would be destroyed by the prune), a detached or
-//! non-unit HEAD (the fold would land on an integration base), or several agent
-//! checkouts that cannot be attributed to this wave. Never swallow, never force,
-//! never `-X ours`.
+//! non-unit HEAD (the fold would land on an integration base), several agent
+//! checkouts this wave could claim, or agent checkouts NONE of which can be
+//! attributed to it. Never swallow, never force, never `-X ours`.
 //!
 //! Nothing is destroyed on failure: a conflicted merge is aborted so the main
 //! checkout is left as it was, and the agent checkout is preserved byte for byte
@@ -40,7 +52,9 @@
 //!
 //! With isolation off, no agent checkout exists and this answers
 //! `{ok:true, action:"nothing-to-reclaim"}` without touching the repository, so
-//! the shared-tree pipeline keeps working byte for byte.
+//! the shared-tree pipeline keeps working byte for byte. That is the ONLY
+//! `ok:true` no-op: once a checkout carrying unmerged work exists, silence would
+//! strand it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,14 +62,17 @@ use std::process::Command;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 
+use crate::commands::agent::render::sections::{normalise_path, same_file};
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees};
 use crate::commands::pipeline::dispatch_plan::wave_declared_files;
-use crate::commands::work_unit_open::{dirty_paths, AGENT_NAME_PREFIX};
+use crate::commands::work_unit_open::{current_unit_branch, dirty_paths, AGENT_NAME_PREFIX};
 
 /// Options for `mustard-rt run wave-reclaim`.
 pub struct WaveReclaimOpts {
-    /// Any directory inside the repo (worktrees welcome — the command resolves
-    /// the main checkout itself). Defaults to the current dir.
+    /// The INVOKING tree: any directory inside the repo (worktrees welcome —
+    /// the command resolves the main checkout itself). Load-bearing, not just a
+    /// locator: the work unit is the branch THIS tree has checked out, and the
+    /// fold happens here. Defaults to the current dir.
     pub root: PathBuf,
     /// Parent spec slug under `.claude/spec/`.
     pub spec: String,
@@ -88,8 +105,8 @@ fn git_run(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// merge failed for a reason other than a content conflict (a dirty tree that
 /// would be overwritten, a missing ref) — the caller reports the git message in
 /// that case instead of an empty file list.
-fn conflicting_paths(main: &Path) -> Vec<String> {
-    let mut paths: Vec<String> = git_out(main, &["diff", "--name-only", "--diff-filter=U"])
+fn conflicting_paths(tree: &Path) -> Vec<String> {
+    let mut paths: Vec<String> = git_out(tree, &["diff", "--name-only", "--diff-filter=U"])
         .unwrap_or_default()
         .lines()
         .map(|l| l.trim().replace('\\', "/"))
@@ -159,11 +176,34 @@ fn attributed_to_wave(main: &Path, opts: &WaveReclaimOpts, unit: &str, pool: Vec
             let touched = git_out(main, &["diff", "--name-only", &range]).unwrap_or_default();
             touched
                 .lines()
-                .map(|l| l.trim().replace('\\', "/"))
-                .any(|p| declared.iter().any(|d| d == &p))
+                .any(|p| declared.iter().any(|d| declared_covers(d, p)))
         })
         .collect();
     matched
+}
+
+/// Whether a DECLARED `## Files` entry covers a path the candidate's commits
+/// touched.
+///
+/// String equality would drop the attribution on three spellings that name the
+/// same work, and a dropped attribution now fails the wave closed:
+///
+/// - a declaration relative to the SUBPROJECT versus git's repo-relative
+///   answer — resolved by [`same_file`], the crate's one segment-anchored
+///   suffix relation (`## Files` entries reach the census through it too);
+/// - a declared DIRECTORY (`apps/rt/src`) standing for the files under it —
+///   the containment below, anchored on `/` in both directions so `rc/a.rs`
+///   never covers `notsrc/a.rs`;
+/// - a case-differing spelling on Windows, where the hand-written declaration
+///   and git's recorded path name one file. Folded here rather than inside
+///   [`same_file`], whose census callers deliberately keep case significant.
+fn declared_covers(declared: &str, touched: &str) -> bool {
+    let d = normalise_path(&declared.to_lowercase());
+    let t = normalise_path(&touched.to_lowercase());
+    if d.is_empty() || t.is_empty() {
+        return false;
+    }
+    same_file(&d, &t) || t.starts_with(&format!("{d}/")) || t.contains(&format!("/{d}/"))
 }
 
 /// A worktree path as the report shows it: relative to the main checkout, so the
@@ -183,42 +223,63 @@ pub(crate) fn reclaim_at(opts: &WaveReclaimOpts) -> Value {
         return nothing;
     };
 
+    // The tree the command was INVOKED in — during EXECUTE the session sits in
+    // the work unit's own worktree, so this is where the unit branch is checked
+    // out and where the merge has to happen. `--show-toplevel` normalises any
+    // directory inside it to the worktree root.
+    let unit_tree = git_out(&opts.root, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| opts.root.clone());
+
+    let config = mustard_core::ProjectConfig::load(&main);
+    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
+    // The SAME resolver the way in uses, asked of the SAME tree — the two halves
+    // of the isolation cannot be allowed to disagree about which unit this is.
+    let unit = current_unit_branch(&unit_tree, &bases);
+    // What that tree is standing on, unit or not — only the refusal messages
+    // need it, to tell a detached HEAD from a branch that is simply not a unit.
+    let raw_head = git_out(&unit_tree, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let raw_head = raw_head.trim().to_string();
+
     // Ask for the checkouts BEFORE anything else can refuse: with isolation off
     // there are none, and the whole command is a no-op that never inspects the
-    // branch it is standing on.
-    let head = git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    let head = head.trim().to_string();
-    let any_agent = !candidates(&main, if head.is_empty() { "HEAD" } else { &head }).is_empty();
-    if !any_agent {
+    // branch it is standing on. A non-unit invoking tree still has a commit to
+    // measure "carries work the unit lacks" against — its own HEAD.
+    let exclude = match unit.clone() {
+        Some(u) => u,
+        None if !raw_head.is_empty() && raw_head != "HEAD" => raw_head.clone(),
+        None => git_out(&unit_tree, &["rev-parse", "HEAD"]).unwrap_or_else(|| "HEAD".to_string()),
+    };
+    let pool = candidates(&main, &exclude);
+    if pool.is_empty() {
         return nothing;
     }
 
     // From here on work EXISTS somewhere, so every unresolved precondition is a
     // refusal — never a silent skip.
-    if head.is_empty() || head == "HEAD" {
-        return json!({
-            "ok": false,
-            "reason": "detached-head",
-            "wave": opts.wave,
-            "files": [],
-            "hint": "the main checkout is not on a branch — there is nowhere to fold the wave's work",
-        });
-    }
-    let config = mustard_core::ProjectConfig::load(&main);
-    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
-    if !bases.iter().any(|b| head.starts_with(&format!("{b}_"))) {
+    let Some(head) = unit else {
+        if raw_head.is_empty() || raw_head == "HEAD" {
+            return json!({
+                "ok": false,
+                "reason": "detached-head",
+                "wave": opts.wave,
+                "files": [],
+                "hint": "the invoking tree is not on a branch — there is nowhere to fold the wave's work",
+            });
+        }
         return json!({
             "ok": false,
             "reason": "not-a-work-unit",
             "wave": opts.wave,
-            "unit": head,
+            "unit": raw_head,
             "bases": bases,
             "files": [],
-            "hint": "the main checkout sits on an integration base — a wave's work is folded onto its work unit, never straight onto a base",
+            "hint": "the invoking tree sits on an integration base — a wave's work is folded onto its work unit, never straight onto a base",
         });
-    }
+    };
 
-    let pool = candidates(&main, &head);
+    let mut all: Vec<String> = pool.iter().map(|c| c.branch.clone()).collect();
+    all.sort();
     let mut matched = attributed_to_wave(&main, opts, &head, pool);
     if matched.len() > 1 {
         matched.sort_by(|a, b| a.branch.cmp(&b.branch));
@@ -233,10 +294,21 @@ pub(crate) fn reclaim_at(opts: &WaveReclaimOpts) -> Value {
         });
     }
     let Some(candidate) = matched.into_iter().next() else {
-        // Agent checkouts exist, but none of them touches a file this wave
-        // declares: their work belongs to another wave, which reclaims it on its
-        // own `wave-done`.
-        return nothing;
+        // Agent checkouts exist and carry commits the unit lacks, but nothing
+        // links any of them to this wave. That is UNATTRIBUTED work, not absent
+        // work: answering `nothing-to-reclaim` here would let `wave-done` report
+        // the wave complete while a commit sits in a checkout nobody folds. Fail
+        // closed, exactly like the several-matches case — the only difference is
+        // how many candidates the operator has to look at.
+        return json!({
+            "ok": false,
+            "reason": "unattributed-agent-checkout",
+            "wave": opts.wave,
+            "unit": head,
+            "files": [],
+            "candidates": all,
+            "hint": "agent checkouts hold work no path this wave declares can claim — declare the paths in the wave's ## Files, or fold them by hand and re-run",
+        });
     };
     let worktree = Path::new(&candidate.path).to_path_buf();
     let shown = relative_to(&main, &candidate.path);
@@ -264,11 +336,14 @@ pub(crate) fn reclaim_at(opts: &WaveReclaimOpts) -> Value {
     // commit otherwise (two waves of the same round).
     let fast_forward =
         git_ok(&main, &["merge-base", "--is-ancestor", &head, &candidate.branch]);
-    if let Err(error) = git_run(&main, &["merge", "--no-edit", &candidate.branch]) {
-        let files = conflicting_paths(&main);
-        // Leave the main checkout exactly as it was — a half-merged tree with
+    // In the INVOKING tree: that is the one with `head` checked out. Merging in
+    // the main checkout would either fail (the branch is busy elsewhere) or, far
+    // worse, advance whatever branch the main checkout happens to hold.
+    if let Err(error) = git_run(&unit_tree, &["merge", "--no-edit", &candidate.branch]) {
+        let files = conflicting_paths(&unit_tree);
+        // Leave the unit's tree exactly as it was — a half-merged tree with
         // conflict markers is the "stranded work" this command exists to prevent.
-        git_ok(&main, &["merge", "--abort"]);
+        git_ok(&unit_tree, &["merge", "--abort"]);
         let reason = if files.is_empty() { "merge-refused" } else { "merge-conflict" };
         return json!({
             "ok": false,
@@ -444,8 +519,142 @@ mod tests {
         assert!(!main.join("wave.txt").exists(), "and nothing folded");
     }
 
+    /// Commit `wave.txt` inside the agent checkout and answer its sha.
+    fn commit_wave_work(wt: &Path, file: &str) -> String {
+        let path = wt.join(file);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&path, "wave work\n").expect("wave file");
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-m", "wave 1 work"]);
+        git_out(wt, &["rev-parse", "HEAD"]).expect("wave head")
+    }
+
+    /// Declare `## Files` for `wave-1-rt` of the `demo` spec.
+    fn declare_files(main: &Path, files: &[&str]) {
+        let dir = main.join(".claude/spec/demo/wave-1-rt");
+        std::fs::create_dir_all(&dir).expect("wave dir");
+        let mut body = String::from("## Files\n\n");
+        for f in files {
+            body.push_str(&format!("- {f}\n"));
+        }
+        std::fs::write(dir.join("spec.md"), body).expect("wave spec");
+    }
+
+    /// Move the main checkout off the unit and check the unit out in its OWN
+    /// worktree — the shape `orchestrator.md` puts the session in during
+    /// EXECUTE. Answers the unit worktree's path.
+    fn move_unit_into_its_own_worktree(main: &Path, main_goes_to: &[&str]) -> PathBuf {
+        git(main, main_goes_to);
+        git(main, &["worktree", "add", ".claude/worktrees/dev_unit", "dev_unit"]);
+        main.join(".claude").join("worktrees").join("dev_unit")
+    }
+
+    /// The unit comes from the INVOKING tree, not from whatever the main
+    /// checkout happens to have out: with the session inside the unit's
+    /// worktree and the main checkout on ANOTHER unit, the fold lands on the
+    /// unit — never on the bystander branch.
+    #[test]
+    fn reclaim_folds_onto_the_invoking_trees_unit_not_the_main_checkouts() {
+        let (_dir, main, wt) = fixture();
+        let wave_sha = commit_wave_work(&wt, "wave.txt");
+        let unit_tree = move_unit_into_its_own_worktree(&main, &["checkout", "-b", "dev_other"]);
+        let bystander = git_out(&main, &["rev-parse", "dev_other"]).expect("dev_other");
+
+        let v = reclaim_at(&WaveReclaimOpts { root: unit_tree.clone(), ..opts(&main) });
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"], json!("dev_unit"), "the unit is the invoking tree's: {v}");
+        assert_eq!(
+            git_out(&main, &["rev-parse", "dev_unit"]).as_deref(),
+            Some(wave_sha.as_str()),
+            "the wave's commit is on the unit branch: {v}"
+        );
+        assert!(unit_tree.join("wave.txt").is_file(), "and in the tree the session sits in");
+        assert_eq!(
+            git_out(&main, &["rev-parse", "dev_other"]).as_deref(),
+            Some(bystander.as_str()),
+            "the branch the main checkout happened to hold is untouched"
+        );
+        assert!(!main.join("wave.txt").exists(), "nothing landed in the main checkout");
+    }
+
+    /// The documented EXECUTE flow with the main checkout left on an
+    /// integration base: the fold still happens, because the unit is read from
+    /// the tree the command was invoked in.
+    #[test]
+    fn reclaim_folds_from_a_worktree_while_the_main_checkout_sits_on_a_base() {
+        let (_dir, main, wt) = fixture();
+        let wave_sha = commit_wave_work(&wt, "wave.txt");
+        let unit_tree = move_unit_into_its_own_worktree(&main, &["checkout", "dev"]);
+
+        let v = reclaim_at(&WaveReclaimOpts { root: unit_tree.clone(), ..opts(&main) });
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["action"], json!("reclaimed"), "{v}");
+        assert_eq!(v["unit"], json!("dev_unit"), "{v}");
+        assert_eq!(
+            git_out(&main, &["rev-parse", "dev_unit"]).as_deref(),
+            Some(wave_sha.as_str()),
+            "{v}"
+        );
+        assert!(unit_tree.join("wave.txt").is_file(), "the next wave sees the file");
+    }
+
+    /// Agent checkouts that exist but cannot be attributed to this wave are
+    /// STRANDED work, not a no-op: they fail closed. The genuine no-op — no
+    /// agent checkout at all — stays a clean pass.
+    #[test]
+    fn reclaim_fails_closed_when_no_checkout_can_be_attributed() {
+        let (_dir, main, wt) = fixture();
+        declare_files(&main, &["declared.txt"]);
+        commit_wave_work(&wt, "undeclared.txt");
+
+        let v = reclaim_at(&opts(&main));
+        assert_eq!(v["ok"], json!(false), "stranded work is never a success: {v}");
+        assert_eq!(v["reason"], json!("unattributed-agent-checkout"), "{v}");
+        assert_eq!(v["candidates"], json!(["agent-w1"]), "{v}");
+        assert!(wt.exists(), "nothing destroyed");
+        assert!(!main.join("undeclared.txt").exists(), "and nothing folded");
+
+        // The other direction: with the checkout gone there is no work at all,
+        // and the shared-tree pipeline keeps its byte-identical clean pass.
+        git(&main, &["worktree", "remove", "--force", wt.to_string_lossy().as_ref()]);
+        let v = reclaim_at(&opts(&main));
+        assert_eq!(v, json!({ "ok": true, "action": "nothing-to-reclaim", "wave": 1 }), "{v}");
+    }
+
+    /// Attribution compares paths by segment-anchored containment, not by
+    /// string equality: a declared DIRECTORY covers the files under it. The
+    /// anchor is what keeps `notsrc/a.rs` out of a `rc/a.rs` declaration.
+    #[test]
+    fn reclaim_attributes_a_declared_directory_prefix() {
+        let (_dir, main, wt) = fixture();
+        declare_files(&main, &["src"]);
+        commit_wave_work(&wt, "src/a.txt");
+
+        let v = reclaim_at(&opts(&main));
+        assert_eq!(v["ok"], json!(true), "a declared directory covers its files: {v}");
+        assert_eq!(v["action"], json!("reclaimed"), "{v}");
+        assert!(main.join("src/a.txt").is_file(), "{v}");
+    }
+
+    /// …and the anchor holds in the negative direction: a declaration that is
+    /// only a CHARACTER-wise suffix of the touched path attributes nothing, so
+    /// the wave fails closed instead of folding another wave's checkout.
+    #[test]
+    fn reclaim_does_not_attribute_an_unanchored_suffix() {
+        let (_dir, main, wt) = fixture();
+        declare_files(&main, &["rc/a.txt"]);
+        commit_wave_work(&wt, "notsrc/a.txt");
+
+        let v = reclaim_at(&opts(&main));
+        assert_eq!(v["reason"], json!("unattributed-agent-checkout"), "{v}");
+        assert!(!main.join("notsrc").exists(), "nothing folded: {v}");
+    }
+
     /// A checkout whose work belongs to an integration base has nowhere safe to
-    /// go: the fold must never land straight on `dev`.
+    /// go: the fold must never land straight on `dev`. Invoked AT the main
+    /// checkout, which is therefore also the invoking tree.
     #[test]
     fn reclaim_refuses_when_the_main_checkout_sits_on_a_base() {
         let (_dir, main, wt) = fixture();

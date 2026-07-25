@@ -690,8 +690,9 @@ mod tests {
         // scan's stem tier answers with fragments like `waveli` that no index
         // publishes, and letting one of those decide made the verdict
         // unreachable on the repository this check was written against.
-        // (`gate` sits exactly AT the median and is deliberately absent: the cut
-        // is strict, so a median-rarity word is not ubiquitous.)
+        // (`gate` is deliberately absent from this intent: the cut is the upper
+        // quartile, so a mid-rarity word counts as ubiquitous and would not
+        // change the outcome either way.)
         let matched = vec!["run".to_string(), "path".to_string(), "waveli".to_string()];
         let mut c = score(&matched, &[], false);
         apply_decline(&mut c, &matched, &index);

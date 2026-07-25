@@ -101,6 +101,6 @@ Every criterion below is verified by a NAMED test and demands a non-zero pass co
 
 ## Boundaries
 
-IN: the files above, plus their tests in the same crate.
+IN: the files above, plus their tests in the same crate, and the fix-loop cascades the review produced: `apps/rt/src/commands/agent/render/sections.rs` (two visibility raises so the per-wave path matcher is REUSED by the reclaim attribution instead of a second one being written) and `apps/rt/src/commands/work_unit_open.rs` (the way-in's unit resolver raised so the way-out reads the same tree — the critical finding was precisely that the two halves disagreed).
 
 OUT: `git add` scope and the `add -A` law; wave decomposition and the dependency model; `worktree.sparsePaths` and build-artifact reuse across checkouts (measure first, size separately); the boundary gate's path matcher; the acceptance-criteria negative test; agent teams; `git-settle`'s unit-level exit ritual, which stays exactly as it is.

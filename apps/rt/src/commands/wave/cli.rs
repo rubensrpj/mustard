@@ -111,11 +111,14 @@ pub enum WaveCmd {
     /// (`.claude/worktrees/agent-*`) back onto the work-unit branch — the way
     /// OUT that `wave-done` runs before it reports the wave complete.
     ///
-    /// Fast-forwards when the cut descended from the unit's HEAD (the common
-    /// case), merges for real when two waves of a round diverged. Fails CLOSED:
-    /// a conflict, an agent checkout holding UNCOMMITTED work, a detached or
-    /// non-unit HEAD, or several checkouts this wave could claim all answer
-    /// `{ok:false, reason, files:[…]}` and exit 1 — nothing is forced, the
+    /// The unit is the branch the INVOKING tree sits on (`--root`, the session's
+    /// worktree during EXECUTE), never whatever the main checkout has out, and
+    /// the merge runs there. Fast-forwards when the cut descended from the
+    /// unit's HEAD (the common case), merges for real when two waves of a round
+    /// diverged. Fails CLOSED: a conflict, an agent checkout holding UNCOMMITTED
+    /// work, a detached or non-unit HEAD, several checkouts this wave could
+    /// claim, or checkouts none of which its declared `## Files` can claim all
+    /// answer `{ok:false, reason, files:[…]}` and exit 1 — nothing is forced, the
     /// conflicted merge is aborted, and the agent checkout is left untouched for
     /// inspection. The prune runs only after the fold is proven. With isolation
     /// off there is no agent checkout and this is a no-op

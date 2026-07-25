@@ -1,25 +1,24 @@
-# Review — make-spec-authoring-carry-conversation (apps/rt)
+# Re-review — make-spec-authoring-carry-conversation (post-fix)
 
-## Verified through the REAL binary, not only unit tests
-- `cargo test -p mustard-rt` → 3439 passed / 0 failed (31 suites). Build clean. Clippy: no deny errors.
-- AC-1/AC-2: finalize with nothing → `nothing-to-record`, no marker written; with two terms → marker carries them. A hand-planted legacy marker + a valid user approval → `approve-spec` printed "recorded NOTHING", named the remedy, exit 1, no events emitted.
-- AC-3/AC-4: `--material` produced the three sections with the file:line intact; a mistyped key produced `unknown field` and NO spec dir — fail-closed proven.
-- AC-9/AC-10: a real wave close wrote exactly one memory file with wave and session in its frontmatter; the residue event was rejected; the next wave's render carried the lesson under SPEC MEMORY.
-- Guards and molds: no violation. All four registrations present for the new command.
+## Verdict: approved — 0 critical
 
-## CRITICAL — the tactical fix ships inert
-`apps/rt/tests/template_parity.rs:39` whitelists the new command, justified by prose that "belongs to the documentation wave". That wave had ALREADY closed when the row was written (wave 7 completed 14:10:49Z; the tactical commit is 14:24:32Z). No match for the command anywhere under `plugin/`. So nothing tells the orchestrator to call it, the deferral has no wave left to land in, and the blind four-word capture the fix exists to end keeps happening. A justified whitelist row is tolerated; this justification cannot come true.
-Remedy: one line in the flow prose naming the command, then delete the whitelist row.
+## Verified live, with the real binary in a temp project — not the unit tests
+- A hollow `.clarified` plus a real user approval made `approve-spec` print "recorded NOTHING", name the remedy, and EXIT 1. The gate that could not fail now fails, and no event is emitted on refusal.
+- `grill-capture --finalize` with neither term nor reason wrote no marker: the hollow marker can no longer be minted by its own door.
+- `spec-draft --material` with a mistyped key returned `unknown field` naming the valid ones, and wrote NO spec — the fail-closed claim holds.
+- Valid material produced the Evidence section with the file:line intact, and `analyze-validation` on that same file returned zero issues: the prose rule really does accept what it used to reject.
 
-## MAJOR — the declined verdict never fires on this repository
-`apps/rt/src/commands/glossary_coverage.rs:308`. Ran the shipped binary on four real intents, including the one that produced this spec: all returned `missing` with an empty stated reason — never `declined`. Cause, from the repo's own index (120 terms, median rarity 4132): the cut IS the median, so about half the published vocabulary sits at or above it and a single such term vetoes; and where terms are generic enough to pass, the digest emits unpublished fragments so the quorum fails (1 judged against 5 open). The module doc claims it fixed "a decline that never fires" — unsupported on the corpus it was written against. AC-5 passes only against a synthetic five-row fixture.
+## Suite and criteria
+- `cargo build --workspace` green; `cargo test --workspace` exit 0 across 61 suites, zero FAILED; clippy exit 0 with nothing pointing at a touched file.
+- AC-1 through AC-11 each run individually: every one `test result: ok. 1 passed`. AC-11 confirmed unfiltered.
 
-## MAJOR — mid-pipeline request not folded into the ACs
-The 13:52 drift-guard request is implemented and passing but no AC names it, while the spec's own change log instructs exactly that. Consequence: QA never exercises the guard. Every other change request IS covered.
+## Guards, molds, scope
+- Guards: none violated. The fail-open invariant is respected; the fail-closed clarify check is a command, not a hook, and says so. `run` output stayed byte-stable. The four-registration rule was satisfied. The CLAUDE.md Guards edit is a factual sharpening of an existing ratchet, not a loosening.
+- Molds: the gate pattern and the inject pattern both intact; only constants moved, and the strict block still fires.
+- Scope: the files flagged as leakage are declared in the tactical spec — verified, not assumed.
+- All seven change requests addressed. The load-bearing one is honoured literally: the guard locates rows by shape, asserts the set both ways, and the prose lost its stated count entirely.
 
-## MINOR
-- `apps/rt/src/commands/context_cli.rs` and `apps/rt/src/hooks/observe/change_request_log.rs` appear in neither spec's Files, while both Boundaries read "IN: the files above".
-- `apps/rt/src/commands/agent/context_inject.rs` — the value filter gates durable memory on three hand-written English marker lists. A non-English lesson can never qualify, and the lists are exactly the hand-curated shape the declined verdict in the same spec correctly replaced with corpus arithmetic.
-
-## Verdict
-rejected — 1 critical.
+## Non-blocking findings
+1. minor — a test comment still describes the median cut after it moved to the upper quartile. No assertion depends on it, but it teaches the wrong rule.
+2. minor — `plugin/refs/agent-prompt/agent-prompt.md` was rewritten for AC-11 and never added to the spec's Files/Boundaries. The per-wave cut keys off exactly that list, so an undeclared file is invisible to it.
+3. minor — the value filter's doc calls itself "deliberately conservative" while its marker lists carry very common words, so the bar is looser than claimed. AC-10 is genuinely met; this is calibration, not a defect.

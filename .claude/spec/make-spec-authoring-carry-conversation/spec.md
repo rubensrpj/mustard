@@ -112,6 +112,7 @@ And a note on the two memories, which are deliberately different things. **Proje
 - `apps/rt/src/commands/agent/context_inject.rs` — the value filter on the producing side, mirroring the emission contract
 - `plugin/commands/feature.md` — the flow authors the material before materializing, and records the grill outcome
 - `plugin/refs/feature/glossary-grill.md` — the decline is a first-class outcome
+- `plugin/refs/agent-prompt/agent-prompt.md` — the placeholder table AC-11 pins, and the per-wave delivery it documents
 
 ## Boundaries
 

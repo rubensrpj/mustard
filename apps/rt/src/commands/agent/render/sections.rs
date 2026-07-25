@@ -394,7 +394,11 @@ fn backtick_path(line: &str) -> Option<String> {
 /// monorepo. Segment-anchored suffix containment is the deterministic relation
 /// that accepts both spellings without guessing a root — and staying anchored on
 /// `/` keeps `foo/bar.rs` from matching `notfoo/bar.rs`.
-fn same_file(a: &str, b: &str) -> bool {
+///
+/// `pub(crate)` because the same relation decides which agent checkout a wave's
+/// `## Files` claims ([`crate::commands::wave::wave_reclaim`]): one anchoring
+/// rule for the crate, not two that are free to disagree.
+pub(crate) fn same_file(a: &str, b: &str) -> bool {
     let a = normalise_path(a);
     let b = normalise_path(b);
     if a.is_empty() || b.is_empty() {
@@ -406,7 +410,7 @@ fn same_file(a: &str, b: &str) -> bool {
 /// Normalise a path spelling for comparison: Windows separators to `/`, no
 /// leading `./`, no surrounding slashes. Case is left alone — the repo's paths
 /// are case-sensitive on the platforms that matter for the census.
-fn normalise_path(p: &str) -> String {
+pub(crate) fn normalise_path(p: &str) -> String {
     p.trim()
         .replace('\\', "/")
         .trim_start_matches("./")

@@ -3,9 +3,12 @@
 //! Folds the bookkeeping steps the orchestrator did by hand after a wave's
 //! agent returned and its work was committed, into ONE call:
 //!   0. `wave-reclaim` — fold the wave's commit out of its isolated agent
-//!      checkout and onto the work-unit branch. FIRST, and gating: a wave whose
-//!      work has not returned is not complete, so a refused fold (a conflict, an
-//!      agent checkout holding uncommitted work, nowhere safe to fold to) stops
+//!      checkout and onto the work-unit branch — the unit being the one the
+//!      INVOKING tree sits on, which is why `cwd` is threaded all the way in.
+//!      FIRST, and gating: a wave whose work has not returned is not complete,
+//!      so a refused fold (a conflict, an agent checkout holding uncommitted
+//!      work, nowhere safe to fold to, or checkouts holding work nothing this
+//!      wave declares can claim) stops
 //!      the composite before the completion event is emitted and answers with
 //!      the blocking reason. With isolation off there is no agent checkout and
 //!      the step is a clean no-op, so the shared-tree pipeline is unchanged.

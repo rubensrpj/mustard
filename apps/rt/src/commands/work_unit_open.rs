@@ -86,7 +86,11 @@ fn ref_exists(dir: &Path, full_ref: &str) -> bool {
 /// hook was invoked. The shape and the longest-match rule mirror
 /// `work_branch_gate::base_for` — the parser of what
 /// [`super::event::work_branch`] produces.
-fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String> {
+///
+/// `pub(crate)` so the way OUT reads the unit the SAME way the way in does:
+/// [`crate::commands::wave::wave_reclaim`] folds onto the branch this answers,
+/// and a second resolver there would be free to disagree with this one.
+pub(crate) fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String> {
     let branch = git_out(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = branch.trim();
     // `HEAD` is git's answer for a detached checkout — not a branch name.
