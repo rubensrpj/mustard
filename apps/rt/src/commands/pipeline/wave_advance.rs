@@ -473,7 +473,7 @@ mod tests {
         assert_eq!(items[1].wave, 2);
         assert_eq!(items[1].role, "cli");
         for item in &items {
-            assert_eq!(item.subagent_type, "general-purpose");
+            assert_eq!(item.subagent_type, "mustard:mustard-impl");
             assert!(
                 item.prompt.starts_with("MUSTARD-PROMPT-REF:"),
                 "prompt must be the dispatch stub: {}",
