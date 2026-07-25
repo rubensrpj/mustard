@@ -32,7 +32,7 @@ Tactical fix derived from [[make-spec-authoring-carry-conversation]], found whil
 
 ## Boundaries
 
-IN: the files above and their tests.
+IN: the files above and their tests, plus the cascades the review recorded: `apps/rt/src/hooks/observe/change_request_log.rs` (visibility only — the command calls the observer's writers instead of copying the bullet format, which would drift), `apps/rt/tests/template_parity.rs` (the reverse-parity ratchet), `apps/rt/CLAUDE.md` (the four-registration rule the ratchet proved wrong), and `plugin/refs/spec/resume-loop.md` (the caller the ratchet demanded).
 
 OUT: the blind prompt capture, which stays as it is — it is the raw trail, and this fix adds the deliberate record beside it, never replacing it. Also out: the flow prose that will tell the orchestrator to use it; that belongs to the parent spec's documentation wave, which is already running.
 

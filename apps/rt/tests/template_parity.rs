@@ -37,15 +37,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          documented manual re-run for a crashed session",
     ),
     (
-        "change-request",
-        "orchestrator-invoked from the conversation when a mid-pipeline \
-         instruction must reach the next dispatched agent (commands/spec/\
-         change_request.rs); the flow prose that names it belongs to the \
-         make-spec-authoring-carry-conversation documentation wave, which this \
-         tactical fix deliberately leaves out of scope - drop this row when \
-         that prose lands",
-    ),
-    (
         "claude-dir-prune",
         "user-invoked .claude/ drift audit (commands/maint/claude_dir_prune.rs \
          module doc); maintenance escape hatch with no scripted caller",

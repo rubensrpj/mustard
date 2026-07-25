@@ -87,7 +87,10 @@ And a note on the two memories, which are deliberately different things. **Proje
 - **AC-10** — when a recorded decision does not pass the value filter, then it does NOT become a memory file — the filter has an input it rejects, so the memory block cannot fill with process residue.
   Command: `cargo test -p mustard-rt value_filter_rejects_process_residue`
   Expect: `ok\. [1-9][0-9]* passed`
-- **AC-11** — the workspace builds green.
+- **AC-11** — when the agent-prompt reference is compared with the renderer, then every placeholder the renderer actually substitutes appears in the reference's table — a set assertion, never a stated count, so a reworded sentence cannot break it and a silent drift cannot survive it. Folded in after the review found the guard implemented, passing, and invisible to the gate.
+  Command: `cargo test -p mustard-rt --test plugin_agents agent_prompt_ref_documents_every_placeholder`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-12** — the workspace builds green.
   Command: `cargo build --workspace`
 
 <!-- PLAN -->
@@ -112,6 +115,6 @@ And a note on the two memories, which are deliberately different things. **Proje
 
 ## Boundaries
 
-IN: the files above plus their tests in the same crate.
+IN: the files above plus their tests in the same crate, and the following cascades the waves reported and the review recorded — each unavoidable, each corrected in the pass that found it: `apps/rt/src/shared/context.rs` and `apps/rt/src/commands/context_cli.rs` (the marker body has one home; a run flag needs both CLI registrations), `apps/rt/src/commands/spec/mod.rs` (module registration), and the reference sweep in `plugin/refs/feature/full-plan.md`, `plugin/commands/spec.md` and `plugin/refs/feature/spec-language.md`, which carried the same stale claims the declared references did.
 
 OUT: wave decomposition, the dependency model and dispatch; the worktree isolation spec now in review; the acceptance-criteria negative test (R2 proper, queued next); automating the grill's questions — asking the operator stays the orchestrator's job in conversation.

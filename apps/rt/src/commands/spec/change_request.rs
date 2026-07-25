@@ -43,6 +43,19 @@ use crate::shared::context::{current_spec, session_id, spec_for_session};
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
 
+/// Count the change-log's bullet lines — the same `- ` shape the per-wave
+/// renderer filters on, so this counts exactly what a dispatched agent will
+/// read. A missing file counts as zero, which makes the first append a growth.
+fn count_bullets(log_path: &Path) -> usize {
+    mfs::read_to_string(log_path)
+        .map(|body| {
+            body.lines()
+                .filter(|l| l.trim_start().starts_with("- "))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// Options for `mustard-rt run change-request`.
 #[derive(Debug, Clone)]
 pub struct ChangeRequestOpts {
@@ -129,18 +142,38 @@ fn record(project: &Path, opts: &ChangeRequestOpts) -> ChangeRequestReport {
         return report;
     }
     let stage = read_stage(project, &spec);
+    // A terminal spec belongs to the post-close amendment window, not here — the
+    // observer twin is fail-CLOSED on non-`Active` for exactly that reason, and
+    // this deliberate half must not diverge from its own sibling: two writers of
+    // one record with different admission rules is how the two drift.
+    if let Some(outcome) = mustard_core::domain::meta::read_meta(&spec_dir.join("meta.json"))
+        .and_then(|m| m.outcome)
+        .as_deref()
+        .and_then(mustard_core::Outcome::parse)
+    {
+        if outcome != mustard_core::Outcome::Active {
+            report.error = Some("spec_not_active".to_string());
+            return report;
+        }
+    }
+    let log_path = spec_dir.join(CHANGE_LOG_MD);
+    // Count the bullets BEFORE writing. The landed-proof used to be substring
+    // containment, which cannot tell "appended" from "was already there": the
+    // same instruction sent twice reported success even if the second append
+    // silently failed. A growth check answers the question actually being asked.
+    let bullets_before = count_bullets(&log_path);
+
     // The bullet body marks the record as deliberate, so a reader (human or
     // agent) can tell the orchestrator's instruction from the raw prompt trail.
     let bullet_body = format!("**Instruction:** {instruction}");
     append_change_log_md(&project_dir, &spec, stage.as_deref(), &bullet_body);
     append_change_request(&project_dir, &spec, &session_id(), stage.as_deref(), &instruction);
 
-    let log_path = spec_dir.join(CHANGE_LOG_MD);
     report.change_log = Some(log_path.display().to_string());
-    // The writers are fail-open by contract; confirm rather than assume.
-    let landed = mfs::read_to_string(&log_path)
-        .map(|body| body.contains(&instruction))
-        .unwrap_or(false);
+    // The writers are fail-open by contract; confirm rather than assume. Both
+    // clauses matter: the log must have grown AND the instruction must be in it.
+    let body = mfs::read_to_string(&log_path).unwrap_or_default();
+    let landed = count_bullets(&log_path) > bullets_before && body.contains(&instruction);
     report.recorded = landed;
     report.ok = landed;
     if !landed {

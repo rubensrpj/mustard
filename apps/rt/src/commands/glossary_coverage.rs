@@ -238,13 +238,26 @@ fn rarity_x1024(t: &DigestTerm) -> u64 {
     t.specificity_x1024 / (t.count.max(1) as u64)
 }
 
-/// The rarity a term must reach to count as domain vocabulary HERE: the median
-/// rarity of the repository's own published term index.
+/// The rarity a term must reach to count as domain vocabulary HERE: the UPPER
+/// QUARTILE of the repository's own published term index.
 ///
 /// Read off the corpus rather than fixed, because the scale of `idf_x1024`
 /// depends on the corpus size — a constant would mean something different in
-/// every repository. The median is the repo's middle word: below it a term is
-/// more widespread than half the vocabulary the miner publishes.
+/// every repository.
+///
+/// It was the median first, and review proved that unreachable on the corpus it
+/// was written against: with the cut at the middle word, HALF the published
+/// vocabulary sits at or above it, and a single such word vetoes the decline
+/// (the veto is correct — one genuine domain term means the grill still has a
+/// question worth asking). Measured on this repository: 120 published terms,
+/// median rarity 4132, and everyday words like `agent` landed exactly ON the
+/// median, so four real intents all failed to decline. A verdict that no input
+/// can reach is decoration, which is the very defect the spec carrying this
+/// change exists to end.
+///
+/// The upper quartile says something a reader can check: a word counts as domain
+/// vocabulary only when it is more concentrated than three quarters of what this
+/// repository publishes. Everything below is the shared background language.
 ///
 /// `None` for an empty index (nothing to compare against → no decline). A model
 /// from an older scan binary carries no `specificity_x1024` at all, so every
@@ -257,7 +270,8 @@ fn corpus_rarity_cut(index: &[DigestTerm]) -> Option<u64> {
     }
     let mut rarities: Vec<u64> = index.iter().map(rarity_x1024).collect();
     rarities.sort_unstable();
-    rarities.get(rarities.len() / 2).copied()
+    // Upper quartile by index, integer and exact — no percentage to round.
+    rarities.get(rarities.len() * 3 / 4).copied()
 }
 
 /// The corpus rarity the published index reports for `group` — the LOWEST
@@ -329,8 +343,9 @@ fn decline_reason(matched: &[String], uncovered: &[String], index: &[DigestTerm]
     }
     Some(format!(
         "the glossary grill declines: every term the corpus can judge here ({}) is \
-         repository-wide vocabulary — the scan model ranks each below its median \
-         term rarity, so there is no domain definition worth capturing",
+         repository-wide vocabulary — the scan model ranks each below the upper \
+         quartile of this repository's term rarity, so there is no domain \
+         definition worth capturing",
         named.join(", ")
     ))
 }

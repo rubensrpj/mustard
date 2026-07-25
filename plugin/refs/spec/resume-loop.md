@@ -73,6 +73,14 @@ Returns the **current round** — `[{wave, role, subproject, subagent_type, prom
 
 `close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) without `qa.result overall=pass`**.
 
+**[you] The user asks for a change mid-round → record the INSTRUCTION, not just the reply.** An observer already captures every prompt verbatim into the spec's change log — that is the raw trail, and it keeps the user's words. But a reply carries its meaning from the conversation: `"Concordo se for agregar"` recorded alone tells the next wave nothing it can act on. So state what was agreed, in one self-contained sentence, as its own record:
+
+```bash
+mustard-rt run change-request --spec {spec} --instruction "<what changes, stated so a wave that never saw this conversation can act on it>"
+```
+
+It lands in the shape `read_change_log` filters for, so the next rendered prompt carries it under `## CHANGE REQUESTS` — no hand-formatted bullet, and a refusal (empty instruction, unknown spec) writes nothing. **Then fold anything that changes BEHAVIOUR into `## Acceptance Criteria` and re-run QA**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25). The narrative of `spec.md` stays frozen either way.
+
 ---
 
 ## Escalation (check each agent return before advancing)
