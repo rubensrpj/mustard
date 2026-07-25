@@ -8,7 +8,7 @@ source: manual
 
 This file is the LIGHT path (most runs) plus the shared ANALYZE. Full-scope PLAN machinery lives in `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` — open it ONLY when scope detection returns `full`.
 
-Law: no code before the approved spec — `scope_guard` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. Full CLARIFIES before approval: after the glossary grill, the clarify-finalize records `<spec>/.clarified`, and `approve-spec` refuses a Full plan without it. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research. Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
+Law: no code before the approved spec — `scope_guard` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. Full CLARIFIES before approval: the clarify-finalize records WHAT was settled into `<spec>/.clarified` — the terms the grill captured, or the stated reason no grill applied — and `approve-spec` REFUSES a Full plan whose marker recorded neither. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research, and never before the conversation material is assembled (§2.2). Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
 
 ## When
 
@@ -32,18 +32,32 @@ No stage emit here; the slug is born at §2 (`spec-draft` backfills the ANALYZE 
 | confirmed bridge | after a settled re-query or `uncovered` row: `mustard-rt run equivalence-learn --term <missed> --tokens <code-terms>` (learned overlay, survives re-scans; explicit, never automatic) |
 
 4. Read the survivors (Explore READS the §1.3 anchors, never re-maps): ONE consolidated `Task(Explore)` (≤40 lines each) when they fit one subagent; one per subproject only when anchors span ≥2 subprojects with volume in each; direct sliced parent reads for a single-subproject feature too small for a subagent. Composition/enhancement → the `slices` lead (each names the pattern and carries `exemplarFiles`); net-new entity → the anchors of a sibling lead.
-5. Glossary grill (optional, non-blocking): `${CLAUDE_PLUGIN_ROOT}/refs/feature/glossary-grill.md`.
+5. Glossary grill: `${CLAUDE_PLUGIN_ROOT}/refs/feature/glossary-grill.md`. RUNNING it stays optional and never blocks — its OUTCOME does not. The outcome is mandatory in exactly one of two shapes: **it ran**, and the terms it settled are named; or **it declined**, and the reason is stated (`glossary-coverage` hands you that sentence verbatim on `verdict:"declined"`). Both shapes are recorded by the same clarify-finalize on the Full path (`refs/feature/full-plan.md` step 6). Silence is not a third shape — a marker that records nothing is what `approve-spec` now refuses.
 6. Specification grill (selective, EARLY — before any §2 ceremony): digest still `weak`/`none` after the re-query, or the request names an outcome/symptom without the mechanism → ONE batched AskUserQuestion (2-3 targeted questions, options inferred from the anchors); fold answers into the intent. A concrete, well-covered request skips this.
+7. Project memory (judgement, NEVER automatic): before drafting, consult what earlier CLOSED specs recorded — `search_knowledge` / `find_similar_specs` on the `mustard-memory` MCP server (substring match over the `decision`/`lesson` events those specs left behind). Carry a memory into THIS spec only when you judge it relevant to THIS spec, and carry it as ordinary material with its ORIGIN named (`— from spec <slug>`), through the same channel as everything else (§2.2). Nothing relevant → carry nothing; the step is silent, never padded. What makes this safe is that a human-authored inclusion cites where it came from: the automatic injection this project once had was removed for confabulating provenance. Distinguish it from PROCESS memory (`<spec>/memory/*.md`, written by `wave-done` as each wave closes, steering the waves that follow) — that one is intra-run, materialised by the pipeline, and never authored here.
 
 ## 2. Route + scope (deterministic — never your eye alone)
 
 1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP.
-2. `mustard-rt run spec-draft --intent "<request>" --scope <your light/full read> --lang <bcp47> [--query-terms "<repo terms when raw words were weak/none>"]` — the ONLY scaffold writer; its auto-downgrade gate is the deterministic backstop.
-3. `mustard-rt run plan-prepare --from-spec .claude/spec/{slug}/spec.md --slice-match-count <sliceMatchCount from the digest>` — the authority for `scope` (plus decompose/waves) on a populated census. On `filesSectionEmpty:true` it returns `scope:"abstain"` — keep the `meta.json#scope` `spec-draft` wrote; an empty-census read never overrides `full`.
-4. `mustard-rt run analyze-validation --spec .claude/spec/{slug}/spec.md` → append `issues[]` to `## Concerns`. It WARNs weak/tautological ACs (a bare `cargo build`/`grep` verifies nothing): ACs are EARS — `when/then` + a behaviour-asserting `Command:`, never a lone build-green.
-5. Emit the transitions (exact commands — there is NO `run emit`): scope → `mustard-rt run emit-pipeline --kind pipeline.scope --spec {slug} --payload <json>`; stage → `mustard-rt run emit-phase --spec {slug} --to Plan`.
-6. Route on the effective scope (`meta.json#scope` on `abstain`): `light` → §3; `full` → open `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` and stop reading this file.
-7. Digest `concerns` ≥2 → each is its own unit, scoped to its anchors (Full: a wave; light/task: its own dispatch).
+2. **Assemble the conversation material FIRST — then materialize. Never the other way round.** A flow that drafts first invites the retype-by-hand this channel exists to remove: what the hand does not retype is simply lost. Write everything §1 established into one JSON file (`.claude/.cache/spec-material.json` — a scratch path; the material's permanent home is the spec `spec-draft` is about to write):
+   ```json
+   { "definitions": [{"term": "wave", "meaning": "one level of the plan"}],
+     "decisions":   [{"decision": "everything branches off dev", "reason": "the release train cuts from it"}],
+     "findings":    [{"statement": "the marker is minted unconditionally", "file": "apps/rt/src/commands/grill_capture.rs", "line": 88}] }
+   ```
+   | Kind | What goes in | Refused |
+   |---|---|---|
+   | `definitions` | a term the conversation settled + what it means HERE (the grill's captures land here too) | a term with no meaning |
+   | `decisions` | a choice + the REASON it was taken — including a project memory you judged relevant (§1.7), with its origin named in the reason | a decision with no reason |
+   | `findings` | a verified statement + the `file` (and `line`) it was checked at — a refuted hypothesis is a finding | a statement with no file |
+
+   A FILE, not a flag: the payload carries newlines, quotes and non-ASCII a shell argument would mangle. The channel is FAIL-CLOSED (unlike most of this pipeline) — an unknown key or a half-entry ABORTS the draft with the offending index rather than degrading to an empty channel, because a silent drop is the defect itself. Nothing established → omit `--material` entirely; the draft is then byte-identical to one written before this channel existed.
+3. `mustard-rt run spec-draft --intent "<request>" --scope <your light/full read> --lang <bcp47> [--material .claude/.cache/spec-material.json] [--query-terms "<repo terms when raw words were weak/none>"]` — the ONLY scaffold writer; its auto-downgrade gate is the deterministic backstop. Each kind lands in a section of its OWN (`## Definitions` / `## Decisions` / `## Evidence`), never crammed into the prose-only opening — which is why a finding keeps its `file:line` where `## Context` would reject it. The report echoes `material:{definitions,decisions,findings}` counts, so a channel that carried nothing is visible.
+4. `mustard-rt run plan-prepare --from-spec .claude/spec/{slug}/spec.md --slice-match-count <sliceMatchCount from the digest>` — the authority for `scope` (plus decompose/waves) on a populated census. On `filesSectionEmpty:true` it returns `scope:"abstain"` — keep the `meta.json#scope` `spec-draft` wrote; an empty-census read never overrides `full`.
+5. `mustard-rt run analyze-validation --spec .claude/spec/{slug}/spec.md` → append `issues[]` to `## Concerns`. It WARNs weak/tautological ACs (a bare `cargo build`/`grep` verifies nothing): ACs are EARS — `when/then` + a behaviour-asserting `Command:`, never a lone build-green.
+6. Emit the transitions (exact commands — there is NO `run emit`): scope → `mustard-rt run emit-pipeline --kind pipeline.scope --spec {slug} --payload <json>`; stage → `mustard-rt run emit-phase --spec {slug} --to Plan`.
+7. Route on the effective scope (`meta.json#scope` on `abstain`): `light` → §3; `full` → open `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` and stop reading this file.
+8. Digest `concerns` ≥2 → each is its own unit, scoped to its anchors (Full: a wave; light/task: its own dispatch).
 
 Orientation labels (plan-prepare decides on a populated census): light = 1-2 layers, ≤5 files, mirrors a slice · extended-light (internal flow label — emits the canonical scope `light`) = matched slice + modifies existing, 6-8 files · full = 3+ layers, net-new, ≥2 slices with ≥2 layers, or >8 files.
 
@@ -57,7 +71,7 @@ Orientation labels (plan-prepare decides on a populated census): light = 1-2 lay
 
 - Research via the digest; read only the selected anchors (~12), never the repo or `grain.model.json` whole. Settle existence/duplication by Grep enumeration BEFORE any subagent — sampled reading never proves absence: `${CLAUDE_PLUGIN_ROOT}/refs/feature/existence-gate.md`.
 - Trust each subagent briefing as the answer; re-read directly ONLY when a conclusion contradicts the user or claims absence.
-- The scaffold is materialised ONLY by `spec-draft`; never hand-write `spec.md`; never Read back a spec / `meta.json` you just wrote.
+- The scaffold is materialised ONLY by `spec-draft`; never hand-write `spec.md`; never Read back a spec / `meta.json` you just wrote. What the conversation established rides IN through `--material` (§2.2), assembled before the draft — never retyped into the spec afterwards.
 - Prompts only via `agent-prompt-render`; dispatch with the recommended `subagent_type` (`explore`→Explore, `review`/`qa`→`mustard:mustard-review`, `guards`→`mustard:mustard-guards`; writing roles→`mustard:mustard-impl`, which runs `isolation: worktree` so each wave writes in its own checkout — plugin agents namespaced, builtins bare; canonical map: `refs/agent-prompt/agent-prompt.md`).
 - Never skip `analyze-validation` or `dependency-precheck`.
 - Flat `.claude/spec/{name}/` layout, lifecycle in `meta.json`, escalation statuses: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md`.

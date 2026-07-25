@@ -1,0 +1,9 @@
+{
+  "stage": "Analyze",
+  "outcome": "Active",
+  "phase": null,
+  "scope": "light",
+  "lang": "en-US",
+  "checkpoint": "2026-07-25T14:06:59.699Z",
+  "parent": "make-spec-authoring-carry-conversation"
+}

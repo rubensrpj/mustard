@@ -31,6 +31,8 @@
 | `## Root cause` | `## Causa raiz` |
 | `## Concerns` | `## Preocupações` |
 | `## Decisions` | `## Decisões não-óbvias` |
+| `## Definitions` | `## Definições` |
+| `## Evidence` | `## Evidências` |
 | `## Symptom` | `## Sintoma` |
 
 - `## PRD` and `## Plan`/`## Plano` are narrative DIVIDERS (PRD = what/why; Plano = how) grouping subsections in one file — intentionally absent from the parser map. The authoritative matcher is `apps/rt/src/commands/spec/spec_sections.rs`: when adding or renaming a PARSED heading, update the table AND the module.
@@ -38,7 +40,8 @@
 ## Contexto rules
 
 - Audience: a human rediscovering the work next week — a briefing, not agent input. One prose paragraph, 4-8 lines, in order: how the system should work (explain each domain term on first use) → what changed / is expected → how the bug or gap violates that → the observable user/business impact.
-- Forbidden in Contexto: tables, file paths, line numbers, method/class/variable names, "how to fix", bullet lists — those belong in `## Root cause` / `## Files` / `## Tasks`. The PRD layer is prose-only (no paths, no identifiers); the Plano layer may carry them. `Métrica de sucesso` states an observable outcome, never an implementation detail.
+- Forbidden in Contexto: tables, file paths, line numbers, method/class/variable names, "how to fix", bullet lists — a VERIFIED FINDING, with the file and line it was checked at, belongs in `## Evidence`; other paths and lists belong in `## Root cause` / `## Files` / `## Tasks`. (`analyze-validation` names that destination in its WARN: a rule that rejects without saying where the material goes is how the material ends up nowhere.) The PRD layer is prose-only (no paths, no identifiers); the Plano layer may carry them.
+- The three conversation-channel sections (`## Definitions`, `## Decisions`, `## Evidence`) are written by `spec-draft --material`, never by hand, and are absent when the channel carried nothing. The drafter appends them to the end of `spec.md`; readers resolve them by heading, never by position. `## Evidence` is the only home for a verified `file:line` outside the Plano layer. `Métrica de sucesso` states an observable outcome, never an implementation detail.
 
 ## Dispatch
 

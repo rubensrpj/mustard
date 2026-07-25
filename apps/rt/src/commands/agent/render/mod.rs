@@ -83,6 +83,38 @@ use sections::{
 };
 use skills::build_skills_list;
 
+/// The placeholder keys this renderer substitutes into the embedded template,
+/// in template order.
+///
+/// It IS the substitution list, not a copy of one: [`render_prompt_at`] zips it
+/// with the collected values, and the value array's length is pinned to
+/// `TEMPLATE_PLACEHOLDERS.len()`, so a key added without its value fails to
+/// compile.
+///
+/// Public because this set is the contract the SHIPPED reference
+/// (`plugin/refs/agent-prompt/agent-prompt.md`) documents for whoever plans a
+/// wave. That file is prose: a placeholder added here and not there breaks
+/// nothing in this workspace and is never seen by a compiler — the same silent
+/// failure mode the rest of `tests/plugin_agents.rs` ratchets. The
+/// `agent_prompt_ref_documents_every_placeholder` guard reads THIS constant, so
+/// the ref's table is checked as a SET; its size is a consequence of the set and
+/// never a claim the guard asserts.
+pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
+    "{subproject}",
+    "{guards_summary}",
+    "{role_block}",
+    "{spec_lang}",
+    "{task_steps}",
+    "{context_md}",
+    "{prior_wave_diff}",
+    "{change_log}",
+    "{conversation_material}",
+    "{cross_wave_memory}",
+    "{reference_files}",
+    "{skills_list}",
+    "{retry_context}",
+];
+
 /// Render mode — picks which template block (dispatch vs retry) is filled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
@@ -395,22 +427,24 @@ pub(crate) fn render_prompt_at(
     // token count.
 
     // ---- Substitute placeholders. ----
-    let substitutions: &[(&str, &str)] = &[
-        ("{subproject}", &subproject_str),
-        ("{guards_summary}", &guards_summary),
-        ("{role_block}", &role_block),
-        ("{spec_lang}", &spec_lang),
-        ("{task_steps}", &task_steps),
-        ("{context_md}", &context_md),
-        ("{prior_wave_diff}", &prior_wave_diff),
-        ("{change_log}", &change_log),
-        ("{conversation_material}", &conversation_material),
-        ("{cross_wave_memory}", &cross_wave_memory),
-        ("{reference_files}", &reference_files),
-        ("{skills_list}", &skills_list),
-        ("{retry_context}", &retry_context),
+    // Values in TEMPLATE_PLACEHOLDERS order — the array length is pinned to the
+    // constant, so adding a key without its value fails to compile.
+    let values: [&str; TEMPLATE_PLACEHOLDERS.len()] = [
+        &subproject_str,
+        &guards_summary,
+        &role_block,
+        &spec_lang,
+        &task_steps,
+        &context_md,
+        &prior_wave_diff,
+        &change_log,
+        &conversation_material,
+        &cross_wave_memory,
+        &reference_files,
+        &skills_list,
+        &retry_context,
     ];
-    for (key, value) in substitutions {
+    for (key, value) in TEMPLATE_PLACEHOLDERS.iter().zip(values.iter()) {
         rendered = rendered.replace(key, value);
     }
 
