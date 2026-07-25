@@ -23,8 +23,8 @@
 //!
 //! 1. MATCH — tokenize the query, drop PT+EN glue, match each token against the
 //!    dictionary `term`s by accent-fold equality OR folded prefix (min side ≥4),
-//!    the same rungs `benchmarks/sialia/dict-lookup.ps1` validated, built on the
-//!    ladder's `fold`. Collect the matched terms (+ their idf).
+//!    the same rungs the retrieval benchmark validated, built on the ladder's
+//!    `fold`. Collect the matched terms (+ their idf).
 //! 2. SEED — resolve each matched term to model files: the modules whose
 //!    declaration/path tokens contain the term (rich, model-derived — the case
 //!    for an English term), UNION the term's dictionary `anchors` (the only

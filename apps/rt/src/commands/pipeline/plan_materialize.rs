@@ -11,6 +11,10 @@
 //! 2. `analyze-validation` — [`crate::commands::review::analyze_validation::validate`]
 //!    (WARN-level, includes the wave-2 AC-parseability check) over the root
 //!    `spec.md`.
+//! 2b. `wave-dependency`'s import-DAG cycle check —
+//!    [`crate::commands::wave::wave_dependency::validate_plan_dag`] over the
+//!    plan's file union (WARN-level). Folded in so the check runs every time,
+//!    not only when the orchestrator relays a separate `wave-dependency` call.
 //! 3. `emit-pipeline --kind pipeline.scope` — the typed
 //!    [`PipelineScopePayload`] with `scope: "full"` (this composite exists for
 //!    the Full/wave-plan flow) + the scaffolded wave count.
@@ -30,7 +34,8 @@
 //!   "scaffold": {
 //!     "created_files": [], "skipped": [], "refreshed": [], "removed": []
 //!   },
-//!   "validation": { "ok": true, "issues": [] }
+//!   "validation": { "ok": true, "issues": [] },
+//!   "dependencies": { "ok": true, "issues": [] }
 //! }
 //! ```
 //!
@@ -47,6 +52,7 @@
 
 use crate::commands::event::emit_phase;
 use crate::commands::review::analyze_validation;
+use crate::commands::wave::wave_dependency;
 use crate::commands::wave::wave_scaffold::{self, ScaffoldOutcome};
 use crate::shared::context::session_id;
 use mustard_core::domain::model::event::{
@@ -181,7 +187,17 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
 
     // 2. analyze-validation over the root spec.md (the spec-draft output).
     //    WARN-level by contract — never blocks the scaffold or the events.
-    let validation = validate_root_spec(spec_dir);
+    let validation = validate_root_spec(project, spec_dir);
+
+    // 2b. Dependency-DAG validation over the plan's file union — folded in from
+    //     `wave-dependency` (it reads the same `plan.json`), so the import-cycle
+    //     check runs as part of materialisation instead of depending on the
+    //     orchestrator relaying a separate `wave-dependency` call it may skip.
+    //     WARN-level, like the analyze-validation above: a cycle never blocks the
+    //     scaffold (the planner's explicit boundaries stand), it flags a wave
+    //     order the imports say is not executable. Reuses the DAG builder — no
+    //     second import parser.
+    let dependencies = wave_dependency::validate_plan_dag(plan_path, project);
 
     // 3 + 4. Events — only for a plan that actually materialised (no PLAN
     //    transition for a spec whose scaffold failed) and a resolvable slug.
@@ -201,6 +217,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         "events": events,
         "scaffold": scaffold_json,
         "validation": validation,
+        "dependencies": dependencies,
     })
 }
 
@@ -209,7 +226,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
 /// task counts, AC parseability). A missing/unreadable `spec.md` degrades to
 /// `ok: false` with a single ERROR issue — `plan-materialize` pressupposes the
 /// draft already ran, so the gap is surfaced, not silently skipped.
-fn validate_root_spec(spec_dir: &Path) -> Value {
+///
+/// `project` is the root [`run`] already resolved, handed down so the file-ref
+/// check resolves against the SAME tree this composite works in (off-root — a
+/// worktree — the process working directory is a different project).
+fn validate_root_spec(project: &Path, spec_dir: &Path) -> Value {
     let spec_md = spec_dir.join("spec.md");
     if !fs::exists(&spec_md) {
         return json!({
@@ -223,7 +244,7 @@ fn validate_root_spec(spec_dir: &Path) -> Value {
     }
     match fs::read_to_string(&spec_md) {
         Ok(content) => {
-            let issues = analyze_validation::validate(&spec_md, &content);
+            let issues = analyze_validation::validate(project, &spec_md, &content);
             json!({ "ok": issues.is_empty(), "issues": issues })
         }
         Err(e) => json!({
@@ -344,6 +365,10 @@ mod tests {
 
         // Validation: the seeded spec is clean.
         assert_eq!(report["validation"]["ok"], json!(true), "{report}");
+
+        // Dependency-DAG check is folded in and always present in the report
+        // (clean here — the seed plan declares no import edges).
+        assert_eq!(report["dependencies"]["ok"], json!(true), "{report}");
 
         // Events: scope (full) + phase (PLAN), in emission order.
         assert_eq!(

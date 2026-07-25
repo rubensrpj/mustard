@@ -1,6 +1,6 @@
 # Spec Language
 
-> Loaded by `/feature` + `/bugfix`. Law as checklist, mappings as table. Rationale: `docs/TEMPLATE-RATIONALE.md` (never loaded).
+> Loaded by `/feature` + `/bugfix`. Law as checklist, mappings as table.
 
 ## Law
 

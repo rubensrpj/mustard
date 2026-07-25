@@ -295,6 +295,9 @@ export function fetchConsumption(repoPath: string): Promise<ConsumptionSummary> 
 export type {
   EconomyScope,
   EconomyScopeKind,
+  EconomyScopeWire,
+  TimeWindow,
+  EconomyWindowPeriod,
   EconomySummary,
   AgentCost,
   SavingsSource,
@@ -304,31 +307,69 @@ export type {
 } from "@/lib/types/economy";
 import type {
   EconomyScope,
+  EconomyScopeWire,
+  TimeWindow,
   EconomySummary,
   SavingsBreakdown,
   ContextRoutingMetrics,
   SpecCost,
   WaveCost,
 } from "@/lib/types/economy";
+import { windowedScope } from "@/lib/types/economy";
 
-export function fetchEconomySummary(scope: EconomyScope): Promise<EconomySummary> {
-  return invoke<EconomySummary>("dashboard_economy_summary", { scope });
+/**
+ * Compose an optional time window onto a base scope for the wire, mirroring the
+ * Rust `EconomyScopeDto::Windowed` wrapper (`{ kind: "windowed", window, inner }`).
+ * `null` sends the bare scope unchanged, so an unwindowed call is byte-identical
+ * to the pre-window payload.
+ */
+function withWindow(scope: EconomyScope, window: TimeWindow | null): EconomyScopeWire {
+  return window ? windowedScope(window, scope) : scope;
 }
 
-export function fetchEconomySavingsBreakdown(scope: EconomyScope): Promise<SavingsBreakdown> {
-  return invoke<SavingsBreakdown>("dashboard_economy_savings_breakdown", { scope });
+export function fetchEconomySummary(
+  scope: EconomyScope,
+  window: TimeWindow | null,
+): Promise<EconomySummary> {
+  return invoke<EconomySummary>("dashboard_economy_summary", {
+    scope: withWindow(scope, window),
+  });
 }
 
-export function fetchEconomyContextRouting(scope: EconomyScope): Promise<ContextRoutingMetrics> {
-  return invoke<ContextRoutingMetrics>("dashboard_economy_context_routing", { scope });
+export function fetchEconomySavingsBreakdown(
+  scope: EconomyScope,
+  window: TimeWindow | null,
+): Promise<SavingsBreakdown> {
+  return invoke<SavingsBreakdown>("dashboard_economy_savings_breakdown", {
+    scope: withWindow(scope, window),
+  });
 }
 
-export function fetchEconomyPerSpecCosts(scope: EconomyScope): Promise<SpecCost[]> {
-  return invoke<SpecCost[]>("dashboard_economy_per_spec_costs", { scope });
+export function fetchEconomyContextRouting(
+  scope: EconomyScope,
+  window: TimeWindow | null,
+): Promise<ContextRoutingMetrics> {
+  return invoke<ContextRoutingMetrics>("dashboard_economy_context_routing", {
+    scope: withWindow(scope, window),
+  });
 }
 
-export function fetchEconomyPerWaveCosts(scope: EconomyScope): Promise<WaveCost[]> {
-  return invoke<WaveCost[]>("dashboard_economy_per_wave_costs", { scope });
+export function fetchEconomyPerSpecCosts(
+  scope: EconomyScope,
+  window: TimeWindow | null,
+): Promise<SpecCost[]> {
+  return invoke<SpecCost[]>("dashboard_economy_per_spec_costs", {
+    scope: withWindow(scope, window),
+  });
+}
+
+export function fetchEconomyPerWaveCosts(
+  scope: EconomyScope,
+  window: TimeWindow | null,
+): Promise<WaveCost[]> {
+  return invoke<WaveCost[]>("dashboard_economy_per_wave_costs", {
+    scope: withWindow(scope, window),
+  });
 }
 
 // --- useProjects hook ---

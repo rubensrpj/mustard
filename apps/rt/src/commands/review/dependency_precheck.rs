@@ -978,10 +978,17 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
         .strip_prefix(&repo_root)
         .map_or_else(|_| spec_arg.to_string(), |p| p.to_string_lossy().replace('\\', "/"));
 
+    // An unreadable spec is NOT a pass. The flow treats this command as a gate
+    // ("never skip dependency-precheck"), so answering `ok: true` here would
+    // approve a spec whose `## Files` was never read — the same "verified
+    // without verifying" defect the doctor and the metrics collector carried.
+    // `ok: false` reports the truth; the caller still decides what to do, and
+    // nothing panics. Distinct from the `no-files-section` branch below, where
+    // the spec WAS read and simply declares no files: that one is a real pass.
     let Ok(spec_text) = fs::read_to_string(&spec_path) else {
         return json!({
             "missing": [],
-            "ok": true,
+            "ok": false,
             "promise_violations": [],
             "spec": spec_slug,
             "subproject": null,
@@ -1564,5 +1571,22 @@ mod tests {
             "TS import of an uncreated symbol is still flagged: {verdict}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A spec this command could not read is NOT a pass. The /feature flow
+    /// treats it as a gate ("never skip dependency-precheck"), so answering
+    /// `ok: true` on an unreadable spec approves work whose `## Files` was never
+    /// seen — the same verified-without-verifying defect the doctor and the
+    /// metrics collector carried. The error field stays, so the caller can tell
+    /// this apart from a genuine failure.
+    #[test]
+    fn unreadable_spec_is_not_a_pass() {
+        let verdict = check("no/such/spec/anywhere/spec.md", None);
+        assert_eq!(
+            verdict["ok"],
+            json!(false),
+            "a spec that could not be read must not be approved: {verdict}"
+        );
+        assert_eq!(verdict["error"], json!("spec-not-readable"));
     }
 }

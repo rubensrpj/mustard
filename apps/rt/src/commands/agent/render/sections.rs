@@ -3,13 +3,30 @@
 //! the two post-substitution passes that keep the rendered prompt clean
 //! ([`collapse_empty_sections`], [`strip_unfilled_template_tokens`]).
 
+use crate::commands::scan_claude::GUARDS_PENDING_OPEN;
 use crate::commands::spec::spec_sections::{is_heading, section_end};
 use mustard_core::io::fs as mfs;
 use std::path::Path;
 
+/// Prefixed to a `## Guards` body that is still the `/scan` scaffold.
+///
+/// The pending block's entire body is HTML comments, so copying it verbatim
+/// hands the agent an EMPTY rule set that renders exactly like a curated one —
+/// nothing in the dispatched prompt distinguishes "this project has no rules
+/// yet" from "these are the rules". This line does.
+const UNCURATED_GUARDS_NOTICE: &str = "> NOTE: this subproject's `## Guards` block is still the uncurated `/scan` \
+     scaffold — the enrich pass never authored its rules. There are NO project \
+     rules below: fall back to the sibling-convention read and do not treat the \
+     placeholder as guidance.";
+
 /// Read the `## Guards` section body from a subproject's `CLAUDE.md`. Empty
 /// when the file or the section is absent.
-pub(crate) fn read_guards_block(subproject_dir: &Path) -> String {
+///
+/// When the block still carries [`GUARDS_PENDING_OPEN`] the body is a
+/// placeholder, not rules: [`UNCURATED_GUARDS_NOTICE`] is prefixed so the
+/// dispatch says so. Fail-open per the inject contract — a missing/unreadable
+/// file yields no injection (empty string), and nothing here panics.
+pub fn read_guards_block(subproject_dir: &Path) -> String {
     let text = mfs::read_to_string(subproject_dir.join("CLAUDE.md")).unwrap_or_default();
     if text.is_empty() {
         return String::new();
@@ -36,7 +53,13 @@ pub(crate) fn read_guards_block(subproject_dir: &Path) -> String {
             collected.push('\n');
         }
     }
-    collected.trim().to_string()
+    let block = collected.trim().to_string();
+    // Absent section ⇒ no injection at all (the empty `## GUARDS` heading is
+    // then collapsed away by `collapse_empty_sections`) — never a bare notice.
+    if block.is_empty() || !block.contains(GUARDS_PENDING_OPEN) {
+        return block;
+    }
+    format!("{UNCURATED_GUARDS_NOTICE}\n\n{block}")
 }
 
 /// Resolve the spec's narrative locale. Defaults to `"en-US"` (BCP-47).
@@ -440,6 +463,44 @@ mod tests {
         assert!(guards.contains("rule A"));
         assert!(guards.contains("rule B"));
         assert!(!guards.contains("Stack"));
+        assert!(
+            !guards.contains("uncurated"),
+            "a curated block must be copied verbatim: {guards}"
+        );
+    }
+
+    /// A `## Guards` block still carrying the pending sentinel is a PLACEHOLDER
+    /// (its whole body is HTML comments). The dispatch must say so, and the
+    /// placeholder itself must survive — the notice is a prefix, not a swap.
+    #[test]
+    fn read_guards_block_marks_the_pending_scaffold() {
+        use crate::commands::scan_claude::GUARDS_CLOSE;
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("CLAUDE.md"),
+            format!(
+                "# Sub\n\n## Guards\n\n{GUARDS_PENDING_OPEN}\n\
+                 <!-- facts: kind=cargo; frameworks=serde -->\n{GUARDS_CLOSE}\n\n## Stack\nrust\n"
+            ),
+        )
+        .unwrap();
+        let guards = read_guards_block(dir.path());
+        assert!(
+            guards.starts_with("> NOTE:"),
+            "the notice must lead the block, before the placeholder: {guards}"
+        );
+        assert!(guards.contains("NO project rules"), "{guards}");
+        assert!(guards.contains(GUARDS_PENDING_OPEN), "the raw block must survive: {guards}");
+    }
+
+    /// Fail-open (inject contract): no `CLAUDE.md`, or one with no `## Guards`
+    /// section, yields NO injection — never a bare notice on an empty body.
+    #[test]
+    fn read_guards_block_missing_source_yields_no_injection() {
+        let dir = tempdir().unwrap();
+        assert_eq!(read_guards_block(dir.path()), "", "absent file ⇒ no injection");
+        std::fs::write(dir.path().join("CLAUDE.md"), "# Sub\n\n## Stack\nrust\n").unwrap();
+        assert_eq!(read_guards_block(dir.path()), "", "absent section ⇒ no injection");
     }
 
     #[test]

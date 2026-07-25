@@ -38,7 +38,7 @@ use serde_json::json;
 
 use crate::commands::economy::context_slice::{parse_term_blocks, resolve_context_files};
 use crate::shared::context::{
-    clarified_marker_path, current_spec, session_id, spec_for_session,
+    clarified_marker_path, current_spec, marker_body, session_id, spec_for_session,
 };
 
 /// Resolve the destination `CONTEXT.md` the same way `glossary-coverage` does:
@@ -217,7 +217,14 @@ fn run_finalize(spec_arg: &str, root: &Path) {
     if let Some(parent) = marker.parent() {
         let _ = mfs::create_dir_all(parent);
     }
-    let body = format!("spec={spec}\nvia=grill-finalize\n");
+    // Through the shared body writer, which is what finally gives this door the
+    // `session=` the other two always wrote — the drift that motivated the seam.
+    let body = marker_body(
+        &spec,
+        "grill-finalize",
+        &session_id(),
+        &mustard_core::time::now_iso8601(),
+    );
     if mfs::write_atomic(&marker, body.as_bytes()).is_err() {
         emit_finalize(false, &spec, Some("write-failed"));
         return;
@@ -271,6 +278,27 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This door's half of the shared-body claim — and the one that closes the
+    /// drift: `grill-finalize` used to write two lines while the other two doors
+    /// wrote three. Now it reads back with a session AND an instant, both of
+    /// which only `marker_body` emits.
+    #[test]
+    fn marker_body_is_the_single_writer_for_grill_finalize() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("epic")).unwrap();
+
+        run_finalize("epic", root);
+
+        let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the minted body must read back as provenance");
+        assert_eq!(p.via, "grill-finalize");
+        assert_eq!(p.spec, "epic");
+        assert!(!p.session.is_empty(), "the door that lacked `session=` must record one");
+        assert!(!p.at.is_empty(), "the door must record an instant");
+    }
 
     #[test]
     fn appends_a_new_term_to_an_empty_glossary() {

@@ -1,6 +1,7 @@
 ---
 description: Use when the user runs /maint or asks about dependencies, validate, sync, or doctor (project hygiene, build/type-check, registry sync, installation health check).
 argument-hint: <deps|validate|sync|doctor>
+disable-model-invocation: true
 source: manual
 ---
 <!-- mustard:generated -->

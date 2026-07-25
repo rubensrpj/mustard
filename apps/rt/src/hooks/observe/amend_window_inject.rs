@@ -469,6 +469,12 @@ fn observe_user_prompt(input: &HookInput, _ctx: &Ctx, project_dir: &str, session
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    // A background task reporting that it finished is not the user amending
+    // anything — it only reaches this trigger because the runtime speaks through
+    // the user channel. See [`crate::shared::prompt`].
+    if crate::shared::prompt::is_harness_notice(&prompt_text) {
+        return;
+    }
     let now = now_iso8601();
     let intent_payload = serde_json::to_value(PipelineAmendIntentPayload {
         spec_id: spec_id.clone(),

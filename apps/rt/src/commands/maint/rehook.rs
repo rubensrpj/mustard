@@ -1,16 +1,27 @@
 //! `mustard-rt run rehook` — restore the harness after [`crate::commands::maint::unhook`].
 //!
 //! For each `.claude/` directory in scope (`this` / `monorepo` / `all` — same
-//! resolution as `unhook`), finds the most recent `settings.json.disabled-*`
-//! and renames it back to `settings.json`. Volatile state directories cleared
-//! by `unhook` are intentionally **not** recreated — the runtime regenerates
-//! them on the next run.
+//! resolution as `unhook`), two shapes are restored:
 //!
-//! Fail-open: missing `.claude/`, no disabled snapshot, or a directory with a
-//! live `settings.json` already in place each surface as their own `state`
-//! string rather than erroring.
+//! 1. **Current** — a live `settings.json` carrying `"disableAllHooks": true`.
+//!    The key is removed and every other key is left verbatim. This is the
+//!    exact inverse of what `unhook` writes today.
+//! 2. **Legacy** — no `settings.json` at all, because an older build renamed it
+//!    to `settings.json.disabled-<timestamp>`. The newest such snapshot is
+//!    renamed back, so a project unhooked before this change is still
+//!    recoverable by the current binary.
+//!
+//! Volatile state directories cleared by `unhook` are intentionally **not**
+//! recreated — the runtime regenerates them on the next run.
+//!
+//! Fail-open: missing `.claude/`, no disabled snapshot, or a `settings.json`
+//! that never carried the flag each surface as their own `state` string rather
+//! than erroring.
 
-use crate::commands::maint::unhook::{collect_claude_dirs, ScopeKind};
+use crate::commands::maint::unhook::{
+    collect_claude_dirs, read_settings_object, write_settings_object, ScopeKind,
+    DISABLE_ALL_HOOKS_KEY,
+};
 use mustard_core::time::now_iso8601;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -29,7 +40,8 @@ pub struct RehookOpts {
 #[derive(Serialize)]
 pub(crate) struct RestoredEntry {
     pub settings_path: String,
-    /// Path that was restored from (`Some` only when state == "restored").
+    /// Snapshot the settings file was renamed back from. Only the legacy path
+    /// sets it — clearing `disableAllHooks` in place restores from nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restored_from: Option<String>,
     /// `restored` | `already-active` | `no-snapshot` | `missing` | `skipped` | `error`.
@@ -71,12 +83,31 @@ fn restore_one(claude_dir: &Path, kind: ScopeKind) -> RestoredEntry {
         };
     }
 
+    // A live `settings.json` is the shape the current kill-switch leaves
+    // behind: the file was never moved, only flagged. Clearing the flag IS the
+    // restore. Checked before the snapshot sweep because a project that has
+    // been unhooked by both builds must be restored from its live file, not
+    // from an older snapshot.
     if settings.exists() {
-        return RestoredEntry {
-            settings_path,
-            restored_from: None,
-            state: "already-active".into(),
-            error: None,
+        return match clear_disable_all_hooks(&settings) {
+            Ok(true) => RestoredEntry {
+                settings_path,
+                restored_from: None,
+                state: "restored".into(),
+                error: None,
+            },
+            Ok(false) => RestoredEntry {
+                settings_path,
+                restored_from: None,
+                state: "already-active".into(),
+                error: None,
+            },
+            Err(e) => RestoredEntry {
+                settings_path,
+                restored_from: None,
+                state: "error".into(),
+                error: Some(e),
+            },
         };
     }
 
@@ -113,6 +144,22 @@ fn restore_one(claude_dir: &Path, kind: ScopeKind) -> RestoredEntry {
         state: "restored".into(),
         error: None,
     }
+}
+
+/// Remove the `disableAllHooks` key from a live `settings.json`, preserving
+/// every other key. Returns `true` when the key was there (a real restore),
+/// `false` when it was absent (the project was never unhooked, or a user
+/// already cleared it) — in which case nothing is written.
+///
+/// `Err` on an unreadable / unparseable file: the report says so instead of
+/// claiming a restore it could not verify, and the file is left as found.
+fn clear_disable_all_hooks(settings: &Path) -> Result<bool, String> {
+    let mut obj = read_settings_object(settings)?;
+    if obj.remove(DISABLE_ALL_HOOKS_KEY).is_none() {
+        return Ok(false);
+    }
+    write_settings_object(settings, obj)?;
+    Ok(true)
 }
 
 /// Find the most-recent `settings.json.disabled*` snapshot in `claude_dir`.
@@ -181,11 +228,11 @@ pub fn run(opts: RehookOpts) {
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
     );
 
-    // Mustard 2.0 ships as a Claude Code plugin; the native toggle is the real
-    // on-switch now. This snapshot restore stays as the legacy fallback.
+    // Mustard 2.0 ships as a Claude Code plugin; the native toggle is the
+    // narrower on-switch. Clearing `disableAllHooks` un-silences every hook.
     eprintln!();
-    eprintln!("Mustard now ships as a Claude Code plugin. Primary way to turn it back ON: claude plugin enable mustard");
-    eprintln!("The snapshot restore above is the legacy fallback for a settings.json that mustard-rt run unhook renamed.");
+    eprintln!("Mustard now ships as a Claude Code plugin. To turn only Mustard back ON: claude plugin enable mustard");
+    eprintln!("The restore above cleared `disableAllHooks` from settings.json (or, for a project unhooked by an older build, renamed its settings.json.disabled-* snapshot back).");
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +271,47 @@ mod tests {
 
         let entry = restore_one(&claude, ScopeKind::Repo);
         assert_eq!(entry.state, "already-active");
+    }
+
+    /// The inverse of the current kill-switch: the file was never moved, so the
+    /// restore is the removal of one key. A stale snapshot from an older build
+    /// must not win over the live file.
+    #[test]
+    fn restore_clears_the_flag_from_a_live_settings_file() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"disableAllHooks":true,"cleanupPeriodDays":30}"#,
+        )
+        .unwrap();
+        std::fs::write(claude.join("settings.json.disabled-ts"), "STALE").unwrap();
+
+        let entry = restore_one(&claude, ScopeKind::Repo);
+
+        assert_eq!(entry.state, "restored");
+        assert!(entry.restored_from.is_none(), "nothing was renamed back");
+        let raw = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert!(!raw.contains("disableAllHooks"), "flag cleared: {raw}");
+        assert!(raw.contains("cleanupPeriodDays"), "siblings survive: {raw}");
+    }
+
+    /// A settings.json we cannot parse is reported, never rewritten.
+    #[test]
+    fn restore_leaves_unparseable_settings_untouched() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("settings.json"), "{ not json").unwrap();
+
+        let entry = restore_one(&claude, ScopeKind::Repo);
+
+        assert_eq!(entry.state, "error");
+        assert_eq!(
+            std::fs::read_to_string(claude.join("settings.json")).unwrap(),
+            "{ not json"
+        );
     }
 
     #[test]

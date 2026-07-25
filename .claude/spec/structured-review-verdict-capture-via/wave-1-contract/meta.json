@@ -1,0 +1,21 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-23T11:41:21.913Z",
+  "parent": "structured-review-verdict-capture-via",
+  "checklist": [
+    {
+      "label": "plugin/agents/mustard-review.md",
+      "path": "plugin/agents/mustard-review.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/agent/render/role.rs",
+      "path": "apps/rt/src/commands/agent/render/role.rs",
+      "done": true
+    }
+  ]
+}

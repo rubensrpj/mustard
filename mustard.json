@@ -13,11 +13,6 @@
       "on": "userPromptSubmit",
       "file": ".claude/mustard/orchestrator.md",
       "once": true
-    },
-    {
-      "on": "sessionStart",
-      "file": ".claude/mustard/response-style.md",
-      "once": true
     }
   ],
   "runtime": {

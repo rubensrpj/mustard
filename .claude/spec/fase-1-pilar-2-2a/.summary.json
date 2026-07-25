@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "fase-1-pilar-2-2a",
+  "title": "Fase 1 do Pilar 2 (2a): adicionar uma janela de tempo (1d/7d/15d/30d) a visao de Economia do dashboard, hoje sem recorte temporal. O EconomyScope (packages/core) ganha um filtro de janela que COMPOE com o escopo atual (Projeto/Spec/Wave/Comparar); os readers de economia (reader.rs) filtram os eventos NDJSON por ts dentro da janela; o EconomyScopeDto + os 6 comandos dashboard_economy_* (apps/dashboard/src-tauri/telemetry.rs) passam a janela adiante; e o Economia.tsx ganha um seletor 1d/7d/15d/30d ao lado do ScopeBar. Deterministico, fail-open. Codigo em ingles.",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "core",
+      "summary": "Janela de tempo no EconomyScope + filtro por ts nos readers de economia",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "tauri",
+      "summary": "EconomyScopeDto + os 6 comandos dashboard_economy_* repassam a janela ao core",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "frontend",
+      "summary": "Seletor de janela (1d/7d/15d/30d) na pagina Economia, compondo com o escopo",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

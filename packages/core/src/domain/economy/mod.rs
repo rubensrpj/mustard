@@ -39,7 +39,7 @@ pub use reader::{
     per_agent_costs, per_phase_token_summary, per_spec_costs, per_wave_costs, savings_breakdown,
     OperationSample,
 };
-pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
+pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, TimeWindow, WaveId};
 pub use writer::{
     context_frame_event, injection_savings_tokens, run_event, savings_event,
 };

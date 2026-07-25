@@ -15,6 +15,13 @@
 //! - `entities` — optional list of registry entities the skill talks about.
 //! - `metadata.generated_by` — `scan` or `foundation`.
 //!
+//! One further key is typed here for a different reason: `paths` — glob
+//! patterns that scope when the skill auto-loads. The four above are Mustard's
+//! own, scored by `skill-resolve`; `paths` is read by Claude Code itself, and
+//! is the only one of the five the platform acts on. It is typed (not left to
+//! `extra`) so the scan-generated molds can carry it deliberately instead of it
+//! surviving only by round-trip accident.
+//!
 //! ## Design (lenient, fail-open)
 //!
 //! - Parsing is **lenient**: unknown frontmatter keys land in `extra`
@@ -241,6 +248,17 @@ pub struct SkillFrontmatter {
     /// Optional entity names from the registry the skill talks about.
     #[serde(default)]
     pub entities: Vec<String>,
+    /// Glob patterns that scope when the platform auto-loads this skill. Unlike
+    /// [`Self::tags`] / [`Self::applies_to`] / [`Self::scope`] — which Mustard
+    /// defined for its own `skill-resolve` ranking — this key is read by Claude
+    /// Code itself, which loads the skill automatically only while working on
+    /// files matching the patterns. Empty = unscoped (loads for the whole
+    /// subproject), which is the pre-`paths` behaviour.
+    ///
+    /// Accepts either a YAML list or a comma-separated string, matching what
+    /// the platform documents; both parse into this vector.
+    #[serde(default)]
+    pub paths: Vec<String>,
     /// Metadata block — declares scan vs foundation provenance.
     #[serde(default)]
     pub metadata: SkillMetadata,
@@ -469,6 +487,26 @@ fn parse_yaml(yaml: &str) -> SkillFrontmatter {
             "entities" => {
                 let (items, consumed) = read_list(&lines, i, &value);
                 fm.entities = items;
+                i += consumed;
+                continue;
+            }
+            "paths" => {
+                let (mut items, consumed) = read_list(&lines, i, &value);
+                // The platform documents TWO shapes for this key: a YAML list
+                // and a bare comma-separated string. `read_list` knows only the
+                // YAML ones, so recover the bare string here rather than
+                // widening a helper that four other keys share.
+                if items.is_empty() {
+                    let bare = value.trim();
+                    if !bare.is_empty() && !bare.starts_with('[') {
+                        items = bare
+                            .split(',')
+                            .map(|s| unquote(s.trim()).to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                }
+                fm.paths = items;
                 i += consumed;
                 continue;
             }
@@ -762,5 +800,35 @@ metadata:
         let raw = "\u{feff}---\r\nname: x\r\ndescription: Use when the user wants something with enough characters here.\r\nsource: scan\r\n---\r\nbody";
         let fm = parse(raw).expect("CRLF+BOM parses");
         assert_eq!(fm.source().as_deref(), Some("scan"));
+    }
+
+    /// `paths` is the only key in this struct the PLATFORM acts on, so it must
+    /// survive as a typed field rather than as an accident of the `extra`
+    /// round-trip. Both shapes the platform documents parse into the same
+    /// vector, and an absent key means unscoped — never an error, since the
+    /// parser's contract is lenient.
+    #[test]
+    fn paths_parses_as_a_typed_field_in_both_documented_shapes() {
+        const DESC: &str = "description: Use when adding or refactoring a module of this kind here.";
+        let block = parse(&format!(
+            "---\nname: x\n{DESC}\npaths:\n  - apps/rt/src/hooks/**\n  - packages/core/src/io/**\n---\nbody"
+        ))
+        .expect("block list parses");
+        assert_eq!(block.paths, vec!["apps/rt/src/hooks/**", "packages/core/src/io/**"]);
+
+        let flow = parse(&format!(
+            "---\nname: x\n{DESC}\npaths: [apps/rt/src/hooks/**]\n---\nbody"
+        ))
+        .expect("flow list parses");
+        assert_eq!(flow.paths, vec!["apps/rt/src/hooks/**"]);
+
+        let bare = parse(&format!(
+            "---\nname: x\n{DESC}\npaths: apps/rt/src/hooks/**, packages/core/src/io/**\n---\nbody"
+        ))
+        .expect("comma-separated string parses");
+        assert_eq!(bare.paths, vec!["apps/rt/src/hooks/**", "packages/core/src/io/**"]);
+
+        let absent = parse(&format!("---\nname: x\n{DESC}\n---\nbody")).expect("absent key parses");
+        assert!(absent.paths.is_empty(), "no key means unscoped, not an error");
     }
 }

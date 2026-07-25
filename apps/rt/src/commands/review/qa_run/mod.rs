@@ -435,6 +435,44 @@ pub(crate) fn run_qa_with_options(cwd: &Path, spec: &str, opts: QaRunOptions) ->
     result
 }
 
+/// The verdict of a Stop-gate QA evaluation: the qa-run `overall` status plus
+/// the id of the FIRST criterion that came back `fail` — the one a block reason
+/// names.
+///
+/// Built ON TOP of [`run_qa_with_options`], the SAME parser + executor `/qa`
+/// runs, so the Stop gate's verdict is qa-run's verdict by construction: there
+/// is no second AC parser to drift (the `drift` this repository already paid
+/// twice to prevent).
+pub struct StopGateOutcome {
+    /// The run's overall verdict (`pass` / `fail` / `timeout` / `skip`),
+    /// identical to what [`run_for_spec_with_options`] would report for the
+    /// same spec under the same [`QaRunOptions`].
+    pub overall: String,
+    /// Id of the first `fail` criterion, or `None` when nothing failed.
+    pub first_failing_ac: Option<String>,
+}
+
+/// Run QA for `spec` under `cwd` through the qa-run executor and reduce it to a
+/// [`StopGateOutcome`] for the Stop gate.
+///
+/// The single reuse seam the Stop gate calls: it delegates to
+/// [`run_qa_with_options`] (the cwd-aware core [`run_for_spec_with_options`]
+/// itself wraps) so the gate reuses `find_spec_file` + [`parse_ac_items`] +
+/// [`gather_capability_acs`] + `run_ac_command` verbatim — never a parallel AC
+/// reader. `opts` carries [`QaRunOptions::self_invoked`]: the Stop gate runs
+/// INSIDE the `mustard-rt` process, so it MUST set it, or an AC that rebuilds
+/// the running binary would hit the Windows exe lock (os error 5).
+#[must_use]
+pub fn run_for_stop_gate(cwd: &Path, spec: &str, opts: QaRunOptions) -> StopGateOutcome {
+    let result = run_qa_with_options(cwd, spec, opts);
+    let first_failing_ac = result
+        .criteria
+        .iter()
+        .find(|c| c.status == "fail")
+        .map(|c| c.id.clone());
+    StopGateOutcome { overall: result.overall, first_failing_ac }
+}
+
 /// `true` when `spec` carries at least one **executable** acceptance criterion
 /// — the exact union [`run_qa`] would run: the spec's own `## Acceptance
 /// Criteria` items PLUS any linked-capability ACs. This is the inverse of the

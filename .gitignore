@@ -134,9 +134,6 @@ packages/cli/templates/.claude/.metrics/
 # Ad-hoc test-run captures dropped in the repo root (scratch, regenerable)
 /full_test_out.txt
 
-# Benchmark corpus snapshots (grain model + dict regenerated via `scan.exe scan <corpus>` — heavy, regenerable)
-benchmarks/*/model/
-
 # Plugin binaries são artefato de build (release workflow popula plugin/bin/,
 # ou o mustard-boot baixa dos assets do Release); nunca commitar. Os scripts
 # mustard-boot / mustard-boot.cmd SÃO commitados — não casar com eles aqui.

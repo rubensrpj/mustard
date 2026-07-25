@@ -45,7 +45,7 @@ use super::model::{
     SessionCost, SpecCost, WaveCost, PHASE_UNATTRIBUTED,
 };
 use super::multi_project::MultiProjectReader;
-use super::scope::{AgentId, EconomyScope, SpecId, WaveId};
+use super::scope::{AgentId, EconomyScope, SpecId, TimeWindow, WaveId};
 
 // ===========================================================================
 // Internal event-name helpers
@@ -174,6 +174,33 @@ fn walk_events(root: &Path) -> Vec<Event> {
     out
 }
 
+/// Collect every NDJSON event under `root` whose timestamp falls inside the
+/// inclusive `[from_ms, to_ms]` window.
+///
+/// When BOTH bounds are `None` this is exactly [`walk_events`] — no filtering,
+/// no per-event timestamp probe — the fail-open fast path that guarantees an
+/// absent window never changes today's aggregate.
+fn walk_events_in_window(root: &Path, from_ms: Option<i64>, to_ms: Option<i64>) -> Vec<Event> {
+    if from_ms.is_none() && to_ms.is_none() {
+        return walk_events(root);
+    }
+    walk_events(root)
+        .into_iter()
+        .filter(|ev| event_in_window(ev, from_ms, to_ms))
+        .collect()
+}
+
+/// Whether an event's timestamp falls inside the inclusive `[from_ms, to_ms]`
+/// window. Fail-open on both axes: an event with no parseable timestamp is KEPT
+/// (a window never drops an event it cannot place), and an absent bound imposes
+/// no constraint on that side.
+fn event_in_window(ev: &Event, from_ms: Option<i64>, to_ms: Option<i64>) -> bool {
+    let Some(ts) = event_ts_ms(ev) else {
+        return true;
+    };
+    from_ms.is_none_or(|f| ts >= f) && to_ms.is_none_or(|t| ts <= t)
+}
+
 // ===========================================================================
 // Scope filtering helpers
 // ===========================================================================
@@ -185,6 +212,10 @@ fn scope_filters(scope: &EconomyScope) -> (Option<&str>, Option<&str>) {
         EconomyScope::Project(_) | EconomyScope::AllProjects(_) => (None, None),
         EconomyScope::Spec { spec, .. } => (Some(spec.0.as_str()), None),
         EconomyScope::Wave { spec, wave, .. } => (Some(spec.0.as_str()), Some(wave.0.as_str())),
+        // Every reader peels the window off via `EconomyScope::into_parts` before
+        // calling this, so a `Windowed` scope is never seen here in practice;
+        // recurse into the inner selector to keep the match total regardless.
+        EconomyScope::Windowed { inner, .. } => scope_filters(inner),
     }
 }
 
@@ -234,10 +265,14 @@ fn matches_scope(payload: &Value, spec_f: Option<&str>, wave_f: Option<&str>) ->
 /// Returns `Ok` always — every IO failure degrades to the partial aggregate.
 #[allow(clippy::too_many_lines)]
 pub fn economy_summary(project_root: &Path, scope: EconomyScope) -> Result<EconomySummary> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            economy_summary(root, EconomyScope::Project(proj.clone()))
+            economy_summary(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut acc = EconomySummary::default();
         for s in per_project.values() {
@@ -261,10 +296,13 @@ pub fn economy_summary(project_root: &Path, scope: EconomyScope) -> Result<Econo
 
     let (spec_f, wave_f) = scope_filters(&scope);
     let unfiltered = spec_f.is_none() && wave_f.is_none();
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
 
     // Collect once — economy_summary touches every aggregate, so a single
-    // pass keeps the IO bound at one walk per call.
-    let events: Vec<Event> = walk_events(project_root);
+    // pass keeps the IO bound at one walk per call. Filtering by the window
+    // here means every downstream fold sees only in-window events.
+    let events: Vec<Event> = walk_events_in_window(project_root, from_ms, to_ms);
 
     // ── Estimated run-usage totals (always computed; used for span_count and
     //    as the cost fallback at filtered scope) ──
@@ -334,7 +372,9 @@ pub fn economy_summary(project_root: &Path, scope: EconomyScope) -> Result<Econo
     }
 
     // ── Top 3 agents by cost (reuses per_agent_costs to stay DRY) ──
-    let top = per_agent_costs(project_root, scope.clone())?
+    // Re-attach the window so the top-agents slice is windowed identically to
+    // the totals above.
+    let top = per_agent_costs(project_root, scope.clone().with_maybe_window(window.clone()))?
         .into_iter()
         .take(3)
         .collect::<Vec<_>>();
@@ -483,10 +523,14 @@ pub fn metric_token_summary(
     project_root: &Path,
     scope: EconomyScope,
 ) -> Result<MetricTokenSummary> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            metric_token_summary(root, EconomyScope::Project(proj.clone()))
+            metric_token_summary(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut by_model: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
         let mut datapoint_count = 0i64;
@@ -519,13 +563,15 @@ pub fn metric_token_summary(
     if spec_f.is_some() || wave_f.is_some() {
         return Ok(MetricTokenSummary::default());
     }
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
 
     let mut by_model: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
     let mut datapoint_count = 0i64;
     let mut input_tokens = 0i64;
     let mut output_tokens = 0i64;
 
-    for ev in walk_events(project_root) {
+    for ev in walk_events_in_window(project_root, from_ms, to_ms) {
         if event_name(&ev) != TELEMETRY_METRIC_KIND {
             continue;
         }
@@ -659,10 +705,14 @@ pub fn per_phase_token_summary(
     project_root: &Path,
     scope: EconomyScope,
 ) -> Result<PerPhaseTokenSummary> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            per_phase_token_summary(root, EconomyScope::Project(proj.clone()))
+            per_phase_token_summary(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut by_phase: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
         for s in per_project.values() {
@@ -682,8 +732,14 @@ pub fn per_phase_token_summary(
     if spec_f.is_some() || wave_f.is_some() {
         return Ok(PerPhaseTokenSummary::default());
     }
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
 
-    let events = walk_events(project_root);
+    // Both the phase timeline and the token datapoints are drawn from the same
+    // windowed slice: an out-of-window phase transition is not a datapoint of
+    // its own, so dropping it only affects attribution of out-of-window tokens,
+    // which are themselves excluded.
+    let events = walk_events_in_window(project_root, from_ms, to_ms);
 
     // Phase timeline per session: ascending (ts_ms, phase) transitions.
     let mut timelines: HashMap<String, Vec<(i64, String)>> = HashMap::new();
@@ -800,10 +856,14 @@ fn finish_per_phase_token_summary(
 ///
 /// Returns `Ok` always — every IO failure degrades to the partial aggregate.
 pub fn per_agent_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<AgentCost>> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            per_agent_costs(root, EconomyScope::Project(proj.clone()))
+            per_agent_costs(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut merged: HashMap<String, AgentCost> = HashMap::new();
         for rows in per_project.values() {
@@ -825,8 +885,10 @@ pub fn per_agent_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<A
     }
 
     let (spec_f, wave_f) = scope_filters(&scope);
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
     let mut by_agent: HashMap<String, AgentCost> = HashMap::new();
-    for ev in walk_events(project_root) {
+    for ev in walk_events_in_window(project_root, from_ms, to_ms) {
         if !RUN_KINDS.contains(&event_name(&ev)) {
             continue;
         }
@@ -871,10 +933,14 @@ pub fn per_agent_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<A
 ///
 /// Returns `Ok` always.
 pub fn per_spec_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<SpecCost>> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            per_spec_costs(root, EconomyScope::Project(proj.clone()))
+            per_spec_costs(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut merged: HashMap<String, SpecCost> = HashMap::new();
         for rows in per_project.values() {
@@ -902,8 +968,10 @@ pub fn per_spec_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<Sp
     }
 
     let (_, wave_f) = scope_filters(&scope);
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
     let mut by_spec: HashMap<String, SpecCost> = HashMap::new();
-    for ev in walk_events(project_root) {
+    for ev in walk_events_in_window(project_root, from_ms, to_ms) {
         if !RUN_KINDS.contains(&event_name(&ev)) {
             continue;
         }
@@ -959,10 +1027,14 @@ pub fn per_spec_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<Sp
 ///
 /// Returns `Ok` always.
 pub fn per_wave_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<WaveCost>> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            per_wave_costs(root, EconomyScope::Project(proj.clone()))
+            per_wave_costs(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut merged: HashMap<(String, String), WaveCost> = HashMap::new();
         for rows in per_project.values() {
@@ -986,8 +1058,10 @@ pub fn per_wave_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<Wa
     }
 
     let (_, wave_f) = scope_filters(&scope);
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
     let mut by_wave: HashMap<(String, String), WaveCost> = HashMap::new();
-    for ev in walk_events(project_root) {
+    for ev in walk_events_in_window(project_root, from_ms, to_ms) {
         if !RUN_KINDS.contains(&event_name(&ev)) {
             continue;
         }
@@ -1048,10 +1122,14 @@ pub fn savings_breakdown(
     project_root: &Path,
     scope: EconomyScope,
 ) -> Result<SavingsBreakdown> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            savings_breakdown(root, EconomyScope::Project(proj.clone()))
+            savings_breakdown(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut total = 0i64;
         let mut per_source: HashMap<SavingsSource, (i64, i64)> = HashMap::new();
@@ -1079,9 +1157,11 @@ pub fn savings_breakdown(
     }
 
     let (spec_f, wave_f) = scope_filters(&scope);
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
     let mut total = 0i64;
     let mut per_source: HashMap<SavingsSource, (i64, i64)> = HashMap::new();
-    for ev in walk_events(project_root) {
+    for ev in walk_events_in_window(project_root, from_ms, to_ms) {
         let name = event_name(&ev);
         if !name.starts_with(SAVINGS_PREFIX) {
             continue;
@@ -1139,10 +1219,14 @@ pub fn context_routing_quality(
     project_root: &Path,
     scope: EconomyScope,
 ) -> Result<ContextRoutingMetrics> {
+    let (window, scope) = scope.into_parts();
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
         let per_project = reader.fan_out(projects, |root, proj| {
-            context_routing_quality(root, EconomyScope::Project(proj.clone()))
+            context_routing_quality(
+                root,
+                EconomyScope::Project(proj.clone()).with_maybe_window(window.clone()),
+            )
         });
         let mut acc = ContextRoutingMetrics::default();
         let mut weight_total = 0i64;
@@ -1163,6 +1247,8 @@ pub fn context_routing_quality(
     }
 
     let (spec_f, wave_f) = scope_filters(&scope);
+    let (from_ms, to_ms): (Option<i64>, Option<i64>) =
+        window.as_ref().map_or((None, None), TimeWindow::bounds_ms);
     let mut prompt_sum: i64 = 0;
     let mut prefix_sum: i64 = 0;
     let mut retry_sum: i64 = 0;
@@ -1170,7 +1256,7 @@ pub fn context_routing_quality(
     let mut input_sum: i64 = 0;
     let mut cache_sum: i64 = 0;
 
-    for ev in walk_events(project_root) {
+    for ev in walk_events_in_window(project_root, from_ms, to_ms) {
         let name = event_name(&ev);
         if name == CONTEXT_FRAME_KIND {
             if !matches_scope(&ev.payload, spec_f, wave_f) {
@@ -1705,5 +1791,117 @@ mod tests {
         assert_eq!(s.total_tokens, 300);
         assert_eq!(s.span_count, 2);
         assert_eq!(s.by_session.len(), 0); // empty at filtered scope
+    }
+
+    // ── Time-window filter (AC-1 / AC-2) ──────────────────────────────────
+    //
+    // A run event carrying a top-level ISO `ts` is the unit the window filters:
+    // `event_ts_ms` reads that `ts`, and `walk_events_in_window` keeps only the
+    // events whose timestamp falls inside `[from, to]`.
+
+    #[test]
+    fn economy_time_window_excludes_events_outside_bounds() {
+        let dir = tempdir().unwrap();
+        // Three run events for one agent; only the middle one (2026-05-15) is
+        // inside the [2026-05-10, 2026-05-20] window.
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-01T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":10,"output_tokens":0,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-15T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":2000,"input_tokens":20,"output_tokens":0,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-25T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":4000,"input_tokens":40,"output_tokens":0,"agent_id":"explore"}}"#,
+            ],
+        );
+        let window = TimeWindow::new(
+            Some("2026-05-10T00:00:00.000Z".to_string()),
+            Some("2026-05-20T00:00:00.000Z".to_string()),
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path())).with_window(window);
+        let rows = per_agent_costs(dir.path(), scope).unwrap();
+        // Only the in-window event survives.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cost_usd_micros, 2000);
+        assert_eq!(rows[0].tokens, 20);
+        assert_eq!(rows[0].span_count, 1);
+    }
+
+    #[test]
+    fn economy_time_window_composes_with_spec_scope() {
+        let dir = tempdir().unwrap();
+        // spec-A: one in-window, one out-of-window. spec-B: one in-window.
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-15T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":2000,"input_tokens":0,"output_tokens":0,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-25T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":3000,"input_tokens":0,"output_tokens":0,"agent_id":"explore"}}"#,
+            ],
+        );
+        plant_spec_events(
+            dir.path(),
+            "spec-B",
+            &[r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-15T00:00:00.000Z","payload":{"spec":"spec-B","cost_usd_micros":9000,"input_tokens":0,"output_tokens":0,"agent_id":"explore"}}"#],
+        );
+        let window = TimeWindow::new(
+            Some("2026-05-10T00:00:00.000Z".to_string()),
+            Some("2026-05-20T00:00:00.000Z".to_string()),
+        );
+        // The window composes WITH the Spec selector: both must match.
+        let scope = EconomyScope::Spec {
+            project: ProjectPath::new(dir.path()),
+            spec: SpecId::new("spec-A"),
+        }
+        .with_window(window);
+        let rows = per_agent_costs(dir.path(), scope).unwrap();
+        // spec-B's 9000 dropped by the spec selector; spec-A's out-of-window
+        // 3000 dropped by the window; only spec-A's in-window 2000 remains.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cost_usd_micros, 2000);
+        assert_eq!(rows[0].span_count, 1);
+    }
+
+    #[test]
+    fn economy_time_window_absent_aggregates_all() {
+        let dir = tempdir().unwrap();
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-01T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":10,"output_tokens":0,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-05-25T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":4000,"input_tokens":40,"output_tokens":0,"agent_id":"explore"}}"#,
+            ],
+        );
+        // No window → every event is aggregated, exactly as before this feature.
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let rows = per_agent_costs(dir.path(), scope).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cost_usd_micros, 5000);
+        assert_eq!(rows[0].span_count, 2);
+    }
+
+    #[test]
+    fn economy_time_window_absent_keeps_undated_events() {
+        let dir = tempdir().unwrap();
+        // One dated event OUTSIDE the window, one event with NO `ts` at all.
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","ts":"2026-01-01T00:00:00.000Z","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":0,"output_tokens":0,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","payload":{"spec":"spec-A","cost_usd_micros":8000,"input_tokens":0,"output_tokens":0,"agent_id":"explore"}}"#,
+            ],
+        );
+        let window = TimeWindow::new(
+            Some("2026-05-10T00:00:00.000Z".to_string()),
+            Some("2026-05-20T00:00:00.000Z".to_string()),
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path())).with_window(window);
+        let rows = per_agent_costs(dir.path(), scope).unwrap();
+        // Dated 2026-01-01 excluded (outside window); the undated event is KEPT
+        // (fail-open — a window never drops an event it cannot place).
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cost_usd_micros, 8000);
+        assert_eq!(rows[0].span_count, 1);
     }
 }

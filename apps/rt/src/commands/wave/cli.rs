@@ -72,6 +72,14 @@ pub enum WaveCmd {
         #[arg(long = "spec-dir", alias = "spec", alias = "from-spec")]
         spec_dir: Option<String>,
     },
+    /// Audit dispatch-parallel waves for `## Files` overlap inside a wave-plan.
+    #[command(display_order = 79)]
+    WaveOverlapCheck {
+        /// Path to the spec directory. Also accepts a `.../spec.md` path or a
+        /// bare slug. `--spec` / `--from-spec` are hidden aliases.
+        #[arg(long = "spec-dir", alias = "spec", alias = "from-spec")]
+        spec_dir: Option<String>,
+    },
     // The folder name is spelled `wave-<n>-<role>` (angle brackets) throughout
     // this doc comment: a literal brace-n sequence is a clap help-template
     // token (forced line break) and would mangle the rendered --help.
@@ -109,6 +117,9 @@ pub fn dispatch(cmd: WaveCmd) {
         WaveCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
         WaveCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         WaveCmd::WaveSizeCheck { spec_dir } => wave::wave_size_check::run(spec_dir.as_deref()),
+        WaveCmd::WaveOverlapCheck { spec_dir } => {
+            wave::wave_overlap_check::run(spec_dir.as_deref());
+        }
         WaveCmd::WaveCollapse { spec, mode } => {
             wave::wave_collapse::run(wave::wave_collapse::WaveCollapseOpts { spec, mode });
         }

@@ -3,24 +3,39 @@
 
 use mustard_core::ClaudePaths;
 use mustard_core::io::fs;
-use mustard_core::domain::model::event::HarnessEvent;
+use mustard_core::domain::model::event::{HarnessEvent, EVENT_PIPELINE_DISPATCH_FAILURE};
 use mustard_core::domain::model::view::{Phase, Stage};
 use mustard_core::view::projection::project_spec_view_with_header;
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// Bucket key for a failure recorded before any `pipeline.phase` event named
+/// the phase it happened in — the failure is real, only its phase is unknown.
+const UNKNOWN_PHASE: &str = "unknown";
+
 /// `buildPipelineState` — current phase + dispatch failures + metrics.
-pub(super) fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) -> Value {
+///
+/// `pub(crate)`: `run metrics collect` folds this same projection per spec so
+/// the two commands report one set of numbers from one reader.
+///
+/// `dispatchFailures` / `dispatchFailuresByPhase` / `retries` are folded from
+/// the real `pipeline.dispatch_failure` and `retry.attempt` events. They used to
+/// be declared empty and never written, which made `retries` structurally `0`
+/// and every consumer's first-pass rate structurally `100%` — a number nobody
+/// measured. A phase-less failure lands in the [`UNKNOWN_PHASE`] bucket rather
+/// than being dropped: losing the attribution must not lose the count.
+pub(crate) fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) -> Value {
     let mut phase: Option<String> = None;
     let mut last_event_at: Option<String> = None;
     let mut started_at: Option<String> = None;
-    let dispatch_failures: Vec<Value> = Vec::new();
+    let mut dispatch_failures: Vec<Value> = Vec::new();
     let mut decisions: Vec<Value> = Vec::new();
     let mut lessons: Vec<Value> = Vec::new();
     let mut api_calls = 0i64;
     let mut tool_breakdown: serde_json::Map<String, Value> = serde_json::Map::new();
     let mut agent_count = 0i64;
-    let failures_by_phase: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut failures_by_phase: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut retry_attempts = 0i64;
 
     for ev in events {
         if let Some(s) = spec {
@@ -42,6 +57,18 @@ pub(super) fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) 
                     phase = Some(from.to_string());
                 }
             }
+            EVENT_PIPELINE_DISPATCH_FAILURE => {
+                let bucket = phase.as_deref().unwrap_or(UNKNOWN_PHASE);
+                let n = failures_by_phase.get(bucket).and_then(Value::as_i64).unwrap_or(0);
+                failures_by_phase.insert(bucket.to_string(), json!(n + 1));
+                dispatch_failures.push(json!({
+                    "at": ev.payload.get("at").and_then(Value::as_str).unwrap_or(&ev.ts),
+                    "phase": bucket,
+                    "reason": ev.payload.get("reason").and_then(Value::as_str),
+                    "agentType": ev.payload.get("agent_type").and_then(Value::as_str),
+                }));
+            }
+            "retry.attempt" => retry_attempts += 1,
             "decision" => decisions.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "lesson" => lessons.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "tool.use" => {
@@ -67,7 +94,11 @@ pub(super) fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) 
         "metrics": {
             "apiCalls": api_calls,
             "toolBreakdown": tool_breakdown,
-            "retries": failures_by_phase.values().filter_map(Value::as_i64).sum::<i64>(),
+            // Every re-attempt the log knows about: a dispatch that had to be
+            // re-issued plus an explicit `retry.attempt` (the signal
+            // `metrics wave-status` already counts).
+            "retries": failures_by_phase.values().filter_map(Value::as_i64).sum::<i64>()
+                + retry_attempts,
             "agentCount": agent_count,
             "startedAt": started_at,
             "dispatchFailuresByPhase": failures_by_phase,
@@ -277,5 +308,44 @@ mod tests {
         assert_eq!(v["phase"], json!("EXECUTE"));
         // Read is excluded from apiCalls.
         assert_eq!(v["metrics"]["apiCalls"], json!(1));
+    }
+
+    #[test]
+    fn pipeline_state_counts_real_retries_by_phase() {
+        let events = vec![
+            ev("pipeline.phase", Some("demo"), json!({ "to": "EXECUTE" })),
+            ev(
+                "pipeline.dispatch_failure",
+                Some("demo"),
+                json!({ "reason": "agent refused", "agent_type": "implement" }),
+            ),
+            ev("retry.attempt", Some("demo"), json!({})),
+        ];
+        let v = build_pipeline_state(&events, Some("demo"));
+        // One dispatch failure + one retry attempt = two re-attempts, and the
+        // failure is attributed to the phase that was current when it fired.
+        assert_eq!(v["metrics"]["retries"], json!(2));
+        assert_eq!(v["metrics"]["dispatchFailuresByPhase"]["EXECUTE"], json!(1));
+        assert_eq!(v["dispatchFailures"][0]["reason"], json!("agent refused"));
+    }
+
+    #[test]
+    fn dispatch_failure_before_any_phase_is_still_counted() {
+        // No `pipeline.phase` yet: the count must survive even when the phase
+        // attribution cannot (dropping it would under-report a real failure).
+        let events = vec![ev("pipeline.dispatch_failure", Some("demo"), json!({}))];
+        let v = build_pipeline_state(&events, Some("demo"));
+        assert_eq!(v["metrics"]["retries"], json!(1));
+        assert_eq!(v["metrics"]["dispatchFailuresByPhase"][UNKNOWN_PHASE], json!(1));
+    }
+
+    #[test]
+    fn a_clean_run_reports_zero_retries_not_a_missing_key() {
+        // The honest zero: the log WAS read and holds no failure. `metrics
+        // collect` distinguishes this from an absent key (which it publishes as
+        // `unknown`), so the key must always be present.
+        let events = vec![ev("pipeline.phase", Some("demo"), json!({ "to": "PLAN" }))];
+        let v = build_pipeline_state(&events, Some("demo"));
+        assert_eq!(v["metrics"]["retries"], json!(0));
     }
 }

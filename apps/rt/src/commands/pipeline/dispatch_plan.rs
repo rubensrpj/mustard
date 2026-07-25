@@ -651,6 +651,40 @@ fn wave_spec_path(spec_dir: &Path, wave: u32, role: &str) -> Option<PathBuf> {
     None
 }
 
+/// The declared `## Files` of one wave, normalised for cross-wave comparison.
+///
+/// Reuses the SAME [`wave_spec_path`] + [`parse_files_section`] pair
+/// [`derive_subproject`] reads, so an overlap lint sees exactly the files the
+/// subproject derivation saw. Paths are lightly LEXICALLY normalised (backslash
+/// → forward slash, a leading `./` dropped) so a Windows-spelled and a
+/// Unix-spelled declaration of the same path compare equal — never an on-disk
+/// canonicalisation (a net-new file may not exist yet, and resolving `..` is out
+/// of scope for an advisory lint that must not mask a real path). Empty (never
+/// panics) when the wave spec / `## Files` section is absent — fail-open, so a
+/// wave with no declared files simply cannot overlap. `pub(crate)` so the
+/// `wave-overlap-check` lint reads the SAME files this module dispatches on.
+pub(crate) fn wave_declared_files(spec_dir: &Path, wave: u32, role: &str) -> Vec<String> {
+    let Some(wave_spec) = wave_spec_path(spec_dir, wave, role) else {
+        return Vec::new();
+    };
+    let Ok(text) = mfs::read_to_string(&wave_spec) else {
+        return Vec::new();
+    };
+    parse_files_section(&text)
+        .unwrap_or_default()
+        .iter()
+        .map(|f| normalise_declared_path(f))
+        .collect()
+}
+
+/// Light lexical path normalisation for cross-wave file comparison: unify the
+/// separator and drop a single leading `./`. Deliberately NOT a filesystem
+/// canonicalisation (see [`wave_declared_files`]).
+fn normalise_declared_path(raw: &str) -> String {
+    let slashed = raw.trim().replace('\\', "/");
+    slashed.strip_prefix("./").unwrap_or(&slashed).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

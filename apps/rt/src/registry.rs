@@ -40,6 +40,7 @@ use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
+use crate::hooks::task::stop_gate::StopGate;
 use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
 use crate::hooks::observe::wikilink_footer_observer::WikilinkFooterObserver;
@@ -505,6 +506,20 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(SessionStopObserver)),
             },
+            // `stop_gate` — the QA verification loop (close-the-qa-verification-loop
+            // W1). On the main session's `Stop`, when there is an active+approved
+            // spec with an executable AC, it runs the criteria through the qa-run
+            // executor and BLOCKS the stop (Deny) on a red criterion, re-dispatching
+            // until they pass. Self-restricts (never a subagent stop, never without
+            // an approved+executable spec) and is bounded by its own per-spec
+            // consecutive-block counter. The FIRST `Check` on `Stop` (until now the
+            // trigger carried only the `session_stop_observer` side effect).
+            Module {
+                id: "stop_gate",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(StopGate)),
+                observer: None,
+            },
             Module {
                 id: "user_prompt_observer",
                 // `UserPromptSubmit` lifecycle observer — appends a single
@@ -731,6 +746,23 @@ mod tests {
     }
 
     #[test]
+    fn stop_gate_is_the_check_on_the_stop_trigger() {
+        let registry = Registry::new();
+        // `stop_gate` rides `Stop` (any tool / none) alongside the observer.
+        let ids = applicable_ids(&registry, Trigger::Stop, None);
+        assert!(ids.contains(&"stop_gate"), "stop_gate must apply on Stop");
+        assert!(ids.contains(&"session_stop_observer"));
+        // It is a `Check` (the FIRST on Stop), not merely an observer.
+        let module = registry.by_id("stop_gate").expect("stop_gate registered");
+        assert!(module.check.is_some(), "stop_gate carries a Check verdict");
+        assert!(module.observer.is_none(), "stop_gate is a pure Check");
+        // It never rides an unrelated trigger.
+        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
+            .contains(&"stop_gate"));
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"stop_gate"));
+    }
+
+    #[test]
     fn by_id_finds_registered_modules() {
         let registry = Registry::new();
         for id in [
@@ -766,6 +798,7 @@ mod tests {
             "rewave_observer",
             "wave_start_observer",
             "wave_complete_observer",
+            "stop_gate",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

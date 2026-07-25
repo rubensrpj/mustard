@@ -1,0 +1,31 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-24T20:28:12.507Z",
+  "parent": "give-the-approval-markers-timestamp",
+  "checklist": [
+    {
+      "label": "apps/rt/src/shared/context.rs",
+      "path": "apps/rt/src/shared/context.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/observe/plan_approval_observer.rs",
+      "path": "apps/rt/src/hooks/observe/plan_approval_observer.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/observe/approval_marker_observer.rs",
+      "path": "apps/rt/src/hooks/observe/approval_marker_observer.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/grill_capture.rs",
+      "path": "apps/rt/src/commands/grill_capture.rs",
+      "done": true
+    }
+  ]
+}

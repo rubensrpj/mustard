@@ -1,0 +1,36 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-24T22:19:22.367Z",
+  "parent": "close-the-qa-verification-loop",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/task/stop_gate.rs",
+      "path": "apps/rt/src/hooks/task/stop_gate.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/qa_run/mod.rs",
+      "path": "apps/rt/src/commands/review/qa_run/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/shared/context.rs",
+      "path": "apps/rt/src/shared/context.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/platform/i18n.rs",
+      "path": "packages/core/src/platform/i18n.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/domain/model/contract.rs",
+      "path": "packages/core/src/domain/model/contract.rs",
+      "done": true
+    }
+  ]
+}

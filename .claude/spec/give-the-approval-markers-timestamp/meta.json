@@ -1,0 +1,15 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "full (wave plan)",
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-24T20:36:28.666Z",
+  "isWavePlan": true,
+  "totalWaves": 2,
+  "currentWave": 2,
+  "completedWaves": [
+    1,
+    2
+  ]
+}

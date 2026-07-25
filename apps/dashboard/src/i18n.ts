@@ -222,6 +222,7 @@ i18n.use(initReactI18next).init({
         "economy.scope.compareLabel": "Projetos a comparar:",
         "economy.scope.selectPlaceholder": "— selecione —",
         "economy.scope.noProjects": "Nenhum projeto descoberto.",
+        "economy.window.label": "Período:",
       },
     },
     "en-US": {
@@ -425,6 +426,7 @@ i18n.use(initReactI18next).init({
         "economy.scope.compareLabel": "Projects to compare:",
         "economy.scope.selectPlaceholder": "— select —",
         "economy.scope.noProjects": "No projects discovered.",
+        "economy.window.label": "Period:",
       },
     },
   },

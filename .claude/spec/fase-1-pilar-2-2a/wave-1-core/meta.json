@@ -1,0 +1,21 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-24T00:41:12.376Z",
+  "parent": "fase-1-pilar-2-2a",
+  "checklist": [
+    {
+      "label": "packages/core/src/domain/economy/scope.rs",
+      "path": "packages/core/src/domain/economy/scope.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/domain/economy/reader.rs",
+      "path": "packages/core/src/domain/economy/reader.rs",
+      "done": true
+    }
+  ]
+}

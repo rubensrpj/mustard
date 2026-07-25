@@ -26,7 +26,7 @@ No stage emit here; the slug is born at §2 (`spec-draft` backfills the ANALYZE 
 |---|---|
 | stdout | compact payload — read ONCE, never redirect |
 | long tail | already written to `.claude/feature-digest.json` — Read it sliced (`offset`/`limit`); NEVER re-run the command |
-| `strong` | SELECT the 5-10 files a developer would open from `candidates` by their evidence lines — never all ~25, never the repo or `grain.model.json`; prefer production code over migrations/seeds/skeletons; keep frontend AND backend when the request spans layers |
+| `strong` | SELECT the 5-10 files a developer would open from `candidates` by their evidence lines — never the whole published list (~12 on a strong report), never the repo or `grain.model.json`; prefer production code over migrations/seeds/skeletons; keep frontend AND backend when the request spans layers. The anchor rows carry no `terms` here: the candidate evidence already does |
 | `weak`/`none` | planning fields withheld — read the `vocabulary` menu, sharpen terms, re-call. A `miss` is NOT absent; true net-new is DESIGN |
 | `uncovered` (absence radar) | request concepts with NO candidate — settle EACH with one Grep/Glob (existence gate) BEFORE planning; never conclude it does not exist from the pool alone |
 | confirmed bridge | after a settled re-query or `uncovered` row: `mustard-rt run equivalence-learn --term <missed> --tokens <code-terms>` (learned overlay, survives re-scans; explicit, never automatic) |

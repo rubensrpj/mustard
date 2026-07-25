@@ -40,11 +40,17 @@ pub struct PromptObserver;
 fn append_prompt_event(cwd: &str, input: &HookInput) {
     // Confirmed shape (amend_window_inject.rs:466, prompt_submit_inject.rs):
     // the harness carries the submitted text at `raw.prompt`.
+    // "Every prompt" means every prompt a PERSON submitted. The runtime speaks
+    // through this same channel, so a finished background task or a completed
+    // subagent would otherwise land in the trace as something the user said —
+    // and this log is what `metrics collect` reads, so the noise would reach the
+    // instruments too. See [`crate::shared::prompt`].
     let Some(prompt) = input
         .raw
         .get("prompt")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
+        .filter(|s| !crate::shared::prompt::is_harness_notice(s))
     else {
         return;
     };

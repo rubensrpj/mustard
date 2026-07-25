@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "scope-scan-generated-role-pattern",
+  "title": "scope scan-generated role-pattern molds with a paths glob derived from the census, and set the plugin command frontmatter the platform honors",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "O glob do cluster sai do censo e chega ao molde como paths:",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "config",
+      "summary": "O frontmatter dos comandos passa a usar as chaves que a plataforma honra",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

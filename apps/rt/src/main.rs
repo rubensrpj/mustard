@@ -295,6 +295,30 @@ fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Option<String> {
             return Some(root.to_string());
         }
     }
+
+    // `Stop` blocks the same way: a top-level `{"decision":"block", …}` (the
+    // `stop_gate` QA-verification gate), NOT the `PreToolUse` permissionDecision
+    // member — that member does not exist for Stop, so the harness would reject
+    // the whole response and the gate would silently never fire. We carry the
+    // reason on BOTH channels: the top-level `reason` and a
+    // `hookSpecificOutput.additionalContext` mirror (the feedback member the
+    // current Stop contract reads), so the failing-AC guidance reaches Claude
+    // regardless of which member the running harness honours. Exit stays 0 —
+    // the whole binary expresses blocking through JSON, never a non-zero exit
+    // (rt `## Guards`), so the exit-2 blocking path never applies here.
+    if event_name == "Stop" {
+        if let Verdict::Deny { reason } = &outcome.verdict {
+            let root = serde_json::json!({
+                "decision": "block",
+                "reason": reason,
+                "hookSpecificOutput": {
+                    "hookEventName": "Stop",
+                    "additionalContext": reason,
+                },
+            });
+            return Some(root.to_string());
+        }
+    }
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
@@ -431,5 +455,41 @@ mod tests {
         let json = hook_specific_output("PreToolUse", &outcome)
             .expect("a denying PreToolUse outcome must emit output");
         assert!(json.contains("\"permissionDecision\":\"deny\""), "unexpected: {json}");
+    }
+
+    #[test]
+    fn stop_deny_emits_top_level_block_with_additional_context() {
+        // A Stop deny (the `stop_gate`) speaks the Stop blocking shape: a
+        // top-level `decision: "block"` + `reason`, mirrored into
+        // `hookSpecificOutput.additionalContext` — never the PreToolUse
+        // permissionDecision member (rejected wholesale for Stop). Exit stays 0.
+        let outcome = Outcome {
+            verdict: Verdict::Deny {
+                reason: "QA criterion AC-2 still fails".to_string(),
+            },
+            warnings: Vec::new(),
+        };
+        let json = hook_specific_output("Stop", &outcome)
+            .expect("a denying Stop outcome must emit output");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed.get("decision").and_then(|v| v.as_str()), Some("block"));
+        assert_eq!(
+            parsed.get("reason").and_then(|v| v.as_str()),
+            Some("QA criterion AC-2 still fails")
+        );
+        assert_eq!(
+            parsed
+                .get("hookSpecificOutput")
+                .and_then(|h| h.get("additionalContext"))
+                .and_then(|v| v.as_str()),
+            Some("QA criterion AC-2 still fails")
+        );
+        assert!(
+            !json.contains("permissionDecision"),
+            "PreToolUse shape must not leak into Stop: {json}"
+        );
+
+        // A Stop ALLOW with no warnings stays silent (no forced continue).
+        assert!(hook_specific_output("Stop", &Outcome::allow()).is_none());
     }
 }

@@ -34,6 +34,7 @@ use serde_json::json;
 use std::io::Write;
 
 use crate::shared::context::{current_spec, current_wave, spec_for_session};
+use crate::shared::prompt::is_harness_notice;
 
 /// Filename of the per-spec durable change-request log (machine-readable).
 const LOG_FILE: &str = "change-requests.ndjson";
@@ -44,6 +45,7 @@ const CHANGE_LOG_MD: &str = "change-log.md";
 
 /// The mid-pipeline change-request recorder.
 pub struct ChangeRequestLog;
+
 
 /// Resolve the spec this session is working on — the canonical session→spec
 /// marker first ([`spec_for_session`]), then the env / legacy fallback
@@ -118,6 +120,30 @@ fn append_change_request(
     }
 }
 
+/// `true` when `path` holds at least one byte and the last one is not a
+/// newline — i.e. an append would fuse onto the existing final line.
+///
+/// Reads only the final byte (`seek` to `len - 1`), so the cost does not grow
+/// with the log. Any IO failure answers `false`: the append then behaves exactly
+/// as it did before this check existed, which is the fail-open direction.
+fn last_byte_is_not_newline(path: &std::path::Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return false;
+    };
+    if len == 0 {
+        return false;
+    }
+    if f.seek(SeekFrom::Start(len - 1)).is_err() {
+        return false;
+    }
+    let mut last = [0u8; 1];
+    f.read_exact(&mut last).is_ok() && last[0] != b'\n'
+}
+
 /// Append a human-readable bullet to `.claude/spec/{id}/change-log.md` — the
 /// VISIBLE record of mid-pipeline requests that lives WITH the spec. The frozen
 /// `spec.md` narrative is never touched; this is a separate, append-only doc, so
@@ -136,6 +162,11 @@ fn append_change_log_md(project_dir: &str, spec: &str, stage: Option<&str>, prom
     }
     let path = dir.join(CHANGE_LOG_MD);
     let header_needed = !path.exists();
+    // An append assumes the file ends in a newline, and a hand-edited or
+    // externally-rewritten log may not — the two bullets then fuse into one
+    // line and the older entry is no longer greppable on its own. Observed in
+    // the field. Cheap to check, and the read is bounded to the last byte.
+    let needs_separator = !header_needed && last_byte_is_not_newline(&path);
     // Collapse whitespace so a multi-line prompt stays a single bullet.
     let one_line = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let stage_tag = stage.map(|s| format!(" _({s})_")).unwrap_or_default();
@@ -145,6 +176,9 @@ fn append_change_log_md(project_dir: &str, spec: &str, stage: Option<&str>, prom
         .append(true)
         .open(&path)
     {
+        if needs_separator {
+            let _ = f.write_all(b"\n");
+        }
         if header_needed {
             let _ = f.write_all(
                 format!(
@@ -200,6 +234,12 @@ impl Observer for ChangeRequestLog {
         // let a `/close` register itself as an unaddressed request at the
         // QA-composition gate (a self-inflicted deadlock).
         if prompt.starts_with('/') {
+            return;
+        }
+        // Skip runtime notices for the same reason: a background task reporting
+        // that it finished is not a request to change anything. It arrives on
+        // this trigger only because the runtime speaks through the user channel.
+        if is_harness_notice(&prompt) {
             return;
         }
         let Some(spec) = resolve_spec(&project_dir, input.session_id.as_deref()) else {
@@ -281,6 +321,66 @@ mod tests {
             .expect("change-log.md must exist");
         assert!(md.contains("# Change Log — my-feature"), "md header: {md}");
         assert!(md.contains("muda o campo status para enum"), "md bullet: {md}");
+    }
+
+    /// A runtime notice is NOT a change request. Both markers are rejected, the
+    /// log file is never even created, and a real request in the same session
+    /// still lands — so the guard cannot be satisfied by recording nothing.
+    #[test]
+    fn skips_harness_notices_but_keeps_real_requests() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        seed_spec(cwd, "my-feature", "Active", "Execute");
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        bind_session_spec(&cwd_str, "sess-1", "my-feature");
+
+        for notice in [
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event.",
+            "<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n</task-notification>",
+        ] {
+            ChangeRequestLog.observe(&prompt_input("sess-1", cwd, notice), &ctx_for(cwd));
+        }
+        assert!(
+            log_contents(cwd, "my-feature").is_none(),
+            "a runtime notice must not even create the log"
+        );
+
+        // The two-sided half: a real request in the same session still records,
+        // so the assertion above cannot pass by the observer being inert.
+        ChangeRequestLog.observe(
+            &prompt_input("sess-1", cwd, "troca o gate para warn"),
+            &ctx_for(cwd),
+        );
+        let body = log_contents(cwd, "my-feature").expect("a real request still records");
+        assert!(body.contains("troca o gate para warn"), "got: {body}");
+        assert!(!body.contains("task-notification"), "no notice leaked in: {body}");
+    }
+
+    /// A log whose last line has no newline gets a separator, so the new bullet
+    /// never fuses onto the previous entry. A log that already ends cleanly gets
+    /// no blank line — the guard must not cost a gap on the normal path.
+    #[test]
+    fn appending_never_fuses_onto_an_unterminated_line() {
+        for (seed, tail) in [("- **t1** — first", "no trailing newline"), ("- **t1** — first\n", "clean")] {
+            let dir = tempdir().unwrap();
+            let cwd = dir.path();
+            seed_spec(cwd, "my-feature", "Active", "Execute");
+            let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("my-feature").unwrap();
+            std::fs::create_dir_all(sp.dir()).unwrap();
+            std::fs::write(sp.dir().join(CHANGE_LOG_MD), seed).unwrap();
+            let cwd_str = cwd.to_string_lossy().into_owned();
+            bind_session_spec(&cwd_str, "sess-1", "my-feature");
+
+            ChangeRequestLog.observe(&prompt_input("sess-1", cwd, "segundo pedido"), &ctx_for(cwd));
+
+            let md = std::fs::read_to_string(sp.dir().join(CHANGE_LOG_MD)).unwrap();
+            assert!(
+                !md.contains("first- **"),
+                "the two entries fused ({tail} seed): {md}"
+            );
+            let bullets = md.lines().filter(|l| l.starts_with("- **")).count();
+            assert_eq!(bullets, 2, "both entries must stay separate ({tail} seed): {md}");
+        }
     }
 
     /// A TERMINAL spec is NOT recorded here — that is the amendment window's

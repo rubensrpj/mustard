@@ -7,12 +7,16 @@
 //! skill) only when the glossary is `missing` or `weak`. It NEVER grills inline
 //! and NEVER blocks.
 //!
-//! N (the denominator) is the digest's **matched terms** — the repo-vocabulary
-//! terms the intent actually maps to — NOT the raw intent tokens (`domain_terms`
-//! keeps stopwords like "the"). K is how many of those matched terms have a
-//! covering block in `CONTEXT.md`, scored with the EXACT term matcher
-//! `context-slice` uses (`parse_term_blocks` + `block_matches`), so the producer
-//! and consumer of the glossary cannot drift.
+//! N (the denominator) is the distinct **word stems** among the digest's
+//! **matched terms** — the repo-vocabulary terms the intent actually maps to —
+//! NOT the raw intent tokens (`domain_terms` keeps stopwords like "the"), and
+//! NOT one entry per inflection: the digest matches `spec` and `specs`
+//! independently, but they are one word and one glossary entry, so they are
+//! collapsed before scoring (see `group_inflections`). K is how many of those
+//! stems have a covering block in `CONTEXT.md`, scored with the EXACT term
+//! matcher `context-slice` uses (`parse_term_blocks` + `block_matches`) over
+//! every matched spelling of the stem, so the producer and consumer of the
+//! glossary cannot drift.
 //!
 //! Output (stdout, byte-stable pretty JSON): `{ coveragePct, contextFile, present,
 //! termsCovered, termsTotal, uncovered, verdict }`. The `uncovered` list IS the
@@ -66,21 +70,117 @@ impl Coverage {
     }
 }
 
+/// One word stem and every spelling of it the digest returned.
+///
+/// The digest matches inflections independently, so `spec` and `specs` — one
+/// word, one thing to define — arrived as two terms. Both were scored, both
+/// counted toward `termsTotal`, and both appeared in `uncovered`: a glossary
+/// with nine open terms reported eighteen, and its percentage was computed over
+/// a denominator inflated by duplicates. Grouping collapses them back to one.
+struct TermGroup {
+    /// The first spelling seen — what the user is shown and asked to define.
+    representative: String,
+    /// Every spelling in this group, including the representative. Coverage
+    /// tries them ALL, so when the digest matched both `spec` and `specs` a
+    /// glossary defining either one closes the word. Deliberately NOT widened
+    /// to `stems`: those include crude truncations (`process` → `proc`), and a
+    /// false "covered" hides an undefined term — the worse error for a nudge.
+    variants: Vec<String>,
+    /// The inflection keys shared by the variants; the grouping key. See
+    /// [`inflection_keys`].
+    stems: BTreeSet<String>,
+}
+
+/// English inflection suffixes stripped when deriving [`inflection_keys`].
+/// Ordered longest-first only for readability — every one is tried.
+const INFLECTION_SUFFIXES: &[&str] = &["ing", "tion", "sion", "ies", "es", "ed", "s"];
+
+/// Shortest base an inflection strip may leave. Below this the "stem" is noise
+/// (`bus` → `bu`) and would collide unrelated words.
+const MIN_STEM_LEN: usize = 3;
+
+/// Every form `term` could share with another spelling of the same word: the
+/// lowercased surface form plus each inflection-stripped base.
+///
+/// Deliberately NOT `agent::context_inject::name_stems`, which does the same
+/// folding for memory RECALL and `break`s at the first suffix that strips —
+/// enough when any single stem firing is a hit, but wrong for an equivalence
+/// class: it folds `waves` to `wav` (via `es`) and never to `wave` (via `s`), so
+/// `wave` and `waves` would never meet. Membership in one class needs every
+/// fold, so all suffixes are tried here.
+fn inflection_keys(term: &str) -> BTreeSet<String> {
+    let lower = term.to_lowercase();
+    let mut keys: BTreeSet<String> = std::iter::once(lower.clone()).collect();
+    for suffix in INFLECTION_SUFFIXES {
+        if let Some(base) = lower.strip_suffix(suffix) {
+            if base.len() >= MIN_STEM_LEN {
+                keys.insert(base.to_string());
+                // `ies` → `y` reconstruction (`policies` → `policy`).
+                if *suffix == "ies" {
+                    keys.insert(format!("{base}y"));
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Collapse inflections of one word stem into a single [`TermGroup`], keeping
+/// input order (the output stays deterministic, and the first spelling wins).
+///
+/// Two terms are the same word when their [`inflection_keys`] intersect. A term
+/// too short to strip keeps only its own surface form as a key, so it stays
+/// distinct instead of collapsing into everything else.
+fn group_inflections(matched: &[String]) -> Vec<TermGroup> {
+    let mut groups: Vec<TermGroup> = Vec::new();
+    for term in matched {
+        let key = inflection_keys(term);
+        match groups
+            .iter_mut()
+            .find(|g| !g.stems.is_disjoint(&key))
+        {
+            Some(group) => {
+                if !group.variants.contains(term) {
+                    group.variants.push(term.clone());
+                }
+                // A longer spelling contributes its stems too, so a later
+                // inflection can still join through either form.
+                group.stems.extend(key);
+            }
+            None => groups.push(TermGroup {
+                representative: term.clone(),
+                variants: vec![term.clone()],
+                stems: key,
+            }),
+        }
+    }
+    groups
+}
+
 /// Score `matched` repo-vocabulary terms against the parsed glossary `blocks`.
 /// `present` is whether any glossary file resolved at all (distinguishes the
 /// "no `CONTEXT.md` authored" case from "authored but thin").
+///
+/// Terms are scored per WORD STEM, not per inflection — see [`group_inflections`].
 fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
+    let groups = group_inflections(matched);
     let mut uncovered: Vec<String> = Vec::new();
     let mut covered = 0usize;
-    for term in matched {
-        let needle: BTreeSet<String> = std::iter::once(term.to_lowercase()).collect();
-        if present && blocks.iter().any(|b| block_matches(b, &needle)) {
+    for group in &groups {
+        // Any spelling the digest matched counts for the whole word: defining
+        // `Spec` once closes it, where scoring each inflection separately
+        // reported the same word simultaneously covered and open.
+        let matched_any = group.variants.iter().any(|variant| {
+            let needle: BTreeSet<String> = std::iter::once(variant.to_lowercase()).collect();
+            blocks.iter().any(|b| block_matches(b, &needle))
+        });
+        if present && matched_any {
             covered += 1;
         } else {
-            uncovered.push(term.clone());
+            uncovered.push(group.representative.clone());
         }
     }
-    let total = matched.len();
+    let total = groups.len();
     let mut c = Coverage {
         present,
         total,
@@ -161,6 +261,31 @@ fn to_json(c: &Coverage) -> serde_json::Value {
     })
 }
 
+/// Score `matched` repo-vocabulary terms against a glossary supplied as raw
+/// markdown — the same parse → score → render path [`run`] takes, minus the
+/// `--context` file resolution. `present` is derived exactly as production
+/// derives it (any parsed block at all).
+///
+/// Exposed so the acceptance tests exercise the PUBLISHED JSON contract
+/// (`termsTotal` / `termsCovered` / `coveragePct` / `uncovered` / `verdict`)
+/// instead of a private shape that could drift away from what the command
+/// actually prints.
+///
+/// `dead_code` is allowed for the same reason `lib.rs` allows it crate-wide:
+/// this is the lib face that `tests/` imports, and the BIN face (`main.rs`,
+/// which declares the same module tree without that blanket allow) never calls
+/// it. [`compute`] is not routed through here on purpose — it parses each
+/// resolved `CONTEXT.md` SEPARATELY, and concatenating them would let a file
+/// that opens with prose be absorbed into the previous file's last block body,
+/// which `block_matches` searches.
+#[allow(dead_code)]
+#[must_use]
+pub fn score_terms(matched: &[String], glossary: &str) -> serde_json::Value {
+    let blocks = parse_term_blocks(glossary);
+    let present = !blocks.is_empty();
+    to_json(&score(matched, &blocks, present))
+}
+
 /// Dispatch `mustard-rt run glossary-coverage`. Always exits 0.
 pub fn run(intent: &str, context: &[String], root: &Path) {
     let payload = match compute(intent, context, root) {
@@ -237,6 +362,71 @@ mod tests {
         let c = score(&matched, &blocks, true);
         assert_eq!(c.pct(), 62);
         assert_eq!(c.verdict, "weak");
+    }
+
+    #[test]
+    fn inflections_of_one_word_group_together() {
+        let groups = group_inflections(&[
+            "spec".to_string(),
+            "specs".to_string(),
+            "tenant".to_string(),
+        ]);
+        assert_eq!(groups.len(), 2, "spec/specs are one word, tenant is another");
+        assert_eq!(groups[0].representative, "spec", "first spelling wins");
+        assert_eq!(groups[0].variants, vec!["spec", "specs"]);
+        // The later inflection can arrive first and still absorb the shorter one.
+        let reversed = group_inflections(&["specs".to_string(), "spec".to_string()]);
+        assert_eq!(reversed.len(), 1);
+        assert_eq!(reversed[0].representative, "specs");
+    }
+
+    #[test]
+    fn terms_too_short_to_stem_stay_distinct() {
+        // Nothing can be stripped below `MIN_STEM_LEN`, so each keeps only its
+        // own surface form and they stay apart instead of sharing one bucket.
+        let groups = group_inflections(&["a".to_string(), "b".to_string(), "ab".to_string()]);
+        assert_eq!(groups.len(), 3);
+    }
+
+    #[test]
+    fn every_suffix_is_tried_not_only_the_first_that_strips() {
+        // The recall matcher folds `waves` through `es` → `wav` and stops, so it
+        // never reaches `wave`. An equivalence class needs both, or the singular
+        // and the plural never meet — the exact case this whole fix exists for.
+        let keys = inflection_keys("waves");
+        assert!(keys.contains("wave"), "the `s` fold must still be reached: {keys:?}");
+        assert!(keys.contains("waves"), "the surface form is always a key");
+        assert_eq!(group_inflections(&["wave".to_string(), "waves".to_string()]).len(), 1);
+        // `ies` → `y` reconstruction still resolves to the dictionary form.
+        assert!(inflection_keys("policies").contains("policy"));
+        assert_eq!(
+            group_inflections(&["policy".to_string(), "policies".to_string()]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn one_defined_spelling_covers_the_whole_group() {
+        // The digest matched both spellings; the glossary defines one. Scoring
+        // each inflection separately reported the word half-covered — one
+        // covered term AND one open term for a single entry that exists.
+        let blocks = parse_term_blocks("## Spec\nA unit of work.");
+        let c = score(&["spec".to_string(), "specs".to_string()], &blocks, true);
+        assert_eq!(c.total, 1, "one word, one slot");
+        assert_eq!(c.covered, 1, "any spelling in the group satisfies it");
+        assert!(c.uncovered.is_empty(), "nothing is left open: {:?}", c.uncovered);
+        assert_eq!(c.pct(), 100);
+    }
+
+    #[test]
+    fn coverage_never_guesses_past_the_spellings_it_saw() {
+        // Deliberately NOT widened to the morphological stems: they include
+        // crude truncations (`process` → `proc`), and a false "covered" hides
+        // an undefined term, which is the worse of the two errors for a nudge.
+        let blocks = parse_term_blocks("## Spec\nA unit of work.");
+        let c = score(&["specs".to_string()], &blocks, true);
+        assert_eq!(c.covered, 0);
+        assert_eq!(c.uncovered, vec!["specs"]);
     }
 
     #[test]

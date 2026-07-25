@@ -28,7 +28,7 @@ import {
   EditorialBand,
 } from "@/components/page";
 import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
-import { relativeTime } from "@/lib/time";
+import { relativeTime, economyWindow } from "@/lib/time";
 import { useProjects } from "@/lib/dashboard";
 import {
   fetchEconomySavingsBreakdown,
@@ -42,9 +42,15 @@ import { useEconomySummary } from "@/hooks/useEconomySummary";
 import { useCollectorHealth } from "@/hooks/usePromptEconomy";
 import type { CollectorHealth } from "@/api/promptEconomy";
 import { ScopeBar } from "@/features/economy/ScopeBar";
+import { WindowBar } from "@/features/economy/WindowBar";
 import { PerAgentTable } from "@/features/economy/PerAgentTable";
 import { SavingsBreakdownCard } from "@/features/economy/SavingsBreakdownCard";
-import type { EconomyScope, SpecCost, WaveCost } from "@/lib/types/economy";
+import type {
+  EconomyScope,
+  EconomyWindowPeriod,
+  SpecCost,
+  WaveCost,
+} from "@/lib/types/economy";
 import { projectScope, formatTokens, formatUsd } from "@/lib/types/economy";
 
 
@@ -62,6 +68,11 @@ export function Economia() {
     repoPath ? projectScope(repoPath) : null,
   );
 
+  // Time window applied on top of the scope (1d/7d/15d/30d). Held here so the
+  // <WindowBar> is a controlled sibling of <ScopeBar>; default to the widest
+  // period so the page opens on the most data (closest to the pre-window view).
+  const [period, setPeriod] = useState<EconomyWindowPeriod>("30d");
+
   // Re-seed the scope when the workspace changes (project switch in sidebar).
   // We compare on `repoPath`, not the whole project object, so a benign
   // rerender from React Query doesn't wipe a Spec/Wave selection.
@@ -72,7 +83,7 @@ export function Economia() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoPath]);
 
-  const summary = useEconomySummary(scope);
+  const summary = useEconomySummary(scope, period);
 
   // Two extra typed wrappers — both fail-soft on the backend, so the React
   // Query layer never surfaces a hard error for missing data, just empty.
@@ -80,32 +91,36 @@ export function Economia() {
   // stays as the live fallback, so route switches within the window render
   // from cache instead of refiring all economy folds.
   const breakdown = useQuery({
-    queryKey: ["economy-savings", scope && scopeKey(scope)],
-    queryFn: () => fetchEconomySavingsBreakdown(scope as EconomyScope),
+    queryKey: ["economy-savings", scope && scopeKey(scope), period],
+    queryFn: () =>
+      fetchEconomySavingsBreakdown(scope as EconomyScope, economyWindow(period)),
     enabled: !!scope,
     staleTime: 60_000,
     refetchInterval: 30_000,
   });
 
   const routing = useQuery({
-    queryKey: ["economy-routing", scope && scopeKey(scope)],
-    queryFn: () => fetchEconomyContextRouting(scope as EconomyScope),
+    queryKey: ["economy-routing", scope && scopeKey(scope), period],
+    queryFn: () =>
+      fetchEconomyContextRouting(scope as EconomyScope, economyWindow(period)),
     enabled: !!scope,
     staleTime: 60_000,
     refetchInterval: 30_000,
   });
 
   const perSpec = useQuery({
-    queryKey: ["economy-per-spec", scope && scopeKey(scope)],
-    queryFn: () => fetchEconomyPerSpecCosts(scope as EconomyScope),
+    queryKey: ["economy-per-spec", scope && scopeKey(scope), period],
+    queryFn: () =>
+      fetchEconomyPerSpecCosts(scope as EconomyScope, economyWindow(period)),
     enabled: !!scope,
     staleTime: 60_000,
     refetchInterval: 30_000,
   });
 
   const perWave = useQuery({
-    queryKey: ["economy-per-wave", scope && scopeKey(scope)],
-    queryFn: () => fetchEconomyPerWaveCosts(scope as EconomyScope),
+    queryKey: ["economy-per-wave", scope && scopeKey(scope), period],
+    queryFn: () =>
+      fetchEconomyPerWaveCosts(scope as EconomyScope, economyWindow(period)),
     enabled: !!scope,
     staleTime: 60_000,
     refetchInterval: 30_000,
@@ -201,7 +216,10 @@ export function Economia() {
         title={t("economy.kpi.cost.label")}
         subtitle={t("economy.byAgent.caption")}
       />
-      <ScopeBar projectPath={repoPath} scope={scope} onScopeChange={setScope} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <ScopeBar projectPath={repoPath} scope={scope} onScopeChange={setScope} />
+        <WindowBar period={period} onPeriodChange={setPeriod} />
+      </div>
 
       {showStaleBanner && ingestionStaleHours != null && (
         <IngestionStaleBanner hours={ingestionStaleHours} />

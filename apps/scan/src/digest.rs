@@ -181,15 +181,19 @@ pub(crate) struct QueryResult {
     pub hubs: Vec<HubD>,
     pub touchpoints: Vec<TouchD>,
     /// Real files to read next, RANKED by BM25F (fielded retrieval): modules
-    /// that DECLARE the matched terms, scored over two fields — the module's
-    /// declarations and its path/filename. A query that names a path segment
-    /// lifts the files under that path (path is a boosted field), while BM25's length-
-    /// normalization stops a sprawling god/seed file that only mentions many
-    /// common terms from dominating. A hub anchors only when the vocabulary
-    /// lives in its declarations — a path hit ALONE keeps it in `hubs`, never
-    /// here (boost, not admission). Test/fixture and machine-written modules are
-    /// excluded (evidence, not anchors). The handful the feature reads for
-    /// ground truth instead of the repo.
+    /// that DECLARE the matched terms or IMPLEMENT a matched contract, scored
+    /// over three fields — the module's declarations, its path/filename, and its
+    /// situating contracts (the supertypes it implements). A query that names a
+    /// path segment lifts the files under that path (path is a boosted field);
+    /// a query that names a contract lifts the modules that implement it (the
+    /// situating field, weaker-boosted) even when neither their names nor paths
+    /// carry the term; while BM25's length-normalization stops a sprawling
+    /// god/seed file that only mentions many common terms from dominating. A hub
+    /// anchors only when the vocabulary lives in its declarations or situating
+    /// contracts — a path hit ALONE keeps it in `hubs`, never here (boost, not
+    /// admission). Test/fixture and machine-written modules are excluded
+    /// (evidence, not anchors). The handful the feature reads for ground truth
+    /// instead of the repo.
     pub files: Vec<String>,
     /// Audit trail for `files`, additive and same order: per anchor, the
     /// fixed-point BM25F score it ranked with and the matched terms that carry
@@ -377,6 +381,24 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
         }
         matched.retain(|(tier, _)| *tier <= 4);
     }
+    // SITUATING sweep — the SAME ladder over the SEPARATE situating index (the
+    // contracts each module implements), producing, per query token, the matched
+    // situating terms. Kept OUT of `dig.terms` / `matched` (the published
+    // declaration catalog stays declaration-only); it only feeds the anchor
+    // ranking's situating field below. Deliberately STRICT-ONLY (`allow_fuzzy =
+    // false`, tiers 1-3): a module IMPLEMENTING a contract is already contextual
+    // evidence, so the fuzzy T5 rescue — reserved for salvaging an otherwise weak
+    // DECLARATION query — never widens the situating field into false-cognate
+    // contracts. Deterministic: BTree-ordered keys, fixed query order.
+    let mut situating_qhits: Vec<Vec<&str>> = (0..ql.len()).map(|_| Vec::new()).collect();
+    for term in c.situating.keys() {
+        let ks = ladder.sig(term);
+        for (qi, qs) in qsigs.iter().enumerate() {
+            if ladder.tier(&ks, qs, false).is_some() {
+                situating_qhits[qi].push(term.as_str());
+            }
+        }
+    }
     // Matched terms ranked by TIER then RARITY (count asc, stable tie-break on
     // the term): a real vocabulary hit outranks a derived one, and among equals
     // the rare term is the discriminative one, so under the per-query cap the
@@ -386,26 +408,35 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     matched.truncate(Q_MAX_TERMS);
     // Anchor ranking — BM25F (FIELDED retrieval), summed over the QUERY
     // CONCEPTS. A candidate is a module that DECLARES at least one matched
-    // concept (anchor-eligible, non-test); a path hit ALONE never admits one —
-    // that keeps a hub named after a domain it does not implement in `hubs`,
-    // never here (its grouped evidence still rides in `report.terms[].files`).
-    // Each candidate scores the Σ over the query concepts of
-    // `idf(concept) * BM25(path_boost*in-path + in-declarations, doc_len)`: TWO
-    // fields — the module's DECLARATIONS and its PATH/filename.
+    // concept OR IMPLEMENTS a queried contract (its situating field), anchor-
+    // eligible and non-test; a path hit ALONE never admits one — that keeps a hub
+    // named after a domain it does not implement in `hubs`, never here (its
+    // grouped evidence still rides in `report.terms[].files`). Each candidate
+    // scores the Σ over the query concepts of
+    // `idf(concept) * BM25(path_boost*in-path + situating_boost*in-situating +
+    // in-declarations, doc_len)`: THREE fields — the module's DECLARATIONS, its
+    // PATH/filename, and its SITUATING contracts (the supertypes it implements).
     //
-    // Two things make this robust where the flat Σ-idf field bug was not:
+    // Three things make this robust where the flat Σ-idf field bug was not:
     //   * Fielding the PATH: a query that NAMES a path segment lifts the files
     //     under that path, and BM25's length-normalization stops a sprawling
     //     god/seed file that merely mentions many common terms from dominating.
+    //   * Fielding the SITUATING contracts: a query that NAMES a contract lifts
+    //     the modules that IMPLEMENT it even when neither their declaration names
+    //     nor their path carry the term — a deterministic Contextual BM25. A
+    //     contract on nearly every module is a common base type (high document
+    //     frequency → low idf), so it is down-weighted, not amplified.
     //   * Summing over CONCEPTS, not index variants: a concept the query asked
     //     for folds ALL the index terms it matched (singular/plural, and the
     //     cross-language lexicon bridges) into ONE tf with ONE idf — so a file
     //     that spells one concept many ways no longer out-co-occurs a focused
     //     file that matches two RARE concepts.
     // idf is the parameter-free corpus rarity over the concept's true DOCUMENT
-    // frequency (`core::domain::ranking::idf_x1024`, NOT the occurrence count,
-    // which clamps to 0 once it exceeds the doc count and erases a valid anchor);
-    // the lone knob `path_boost` lives in ranking.toml. Fixed-point, byte-stable.
+    // frequency ACROSS the fields (`core::domain::ranking::idf_x1024`, NOT the
+    // occurrence count, which clamps to 0 once it exceeds the doc count and
+    // erases a valid anchor); the lone ranking.toml knob is `path_boost`, and the
+    // situating boost is a fixed constant (`rank::SITUATING_BOOST`, no gratuitous
+    // knob). Fixed-point, byte-stable.
     //
     // A declaration in a test/fixture file is honest EVIDENCE (it stays in
     // `report.terms[].files`) but never an ANCHOR — you read and edit the
@@ -425,9 +456,17 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
         best_tier: u8,
         sig: crate::matching::Sig,
         tf: BTreeMap<String, usize>,
-        /// Every module declaring this concept (the document-frequency set,
-        /// NOT just the anchor-eligible `tf` keys) — the surface the
-        /// co-occurrence graph joins concepts over.
+        /// Anchor-eligible modules that IMPLEMENT this concept (a matched
+        /// supertype), with the summed situating count — the BM25F situating
+        /// field. Separate from `tf` because a situating match earns a FIXED
+        /// boost (`rank::SITUATING_BOOST`), not the raw declaration tf; a
+        /// situating-only concept has an empty `tf` and a non-empty `situating_tf`.
+        situating_tf: BTreeMap<String, usize>,
+        /// Every module declaring OR implementing this concept (the
+        /// document-frequency set ACROSS both fields, NOT just the anchor-eligible
+        /// `tf`/`situating_tf` keys) — feeds the idf (so a common base type is
+        /// down-weighted by corpus rarity) and the surface the co-occurrence
+        /// graph joins concepts over.
         modules: BTreeSet<String>,
     }
     let concepts: Vec<QConcept> = qhits
@@ -435,6 +474,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
         .enumerate()
         .filter_map(|(qi, hits)| {
             let mut tf: BTreeMap<String, usize> = BTreeMap::new();
+            let mut situating_tf: BTreeMap<String, usize> = BTreeMap::new();
             let mut df: BTreeSet<String> = BTreeSet::new();
             let mut best_tier = u8::MAX;
             for h in hits {
@@ -447,6 +487,25 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
                     }
                 }
             }
+            // SITUATING field: fold the concept's matched supertype postings. A
+            // module that IMPLEMENTS the concept joins the document-frequency set
+            // `df` (so the idf reflects the contract's TRUE corpus rarity ACROSS
+            // both fields — a ubiquitous base type is down-weighted, a rare
+            // contract keeps a high idf) and, when anchor-eligible, its count
+            // lands in `situating_tf` for the boosted BM25F contribution. Same
+            // test/generated exclusion as `tf`.
+            for &term in &situating_qhits[qi] {
+                let Some(per_mod) = c.situating.get(term) else { continue };
+                for (p, n) in per_mod {
+                    df.insert((*p).to_string());
+                    if !mustard_core::domain::ast::is_test_path(p) && crate::classify::anchor_eligible(c.class_of.get(p).copied().unwrap_or("")) {
+                        *situating_tf.entry((*p).to_string()).or_insert(0) += *n;
+                    }
+                }
+            }
+            // Admitted when the concept appears at all — in a declaration OR as a
+            // situating contract (a situating-only concept has an empty `tf`, but
+            // its implementing modules populate `df`, so this stays non-empty).
             if df.is_empty() {
                 return None;
             }
@@ -456,6 +515,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
                 best_tier,
                 sig: ladder.sig(&ql[qi]),
                 tf,
+                situating_tf,
                 modules: df,
             })
         })
@@ -465,15 +525,20 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     // is the same BM25F retrieval for both, so the flat list and a concern's
     // list can never disagree on how a file is scored:
     //   * candidate = an anchor-eligible module declaring any concept in the
-    //     subset (a path hit ALONE never admits — boost only),
+    //     subset OR implementing one as a situating contract (a path hit ALONE
+    //     never admits — boost only),
     //   * BM25F summed over the subset's concepts (idf·BM25 of the boosted
-    //     path/decl tf), score desc / best-tier / path-asc, byte-stable,
+    //     path/situating/decl tf), score desc / best-tier / path-asc, byte-stable,
     //   * per-stratum (project) diversity via `stratified_order`, capped.
     // Returns the ranked `(files, files_detail)` for the subset.
     let rank_over = |subset: &[&QConcept]| -> (Vec<String>, Vec<FileDetail>) {
         let mut cand: BTreeSet<String> = BTreeSet::new();
         for qc in subset {
             cand.extend(qc.tf.keys().cloned());
+            // A module that only IMPLEMENTS a queried contract (situating field)
+            // is a candidate too — even with no declaration of the term and no
+            // path hit.
+            cand.extend(qc.situating_tf.keys().cloned());
         }
         let mut ranked: Vec<(String, u64, u8, Vec<String>)> = cand
             .into_iter()
@@ -484,10 +549,11 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
                 for qc in subset {
                     let tf_decl = qc.tf.get(&m).copied().unwrap_or(0);
                     let in_path = psigs.iter().any(|ps| ladder.tier(ps, &qc.sig, false).is_some());
-                    if tf_decl == 0 && !in_path {
+                    let in_situating = qc.situating_tf.get(&m).copied().unwrap_or(0) > 0;
+                    if tf_decl == 0 && !in_path && !in_situating {
                         continue;
                     }
-                    score = score.saturating_add(crate::rank::bm25f_contribution_x1024(qc.idf, tf_decl, in_path, dl, c.avgdl_x1024));
+                    score = score.saturating_add(crate::rank::bm25f_contribution_x1024(qc.idf, tf_decl, in_path, in_situating, dl, c.avgdl_x1024));
                     best_tier = best_tier.min(qc.best_tier);
                     terms.push(qc.token.clone());
                 }
@@ -819,13 +885,25 @@ pub(crate) fn stopwords() -> &'static BTreeSet<String> {
 /// average length — built in ONE pass over the model and consumed by both the
 /// published term view ([`build_terms`]) and the per-query anchor scoring
 /// ([`query`]), so the two can never disagree. The scoring arithmetic itself
-/// lives in [`crate::rank`]. BTreeMaps throughout: deterministic iteration.
+/// lives in [`crate::rank`]. A SECOND term index — `situating` — maps the
+/// contracts each module implements (its declaration supertypes); it feeds the
+/// anchor ranking's situating field ONLY and is NEVER published in the
+/// declaration catalog. BTreeMaps throughout: deterministic iteration.
 struct Corpus<'a> {
     /// term -> module path -> (occurrences, Σ kind-class weights ×1024) in
     /// that module's declarations. The raw count feeds BM25; the weighted sum
     /// feeds the published-catalog rank (rank::kind_weight_x1024 — values and
     /// the type-kind list are DATA in ranking.toml).
     postings: BTreeMap<String, BTreeMap<&'a str, (usize, u64)>>,
+    /// SITUATING field — situating token -> module path -> occurrence count in
+    /// that module's SUPERTYPES (the contracts each declaration implements),
+    /// tokenized by the SAME rule as `postings` (`index_ident`). A SEPARATE
+    /// index whose searchable terms are `situating.keys()`: they lift the
+    /// modules that IMPLEMENT a queried contract in the anchor ranking (BM25F's
+    /// situating field), but are NEVER added to the published declaration
+    /// catalog (`build_terms`/`dig.terms`). No kind-class weight (the catalog
+    /// never sees these), so a plain count is enough.
+    situating: BTreeMap<String, BTreeMap<&'a str, usize>>,
     /// Module path -> machine-written class (hand-written modules absent).
     class_of: BTreeMap<&'a str, &'a str>,
     /// Module path -> declaration count — the BM25 document length.
@@ -842,8 +920,41 @@ struct Corpus<'a> {
     avgdl_x1024: u64,
 }
 
-/// Build the corpus from declaration names (the repo's own vocabulary).
-/// Stopwords are never indexed.
+/// Index one identifier `name` into `bump`: the whole-identifier lowercased-alnum
+/// key (when it differs from the sole token) plus each case/separator token, both
+/// under the shared stopword filter and the tokenizer's ≥3-char alphabetic floor.
+/// The SINGLE tokenization rule shared by the declaration field (`d.name` →
+/// `postings`) and the situating field (`d.supertypes` → `situating`), so the two
+/// can never drift. Deterministic: `bump` fires ident-first, then the tokens in
+/// `tokenize()` order.
+fn index_ident(name: &str, stop: &BTreeSet<String>, mut bump: impl FnMut(String)) {
+    let toks = tokenize(name);
+    // ONE extra entry per identifier: the whole identifier, lowercased and
+    // stripped of separators ("SplitAsync" -> "splitasync", "parent_id" ->
+    // "parentid"). Tier-1 of the match ladder accepts it as an exact key, so a
+    // same-case or concatenated request term lands without any prefix guessing.
+    // Skipped when it equals the single token (no double count) and under the
+    // same glue rules.
+    let ident: String = name.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>().to_lowercase();
+    if ident.len() >= 3
+        && ident.chars().any(|ch| ch.is_alphabetic())
+        && !(toks.len() == 1 && toks[0] == ident)
+        && !stop.contains(&ident)
+    {
+        bump(ident);
+    }
+    for tok in toks {
+        if stop.contains(&tok) {
+            continue;
+        }
+        bump(tok);
+    }
+}
+
+/// Build the corpus from declaration names (the repo's own vocabulary) plus the
+/// SITUATING field (each declaration's supertypes — the contracts it implements)
+/// in a SEPARATE index. Stopwords are never indexed; the two fields share ONE
+/// tokenization rule ([`index_ident`]).
 fn corpus(model: &ProjectModel) -> Corpus<'_> {
     let stop = stopwords();
     let class_of: BTreeMap<&str, &str> = model
@@ -853,6 +964,7 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         .map(|m| (m.path.as_str(), m.file_class.as_str()))
         .collect();
     let mut postings: BTreeMap<String, BTreeMap<&str, (usize, u64)>> = BTreeMap::new();
+    let mut situating: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
     let mut doc_len: BTreeMap<&str, usize> = BTreeMap::new();
     let mut stratum: BTreeMap<&str, &str> = BTreeMap::new();
     let mut path_tokens: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
@@ -881,39 +993,31 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         path_tokens.insert(m.path.as_str(), tokenize(&m.path).into_iter().collect());
         imports.insert(m.path.as_str(), m.imports.iter().map(|s| s.as_str()).collect());
         for d in &m.declarations {
-            let toks = tokenize(&d.name);
             // Each occurrence carries its declaration's kind-class weight for
             // the published rank, alongside the raw count BM25 consumes.
             let kw = crate::rank::kind_weight_x1024(&d.kind);
-            let mut bump = |term: String| {
+            index_ident(&d.name, stop, |term| {
                 let e = postings.entry(term).or_default().entry(m.path.as_str()).or_insert((0, 0));
                 e.0 += 1;
                 e.1 += kw;
-            };
-            // ONE extra entry per declaration: the whole identifier, lowercased
-            // and stripped of separators ("SplitAsync" -> "splitasync",
-            // "parent_id" -> "parentid"). Tier-1 of the match ladder accepts
-            // it as an exact key, so a same-case or concatenated request term
-            // lands without any prefix guessing. Skipped when it equals the
-            // single token (no double count) and under the same glue rules.
-            let ident: String = d.name.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>().to_lowercase();
-            if ident.len() >= 3
-                && ident.chars().any(|ch| ch.is_alphabetic())
-                && !(toks.len() == 1 && toks[0] == ident)
-                && !stop.contains(&ident)
-            {
-                bump(ident);
-            }
-            for tok in toks {
-                if stop.contains(&tok) {
-                    continue;
-                }
-                bump(tok);
+            });
+            // SITUATING field: index the contracts this declaration IMPLEMENTS
+            // (its supertypes) under the SAME tokenization rule, into a SEPARATE
+            // map. A query that names a contract then lifts the modules that
+            // implement it (BM25F situating field) even when the contract name is
+            // absent from the declaration names and the path — WITHOUT the
+            // supertype vocabulary ever entering the published declaration
+            // catalog. Plain count (no kind weight): the catalog never sees it.
+            for sup in &d.supertypes {
+                index_ident(sup, stop, |term| {
+                    *situating.entry(term).or_default().entry(m.path.as_str()).or_insert(0) += 1;
+                });
             }
         }
     }
     Corpus {
         postings,
+        situating,
         class_of,
         doc_len,
         stratum,
@@ -1017,4 +1121,124 @@ pub(crate) fn tokenize(name: &str) -> Vec<String> {
         out.push(cur);
     }
     out.into_iter().map(|s| s.to_lowercase()).filter(|s| s.len() >= 3 && s.chars().any(|c| c.is_alphabetic())).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Decl, Module, ProjectModel};
+
+    /// One class declaration implementing the given contracts (supertypes).
+    fn decl(name: &str, supertypes: &[&str]) -> Decl {
+        Decl { kind: "class".to_string(), name: name.to_string(), line: 1, supertypes: supertypes.iter().map(|s| s.to_string()).collect() }
+    }
+
+    /// One hand-written module (empty `file_class` → indexed and anchor-eligible).
+    fn module(path: &str, decls: Vec<Decl>) -> Module {
+        Module { path: path.to_string(), declarations: decls, ..Default::default() }
+    }
+
+    fn model(modules: Vec<Module>) -> ProjectModel {
+        ProjectModel { root: "/repo".to_string(), modules, ..Default::default() }
+    }
+
+    #[test]
+    fn situating_field_lifts_a_module_implementing_a_rare_contract() {
+        // "PaymentGateway" is a SUPERTYPE on exactly one module whose declaration
+        // name ("Handler") and path ("apps/svc/handler.x") are both generic — the
+        // contract name is absent from the declaration names AND the path. A query
+        // naming the contract must still rank that module as an anchor: the
+        // situating field (the contracts a module implements) carries it — a
+        // deterministic Contextual BM25.
+        let mut mods = vec![module("apps/svc/handler.x", vec![decl("Handler", &["PaymentGateway"])])];
+        // Filler modules keep "paymentgateway" rare (idf > 0) and give the corpus
+        // a realistic size; none declare or implement the contract.
+        for i in 0..8 {
+            mods.push(module(&format!("apps/other/mod{i:02}.x"), vec![decl(&format!("Widget{i:02}"), &[])]));
+        }
+        let m = model(mods);
+        let q = query(&m, &["PaymentGateway".to_string()]);
+
+        assert_eq!(
+            q.files.first().map(String::as_str),
+            Some("apps/svc/handler.x"),
+            "the module implementing the rare contract anchors via the situating field: {:?}",
+            q.files
+        );
+        // A real BM25F score (high idf over df=1 across fields, boosted tf > 0).
+        let detail = |q: &QueryResult| q.files_detail.iter().map(|d| (d.file.clone(), d.score_x1024)).collect::<Vec<_>>();
+        assert!(q.files_detail[0].score_x1024 > 0, "the situating anchor carries a real BM25F score: {:?}", detail(&q));
+
+        // The contract vocabulary must NOT leak into the PUBLISHED declaration
+        // catalog — situating is a separate, unpublished index.
+        let dig = build(&m);
+        assert!(
+            !dig.terms.iter().any(|t| ["paymentgateway", "payment", "gateway"].contains(&t.term.as_str())),
+            "situating terms never enter the published `terms` catalog: {:?}",
+            dig.terms.iter().map(|t| t.term.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_common_situating_contract_does_not_outrank_a_focused_declaration() {
+        // "BaseService" is an omnipresent supertype (on ten modules), so its
+        // corpus rarity is LOW and the idf down-weights it. A focused module that
+        // DECLARES a rare term must outrank the flood of modules that merely
+        // IMPLEMENT the common contract, even though each earns the situating
+        // boost. The focused file's path does NOT name the term, so this isolates
+        // the declaration idf vs. the situating idf (no path-field help).
+        let mut mods = vec![module("billing/core.x", vec![decl("Invoice", &[])])];
+        for i in 0..10 {
+            // Generic declaration names → "service" lives ONLY in the situating
+            // field (the supertype), never in a declaration name or a path.
+            mods.push(module(&format!("svc/unit{i:02}.x"), vec![decl(&format!("Unit{i:02}"), &["BaseService"])]));
+        }
+        let m = model(mods);
+        // The query names BOTH the rare declaration term and the common contract.
+        let q = query(&m, &["invoice".to_string(), "service".to_string()]);
+        let detail = q.files_detail.iter().map(|d| (d.file.clone(), d.score_x1024)).collect::<Vec<_>>();
+
+        assert_eq!(
+            q.files.first().map(String::as_str),
+            Some("billing/core.x"),
+            "the focused rare declaration leads; the common contract's implementors do not dominate: {detail:?}",
+        );
+        // The common contract's implementors DO still surface (situating admits
+        // them) — just ranked strictly below the focused declaration match.
+        assert!(
+            q.files.iter().any(|f| f.starts_with("svc/unit")),
+            "modules implementing the common contract still surface as situating anchors: {:?}",
+            q.files
+        );
+        let lead = q.files_detail[0].score_x1024;
+        let common = q.files_detail.iter().find(|d| d.file.starts_with("svc/unit")).map(|d| d.score_x1024).unwrap_or(0);
+        assert!(lead > common, "the rare declaration outscores the common contract's implementors: {lead} vs {common}");
+    }
+
+    #[test]
+    fn situating_driven_ranking_is_deterministic() {
+        // A fixture mixing a rare contract, a common contract and a declaration
+        // match over several modules, so the BTree ordering of the situating
+        // index is exercised. Two independent queries must serialize
+        // byte-identically — every situating tie-break is stable
+        // (BTreeMap/BTreeSet throughout, no HashMap iteration).
+        let mut mods = vec![
+            module("pay/gateway_impl.x", vec![decl("StripeAdapter", &["PaymentGateway", "BaseService"])]),
+            module("pay/gateway_alt.x", vec![decl("PaypalAdapter", &["PaymentGateway", "BaseService"])]),
+            module("billing/invoice.x", vec![decl("Invoice", &["BaseService"])]),
+        ];
+        for i in 0..5 {
+            mods.push(module(&format!("misc/unit{i:02}.x"), vec![decl(&format!("Unit{i:02}"), &["BaseService"])]));
+        }
+        let m = model(mods);
+        let terms = ["paymentgateway".to_string(), "invoice".to_string()];
+        let a = serde_json::to_string(&query(&m, &terms)).expect("serialize query result");
+        let b = serde_json::to_string(&query(&m, &terms)).expect("serialize query result");
+        assert_eq!(a, b, "identical situating-driven answers across runs");
+        // Sanity: both concepts anchored their evidence — the rare contract's
+        // implementors AND the declaration match.
+        let q = query(&m, &terms);
+        assert!(q.files.contains(&"pay/gateway_impl.x".to_string()), "rare contract implementor anchors: {:?}", q.files);
+        assert!(q.files.contains(&"billing/invoice.x".to_string()), "declaration match anchors: {:?}", q.files);
+    }
 }

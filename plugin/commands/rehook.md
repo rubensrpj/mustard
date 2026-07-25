@@ -12,7 +12,7 @@ source: manual
 
 ## Description
 
-Reverses `/mustard:unhook`. For each `.claude/` in scope, finds the most recent `settings.json.disabled*` snapshot and renames it back to `settings.json`. Volatile state directories that `unhook` wiped are **not** recreated — the runtime regenerates them on next run.
+Reverses `/mustard:unhook`. For each `.claude/` in scope, removes the `"disableAllHooks"` key from the live `settings.json`. When there is no live file, the legacy path still applies: the most recent `settings.json.disabled*` snapshot is renamed back, so a project unhooked by an older build still recovers. Volatile state directories that `unhook` wiped are **not** recreated — the runtime regenerates them on next run.
 
 ## Action
 
@@ -26,15 +26,15 @@ Print stdout verbatim. Scope same as `/mustard:unhook`: `this` (default), `monor
 
 | State | Meaning |
 |-------|---------|
-| `restored` | `settings.json.disabled-<ts>` renamed back to `settings.json` |
-| `already-active` | Live `settings.json` already in place |
-| `no-snapshot` | `.claude/` exists but has no `settings.json.disabled*` |
+| `restored` | `disableAllHooks` removed from the live `settings.json`, or a legacy `settings.json.disabled-<ts>` renamed back |
+| `already-active` | Live `settings.json` carries no `disableAllHooks` — hooks were never off |
+| `no-snapshot` | `.claude/` exists, no live `settings.json` and no `settings.json.disabled*` |
 | `missing` | `.claude/` does not exist |
 | `skipped` | `--scope all` without `--confirm` (global target left alone) |
-| `error` | Rename failed (path locked, permissions denied) — OS message in report |
+| `error` | Settings unreadable/unparseable, or the rename failed — OS message in report; the file is left untouched |
 
 ## INVIOLABLE RULES
 
-- Always delegate to `mustard-rt run rehook` — never rename `settings.json.disabled*` files by hand.
+- Always delegate to `mustard-rt run rehook` — never edit `settings.json` or rename `settings.json.disabled*` files by hand.
 - Report each entry's `state` field.
 - If every entry is `already-active`, surface that — user may have meant `/mustard:unhook`.

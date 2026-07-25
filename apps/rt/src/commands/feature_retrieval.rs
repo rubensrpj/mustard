@@ -20,6 +20,19 @@ pub(super) const INSUMOS_MAX: usize = 10;
 /// deterministic top-10 so the in-session selector sees past the RRF cut).
 pub(super) const POOL_MAX: usize = 25;
 
+/// How many candidates are PUBLISHED when the report came back `strong`.
+///
+/// The pool itself stays [`POOL_MAX`] wide — it feeds the fusion and, crucially,
+/// the `uncovered` absence radar, which must see every candidate or it reports
+/// covered concepts as blind spots. Only the published slice narrows.
+///
+/// Twelve, because the instruction that consumes this field tells the reader to
+/// pick "the 5-10 files a developer would open — never all ~25". Publishing 25
+/// where at most 10 may be used charges the window for 15 rows that the contract
+/// itself forbids using; publishing exactly 10 would leave the selector no
+/// margin above its own ceiling.
+pub(super) const STRONG_POOL_MAX: usize = 12;
+
 /// The RRF constant (`k = 60`, the measured winner in the fusion benchmark).
 const RRF_K: f64 = 60.0;
 
