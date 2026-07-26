@@ -57,8 +57,20 @@ impl ChangedFile {
 
 /// Build the signature diff between `base` and `head` (e.g. `"HEAD~1"`,
 /// `"HEAD"`), run in `cwd`. Empty when nothing changed or git is unavailable.
-pub(crate) fn build_signature_diff(cwd: &Path, base: &str, head: &str) -> String {
+///
+/// `scope` narrows the digest to a declared file set (see [`path_in_scope`]) —
+/// the revision range says WHEN the work landed, `scope` says WHOSE it is. An
+/// EMPTY scope means "no narrowing": every file in the range is digested, which
+/// is the behaviour this function always had.
+pub(crate) fn build_signature_diff(cwd: &Path, base: &str, head: &str, scope: &[String]) -> String {
     let mut changed = changed_files(cwd, base, head);
+    if !scope.is_empty() {
+        // Either side counts: a rename INTO the declared set is this wave's
+        // work, and so is a rename out of it.
+        changed.retain(|cf| {
+            path_in_scope(&cf.new_path, scope) || path_in_scope(&cf.old_path, scope)
+        });
+    }
     if changed.is_empty() {
         return String::new();
     }
@@ -150,6 +162,32 @@ fn signatures(
         .map(|e| e.name)
         .collect();
     (fns, types)
+}
+
+/// Whether a changed path falls inside a declared `## Files` set.
+///
+/// Declarations are written by hand and are not normalised to one anchor: a spec
+/// may declare `apps/rt/src/x.rs` (repo-relative, what git prints) or `src/x.rs`
+/// (relative to its own subproject), and either form may name a DIRECTORY. All
+/// four shapes are accepted, matched on whole path components so `src/alpha.rs`
+/// never captures `src/alphabet.rs`. An empty path (the missing side of an
+/// add/delete) is in no scope.
+fn path_in_scope(path: &str, scope: &[String]) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let path = path.replace('\\', "/");
+    scope.iter().any(|declared| {
+        let declared = declared.replace('\\', "/");
+        let declared = declared.trim_start_matches("./").trim_end_matches('/');
+        if declared.is_empty() {
+            return false;
+        }
+        path == declared                                    // the file itself
+            || path.starts_with(&format!("{declared}/"))    // a declared directory
+            || path.ends_with(&format!("/{declared}"))      // subproject-relative file
+            || path.contains(&format!("/{declared}/")) // subproject-relative directory
+    })
 }
 
 /// Parse `git diff --name-status -M {base} {head}` into changed files. Empty on
@@ -273,7 +311,7 @@ mod tests {
         git(cwd, &["add", "-A"]);
         git(cwd, &["commit", "-m", "v2"]);
 
-        let digest = build_signature_diff(cwd, "HEAD~1", "HEAD");
+        let digest = build_signature_diff(cwd, "HEAD~1", "HEAD", &[]);
         // Skip if git could not produce the range (fail-open path, e.g. sandbox).
         if digest.is_empty() {
             return;
@@ -303,7 +341,7 @@ mod tests {
         git(cwd, &["add", "-A"]);
         git(cwd, &["commit", "-m", "add file"]);
 
-        let digest = build_signature_diff(cwd, "HEAD~1", "HEAD");
+        let digest = build_signature_diff(cwd, "HEAD~1", "HEAD", &[]);
         if digest.is_empty() {
             return;
         }
@@ -329,7 +367,7 @@ mod tests {
         git(cwd, &["add", "-A"]);
         git(cwd, &["commit", "-m", "v2"]);
 
-        let digest = build_signature_diff(cwd, "HEAD~1", "HEAD");
+        let digest = build_signature_diff(cwd, "HEAD~1", "HEAD", &[]);
         if digest.is_empty() {
             return;
         }
@@ -337,10 +375,30 @@ mod tests {
         assert!(digest.contains("(no signature change)"), "no sig delta noted: {digest}");
     }
 
+    /// The scope matcher accepts the shapes a hand-written `## Files` actually
+    /// uses, and refuses the near-misses a naive substring test would swallow.
+    #[test]
+    fn scope_matches_declared_shapes_only() {
+        let scope = vec!["apps/rt/src/alpha.rs".to_string(), "src/beta/".to_string()];
+        // Repo-relative file, exactly as declared.
+        assert!(path_in_scope("apps/rt/src/alpha.rs", &scope));
+        // Declared directory, repo-relative and subproject-relative.
+        assert!(path_in_scope("src/beta/thing.rs", &scope));
+        assert!(path_in_scope("apps/rt/src/beta/thing.rs", &scope));
+        // Subproject-relative file declaration still finds the repo-relative path.
+        assert!(path_in_scope("apps/rt/src/beta/x.rs", &["src/beta/x.rs".to_string()]));
+        // Near-misses: a longer basename, a sibling directory, the empty side of
+        // an add/delete, and an empty declaration.
+        assert!(!path_in_scope("apps/rt/src/alphabet.rs", &scope));
+        assert!(!path_in_scope("src/betamax/thing.rs", &scope));
+        assert!(!path_in_scope("", &scope));
+        assert!(!path_in_scope("apps/rt/src/alpha.rs", &[String::new()]));
+    }
+
     /// Fail-open: outside a git repo the digest is empty, never a panic.
     #[test]
     fn fail_open_outside_repo() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(build_signature_diff(dir.path(), "HEAD~1", "HEAD"), "");
+        assert_eq!(build_signature_diff(dir.path(), "HEAD~1", "HEAD", &[]), "");
     }
 }

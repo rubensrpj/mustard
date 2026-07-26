@@ -422,6 +422,321 @@ pub(crate) fn extract_memory_summary(text: &str) -> String {
     String::new()
 }
 
+// ---------------------------------------------------------------------------
+// The PRODUCING side of the same channel
+// ---------------------------------------------------------------------------
+//
+// HISTORY — why this side is written the way it is. This project HAD a memory
+// injection and REMOVED it (PR #30), because what it produced was CONFABULATED
+// provenance: a general "what I have learned" summary that read as fact and
+// could not be traced to anything that actually happened. The consumer above
+// survived that removal; the producer did not, and nothing replaced it — so
+// `memory/*.md` never existed and the `## SPEC MEMORY` block rendered empty on
+// every dispatch, always.
+//
+// Restoring the producer without restoring the defect is the whole point of the
+// two functions below:
+//
+//   * [`lesson_qualifies`] is the VALUE FILTER — the producing-side twin of the
+//     bar the role contract already states at EMISSION time ("emit a `<MEMORY>`
+//     block ONLY IF there was a real choice AND a future agent would decide
+//     worse without knowing it"). Stating a bar at the source and never checking
+//     it downstream is exactly how the clarification marker became decoration:
+//     a filter that accepts everything is the same as no filter.
+//   * [`memory_file_stem`] names the file so its provenance is legible AND so
+//     the recall matcher above can actually find it — the name is the primary
+//     relevance signal, so the two must be written together or they drift.
+//
+// Everything here is deterministic and LLM-free: no model decides what is worth
+// remembering, so nothing can be invented.
+
+/// Minimum informative length of a lesson, in characters.
+///
+/// Not the filter — a supporting bound. A real lesson names an alternative AND
+/// its consequence, which does not fit in a handful of characters; a recap
+/// ("Fixed the bug in foo.rs") does. Applied on the whitespace-normalised text.
+const MIN_LESSON_CHARS: usize = 30;
+
+/// Process residue — text that describes the RUN rather than a decision. These
+/// are the categories the emission contract names verbatim as disqualifying
+/// ("a recap of what you did", "context you read", "a file list",
+/// "'interrupted'"), so a hit is a hard veto.
+///
+/// These words stayed while the admission lists went, and the asymmetry is the
+/// whole reason — see [`lesson_qualifies`]. This is an EXCLUSION test: an
+/// unknown language means these words are absent, which lets text through. An
+/// ADMISSION test fails the other way: absent words REJECT, and that is what
+/// silently dropped a Portuguese lesson that was every bit as valuable as its
+/// English twin. A partial safety net degrades gently; a partial gate loses
+/// knowledge without a sound.
+const RESIDUE_MARKERS: &[&str] = &[
+    "interrupted",
+    "interruption",
+    "no changes",
+    "nothing to do",
+    "nothing changed",
+    "as requested",
+    "as instructed",
+    "as described",
+    "files changed",
+    "file list",
+    "recap",
+];
+
+/// Clause (a) of the bar — evidence that ALTERNATIVES EXISTED and the other way
+/// was possible. A lesson with no alternative in it states what is, not what was
+/// chosen, and the reader has nothing to decide differently.
+///
+/// Both locales, always, in one list — see [`lesson_qualifies`] for why the
+/// union rather than the configured locale alone.
+const CHOICE_MARKERS: &[&str] = &[
+    // en-US
+    "chose", "chosen", "choose", "opted", "decided", "instead", "rather",
+    "over", "versus", "vs", "but", "not", "prefer", "preferred", "picked",
+    // pt-BR
+    "escolhi", "escolheu", "escolhido", "optei", "optou", "decidi", "decidiu",
+    "preferi", "preferiu", "prefira", "invés", "inves", "vez", "porém",
+    "porem", "mas", "não", "nao", "nunca", "jamais", "ao contrário",
+    "ao contrario",
+];
+
+/// Clause (b) of the bar — evidence that a future agent would DECIDE WORSE
+/// without this: the consequence of going the other way. A choice stated with no
+/// consequence is a fact about this task, not a lesson.
+///
+/// Both locales, always — same reason as [`CHOICE_MARKERS`].
+const CONSEQUENCE_MARKERS: &[&str] = &[
+    // en-US
+    "because", "since", "otherwise", "would", "will", "never", "always",
+    "avoid", "avoids", "prevent", "prevents", "break", "breaks", "broke",
+    "corrupt", "corrupts", "fail", "fails", "silently", "cannot", "risk",
+    "stale", "wrong", "reproduce", "reproduces", "defect", "deadlock",
+    "lose", "loses", "so",
+    // pt-BR
+    "porque", "pois", "senão", "senao", "caso contrário", "caso contrario",
+    "evita", "evitar", "impede", "impedir", "quebra", "quebrar", "corrompe",
+    "corromper", "falha", "falhar", "silenciosamente", "risco", "errado",
+    "defeito", "perde", "perder", "então", "entao", "portanto", "logo",
+    "sempre", "desatualizado",
+];
+
+/// The VALUE FILTER: does this captured lesson deserve to become a memory file?
+///
+/// ## Who judges what, and why it is split this way
+///
+/// "Was there a real choice, and would a future agent decide worse without
+/// knowing it?" is a question about MEANING. The emission contract already puts
+/// it to the only party that can answer it — the agent that lived the decision,
+/// saw the alternatives, and knows what the other branch would have cost. This
+/// filter sees a string.
+///
+/// The bar is the emission contract's own, evaluated over the text: a lesson
+/// qualifies only when BOTH clauses are visible — an alternative that existed
+/// ([`CHOICE_MARKERS`]) AND the consequence of taking it
+/// ([`CONSEQUENCE_MARKERS`]) — and it is none of the shapes the contract
+/// disqualifies by name ([`RESIDUE_MARKERS`], a bare file list, a lone path, or
+/// text too short to carry either clause).
+///
+/// ## Why the marker lists carry BOTH locales, and not the configured one
+///
+/// The lists were English-only, and review proved the cost: the SAME lesson, of
+/// the same value, qualified in English and was dropped in Portuguese — silently,
+/// which is the worst way to lose knowledge.
+///
+/// This project already declares its language: `mustard.json#specLang`, resolved
+/// through `ProjectConfig::i18n`. That is what makes the fix small, because it
+/// also fixes the SIZE of the problem: Mustard supports exactly two locales
+/// (`pt-BR`, `en-US`) — [`mustard_core::platform::i18n::Locale`] has two
+/// variants and rejects anything else — so "every language" is two lists, not an
+/// open set.
+///
+/// Both are tested, always, rather than selecting by the configured locale. The
+/// reason is that the configured locale does not predict the lesson's language:
+/// the `<MEMORY>` contract reaches the agent in English inside a prompt whose
+/// narrative locale may be `pt-BR`, so a mixed answer is the normal case, not
+/// the exception. Selecting one list would re-open the same silent drop for the
+/// other half. With exactly two locales the union costs nothing and cannot be
+/// defeated by a misconfigured project.
+///
+/// Rejections, in order:
+/// 1. too short to carry a decision AND its reason ([`MIN_LESSON_CHARS`]);
+/// 2. named process residue ([`RESIDUE_MARKERS`]);
+/// 3. a bare file list ([`looks_like_a_file_list`]);
+/// 4. nothing but a path — a filename with no sentence around it;
+/// 5. missing either clause of the bar.
+///
+/// The asymmetry that shapes the design: this gates DURABLE context injected
+/// into every later dispatch, so a false accept costs every future agent while a
+/// false reject costs one lesson — which is still on the event log and still
+/// reaches the next wave through `## DECISIONS`.
+///
+/// Calibration, stated plainly rather than claimed: this bar is NOT tight.
+/// Review measured it — the marker lists carry very common words (`not`, `but`,
+/// `so`, `will`), so most sentences of a few clauses clear both. The real
+/// rigour lives in the emission contract, with the agent that saw the
+/// alternatives; what runs here is a floor that catches the shapes the contract
+/// disqualifies by name. Tightening it means picking rarer words, which is how
+/// the English-only version came to drop every Portuguese lesson — so the honest
+/// next step is to measure what actually gets accepted before narrowing it, not
+/// to describe it as strict and hope.
+///
+/// The asymmetry that shaped the old comment still holds and still points the
+/// same way: this gates DURABLE context injected into every later dispatch, so a
+/// false accept costs every future agent while a false reject costs one lesson,
+/// which remains on the event log and still reaches the next wave through
+/// `## DECISIONS`. The difference is that the rigour now lives where it can
+/// actually be exercised, instead of being claimed here and not delivered.
+#[must_use]
+pub(crate) fn lesson_qualifies(lesson: &str) -> bool {
+    let text = normalize_lesson(lesson);
+    if text.chars().count() < MIN_LESSON_CHARS {
+        return false;
+    }
+    // Unicode lowercase, not the ASCII one: `ENTÃO` must fold to `então` or the
+    // pt-BR markers would miss any capitalised accent.
+    let lower = text.to_lowercase();
+    if RESIDUE_MARKERS.iter().any(|m| contains_marker(&lower, m)) {
+        return false;
+    }
+    if looks_like_a_file_list(&text) {
+        return false;
+    }
+    // A lone path, however long, is a location and not a lesson: it carries no
+    // sentence around it. Detected by shape — every whitespace-separated token
+    // looks like a path — so it holds in either locale.
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if !tokens.is_empty() && tokens.iter().all(|t| looks_like_a_path_token(t)) {
+        return false;
+    }
+    // The bar itself, over the union of both supported locales (see the fn doc).
+    let has_choice = CHOICE_MARKERS.iter().any(|m| contains_marker(&lower, m));
+    let has_consequence = CONSEQUENCE_MARKERS
+        .iter()
+        .any(|m| contains_marker(&lower, m));
+    has_choice && has_consequence
+}
+
+/// Word-boundary-anchored substring test over an already-lowercased haystack.
+///
+/// The residue markers are short, so a naive `contains` would fire on `recap`
+/// inside `recapture`. A match counts only when neither neighbouring byte is
+/// ASCII-alphanumeric; every marker is ASCII, and any non-ASCII byte (an em
+/// dash, an accent) is a boundary, which is what we want.
+fn contains_marker(haystack_lower: &str, marker: &str) -> bool {
+    let hay = haystack_lower.as_bytes();
+    let needle = marker.as_bytes();
+    if needle.is_empty() || needle.len() > hay.len() {
+        return false;
+    }
+    for i in 0..=(hay.len() - needle.len()) {
+        if &hay[i..i + needle.len()] != needle {
+            continue;
+        }
+        let before_ok = i == 0 || !hay[i - 1].is_ascii_alphanumeric();
+        let after = i + needle.len();
+        let after_ok = after == hay.len() || !hay[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a whitespace-separated token reads as a path or filename rather than
+/// a word: it carries a separator or a dotted extension. Language-agnostic by
+/// construction — it inspects punctuation, never vocabulary.
+fn looks_like_a_path_token(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '\\' && c != '.');
+    if t.is_empty() {
+        return false;
+    }
+    if t.contains('/') || t.contains('\\') {
+        return true;
+    }
+    // `foo.rs` — a dot with alphanumerics on both sides and a short tail.
+    match t.rsplit_once('.') {
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && !ext.is_empty()
+                && ext.len() <= 5
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
+/// Collapse every whitespace run to a single space and trim — the canonical
+/// one-line form of a lesson. A `<MEMORY>` block may arrive wrapped across
+/// lines; the memory file's frontmatter `description:` is a single line by
+/// construction, so normalising here keeps the filter, the file name, the
+/// frontmatter and the de-duplication all keyed on the SAME string.
+#[must_use]
+pub(crate) fn normalize_lesson(lesson: &str) -> String {
+    lesson.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `true` when the text is mostly paths — the "a file list" the contract
+/// disqualifies. A token counts as path-shaped when it carries a `/` or a
+/// short trailing extension (`foo.rs`, `mod.ts`). A real lesson may well cite
+/// a file or two, so the veto needs a MAJORITY, not a single hit.
+fn looks_like_a_file_list(text: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    let pathish = tokens
+        .iter()
+        .filter(|tok| {
+            tok.contains('/')
+                || tok
+                    .rsplit_once('.')
+                    .is_some_and(|(head, ext)| {
+                        !head.is_empty()
+                            && (1..=4).contains(&ext.len())
+                            && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                    })
+        })
+        .count();
+    pathish * 2 > tokens.len()
+}
+
+/// Segments kept from the lesson slug in a memory file's name. Enough to make
+/// the file legible and to give the recall matcher several stems to score on,
+/// short enough that the name stays a name.
+const MEMORY_STEM_SEGMENTS: usize = 6;
+
+/// The file-name stem for a lesson materialised at the close of `wave` —
+/// `<lesson-slug…>-wave{N}`, without the `.md`.
+///
+/// Two constraints meet here, which is why this lives beside [`name_stems`]
+/// rather than in the writer:
+///
+/// 1. **Provenance is in the name.** The wave is part of the identifier, so the
+///    `[[wikilink]]` the prompt renders says which wave produced the line. The
+///    file's frontmatter carries the run too; the name carries the wave because
+///    the name is what a reader sees.
+/// 2. **The name must stay a relevance signal.** [`name_stems`] drops tokens
+///    under 3 chars, and the wave marker is written `wave{N}` (one token) rather
+///    than `wave-{N}` precisely so it does NOT contribute the stem `wave` —
+///    which, being in almost every dispatch intent, would score every memory
+///    file equally and collapse the relevance ranking into "inject everything".
+///
+/// Kebab-casing goes through the project's single slug maker
+/// ([`i18n::slugify`]) so there is no second, hand-rolled stopword list.
+#[must_use]
+pub(crate) fn memory_file_stem(lesson: &str, wave: u64) -> String {
+    let slug = i18n::slugify(&normalize_lesson(lesson), Locale::EnUs);
+    let kept: Vec<&str> = slug
+        .split('-')
+        .filter(|seg| seg.chars().count() >= 3)
+        .take(MEMORY_STEM_SEGMENTS)
+        .collect();
+    if kept.is_empty() {
+        return format!("lesson-wave{wave}");
+    }
+    format!("{}-wave{wave}", kept.join("-"))
+}
+
 /// Render a `## SPEC MEMORY` block from matched principle files.
 ///
 /// `with_summary` mirrors [`match_spec_memory`]: when `true`, each line is
@@ -687,6 +1002,101 @@ mod tests {
         }];
         assert!(render_spec_memory_block(&without).contains("- [[tabs-routing]]\n"));
         assert!(render_spec_memory_block(&[]).is_empty());
+    }
+
+    #[test]
+    fn lesson_qualifies_needs_both_an_alternative_and_a_consequence() {
+        // Both clauses present — the shape the emission contract asks for.
+        assert!(lesson_qualifies(
+            "Chose atomic_md write over direct fs::write because a mid-write crash corrupts the file"
+        ));
+        // An alternative with no consequence is a fact about this task only.
+        assert!(!lesson_qualifies(
+            "Chose the porcelain parser over the plumbing parser for this module"
+        ));
+        // A consequence with no alternative leaves nothing to decide.
+        assert!(!lesson_qualifies(
+            "The shared git helper trims the whole output before returning it"
+        ));
+    }
+
+    #[test]
+    fn residue_veto_is_a_safety_net_not_a_gate() {
+        // Recap — the contract's own "Bad" example, caught by the length bound.
+        assert!(!lesson_qualifies("Fixed the bug in foo.rs"));
+        // Interruption — caught by name, in any of the shapes the contract lists.
+        assert!(!lesson_qualifies(
+            "Interrupted before the build finished, so not everything was verified"
+        ));
+        // A long recap that clears the length bound is still only a report of
+        // what was done: no alternative, so the bar rejects it.
+        assert!(!lesson_qualifies(
+            "Fixed the wave-done regression and updated the tests that covered it"
+        ));
+        // A file list, vetoed by shape even when the marker words are present.
+        assert!(looks_like_a_file_list("src/a.rs src/b.rs tests/c.rs"));
+        assert!(!lesson_qualifies(
+            "Not src/a.rs but src/b.rs, src/c.rs, tests/d.rs, so tests/e.rs"
+        ));
+        // A lesson may still cite a file or two without being a file list.
+        assert!(lesson_qualifies(
+            "Chose wave_done.rs over close_pipeline.rs because closing the spec runs too late"
+        ));
+    }
+
+    /// THE regression review found: the marker lists were English-only, so the
+    /// SAME lesson qualified in English and was dropped in Portuguese — silently.
+    /// Mustard supports exactly two locales, so both are covered, and both are
+    /// tested here on one lesson written twice.
+    #[test]
+    fn the_same_lesson_qualifies_in_both_supported_locales() {
+        let english = "The shared git helper trims the whole output, so porcelain \
+                       loses the first entry's space — split on the first space instead";
+        let portuguese = "O utilitário de git apara a saída inteira, então o porcelain \
+                          perde o espaço da primeira linha — nunca fatie por coluna fixa";
+        assert!(lesson_qualifies(english), "en-US lesson must qualify");
+        assert!(
+            lesson_qualifies(portuguese),
+            "the SAME lesson in pt-BR must qualify — this is the review finding"
+        );
+        // Capitalised accents must fold: the fold is Unicode, not ASCII.
+        assert!(
+            lesson_qualifies(&portuguese.to_uppercase()),
+            "ENTÃO must still match então"
+        );
+    }
+
+    /// The structural rejections need no vocabulary at all, so they hold the
+    /// same in either locale.
+    #[test]
+    fn structural_rejections_need_no_vocabulary() {
+        assert!(!lesson_qualifies("Corrigi o bug"), "too short to carry a reason");
+        assert!(!lesson_qualifies("Fixed it"), "too short to carry a reason");
+        assert!(
+            !lesson_qualifies("apps/rt/src/commands/agent/context_inject.rs"),
+            "a bare path is a location, not a lesson"
+        );
+        assert!(
+            !lesson_qualifies("src/a.rs src/b.rs tests/c.rs src/d.rs tests/e.rs"),
+            "a file list stays vetoed"
+        );
+    }
+
+    #[test]
+    fn memory_file_stem_carries_the_wave_without_a_generic_wave_stem() {
+        let stem = memory_file_stem(
+            "Chose the porcelain parser over slicing fixed columns because the helper trims",
+            1,
+        );
+        assert!(stem.ends_with("-wave1"), "the wave is part of the name: {stem}");
+        assert!(stem.contains("porcelain"), "{stem}");
+        // The whole point of `wave1` over `wave-1`: no bare `wave` stem, which
+        // would fire in nearly every dispatch intent and flatten the ranking.
+        let stems = name_stems(&stem);
+        assert!(!stems.iter().any(|s| s == "wave"), "got {stems:?}");
+        assert!(stems.iter().any(|s| s == "porcelain"), "got {stems:?}");
+        // Segment cap holds, so the name stays a name.
+        assert!(stem.split('-').count() <= 7, "{stem}");
     }
 
     #[test]

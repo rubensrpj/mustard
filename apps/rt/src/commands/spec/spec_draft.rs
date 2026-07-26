@@ -52,9 +52,10 @@ use mustard_core::{
     platform::i18n::{translate, Locale, Tone},
     Outcome, Scan, Scope, Stage,
 };
+use serde::Deserialize;
 use serde_json::json;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Human-readable instruction inserted into the drafter prompt for `tone`.
@@ -89,6 +90,13 @@ pub struct SpecDraftOpts {
     pub signals: Option<String>,
     /// Optional output directory. Defaults to `.claude/spec/{slug}/`.
     pub output: Option<PathBuf>,
+    /// Optional path to the CONVERSATION MATERIAL file — the channel that
+    /// carries what the discussion established into the drafted spec (see
+    /// [`ConversationMaterial`]). A FILE, not a flag value: the payload holds
+    /// newlines, quotes and non-ASCII, none of which survive a shell argument
+    /// intact. Absent (or carrying nothing) ⇒ the draft is byte-identical to a
+    /// draft without the channel.
+    pub material: Option<PathBuf>,
     /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
     /// The wave dirs themselves are materialised by `wave-scaffold`.
     pub waves: u32,
@@ -167,6 +175,196 @@ fn find_near_duplicate(spec_parent: &std::path::Path, slug: &str) -> Option<Stri
     None
 }
 
+// ---------------------------------------------------------------------------
+// The conversation channel
+// ---------------------------------------------------------------------------
+
+/// One term the conversation defined, and what it means HERE. A definition is
+/// the cheapest thing to lose and the most expensive to re-derive: every
+/// implementer that does not have it invents its own.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Definition {
+    /// The term as the conversation used it.
+    term: String,
+    /// What it means in THIS spec.
+    meaning: String,
+}
+
+/// One decision and the REASON it was taken. The reason is not decoration: a
+/// decision without it is exactly the thing a later reader cannot use — they
+/// can see WHAT was chosen and have no way to tell whether the choice still
+/// holds. That is why [`load_material`] refuses a reason-less decision instead
+/// of carrying half of it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Decision {
+    /// What was decided.
+    decision: String,
+    /// Why it was decided that way.
+    reason: String,
+}
+
+/// One verified statement plus the evidence that makes it CHECKABLE: the file
+/// it was read at, and the line when the claim is line-precise. A statement
+/// with no file is an opinion; the loader refuses it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Finding {
+    /// What was verified.
+    statement: String,
+    /// The file the claim was checked against.
+    file: String,
+    /// The line, when the claim is line-precise (a file-level claim omits it).
+    #[serde(default)]
+    line: Option<u32>,
+}
+
+/// The structured material a conversation produced, carried into the draft by
+/// `spec-draft --material <FILE>`.
+///
+/// Three kinds because they BEHAVE differently: a definition is a term and its
+/// local meaning, a decision is a choice plus its reason, a finding is a claim
+/// plus the file (and line) it was checked at. Each lands in a section of its
+/// own — never in the prose-only opening section, which is precisely where the
+/// material used to be crammed and then rejected.
+///
+/// `deny_unknown_fields` is deliberate: a mistyped key (`decision` for
+/// `decisions`) would otherwise deserialise into an empty channel and drop the
+/// material silently — the very defect this file is closing.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConversationMaterial {
+    #[serde(default)]
+    definitions: Vec<Definition>,
+    #[serde(default)]
+    decisions: Vec<Decision>,
+    #[serde(default)]
+    findings: Vec<Finding>,
+}
+
+impl ConversationMaterial {
+    /// `true` when the channel carries nothing — the draft must then be
+    /// byte-identical to a draft with no channel at all.
+    fn is_empty(&self) -> bool {
+        self.definitions.is_empty() && self.decisions.is_empty() && self.findings.is_empty()
+    }
+}
+
+/// EN display headings for the three material sections. Language-agnostic on
+/// purpose — the same reasoning as `CHECKLIST_HEADING`: these sections are read
+/// by machinery (the per-wave cut, the QA extractor), so every consumer keys
+/// off ONE literal. `spec_sections::variants` registers both the EN and PT
+/// spellings so a hand-authored spec still resolves through the shared
+/// resolver.
+const DEFINITIONS_HEADING: &str = "Definitions";
+const DECISIONS_HEADING: &str = "Decisions";
+const EVIDENCE_HEADING: &str = "Evidence";
+
+/// Read and check the conversation-material channel at `path`.
+///
+/// FAIL-CLOSED, unlike most of this command: the operator handed over material
+/// explicitly, so a malformed file must stop the draft rather than degrade to
+/// an empty channel. Degrading here would reproduce the defect — the material
+/// vanishes and nobody is told.
+///
+/// # Errors
+///
+/// The file could not be read, is not the expected JSON shape, or carries an
+/// entry missing the half that makes it usable (a definition with no meaning,
+/// a decision with no reason, a finding with no file).
+fn load_material(path: &Path) -> Result<ConversationMaterial, String> {
+    let raw = mfs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let material: ConversationMaterial =
+        serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (i, d) in material.definitions.iter().enumerate() {
+        if d.term.trim().is_empty() || d.meaning.trim().is_empty() {
+            return Err(format!(
+                "definitions[{i}]: a definition needs both the term and what it means here"
+            ));
+        }
+    }
+    for (i, d) in material.decisions.iter().enumerate() {
+        if d.decision.trim().is_empty() || d.reason.trim().is_empty() {
+            return Err(format!(
+                "decisions[{i}]: a decision without its reason is unusable to a later reader"
+            ));
+        }
+    }
+    for (i, f) in material.findings.iter().enumerate() {
+        if f.statement.trim().is_empty() || f.file.trim().is_empty() {
+            return Err(format!(
+                "findings[{i}]: a finding needs a statement and the file it was checked at"
+            ));
+        }
+    }
+    Ok(material)
+}
+
+/// Render the material as markdown sections — one `## ` heading per kind that
+/// carries something, and NOTHING for a kind that does not. Pure (no I/O) so it
+/// is unit-testable. Returns `None` for an empty channel, which is what makes
+/// the feature invisible when unused.
+///
+/// Each item follows the project's established "bullet + attribute line" shape
+/// (the same one `- **AC-N** — …` / `  Command: \`…\`` uses), so the per-wave
+/// cut can lift a finding's file out of `Evidence:` without a bespoke grammar.
+fn render_material_sections(material: &ConversationMaterial) -> Option<String> {
+    if material.is_empty() {
+        return None;
+    }
+    let mut block = String::new();
+    if !material.definitions.is_empty() {
+        let _ = write!(block, "\n## {DEFINITIONS_HEADING}\n\n");
+        for d in &material.definitions {
+            let _ = writeln!(block, "- **{}** — {}", d.term.trim(), d.meaning.trim());
+        }
+    }
+    if !material.decisions.is_empty() {
+        let _ = write!(block, "\n## {DECISIONS_HEADING}\n\n");
+        for d in &material.decisions {
+            let _ = writeln!(block, "- {}\n  Reason: {}", d.decision.trim(), d.reason.trim());
+        }
+    }
+    if !material.findings.is_empty() {
+        let _ = write!(block, "\n## {EVIDENCE_HEADING}\n\n");
+        for f in &material.findings {
+            let at = match f.line {
+                Some(line) => format!("{}:{line}", f.file.trim()),
+                None => f.file.trim().to_string(),
+            };
+            let _ = writeln!(block, "- {}\n  Evidence: `{at}`", f.statement.trim());
+        }
+    }
+    Some(block)
+}
+
+/// Splice the material sections onto the `spec.md` [`spec_scaffold::write_spec_md`]
+/// just wrote.
+///
+/// Appended by the DRAFTER rather than threaded through the scaffold on
+/// purpose: the scaffold owns the canonical layout shared with
+/// `tactical-fix-create`, and the channel is `spec-draft`'s own concern. It
+/// also makes the "invisible when unused" rule structural instead of
+/// conditional — an empty channel performs no second write at all, so the
+/// bytes cannot drift.
+///
+/// # Errors
+///
+/// The freshly-written `spec.md` could not be read back or rewritten.
+fn append_material_sections(output: &Path, material: &ConversationMaterial) -> Result<(), String> {
+    let Some(block) = render_material_sections(material) else {
+        return Ok(());
+    };
+    let path = output.join("spec.md");
+    let mut body = mfs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str(&block);
+    mfs::write_atomic(&path, body.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Entry point.
 pub fn run(opts: SpecDraftOpts) {
     let Some(scope) = Scope::parse(&opts.scope) else {
@@ -182,6 +380,18 @@ pub fn run(opts: SpecDraftOpts) {
         emit_error("intent did not yield a slug", &opts.intent);
         return;
     }
+    // The channel is read and checked BEFORE anything is written: a malformed
+    // material file must not leave a half-drafted spec behind.
+    let material = match opts.material.as_deref() {
+        Some(path) => match load_material(path) {
+            Ok(m) => m,
+            Err(detail) => {
+                emit_error("invalid --material", &detail);
+                return;
+            }
+        },
+        None => ConversationMaterial::default(),
+    };
 
     let auto_output = opts.output.is_none();
     let output = opts.output.unwrap_or_else(|| {
@@ -277,6 +487,13 @@ pub fn run(opts: SpecDraftOpts) {
     }
     written.push(output.join("spec.md").display().to_string());
 
+    // The conversation channel — each kind in a section of its own. A no-op
+    // when nothing was carried.
+    if let Err(e) = append_material_sections(&output, &material) {
+        emit_error("write conversation material", &e);
+        return;
+    }
+
     let meta = build_meta_from_input(&input);
     if let Err(e) = spec_scaffold::write_meta_json(&output, &meta) {
         emit_error("write meta.json", &e);
@@ -330,6 +547,18 @@ pub fn run(opts: SpecDraftOpts) {
     });
     if let (Some(obj), Some(downgrade)) = (report.as_object_mut(), scope_downgraded) {
         obj.insert("scopeDowngraded".to_string(), downgrade);
+    }
+    // What the channel actually carried — so a material file that was read but
+    // yielded nothing is visible in the report instead of looking like success.
+    if let (Some(obj), false) = (report.as_object_mut(), material.is_empty()) {
+        obj.insert(
+            "material".to_string(),
+            json!({
+                "definitions": material.definitions.len(),
+                "decisions": material.decisions.len(),
+                "findings": material.findings.len(),
+            }),
+        );
     }
     // The scan anchors ride the REPORT, not the artifact — the orchestrator
     // reads them to decide what to open, and `## Context` stays prose.
@@ -1192,6 +1421,7 @@ mod tests {
             lang: "pt-BR".into(),
             signals: None,
             output: Some(out.clone()),
+            material: None,
             waves: 0,
             force: false,
             query_terms: None,
@@ -1231,6 +1461,7 @@ mod tests {
             lang: "pt-BR".into(),
             signals: None,
             output: Some(out.clone()),
+            material: None,
             waves: 3,
             force: false,
             query_terms: None,
@@ -1286,6 +1517,7 @@ mod tests {
                 lang: lang.into(),
                 signals: None,
                 output: Some(out.clone()),
+                material: None,
                 waves,
                 force: false,
                 query_terms: None,
@@ -1321,6 +1553,7 @@ mod tests {
             lang: "pt-BR".into(),
             signals: None,
             output: Some(dir.path().join("specs").join("demo")),
+            material: None,
             waves: 2,
             force: false,
             query_terms: None,
@@ -1346,6 +1579,7 @@ mod tests {
             lang: "pt".into(),
             signals: None,
             output: Some(dir.path().join("out")),
+            material: None,
             waves: 0,
             force: false,
             query_terms: None,
@@ -1354,6 +1588,213 @@ mod tests {
         run(opts);
         // Output dir should not have been populated.
         assert!(!dir.path().join("out").join("spec.md").exists());
+    }
+
+    // --- The conversation channel (--material) ----------------------------
+
+    /// Draft a Light spec into `out`, optionally carrying `material_json`
+    /// through the channel, and return the resulting `spec.md` body.
+    fn draft_with_material(
+        dir: &std::path::Path,
+        out: &std::path::Path,
+        material_json: Option<&str>,
+    ) -> String {
+        let material = material_json.map(|json| {
+            let path = dir.join("material.json");
+            std::fs::write(&path, json).unwrap();
+            path
+        });
+        run(SpecDraftOpts {
+            intent: "Demo intent".into(),
+            scope: "light".into(),
+            lang: "en-US".into(),
+            signals: None,
+            output: Some(out.to_path_buf()),
+            material,
+            waves: 0,
+            force: false,
+            query_terms: None,
+            force_scope: false,
+        });
+        std::fs::read_to_string(out.join("spec.md")).expect("draft written")
+    }
+
+    /// The whole point of the channel: one definition, one decision WITH its
+    /// reason, and one finding all reach the materialized spec — each under a
+    /// heading of its own — while the prose-only opening section is left
+    /// exactly as a draft without the channel would have written it.
+    #[test]
+    fn drafter_carries_conversation_material_into_its_own_sections() {
+        use crate::commands::spec::spec_sections::section_block;
+        let dir = tempdir().unwrap();
+        let bare = draft_with_material(dir.path(), &dir.path().join("bare"), None);
+        let carried = draft_with_material(
+            dir.path(),
+            &dir.path().join("carried"),
+            Some(
+                r#"{
+                    "definitions": [
+                        {"term": "wave", "meaning": "one dispatchable unit of the plan"}
+                    ],
+                    "decisions": [
+                        {"decision": "carry the material through a file",
+                         "reason": "a shell argument mangles newlines and non-ASCII"}
+                    ],
+                    "findings": [
+                        {"statement": "the drafter takes no material argument today",
+                         "file": "apps/rt/src/commands/spec/spec_draft.rs", "line": 81}
+                    ]
+                }"#,
+            ),
+        );
+
+        // Three sections, three headings, each carrying its own kind.
+        assert!(carried.contains("\n## Definitions\n"), "definitions heading:\n{carried}");
+        assert!(
+            carried.contains("- **wave** — one dispatchable unit of the plan"),
+            "definition body:\n{carried}"
+        );
+        assert!(carried.contains("\n## Decisions\n"), "decisions heading:\n{carried}");
+        assert!(carried.contains("- carry the material through a file"), "decision:\n{carried}");
+        assert!(
+            carried.contains("  Reason: a shell argument mangles newlines and non-ASCII"),
+            "a decision carries its REASON, not just the choice:\n{carried}"
+        );
+        assert!(carried.contains("\n## Evidence\n"), "evidence heading:\n{carried}");
+        assert!(
+            carried.contains("- the drafter takes no material argument today"),
+            "finding:\n{carried}"
+        );
+
+        // The opening section is untouched — byte-identical to the draft that
+        // carried nothing. The material landed BESIDE it, never inside it.
+        assert_eq!(
+            section_block(&carried, "context"),
+            section_block(&bare, "context"),
+            "the prose-only Context must be identical with and without the channel",
+        );
+        // And the bare draft grew no empty headings.
+        for heading in ["## Definitions", "## Decisions", "## Evidence"] {
+            assert!(!bare.contains(heading), "empty channel emits no `{heading}`:\n{bare}");
+        }
+    }
+
+    /// The two halves of the defect, proven together: a finding citing a file
+    /// AND a line survives materialization intact, and the prose rule that
+    /// rejects that same path in `## Context` raises nothing about it — because
+    /// `## Evidence` is where it now lives. The contrast case keeps the rule
+    /// honest: the same reference moved back into Context still WARNs.
+    #[test]
+    fn evidence_section_keeps_file_and_line_references() {
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("evidence");
+        let body = draft_with_material(
+            dir.path(),
+            &out,
+            Some(
+                r#"{"findings": [
+                    {"statement": "the prose rule rejects paths in the opening section",
+                     "file": "apps/rt/src/commands/review/analyze_validation.rs", "line": 294},
+                    {"statement": "the scaffold owns the canonical layout",
+                     "file": "apps/rt/src/commands/spec/spec_scaffold.rs"}
+                 ]}"#,
+            ),
+        );
+
+        // File AND line survive verbatim, in a backticked reference.
+        assert!(
+            body.contains("  Evidence: `apps/rt/src/commands/review/analyze_validation.rs:294`"),
+            "file:line reference intact:\n{body}"
+        );
+        // A file-level finding (no line) renders the file alone — no `:0` noise.
+        assert!(
+            body.contains("  Evidence: `apps/rt/src/commands/spec/spec_scaffold.rs`"),
+            "line-less finding keeps the bare file:\n{body}"
+        );
+        assert!(!body.contains(".rs:0`"), "no fabricated line number:\n{body}");
+
+        // The validator raises NO prose complaint — the evidence section
+        // accepts exactly what the prose section rejects.
+        let root = std::path::PathBuf::from(crate::shared::context::project_dir());
+        let spec_md = out.join("spec.md");
+        let issues =
+            crate::commands::review::analyze_validation::validate(&root, &spec_md, &body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("context-not-prose")),
+            "a finding in Evidence is not a Context violation: {issues:?}"
+        );
+        assert!(issues.is_empty(), "the carried draft still validates clean: {issues:?}");
+
+        // Contrast: the SAME reference inside Context still WARNs, and the
+        // message now names Evidence as its destination.
+        let polluted = body.replace(
+            "Demo intent.",
+            "Demo intent, verified at apps/rt/src/commands/review/analyze_validation.rs line 294.",
+        );
+        let polluted_issues =
+            crate::commands::review::analyze_validation::validate(&root, &spec_md, &polluted);
+        let warn = polluted_issues
+            .iter()
+            .find(|i| i["type"] == json!("context-not-prose"))
+            .unwrap_or_else(|| panic!("prose rule must still fire: {polluted_issues:?}"));
+        let msg = warn["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("Evidence"), "the rejection names the destination: {msg}");
+    }
+
+    /// Invisible when unused: a channel that carries nothing produces the exact
+    /// bytes a draft with no channel produces — no empty headings, no
+    /// placeholders, no trailing whitespace drift. Both drafts land in a
+    /// directory of the SAME name (the leaf seeds the `id:` frontmatter), so
+    /// the only variable left is the channel.
+    #[test]
+    fn empty_material_leaves_the_draft_byte_identical() {
+        let dir = tempdir().unwrap();
+        let bare = draft_with_material(dir.path(), &dir.path().join("a").join("demo"), None);
+        let empty = draft_with_material(
+            dir.path(),
+            &dir.path().join("b").join("demo"),
+            Some(r#"{"definitions": [], "decisions": [], "findings": []}"#),
+        );
+        assert_eq!(empty, bare, "an empty channel must not change a single byte");
+    }
+
+    /// The channel is FAIL-CLOSED: half an entry (a decision with no reason, a
+    /// finding with no file) and a mistyped key are refused instead of silently
+    /// dropping the material — the exact failure mode this feature exists to
+    /// end. Nothing is written when the material is refused.
+    #[test]
+    fn malformed_material_is_refused_before_anything_is_written() {
+        let dir = tempdir().unwrap();
+        for (name, json) in [
+            ("no-reason", r#"{"decisions": [{"decision": "x", "reason": "  "}]}"#),
+            ("no-file", r#"{"findings": [{"statement": "x", "file": ""}]}"#),
+            ("typo-key", r#"{"decision": [{"decision": "x", "reason": "y"}]}"#),
+            ("not-json", "definitions: none"),
+        ] {
+            let path = dir.path().join(format!("{name}.json"));
+            std::fs::write(&path, json).unwrap();
+            assert!(
+                load_material(&path).is_err(),
+                "{name}: malformed material must be refused, not degraded to empty"
+            );
+            let out = dir.path().join(name);
+            run(SpecDraftOpts {
+                intent: "Demo intent".into(),
+                scope: "light".into(),
+                lang: "en-US".into(),
+                signals: None,
+                output: Some(out.clone()),
+                material: Some(path),
+                waves: 0,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            });
+            assert!(
+                !out.join("spec.md").exists(),
+                "{name}: no half-drafted spec is left behind"
+            );
+        }
     }
 
     // --- Deterministic routing gate (apply_scope_gate) --------------------

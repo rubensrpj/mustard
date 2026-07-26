@@ -19,7 +19,8 @@
 //!
 //! - [`prompt_ref`] — the `--emit ref` stub, its deterministic path, the FNV key;
 //! - [`role`] — the per-role delivery contracts + `recommended_subagent_type`;
-//! - [`sections`] — spec section cutting, task steps, and the cleanup passes;
+//! - [`sections`] — spec section cutting, task steps, the per-wave cut of the
+//!   parent spec's conversation material, and the cleanup passes;
 //! - [`retry`] — `## RETRY CONTEXT` composition;
 //! - [`capabilities`] — the durable BM25 capability injector;
 //! - [`skills`] — the subproject skill shelf;
@@ -64,10 +65,10 @@ pub use prompt_ref::PROMPT_REF_MARKER;
 pub use role::{recommended_subagent_type, EPISTEMIC_FLOOR};
 pub(crate) use prompt_ref::render_prompt_ref_at;
 pub(crate) use sections::read_task_steps;
-// Surfaced only for the compatibility façade's test-gated consumers
-// (`wave_scaffold` tests); the compositor calls `build_reference_files`, not
-// this directly, so the bin build never references it.
-#[cfg(test)]
+// Surfaced for the compatibility façade's consumers (`wave_scaffold` tests and
+// `wave_done`, which parses the same `## Files` section); the compositor calls
+// `build_reference_files`, not this directly. NOT `#[cfg(test)]` — a runtime
+// caller exists, and gating it to tests made the bin build fail to resolve it.
 pub(crate) use reference::files_section_paths;
 
 // Sub-engine helpers the compositor calls directly.
@@ -77,10 +78,42 @@ use reference::build_reference_files;
 use retry::compose_retry_context;
 use role::{build_role_block, patterns_task_block};
 use sections::{
-    collapse_empty_sections, filter_task_lines, read_guards_block, read_spec_lang, scan_unfilled,
-    strip_unfilled_template_tokens,
+    build_conversation_material, collapse_empty_sections, filter_task_lines, read_guards_block,
+    read_spec_lang, scan_unfilled, strip_unfilled_template_tokens,
 };
 use skills::build_skills_list;
+
+/// The placeholder keys this renderer substitutes into the embedded template,
+/// in template order.
+///
+/// It IS the substitution list, not a copy of one: [`render_prompt_at`] zips it
+/// with the collected values, and the value array's length is pinned to
+/// `TEMPLATE_PLACEHOLDERS.len()`, so a key added without its value fails to
+/// compile.
+///
+/// Public because this set is the contract the SHIPPED reference
+/// (`plugin/refs/agent-prompt/agent-prompt.md`) documents for whoever plans a
+/// wave. That file is prose: a placeholder added here and not there breaks
+/// nothing in this workspace and is never seen by a compiler — the same silent
+/// failure mode the rest of `tests/plugin_agents.rs` ratchets. The
+/// `agent_prompt_ref_documents_every_placeholder` guard reads THIS constant, so
+/// the ref's table is checked as a SET; its size is a consequence of the set and
+/// never a claim the guard asserts.
+pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
+    "{subproject}",
+    "{guards_summary}",
+    "{role_block}",
+    "{spec_lang}",
+    "{task_steps}",
+    "{context_md}",
+    "{prior_wave_diff}",
+    "{change_log}",
+    "{conversation_material}",
+    "{cross_wave_memory}",
+    "{reference_files}",
+    "{skills_list}",
+    "{retry_context}",
+];
 
 /// Render mode — picks which template block (dispatch vs retry) is filled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +311,20 @@ pub(crate) fn render_prompt_at(
     // The spec's mid-pipeline change-log (`## CHANGE REQUESTS`) — bullets only,
     // empty (so the heading collapses) for spec-less renders or a spec with none.
     let change_log = spec.map(|_| read_change_log(&spec_dir)).unwrap_or_default();
+    // What the CONVERSATION established, carried in by `spec-draft --material`
+    // and living ONCE in the PARENT spec (`## Definitions` / `## Decisions` /
+    // `## Evidence`). A per-wave copy would drift, so the cut happens HERE:
+    // definitions and decisions bind every wave; a finding rides only to the
+    // wave whose declared `## Files` contains its file — see
+    // [`build_conversation_material`]. Spec-less renders carry none, and a spec
+    // that carried nothing yields "" so the heading collapses and the prompt is
+    // byte-identical to one rendered before the channel existed. It sits in the
+    // VARIABLE tail of the template (after `## EFFICIENCY`), never in the
+    // prefix-stable head — carrying context is worthless if it breaks the
+    // prompt cache on every dispatch.
+    let conversation_material = spec
+        .map(|_| build_conversation_material(&spec_dir.join("spec.md"), &op_spec_path))
+        .unwrap_or_default();
     // The `{cross_wave_memory}` body accumulates the relevance-gated blocks
     // below (capabilities, spec memory, vocabulary). An empty result collapses
     // the section (`collapse_empty_sections`). The query is the role + task
@@ -380,28 +427,32 @@ pub(crate) fn render_prompt_at(
     // token count.
 
     // ---- Substitute placeholders. ----
-    let substitutions: &[(&str, &str)] = &[
-        ("{subproject}", &subproject_str),
-        ("{guards_summary}", &guards_summary),
-        ("{role_block}", &role_block),
-        ("{spec_lang}", &spec_lang),
-        ("{task_steps}", &task_steps),
-        ("{context_md}", &context_md),
-        ("{prior_wave_diff}", &prior_wave_diff),
-        ("{change_log}", &change_log),
-        ("{cross_wave_memory}", &cross_wave_memory),
-        ("{reference_files}", &reference_files),
-        ("{skills_list}", &skills_list),
-        ("{retry_context}", &retry_context),
+    // Values in TEMPLATE_PLACEHOLDERS order — the array length is pinned to the
+    // constant, so adding a key without its value fails to compile.
+    let values: [&str; TEMPLATE_PLACEHOLDERS.len()] = [
+        &subproject_str,
+        &guards_summary,
+        &role_block,
+        &spec_lang,
+        &task_steps,
+        &context_md,
+        &prior_wave_diff,
+        &change_log,
+        &conversation_material,
+        &cross_wave_memory,
+        &reference_files,
+        &skills_list,
+        &retry_context,
     ];
-    for (key, value) in substitutions {
+    for (key, value) in TEMPLATE_PLACEHOLDERS.iter().zip(values.iter()) {
         rendered = rendered.replace(key, value);
     }
 
     // ---- Drop headings whose fail-open body resolved to empty. ----
-    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## CROSS-WAVE MEMORY`
-    // and `## PRIOR WAVE DIFF` all degrade to "" on the spec-less / wave-1 /
-    // no-Files paths; a dangling empty heading is negative signal, so collapse it.
+    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## CONVERSATION
+    // MATERIAL`, `## CROSS-WAVE MEMORY` and `## PRIOR WAVE DIFF` all degrade to
+    // "" on the spec-less / wave-1 / no-Files / no-material paths; a dangling
+    // empty heading is negative signal, so collapse it.
     rendered = collapse_empty_sections(&rendered);
 
     // ---- Blank only the TEMPLATE placeholders left unfilled (warn on each). ----
@@ -819,6 +870,7 @@ mod tests {
             ("{context_md}", ""),
             ("{prior_wave_diff}", ""),
             ("{change_log}", ""),
+            ("{conversation_material}", ""),
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
             ("{skills_list}", ""),
@@ -951,6 +1003,148 @@ mod tests {
             RenderMode::First, None, None, None,
         );
         assert!(!rendered.contains("## DECISIONS"), "{rendered}");
+    }
+
+    // --- conversation material: the per-wave cut -----------------------------
+
+    /// Plant a parent spec carrying the conversation material plus two waves
+    /// with DISJOINT `## Files` lists — the shape the per-wave cut is defined
+    /// against. `evidence` is spliced verbatim so a test can vary the findings
+    /// without touching anything else.
+    fn seed_material_spec(project: &Path, spec: &str, evidence: &str) {
+        let spec_dir = project.join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# T\n\n## Files\n\n- `src/alpha.rs`\n- `src/beta.rs`\n\n\
+                 ## Definitions\n\n- **wave** — one level of the plan\n\n\
+                 ## Decisions\n\n- everything branches off dev\n  Reason: the release train\n\n\
+                 ## Evidence\n\n{evidence}"
+            ),
+        )
+        .unwrap();
+        for (dir, file, task) in [
+            ("wave-1-alpha", "src/alpha.rs", "do alpha"),
+            ("wave-2-beta", "src/beta.rs", "do beta"),
+        ] {
+            let wd = spec_dir.join(dir);
+            std::fs::create_dir_all(&wd).unwrap();
+            std::fs::write(
+                wd.join("spec.md"),
+                format!("# W\n\n## Files\n\n- `{file}`\n\n## Tasks\n\n- [ ] {task}\n"),
+            )
+            .unwrap();
+        }
+    }
+
+    fn render_wave(project: &Path, spec: &str, wave: u32) -> String {
+        render_prompt_at(
+            project, Some(spec), Some(wave), "impl", Path::new("."),
+            RenderMode::First, None, None, None,
+        )
+    }
+
+    /// A finding reaches ONLY the wave whose declared `## Files` contains its
+    /// file — asserted in BOTH directions, because a cut that lets everything
+    /// through is the same as no cut at all. Definitions and decisions are the
+    /// shared vocabulary and the law of the work, so they reach every wave.
+    #[test]
+    fn findings_reach_only_the_wave_that_declares_the_file() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "carry-material-spec";
+        seed_material_spec(
+            dir.path(),
+            spec,
+            "- alpha parses the header twice\n  Evidence: `src/alpha.rs:12`\n\
+             - beta swallows the error\n  Evidence: `src/beta.rs:30`\n",
+        );
+
+        let w1 = render_wave(dir.path(), spec, 1);
+        let w2 = render_wave(dir.path(), spec, 2);
+
+        // Wave 1 declares only `src/alpha.rs`.
+        assert!(w1.contains("alpha parses the header twice"), "own finding missing: {w1}");
+        assert!(!w1.contains("beta swallows the error"), "sibling finding leaked: {w1}");
+        // Wave 2 declares only `src/beta.rs` — the mirror image.
+        assert!(w2.contains("beta swallows the error"), "own finding missing: {w2}");
+        assert!(!w2.contains("alpha parses the header twice"), "sibling finding leaked: {w2}");
+
+        // Definitions and decisions are uncut: both waves carry both.
+        for (label, rendered) in [("wave 1", &w1), ("wave 2", &w2)] {
+            assert!(
+                rendered.contains("## CONVERSATION MATERIAL"),
+                "{label} lost the material heading: {rendered}"
+            );
+            assert!(
+                rendered.contains("**wave** — one level of the plan"),
+                "{label} lost the definitions: {rendered}"
+            );
+            assert!(
+                rendered.contains("everything branches off dev"),
+                "{label} lost the decisions: {rendered}"
+            );
+        }
+    }
+
+    /// The material rides in the VARIABLE tail: two renders of the same spec
+    /// with DIFFERENT findings must leave the prefix-stable head byte-identical,
+    /// or every dispatch pays full price instead of the cached-prefix price.
+    #[test]
+    fn carried_material_does_not_break_the_stable_prompt_head() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "stable-head-spec";
+
+        seed_material_spec(
+            dir.path(),
+            spec,
+            "- alpha parses the header twice\n  Evidence: `src/alpha.rs:12`\n",
+        );
+        let first = render_wave(dir.path(), spec, 1);
+        seed_material_spec(
+            dir.path(),
+            spec,
+            "- alpha leaks the file handle on the error path\n  Evidence: `src/alpha.rs:88`\n",
+        );
+        let second = render_wave(dir.path(), spec, 1);
+
+        // Both renders carry material, so the marker is present in both and the
+        // split is the real boundary between the stable head and the tail.
+        let head = |r: &str| {
+            r.split_once("## CONVERSATION MATERIAL")
+                .map(|(h, _)| h.to_string())
+                .expect("material section rendered")
+        };
+        assert_eq!(head(&first), head(&second), "the prefix-stable head must not vary");
+        // ...and the change really did land, in the tail.
+        assert!(first.contains("parses the header twice"), "{first}");
+        assert!(second.contains("leaks the file handle"), "{second}");
+        assert!(!second.contains("parses the header twice"), "{second}");
+    }
+
+    /// A spec with no material is INVISIBLE to this wave: no heading, no
+    /// placeholder, no blank section — the prompt is exactly what it was before
+    /// the channel existed.
+    #[test]
+    fn spec_without_material_renders_no_conversation_section() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "no-material-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] a task\n").unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(!rendered.contains("## CONVERSATION MATERIAL"), "{rendered}");
+        assert!(!rendered.contains("{conversation_material}"), "{rendered}");
+        // Spec-less renders never look for material either.
+        let spec_less = render_prompt_at(
+            dir.path(), None, None, "impl", Path::new("."),
+            RenderMode::First, None, None, Some("ad-hoc task"),
+        );
+        assert!(!spec_less.contains("## CONVERSATION MATERIAL"), "{spec_less}");
     }
 
     /// AC-5: when the target subproject is its OWN nested git repository (`.git`

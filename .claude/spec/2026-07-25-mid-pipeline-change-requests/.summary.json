@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "2026-07-25-mid-pipeline-change-requests",
+  "title": "Tactical Fix: Mid-pipeline change requests record the user's words, not the change",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

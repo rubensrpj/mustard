@@ -30,6 +30,9 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 - Max 3 build attempts, then STOP + report
 - Return cap: follow pipeline-config.md Max Return limits (impl 40, explore 30, review 60, plan 80 lines). Return a condensed summary (files changed + non-obvious decisions + blockers) — not a re-grounding of what you read.
 
+## CONVERSATION MATERIAL
+{conversation_material}
+
 ## CROSS-WAVE MEMORY
 {cross_wave_memory}
 

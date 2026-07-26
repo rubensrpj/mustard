@@ -9,9 +9,15 @@
 //! ## Deterministic chaining (no LLM judgement)
 //!
 //! When **every** gate passes, the orchestrator auto-chains the close itself —
-//! it calls [`crate::commands::spec::complete_spec::run_complete`] **directly**
+//! it calls [`crate::commands::spec::complete_spec::finalize`] **directly**
 //! (module-qualified, in-process — no subprocess), marking the spec
-//! `completed` and emitting `pipeline.complete`. It then auto-verifies
+//! `completed` and emitting `pipeline.complete`. `finalize`, not `run_complete`:
+//! the QA gate above reads the RECORDED `qa.result overall=pass`
+//! ([`qa_gate_passes`]) — the same fact `run_complete`'s admission would read —
+//! so routing there would refuse nothing and only re-execute every criterion.
+//! That equivalence is the whole justification, and it only holds while this
+//! gate stays strict: it once accepted `skip` and chained the close with nothing
+//! verified. It then auto-verifies
 //! that the `pipeline.complete` event landed in the per-spec NDJSON window via
 //! [`crate::commands::event::verify_emit::verify_event_landed`] and folds the
 //! boolean into the report (`verified`). The LLM no longer decides whether to
@@ -109,13 +115,37 @@ fn run_subcmd(args: &[&str]) -> (bool, u64, String) {
 /// Inspect a `qa-run --format json` stdout for the `overall` field.
 fn qa_overall(stdout: &str) -> Option<String> {
     let v: Value = serde_json::from_str(stdout.trim()).ok()?;
-    v.get("overall").and_then(Value::as_str).map(str::to_string)
+    v.get("payload")
+        .and_then(|p| p.get("overall"))
+        .or_else(|| v.get("overall"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Whether the QA gate passes for this close.
+///
+/// Reads the verdict where it is RECORDED, through the same predicate
+/// `emit-pipeline` and `complete-spec` consult — one fact, three doors.
+///
+/// Deliberately NOT the subprocess's exit code, and not a string parsed off its
+/// stdout. `qa-run` exits 0 on `skip`, so "it ran" is not "it verified"; and the
+/// stdout read above had been looking for `overall` at the top level while
+/// `qa-run` prints it under `payload`, so it always answered `None` and the gate
+/// silently collapsed to "the subprocess exited 0". Together those two let a
+/// `skip` chain the close and write `pipeline.complete` with nothing verified —
+/// found by review, reproduced live. `close-pipeline` already refuses `skip` for
+/// exactly this reason; this is the two composites agreeing.
+fn qa_gate_passes(cwd: &Path, spec: &str) -> bool {
+    crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec)
 }
 
 /// CLI entry.
 pub fn run(opts: CloseOrchestrateOpts) {
     let started = std::time::Instant::now();
     let mut gates: Vec<GateReport> = Vec::new();
+    // Resolved ONCE, up here: the QA gate below reads the recorded verdict from
+    // this root, and the chained finalize writes to the same one.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
     // 1. verify-pipeline (build/test gate).
     let (ok, dur, _) = run_subcmd(&["verify-pipeline"]);
@@ -126,14 +156,13 @@ pub fn run(opts: CloseOrchestrateOpts) {
         summary: None,
     });
 
-    // 2. qa-run --spec <spec>.
-    let (qa_ok, qa_dur, qa_out) = run_subcmd(&["qa-run", "--spec", &opts.spec]);
+    // 2. qa-run --spec <spec>. The run is what RECORDS a verdict; the gate then
+    //    reads the record ([`qa_gate_passes`]), never this subprocess's exit
+    //    code — it exits 0 on `skip`. `qa_summary` is for the operator-facing
+    //    report only and never decides.
+    let (_qa_ran, qa_dur, qa_out) = run_subcmd(&["qa-run", "--spec", &opts.spec]);
     let qa_summary = qa_overall(&qa_out);
-    // Treat `skip` as a pass for the overall verdict (no AC = no fail).
-    let qa_pass = qa_ok
-        && qa_summary
-            .as_deref()
-            .map_or(qa_ok, |s| s == "pass" || s == "skip");
+    let qa_pass = qa_gate_passes(&cwd, &opts.spec);
     gates.push(GateReport {
         name: "qa-run".to_string(),
         ok: qa_pass,
@@ -200,7 +229,7 @@ pub fn run(opts: CloseOrchestrateOpts) {
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "close-orchestrate", total as u64, Some(opts.spec.as_str()), json!({ "chained": chained, "verified": verified }));
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "close-orchestrate", total, Some(opts.spec.as_str()), json!({ "chained": chained, "verified": verified }));
 }
 
 /// Gate name of the advisory summary step — excluded from the close verdict by
@@ -229,12 +258,14 @@ fn close_overall(gates: &[GateReport]) -> bool {
 /// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
 fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    // Use `finalize`, NOT `run_complete`: the qa-run gate above already ran every
-    // AC and gated `overall_pass`, and its `qa.result=pass` event satisfies the
-    // `emit_pipeline` QA safety net. `run_complete` would re-execute every AC a
-    // second time in-process — wasted minutes (a full `cargo test`) for zero new
-    // signal. `finalize` is the qa-less terminal path `close-pipeline` already
-    // uses for exactly this reason.
+    // Use `finalize`, NOT `run_complete`: the QA gate above already ran every AC
+    // and, crucially, gated on the RECORDED `qa.result overall=pass` — the same
+    // fact `run_complete`'s admission would read, so routing here would refuse
+    // nothing and only re-execute every AC a second time in-process (wasted
+    // minutes for zero new signal). That claim is only safe because the gate is
+    // strict: until it was fixed it accepted `skip`, and this line asserted a
+    // verification that had not happened. `finalize` is the qa-less terminal path
+    // `close-pipeline` already uses for exactly this reason.
     let _ = crate::commands::spec::complete_spec::finalize(&cwd, spec);
     let verified = crate::commands::event::verify_emit::verify_event_landed(
         &cwd,
@@ -316,6 +347,66 @@ mod tests {
     fn qa_overall_missing_field_returns_none() {
         assert!(qa_overall("{}").is_none());
         assert!(qa_overall("not json").is_none());
+    }
+
+    /// The shape `qa-run` ACTUALLY prints. The reader looked for `overall` at
+    /// the top level while the command emits `{ event, payload: { overall } }`,
+    /// so it always answered `None` — which is why the gate report shipped with
+    /// no `summary` and the decision silently fell back to the subprocess exit
+    /// code. The bare form the tests above use still works.
+    #[test]
+    fn qa_overall_reads_the_shape_qa_run_really_prints() {
+        let real = r#"{"event":"qa.result","payload":{"spec":"s","overall":"skip","criteria":[]}}"#;
+        assert_eq!(qa_overall(real).as_deref(), Some("skip"));
+        let passing = r#"{"event":"qa.result","payload":{"spec":"s","overall":"pass"}}"#;
+        assert_eq!(qa_overall(passing).as_deref(), Some("pass"));
+    }
+
+    /// The gate itself, both directions: a run that verified nothing must NOT
+    /// open the close, and a recorded pass must.
+    ///
+    /// This is the composite half of the side-door fix. `close-orchestrate` used
+    /// to accept `skip` — and, because the stdout read above never resolved, to
+    /// accept "the subprocess exited 0", which `qa-run` does on `skip`. So it
+    /// chained the finalize and wrote `pipeline.complete` with nothing verified,
+    /// while `close-pipeline` refused the same shape. Now both read the recorded
+    /// verdict through the one predicate.
+    #[test]
+    fn a_skip_verdict_does_not_open_the_composite_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "composite-gate-spec";
+
+        // Nothing recorded at all → shut.
+        assert!(!qa_gate_passes(cwd, spec), "no verdict is not a pass");
+
+        // A recorded `skip` → still shut. The exact shape that used to chain.
+        emit_qa_result(cwd, spec, "skip");
+        assert!(
+            !qa_gate_passes(cwd, spec),
+            "a run that verified nothing must not open the close"
+        );
+
+        // A recorded `pass` → open, so the gate cannot pass by refusing always.
+        emit_qa_result(cwd, spec, "pass");
+        assert!(qa_gate_passes(cwd, spec), "a recorded pass must open it");
+    }
+
+    /// Write one `qa.result` for `spec` through the production router, so the
+    /// gate reads a real event row rather than a hand-built fixture.
+    fn emit_qa_result(cwd: &Path, spec: &str, overall: &str) {
+        use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-07-26T00:00:00.000Z".to_string(),
+            session_id: "s-test".to_string(),
+            wave: 0,
+            actor: Actor { kind: ActorKind::Cli, id: Some("test".to_string()), actor_type: None },
+            event: "qa.result".to_string(),
+            payload: serde_json::json!({ "spec": spec, "overall": overall, "criteria": [] }),
+            spec: Some(spec.to_string()),
+        };
+        let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
     }
 
     #[test]

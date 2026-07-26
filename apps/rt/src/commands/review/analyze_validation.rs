@@ -287,10 +287,14 @@ fn looks_like_file_path(token: &str) -> bool {
 /// The shipped spec law (`plugin/refs/feature/spec-language.md`, "Contexto
 /// rules") makes the PRD layer prose-only: `## Context` briefs a human
 /// rediscovering the work next week, so file paths, line numbers, identifiers
-/// and bullet lists belong to `## Root cause` / `## Files` / `## Tasks`. The law
-/// shipped but nothing enforced it, and the drafter itself violated it — it
-/// spliced the scan digest's anchors into Context as a bullet list of paths.
-/// Checked here so the violation is caught wherever it comes from.
+/// and bullet lists belong to `## Root cause` / `## Files` / `## Tasks` — and a
+/// VERIFIED FINDING to `## Evidence`, the section the conversation channel
+/// (`spec-draft --material`) materialises. The rule is unchanged; what changed
+/// is that the message now names where a finding actually goes, because a rule
+/// that rejects without naming the destination is how the material ends up
+/// nowhere. The law shipped but nothing enforced it, and the drafter itself
+/// violated it — it spliced the scan digest's anchors into Context as a bullet
+/// list of paths. Checked here so the violation is caught wherever it comes from.
 fn context_prose_violations(content: &str) -> Vec<String> {
     let Some(block) = crate::commands::spec::spec_sections::section_block(content, "context")
     else {
@@ -326,36 +330,107 @@ fn truncate_for_message(s: &str) -> String {
 /// feature was actually built, so it verifies nothing. These are the rubber
 /// stamps F6 kills: a bare `cargo build`/`cargo check`, a `cargo test` with no
 /// test-name filter (it just re-runs the pre-existing suite), `npm test`/
-/// `npm run build`, or a source `grep`/`rg` (asserts textual presence, not
-/// runtime behaviour).
+/// `npm run build`, or a source `grep`/`rg` (asserts textual presence OR
+/// absence — neither is runtime behaviour).
 ///
-/// Deliberately conservative to avoid false positives: a COMPOUND command
-/// (`&&` / `||` / `;` / `|`) is never weak (the author combined steps on
-/// purpose), and any positional test-name / assertion target makes it strong.
-/// A leading `rtk ` wrapper is transparent. Pure, total, never panics.
+/// A COMPOUND command is judged BY ITS PARTS: the whole is weak only when EVERY
+/// part is weak, so `cargo test -p x foo && ./verify.sh` stays strong while
+/// `rg -q 'literal' src/lib.rs && echo OK` — a presence search wearing a
+/// compound coat — is weak, because a bare `echo`/`true`/`:` asserts nothing.
+/// The blanket "the author combined steps on purpose" exemption this replaces
+/// was walked straight through by that shape in the field.
+///
+/// A leading `rtk ` wrapper is transparent, and any positional test-name /
+/// assertion target makes a part strong. Pure, total, never panics.
 fn is_weak_ac_command(command: &str) -> bool {
     let cmd = command.trim();
-    if cmd.is_empty()
-        || cmd.contains("&&")
-        || cmd.contains("||")
-        || cmd.contains(';')
-        || cmd.contains('|')
-    {
+    if cmd.is_empty() {
         return false;
     }
+    let parts = split_command_parts(cmd);
+    // A part that asserts nothing cannot rescue its neighbours, and a single
+    // strong part is enough to make the whole a real verification.
+    parts.iter().all(|part| is_weak_command_part(part))
+}
+
+/// Split a shell command on its top-level operators (`&&`, `||`, `;`, `|`),
+/// ignoring any that sit inside quotes so a pattern like `rg 'a|b' src` stays
+/// ONE part. An unterminated quote yields the whole command as a single part —
+/// when the split cannot be trusted, the judgement falls back to the whole
+/// string rather than to a fabricated part list. Pure, total.
+fn split_command_parts(cmd: &str) -> Vec<&str> {
+    let bytes = cmd.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+                i += 1;
+            }
+            None => {
+                if b == b'\'' || b == b'"' || b == b'`' {
+                    quote = Some(b);
+                    i += 1;
+                    continue;
+                }
+                let width = match b {
+                    b'&' if bytes.get(i + 1) == Some(&b'&') => 2,
+                    b'|' if bytes.get(i + 1) == Some(&b'|') => 2,
+                    b';' | b'|' => 1,
+                    _ => 0,
+                };
+                if width == 0 {
+                    i += 1;
+                    continue;
+                }
+                parts.push(cmd[start..i].trim());
+                i += width;
+                start = i;
+            }
+        }
+    }
+    if quote.is_some() {
+        return vec![cmd];
+    }
+    parts.push(cmd[start..].trim());
+    parts.retain(|p| !p.is_empty());
+    if parts.is_empty() {
+        return vec![cmd];
+    }
+    parts
+}
+
+/// Whether ONE part of a command is weak — a tautology, or a step that asserts
+/// nothing at all. The per-part half of [`is_weak_ac_command`]: it never looks
+/// at operators, so the two concerns stay separable and testable apart.
+///
+/// A search (`grep`/`rg`/…) is ALWAYS weak here, in either direction. An
+/// absence search used to be exempt as a "genuine post-condition", but
+/// `--files-without-match` exits 0 precisely when the pattern matches nothing
+/// and `-v` exits 0 when any single line fails to match — whether such a search
+/// CAN fail is a fact about the repository, which only the negative test
+/// (`ac-negative-check`) can establish. Pure, total.
+fn is_weak_command_part(part: &str) -> bool {
     // `rtk` is a transparent RTK passthrough — the weakness (if any) lives in
     // the wrapped command.
+    let cmd = part.trim();
     let cmd = cmd.strip_prefix("rtk ").map_or(cmd, str::trim_start);
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     let Some(&first) = tokens.first() else {
         return false;
     };
     match first {
-        // A pure source PRESENCE search asserts textual presence, not
-        // behaviour — weak. But an ABSENCE search (`--files-without-match`,
-        // `grep -L`, `rg -v`) is a genuine post-condition that `qa-run` runs
-        // and grades by exit code, so it is exempt.
-        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" => !is_absence_search(cmd),
+        // Asserts NOTHING: a step whose only job is to exit 0. Chained after a
+        // real command it also swallows nothing — it just re-states success.
+        "echo" | "true" | ":" => true,
+        // A source search asserts textual presence or absence, not behaviour.
+        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" => true,
         // A bare build word / whole-project type-check with no target.
         "build" | "tsc" | "make" if tokens.len() == 1 => true,
         "cargo" => match tokens.get(1).copied() {
@@ -373,19 +448,6 @@ fn is_weak_ac_command(command: &str) -> bool {
         },
         _ => false,
     }
-}
-
-/// Whether a search command is an ABSENCE / negation assertion rather than a
-/// presence one. `rg --files-without-match PATTERN FILE` / `grep -L` / `rg -v`
-/// exit non-zero when the string is STILL present, so they verify a real
-/// post-condition (e.g. "the deprecated call is gone") — `qa-run` runs and
-/// grades exactly these. (`-L` also means follow-symlinks in `rg`; treating
-/// such a command as non-weak only drops a false-positive WARN — the safe
-/// direction.) Pure, total.
-fn is_absence_search(cmd: &str) -> bool {
-    cmd.contains("--files-without-match")
-        || cmd.contains("--invert-match")
-        || cmd.split_whitespace().any(|t| t == "-L" || t == "-v")
 }
 
 /// Whether a `cargo test …` invocation carries a positional test-name filter
@@ -693,9 +755,10 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
             "severity": "WARN",
             "type": "context-not-prose",
             "message": format!(
-                "The Context section is prose-only — it briefs a human rediscovering the work, \
-                 so file paths, line numbers and bullet lists belong to Root cause / Files / \
-                 Tasks. Found: {}.",
+                "The Context section is prose-only — it briefs a human rediscovering the work. \
+                 A VERIFIED FINDING, with the file and line it was checked at, belongs to the \
+                 Evidence section (carried in by `spec-draft --material`); other paths and \
+                 lists belong to Root cause / Files / Tasks. Found: {}.",
                 context_violations.join(", ")
             ),
         }));
@@ -824,14 +887,55 @@ mod tests {
         }
     }
 
+    /// V6, all three directions: no exemption lets a search that cannot fail
+    /// read as strong.
+    ///
+    /// The two escapes this locks shut were both live in the field. A
+    /// search-for-ABSENCE was exempt as a "genuine post-condition", but
+    /// `--files-without-match` exits 0 precisely when the pattern matches
+    /// nothing. And ANY compound command was exempt on the reasoning that the
+    /// author combined steps on purpose — so a presence search wearing a
+    /// compound coat (`rg -q … && echo OK`) walked straight through. A
+    /// genuinely combined command, with one part that really asserts something,
+    /// must still read strong.
     #[test]
-    fn absence_search_is_not_weak() {
-        // A presence search is weak; an absence search (files-without-match /
-        // grep -L / rg -v) is a real post-condition that `qa-run` grades.
-        assert!(is_weak_ac_command("rg -q Foo src/lib.rs"));
-        assert!(!is_weak_ac_command("rg --files-without-match Foo src/lib.rs"));
-        assert!(!is_weak_ac_command("grep -L Foo src/lib.rs"));
-        assert!(!is_weak_ac_command("rg -v Foo src/lib.rs"));
+    fn a_search_that_cannot_fail_is_never_exempt() {
+        // 1. A search is weak in EITHER direction — presence or absence.
+        assert!(is_weak_ac_command("rg -q Foo src/lib.rs"), "presence search");
+        assert!(is_weak_ac_command("rg --files-without-match Foo src/lib.rs"));
+        assert!(is_weak_ac_command("grep -L Foo src/lib.rs"));
+        assert!(is_weak_ac_command("rg -v Foo src/lib.rs"));
+
+        // 2. A literal search chained to a step that asserts nothing is weak:
+        //    every part is weak, so the compound coat changes nothing.
+        assert!(is_weak_ac_command("rg -q 'fn build_report' src/lib.rs && echo OK"));
+        assert!(is_weak_ac_command("grep -q Foo src/lib.rs; true"));
+        assert!(is_weak_ac_command("cargo build && echo done"));
+
+        // 3. A genuinely combined command keeps its strength — ONE part that
+        //    really asserts something is enough.
+        assert!(!is_weak_ac_command("cargo test -p mustard-rt my_case && ./verify.sh"));
+        assert!(!is_weak_ac_command("rg -q Foo src/lib.rs && ./verify.sh"));
+        assert!(!is_weak_ac_command("cargo build && curl -sf localhost/health"));
+    }
+
+    /// The operator split is quote-aware: an operator INSIDE a search pattern is
+    /// not a compound boundary, so `rg 'a|b'` stays one (weak) part instead of
+    /// being sliced into fragments that judge nothing.
+    #[test]
+    fn command_parts_split_only_on_top_level_operators() {
+        assert_eq!(split_command_parts("cargo test foo"), vec!["cargo test foo"]);
+        assert_eq!(
+            split_command_parts("rg -q 'a|b' src && echo OK"),
+            vec!["rg -q 'a|b' src", "echo OK"]
+        );
+        assert_eq!(
+            split_command_parts("a && b || c; d | e"),
+            vec!["a", "b", "c", "d", "e"]
+        );
+        // An unterminated quote: the split cannot be trusted, so the whole
+        // string is judged as one part rather than as invented fragments.
+        assert_eq!(split_command_parts("rg -q 'a && b"), vec!["rg -q 'a && b"]);
     }
 
     /// V6b: a FILTERED `cargo test` (strong, so NOT flagged weak) that declares

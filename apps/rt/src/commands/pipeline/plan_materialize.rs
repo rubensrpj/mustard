@@ -15,6 +15,12 @@
 //!    [`crate::commands::wave::wave_dependency::validate_plan_dag`] over the
 //!    plan's file union (WARN-level). Folded in so the check runs every time,
 //!    not only when the orchestrator relays a separate `wave-dependency` call.
+//! 2c. `ac-negative-check`'s NEGATIVE TEST —
+//!    [`crate::commands::review::ac_negative_check::check`] over the parent
+//!    `spec.md`'s own acceptance criteria. BLOCKING, unlike 2 and 2b: a
+//!    criterion that was not proven ABLE to fail withholds the PLAN transition
+//!    and exits 2, exactly like the uncovered-criteria coverage gate below —
+//!    and, like it, with NO env knob.
 //! 3. `emit-pipeline --kind pipeline.scope` — the typed
 //!    [`PipelineScopePayload`] with `scope: "full"` (this composite exists for
 //!    the Full/wave-plan flow) + the scaffolded wave count.
@@ -35,9 +41,15 @@
 //!     "created_files": [], "skipped": [], "refreshed": [], "removed": []
 //!   },
 //!   "validation": { "ok": true, "issues": [] },
-//!   "dependencies": { "ok": true, "issues": [] }
+//!   "dependencies": { "ok": true, "issues": [] },
+//!   "proof": { "ok": true, "proven": 0, "exempt": 0, "unproven": [] }
 //! }
 //! ```
+//!
+//! The `proof` slot carries only the counts, the ledger path and the ids of the
+//! criteria that failed the negative test with the engine's own (constant)
+//! reason — never the captured command output, which carries the machine's
+//! paths and the run's timings and would break byte-stability on stdout.
 //!
 //! `events` lists the composed emission steps that ran (empty when the
 //! scaffold failed — no phase transition is recorded for a plan that did not
@@ -51,6 +63,7 @@
 //! timestamps or volatile paths appear on stdout.
 
 use crate::commands::event::emit_phase;
+use crate::commands::review::ac_negative_check::{self, Verdict};
 use crate::commands::review::analyze_validation;
 use crate::commands::wave::wave_dependency;
 use crate::commands::wave::wave_scaffold::{self, ScaffoldOutcome};
@@ -83,11 +96,18 @@ const ERR_PLAN_UNREADABLE: &str = "plan unreadable";
 /// enforced unconditionally in the pipeline (no env knob).
 const ERR_UNCOVERED_ACS: &str = "uncovered acceptance criteria";
 
+/// Stdout `proof.error` marker for a spec carrying an acceptance criterion that
+/// was never proven ABLE to fail. [`run`] maps it to exit 2 and [`materialize`]
+/// withholds the PLAN transition — the negative-test gate, enforced
+/// unconditionally in the pipeline (no env knob), like the coverage gate above.
+const ERR_UNPROVEN_ACS: &str = "unproven acceptance criteria";
+
 /// CLI entry — resolves the paths against the cwd and prints the composite
-/// report. Exit code: 0 on success and on advisory failures (validation is
-/// WARN-level; failures are expressed in the JSON), 2 when the plan file
-/// could not be read/parsed, or an uncovered acceptance criterion tripped the
-/// coverage gate — either way a non-zero exit so the orchestrator notices.
+/// report. Exit code: 0 on success and on advisory failures (validation and the
+/// dependency DAG are WARN-level; failures are expressed in the JSON), 2 when
+/// the plan file could not be read/parsed, an uncovered acceptance criterion
+/// tripped the coverage gate, or an unproven one tripped the negative-test gate
+/// — either way a non-zero exit so the orchestrator notices.
 pub fn run(opts: PlanMaterializeOpts) {
     let project = PathBuf::from(crate::shared::context::project_dir());
     // Accept the three spec-dir spellings (a directory, a `…/spec.md` path, a
@@ -103,7 +123,11 @@ pub fn run(opts: PlanMaterializeOpts) {
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
     );
     let scaffold_err = report["scaffold"]["error"].as_str();
-    if scaffold_err == Some(ERR_PLAN_UNREADABLE) || scaffold_err == Some(ERR_UNCOVERED_ACS) {
+    let proven = report["proof"]["ok"].as_bool().unwrap_or(false);
+    if scaffold_err == Some(ERR_PLAN_UNREADABLE)
+        || scaffold_err == Some(ERR_UNCOVERED_ACS)
+        || !proven
+    {
         std::process::exit(2);
     }
 }
@@ -199,10 +223,20 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
     //     second import parser.
     let dependencies = wave_dependency::validate_plan_dag(plan_path, project);
 
+    // 2c. The negative test over the parent spec's own acceptance criteria —
+    //     composed in-process from `ac-negative-check`, exactly as the two
+    //     advisory steps above are. BLOCKING, and deliberately HERE: a refusal
+    //     that first appeared at the approval gesture would land at the instant
+    //     of highest expectation, while during planning a criterion that cannot
+    //     fail is ordinary work to fix. `approve-spec` keeps its own reading of
+    //     the same ledger as the backstop for the Light path.
+    let (proof, proof_ok) = prove_acceptance_criteria(project, spec_dir);
+
     // 3 + 4. Events — only for a plan that actually materialised (no PLAN
-    //    transition for a spec whose scaffold failed) and a resolvable slug.
+    //    transition for a spec whose scaffold failed or whose criteria were not
+    //    proven able to fail) and a resolvable slug.
     let mut events: Vec<String> = Vec::new();
-    if scaffold_ok && !spec.is_empty() {
+    if scaffold_ok && proof_ok && !spec.is_empty() {
         emit_scope_full(project, spec_dir, &spec);
         events.push(EVENT_PIPELINE_SCOPE.to_string());
         // Idempotent: a re-run whose last phase is already PLAN skips the
@@ -218,7 +252,53 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         "scaffold": scaffold_json,
         "validation": validation,
         "dependencies": dependencies,
+        "proof": proof,
     })
+}
+
+/// Run the NEGATIVE TEST over the spec's own acceptance criteria and reduce the
+/// engine's report to the byte-stable slot this composite publishes.
+///
+/// Returns `(report, ok)`; `ok` is `false` — and the caller then withholds the
+/// PLAN transition — when the engine could not run at all OR when any
+/// non-exempt criterion was not proven able to fail. Unconditional: there is no
+/// env knob, matching the coverage gate this file already documents.
+///
+/// Only the counts, the repo-relative ledger path and each unproven criterion's
+/// id + constant reason are published. The engine's per-criterion record also
+/// carries the captured command output, which holds this machine's paths and
+/// this run's timings — publishing it would break the byte-stability the `run`
+/// surface is snapshot-compared for.
+fn prove_acceptance_criteria(project: &Path, spec_dir: &Path) -> (Value, bool) {
+    let report = ac_negative_check::check(project, &spec_dir.to_string_lossy());
+    let unproven: Vec<String> = report
+        .criteria
+        .iter()
+        .filter(|c| c.verdict == Verdict::Unproven)
+        .map(|c| match c.reason.as_deref() {
+            Some(reason) => format!("{} — {reason}", c.id),
+            None => c.id.clone(),
+        })
+        .collect();
+    let ok = report.error.is_none() && unproven.is_empty();
+    let mut slot = json!({
+        "ok": ok,
+        "proven": report.proven,
+        "exempt": report.exempt,
+        "unproven": unproven,
+    });
+    if let Some(ledger) = report.ledger {
+        slot["ledger"] = json!(ledger);
+    }
+    // The engine's own abort reason (`spec-not-found`, `ledger-write-failed`, …)
+    // is NOT a verdict about a criterion, so it is surfaced verbatim instead of
+    // being relabelled as an unproven criterion.
+    if let Some(error) = report.error {
+        slot["error"] = json!(error);
+    } else if !ok {
+        slot["error"] = json!(ERR_UNPROVEN_ACS);
+    }
+    (slot, ok)
 }
 
 /// Run the WARN-level structural validation over `<spec_dir>/spec.md`,
@@ -513,5 +593,114 @@ mod tests {
         );
         // No PLAN transition on a blocked scaffold.
         assert_eq!(report["events"], json!([]), "blocked scaffold emits nothing: {report}");
+    }
+
+    /// A command that comes back RED on both shells (`cmd.exe` and `sh`): the
+    /// directory does not exist, so `cd` exits non-zero.
+    const RED_COMMAND: &str = "cd no-such-directory-abc";
+    /// A command that comes back GREEN on both shells — `cd .` is a builtin
+    /// everywhere and always succeeds.
+    const GREEN_COMMAND: &str = "cd .";
+
+    /// Seed a spec whose FIRST criterion carries `command` and whose second is
+    /// the trailing build-green safety net, plus a one-wave plan claiming both
+    /// (so the coverage gate is satisfied and only the proof can refuse).
+    fn seed_proof_spec(project: &Path, slug: &str, command: &str) -> (PathBuf, PathBuf) {
+        let spec_dir = project.join(".claude").join("spec").join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# Demo\n\n## Files\n- `a.rs` (create)\n\n## Acceptance Criteria\n\
+                 - **AC-1** — when the work lands, then the new behaviour holds.\n  Command: `{command}`\n\
+                 - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+            ),
+        )
+        .unwrap();
+        let plan_path = project.join(format!("{slug}-plan.json"));
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                      "satisfies": ["AC-1", "AC-2"] }
+                ],
+                "total_waves": 1,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        (spec_dir, plan_path)
+    }
+
+    /// AC-7 — the negative-test gate, unconditional and enforced HERE rather
+    /// than at the approval gesture: a criterion whose command already exits
+    /// green against the tree as it is was never proven able to fail, so the
+    /// PLAN transition is WITHHELD and the report names it.
+    ///
+    /// Two-sided by construction: the same spec with a command that DOES fail
+    /// now proves and materialises normally, so the assertion cannot pass by
+    /// the gate refusing everything.
+    #[test]
+    fn an_unproven_criterion_withholds_the_plan_transition() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let (spec_dir, plan_path) = seed_proof_spec(project, "demo-proof", GREEN_COMMAND);
+
+        let blocked = materialize(project, &spec_dir, &plan_path);
+
+        // The refusal comes from the PROOF, not from the scaffold: the layout
+        // materialised and every criterion is claimed by a wave.
+        assert!(
+            blocked["scaffold"]["error"].is_null(),
+            "the scaffold itself is clean — only the proof refuses: {blocked}"
+        );
+        assert_eq!(blocked["proof"]["ok"], json!(false), "{blocked}");
+        assert_eq!(
+            blocked["proof"]["error"],
+            json!(ERR_UNPROVEN_ACS),
+            "{blocked}"
+        );
+        assert!(
+            blocked["proof"]["unproven"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|u| u.as_str().unwrap_or_default().starts_with("AC-1")),
+            "the vacuous criterion is named: {blocked}"
+        );
+        // The trailing criterion is exempt, never tested.
+        assert_eq!(blocked["proof"]["exempt"], json!(1), "{blocked}");
+        // The gate's whole point: the plan does not advance.
+        assert_eq!(
+            blocked["events"],
+            json!([]),
+            "an unproven criterion withholds the PLAN transition: {blocked}"
+        );
+        let events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
+            &spec_dir.join(".events"),
+        );
+        assert!(
+            !events.iter().any(|e| e.event == "pipeline.phase"),
+            "no PLAN phase reached the log"
+        );
+        // Nothing volatile on stdout: the captured command output stays in the
+        // ledger, never in the report.
+        assert!(
+            blocked["proof"].get("stderr_excerpt").is_none(),
+            "the proof slot publishes no captured output: {blocked}"
+        );
+
+        // The other direction — the SAME spec with a criterion that can fail.
+        let (spec_dir, plan_path) = seed_proof_spec(project, "demo-proven", RED_COMMAND);
+        let allowed = materialize(project, &spec_dir, &plan_path);
+        assert_eq!(allowed["proof"]["ok"], json!(true), "{allowed}");
+        assert_eq!(allowed["proof"]["proven"], json!(1), "{allowed}");
+        assert_eq!(
+            allowed["events"],
+            json!(["pipeline.scope", "pipeline.phase"]),
+            "a proven plan materialises normally: {allowed}"
+        );
     }
 }

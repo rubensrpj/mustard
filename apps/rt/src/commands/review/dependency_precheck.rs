@@ -10,6 +10,14 @@
 //! orchestrator parses the JSON to decide whether to surface a tactical-fix
 //! suggestion before paying tokens to discover the gap mid-dispatch.
 //!
+//! ## What `ok` means — and what it does not
+//!
+//! `ok: true` is NOT "safe to dispatch". Every report carries
+//! `checks_performed`, naming the passes that actually ran; `ok` is a verdict
+//! over exactly those and nothing else. A green report therefore says the
+//! symbols exist — it says nothing about whether the CAPABILITY the wave needs
+//! is present, and this gate does not attempt to find out.
+//!
 //! Environment override `MUSTARD_DEPENDENCY_PRECHECK_MODE`:
 //!  - `off`  → force `ok: true` regardless of detection
 //!  - `warn` → emit the report as-is (orchestrator treats advisory)
@@ -104,6 +112,19 @@ const EXTRA_STRIP_HEADINGS: &[&str] = &[
     "Lições",
     "Lessons Learned",
 ];
+
+// ---------------------------------------------------------------------------
+// Check-scope labels — what `ok` actually stands for
+// ---------------------------------------------------------------------------
+
+/// Label for the symbol-resolution pass: every capitalized JSX tag and every
+/// named/default import the spec references is `export`ed somewhere inside the
+/// containing subproject.
+const CHECK_SYMBOLS_RESOLVE: &str = "imported-symbols-resolve-in-subproject";
+
+/// Label for the cross-spec promise pass: each missing symbol is classified
+/// against what the governing wave plan's parent waves promised to deliver.
+const CHECK_PARENT_WAVE_PROMISES: &str = "parent-wave-promises-classified";
 
 /// One detected dependency reference.
 #[derive(Debug, Clone)]
@@ -932,6 +953,8 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
         println!(
             "{}",
             json!({
+                // Nothing was verified — no spec to read.
+                "checks_performed": [],
                 "missing": [],
                 "ok": true,
                 "promise_violations": [],
@@ -987,6 +1010,8 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
     // the spec WAS read and simply declares no files: that one is a real pass.
     let Ok(spec_text) = fs::read_to_string(&spec_path) else {
         return json!({
+            // Nothing was verified — the spec could not be read.
+            "checks_performed": [],
             "missing": [],
             "ok": false,
             "promise_violations": [],
@@ -1001,6 +1026,9 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
     let files = parse_files_section(&spec_text);
     if files.is_empty() {
         return json!({
+            // Nothing was verified — the spec declares no `## Files`, so there
+            // was no subproject to resolve symbols against.
+            "checks_performed": [],
             "missing": [],
             "ok": true,
             "promise_violations": [],
@@ -1062,6 +1090,8 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
     let target_langs = mustard_core::resolve_target_languages(&files, &model_path, &repo_root);
     if !mustard_core::target_understood(&target_langs) {
         return json!({
+            // Nothing was verified — this gate cannot parse the target stack.
+            "checks_performed": [],
             "languages": target_langs.into_iter().collect::<Vec<_>>(),
             "missing": [],
             "mode": mode,
@@ -1115,8 +1145,9 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
     // Cross-spec promise check: classify every missing symbol against the
     // governing wave plan (if any). Layout: `{spec_dir}/wave-plan.md` plus
     // sibling `wave-N-role/spec.md` directories.
-    let promise_violations: Vec<Value> = if let Some(plan_path) = find_wave_plan(&spec_path) {
-        let plan_text = fs::read_to_string(&plan_path).unwrap_or_default();
+    let wave_plan_path = find_wave_plan(&spec_path);
+    let promise_violations: Vec<Value> = if let Some(plan_path) = wave_plan_path.as_ref() {
+        let plan_text = fs::read_to_string(plan_path).unwrap_or_default();
         let current_wave = extract_wave_number_from_spec_path(&spec_path);
         let parent_waves = match current_wave {
             Some(n) => parse_wave_plan_deps(&plan_text, n),
@@ -1153,7 +1184,19 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
         Vec::new()
     };
 
+    // What `ok` actually stands for. Field evidence (2026-07): a wave dispatched
+    // on a green pre-gate came back BLOCKED on two criteria because what was
+    // missing was a CAPABILITY, not a symbol — `ok: true` had been read as "safe
+    // to dispatch" when all it ever established was the narrower fact below.
+    // Naming the passes is the whole fix: this gate does NOT detect capabilities
+    // and must not pretend to.
+    let mut checks_performed: Vec<&str> = vec![CHECK_SYMBOLS_RESOLVE];
+    if wave_plan_path.is_some() {
+        checks_performed.push(CHECK_PARENT_WAVE_PROMISES);
+    }
+
     json!({
+        "checks_performed": checks_performed,
         "missing": missing,
         "mode": mode,
         "ok": effective_ok,
@@ -1168,6 +1211,61 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The report now STATES the scope of what it verified, so `ok` can no
+    /// longer be read as "safe to dispatch".
+    ///
+    /// Asserts the new signal (`checks_performed` names the symbol pass on a
+    /// real run) and that the old behaviour is gone: a green report used to
+    /// carry `ok: true` with nothing at all saying what `true` covered — and the
+    /// scope-less green is exactly what the field incident acted on. The
+    /// `no-files-section` branch is the sharpest case: it is green while having
+    /// verified NOTHING, and must now say so with an empty list.
+    #[test]
+    fn the_pre_gate_names_the_scope_it_verified() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        // `find_project_root` anchors on `.claude/`.
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("demo")).unwrap();
+        std::fs::create_dir_all(root.join("apps").join("web").join("src")).unwrap();
+
+        let spec_md = root.join(".claude").join("spec").join("demo").join("spec.md");
+        std::fs::write(
+            &spec_md,
+            "# Demo\n\n## Files\n- apps/web/src/Panel.tsx\n\n## Tasks\n\
+             - [ ] import { MissingWidget } from \"../widgets\";\n",
+        )
+        .unwrap();
+
+        let report = check(&spec_md.to_string_lossy(), None);
+        let checks: Vec<&str> = report
+            .get("checks_performed")
+            .and_then(Value::as_array)
+            .expect("every report must state its check scope")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            checks.contains(&CHECK_SYMBOLS_RESOLVE),
+            "a real run must name the symbol-resolution pass: {report}"
+        );
+        // Honest labelling only — the gate must NOT claim a capability check.
+        assert!(
+            !checks.iter().any(|c| c.contains("capabilit")),
+            "this gate does not detect capabilities: {report}"
+        );
+
+        // The green-but-verified-nothing branch: `ok:true` with an EMPTY scope.
+        let empty_spec = root.join(".claude").join("spec").join("demo").join("empty.md");
+        std::fs::write(&empty_spec, "# Demo\n\nNo files section here.\n").unwrap();
+        let green = check(&empty_spec.to_string_lossy(), None);
+        assert_eq!(green.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            green.get("checks_performed").and_then(Value::as_array),
+            Some(&Vec::new()),
+            "a green report that verified nothing must say so, not stay silent: {green}"
+        );
+    }
 
     #[test]
     fn whitelist_html_primitives_skipped() {

@@ -6,10 +6,12 @@
 //! hooks, all `PreToolUse(Write|Edit)` gates:
 //!
 //! - `spec-size-gate.js` — warns/blocks an oversized spec `.md` file
-//!   (warn 200 / strict-warn 400 / block 500 lines). Its second concern, the
-//!   advisory **AC quality audit**, is also ported — it never blocks.
-//! - `skill-size-gate.js` — the same three-tier line check for `SKILL.md`
-//!   files, skipping generated skills in warn mode.
+//!   (warn 500 / strict-warn 700 / block 800 lines — see [`SPEC_WARN_LINES`]
+//!   for the derivation). Its second concern, the advisory **AC quality
+//!   audit**, is also ported — it never blocks.
+//! - `skill-size-gate.js` — the same three-tier shape for `SKILL.md` files
+//!   (warn 200 / strict-warn 400 / block 500 lines), skipping generated skills
+//!   in warn mode.
 //! - `skill-validate-gate.js` — validates `SKILL.md` YAML frontmatter
 //!   (kebab-case `name`, `description` with trigger words, `source: scan|manual`).
 //!
@@ -41,10 +43,55 @@ use crate::util::format_gate_message;
 // Shared: content extraction (mode resolution lives in `shared::gate_mode`)
 // ---------------------------------------------------------------------------
 
-/// The line-count thresholds shared by the spec and skill size gates.
-const WARN_LINES: usize = 200;
-const STRICT_WARN_LINES: usize = 400;
-const BLOCK_LINES: usize = 500;
+/// The line-count thresholds for the **skill** size gate.
+///
+/// A `SKILL.md` really is the instruction-file kind of cost: its `description`
+/// is loaded into EVERY session, and the body is spliced in whenever the skill
+/// triggers. Permanent and global — which is exactly why an oversized one makes
+/// its own rules get ignored. These are the published instruction-file numbers
+/// and they stay put; the spec side moved away from them, this side did not.
+const SKILL_WARN_LINES: usize = 200;
+const SKILL_STRICT_WARN_LINES: usize = 400;
+const SKILL_BLOCK_LINES: usize = 500;
+
+/// The line-count thresholds for the **spec** size gate.
+///
+/// ## Why these are no longer the skill numbers
+///
+/// A spec is not loaded like an instruction file. Its loading model has exactly
+/// two readers:
+///
+/// 1. the orchestrator, which reads the whole file ONCE while planning; and
+/// 2. each implementer, which never receives the whole file — the per-wave
+///    renderer extracts named sections (`render::sections::read_task_steps`
+///    cuts the wave's `## Tasks`; `filter_task_lines` narrows it further).
+///
+/// So the cost is per-wave and selective, not permanent and global, and what
+/// degrades as a spec grows is the per-wave EXTRACT — not the total. Sizing a
+/// spec by the always-on instruction file's ceiling imported a reason that does
+/// not transfer.
+///
+/// ## Derivation
+///
+/// A spec is a shared narrative head plus one extracted section per wave:
+///
+/// - **head ≈ 200 lines** — Context, Acceptance Criteria, Files, Boundaries:
+///   the part every reader gets. Measured, not guessed: the largest spec in
+///   this project's history is 160 lines and is entirely this head.
+/// - **wave section ≈ 100 lines** — a wave declares at most
+///   `MUSTARD_WAVE_SIZE_LIMIT` files (default 10, see
+///   `commands::wave::wave_size_check::resolve_limit`) at roughly 10 lines of
+///   task text each.
+/// - **6 waves** — the decomposition cap, matching `MAX_FALLBACK_LAYERS` in
+///   `commands::wave::wave_dependency`: "a handful of layers, not a dozen".
+///
+/// Hence `head + n × section`: advisory at 3 waves' worth of material, stronger
+/// advisory at 5, block at the 6-wave cap. Past the block line at least one
+/// wave's extract must be over its own budget — that is the point at which the
+/// thing that actually degrades starts degrading.
+const SPEC_WARN_LINES: usize = 500;
+const SPEC_STRICT_WARN_LINES: usize = 700;
+const SPEC_BLOCK_LINES: usize = 800;
 
 /// Count newline-separated segments — JS `content.split('\n').length`.
 fn count_lines(content: &str) -> usize {
@@ -139,49 +186,55 @@ fn is_spec_path(file_path: &str) -> bool {
 
 /// The spec-size-gate verdict for a spec file of `lines` lines under `mode`.
 ///
-/// 1:1 with `spec-size-gate.js#delegateSizeGate`:
-/// - strict mode + `lines >= 500` → `Deny`;
-/// - warn mode (any tier ≥ 200) → `Warn` advisory, never `Deny`;
-/// - under 200 lines → `Allow`.
+/// Keeps the three-tier shape of `spec-size-gate.js#delegateSizeGate`, re-based
+/// onto the spec's own loading model (see [`SPEC_WARN_LINES`]):
+/// - strict mode + `lines >= 800` → `Deny`;
+/// - warn mode (any tier ≥ 500) → `Warn` advisory, never `Deny`;
+/// - under 500 lines → `Allow`.
+///
+/// The re-base moves what the gate refuses, never whether it can refuse: the
+/// strict-mode block is intact.
 fn spec_size_verdict(lines: usize, mode: GateMode) -> Verdict {
-    if mode == GateMode::Strict && lines >= BLOCK_LINES {
+    if mode == GateMode::Strict && lines >= SPEC_BLOCK_LINES {
         return Verdict::Deny {
             reason: format_gate_message(
                 "Spec Size",
-                &format!("spec exceeds the {BLOCK_LINES}-line hard limit ({lines} lines)"),
-                "oversized specs are hard to read and review",
+                &format!("spec exceeds the {SPEC_BLOCK_LINES}-line hard limit ({lines} lines)"),
+                "past this point at least one wave's extracted section is over its own budget",
                 "split into references/{section}.md (see feature/SKILL.md § Spec Layout), \
                  or set MUSTARD_SPEC_SIZE_MODE=warn",
             ),
         };
     }
-    if lines >= WARN_LINES {
-        let msg = if lines >= BLOCK_LINES {
+    if lines >= SPEC_WARN_LINES {
+        let msg = if lines >= SPEC_BLOCK_LINES {
             format_gate_message(
                 "Spec Size",
-                &format!("spec has {lines} lines — over the {BLOCK_LINES}-line hard limit"),
+                &format!("spec has {lines} lines — over the {SPEC_BLOCK_LINES}-line hard limit"),
                 "warn mode is active so this is advisory only",
                 "split into references/{section}.md (see feature/SKILL.md § Spec Layout), \
                  or set MUSTARD_SPEC_SIZE_MODE=strict to enforce",
             )
-        } else if lines >= STRICT_WARN_LINES {
+        } else if lines >= SPEC_STRICT_WARN_LINES {
             format_gate_message(
                 "Spec Size",
                 &format!(
                     "spec has {lines} lines — past the strict threshold \
-                     ({STRICT_WARN_LINES}), approaching the {BLOCK_LINES}-line block"
+                     ({SPEC_STRICT_WARN_LINES}), approaching the \
+                     {SPEC_BLOCK_LINES}-line block"
                 ),
-                "oversized specs are hard to read and review",
+                "the per-wave extract is approaching the size at which a wave stops \
+                 being readable in one sitting",
                 "split into references/{section}.md (see feature/SKILL.md § Spec Layout)",
             )
         } else {
             format_gate_message(
                 "Spec Size",
                 &format!(
-                    "spec has {lines} lines (warn at {WARN_LINES}, strict at \
-                     {STRICT_WARN_LINES}, block at {BLOCK_LINES})"
+                    "spec has {lines} lines (warn at {SPEC_WARN_LINES}, strict at \
+                     {SPEC_STRICT_WARN_LINES}, block at {SPEC_BLOCK_LINES})"
                 ),
-                "approaching the size where specs become hard to review",
+                "carrying more than a few waves' worth of material beyond the narrative head",
                 "consider splitting into references/{section}.md",
             )
         };
@@ -513,7 +566,7 @@ fn skill_size_verdict(content: &str, lines: usize, mode: GateMode) -> Verdict {
     if mode == GateMode::Warn && content.trim_start().starts_with("<!-- mustard:generated -->") {
         return Verdict::Allow;
     }
-    if lines >= BLOCK_LINES {
+    if lines >= SKILL_BLOCK_LINES {
         let msg = format!(
             "[skill-size-gate] SKILL.md exceeds 500 lines ({lines} lines) — \
              split verbose sections into references/examples.md"
@@ -523,18 +576,18 @@ fn skill_size_verdict(content: &str, lines: usize, mode: GateMode) -> Verdict {
         }
         return Verdict::Warn { message: msg };
     }
-    if lines >= STRICT_WARN_LINES {
+    if lines >= SKILL_STRICT_WARN_LINES {
         return Verdict::Warn {
             message: format!(
                 "[skill-size-gate] WARN: {lines} lines (strict-warn threshold \
-                 {STRICT_WARN_LINES})"
+                 {SKILL_STRICT_WARN_LINES})"
             ),
         };
     }
-    if lines >= WARN_LINES {
+    if lines >= SKILL_WARN_LINES {
         return Verdict::Warn {
             message: format!(
-                "[skill-size-gate] ADVISORY: {lines} lines (warn threshold {WARN_LINES})"
+                "[skill-size-gate] ADVISORY: {lines} lines (warn threshold {SKILL_WARN_LINES})"
             ),
         };
     }
@@ -855,7 +908,7 @@ mod tests {
         (1..=n).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")
     }
 
-    // --- spec-size-gate parity (size-gates.test.js) ------------------------
+    // --- spec-size-gate tiers (re-based onto the spec's loading model) ------
 
     #[test]
     fn spec_150_lines_warn_mode_allows() {
@@ -863,36 +916,88 @@ mod tests {
     }
 
     #[test]
-    fn spec_250_lines_warn_mode_warns() {
+    fn spec_550_lines_warn_mode_warns() {
         assert!(matches!(
-            spec_size_verdict(250, GateMode::Warn),
+            spec_size_verdict(550, GateMode::Warn),
             Verdict::Warn { .. }
         ));
     }
 
     #[test]
-    fn spec_450_lines_warn_mode_strict_warn_tier() {
-        match spec_size_verdict(450, GateMode::Warn) {
+    fn spec_750_lines_warn_mode_strict_warn_tier() {
+        match spec_size_verdict(750, GateMode::Warn) {
             Verdict::Warn { message } => assert!(message.contains("strict")),
             other => panic!("expected Warn, got {other:?}"),
         }
     }
 
     #[test]
-    fn spec_550_lines_warn_mode_advises_never_denies() {
-        let v = spec_size_verdict(550, GateMode::Warn);
+    fn spec_850_lines_warn_mode_advises_never_denies() {
+        let v = spec_size_verdict(850, GateMode::Warn);
         assert!(!v.is_blocking());
         assert!(matches!(v, Verdict::Warn { .. }));
     }
 
     #[test]
-    fn spec_550_lines_strict_mode_denies() {
-        assert!(spec_size_verdict(550, GateMode::Strict).is_blocking());
+    fn spec_850_lines_strict_mode_denies() {
+        assert!(spec_size_verdict(850, GateMode::Strict).is_blocking());
     }
 
     #[test]
-    fn spec_499_lines_strict_mode_no_deny() {
-        assert!(!spec_size_verdict(499, GateMode::Strict).is_blocking());
+    fn spec_799_lines_strict_mode_no_deny() {
+        assert!(!spec_size_verdict(799, GateMode::Strict).is_blocking());
+    }
+
+    /// The spec ceiling no longer borrows the always-on instruction file's.
+    ///
+    /// A `SKILL.md` description loads into every session; a spec is read once by
+    /// the orchestrator and afterwards only extracted by section. Three things
+    /// must hold at once: the two ceilings are genuinely separate constants; a
+    /// spec sitting at the OLD borrowed warn line is now clean; and the
+    /// strict-mode block still fires above the NEW ceiling — that last one is
+    /// what keeps the gate a gate instead of trading one piece of decoration
+    /// for another.
+    #[test]
+    fn spec_size_ceiling_is_not_the_instruction_file_ceiling() {
+        assert_ne!(
+            SPEC_WARN_LINES, SKILL_WARN_LINES,
+            "the spec gate must stop reusing the instruction-file warn line"
+        );
+
+        // A spec at the OLD warn line (the instruction file's 200) is clean —
+        // in both modes, so this is not just strict mode being lenient.
+        assert_eq!(
+            spec_size_verdict(SKILL_WARN_LINES, GateMode::Warn),
+            Verdict::Allow,
+            "a {SKILL_WARN_LINES}-line spec must no longer be a finding"
+        );
+        assert_eq!(
+            spec_size_verdict(SKILL_WARN_LINES, GateMode::Strict),
+            Verdict::Allow
+        );
+
+        // ...and the strict-mode block survived the re-base.
+        assert!(
+            spec_size_verdict(SPEC_BLOCK_LINES, GateMode::Strict).is_blocking(),
+            "the block must fire AT the new ceiling"
+        );
+        assert!(
+            spec_size_verdict(SPEC_BLOCK_LINES + 200, GateMode::Strict).is_blocking(),
+            "the block must fire above the new ceiling"
+        );
+
+        // The skill gate is untouched: 200 lines of SKILL.md still advises.
+        assert!(
+            matches!(
+                skill_size_verdict(
+                    &make_content(SKILL_WARN_LINES),
+                    SKILL_WARN_LINES,
+                    GateMode::Warn
+                ),
+                Verdict::Warn { .. }
+            ),
+            "the skill ceiling must not have moved with the spec ceiling"
+        );
     }
 
     #[test]

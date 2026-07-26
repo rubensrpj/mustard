@@ -10,13 +10,17 @@
 //! Contract:
 //! - **Glossary write.** It writes a single term block (`## {Term}\n{definition}`)
 //!   into a `CONTEXT.md`; the glossary write itself never touches ADRs or specs.
-//! - **Clarify finalize (F6).** With `--finalize`, the command mints
-//!   `<spec>/.clarified` for the spec — the marker `approve-spec` requires before
-//!   a Full plan may be approved. This is the SINGLE, explicit "clarification
-//!   complete" action; a term capture NEVER mints it, and it needs no term, so a
-//!   complete-glossary Full spec can still be finalized (killing the old
-//!   deadlock). Best-effort and fail-open. The gate itself lives in
-//!   `approve-spec`, not here.
+//! - **Clarify finalize (F6).** With `--finalize`, the command RECORDS the
+//!   clarification into `<spec>/.clarified` — the marker `approve-spec` requires
+//!   before a Full plan may be approved. This is the SINGLE, explicit
+//!   "clarification complete" action; a term capture NEVER mints it. The marker
+//!   must say what was settled: `--term <term>` (repeatable) names the terms the
+//!   grill confirmed, and `--reason "<why>"` states, as a sentence, why no grill
+//!   applied — a complete glossary is a legitimate reason, so a
+//!   complete-glossary Full spec is still never deadlocked. With NEITHER, the
+//!   finalize refuses (`{ok:false, reason:"nothing-to-record"}`, exit 0) instead
+//!   of minting a marker that proves only that it ran. Best-effort and fail-open.
+//!   The gate itself lives in `approve-spec`, not here.
 //! - **Update, not duplicate.** The target is parsed through the SAME resolver
 //!   (`resolve_context_files`, CONTEXT-MAP-aware) and term matcher
 //!   (`parse_term_blocks`) the slicer/coverage use, so a term that already has a
@@ -25,11 +29,14 @@
 //!   drift.
 //! - **Fail-open when absent.** No `--context` resolves to no destination →
 //!   `{ok:false, reason:"no-context-target"}`, exit 0. `grill-capture` itself
-//!   never blocks; the clarify gate it feeds lives in `scope_guard`.
+//!   never blocks; the clarify gate it feeds lives in `approve-spec` (which
+//!   reads the marker's RECORD, not merely its existence).
 //!
-//! Output (stdout, byte-stable pretty JSON):
+//! Output (stdout, byte-stable pretty JSON): a capture emits
 //! `{ ok, action, term, contextFile, reason? }` where `action ∈ {appended,
-//! updated}`. Always exits 0.
+//! updated}`; a finalize emits `{ ok, action:"clarified", spec, terms,
+//! statedReason, reason? }` — `terms` / `statedReason` echo the RECORD written
+//! into the marker, `reason` stays the refusal reason. Always exits 0.
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +45,7 @@ use serde_json::json;
 
 use crate::commands::economy::context_slice::{parse_term_blocks, resolve_context_files};
 use crate::shared::context::{
-    clarified_marker_path, current_spec, marker_body, session_id, spec_for_session,
+    clarified_marker_path, clarify_marker_body, current_spec, session_id, spec_for_session,
 };
 
 /// Resolve the destination `CONTEXT.md` the same way `glossary-coverage` does:
@@ -172,12 +179,20 @@ fn emit(ok: bool, action: &str, term: &str, context_file: &str, reason: Option<&
 
 /// Emit the clarify-finalize result as byte-stable pretty JSON. `spec` is the
 /// resolved spec name (deterministic — no volatile path is emitted).
-fn emit_finalize(ok: bool, spec: &str, reason: Option<&str>) {
+///
+/// `terms` / `stated` echo the RECORD written into the marker, so the caller
+/// reads back exactly what a later reader of `.clarified` will see. `failure` is
+/// the refusal reason and keeps the `reason` key's established meaning (the
+/// `no-context-target` convention of the capture half) — it is NOT the stated
+/// decline, which travels under `statedReason`.
+fn emit_finalize(ok: bool, spec: &str, terms: &[String], stated: &str, failure: Option<&str>) {
     let payload = json!({
         "ok": ok,
         "action": "clarified",
         "spec": spec,
-        "reason": reason,
+        "terms": terms,
+        "statedReason": stated,
+        "reason": failure,
     });
     println!(
         "{}",
@@ -185,72 +200,108 @@ fn emit_finalize(ok: bool, spec: &str, reason: Option<&str>) {
     );
 }
 
-/// Finalize clarification: mint `<spec>/.clarified` unconditionally — no term
-/// required. This is the SINGLE deliberate minter of the marker `approve-spec`
-/// requires before a Full plan may be approved (a term capture never mints it),
-/// so a complete-glossary Full spec is not deadlocked out of approval.
+/// The refusal a finalize with nothing to record earns. Names both honest
+/// paths, because a caller that reached this point has one of the two.
+const NOTHING_TO_RECORD: &str = "nothing-to-record: name what the grill settled \
+     (`--term <term>`, once per confirmed term) or state why no grill applied \
+     (`--reason \"<sentence>\"`) — a complete glossary is a legitimate reason";
+
+/// Finalize clarification: RECORD what the clarification settled into
+/// `<spec>/.clarified`. This is the SINGLE deliberate writer of the marker
+/// `approve-spec` requires before a Full plan may be approved (a term capture
+/// never writes it).
+///
+/// It needs no term, but it does need SUBSTANCE: the terms the grill confirmed
+/// (`terms`), or a stated sentence explaining why no grill applied (`reason`).
+/// The decline is first-class — "the glossary already covers every matched term"
+/// is a legitimate reason — so a complete-glossary Full spec is still not
+/// deadlocked out of approval; it just has to say so. With neither, the finalize
+/// refuses and writes NOTHING, because a marker that names only its spec proves
+/// only that this command ran seconds before the approval it unlocks.
 ///
 /// The spec is taken from `--spec` when given (the explicit, robust path the
 /// Full PLAN flow uses, mirroring `approve-spec`); absent that, it falls back to
 /// the session-to-spec binding, then `current_spec`. Fail-open at every step — a
 /// resolution or write failure reports `{ok:false, reason}` and still exits 0.
-fn run_finalize(spec_arg: &str, root: &Path) {
+fn run_finalize(spec_arg: &str, terms: &[String], reason: &str, root: &Path) {
+    let terms: Vec<String> = terms
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let reason = reason.trim();
+
     let Some(root_str) = root.to_str() else {
-        emit_finalize(false, "", Some("bad-root"));
+        emit_finalize(false, "", &terms, reason, Some("bad-root"));
         return;
     };
     let spec = if spec_arg.trim().is_empty() {
         match spec_for_session(root_str, &session_id()).or_else(|| current_spec(root_str)) {
             Some(s) => s,
             None => {
-                emit_finalize(false, "", Some("no-active-spec"));
+                emit_finalize(false, "", &terms, reason, Some("no-active-spec"));
                 return;
             }
         }
     } else {
         spec_arg.trim().to_string()
     };
+    if terms.is_empty() && reason.is_empty() {
+        emit_finalize(false, &spec, &terms, reason, Some(NOTHING_TO_RECORD));
+        return;
+    }
     let Some(marker) = clarified_marker_path(root_str, &spec) else {
-        emit_finalize(false, &spec, Some("bad-spec"));
+        emit_finalize(false, &spec, &terms, reason, Some("bad-spec"));
         return;
     };
     if let Some(parent) = marker.parent() {
         let _ = mfs::create_dir_all(parent);
     }
     // Through the shared body writer, which is what finally gives this door the
-    // `session=` the other two always wrote — the drift that motivated the seam.
-    let body = marker_body(
+    // `session=` the other two always wrote — the drift that motivated the seam
+    // — and which owns the `terms=` / `reason=` record lines the gate reads.
+    let body = clarify_marker_body(
         &spec,
-        "grill-finalize",
         &session_id(),
         &mustard_core::time::now_iso8601(),
+        &terms,
+        reason,
     );
     if mfs::write_atomic(&marker, body.as_bytes()).is_err() {
-        emit_finalize(false, &spec, Some("write-failed"));
+        emit_finalize(false, &spec, &terms, reason, Some("write-failed"));
         return;
     }
-    emit_finalize(true, &spec, None);
+    emit_finalize(true, &spec, &terms, reason, None);
 }
 
 /// Dispatch `mustard-rt run grill-capture`. Always exits 0 (fail-open).
 ///
-/// Two modes: `--finalize` mints `<spec>/.clarified` (the clarify-finalize — see
-/// [`run_finalize`]) and returns; otherwise this is the glossary term capture
-/// (`--term` / `--definition` / `--context`). A capture NEVER mints `.clarified`
-/// — only the deliberate finalize does.
+/// Two modes: `--finalize` records the clarification into `<spec>/.clarified`
+/// (see [`run_finalize`]) — there `--term` is repeatable, naming every term the
+/// grill settled, and `--reason` states why none applied. Otherwise this is the
+/// glossary term capture (`--term` / `--definition` / `--context`), which takes
+/// exactly ONE term per call and NEVER writes `.clarified`.
 pub fn run(
-    term: &str,
+    terms: &[String],
     definition: &str,
     context: &[String],
     spec: &str,
+    reason: &str,
     finalize: bool,
     root: &Path,
 ) {
     if finalize {
-        run_finalize(spec, root);
+        run_finalize(spec, terms, reason, root);
         return;
     }
-    let term_t = term.trim();
+    // A capture persists ONE block, so more than one `--term` is a caller error
+    // stated out loud rather than a silently dropped definition.
+    let named: Vec<&str> = terms.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    if named.len() > 1 {
+        emit(false, "none", "", "", Some("one-term-per-capture"));
+        return;
+    }
+    let term_t = named.first().copied().unwrap_or("");
     if term_t.is_empty() || definition.trim().is_empty() {
         emit(false, "none", term_t, "", Some("empty-term-or-definition"));
         return;
@@ -289,7 +340,7 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir_all(root.join(".claude").join("spec").join("epic")).unwrap();
 
-        run_finalize("epic", root);
+        run_finalize("epic", &["Payable".to_string()], "", root);
 
         let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
         let p = crate::shared::context::read_marker_provenance(&marker)
@@ -377,7 +428,15 @@ mod tests {
 
         let ctx_file = root.join("CONTEXT.md");
         let context = vec![ctx_file.to_string_lossy().into_owned()];
-        run("Payable", "A bill the org owes.", &context, "", false, root);
+        run(
+            &["Payable".to_string()],
+            "A bill the org owes.",
+            &context,
+            "",
+            "",
+            false,
+            root,
+        );
 
         // The confirmed term lands in the glossary...
         assert!(
@@ -390,20 +449,65 @@ mod tests {
         assert!(!marker.exists(), "a capture must NOT mint .clarified");
     }
 
+    /// The finalize RECORDS, it does not merely mint. Both honest inputs land in
+    /// the marker a later reader will `cat`: the terms the grill settled, and —
+    /// when no grill would pay off — the stated sentence saying so.
     #[test]
-    fn finalize_mints_clarified_with_zero_terms() {
+    fn clarified_marker_records_what_was_settled() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full (wave plan)");
+        let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
+
+        // (a) Captured terms — the marker NAMES them.
+        run(
+            &["Payable".to_string(), "Tenant".to_string()],
+            "",
+            &[],
+            "epic",
+            "",
+            true,
+            root,
+        );
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert!(body.contains("Payable") && body.contains("Tenant"), "{body}");
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the record reads back through the single reader");
+        assert_eq!(p.terms, vec!["Payable".to_string(), "Tenant".to_string()]);
+        assert!(p.records_substance());
+
+        // (b) The stated decline — a complete glossary is a legitimate reason,
+        // and the sentence survives VERBATIM for the later reader. This is what
+        // replaces the old "mint with zero terms" escape hatch: the
+        // complete-glossary spec is still never deadlocked, it just says why.
+        let stated = "the glossary already defines every matched term";
+        run(&[], "", &[], "epic", stated, true, root);
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert!(body.contains(stated), "the reason must survive verbatim: {body}");
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the stated decline reads back");
+        assert_eq!(p.reason, stated);
+        assert!(p.terms.is_empty());
+        assert!(p.records_substance());
+    }
+
+    #[test]
+    fn finalize_without_terms_or_reason_records_nothing_and_writes_nothing() {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let root = dir.path();
         seed_spec(root, "epic", "full (wave plan)");
 
-        // The clarify-finalize takes the spec explicitly and needs NO term — a
-        // complete-glossary Full spec can still be marked clarified. This kills
-        // the old deadlock where `.clarified` could only be minted by a term
-        // capture, so a spec with nothing to grill could never be approved.
-        run("", "", &[], "epic", true, root);
+        // The decoration this wave kills: minting the marker seconds before the
+        // approval it unlocks, saying nothing. Refused — and no file appears, so
+        // the approval gate is not handed a hollow marker to argue with.
+        run(&[], "", &[], "epic", "  ", true, root);
 
         let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
-        assert!(marker.exists(), "finalize must mint .clarified with zero terms");
+        assert!(
+            !marker.exists(),
+            "a finalize with nothing to record must not write the marker"
+        );
     }
 }

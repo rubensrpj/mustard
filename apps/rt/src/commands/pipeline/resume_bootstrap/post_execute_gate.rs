@@ -146,15 +146,8 @@ fn derive_review_roles(spec_dir: &Path) -> Vec<String> {
 /// untouched (we cannot prove the spec is an unapproved Full spec).
 pub(super) fn block_unapproved_execute(spec_dir: &Path, out: &mut ResumeBootstrap) {
     // Resolve scope from the spec's meta.json (the single source of truth).
-    let Some(meta) = mustard_core::read_meta(&spec_dir.join("meta.json")) else {
-        return;
-    };
-    let is_full = meta
-        .scope
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase().starts_with("full"))
-        .unwrap_or(false);
-    if !is_full {
+    // Not Full (or unreadable) → this gate is not its business.
+    if full_scope_meta(spec_dir).is_none() {
         return;
     }
 
@@ -208,18 +201,11 @@ pub(super) fn block_unapproved_execute(spec_dir: &Path, out: &mut ResumeBootstra
 /// gates are independent (approval vs decomposition); both reset toward Plan.
 pub(super) fn block_full_without_wave(spec_dir: &Path, out: &mut ResumeBootstrap) {
     // Resolve scope from meta.json (single source of truth). Fail-open: an
-    // unreadable meta means we cannot prove this is a wave-less Full → allow.
-    let Some(meta) = mustard_core::read_meta(&spec_dir.join("meta.json")) else {
+    // unreadable meta — or a Light / Touch spec, which has no wave invariant —
+    // means we cannot prove this is a wave-less Full → allow.
+    let Some(meta) = full_scope_meta(spec_dir) else {
         return;
     };
-    let is_full = meta
-        .scope
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase().starts_with("full"))
-        .unwrap_or(false);
-    if !is_full {
-        return; // Light / Touch — no wave invariant.
-    }
 
     // Only gate when the resolved stage is at/after Execute. A spec still in
     // Plan/Analyze has not tried to execute, so there is nothing to block.
@@ -247,6 +233,85 @@ pub(super) fn block_full_without_wave(spec_dir: &Path, out: &mut ResumeBootstrap
     out.spec_summary =
         "BLOCKED: Full scope requires ≥1 wave — decompose via plan-materialize before Execute"
             .to_string();
+}
+
+/// Read `<spec>/meta.json` and return it ONLY when it declares a **Full**-scope
+/// spec (`scope` starts with `full` after a case-insensitive trim — `"full"` or
+/// `"full (wave plan)"`).
+///
+/// The single home for "is this the Full-scope gate's business?", shared by the
+/// three gates below so their scope test cannot drift. `None` means *not our
+/// business* for two different reasons that call for the same answer: an
+/// unreadable / absent `meta.json` (fail-open — we cannot prove anything) and a
+/// Light / Touch spec (no plan-approval or wave invariant at all).
+fn full_scope_meta(spec_dir: &Path) -> Option<mustard_core::Meta> {
+    let meta = mustard_core::read_meta(&spec_dir.join("meta.json"))?;
+    let is_full = meta
+        .scope
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase().starts_with("full"))
+        .unwrap_or(false);
+    is_full.then_some(meta)
+}
+
+/// Name the step an APPROVED Full plan implies, instead of leaving the caller to
+/// infer it.
+///
+/// The gap this closes: [`apply_post_execute_gate`] only speaks once EXECUTE is
+/// complete, and the two blocking gates only speak at/after Execute. So a Full
+/// spec that IS approved and is still resolved to `Plan` came back with
+/// `stage: "Plan"`, `approvedByUser: true` and NO `nextAction` — and the caller
+/// had to know, from a reference document, that this exact combination means
+/// "do not re-present, do not re-approve, just start". A deterministic decision
+/// delegated to a model is precisely what this binary exists to prevent, so the
+/// state gets its own token in the same vocabulary as `await-approval` /
+/// `await-plan-materialize`:
+///
+/// - waves materialised → `dispatch-wave`, plus [`ResumeBootstrap::dispatch_command`]
+///   naming the PUBLISHED command that starts the round (`wave-advance`);
+/// - no wave yet → `await-plan-materialize`, the existing token for exactly
+///   that remedy (`plan-materialize`), so an approved-but-undecomposed Full is
+///   not left silent either.
+///
+/// Advisory in effect — it only ever FILLS an empty `nextAction`, and never
+/// rewrites `stage`. MUST NOT speak when: another gate already answered
+/// (`next_action` is set); the spec is not resolved to `Plan`; the spec is not
+/// Full; or no approval is on record. FAIL-OPEN: an unreadable `meta.json`
+/// leaves `out` untouched.
+pub(super) fn signal_approved_plan_ready(
+    spec: &str,
+    spec_dir: &Path,
+    out: &mut ResumeBootstrap,
+) {
+    if out.next_action.is_some() {
+        return; // A gate above already named the step — never overwrite it.
+    }
+    if out.stage.as_deref() != Some("Plan") {
+        return;
+    }
+    let Some(meta) = full_scope_meta(spec_dir) else {
+        return;
+    };
+    // Approved = the user's own marker (`<spec>/.approved-by-user`, already
+    // resolved onto `out`) OR the emitted `draft→approved` signal. Either proves
+    // the approval gesture happened; requiring both would re-refuse a spec
+    // approved through the other door.
+    if !(out.approved_by_user || approval_event_present(spec_dir)) {
+        return;
+    }
+
+    // Same wave evidence `block_full_without_wave` reads: live-resolved view
+    // (events + FS) or the persisted sidecar flags.
+    let has_wave = out.is_wave_plan
+        || out.total_waves >= 1
+        || meta.is_wave_plan == Some(true)
+        || meta.total_waves.unwrap_or(0) >= 1;
+    if !has_wave {
+        out.next_action = Some("await-plan-materialize".to_string());
+        return;
+    }
+    out.next_action = Some("dispatch-wave".to_string());
+    out.dispatch_command = Some(format!("mustard-rt run wave-advance --spec {spec}"));
 }
 
 /// `true` when the spec's per-spec NDJSON log carries a `pipeline.status` event
@@ -804,6 +869,94 @@ mod tests {
         block_full_without_wave(spec_dir, &mut out);
         assert_eq!(out.stage.as_deref(), Some("Execute"));
         assert!(out.next_action.is_none());
+    }
+
+    // --- Approved-but-not-started: `dispatch-wave` ------------------------
+
+    /// An APPROVED Full spec still resolved to `Plan` now NAMES its next step.
+    ///
+    /// Asserts the new signal (`dispatch-wave` + the published command that
+    /// implies) and that the old behaviour is gone: the same input used to
+    /// return `nextAction: null`, leaving "just start" to be inferred from a
+    /// reference document. The unapproved control proves the token is earned by
+    /// the approval, not handed out to every Plan-stage Full.
+    #[test]
+    fn an_approved_plan_that_never_started_names_its_next_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        seed_meta_scope(spec_dir, "full (wave plan)");
+
+        // Unapproved Full in Plan — untouched (the approval gate owns that).
+        let mut unapproved = ResumeBootstrap {
+            stage: Some("Plan".to_string()),
+            is_wave_plan: true,
+            total_waves: 3,
+            ..Default::default()
+        };
+        signal_approved_plan_ready("demo", spec_dir, &mut unapproved);
+        assert!(
+            unapproved.next_action.is_none(),
+            "an unapproved Full must not be told to dispatch"
+        );
+
+        // Approved (user marker resolved onto `out`) + waves materialised.
+        let mut out = ResumeBootstrap {
+            stage: Some("Plan".to_string()),
+            approved_by_user: true,
+            is_wave_plan: true,
+            total_waves: 3,
+            ..Default::default()
+        };
+        signal_approved_plan_ready("demo", spec_dir, &mut out);
+        assert_eq!(
+            out.next_action.as_deref(),
+            Some("dispatch-wave"),
+            "the old `nextAction: null` for this state must be gone"
+        );
+        assert_eq!(
+            out.dispatch_command.as_deref(),
+            Some("mustard-rt run wave-advance --spec demo"),
+            "the token must name the published command it implies"
+        );
+        // Advisory in effect: the stage is NOT rewritten, and no re-approval is
+        // requested.
+        assert_eq!(out.stage.as_deref(), Some("Plan"));
+        assert_ne!(out.next_action.as_deref(), Some("await-approval"));
+    }
+
+    /// The new signal never overwrites a gate that already spoke, and an
+    /// approved Full with NO wave is routed to decompose rather than dispatch.
+    #[test]
+    fn approved_plan_signal_yields_to_existing_gate_and_routes_waveless_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        seed_meta_scope(spec_dir, "full");
+
+        // A gate above already answered → untouched.
+        let mut spoken = ResumeBootstrap {
+            stage: Some("Plan".to_string()),
+            approved_by_user: true,
+            is_wave_plan: true,
+            total_waves: 2,
+            next_action: Some("await-approval".to_string()),
+            ..Default::default()
+        };
+        signal_approved_plan_ready("demo", spec_dir, &mut spoken);
+        assert_eq!(spoken.next_action.as_deref(), Some("await-approval"));
+        assert!(spoken.dispatch_command.is_none());
+
+        // Approved Full with zero waves → decompose first, still explicit.
+        let mut waveless = ResumeBootstrap {
+            stage: Some("Plan".to_string()),
+            approved_by_user: true,
+            ..Default::default()
+        };
+        signal_approved_plan_ready("demo", spec_dir, &mut waveless);
+        assert_eq!(
+            waveless.next_action.as_deref(),
+            Some("await-plan-materialize")
+        );
+        assert!(waveless.dispatch_command.is_none());
     }
 
     /// ALLOW: a Full meta that persisted `isWavePlan: true` / `totalWaves ≥ 1`

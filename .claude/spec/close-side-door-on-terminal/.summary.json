@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "close-side-door-on-terminal",
+  "title": "Close the side door on the terminal close: complete-spec must consult the recorded QA verdict the shipped ritual already promises",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

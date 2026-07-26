@@ -25,8 +25,22 @@
 //!    as pre-approval. This both identifies WHICH spec and proves an approval is
 //!    the pending action. It is derived from the deterministic `meta.json` + the
 //!    event log, so the model cannot fabricate it.
-//! 2. **A real user answer (unforgeable).** `tool_response.answers` holds ≥1
-//!    non-empty selection. An empty `{}` (cancel / dismiss) records nothing.
+//! 2. **A real SELECTION (unforgeable).** `tool_response.answers` holds ≥1
+//!    non-empty answer that is EXACTLY one of the option labels the question
+//!    offered (`tool_input`, authored by the model and echoed by the harness).
+//!    An empty `{}` (cancel / dismiss) records nothing — and so does free text.
+//!
+//!    Free text is the hole this requirement closes, REPRODUCED in the field:
+//!    the harness lets the user answer by typing their own words through the
+//!    `Other` row or the notes field, and that answer lands in the SAME
+//!    `answers` map as a selected label. Fact 3 below only asks whether SOME
+//!    word carries the approval stem, so a long message that merely *mentions*
+//!    approval — a field report discussing it, for instance — minted the one
+//!    signal the whole gate rests on being unforgeable, and the marker then
+//!    froze the wave layout and silently discarded a plan revision. An answer
+//!    the model did not offer as an option is therefore never an approval,
+//!    whatever words it contains. When the offered options cannot be read at
+//!    all, nothing is offered and nothing is minted: fail-closed.
 //! 3. **Affirmative selection.** A selected option label is an *approval* rather
 //!    than a reject / adjust / stop. We do NOT hardcode a multilingual approval
 //!    dictionary (fragile, and the corpus-over-hand-curated rule forbids it):
@@ -191,10 +205,63 @@ fn selected_labels(input: &HookInput) -> Vec<String> {
     out
 }
 
+/// Every option label the QUESTION OFFERED, read from `tool_input`.
+///
+/// The harness echoes the tool's own input back to PostToolUse, so this is the
+/// menu the model authored — not anything the answer can influence. Collected by
+/// walking the document for any `options` array and taking each entry's `label`
+/// (or the entry itself, when the option is a bare string), which keeps this
+/// robust to where the array is nested (`{questions:[{options:[…]}]}` today).
+///
+/// An empty result means nothing can be shown to have been offered, and the
+/// caller then mints nothing — the fail-closed direction.
+fn offered_labels(input: &HookInput) -> Vec<String> {
+    fn walk(node: &Value, out: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    if key == "options" {
+                        if let Some(items) = value.as_array() {
+                            for item in items {
+                                let label = match item {
+                                    Value::String(s) => Some(s.as_str()),
+                                    other => other.get("label").and_then(Value::as_str),
+                                };
+                                if let Some(l) = label.filter(|l| !l.trim().is_empty()) {
+                                    out.push(l.to_string());
+                                }
+                            }
+                        }
+                    }
+                    walk(value, out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&input.tool_input, &mut out);
+    out
+}
+
+/// `true` when `answer` is EXACTLY one of the `offered` option labels (trimmed).
+///
+/// Exactness is the whole point: a substring or prefix rule would let free text
+/// that quotes an option back in a longer sentence pass, which is the shape of
+/// the incident. Nothing offered ⇒ nothing selected.
+fn is_offered(answer: &str, offered: &[String]) -> bool {
+    offered.iter().any(|o| o.trim() == answer.trim())
+}
+
 /// `true` when a selected label is an affirmative approval — some word token
 /// (lowercased, split on non-alphanumeric runs) starts with a canonical approval
 /// stem. Word-boundary, so `desaprovar` / `reprovar` / `disapprove` do NOT match
 /// while `Aprovar…` / `Approve…` do.
+///
+/// Only ever asked about an answer that already passed [`is_offered`]: the stem
+/// separates approve from reject *within a genuine selection*, and was never
+/// meant to judge arbitrary prose.
 fn is_affirmative(label: &str) -> bool {
     label
         .split(|c: char| !c.is_alphanumeric())
@@ -214,20 +281,46 @@ fn is_affirmative(label: &str) -> bool {
 /// `None` when there is nothing to explain: an empty `labels` is a cancelled or
 /// dismissed dialog, which answers no question and therefore fails no condition.
 ///
-/// A deliberate rejection also lands here and is told the same thing. That is
-/// the honest trade: distinguishing "the user said no" from "the user said yes
-/// in words we do not recognise" would take a hand-curated multilingual
-/// negation dictionary — exactly what the corpus-over-curation rule forbids —
-/// so the notice states the condition and leaves the reading to the human.
-fn unrecognised_answer_notice(spec: &str, labels: &[String]) -> Option<String> {
+/// TWO conditions can now fail, and they are told apart because their remedies
+/// differ. When no answer is one of the OFFERED options, the answer was typed
+/// as free text (the `Other` row / the notes field) — the operator's genuine
+/// approval was real but unselectable, and the remedy is to answer again by
+/// picking the option. When an offered option WAS selected but carries no
+/// approval stem, the original condition applies.
+///
+/// A deliberate rejection also lands in the second case and is told the same
+/// thing. That is the honest trade: distinguishing "the user said no" from "the
+/// user said yes in words we do not recognise" would take a hand-curated
+/// multilingual negation dictionary — exactly what the corpus-over-curation rule
+/// forbids — so the notice states the condition and leaves the reading to the
+/// human.
+fn unrecognised_answer_notice(spec: &str, labels: &[String], offered: &[String]) -> Option<String> {
     if labels.is_empty() {
         return None;
     }
-    let selected = labels
-        .iter()
-        .map(|l| format!("{:?}", l.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let quote = |values: &[String]| -> String {
+        values
+            .iter()
+            .map(|v| format!("{:?}", truncate(v.trim())))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let selected = quote(labels);
+    if !labels.iter().any(|l| is_offered(l, offered)) {
+        let menu = if offered.is_empty() {
+            "the question offered no options this recorder could read".to_string()
+        } else {
+            format!("the options offered were: {}", quote(offered))
+        };
+        return Some(format!(
+            "[approval] `{spec}` awaits approval, but NOTHING was recorded: the answer \
+             ({selected}) is not one of the options the question offered, so it is free text — \
+             and free text never mints the approval marker, whatever words it contains (that is \
+             how a message merely MENTIONING approval once forged one). {menu}. If you did mean \
+             to approve, answer the question again by SELECTING the approval option instead of \
+             typing; `approve-spec` will keep refusing until `.approved-by-user` exists."
+        ));
+    }
     let stems = APPROVAL_STEMS
         .iter()
         .map(|s| format!("`{s}`"))
@@ -243,6 +336,18 @@ fn unrecognised_answer_notice(spec: &str, labels: &[String]) -> Option<String> {
     ))
 }
 
+/// Bound one quoted answer in the notice. A free-text answer can be an entire
+/// message — the incident's was — and a hook's stderr is a diagnostic, not a
+/// transcript.
+fn truncate(s: &str) -> String {
+    const MAX: usize = 80;
+    if s.chars().count() <= MAX {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(MAX).collect();
+    format!("{head}…")
+}
+
 impl Observer for ApprovalMarkerObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = ctx.project_dir_or_cwd(input);
@@ -255,14 +360,20 @@ impl Observer for ApprovalMarkerObserver {
             return;
         }
 
-        // Facts 2 + 3 — a real user answer that is affirmative. A decline is
-        // still fail-closed (nothing is written), but it no longer happens in
-        // silence: the unmet condition is named on stderr. Advisory only — an
-        // `eprintln!` is a pure side-effect and can never turn this Observer
-        // into a verdict.
+        // Facts 2 + 3 — a real SELECTION (one of the offered option labels,
+        // exactly) that is affirmative. The `is_offered` filter runs BEFORE the
+        // stem test, so free text is discarded on its shape and never reaches a
+        // recogniser that only inspects its words. A decline is still fail-closed
+        // (nothing is written), but it no longer happens in silence: the unmet
+        // condition is named on stderr. Advisory only — an `eprintln!` is a pure
+        // side-effect and can never turn this Observer into a verdict.
         let labels = selected_labels(input);
-        if !labels.iter().any(|l| is_affirmative(l)) {
-            if let Some(notice) = unrecognised_answer_notice(&spec, &labels) {
+        let offered = offered_labels(input);
+        let approved = labels
+            .iter()
+            .any(|l| is_offered(l, &offered) && is_affirmative(l));
+        if !approved {
+            if let Some(notice) = unrecognised_answer_notice(&spec, &labels, &offered) {
                 eprintln!("{notice}");
             }
             return;
@@ -298,15 +409,39 @@ mod tests {
         }
     }
 
-    /// A PostToolUse(AskUserQuestion) input carrying `tool_response.answers`.
-    fn ask_input(session: &str, answers: Value) -> HookInput {
+    /// A PostToolUse(AskUserQuestion) input whose `tool_input` offers `options`
+    /// and whose `tool_response.answers` carries the user's answer — the shape
+    /// the harness delivers, with the offered menu and the answer separated.
+    fn ask_input_offering(session: &str, options: Value, answers: Value) -> HookInput {
         HookInput {
             hook_event_name: Some("PostToolUse".to_string()),
             tool_name: Some("AskUserQuestion".to_string()),
             session_id: Some(session.to_string()),
+            tool_input: json!({
+                "questions": [{ "question": "Decision", "header": "Plan", "options": options }]
+            }),
             raw: json!({ "tool_response": { "questions": [], "answers": answers } }),
             ..HookInput::default()
         }
+    }
+
+    /// The common case: every answer given was ALSO one of the offered options,
+    /// i.e. the user picked from the menu.
+    fn ask_input(session: &str, answers: Value) -> HookInput {
+        let offered: Vec<Value> = match &answers {
+            Value::Object(map) => map
+                .values()
+                .flat_map(|v| match v {
+                    Value::String(s) => vec![json!({ "label": s })],
+                    Value::Array(items) => {
+                        items.iter().map(|i| json!({ "label": i })).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        ask_input_offering(session, json!(offered), answers)
     }
 
     /// Seed `.claude/spec/<spec>/meta.json` with the given scope + stage.
@@ -386,7 +521,10 @@ mod tests {
     #[test]
     fn notice_names_the_condition_the_label_failed() {
         let labels = vec!["Sim, pode ir".to_string()];
-        let msg = unrecognised_answer_notice("epic", &labels).expect("a real answer is explained");
+        // The option WAS offered — so the stem is the condition that failed.
+        let offered = labels.clone();
+        let msg = unrecognised_answer_notice("epic", &labels, &offered)
+            .expect("a real answer is explained");
         // The spec, the label that failed, and BOTH stems that would satisfy it.
         assert!(msg.contains("epic"), "names the spec: {msg}");
         assert!(msg.contains("Sim, pode ir"), "quotes the selected label: {msg}");
@@ -398,7 +536,24 @@ mod tests {
     #[test]
     fn notice_stays_silent_on_a_dismissed_dialog() {
         // No answer was given, so no condition was failed — nothing to explain.
-        assert_eq!(unrecognised_answer_notice("epic", &[]), None);
+        assert_eq!(unrecognised_answer_notice("epic", &[], &[]), None);
+    }
+
+    #[test]
+    fn notice_tells_free_text_apart_from_an_unrecognised_option() {
+        // An answer nobody offered is free text, and the remedy is different:
+        // select the option instead of typing it.
+        let typed = vec!["Yes, approve it, go ahead".to_string()];
+        let offered = vec!["Approve and implement now".to_string()];
+        let msg = unrecognised_answer_notice("epic", &typed, &offered)
+            .expect("free text is explained");
+        assert!(msg.contains("free text"), "names the condition: {msg}");
+        assert!(msg.contains("SELECTING"), "names the remedy: {msg}");
+        assert!(msg.contains("Approve and implement now"), "shows the menu: {msg}");
+        // A very long answer is bounded — stderr is a diagnostic, not a transcript.
+        let essay = vec!["approve ".repeat(200)];
+        let long = unrecognised_answer_notice("epic", &essay, &offered).unwrap();
+        assert!(long.len() < 1200, "the quoted answer is bounded: {} chars", long.len());
     }
 
     // ── The observer (integration over a tempdir) ────────────────────────────
@@ -444,6 +599,74 @@ mod tests {
         assert_eq!(p.spec, "epic");
         assert_eq!(p.session, "s-7");
         assert!(!p.at.is_empty(), "the door must record an instant");
+    }
+
+    /// AC-9 — the forged approval, closed in BOTH directions.
+    ///
+    /// Free text carrying approval words mints NOTHING, however emphatic; a
+    /// genuine selection of an offered approval option still mints the marker
+    /// exactly as before. The second half is what stops the fix from passing by
+    /// making the recogniser inert.
+    #[test]
+    fn free_text_answer_never_mints_the_marker() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        seed_spec(root, "epic", "full (wave plan)", "Plan");
+        bind_session(root, "s-1", "epic");
+
+        // The menu the model authored. The user typed instead of picking.
+        let offered = json!([
+            { "label": "Approve and implement now" },
+            { "label": "Reject — re-plan" }
+        ]);
+        // The field shape: a long message that merely CONTAINS an approval word.
+        let essay = "Here is the field report. The run stalled at approve-spec because the \
+                     approval marker was missing, so nobody could approve the plan.";
+        assert!(
+            is_affirmative(essay),
+            "the stem recogniser DOES fire on this text — the shape check is what must stop it"
+        );
+        ApprovalMarkerObserver.observe(
+            &ask_input_offering("s-1", offered.clone(), json!({ "Decision": essay })),
+            &ctx(root_str),
+        );
+        assert!(
+            !marker_exists(root, "epic"),
+            "free text must never mint the marker, whatever words it carries"
+        );
+
+        // Not even the exact option quoted back inside a longer sentence.
+        ApprovalMarkerObserver.observe(
+            &ask_input_offering(
+                "s-1",
+                offered.clone(),
+                json!({ "Decision": "yes: Approve and implement now, please" }),
+            ),
+            &ctx(root_str),
+        );
+        assert!(!marker_exists(root, "epic"), "a quoted option inside prose is still free text");
+
+        // Nor when the offered menu cannot be read at all (fail-closed).
+        let mut blind = ask_input_offering("s-1", offered.clone(), json!({ "Decision": "Approve and implement now" }));
+        blind.tool_input = json!({});
+        ApprovalMarkerObserver.observe(&blind, &ctx(root_str));
+        assert!(!marker_exists(root, "epic"), "no readable menu → nothing is proven offered");
+
+        // The other direction — a genuine SELECTION of the offered approval
+        // option still mints the marker, exactly as today.
+        ApprovalMarkerObserver.observe(
+            &ask_input_offering(
+                "s-1",
+                offered,
+                json!({ "Decision": "Approve and implement now" }),
+            ),
+            &ctx(root_str),
+        );
+        assert!(
+            marker_exists(root, "epic"),
+            "a real selection of an offered approval label must still mint the marker"
+        );
     }
 
     #[test]

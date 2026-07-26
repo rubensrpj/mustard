@@ -82,12 +82,16 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 | `close_gate` (checklist) | same | `MUSTARD_CHECKLIST_GATE_MODE` (strict) | unchecked `- [ ]` |
 | `close_gate` (debt) | same | `MUSTARD_DEBT_GATE_MODE` (strict) | unresolved tracked debt |
 | `approve-spec` (approval) | `approve-spec` run | `MUSTARD_APPROVAL_MODE` (strict) | no `<spec>/.approved-by-user` marker — approval must come from the USER: plan-mode accept (`ExitPlanMode` → `plan_approval_observer`) or the approval `AskUserQuestion` (`approval_marker_observer`); strict refuses (exit≠0), warn nudges, off disables |
+| `approve-spec` (clarify, Full) | same | `MUSTARD_APPROVAL_MODE` (strict) | no `<spec>/.clarified`, or a marker that RECORDED nothing — mint it with `grill-capture --finalize --term <term>` (per settled term) or `--reason "<sentence>"` |
+| `approve-spec` (proof) | same | **none — unconditional** | any non-exempt acceptance criterion with no recorded RED proof in `<spec>/ac-proof.json` — take it with `ac-negative-check` (PLAN time; `plan-materialize` runs it itself on Full), or `ac-amend` once the artefacts are frozen |
 | `bash_command_gate` (rtk) | Bash | `MUSTARD_RTK_GATE_MODE` (warn) | unprefixed → auto-rewrite to `rtk`; `strict` denies; builtins pass |
 | `bash_command_gate` (commit) | `git commit` | `MUSTARD_COMMIT_GATE_MODE` (warn) | secrets staged / build broken |
 | `bash_command_gate` (native-redirect) | Bash | always-on | `grep`/`ls`/`cat`/`head`/`tail`/`find` → suggests Grep/Glob/Read |
 | `scope_guard` | Write/Edit/Task | fail-open | production change outside an approved spec |
 | `tool_use_counter` | Subagent* | hard | Explore at 15 tool uses (warn 12) |
 | `skills_advisory` | Task | advisory | skills >10 |
+
+`approve-spec` weighs its three preconditions in ONE decision and reports every unmet one together, each naming the command that mints it. `MUSTARD_APPROVAL_MODE` governs the two MARKER preconditions and nothing else: `off` mutes both, `warn` nudges. **The proof precondition is outside that fork** — a gate blocks with no knob, the same way the AC-coverage gate in `plan-materialize` does — and it is fail-closed: an absent, unreadable or unparsable ledger refuses. A spec that declares no acceptance criteria is not gated by it (an absence of obligation, not a degradation).
 
 ### Destructive-ops Law (BG01–BG13)
 

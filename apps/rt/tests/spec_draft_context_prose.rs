@@ -45,6 +45,7 @@ fn drafted_context_is_prose_only() {
             lang: lang.into(),
             signals: None,
             output: Some(out.clone()),
+            material: None,
             waves,
             force: false,
             query_terms: None,

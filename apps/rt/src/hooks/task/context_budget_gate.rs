@@ -739,6 +739,32 @@ mod tests {
     fn unknown_subagent_type_has_no_hard_block() {
         // `getBudget` returns null for unknown types → never a hard block.
         assert!(!verdict_for("", 50_000, "").is_blocking());
+        assert!(!verdict_for("some-other-agent", 50_000, "").is_blocking());
+    }
+
+    /// The role the pipeline dispatches its WRITING work as is still subject to
+    /// the prompt-size block — the one place this gate blocks.
+    ///
+    /// Asserted through the dispatcher's own mapping rather than a literal: a
+    /// writing role routed to a `subagent_type` this classifier does not know
+    /// lands in the `Unknown` arm, where `prompt_budget` returns `None`, and the
+    /// hard block silently stops applying to every pipeline dispatch. That is
+    /// exactly what happened once; pinning the two together is what catches it.
+    #[test]
+    fn pipeline_writing_role_is_still_prompt_budgeted() {
+        let ty = crate::commands::agent::agent_prompt_render::recommended_subagent_type("impl");
+
+        // Both directions of the general budget's edge.
+        assert_eq!(verdict_for(&ty, 30_000, "Wave 1 impl — rt"), Verdict::Allow);
+        assert!(
+            verdict_for(&ty, 30_001, "Wave 1 impl — rt").is_blocking(),
+            "an oversized implementer briefing must still be refused"
+        );
+
+        // …and it is measured AS the writing role, never as an unknown type.
+        assert_eq!(prompt_role_label(classify_role(&ty, ""), &ty), "general-purpose");
+        assert_eq!(output_role_label(classify_role(&ty, ""), &ty), "general-purpose");
+        assert_eq!(output_budget(classify_role(&ty, "")), 40);
     }
 
     #[test]

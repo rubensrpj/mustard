@@ -51,7 +51,10 @@ use context_loader::{generate_context_on_resume, load_pruned_prior_summaries, wi
 use dispatch_failure::render_dispatch_failure;
 use event_emission::{emit_resume_mode, emit_scope_for_session};
 use mode_decision::{compute_needs_refresh, decide_mode};
-use post_execute_gate::{apply_post_execute_gate, block_full_without_wave, block_unapproved_execute};
+use post_execute_gate::{
+    apply_post_execute_gate, block_full_without_wave, block_unapproved_execute,
+    signal_approved_plan_ready,
+};
 use stage_resolver::{
     detect_stage, detect_stub, extract_summary, read_first_lines, relativize,
 };
@@ -115,6 +118,17 @@ pub struct ResumeBootstrap {
     /// vs *approve only*. Avoids soliciting the same approval twice.
     #[serde(rename = "approvedByUser")]
     pub approved_by_user: bool,
+    /// **Advisory, never blocking.** `true` when `<spec>/.clarified` EXISTS but
+    /// records nothing — no captured term, no stated reason.
+    ///
+    /// `approve-spec` REFUSES on exactly this state, at the worst possible
+    /// moment: right after the operator asked for the implementation. Reporting
+    /// it on the resume path moves the DISCOVERY earlier; the refusal itself is
+    /// untouched and this field never changes `mode` / `stage` / `nextAction`.
+    /// Classified by the single definition of "hollow" —
+    /// [`crate::commands::spec::approve_spec::clarify_state`].
+    #[serde(rename = "clarifyRecordsNothing")]
+    pub clarify_records_nothing: bool,
     /// Most recent unrecovered dispatch failure (if any, within 10 min).
     #[serde(rename = "lastDispatchFailure", skip_serializing_if = "Option::is_none")]
     pub last_dispatch_failure: Option<serde_json::Value>,
@@ -131,8 +145,10 @@ pub struct ResumeBootstrap {
     #[serde(rename = "agentRoles")]
     pub agent_roles: Vec<String>,
     /// **Explicit** next step the orchestrator must take. One of:
+    /// `await-approval`, `await-plan-materialize`, `dispatch-wave`,
     /// `dispatch-review`, `run-qa`, `emit-complete`, or `null` (mid-execute).
-    /// Pairs with [`Self::review_roles`] / [`Self::qa_command`] when relevant.
+    /// Pairs with [`Self::review_roles`] / [`Self::qa_command`] /
+    /// [`Self::dispatch_command`] when relevant.
     ///
     /// This field is the canonical post-execute signal — when `nextAction` is
     /// non-null, the orchestrator must NOT freelance: do exactly what it says.
@@ -146,6 +162,11 @@ pub struct ResumeBootstrap {
     /// Shell-ready command to run QA. Populated when `nextAction == "run-qa"`.
     #[serde(rename = "qaCommand", skip_serializing_if = "Option::is_none")]
     pub qa_command: Option<String>,
+    /// Shell-ready command that starts the round. Populated when `nextAction ==
+    /// "dispatch-wave"` — the sibling of [`Self::qa_command`], so the token and
+    /// the PUBLISHED command it implies always travel together.
+    #[serde(rename = "dispatchCommand", skip_serializing_if = "Option::is_none")]
+    pub dispatch_command: Option<String>,
     /// Spec A v4 / W6 — estimated token usage of the pruned prior-wave context
     /// loaded by this bootstrap. Bounded by [`RESUME_TOKEN_BUDGET`] (AC-A-10).
     /// `0` when no prior summaries were available (first wave, fresh spec).
@@ -263,6 +284,15 @@ pub fn run(spec: &str, json_flag: bool) {
         crate::shared::context::approval_marker_path(&project.to_string_lossy(), spec)
             .is_some_and(|p| p.exists());
 
+    // Advisory only: a `<spec>/.clarified` that records NOTHING is what
+    // `approve-spec` refuses on. Reporting it here (and in `active-specs`) moves
+    // the discovery off the approval gesture. Same classifier, never a second
+    // definition of hollow — and it changes nothing else on `out`.
+    out.clarify_records_nothing = matches!(
+        crate::commands::spec::approve_spec::clarify_state(&project.to_string_lossy(), spec),
+        crate::commands::spec::approve_spec::ClarifyState::Hollow
+    );
+
     // --- specSummary: first non-empty line of `## Resumo` / `## Summary`. ---
     let body = op_path
         .exists()
@@ -323,6 +353,16 @@ pub fn run(spec: &str, json_flag: bool) {
     // explicit `nextAction` (with companion fields). Fail-open: if the events
     // dir is unreadable, we take the conservative path → ReviewPending.
     apply_post_execute_gate(&project, spec, &spec_dir, &mut out);
+
+    // --- Approved-but-not-started: name the step instead of implying it. ---
+    //
+    // An APPROVED Full spec still resolved to `Plan` used to come back with
+    // `stage:"Plan"`, `approvedByUser:true` and NO `nextAction` — leaving the
+    // caller to infer "do not re-present, do not re-approve, just start" from a
+    // reference document. That is a deterministic decision delegated to a model.
+    // Runs LAST so it can only fill a gap: every gate above already ran and it
+    // no-ops when any of them spoke.
+    signal_approved_plan_ready(spec, &spec_dir, &mut out);
 
     // --- Spec A v4 / W6 — disciplined context load (AC-A-10). ---
     //
@@ -409,6 +449,10 @@ fn print_table(out: &ResumeBootstrap) {
     if let Some(q) = out.qa_command.as_deref() {
         println!("qaCommand        : {q}");
     }
+    if let Some(d) = out.dispatch_command.as_deref() {
+        println!("dispatchCommand  : {d}");
+    }
+    println!("clarifyRecordsNothing: {}", out.clarify_records_nothing);
     // W6#3: surface the W6 budget metrics in the text-table form so callers
     // who don't pass `--json` still see how the budget was spent.
     println!("tokensUsed       : {}", out.tokens_used);

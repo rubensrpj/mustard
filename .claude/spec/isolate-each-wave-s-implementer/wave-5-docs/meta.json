@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-25T11:10:51.251Z",
+  "parent": "isolate-each-wave-s-implementer",
+  "checklist": [
+    {
+      "label": "plugin/refs/agent-prompt/agent-prompt.md",
+      "path": "plugin/refs/agent-prompt/agent-prompt.md",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/feature.md",
+      "path": "plugin/commands/feature.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/plugin_agents.rs",
+      "path": "apps/rt/tests/plugin_agents.rs",
+      "done": true
+    }
+  ]
+}
