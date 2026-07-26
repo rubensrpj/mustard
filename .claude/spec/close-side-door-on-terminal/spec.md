@@ -83,6 +83,7 @@ Adding any switch that relaxes the new refusal.
 - `apps/rt/src/commands/spec/complete_spec.rs`
 - `apps/rt/src/commands/pipeline/close_orchestrate.rs`
 - `plugin/commands/close.md`
+- `plugin/commands/qa.md`
 - `plugin/refs/feature/spec-hygiene.md`
 
 ## Root cause

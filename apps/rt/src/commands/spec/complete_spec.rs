@@ -1449,5 +1449,35 @@ mod tests {
              its own) — a bare prohibition tells the reader to obey without telling them what \
              would stop them, which is how the previous false attribution survived so long"
         );
+
+        // The OTHER way these rituals can lie about this gate: promising that
+        // some verdict short of a pass still lets the close through. Every door
+        // now reads the recorded verdict and only `pass` opens it, so a skip
+        // blocks — including a spec that declares no criterion at all.
+        //
+        // Checked per CLAUSE, not per line: one line lists every gate, so a
+        // line-wise read would trip on `--skip-docs` sitting beside the
+        // unrelated `(advisory)` of `pipeline-summary`. The two claims below are
+        // the doc's own vocabulary for the leniency that no longer exists — this
+        // is a check on the CLAIM, and it is the tightest honest anchor
+        // available for prose.
+        for ritual in ["plugin/commands/close.md", "plugin/commands/qa.md"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join(ritual);
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{ritual} must be readable: {e}"));
+            let lying: Vec<String> = body
+                .split(['\n', ';', '.'])
+                .map(|c| c.trim().to_lowercase())
+                .filter(|c| {
+                    (c.contains("skip") && c.contains("advisory")) || c.contains("not blocked")
+                })
+                .collect();
+            assert!(
+                lying.is_empty(),
+                "{ritual} still tells the reader a skip does not block the close, which no door \
+                 grants any more — a spec with nothing to verify has nothing to claim:\n{}",
+                lying.join("\n")
+            );
+        }
     }
 }
