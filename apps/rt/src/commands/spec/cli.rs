@@ -153,6 +153,14 @@ pub enum SpecCmd {
         /// Output directory (default `.claude/spec/{slug}/`).
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Path to the conversation-material JSON: `{ "definitions": [{term,
+        /// meaning}], "decisions": [{decision, reason}], "findings":
+        /// [{statement, file, line?}] }`. Each kind lands in a section of its
+        /// own. A FILE, not a flag value — the payload carries newlines,
+        /// quotes and non-ASCII that a shell argument would mangle. Omitted
+        /// (or carrying nothing): the draft is byte-identical to today's.
+        #[arg(long)]
+        material: Option<PathBuf>,
         /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
         /// The wave dirs themselves are materialised by `wave-scaffold`.
         #[arg(long, default_value_t = 1)]
@@ -246,6 +254,27 @@ pub enum SpecCmd {
         #[arg(long)]
         spec: Option<String>,
     },
+    /// Record a DELIBERATE mid-pipeline change request in the active spec's
+    /// change log, carrying the INSTRUCTION the conversation produced.
+    ///
+    /// The `UserPromptSubmit` observer captures the sentence the user typed —
+    /// blind by construction, since it cannot know what the sentence means. This
+    /// is the orchestrator's record beside it: it lands in the same two files
+    /// (`change-log.md` + `change-requests.ndjson`), in the shape the per-wave
+    /// renderer reads, so the instruction reaches the next dispatched agent
+    /// without anyone hand-formatting a bullet. A blank instruction is refused
+    /// and nothing is written.
+    #[command(name = "change-request")]
+    #[command(display_order = 80)]
+    ChangeRequest {
+        /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
+        /// then the active-spec fallback.
+        #[arg(long)]
+        spec: Option<String>,
+        /// What the orchestrator instructs, in full.
+        #[arg(long)]
+        instruction: String,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -278,6 +307,7 @@ pub fn dispatch(cmd: SpecCmd) {
             lang,
             signals,
             output,
+            material,
             waves,
             force,
             query_terms,
@@ -289,6 +319,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 lang,
                 signals,
                 output,
+                material,
                 waves,
                 force,
                 query_terms,
@@ -320,6 +351,12 @@ pub fn dispatch(cmd: SpecCmd) {
         }
         SpecCmd::TacticalFixDetect { spec } => {
             spec::tactical_fix_detect::run(spec.as_deref());
+        }
+        SpecCmd::ChangeRequest { spec: slug, instruction } => {
+            spec::change_request::run(spec::change_request::ChangeRequestOpts {
+                spec: slug,
+                instruction,
+            });
         }
     }
 }

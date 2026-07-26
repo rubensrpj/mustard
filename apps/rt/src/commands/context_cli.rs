@@ -84,10 +84,11 @@ pub enum ContextCmd {
     #[command(name = "grill-capture")]
     #[command(display_order = 6)]
     GrillCapture {
-        /// The domain term being defined (becomes the block heading). Optional
-        /// with `--finalize` (which needs no term).
-        #[arg(long, default_value = "")]
-        term: String,
+        /// The domain term being defined (becomes the block heading). Exactly
+        /// one per capture. With `--finalize` it is repeatable instead, naming
+        /// every term the clarification grill settled.
+        #[arg(long)]
+        term: Vec<String>,
         /// The confirmed one-line definition for the term. Optional with
         /// `--finalize`.
         #[arg(long, default_value = "")]
@@ -96,12 +97,20 @@ pub enum ContextCmd {
         /// first resolved (or first requested) path is the write target.
         #[arg(long)]
         context: Vec<String>,
-        /// Clarify-finalize (F6): mint `<spec>/.clarified` for the spec — the
-        /// marker `approve-spec` requires before a Full plan may be approved —
-        /// then exit. Needs no term; the SINGLE explicit "clarification complete"
-        /// action (a term capture never mints it).
+        /// Clarify-finalize (F6): RECORD the clarification into
+        /// `<spec>/.clarified` — the marker `approve-spec` requires before a Full
+        /// plan may be approved — then exit. The SINGLE explicit "clarification
+        /// complete" action (a term capture never writes it). It needs no term,
+        /// but it does need substance: `--term` per settled term, or `--reason`
+        /// stating why no grill applied; with neither it refuses.
         #[arg(long)]
         finalize: bool,
+        /// With `--finalize`: the stated sentence explaining why no grill applied
+        /// (e.g. "the glossary already defines every matched term"). The honest
+        /// decline — recorded verbatim in the marker, and what a later reader
+        /// sees. Ignored without `--finalize`.
+        #[arg(long, default_value = "")]
+        reason: String,
         /// The spec to finalize (with `--finalize`). Explicit and robust (mirrors
         /// `approve-spec --spec`); absent, the active spec is resolved from the
         /// session binding. Ignored without `--finalize`.
@@ -128,8 +137,9 @@ pub fn dispatch(cmd: ContextCmd) {
             definition,
             context,
             finalize,
+            reason,
             spec,
             root,
-        } => grill_capture::run(&term, &definition, &context, &spec, finalize, &root),
+        } => grill_capture::run(&term, &definition, &context, &spec, &reason, finalize, &root),
     }
 }

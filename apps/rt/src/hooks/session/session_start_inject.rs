@@ -323,7 +323,8 @@ impl Check for SessionStartInject {
         spawn_otel_collector(&cwd);
         run_spec_hygiene(&cwd);
         // Wave 1 (mustard-unification): advisory probe for orphan agent
-        // worktrees under `<repo>/.claude/worktrees/agent-*`. Read-only;
+        // worktrees under `<repo>/.claude/worktrees/` (every name that is not
+        // a work unit's `{base}_…` — there is no `agent-` prefix). Read-only;
         // emits a single stderr warning when the orphan count exceeds the
         // module's threshold. Fail-open at every step.
         crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));

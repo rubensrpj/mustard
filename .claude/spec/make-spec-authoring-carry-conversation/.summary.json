@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "spec": "make-spec-authoring-carry-conversation",
+  "title": "Make spec authoring carry the conversation that produced it: a first-class channel for definitions, decisions and evidence gathered before the spec is materialized, a clarification gate that can actually fail, a glossary grill that says when it does not apply, and a spec size ceiling derived from how a spec is really loaded",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "clarify",
+      "summary": "Give the clarification gate a state of the world in which it fails: the marker records WHAT was settled, and approval refuses one that recorded nothing.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "size",
+      "summary": "Stop judging a spec by the ceiling that belongs to the always-on instruction file, and derive one from how a spec is actually loaded.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "channel",
+      "summary": "Give the drafter a first-class channel for the conversation material, landing in sections of its own instead of being crammed into the prose-only opening.",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "grill",
+      "summary": "Let the grill say when it does not apply, so declining becomes a recorded outcome instead of a silent skip.",
+      "status": "in_progress"
+    },
+    {
+      "n": 5,
+      "role": "render",
+      "summary": "Deliver the material to the implementer: cut it per wave at render time — definitions and decisions to every wave, a finding only to the wave that declares its file.",
+      "status": "in_progress"
+    },
+    {
+      "n": 6,
+      "role": "memory",
+      "summary": "Reconnect process memory: as EACH wave closes, a lesson that passes the value filter becomes a memory file naming its wave, and the next round receives it through the consumer that already exists.",
+      "status": "in_progress"
+    },
+    {
+      "n": 7,
+      "role": "docs",
+      "summary": "Teach the flow to read project memory while authoring, to assemble the material before materializing, to record the grill outcome, and to say where each kind of material lands.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -19,7 +19,7 @@ This is the canonical role→`subagent_type` map — other command refs point he
 
 ## Placeholders (filled by the binary)
 
-The 12 placeholders the renderer substitutes (`substitutions` in `agent_prompt_render.rs`), in template order:
+The placeholders the renderer substitutes — `TEMPLATE_PLACEHOLDERS` in `apps/rt/src/commands/agent/render/mod.rs`, which IS the substitution list, not a copy of it — in template order. The table below is pinned to that constant by the `agent_prompt_ref_documents_every_placeholder` drift guard: a placeholder added to the renderer and not to this table fails the build, because a reader planning a wave cannot use what the reference never mentions.
 
 | Placeholder | Source | Notes |
 |---|---|---|
@@ -31,10 +31,30 @@ The 12 placeholders the renderer substitutes (`substitutions` in `agent_prompt_r
 | `{context_md}` | `mustard-rt run context-slice` (cached, refreshed per wave) | Stable across a wave. Empty when no `CONTEXT.md` glossary exists (opt-in via `grill-with-docs`) — blank by design, not a failure. |
 | `{prior_wave_diff}` | per-wave `diff.md` (`git diff HEAD~1 HEAD --stat`, cached by `wave-done`) | VARIABLE — empty on wave 1 or when the diff is empty. |
 | `{change_log}` | spec `change-log.md` request bullets | VARIABLE — mid-pipeline change requests; empty when none. |
-| `{cross_wave_memory}` | renderer-internal (capability blocks + spec-memory + vocabulary regression) | VARIABLE — empty when none apply. |
+| `{conversation_material}` | the PARENT spec's `## Definitions` / `## Decisions` / `## Evidence` (written by `spec-draft --material`), cut for THIS wave | VARIABLE — see the per-wave cut below; empty when the spec carries no material or nothing survives the cut. |
+| `{cross_wave_memory}` | renderer-internal (capability blocks + spec-memory `<spec>/memory/*.md` + vocabulary regression) | VARIABLE — empty when none apply. The memory files are PROCESS memory, written by `wave-done` as each wave closes; see below. |
 | `{reference_files}` | scan-derived neighbours — the spec's `## Files`/`## Arquivos` list + those files' public signatures (tree-sitter) | 2-3 file references. |
 | `{skills_list}` | the subproject's skill shelf — names + trigger descriptions, never bodies | The agent loads each via the Skill tool; empty for the `patterns` role by design. |
 | `{retry_context}` | renderer-composed (`compose_retry_context`): last `review.result` verdict + critical count, last `pipeline.wave.failed` signal, persisted `<spec>/review/findings.md`, prior-wave diff, change log | Empty in `first`; composed in `granular`/`fix-loop`; `--retry-context-file` overrides with hand-supplied text. |
+
+## `## CONVERSATION MATERIAL` — the per-wave cut
+
+What the conversation established before the spec existed (`spec-draft --material`) lives ONCE, in the PARENT spec. A per-wave copy would drift, so the cut happens here, at render time. Each kind has a different natural key:
+
+| Kind | Parent section | Reaches | Why |
+|---|---|---|---|
+| Definitions | `## Definitions` | **EVERY wave** | The shared vocabulary. Cut it and each wave invents its own word for the same thing again. |
+| Decisions | `## Decisions` | **EVERY wave** | The law of the work ("everything branches off dev") binds every wave, not one. |
+| Findings | `## Evidence` | **only the wave that DECLARES the file** | A finding carries a file, so the file is the key: a wave receives the evidence about the code it is about to touch, and no other. |
+
+The finding cut is a set intersection over the wave's declared `## Files` — the same list the reference-file builder reads, so the cut cannot disagree with the rest of the pipeline. Two consequences a reader planning a wave needs:
+
+- **Record the file, or the finding reaches nobody.** A finding with no evidence path cannot be attributed to any wave and is DROPPED. Matching is segment-anchored suffix containment, not string equality: a subproject-relative `## Files` entry (`src/alpha.rs`) still matches a repo-relative evidence path (`apps/rt/src/alpha.rs`), which is what makes the cut work in a monorepo.
+- **Declaring a file in a wave is also how you ask for its evidence.** A wave that declares none of the evidence files still receives the definitions and the decisions, and gets no `### Evidence` sub-heading at all — an empty kind contributes no heading.
+
+The block rides in the VARIABLE region (after `## EFFICIENCY`), so carrying the material never touches the byte-identical stable head — two renders of the same spec that differ only in their per-wave findings share the same cached prefix. A spec with no material renders a prompt byte-identical to one from before this channel existed: the heading collapses like any other empty section.
+
+Do not confuse it with `## CROSS-WAVE MEMORY`. **Conversation material is PROJECT-side**: authored before the spec, including any earlier-spec memory the author judged relevant and cited. **`<spec>/memory/*.md` is PROCESS memory**: strictly intra-run, written by `wave-done` as each wave closes (verbatim `<MEMORY>` bodies, frontmatter naming the wave, run and timestamp), so a lesson learned in wave 1 reaches wave 3 instead of dying in the event log. Nothing summarises or infers either one.
 
 Why `## SKILLS` is a shelf and not the native per-agent skill preload: the native preload is static in the agent definition and injects skill BODIES — both would break the per-subproject selection and the PREFIX-STABLE byte-identical head; the shelf is computed per subproject and carries names + trigger descriptions only (the agent loads a body on demand via the Skill tool).
 
@@ -66,6 +86,7 @@ The embedded file holds two `<!-- TEMPLATE: … -->` blocks — **preserve every
 ## WEB VALIDATION    (static)
 ## ROLE              ({role_block})
 ## EFFICIENCY        (static)
+## CONVERSATION MATERIAL ({conversation_material} — the parent spec's material, cut for this wave)
 ## CROSS-WAVE MEMORY ({cross_wave_memory})
 ## PRIOR WAVE DIFF   ({prior_wave_diff})
 ## CHANGE REQUESTS   ({change_log})
@@ -74,6 +95,6 @@ The embedded file holds two `<!-- TEMPLATE: … -->` blocks — **preserve every
 
 **`retry`** — labeled `<!-- VARIABLE -->`; the minimal re-dispatch prompt: `## RETRY CONTEXT` (`{retry_context}`) → `## EFFICIENCY` → `## TASK`. Selected by `--mode granular|fix-loop`.
 
-A `## ` section whose placeholder body resolves to "" is dropped (`collapse_empty_sections`) — typically `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## SKILLS`, `## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS` on the spec-less / wave-1 / no-Files / `patterns` paths; `## TASK` always survives (its trailing line is non-blank body).
+A `## ` section whose placeholder body resolves to "" is dropped (`collapse_empty_sections`) — typically `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## SKILLS`, `## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS` on the spec-less / wave-1 / no-material / no-Files / `patterns` paths; `## TASK` always survives (its trailing line is non-blank body).
 
-Prompt-cache rule: the Anthropic API bills a byte-identical prefix (≥1024 tokens; ~1024 chars is a safe floor) at 10% of input on nearby calls. The stable head of `dispatch` (`## CONTEXT`…`## EFFICIENCY`) is reused across a wave's dispatches; the per-dispatch tail (`## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS`, `## TASK`) changes each round. `{context_md}` is *content* but byte-identical across a wave (regenerated + cached on each wave transition), so it rides in the stable head. A prefix below 1024 chars is still valid — it just does not cache (gain 0).
+Prompt-cache rule: the Anthropic API bills a byte-identical prefix (≥1024 tokens; ~1024 chars is a safe floor) at 10% of input on nearby calls. The stable head of `dispatch` (`## CONTEXT`…`## EFFICIENCY`) is reused across a wave's dispatches; the per-dispatch tail (`## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS`, `## TASK`) changes each round. That is why the per-wave material cut sits below the line and not above it: its content differs per wave by construction, so placing it in the head would defeat the cache for every dispatch of every spec that carries any. `{context_md}` is *content* but byte-identical across a wave (regenerated + cached on each wave transition), so it rides in the stable head. A prefix below 1024 chars is still valid — it just does not cache (gain 0).

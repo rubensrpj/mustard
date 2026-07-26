@@ -19,18 +19,30 @@
 //! glossary cannot drift.
 //!
 //! Output (stdout, byte-stable pretty JSON): `{ coveragePct, contextFile, present,
-//! termsCovered, termsTotal, uncovered, verdict }`. The `uncovered` list IS the
-//! actionable payload — the weak/missing domain terms the orchestrator hands to
-//! the inline grill (`grill-capture`) so each confirmed definition lands in the
-//! glossary; `contextFile` names the resolved target to write them into (the
+//! statedReason, termsCovered, termsTotal, uncovered, verdict }`. The `uncovered`
+//! list IS the actionable payload — the weak/missing domain terms the orchestrator
+//! hands to the inline grill (`grill-capture`) so each confirmed definition lands
+//! in the glossary; `contextFile` names the resolved target to write them into (the
 //! first existing CONTEXT.md, or the first requested path when none resolved yet,
 //! so a still-empty glossary still has a destination). Fail-open: a missing model
 //! / unreadable glossary degrades to `verdict: "na"` (the SKILL then stays
 //! silent); exit 0.
+//!
+//! The check was designed for a business domain, where a matched term like
+//! `payable` has a definition worth capturing. In a harness the domain vocabulary
+//! IS technical vocabulary, so the matcher answers with the words the repository
+//! says everywhere and the grill would ask low-value questions. `verdict:
+//! "declined"` is that outcome said out loud: the terms matched, but the corpus
+//! itself reports them as repository-wide vocabulary, so no definition is worth
+//! grilling. It is NOT an error and NOT a skip — it carries `statedReason`, the
+//! sentence `grill-capture --finalize --reason "<sentence>"` records into the
+//! clarification marker, which is exactly the substance the approval gate accepts.
+//! Declining therefore becomes a recorded outcome instead of a silent skip.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use mustard_core::domain::scan::DigestTerm;
 use mustard_core::Scan;
 use serde_json::json;
 
@@ -58,6 +70,11 @@ struct Coverage {
     /// none exists yet (so a `missing` verdict still has a destination). Empty
     /// when no `--context` was given.
     context_file: String,
+    /// Why no grill applies, as a sentence — non-empty ONLY on the `declined`
+    /// verdict. It is written to be passed VERBATIM to `grill-capture --finalize
+    /// --reason`, which is what turns the decline into a recorded clarification
+    /// instead of a skip nobody wrote down.
+    stated_reason: String,
 }
 
 impl Coverage {
@@ -188,6 +205,7 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         uncovered,
         verdict: "ok",
         context_file: String::new(),
+        stated_reason: String::new(),
     };
     c.verdict = if total == 0 {
         // No domain terms touched → nothing a glossary could cover; never nudge.
@@ -200,6 +218,153 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         "ok"
     };
     c
+}
+
+/// The verdict for "the terms matched, but they are not domain vocabulary".
+/// Beside the others, not above them: declining is a legitimate outcome, and
+/// naming it is what makes it visible.
+const DECLINED: &str = "declined";
+
+/// A published term's corpus RARITY ×1024, recovered from the two numbers the
+/// scan model publishes about it: `specificity_x1024` is TF·IDF (`count` ×
+/// `idf_x1024`), so dividing it back by `count` leaves the inverse document
+/// frequency alone — how CONCENTRATED the term is across the repository,
+/// independent of how often it is repeated. A word in nearly every module tends
+/// to 0; a word living in a few places scores high. That is the exact statement
+/// this verdict needs, and it is the corpus's own arithmetic — no list of words
+/// is written down anywhere, so nothing here can rot or encode one person's
+/// taste.
+fn rarity_x1024(t: &DigestTerm) -> u64 {
+    t.specificity_x1024 / (t.count.max(1) as u64)
+}
+
+/// The rarity a term must reach to count as domain vocabulary HERE: the UPPER
+/// QUARTILE of the repository's own published term index.
+///
+/// Read off the corpus rather than fixed, because the scale of `idf_x1024`
+/// depends on the corpus size — a constant would mean something different in
+/// every repository.
+///
+/// It was the median first, and review proved that unreachable on the corpus it
+/// was written against: with the cut at the middle word, HALF the published
+/// vocabulary sits at or above it, and a single such word vetoes the decline
+/// (the veto is correct — one genuine domain term means the grill still has a
+/// question worth asking). Measured on this repository: 120 published terms,
+/// median rarity 4132, and everyday words like `agent` landed exactly ON the
+/// median, so four real intents all failed to decline. A verdict that no input
+/// can reach is decoration, which is the very defect the spec carrying this
+/// change exists to end.
+///
+/// The upper quartile says something a reader can check: a word counts as domain
+/// vocabulary only when it is more concentrated than three quarters of what this
+/// repository publishes. Everything below is the shared background language.
+///
+/// `None` for an empty index (nothing to compare against → no decline). A model
+/// from an older scan binary carries no `specificity_x1024` at all, so every
+/// rarity is 0 and the cut is 0 — and since the comparison is strict, nothing is
+/// ever below it. The signal's absence can only silence the decline, never
+/// invent one.
+fn corpus_rarity_cut(index: &[DigestTerm]) -> Option<u64> {
+    if index.is_empty() {
+        return None;
+    }
+    let mut rarities: Vec<u64> = index.iter().map(rarity_x1024).collect();
+    rarities.sort_unstable();
+    // Upper quartile by index, integer and exact — no percentage to round.
+    rarities.get(rarities.len() * 3 / 4).copied()
+}
+
+/// The corpus rarity the published index reports for `group` — the LOWEST
+/// across every spelling of the word the index carries (`spec` and `specs` are
+/// often both published).
+///
+/// Lowest, because the group is ONE word and the check already treats it as one
+/// (defining either spelling closes it). The word's documents are the UNION of
+/// its spellings' documents, so its document frequency is at least the largest
+/// of them and its rarity is therefore at most the smallest of them: `spec`
+/// living in most modules makes the word repository-wide however narrowly the
+/// plural is used. Taking the highest instead would let the rarer spelling
+/// speak for a word that is everywhere.
+///
+/// `None` when the index says nothing about the word.
+fn group_rarity_x1024(group: &TermGroup, index: &[DigestTerm]) -> Option<u64> {
+    index
+        .iter()
+        .filter(|t| !inflection_keys(&t.term).is_disjoint(&group.stems))
+        .map(rarity_x1024)
+        .min()
+}
+
+/// The sentence to record when the corpus says none of the terms still open is
+/// domain vocabulary — `None` when the grill has something worth asking.
+///
+/// Three conditions, all read off the corpus:
+/// - **every judged word is ubiquitous.** One word above the median rarity is a
+///   word concentrated somewhere, which is a question worth asking, so the first
+///   one found ends the decline;
+/// - **the corpus judged at least half the open set** (the quorum below). A word
+///   the index never published is an ABSTENTION: it might be a genuinely
+///   concentrated term the rank cap trimmed, and calling it generic would be a
+///   guess. Abstentions neither support the decline nor veto it — but a decline
+///   resting on a minority of the open set would be the corpus deciding about
+///   words it never saw;
+/// - **at least one word was judged**, so a wholly unpublished set cannot
+///   decline by the quorum alone.
+///
+/// Why abstentions must not veto: scan's stem tier answers with fragments no
+/// human ever typed (`waveli` for `waveList`), which the term index never
+/// publishes. Letting one of those block the verdict is what made the decline
+/// unreachable on this very repository — a decline that never fires is as
+/// useless as one that fires always.
+///
+/// Pure and deterministic: the named terms keep the digest's order, and the same
+/// inputs always produce the same sentence.
+fn decline_reason(matched: &[String], uncovered: &[String], index: &[DigestTerm]) -> Option<String> {
+    let cut = corpus_rarity_cut(index)?;
+    let mut named: Vec<String> = Vec::new();
+    let mut open = 0usize;
+    for group in group_inflections(matched) {
+        if !uncovered.contains(&group.representative) {
+            continue;
+        }
+        open += 1;
+        let Some(rarity) = group_rarity_x1024(&group, index) else {
+            continue; // abstention: the corpus never published this word
+        };
+        if rarity >= cut {
+            return None;
+        }
+        named.push(group.representative);
+    }
+    // The quorum: judged words must be at least half of what the grill would ask
+    // about (`2 * judged >= open`, integer and exact — no percentage to round).
+    if named.is_empty() || named.len() * 2 < open {
+        return None;
+    }
+    Some(format!(
+        "the glossary grill declines: every term the corpus can judge here ({}) is \
+         repository-wide vocabulary — the scan model ranks each below the upper \
+         quartile of this repository's term rarity, so there is no domain \
+         definition worth capturing",
+        named.join(", ")
+    ))
+}
+
+/// Turn a `missing`/`weak` verdict into `declined` when the corpus reports that
+/// none of the still-open terms carries domain meaning.
+///
+/// Only those two verdicts are eligible: `ok` runs no grill to decline, and `na`
+/// never reaches here (the digest was unavailable, so there is no corpus to ask).
+/// Fail-open twice over — an empty index or a single unjudgeable word leaves the
+/// coverage exactly as scored.
+fn apply_decline(c: &mut Coverage, matched: &[String], index: &[DigestTerm]) {
+    if !matches!(c.verdict, "missing" | "weak") {
+        return;
+    }
+    if let Some(reason) = decline_reason(matched, &c.uncovered, index) {
+        c.verdict = DECLINED;
+        c.stated_reason = reason;
+    }
 }
 
 /// Resolve the digest's matched terms + glossary blocks, then score. Fail-open:
@@ -228,6 +393,18 @@ fn compute(intent: &str, context: &[String], root: &Path) -> Option<Coverage> {
 
     let mut coverage = score(&matched, &blocks, present);
     coverage.context_file = target_context_file(&resolved, context);
+
+    // The corpus is consulted only when a grill would actually run: on `ok` the
+    // decline could not change the answer, so the lean path keeps its single
+    // spawn. The published index is the same model, re-projected — an error
+    // leaves an empty index, which by construction can only fail open.
+    if matches!(coverage.verdict, "missing" | "weak") {
+        let index = Scan::locate()
+            .digest(&model)
+            .map(|d| d.terms)
+            .unwrap_or_default();
+        apply_decline(&mut coverage, &matched, &index);
+    }
     Some(coverage)
 }
 
@@ -258,13 +435,18 @@ fn to_json(c: &Coverage) -> serde_json::Value {
         "coveragePct": c.pct(),
         "uncovered": c.uncovered,
         "contextFile": c.context_file,
+        // Always present (stable shape), non-empty only on `declined` — the
+        // sentence the caller hands to `grill-capture --finalize --reason`.
+        "statedReason": c.stated_reason,
     })
 }
 
 /// Score `matched` repo-vocabulary terms against a glossary supplied as raw
 /// markdown — the same parse → score → render path [`run`] takes, minus the
-/// `--context` file resolution. `present` is derived exactly as production
-/// derives it (any parsed block at all).
+/// `--context` file resolution and minus the corpus consultation (there is no
+/// model behind a raw markdown string, so the answer is the ordinary
+/// coverage verdict, never `declined`). `present` is derived exactly as
+/// production derives it (any parsed block at all).
 ///
 /// Exposed so the acceptance tests exercise the PUBLISHED JSON contract
 /// (`termsTotal` / `termsCovered` / `coveragePct` / `uncovered` / `verdict`)
@@ -300,6 +482,9 @@ pub fn run(intent: &str, context: &[String], root: &Path) {
             "coveragePct": 0,
             "uncovered": [],
             "contextFile": "",
+            // No corpus to ask, so nothing was declined — the shape stays stable
+            // and the caller has no reason to record.
+            "statedReason": "",
         }),
     };
     println!(
@@ -434,6 +619,170 @@ mod tests {
         let c = score(&[], &[], false);
         assert_eq!(c.verdict, "ok");
         assert_eq!(c.pct(), 100);
+    }
+
+    /// A published term index, given as `(term, count, rarity_x1024)` — the
+    /// rarity is what the corpus judges on, so the fixture states it directly
+    /// and multiplies back into the `specificity_x1024` (TF·IDF) the model
+    /// really publishes.
+    fn corpus(rows: &[(&str, usize, u64)]) -> Vec<DigestTerm> {
+        rows.iter()
+            .map(|(term, count, rarity)| DigestTerm {
+                term: (*term).to_string(),
+                count: *count,
+                specificity_x1024: (*count as u64) * rarity,
+                samples: Vec::new(),
+                purpose: None,
+            })
+            .collect()
+    }
+
+    /// A repository whose published vocabulary spans both ends: `run`/`path` are
+    /// said everywhere, `ledger`/`payable` live in a corner. Median rarity =
+    /// 3000, the middle of five rows.
+    fn sample_corpus() -> Vec<DigestTerm> {
+        corpus(&[
+            ("run", 200, 1000),
+            ("path", 150, 2000),
+            ("gate", 100, 3000),
+            ("ledger", 40, 4000),
+            ("payable", 30, 5000),
+        ])
+    }
+
+    /// Both directions, because a decline that fires always is as useless as one
+    /// that never fires.
+    #[test]
+    fn grill_declines_when_terms_are_not_domain_vocabulary() {
+        let index = sample_corpus();
+
+        // (a) Ubiquitous matched terms → the grill declines, WITH a sentence.
+        // Both words live below the corpus median rarity: they are what the
+        // repository says everywhere, so a definition would restate the code.
+        let matched = vec!["run".to_string(), "path".to_string()];
+        let mut c = score(&matched, &[], false);
+        assert_eq!(c.verdict, "missing", "without the corpus this asks for a glossary");
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, DECLINED);
+        assert!(
+            c.stated_reason.contains("run") && c.stated_reason.contains("path"),
+            "the reason must NAME the terms it declines: {}",
+            c.stated_reason
+        );
+
+        // (b) Genuinely concentrated domain terms → the ordinary verdict stands,
+        // and nothing is stated (there is nothing to decline).
+        let matched = vec!["payable".to_string(), "ledger".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, "missing", "concentrated terms are worth grilling");
+        assert!(c.stated_reason.is_empty());
+
+        // (c) ONE concentrated term among ubiquitous ones is enough to keep the
+        // question — the decline is about the whole open set.
+        let matched = vec!["run".to_string(), "payable".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, "missing");
+
+        // (d) A word the corpus never published ABSTAINS. It is not swept into
+        // the decline (it is never named), and it does not veto one either —
+        // scan's stem tier answers with fragments like `waveli` that no index
+        // publishes, and letting one of those decide made the verdict
+        // unreachable on the repository this check was written against.
+        // (`gate` is deliberately absent from this intent: the cut is the upper
+        // quartile, so a mid-rarity word counts as ubiquitous and would not
+        // change the outcome either way.)
+        let matched = vec!["run".to_string(), "path".to_string(), "waveli".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, DECLINED, "one unpublished fragment must not veto");
+        assert!(
+            !c.stated_reason.contains("waveli"),
+            "an abstention is never NAMED as generic: {}",
+            c.stated_reason
+        );
+
+        // (e) But the quorum holds the line: when the corpus judged fewer than
+        // half the open terms, it is deciding about words it never saw, so the
+        // decline is refused. Here one judged word against three open ones.
+        let matched = vec![
+            "run".to_string(),
+            "desdobramento".to_string(),
+            "hierarquia".to_string(),
+        ];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, "missing", "a minority of judged terms cannot decline");
+
+        // (f) Fail-open: no index at all (scan model unavailable, or a model
+        // from a binary that published no specificity) changes nothing.
+        let matched = vec!["run".to_string(), "path".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &[]);
+        assert_eq!(c.verdict, "missing");
+        let flat = corpus(&[("run", 200, 0), ("path", 150, 0)]);
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &flat);
+        assert_eq!(c.verdict, "missing", "a signal-less model must not mint a decline");
+
+        // (g) A covered glossary is `ok`, and `ok` is never turned into a
+        // decline — there is no grill to decline.
+        let blocks = parse_term_blocks("## Run\nStart something.\n## Path\nA location.");
+        let mut c = score(&matched, &blocks, true);
+        assert_eq!(c.verdict, "ok");
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, "ok");
+        assert!(c.stated_reason.is_empty());
+    }
+
+    /// The decline judges the word, not the spelling: the index publishes the
+    /// singular, the digest matched the plural, and the group still resolves.
+    #[test]
+    fn decline_matches_the_word_across_its_spellings() {
+        let index = sample_corpus();
+        let matched = vec!["runs".to_string(), "paths".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, DECLINED, "`runs` is `run`: {}", c.stated_reason);
+
+        // And when BOTH spellings are published, the widespread one speaks for
+        // the word: `spec` in most modules makes the word repository-wide even
+        // though the narrow plural scores as concentrated. Judging by the plural
+        // is what silenced this verdict on the repository it was written for.
+        let index = corpus(&[
+            ("spec", 670, 1916),
+            ("specs", 56, 4676),
+            ("gate", 100, 3000),
+            ("ledger", 40, 4000),
+            ("payable", 30, 5000),
+        ]);
+        let matched = vec!["spec".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, DECLINED, "the word is where its spellings are: {}", c.stated_reason);
+    }
+
+    /// The stated reason is the payload, not a log line: it must survive into
+    /// `grill-capture --finalize --reason` and into the JSON the caller reads.
+    #[test]
+    fn declined_verdict_publishes_its_stated_reason() {
+        let index = sample_corpus();
+        let matched = vec!["run".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        let payload = to_json(&c);
+        assert_eq!(payload["verdict"], serde_json::json!(DECLINED));
+        let stated = payload["statedReason"].as_str().unwrap_or_default();
+        assert!(stated.contains("run"), "the sentence must name the term: {payload}");
+        assert!(
+            stated.ends_with("capturing"),
+            "a complete sentence, ready to be recorded verbatim: {stated}"
+        );
+        // Every other verdict publishes the key EMPTY — the shape is stable, so
+        // a caller can always read it, and only a decline has something to say.
+        let ok = to_json(&score(&[], &[], false));
+        assert_eq!(ok["statedReason"], serde_json::json!(""));
     }
 
     #[test]

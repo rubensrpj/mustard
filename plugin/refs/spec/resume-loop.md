@@ -60,7 +60,7 @@ Returns the **current round** — `[{wave, role, subproject, subagent_type, prom
 
 **Each round:**
 1. **[you] Dispatch the WHOLE round in ONE message** — one `Task` per item, `prompt` **verbatim** (a `MUSTARD-PROMPT-REF` stub — never hand-craft, NEVER read the `.dispatch/` file; mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`), `subagent_type` = the item field. Before an impl item, check its `precheck`: `{ok:true}`/absent → dispatch; `{ok:false,missing,…}` → print `BLOCKED — N missing symbols`, emit `pipeline.dispatch_failure`, `AskUserQuestion` (tactical-fix / investigate / force). **Skip** on `mode:continued` or `MUSTARD_DEPENDENCY_PRECHECK_MODE=off`.
-2. **[you] After each impl wave:** commit (`feat(wave-{N}/{role}): {summary}`), then `mustard-rt run wave-done --spec {spec} --wave {N} --duration-ms {elapsed}` (emits `pipeline.wave.complete` + caches the diff — one atomic call).
+2. **[you] Commit ONCE per ROUND — after EVERY wave of the round has returned, never after each wave.** One commit (`feat(wave-{N}/{role}): {summary}`, or `feat(waves-{N}-{M}): {summary}` when the round holds several), then `mustard-rt run wave-done --spec {spec} --wave {N} --duration-ms {elapsed}` **per wave of the round** (emits `pipeline.wave.complete` + caches that wave's diff — one atomic call; it runs after the commit so the cached diff is the round's real work). **Why per round:** committing between two waves of the same round is the one thing that can lose work — under the `add -A` law it sweeps a sibling's in-flight edits into your commit. Waves of the SAME round are independent by construction (that is what a dependency level means) and their declared `## Files` are audited disjoint (`wave-overlap-check`); waves of DIFFERENT rounds are sequential and cannot collide. So the round boundary removes the exposure outright — no isolated checkouts, no copies, no transport step.
 3. **[you] After each review item:** save the review agent's return verbatim to a scratch file, then `mustard-rt run review-result --spec {spec} --verdict approved|rejected [--critical N] --subproject {sub} --findings-file {scratch}` — the "already reviewed" signal (else the next `wave-advance` re-emits it); persists `<spec>/review/findings.md` for the fix-loop's `## RETRY CONTEXT`. No commit/wave-done. REJECTED (any CRITICAL) → **§ Fix Loop** before advancing.
 4. **[you] After the round:** `mustard-rt run wave-tree --spec-dir .claude/spec/{spec}`, then re-run `wave-advance`.
 5. **`wave-advance` returns `[]`** → do NOT emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction`:
@@ -72,6 +72,14 @@ Returns the **current round** — `[{wave, role, subproject, subagent_type, prom
 | `run-qa` / `emit-complete` | `mustard-rt run close-pipeline --spec {spec}` |
 
 `close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) without `qa.result overall=pass`**.
+
+**[you] The user asks for a change mid-round → record the INSTRUCTION, not just the reply.** An observer already captures every prompt verbatim into the spec's change log — that is the raw trail, and it keeps the user's words. But a reply carries its meaning from the conversation: `"Concordo se for agregar"` recorded alone tells the next wave nothing it can act on. So state what was agreed, in one self-contained sentence, as its own record:
+
+```bash
+mustard-rt run change-request --spec {spec} --instruction "<what changes, stated so a wave that never saw this conversation can act on it>"
+```
+
+It lands in the shape `read_change_log` filters for, so the next rendered prompt carries it under `## CHANGE REQUESTS` — no hand-formatted bullet, and a refusal (empty instruction, unknown spec) writes nothing. **Then fold anything that changes BEHAVIOUR into `## Acceptance Criteria` and re-run QA**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25). The narrative of `spec.md` stays frozen either way.
 
 ---
 

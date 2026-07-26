@@ -8,7 +8,8 @@
 //!
 //! The engine lives in [`crate::commands::work_unit_open::hook_create`] (same
 //! motor as `mustard-rt run work-unit-open`): `{base}_{slug}` names cut from a
-//! fresh `origin/{base}`; non-unit names (`agent-*`, desktop) replicate the
+//! fresh `origin/{base}`; every other name — the SLUG the event actually hands
+//! over (`recursing-benz-063389`, `feature-auth`, `pr-1234`) — replicates the
 //! native default cut so background isolation never breaks.
 //!
 //! The event carries a NAME, not a path (`{hook_event_name:"WorktreeCreate",

@@ -1,8 +1,11 @@
 //! Section cutting and prompt cleanup: read a subproject's `## Guards`, cut the
-//! spec's `## Tasks` (with narrative fallbacks), resolve the spec locale, and
-//! the two post-substitution passes that keep the rendered prompt clean
-//! ([`collapse_empty_sections`], [`strip_unfilled_template_tokens`]).
+//! spec's `## Tasks` (with narrative fallbacks), cut the parent spec's
+//! conversation material for one wave ([`build_conversation_material`]), resolve
+//! the spec locale, and the two post-substitution passes that keep the rendered
+//! prompt clean ([`collapse_empty_sections`],
+//! [`strip_unfilled_template_tokens`]).
 
+use super::reference::files_section_paths;
 use crate::commands::scan_claude::GUARDS_PENDING_OPEN;
 use crate::commands::spec::spec_sections::{is_heading, section_end};
 use mustard_core::io::fs as mfs;
@@ -231,6 +234,184 @@ fn cut_section_at(lines: &[&str], start: usize) -> Option<String> {
         return None;
     }
     Some(lines[start..end].join("\n").trim_end().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// The conversation material, cut per wave
+// ---------------------------------------------------------------------------
+
+/// EN sub-headings for the carried material — fixed literals, exactly like the
+/// drafter's own `## Definitions` / `## Decisions` / `## Evidence`. Agent
+/// prompts stay EN by policy (the same rule the vocabulary block and
+/// `## GIT BOUNDARY` follow), and one literal per kind keeps every consumer
+/// keyed off the same string instead of the spec's localised heading.
+const MATERIAL_DEFINITIONS: &str = "### Definitions";
+const MATERIAL_DECISIONS: &str = "### Decisions";
+const MATERIAL_EVIDENCE: &str = "### Evidence";
+
+/// Cut the parent spec's conversation material (`spec-draft --material`) for ONE
+/// wave.
+///
+/// The material lives ONCE, in `parent_spec`; a per-wave copy would drift, so
+/// the cut happens here, at render time. Each kind has a different natural key:
+///
+/// - **Definitions** are the shared vocabulary — every wave gets them, or each
+///   wave invents its own term for the same thing again.
+/// - **Decisions** are the law of the work ("everything branches off dev" binds
+///   every wave), so they are not cut either.
+/// - **Findings** carry a file, so the FILE is the key: a finding reaches only
+///   the wave whose declared `## Files` list contains it. That intersection is
+///   computed over [`files_section_paths`] — the SAME list the reference-files
+///   builder reads — so this cut cannot disagree with the rest of the pipeline.
+///
+/// `wave_spec` is the wave's operational spec
+/// (`resume_bootstrap::resolve_operational_spec_path`); on a wave-less render it
+/// IS `parent_spec`, and the cut then runs against the parent's own `## Files`.
+///
+/// Empty when the spec carries no material, or when nothing survives the cut —
+/// the `## CONVERSATION MATERIAL` heading is then dropped by
+/// [`collapse_empty_sections`], so a spec that carries nothing renders a prompt
+/// byte-identical to one rendered before this channel existed. Fail-open: an
+/// unreadable spec yields "".
+pub(crate) fn build_conversation_material(parent_spec: &Path, wave_spec: &Path) -> String {
+    let text = mfs::read_to_string(parent_spec).unwrap_or_default();
+    if text.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    if let Some(body) = cut_section_body(&text, "definitions") {
+        push_material_block(&mut out, MATERIAL_DEFINITIONS, &body);
+    }
+    if let Some(body) = cut_section_body(&text, "decisions") {
+        push_material_block(&mut out, MATERIAL_DECISIONS, &body);
+    }
+    if let Some(body) = cut_section_body(&text, "evidence") {
+        let wave_text = mfs::read_to_string(wave_spec).unwrap_or_default();
+        let declared = files_section_paths(&wave_text);
+        let kept = keep_findings_for(&body, &declared);
+        if !kept.is_empty() {
+            push_material_block(&mut out, MATERIAL_EVIDENCE, &kept);
+        }
+    }
+    out
+}
+
+/// The body of a `## <key>` section, heading EXCLUDED and trimmed. `None` when
+/// the heading is absent or its body is entirely blank — an empty kind must
+/// contribute no sub-heading at all.
+fn cut_section_body(text: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| is_heading(l, key))?;
+    let end = section_end(&lines, start);
+    let body = lines[start + 1..end].join("\n").trim().to_string();
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// Append one `### <kind>` block, separated from the previous one by a blank
+/// line. The first block never gets a leading separator, so an all-but-one-kind
+/// material renders without a stray blank head.
+fn push_material_block(out: &mut String, heading: &str, body: &str) {
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(heading);
+    out.push('\n');
+    out.push_str(body);
+}
+
+/// Keep only the findings whose evidence file is in `declared`.
+///
+/// A finding is one top-level `- ` bullet plus its indented continuation lines
+/// (the "bullet + attribute line" shape the drafter emits). The evidence path is
+/// the first backtick-quoted token on a CONTINUATION line: the drafter writes
+/// exactly one such attribute (`  Evidence: \`file:line\``), and keying off the
+/// token rather than the `Evidence:` label keeps a hand-authored PT spec
+/// (`Evidência:`) resolving through this same cut instead of growing a second
+/// parser. Skipping the bullet line itself means a backtick inside the statement
+/// is never mistaken for the path.
+///
+/// A finding with no evidence path is DROPPED: it cannot be attributed to any
+/// wave, and letting it through would make the cut a no-op for it.
+fn keep_findings_for(body: &str, declared: &[String]) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for item in split_bullet_items(body) {
+        let Some(path) = item.iter().skip(1).find_map(|l| backtick_path(l)) else {
+            continue;
+        };
+        if declared.iter().any(|d| same_file(d, &path)) {
+            kept.push(item.join("\n").trim_end().to_string());
+        }
+    }
+    kept.join("\n")
+}
+
+/// Group a bullet list into items: each top-level `- ` line plus every following
+/// line until the next top-level bullet. Lines before the first bullet are
+/// discarded (a kind's body is a bullet list by construction).
+fn split_bullet_items(body: &str) -> Vec<Vec<&str>> {
+    let mut items: Vec<Vec<&str>> = Vec::new();
+    for line in body.lines() {
+        if line.starts_with("- ") {
+            items.push(vec![line]);
+        } else if let Some(last) = items.last_mut() {
+            last.push(line);
+        }
+    }
+    items
+}
+
+/// The first backtick-quoted token on a line, with a trailing `:<line>` suffix
+/// removed — `` `src/a.rs:12` `` and `` `src/a.rs` `` both yield `src/a.rs`, so
+/// a line-precise finding and a file-level one key the same way.
+fn backtick_path(line: &str) -> Option<String> {
+    let open = line.find('`')?;
+    let rest = &line[open + 1..];
+    let close = rest.find('`')?;
+    let inner = rest[..close].trim();
+    if inner.is_empty() {
+        return None;
+    }
+    let path = match inner.rsplit_once(':') {
+        Some((head, tail))
+            if !head.is_empty() && !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => inner,
+    };
+    Some(path.to_string())
+}
+
+/// Whether two path spellings name the same file.
+///
+/// A `## Files` entry is subproject-relative OR repo-relative (the reference
+/// builder resolves both spellings), while a finding records the path it was
+/// READ at. Plain string equality would therefore cut everything away on a
+/// monorepo. Segment-anchored suffix containment is the deterministic relation
+/// that accepts both spellings without guessing a root — and staying anchored on
+/// `/` keeps `foo/bar.rs` from matching `notfoo/bar.rs`.
+fn same_file(a: &str, b: &str) -> bool {
+    let a = normalise_path(a);
+    let b = normalise_path(b);
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
+}
+
+/// Normalise a path spelling for comparison: Windows separators to `/`, no
+/// leading `./`, no surrounding slashes. Case is left alone — the repo's paths
+/// are case-sensitive on the platforms that matter for the census.
+fn normalise_path(p: &str) -> String {
+    p.trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_matches('/')
+        .to_string()
 }
 
 /// Filter the lines of a task block by a regex-style pattern.
@@ -511,6 +692,86 @@ mod tests {
         assert!(out.contains("## B\nbody"), "filled heading B dropped: {out}");
         assert!(!out.contains("## C"), "whitespace-only heading C survived: {out}");
         assert!(out.contains("## D\nx"), "filled heading D dropped: {out}");
+    }
+
+    // --- build_conversation_material -----------------------------------------
+
+    /// Write a parent spec carrying all three kinds and a wave spec declaring
+    /// `files`; returns the pair of paths the cut runs over.
+    fn material_fixture(dir: &Path, files: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let parent = dir.join("spec.md");
+        std::fs::write(
+            &parent,
+            "# T\n\n## Definitions\n\n- **wave** — one level of the plan\n\n\
+             ## Decisions\n\n- everything branches off dev\n  Reason: the release train\n\n\
+             ## Evidence\n\n- alpha parses twice\n  Evidence: `apps/rt/src/alpha.rs:12`\n\
+             - beta swallows the error\n  Evidence: `src/beta.rs`\n",
+        )
+        .unwrap();
+        let wave_dir = dir.join("wave-1-x");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        let wave = wave_dir.join("spec.md");
+        std::fs::write(&wave, format!("# W\n\n## Files\n\n{files}\n## Tasks\n\n- [ ] x\n")).unwrap();
+        (parent, wave)
+    }
+
+    /// The finding cut is a set intersection over the wave's `## Files`, and a
+    /// subproject-relative `## Files` entry still matches a repo-relative
+    /// evidence path (the two spellings both occur in a monorepo).
+    #[test]
+    fn conversation_material_cuts_findings_by_declared_files() {
+        let dir = tempdir().unwrap();
+        let (parent, wave) = material_fixture(dir.path(), "- `src/alpha.rs`\n");
+        let out = build_conversation_material(&parent, &wave);
+        assert!(out.contains("### Definitions"), "{out}");
+        assert!(out.contains("### Decisions"), "{out}");
+        assert!(out.contains("### Evidence"), "{out}");
+        assert!(out.contains("alpha parses twice"), "declared file's finding missing: {out}");
+        assert!(!out.contains("beta swallows"), "undeclared file's finding leaked: {out}");
+    }
+
+    /// A wave that declares NONE of the evidence files gets the vocabulary and
+    /// the law of the work, and no `### Evidence` sub-heading at all.
+    #[test]
+    fn conversation_material_drops_evidence_heading_when_nothing_matches() {
+        let dir = tempdir().unwrap();
+        let (parent, wave) = material_fixture(dir.path(), "- `src/gamma.rs`\n");
+        let out = build_conversation_material(&parent, &wave);
+        assert!(out.contains("### Definitions"), "{out}");
+        assert!(!out.contains("### Evidence"), "empty evidence heading survived: {out}");
+        assert!(!out.contains("alpha parses twice"), "{out}");
+    }
+
+    /// A spec with no material at all yields "" — the caller's heading then
+    /// collapses and the prompt is byte-identical to one without the channel.
+    #[test]
+    fn conversation_material_empty_for_a_spec_without_the_channel() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("spec.md");
+        std::fs::write(&parent, "# T\n\n## Files\n\n- `a.rs`\n\n## Tasks\n\n- [ ] x\n").unwrap();
+        assert_eq!(build_conversation_material(&parent, &parent), "");
+        // Missing file → fail-open, never a panic.
+        let missing = dir.path().join("nope.md");
+        assert_eq!(build_conversation_material(&missing, &missing), "");
+    }
+
+    #[test]
+    fn backtick_path_strips_the_line_suffix_only() {
+        assert_eq!(backtick_path("  Evidence: `src/a.rs:12`").as_deref(), Some("src/a.rs"));
+        assert_eq!(backtick_path("  Evidence: `src/a.rs`").as_deref(), Some("src/a.rs"));
+        // A non-numeric tail is part of the path, not a line number.
+        assert_eq!(backtick_path("  Evidência: `a:b.rs`").as_deref(), Some("a:b.rs"));
+        assert_eq!(backtick_path("  no backticks here"), None);
+    }
+
+    #[test]
+    fn same_file_is_segment_anchored() {
+        assert!(same_file("apps/rt/src/a.rs", "src/a.rs"));
+        assert!(same_file("src/a.rs", "./apps/rt/src/a.rs"));
+        assert!(same_file("src\\a.rs", "src/a.rs"));
+        // A shared tail that is not a path segment must NOT match.
+        assert!(!same_file("notsrc/a.rs", "rc/a.rs"));
+        assert!(!same_file("src/a.rs", "src/b.rs"));
     }
 
     #[test]

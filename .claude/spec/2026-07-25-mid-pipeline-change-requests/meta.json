@@ -1,0 +1,13 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "light",
+  "lang": "en-US",
+  "checkpoint": "2026-07-25T22:51:11.081Z",
+  "parent": "make-spec-authoring-carry-conversation",
+  "currentWave": 0,
+  "completedWaves": [
+    0
+  ]
+}
