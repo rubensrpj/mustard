@@ -72,13 +72,18 @@ Adding any switch that relaxes the new refusal.
 - **AC-3** — when the shipped close ritual is read, then it names the protection that actually enforces the refusal instead of promising another command's gate.
   Command: `cargo test -p mustard-rt --lib complete_spec::tests::the_shipped_ritual_names_the_protection_that_exists`
   Expect: `[1-9][0-9]* passed`
+- **AC-5** — when the composite close asks its verification gate, then a run that verified nothing does not open the close, and a recorded pass does.
+  Command: `cargo test -p mustard-rt --lib close_orchestrate::tests::a_skip_verdict_does_not_open_the_composite_close`
+  Expect: `[1-9][0-9]* passed`
 - **AC-4** — when the whole workspace is built, then it compiles green.
   Command: `cargo build --workspace`
 
 ## Files
 
 - `apps/rt/src/commands/spec/complete_spec.rs`
+- `apps/rt/src/commands/pipeline/close_orchestrate.rs`
 - `plugin/commands/close.md`
+- `plugin/refs/feature/spec-hygiene.md`
 
 ## Root cause
 
