@@ -419,11 +419,19 @@ mod tests {
         write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
         write_qa_event(dir.path(), "skip-qa-spec", "skip", json!([]));
         let input = close_input(dir.path(), "skip-qa-spec");
-        let verdict = close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict());
-        assert!(
-            verdict.is_blocking(),
-            "a spec that declares no criterion has nothing to claim: {verdict:?}"
-        );
+        // The reason is pinned, not just the blocking: this exact fixture used
+        // to be ALLOWED, so every other sub-gate passes it — but asserting only
+        // `is_blocking()` would keep passing if some unrelated gate started
+        // denying first, and the criterion would then verify the wrong refusal.
+        match close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict()) {
+            Verdict::Deny { reason } => assert!(
+                reason.contains("declares no acceptance criteria"),
+                "the refusal must be the QA one, and must name the shape: {reason}"
+            ),
+            other => panic!(
+                "a spec that declares no criterion has nothing to claim, got {other:?}"
+            ),
+        }
     }
 
     /// The override keeps the meaning it always had: under `warn`, BOTH skip

@@ -68,10 +68,16 @@ stopped honouring it.
 
 ## Limits
 
-This adapter can only ALLOW — it never writes the completion event, so no door
-was open while it disagreed. What is being closed is a rule disagreement, not an
-active hole. The shipped prose already describes the rule this brings the code
-in line with, so nothing here changes what the operator was told.
+The adapter that surfaced this can only ALLOW — it never writes the completion
+event, so no door was open while it disagreed. But the branch being changed
+lives in the SHARED gate routine, which the live `emit-phase --to CLOSE` door
+also runs through: after this, that door refuses an empty-criteria skip too.
+That is the intended direction and the reason the change is worth making, but it
+is a wider blast radius than "a hook adapter", and saying otherwise would
+understate it.
+
+The shipped prose already describes the rule this brings the code in line with,
+so nothing here changes what the operator was told.
 
 ## Definitions
 
