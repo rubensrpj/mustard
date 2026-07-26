@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "seed-first-glossary-from-corpus",
+  "title": "Seed the first glossary from the corpus: a project with no CONTEXT.md gets a short list of terms worth defining instead of a blank page",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
