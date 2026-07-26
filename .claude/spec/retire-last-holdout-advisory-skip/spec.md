@@ -79,6 +79,15 @@ understate it.
 The shipped prose already describes the rule this brings the code in line with,
 so nothing here changes what the operator was told.
 
+One criterion's negative proof is NOMINAL, and saying so is the point. AC-3
+guards PRESERVATION — that the warn override keeps the meaning it always had —
+and warn behaviour is deliberately identical before and after. Its recorded red
+therefore means only "the test did not exist yet", never "the retired rule made
+it fail". A preservation criterion cannot come back red for the right reason,
+because there is no wrong behaviour for it to catch; it earns its place by
+pinning what must NOT move. The ledger cannot tell those two reds apart, so this
+paragraph does.
+
 ## Definitions
 
 - **the two skip shapes** — a verification run reports `skip` for two different reasons, told apart by whether it recorded any criteria at all. EMPTY criteria: the spec declares nothing to verify. NON-EMPTY criteria: criteria exist but none could be attempted (timeout, spawn failure, or a run inside the binary its criteria target). The remedies differ — author a criterion versus fix or externally re-run the ones that exist — but neither is a verification.
