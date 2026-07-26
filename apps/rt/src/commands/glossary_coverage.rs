@@ -19,8 +19,8 @@
 //! glossary cannot drift.
 //!
 //! Output (stdout, byte-stable pretty JSON): `{ coveragePct, contextFile, present,
-//! statedReason, termsCovered, termsTotal, uncovered, verdict }` — the same keys
-//! on every verdict, so a caller can always read them. The `uncovered` list IS
+//! seed, statedReason, termsCovered, termsTotal, uncovered, verdict }` — the same
+//! keys on every verdict, so a caller can always read them. The `uncovered` list IS
 //! the actionable payload — the domain terms of a THIN glossary (`weak`) that the
 //! orchestrator hands to the inline grill (`grill-capture`) so each confirmed
 //! definition lands in the glossary; `contextFile` names the resolved target to
@@ -481,9 +481,15 @@ fn apply_decline(c: &mut Coverage, matched: &[String], index: &[DigestTerm]) {
     if let Some(reason) = decline_reason(matched, &c.open, index) {
         c.verdict = DECLINED;
         c.stated_reason = reason;
-        // A declined project has, by the corpus's own reading, nothing worth
-        // defining — so it must not also be handed a list to define. The two
-        // verdicts would contradict each other in the same document.
+        // Belt and braces, and honest about being exactly that: the two are
+        // mutually exclusive BY CONSTRUCTION today, so this line is currently
+        // unreachable. A non-empty seed means some group sits at or above the
+        // cut; on `missing` every group is still open, and `decline_reason`
+        // returns `None` on the first such group — so a decline and a seed
+        // cannot coexist. Kept because the coupling is indirect (it depends on
+        // `score` putting everything in `open` when no glossary resolved) and a
+        // declined project handed a list to define would contradict itself in
+        // one document. The invariant, not this branch, is what the tests pin.
         c.seed.clear();
     }
 }
@@ -1072,9 +1078,12 @@ mod tests {
     fn a_seed_is_empty_rather_than_padded_with_noise() {
         let index = sample_corpus();
 
-        // (a) only ubiquitous vocabulary → the corpus declines, and a declined
-        // project must not ALSO be handed a list to define: the two verdicts
-        // would contradict each other in one document.
+        // (a) only ubiquitous vocabulary → the corpus declines and offers
+        // nothing. Stated as the INVARIANT it really is, not as a branch being
+        // exercised: a decline and a non-empty seed are mutually exclusive by
+        // construction, so asserting `seed.is_empty()` here alone would pass
+        // trivially. What is pinned is that the two never coexist — over every
+        // fixture in this test, including the ones that DO seed.
         let matched = vec!["run".to_string(), "path".to_string()];
         let mut c = score(&matched, &[], false);
         apply_decline(&mut c, &matched, &index);
@@ -1093,6 +1102,25 @@ mod tests {
         let mut c = score(&matched, &[], false);
         apply_decline(&mut c, &matched, &[]);
         assert!(c.seed.is_empty(), "an empty index cannot mint a seed");
+
+        // The invariant itself, over every shape this test built: a declined
+        // verdict and a seed never appear together. This is what sub-assertion
+        // (a) can only gesture at on its own.
+        for matched in [
+            vec!["run".to_string(), "path".to_string()],
+            vec!["payable".to_string(), "run".to_string()],
+            vec!["payable".to_string(), "ledger".to_string()],
+            vec!["waveli".to_string()],
+        ] {
+            let mut c = score(&matched, &[], false);
+            apply_decline(&mut c, &matched, &index);
+            assert!(
+                c.verdict != DECLINED || c.seed.is_empty(),
+                "a decline and a seed contradict each other: {:?} / {:?}",
+                c.verdict,
+                c.seed
+            );
+        }
     }
 
     /// AC-3 — an authored glossary is never offered a seed, however thin it is.
