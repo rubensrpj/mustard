@@ -14,9 +14,14 @@
 //! A criterion killed by its per-AC deadline reports `timeout` — a class of its
 //! own, never `skip` — and no run with a timed-out criterion can read `pass`
 //! (see [`overall_verdict`]). `skip` keeps its narrower meaning: the criterion
-//! could not be attempted at all. And a SELF-invoked run in which every
-//! criterion skipped emits no `qa.result` at all (see [`should_emit_qa_event`]):
-//! it verified nothing, so it must not overwrite a real external verdict.
+//! could not be attempted at all. In a SELF-invoked run that meaning is
+//! load-bearing: a criterion nobody attempted was not verified, so such a run
+//! never reads `pass` while any criterion skipped (see [`overall_verdict`]) and
+//! writes no `qa.result` unless it either attempted every criterion or found
+//! something red (see [`should_emit_qa_event`]) — it must not overwrite a real
+//! external verdict with a claim it did not earn. The EXTERNAL run path is
+//! untouched: a standalone `mustard-rt run qa-run` that genuinely skips a
+//! criterion keeps its historical verdict and still emits.
 //!
 //! `--format json` (default) prints the `{ event, payload }` JSON the pipeline
 //! consumes. `--format html` additionally writes a standalone HTML report to
@@ -218,7 +223,13 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
 /// (which may or may not hold a `Command:` marker — that is the caller's job).
 ///
 /// Plain string scanning, no regex crate. Returns `None` for any non-AC line.
-fn parse_ac_header(line: &str) -> Option<(String, &str)> {
+///
+/// `pub(crate)` because the amendment door
+/// ([`crate::commands::spec::ac_amend`]) REWRITES criterion lines in place and
+/// must find them with the very reader that grades them — a writer that
+/// recognised an AC line by its own rule would happily edit a line this parser
+/// never reads, leaving the dispatched agent on the superseded command.
+pub(crate) fn parse_ac_header(line: &str) -> Option<(String, &str)> {
     let t = line.trim_start();
     let rest = t.strip_prefix('-')?.trim_start();
     // The `[ ]` / `[x]` / `[X]` checkbox is OPTIONAL: the historical checklist
@@ -531,7 +542,8 @@ pub(crate) fn spec_has_executable_acs(cwd: &Path, spec: &str) -> bool {
     has_own_acs || !runner::gather_capability_acs(cwd, spec).is_empty()
 }
 
-/// The overall verdict of a finished run, from the per-criterion statuses.
+/// The overall verdict of a finished run, from the per-criterion statuses and
+/// whether the run was self-invoked.
 ///
 /// Precedence, most severe first:
 /// - any `fail` ⇒ `fail` — a red criterion still dominates (unchanged).
@@ -540,11 +552,21 @@ pub(crate) fn spec_has_executable_acs(cwd: &Path, spec: &str) -> bool {
 ///   `skip`: the flow documents `skip` as warn-and-allow, and a run that ran out
 ///   of time is not a run that had nothing to do.
 /// - every criterion `skip` ⇒ `skip` — today's tolerance, unchanged.
+/// - a SELF-invoked run with ANY `skip` ⇒ `skip` — a criterion that could not
+///   be attempted was not verified, so the run learned nothing about the
+///   feature that criterion guards. It may not claim `pass` on the strength of
+///   the criteria that happened to be attemptable: the reproduced shape is nine
+///   criteria skipped because they rebuild the running binary plus one
+///   incidental green, which used to read `pass`. This is a fact read straight
+///   off the statuses, not a threshold — one unattempted criterion is enough.
 /// - otherwise ⇒ `pass`.
 ///
-/// Pure and total: a function of the statuses alone, so the precedence is
-/// unit-testable without spawning a single command.
-fn overall_verdict(criteria: &[AcResult]) -> &'static str {
+/// `self_invoked` is a PARAMETER rather than a thread-local read so the whole
+/// precedence stays pure and total — a function of its inputs alone, testable
+/// without spawning a single command. An EXTERNAL run (`self_invoked = false`)
+/// takes exactly the historical branches: a genuine skip beside a pass still
+/// reads `pass`.
+fn overall_verdict(criteria: &[AcResult], self_invoked: bool) -> &'static str {
     let (mut fail, mut timeout, mut skip) = (0usize, 0usize, 0usize);
     for c in criteria {
         match c.status.as_str() {
@@ -558,40 +580,57 @@ fn overall_verdict(criteria: &[AcResult]) -> &'static str {
         "fail"
     } else if timeout > 0 {
         "timeout"
-    } else if skip == criteria.len() {
+    } else if skip == criteria.len() || (self_invoked && skip > 0) {
+        // Left: the historical all-skip tolerance (and the empty-criteria
+        // contract, `0 == 0`). Right: the self-invoked rule — one criterion
+        // that could not be attempted is already enough.
         "skip"
     } else {
         "pass"
     }
 }
 
-/// `false` for a **self-invoked** run in which every criterion came back
-/// `skip` — the run verified nothing, so it must not write a `qa.result`.
+/// `false` for a **self-invoked** run that did not attempt every criterion and
+/// found nothing red — it has no verified result to record, so it must not
+/// write a `qa.result`.
 ///
 /// Why: `emit_pipeline::qa_result_passed` takes the LAST `qa.result` verdict and
 /// the close gate defaults to strict. A self-invoked run (from `complete-spec` /
-/// `close-pipeline`) whose ACs all skip — typically because they rebuild the
-/// very binary executing them — would otherwise overwrite a REAL external pass
-/// with a non-pass and block the close. Silence is the honest record here: the
-/// JSON report, the sidecar and the metric still say what happened. The gate
-/// itself is untouched.
+/// `close-pipeline`) whose ACs skip — typically because they rebuild the very
+/// binary executing them — would otherwise write the last verdict for the spec
+/// on the strength of whatever it did manage to run. Silence is the honest
+/// record here: the JSON report, the sidecar and the metric still say what
+/// happened. The gate itself is untouched.
 ///
-/// External runs (`self_invoked = false`) always emit, including all-skip ones.
-fn should_emit_qa_event(criteria: &[AcResult]) -> bool {
-    let self_invoked = runner::QA_OPTIONS.with(std::cell::Cell::get).self_invoked;
-    // An EMPTY criteria list counts as "verified nothing" too (`all` is
-    // vacuously true): a self-invoked run that found no parseable criterion
-    // reaches the same end state by the other door — `complete_spec`'s fail-open
-    // QA on a spec whose ACs stopped parsing — and must not write the last
-    // verdict either. An EXTERNAL run with no criteria still emits its `skip`,
-    // the historical contract for a spec that carries none.
-    let verified_nothing = criteria.iter().all(|c| c.status == "skip");
-    !(self_invoked && verified_nothing)
+/// Two escapes keep the guard from swallowing real information:
+/// - a `fail` / `timeout` still emits — that criterion WAS attempted and came
+///   back wrong, which is never a claim the run did not earn, and silencing it
+///   would hide the one result the close gate most needs (unchanged from
+///   before: an all-attempted self-invoked run always emitted).
+/// - external runs (`self_invoked = false`) always emit, including all-skip
+///   ones — the standalone `mustard-rt run qa-run` contract, byte-for-byte.
+fn should_emit_qa_event(criteria: &[AcResult], self_invoked: bool) -> bool {
+    if !self_invoked {
+        return true;
+    }
+    if criteria.iter().any(|c| c.status == "fail" || c.status == "timeout") {
+        return true;
+    }
+    // Nothing red: the run may only speak if it actually attempted EVERY
+    // criterion. One criterion that could not be attempted verified nothing
+    // about the feature it guards, so there is no passing result to record —
+    // and an EMPTY criteria list is that same emptiness by the other door
+    // (`complete_spec`'s fail-open QA on a spec whose ACs stopped parsing).
+    !(criteria.is_empty() || criteria.iter().any(|c| c.status == "skip"))
 }
 
 /// Run QA for `spec` under `cwd`. Always emits the metric; emits the
 /// `qa.result` event unless [`should_emit_qa_event`] vetoes it.
 fn run_qa(cwd: &Path, spec: &str) -> QaResult {
+    // Read the invocation mode ONCE: both the verdict and the emission guard
+    // are pure functions of the statuses plus this flag, so neither reaches
+    // back into the thread-local on its own.
+    let self_invoked = runner::QA_OPTIONS.with(std::cell::Cell::get).self_invoked;
     let Some(spec_file) = runner::find_spec_file(cwd, spec) else {
         eprintln!("[qa-run] Spec file not found for \"{spec}\"");
         runner::emit_qa_metric(cwd, spec, "skip", &[]);
@@ -633,7 +672,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         } else {
             eprintln!("[qa-run] WARN: Acceptance Criteria section found but no parseable AC items");
         }
-        if should_emit_qa_event(&[]) {
+        if should_emit_qa_event(&[], self_invoked) {
             runner::emit_qa_event(cwd, spec, "skip", &[]);
         }
         runner::emit_qa_metric(cwd, spec, "skip", &[]);
@@ -646,11 +685,11 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         res.id.clone_from(id);
         criteria.push(res);
     }
-    let overall = overall_verdict(&criteria);
+    let overall = overall_verdict(&criteria, self_invoked);
 
     let cjson = criteria_json(&criteria);
     let payload = json!({ "spec": spec, "overall": overall, "criteria": cjson });
-    if should_emit_qa_event(&criteria) {
+    if should_emit_qa_event(&criteria, self_invoked) {
         runner::emit_qa_event(cwd, spec, overall, &cjson);
     }
     runner::emit_qa_metric(cwd, spec, overall, &criteria);
@@ -915,15 +954,111 @@ mod tests {
     #[test]
     fn overall_verdict_timeout_is_never_pass_and_never_beats_fail() {
         // A timeout beside a green AC: the run verified less than it claims.
-        assert_eq!(overall_verdict(&[ac("pass"), ac("timeout")]), "timeout");
+        assert_eq!(overall_verdict(&[ac("pass"), ac("timeout")], false), "timeout");
         // `fail` still dominates every other class.
-        assert_eq!(overall_verdict(&[ac("timeout"), ac("fail")]), "fail");
+        assert_eq!(overall_verdict(&[ac("timeout"), ac("fail")], false), "fail");
         // Unchanged: all-skip tolerance, mixed skip+pass, all-pass.
-        assert_eq!(overall_verdict(&[ac("skip"), ac("skip")]), "skip");
-        assert_eq!(overall_verdict(&[ac("pass"), ac("skip")]), "pass");
-        assert_eq!(overall_verdict(&[ac("pass"), ac("pass")]), "pass");
+        assert_eq!(overall_verdict(&[ac("skip"), ac("skip")], false), "skip");
+        assert_eq!(overall_verdict(&[ac("pass"), ac("skip")], false), "pass");
+        assert_eq!(overall_verdict(&[ac("pass"), ac("pass")], false), "pass");
         // A timeout also outranks a skip — the harsher of the two non-verdicts.
-        assert_eq!(overall_verdict(&[ac("skip"), ac("timeout")]), "timeout");
+        assert_eq!(overall_verdict(&[ac("skip"), ac("timeout")], false), "timeout");
+    }
+
+    /// The self-invocation arm of the precedence, read off the statuses alone:
+    /// an unattempted criterion drags a self-invoked run off `pass`, while the
+    /// severe classes and the all-passed case are untouched.
+    #[test]
+    fn overall_verdict_self_invoked_skip_is_never_pass() {
+        assert_eq!(overall_verdict(&[ac("pass"), ac("skip")], true), "skip");
+        assert_eq!(overall_verdict(&[ac("skip"), ac("fail")], true), "fail");
+        assert_eq!(overall_verdict(&[ac("skip"), ac("timeout")], true), "timeout");
+        assert_eq!(overall_verdict(&[ac("pass"), ac("pass")], true), "pass");
+        // Empty stays `skip` under both modes (the no-criteria contract).
+        assert_eq!(overall_verdict(&[], true), "skip");
+        assert_eq!(overall_verdict(&[], false), "skip");
+    }
+
+    /// The reproduced shape: a self-invoked run whose criteria that exercise
+    /// the feature all target the very binary executing QA (skipped without
+    /// spawning) plus one incidental green. It used to read `pass` and record a
+    /// `qa.result` for a spec where nothing had been implemented — the verdict
+    /// let skips ride along, and the emission guard's "verified nothing" meant
+    /// EVERY criterion skipped, which the one incidental pass defeated.
+    ///
+    /// Both directions are asserted: the dishonest run neither reads `pass` nor
+    /// records anything, AND a run whose criteria genuinely ran still reads
+    /// `pass` and still records — without that half the fix could pass by
+    /// making the verdict inert.
+    #[test]
+    fn a_run_that_verified_almost_nothing_is_not_a_pass() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        seed_spec_md(
+            cwd,
+            "almost-nothing",
+            "# R\n\n## Acceptance Criteria\n\
+             - **AC-1** — exercises the feature.\n  Command: `cargo test -p mustard-rt one`\n\
+             - **AC-2** — exercises the feature.\n  Command: `cargo test -p mustard-rt two`\n\
+             - **AC-3** — incidental green.\n  Command: `cd .`\n",
+        );
+        let almost = run_qa_with_options(cwd, "almost-nothing", QaRunOptions { self_invoked: true });
+        assert_eq!(
+            almost.criteria.len(),
+            3,
+            "the shape under test: two unattempted criteria plus one incidental green"
+        );
+        assert_eq!(
+            almost.criteria.iter().filter(|c| c.status == "skip").count(),
+            2,
+            "the feature-exercising criteria were never attempted"
+        );
+        assert_eq!(
+            almost.overall, "skip",
+            "a run that could not attempt its criteria must not read pass"
+        );
+        assert_eq!(
+            qa_result_events(cwd, "almost-nothing"),
+            0,
+            "and it must record no result for the spec"
+        );
+
+        // The other direction: criteria that genuinely ran and passed.
+        seed_spec_md(
+            cwd,
+            "really-ran",
+            "# P\n\n## Acceptance Criteria\n\
+             - **AC-1** — real.\n  Command: `cd .`\n\
+             - **AC-2** — real.\n  Command: `cd .`\n",
+        );
+        let ran = run_qa_with_options(cwd, "really-ran", QaRunOptions { self_invoked: true });
+        assert_eq!(ran.overall, "pass", "a run that verified everything still passes");
+        assert_eq!(
+            qa_result_events(cwd, "really-ran"),
+            1,
+            "and still records its verdict — the fix must not make the verdict inert"
+        );
+    }
+
+    /// The EXTERNAL path is untouched by the self-invocation rule: a standalone
+    /// run that genuinely skips one criterion beside a green one keeps its
+    /// historical `pass` and still writes its `qa.result`.
+    #[test]
+    fn external_skip_beside_a_pass_keeps_its_historical_verdict() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        // An uncompilable `Expect:` regex is the fail-open skip of an AC that
+        // DID run — reachable without the self-invocation guard.
+        seed_spec_md(
+            cwd,
+            "ext-mixed",
+            "# E\n\n## Acceptance Criteria\n\
+             - **AC-1** — bad expect.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
+             - **AC-2** — green.\n  Command: `cd .`\n",
+        );
+        let result = run_qa_with_options(cwd, "ext-mixed", QaRunOptions::default());
+        assert_eq!(result.overall, "pass", "{}", result.criteria[0].stderr_excerpt);
+        assert_eq!(qa_result_events(cwd, "ext-mixed"), 1);
     }
 
     /// `qa.result` events recorded for `spec` under `cwd`.

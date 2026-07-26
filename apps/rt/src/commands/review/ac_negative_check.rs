@@ -210,7 +210,13 @@ const REASON_EXEMPT: &str = "exempt by position: the trailing criterion is the b
 /// ONE exemption in the codebase, not two. The trailing criterion is the
 /// build-green safety net: it is green before the work by design, so requiring
 /// it to fail would block every spec. Pure, total.
-fn is_exempt(index: usize, total: usize) -> bool {
+///
+/// `pub(crate)` so the amendment door
+/// ([`crate::commands::spec::ac_amend`]) applies the SAME positional rule when
+/// it decides whether a replacement command owes a proof at all — a second
+/// spelling of "which criterion is exempt" is how the two would disagree about
+/// the trailing one.
+pub(crate) fn is_exempt(index: usize, total: usize) -> bool {
     total > 0 && index + 1 == total
 }
 
@@ -269,14 +275,26 @@ fn resolve_spec_file(root: &Path, spec: &str) -> Option<PathBuf> {
     qa_run::spec_file_for(root, spec)
 }
 
+/// Parse the ledger at `path`. `None` when the file is absent, unreadable or
+/// unparsable — the ONE reader of `ac-proof.json` in the crate, so the producer
+/// and the approval gate can never disagree about what the file says.
+///
+/// The two callers read the same `None` in opposite directions, deliberately:
+/// [`read_ledger`] treats it as "nothing recorded yet, test the criteria again"
+/// (fail-open — re-taking a proof is cheap and safe), while the approval gate
+/// treats it as a refusal (fail-closed — an approval must be PROVEN, never
+/// assumed). The direction is the caller's decision; the parse is not.
+pub(crate) fn load_ledger(path: &Path) -> Option<AcProofLedger> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|body| serde_json::from_str::<AcProofLedger>(&body).ok())
+}
+
 /// Read the ledger already on disk, if any. An absent or unreadable file yields
 /// an empty ledger: a proof that cannot be read is a proof that was never taken,
 /// and the criteria are simply tested again.
 fn read_ledger(path: &Path) -> AcProofLedger {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|body| serde_json::from_str::<AcProofLedger>(&body).ok())
-        .unwrap_or_default()
+    load_ledger(path).unwrap_or_default()
 }
 
 /// The recorded proof for `id` whose command AND expect regex still match.
@@ -285,7 +303,11 @@ fn read_ledger(path: &Path) -> AcProofLedger {
 /// grades a command, so a criterion whose regex changed is a different question
 /// and must be asked again. The direction of the extra strictness is the safe
 /// one — it can only cause a re-run, never a stale reuse.
-fn recorded_proof<'a>(
+///
+/// `pub(crate)` so the approval gate looks a proof up by exactly this rule: a
+/// recorded command that no longer matches the criterion's current command is
+/// NO proof, which is the hand edit the gate exists to catch.
+pub(crate) fn recorded_proof<'a>(
     ledger: &'a AcProofLedger,
     id: &str,
     command: &str,
@@ -294,6 +316,56 @@ fn recorded_proof<'a>(
     ledger.criteria.iter().find(|p| {
         p.id == id && p.command == command && p.expect.as_deref() == expect
     })
+}
+
+/// Take the proof for ONE criterion and build its ledger record.
+///
+/// The whole per-criterion rule, in one place: an `exempt` criterion is recorded
+/// without being run; a SKELETON command is recorded as NEVER TAKEN; anything
+/// else is executed through the shared `qa_run` executor and classified by
+/// [`classify`].
+///
+/// `pub(crate)` because the amendment door
+/// ([`crate::commands::spec::ac_amend`]) must ask THIS engine whether a
+/// replacement command is proven, and must record the answer in the very shape
+/// the ledger already carries. Re-deriving either there would let the gate that
+/// produces the proof and the door that demands one drift apart — which is
+/// exactly the drift this whole path exists to remove.
+pub(crate) fn prove_one(
+    root: &Path,
+    id: &str,
+    command: &str,
+    expect: Option<&str>,
+    exempt: bool,
+) -> AcProof {
+    let base = |verdict: Verdict, proof: Proof, reason: &str| AcProof {
+        id: id.to_string(),
+        command: command.to_string(),
+        expect: expect.map(str::to_string),
+        verdict,
+        proof,
+        exit: None,
+        reason: Some(reason.to_string()),
+        stderr_excerpt: String::new(),
+    };
+    if exempt {
+        return base(Verdict::Exempt, Proof::NotAttempted, REASON_EXEMPT);
+    }
+    if is_placeholder(command) {
+        return base(Verdict::Unproven, Proof::NotAttempted, REASON_PLACEHOLDER);
+    }
+    let result = qa_run::execute_ac(command, expect, root);
+    let (verdict, proof, reason) = classify(result.status());
+    AcProof {
+        id: id.to_string(),
+        command: command.to_string(),
+        expect: expect.map(str::to_string),
+        verdict,
+        proof,
+        exit: result.exit(),
+        reason,
+        stderr_excerpt: result.stderr_excerpt().to_string(),
+    }
 }
 
 /// Run the negative test for `spec` against an explicit project `root`, write
@@ -327,16 +399,7 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
     for (index, item) in items.iter().enumerate() {
         let expect = item.expect.as_deref();
         if is_exempt(index, total) {
-            criteria.push(AcProof {
-                id: item.id.clone(),
-                command: item.command.clone(),
-                expect: item.expect.clone(),
-                verdict: Verdict::Exempt,
-                proof: Proof::NotAttempted,
-                exit: None,
-                reason: Some(REASON_EXEMPT.to_string()),
-                stderr_excerpt: String::new(),
-            });
+            criteria.push(prove_one(root, &item.id, &item.command, expect, true));
             continue;
         }
         // A proof already recorded for this exact command is kept as it is: the
@@ -346,31 +409,7 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
             criteria.push(kept.clone());
             continue;
         }
-        if is_placeholder(&item.command) {
-            criteria.push(AcProof {
-                id: item.id.clone(),
-                command: item.command.clone(),
-                expect: item.expect.clone(),
-                verdict: Verdict::Unproven,
-                proof: Proof::NotAttempted,
-                exit: None,
-                reason: Some(REASON_PLACEHOLDER.to_string()),
-                stderr_excerpt: String::new(),
-            });
-            continue;
-        }
-        let result = qa_run::execute_ac(&item.command, expect, root);
-        let (verdict, proof, reason) = classify(result.status());
-        criteria.push(AcProof {
-            id: item.id.clone(),
-            command: item.command.clone(),
-            expect: item.expect.clone(),
-            verdict,
-            proof,
-            exit: result.exit(),
-            reason,
-            stderr_excerpt: result.stderr_excerpt().to_string(),
-        });
+        criteria.push(prove_one(root, &item.id, &item.command, expect, false));
     }
     // Byte-stability: one deterministic order for the file AND the report.
     criteria.sort_by(|a, b| a.id.cmp(&b.id));
@@ -415,7 +454,10 @@ fn write_ledger(path: &Path, ledger: &AcProofLedger) -> bool {
 /// `path` relative to the project root, with forward slashes — a repo path the
 /// output can carry without leaking the machine it ran on (the `run` surface is
 /// snapshot-compared). Falls back to the file name when it is outside the root.
-fn repo_relative(root: &Path, path: &Path) -> String {
+///
+/// `pub(crate)` so the amendment door reports the artefacts it rewrote in the
+/// same repo-path spelling the ledger path already uses.
+pub(crate) fn repo_relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .ok()
         .or_else(|| path.file_name().map(Path::new))
