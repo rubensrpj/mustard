@@ -29,7 +29,7 @@ mustard-rt run qa-run --spec {spec}
 
 - **`pass`** → emit `pipeline.stage: Close`. *"QA passed."*
 - **`fail`** → list failing AC. After 3 failures → `AskUserQuestion`: (a) fix+retry, (b) relax AC, (c) abort.
-- **`skip`** → two shapes, told apart by `criteria` in the result. **No AC at all** (`criteria` empty) → advisory; warn *"QA skipped — spec carries no AC; CLOSE not blocked."* **ACs exist but every one skipped** (per-AC timeout 120s / spawn failure) → NOT a pass: the strict close gate blocks CLOSE. Fix the AC commands (raise the timeout or split the AC) and re-run — or confirm the skip with the user (`AskUserQuestion`) before closing under `MUSTARD_QA_GATE_MODE=warn`.
+- **`skip`** → **every** close door reads the recorded verdict and only `overall=pass` opens it, so a skip always blocks CLOSE. Two shapes, told apart by `criteria` in the result, and the remedy differs. **No AC at all** (`criteria` empty) → the spec has nothing to verify, so it has nothing to claim: author a criterion (one reproduction command that is red before the work and green after) and re-run. **ACs exist but every one skipped** (per-AC timeout 120s / spawn failure, or a self-invoked run that cannot rebuild the binary its criteria target) → fix the AC commands (raise the timeout, split the AC) and re-run, or record the verdict from an EXTERNAL `qa-run` — that is the run that can actually attempt them.
 
 ## 4. Tactical-fix discovery (post-pass — detect + propose, never auto-create)
 
