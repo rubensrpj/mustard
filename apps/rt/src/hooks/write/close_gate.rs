@@ -404,18 +404,48 @@ mod tests {
         );
     }
 
-    /// The legitimate skip shape: the spec carries NO acceptance criteria at
-    /// all (`criteria` empty) — the historical advisory contract holds.
+    /// The empty-criteria skip: the spec declares NOTHING to verify.
+    ///
+    /// This test used to assert the opposite — that the gate falls through,
+    /// "the historical advisory contract holds". Every other door
+    /// (`emit-pipeline`, `complete-spec`, `close-pipeline`, `close-orchestrate`)
+    /// had since stopped honouring that rule and the shipped rituals describe
+    /// the strict one, leaving this adapter as the last disagreement. Inverted
+    /// rather than deleted: it is the only coverage this shape has, and
+    /// inverted it makes the retired rule impossible to bring back unnoticed.
     #[test]
-    fn close_gate_allows_when_qa_skipped() {
+    fn an_empty_criteria_skip_no_longer_falls_through() {
         let dir = make_project();
         write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
         write_qa_event(dir.path(), "skip-qa-spec", "skip", json!([]));
         let input = close_input(dir.path(), "skip-qa-spec");
+        let verdict = close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict());
         assert!(
-            !close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict())
-                .is_blocking()
+            verdict.is_blocking(),
+            "a spec that declares no criterion has nothing to claim: {verdict:?}"
         );
+    }
+
+    /// The override keeps the meaning it always had: under `warn`, BOTH skip
+    /// shapes fall through. The strictness added above is about what STRICT
+    /// refuses — it must not quietly redefine the operator's deliberate escape.
+    #[test]
+    fn warn_mode_still_lets_both_skip_shapes_through() {
+        for (spec, criteria) in [
+            ("warn-skip-empty", json!([])),
+            ("warn-skip-with-acs", json!([{ "id": "AC-1", "status": "skip" }])),
+        ] {
+            let dir = make_project();
+            write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+            write_qa_event(dir.path(), spec, "skip", criteria);
+            let input = close_input(dir.path(), spec);
+            let modes = CloseGateModes { qa: GateMode::Warn, ..all_strict() };
+            let verdict = close_gate_with_modes(&input, dir.path().to_str().unwrap(), modes);
+            assert!(
+                !verdict.is_blocking(),
+                "warn must still let {spec} through: {verdict:?}"
+            );
+        }
     }
 
     /// The dangerous skip shape: acceptance criteria EXIST but every one
