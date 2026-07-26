@@ -152,7 +152,32 @@ git worktree list --porcelain passa a reportar checkout detached
 
 No lugar do mecanismo ficou a regra de fluxo do `resume-loop.md` §B: **um commit por rodada**.
 
-Os demais oito requisitos permanecem sem trabalho agendado, na ordem da seção 6.
+**R2 + R9** (item 2 da fila) → `.claude/spec/prove-every-acceptance-criterion-can/`, escopo full, oito ondas, base `dev`. **Entregue.** O falso-verde que abriu o levantamento está fechado, e fechado pelo mecanismo que a seção 3 pediu: quem julga o critério é separado de quem o escreve.
+
+O que entrou:
+
+```
+ac-negative-check   roda o Command: de cada critério contra a árvore COMO ELA ESTÁ,
+                    antes do trabalho existir — o critério só passa REPROVANDO.
+                    Verde, morto no deadline, nunca tentado ou com placeholder <…>
+                    por preencher = NÃO PROVADO. O último critério fica isento
+                    (é a rede de segurança build-green, verde por desenho).
+ac-proof.json       o registro por critério (comando exato, veredito, exit code,
+                    histórico de emendas) — produzido no PLAN, CONSUMIDO na aprovação.
+ac-amend            o R9: emendar um critério congelado virou operação. Reescreve o
+                    critério em TODO artefato da spec que carrega o id (spec.md,
+                    wave-plan.md, cada wave-*/spec.md) e recusa a substituta que
+                    não reprova — trocar um comando verde por outro verde não prova
+                    nada. Nome com prefixo porque `amend-finalize` já é outra coisa.
+```
+
+Onde cada portão mora, e por quê: a prova é **produzida** no PLAN (`plan-materialize` roda o motor em processo no caminho Full; o caminho Light chama `ac-negative-check` direto) e apenas **lida** na aprovação. Produzi-la dentro do `approve-spec` faria o operador esperar minutos de compilação exatamente no gesto de aprovar; produzi-la só no `plan-materialize` deixaria as specs Light sem portão. A precondição de aprovação é **incondicional** — o `MUSTARD_APPROVAL_MODE` governa os dois marcadores e não move esta.
+
+A isenção de busca por ausência do linter estático (achado 6, a causa localizada do R2) foi **removida** em vez de estreitada: se um comando *pode* reprovar é fato sobre o repositório, não sobre a grafia do comando — que é justamente o julgamento que o teste negativo faz e um linter estático não faz.
+
+**O limite que vale registrar:** a prova é tomada **na árvore de trabalho**, tal como ela está no momento em que o comando roda. Um critério emendado **depois que o trabalho dele já entrou** não tem como reprovar ali — o código que ele descreve já existe —, então o `ac-amend` recusa a emenda e o `approve-spec` recusa a spec. Isso é o portão funcionando, não um defeito: emenda de critério é operação de PLAN e de meio de rodada, não de pós-entrega. Emendar depois que o trabalho fechou exige desfazer a entrega ou abrir spec nova.
+
+Os demais sete requisitos permanecem sem trabalho agendado, na ordem da seção 6.
 
 ---
 

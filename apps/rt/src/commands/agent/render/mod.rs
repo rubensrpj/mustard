@@ -65,10 +65,10 @@ pub use prompt_ref::PROMPT_REF_MARKER;
 pub use role::{recommended_subagent_type, EPISTEMIC_FLOOR};
 pub(crate) use prompt_ref::render_prompt_ref_at;
 pub(crate) use sections::read_task_steps;
-// Surfaced only for the compatibility façade's test-gated consumers
-// (`wave_scaffold` tests); the compositor calls `build_reference_files`, not
-// this directly, so the bin build never references it.
-#[cfg(test)]
+// Surfaced for the compatibility façade's consumers (`wave_scaffold` tests and
+// `wave_done`, which parses the same `## Files` section); the compositor calls
+// `build_reference_files`, not this directly. NOT `#[cfg(test)]` — a runtime
+// caller exists, and gating it to tests made the bin build fail to resolve it.
 pub(crate) use reference::files_section_paths;
 
 // Sub-engine helpers the compositor calls directly.

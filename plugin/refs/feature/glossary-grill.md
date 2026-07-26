@@ -14,12 +14,12 @@ mustard-rt run glossary-coverage --intent "<the request>" --context {root}/CONTE
 ```
 Deterministic + zero-token (pure Rust over `grain.model.json` + `CONTEXT.md`, the same term matcher `context-slice` uses). Byte-stable JSON:
 ```json
-{ "verdict":"missing|weak|declined|ok|na", "present":false, "termsTotal":3,
-  "termsCovered":0, "coveragePct":0, "uncovered":["spec","wave","pipeline"],
+{ "verdict":"weak", "present":true, "termsTotal":4,
+  "termsCovered":1, "coveragePct":25, "uncovered":["spec","wave","pipeline"],
   "contextFile":"CONTEXT.md", "statedReason":"" }
 ```
 - `termsTotal` = the digest's MATCHED terms (repo vocabulary the intent maps to), never raw intent tokens — stopwords never inflate it.
-- `uncovered` = the actionable payload: the weak/missing domain terms to grill, in declaration order.
+- `uncovered` = the actionable payload: the weak domain terms to grill, in declaration order. **It is populated only when a glossary EXISTS (`present:true`).** With none authored (`present:false` ⇒ `verdict:"missing"`) the key keeps its place and arrives **empty** — deliberately: a list of words to interrogate answers "which entries are thin", and with no file there is no entry to be thin. The question there is a different one, so the report declines to answer it with the wrong payload.
 - `contextFile` = where `grill-capture` writes (the authored `CONTEXT.md`, or the first requested path when none exists yet). Empty when no `--context` is given.
 - `statedReason` = always present, non-empty ONLY on `declined`: the sentence to pass VERBATIM to `grill-capture --finalize --reason`. It is what turns a decline into a recorded outcome instead of a skip nobody wrote down.
 - `verdict`: `missing` (no `CONTEXT.md` authored) · `weak` (authored but coverage < 50% OR >= 3 uncovered matched terms) · `declined` (terms matched, but the CORPUS reports them as repository-wide vocabulary — a definition would restate the code) · `ok` (covered, or no domain terms touched) · `na` (scan model unavailable — fail-open).
@@ -27,7 +27,11 @@ Deterministic + zero-token (pure Rust over `grain.model.json` + `CONTEXT.md`, th
 Why `declined` exists beside the others and not above them: the check was designed for a business domain, where a matched term like `payable` has a definition worth capturing. In a harness the domain vocabulary IS technical vocabulary, so the matcher answers with the words the repository says everywhere and the grill would ask low-value questions. `declined` is that outcome said out loud. It is decided by the corpus's own arithmetic — a word's rarity against the median rarity of the repo's published term index — so no list of words is written down anywhere to rot or encode one person's taste. It is NOT an error and NOT a skip.
 
 ## React
-- `missing`/`weak` → run a LIGHT inline grill. Take the <=3 most central `uncovered` terms (drop tangential ones — a seeder term, a stats-DTO term). ONE batched `AskUserQuestion` asks the user for a one-line definition of each: "Your glossary doesn't define these domain terms yet ({uncovered}). A one-line definition each sharpens the spec and every dispatched agent's shared language. (Skip any you'd rather not.)" Persist EACH confirmed pair (skip blanks):
+- `missing` (no `CONTEXT.md` authored) → **do NOT grill: `uncovered` is empty here, by design (above), so there are no terms to take.** There is no glossary to extend — the answer is to author a first one. ONE `AskUserQuestion`: offer to start `{contextFile}` with a one-line definition of the 1-3 terms most central to THIS request (name them from the intent and the digest anchors, not from `uncovered`), or to move on. Answers → `grill-capture --term/--definition --context {contextFile}` exactly as below. The user declines, or the request does not warrant a first glossary → **record the stated reason** rather than staying silent, because on a Full spec silence leaves a marker with nothing in it:
+  ```bash
+  mustard-rt run grill-capture --finalize --spec {slug} --reason "no glossary is authored yet and this request did not warrant starting one"
+  ```
+- `weak` (authored but thin) → run a LIGHT inline grill. Take the <=3 most central `uncovered` terms (drop tangential ones — a seeder term, a stats-DTO term). ONE batched `AskUserQuestion` asks the user for a one-line definition of each: "Your glossary doesn't define these domain terms yet ({uncovered}). A one-line definition each sharpens the spec and every dispatched agent's shared language. (Skip any you'd rather not.)" Persist EACH confirmed pair (skip blanks):
   ```bash
   mustard-rt run grill-capture --term "<term>" --definition "<the user's answer>" --context <contextFile from the coverage output>
   ```

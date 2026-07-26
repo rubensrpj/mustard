@@ -363,18 +363,28 @@ fn wave_precheck(spec_dir: &Path, wave: u32, role: &str, subproject: &str) -> Op
 }
 
 /// Trim a [`dependency_precheck::check`] verdict to the decision-relevant
-/// subset: `{ok:true}` when clean, else the missing symbols plus tactical-fix
-/// suggestions and any cross-wave promise violations. Keeps the round
-/// annotation lean — the verbose `would_be_created_here` / `spec` /
+/// subset: `{ok, checks_performed}` when clean, else the missing symbols plus
+/// tactical-fix suggestions and any cross-wave promise violations. Keeps the
+/// round annotation lean — the verbose `would_be_created_here` / `spec` /
 /// `subproject` / `mode` fields are dropped (the orchestrator needs none of
 /// them to decide whether to surface a tactical-fix).
+///
+/// `checks_performed` survives the trim on BOTH branches: it is what stops a
+/// bare `{ok:true}` from being read as "safe to dispatch" when all the gate
+/// established was that the symbols exist (the field incident where a wave
+/// dispatched on a green pre-gate came back blocked on a missing capability).
 fn lean_precheck(full: &Value) -> Value {
     let ok = full.get("ok").and_then(Value::as_bool).unwrap_or(true);
+    let checks = full
+        .get("checks_performed")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
     if ok {
-        return json!({ "ok": true });
+        return json!({ "ok": true, "checks_performed": checks });
     }
     json!({
         "ok": false,
+        "checks_performed": checks,
         "missing": full.get("missing").cloned().unwrap_or_else(|| json!([])),
         "suggested_tactical_fix_files":
             full.get("suggested_tactical_fix_files").cloned().unwrap_or_else(|| json!([])),

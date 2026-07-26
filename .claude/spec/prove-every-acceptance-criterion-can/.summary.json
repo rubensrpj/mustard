@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "spec": "prove-every-acceptance-criterion-can",
+  "title": "Prove every acceptance criterion can fail before it enters the plan, and make amending one an operation of its own",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "rt",
+      "summary": "The negative-test engine: run each criterion against the tree as it is, require it to fail, record the proof — plus the removal of the search-for-absence exemption that let a criterion read green whil",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "gate",
+      "summary": "The proof is demanded during planning, not at the approval gesture; the approval door keeps a fail-closed backstop and stops reporting a gesture the current run never performed.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "amend",
+      "summary": "Amending a criterion becomes an operation: it demands the same negative proof from the replacement and keeps the superseded version with the reason it was replaced.",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "verdict",
+      "summary": "A verification run that could not attempt its criteria stops being allowed to declare a pass — reproduced live on this spec, which already carries a passing verdict with no work done.",
+      "status": "in_progress"
+    },
+    {
+      "n": 5,
+      "role": "glossary",
+      "summary": "The coverage report stops treating an absent glossary as a coverage failure, and stops offering words the corpus never published — the same words whose abstention blocks the decline that would silence",
+      "status": "in_progress"
+    },
+    {
+      "n": 6,
+      "role": "signals",
+      "summary": "Three reports stop overstating what they know: a hollow clarification marker becomes visible before the approval gesture, an approved-but-unstarted plan says what to do next, and the dependency pre-ga",
+      "status": "in_progress"
+    },
+    {
+      "n": 7,
+      "role": "round",
+      "summary": "A wave caches the diff of the files it declared, not the whole round's commit — so a blocked sibling's work stops leaking into a finished wave's record.",
+      "status": "in_progress"
+    },
+    {
+      "n": 8,
+      "role": "docs",
+      "summary": "Lock the two new commands into the published surface and teach the flow to use them — the proof at planning time, the amendment instead of a hand edit.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

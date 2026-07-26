@@ -73,13 +73,34 @@ Returns the **current round** — `[{wave, role, subproject, subagent_type, prom
 
 `close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) without `qa.result overall=pass`**.
 
+**MIXED ROUND — one wave finished, its sibling came back `BLOCKED`.** Two rules above are both true here and neither one covers it: *commit once per round, after every wave has returned* (step 2) and *`BLOCKED` → STOP, do not advance* (§ Escalation). Every wave HAS returned, so the commit condition is met; one of them failed, so the round is not done. Do all three, in this order:
+
+1. **Commit anyway.** Preserving work is not advancing it. The finished wave's work is real and uncommitted work is the only thing a later stash, checkout or retry can actually lose. Same message shape as any round.
+2. **`wave-done` ONLY for the waves that finished.** A blocked wave gets no `pipeline.wave.complete` — that event is what makes `wave-advance` stop re-emitting it, and a wave marked done is a wave nobody comes back to.
+3. **Do NOT advance the round.** No `wave-advance`, no next level. Go to § Escalation `BLOCKED`: `AskUserQuestion` with the exact blocker, and resume this same round from the blocked wave.
+
+The record stays clean through this because `wave-done` scopes each wave's cached diff to the files that wave DECLARED in its own `## Files`, not to the whole commit — so the blocked sibling's half-written files never land in the finished wave's cached diff, and from there in its retry context and the closing summary. That is why committing a mixed round is safe to write down as a rule rather than a judgement call.
+
 **[you] The user asks for a change mid-round → record the INSTRUCTION, not just the reply.** An observer already captures every prompt verbatim into the spec's change log — that is the raw trail, and it keeps the user's words. But a reply carries its meaning from the conversation: `"Concordo se for agregar"` recorded alone tells the next wave nothing it can act on. So state what was agreed, in one self-contained sentence, as its own record:
 
 ```bash
 mustard-rt run change-request --spec {spec} --instruction "<what changes, stated so a wave that never saw this conversation can act on it>"
 ```
 
-It lands in the shape `read_change_log` filters for, so the next rendered prompt carries it under `## CHANGE REQUESTS` — no hand-formatted bullet, and a refusal (empty instruction, unknown spec) writes nothing. **Then fold anything that changes BEHAVIOUR into `## Acceptance Criteria` and re-run QA**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25). The narrative of `spec.md` stays frozen either way.
+It lands in the shape `read_change_log` filters for, so the next rendered prompt carries it under `## CHANGE REQUESTS` — no hand-formatted bullet, and a refusal (empty instruction, unknown spec) writes nothing.
+
+**Then carry anything that changes BEHAVIOUR into `## Acceptance Criteria` — with `ac-amend`, never by hand**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25).
+
+```bash
+mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that asserts the NEW behaviour>" [--expect "<evidence regex>"] [--statement "<the EARS line>"] --reason "<why the criterion is changing>"
+```
+
+Two things the hand cannot do, and this is why the hand does not do it:
+
+- **The replacement is PROVEN.** It goes through the same negative test the plan took (`ac-negative-check`): the new command is run against the tree as it is and **must itself come back RED**. A replacement that already passes proves exactly as little as the criterion it replaces, so the amendment is REFUSED — along with a blank reason, an unknown spec and an unknown AC id. Every refusal writes nothing, anywhere.
+- **Every artefact is rewritten.** `wave-plan.md` and each `wave-*/spec.md` carry the criterion lines too, and the scaffold is frozen after approval — a root-only edit leaves the dispatched agent reading the superseded command. `ac-amend` rewrites each artefact carrying that id and appends the supersession to `<spec>/ac-proof.json`'s `amendments`, so the change is auditable instead of being a `decision` event that is a trail, not a path.
+
+Then re-run QA. The narrative of `spec.md` stays frozen either way — an amendment touches the criterion, never the prose.
 
 ---
 

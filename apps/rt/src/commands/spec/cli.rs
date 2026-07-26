@@ -275,6 +275,44 @@ pub enum SpecCmd {
         #[arg(long)]
         instruction: String,
     },
+    /// Deliberately change ONE acceptance criterion after the spec artefacts are
+    /// frozen, and prove the replacement still knows how to fail.
+    ///
+    /// The replacement command is run through the SAME negative-test engine
+    /// (`ac-negative-check`) and REFUSED unless it comes back red: a replacement
+    /// that already passes proves exactly as little as the criterion it would
+    /// replace. On acceptance the criterion is rewritten in EVERY artefact under
+    /// the spec directory that carries its id — the root `spec.md`,
+    /// `wave-plan.md` and each `wave-*/spec.md` — because the scaffold is frozen
+    /// after approval and a root-only amendment leaves the dispatched agent
+    /// reading the superseded command. The supersession is appended to the proof
+    /// ledger's `amendments` array with the stated reason.
+    ///
+    /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
+    /// the unrelated session-end amendment window.
+    #[command(name = "ac-amend")]
+    #[command(display_order = 82)]
+    AcAmend {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// The criterion to amend (`AC-2`, `AC-W4-1`, …).
+        #[arg(long)]
+        ac: String,
+        /// The replacement command.
+        #[arg(long)]
+        command: String,
+        /// The replacement `Expect:` evidence regex. Omitted: the criterion
+        /// keeps the regex it already carries.
+        #[arg(long)]
+        expect: Option<String>,
+        /// The replacement statement. Omitted: the statement is left alone.
+        #[arg(long)]
+        statement: Option<String>,
+        /// Why the criterion is being changed. A blank reason is refused.
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -356,6 +394,23 @@ pub fn dispatch(cmd: SpecCmd) {
             spec::change_request::run(spec::change_request::ChangeRequestOpts {
                 spec: slug,
                 instruction,
+            });
+        }
+        SpecCmd::AcAmend {
+            spec: slug,
+            ac,
+            command,
+            expect,
+            statement,
+            reason,
+        } => {
+            spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
+                spec: slug,
+                ac,
+                command,
+                expect,
+                statement,
+                reason,
             });
         }
     }

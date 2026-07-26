@@ -19,14 +19,29 @@
 //! glossary cannot drift.
 //!
 //! Output (stdout, byte-stable pretty JSON): `{ coveragePct, contextFile, present,
-//! statedReason, termsCovered, termsTotal, uncovered, verdict }`. The `uncovered`
-//! list IS the actionable payload — the weak/missing domain terms the orchestrator
-//! hands to the inline grill (`grill-capture`) so each confirmed definition lands
-//! in the glossary; `contextFile` names the resolved target to write them into (the
-//! first existing CONTEXT.md, or the first requested path when none resolved yet,
-//! so a still-empty glossary still has a destination). Fail-open: a missing model
-//! / unreadable glossary degrades to `verdict: "na"` (the SKILL then stays
-//! silent); exit 0.
+//! statedReason, termsCovered, termsTotal, uncovered, verdict }` — the same keys
+//! on every verdict, so a caller can always read them. The `uncovered` list IS
+//! the actionable payload — the domain terms of a THIN glossary (`weak`) that the
+//! orchestrator hands to the inline grill (`grill-capture`) so each confirmed
+//! definition lands in the glossary; `contextFile` names the resolved target to
+//! write them into (the first existing CONTEXT.md, or the first requested path
+//! when none resolved yet, so a still-empty glossary still has a destination).
+//! Fail-open: a missing model / unreadable glossary degrades to `verdict: "na"`
+//! (the SKILL then stays silent); exit 0.
+//!
+//! ABSENCE and THINNESS are different questions and get different answers. An
+//! absent glossary (`missing`) asks for a FIRST glossary — one decision about the
+//! project, not a queue of words to interrogate — so it publishes NO term list at
+//! all. A thin one (`weak`) asks for MORE entries, and there the list is exactly
+//! what the grill needs. Publishing the whole matched vocabulary under `missing`
+//! answered the thin question with the absent verdict.
+//!
+//! And a term is only offered when the corpus published it. Scan's stem tier
+//! answers with fragments no human ever typed (`waveli` for `waveList`,
+//! `split201`), and the term index — the repository's own record of what it says
+//! — carries nothing about them. A word the corpus never published is not
+//! vocabulary anyone can define, so it is dropped from the offer rather than
+//! filtered by a hand-written stopword list (see [`keep_only_published`]).
 //!
 //! The check was designed for a business domain, where a matched term like
 //! `payable` has a definition worth capturing. In a harness the domain vocabulary
@@ -63,7 +78,13 @@ struct Coverage {
     present: bool,
     total: usize,
     covered: usize,
-    uncovered: Vec<String>,
+    /// Every word the glossary leaves open — the WORKING set, not the published
+    /// one. What the report offers is derived from it in [`to_json`]: a thin
+    /// glossary publishes these terms, an absent one publishes none (it is asked
+    /// for a first glossary, not for a list of words), and the corpus filter in
+    /// [`keep_only_published`] has already removed anything the term index never
+    /// published. The decline reads THIS set, so absence keeps its judgement.
+    open: Vec<String>,
     verdict: &'static str,
     /// The glossary file the orchestrator's inline grill should write confirmed
     /// terms into — the resolved CONTEXT.md, or the first requested path when
@@ -181,7 +202,7 @@ fn group_inflections(matched: &[String]) -> Vec<TermGroup> {
 /// Terms are scored per WORD STEM, not per inflection — see [`group_inflections`].
 fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
     let groups = group_inflections(matched);
-    let mut uncovered: Vec<String> = Vec::new();
+    let mut open: Vec<String> = Vec::new();
     let mut covered = 0usize;
     for group in &groups {
         // Any spelling the digest matched counts for the whole word: defining
@@ -194,7 +215,7 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         if present && matched_any {
             covered += 1;
         } else {
-            uncovered.push(group.representative.clone());
+            open.push(group.representative.clone());
         }
     }
     let total = groups.len();
@@ -202,7 +223,7 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         present,
         total,
         covered,
-        uncovered,
+        open,
         verdict: "ok",
         context_file: String::new(),
         stated_reason: String::new(),
@@ -211,8 +232,13 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         // No domain terms touched → nothing a glossary could cover; never nudge.
         "ok"
     } else if !present {
+        // ABSENT: there is no glossary to extend, so the answer is "author one".
+        // The open words are still tracked (the decline judges them), but the
+        // report offers none of them — see `to_json`.
         "missing"
-    } else if c.pct() < WEAK_COVERAGE_PCT || c.uncovered.len() >= WEAK_UNCOVERED_FLOOR {
+    } else if c.pct() < WEAK_COVERAGE_PCT || c.open.len() >= WEAK_UNCOVERED_FLOOR {
+        // THIN: a glossary exists and is short of entries — here the open words
+        // ARE the answer.
         "weak"
     } else {
         "ok"
@@ -317,14 +343,21 @@ fn group_rarity_x1024(group: &TermGroup, index: &[DigestTerm]) -> Option<u64> {
 /// unreachable on this very repository — a decline that never fires is as
 /// useless as one that fires always.
 ///
+/// The quorum survives as the backstop for a caller that hands over a RAW open
+/// set. In production it can no longer bite: [`keep_only_published`] runs first
+/// and takes the unpublished words out of `open`, so every remaining word is one
+/// the index can judge and `judged == open`. That was the whole deadlock — the
+/// fragments dirtying the offer were also the ones holding the quorum below half
+/// and blocking the decline that would have silenced the offer.
+///
 /// Pure and deterministic: the named terms keep the digest's order, and the same
 /// inputs always produce the same sentence.
-fn decline_reason(matched: &[String], uncovered: &[String], index: &[DigestTerm]) -> Option<String> {
+fn decline_reason(matched: &[String], open_terms: &[String], index: &[DigestTerm]) -> Option<String> {
     let cut = corpus_rarity_cut(index)?;
     let mut named: Vec<String> = Vec::new();
     let mut open = 0usize;
     for group in group_inflections(matched) {
-        if !uncovered.contains(&group.representative) {
+        if !open_terms.contains(&group.representative) {
             continue;
         }
         open += 1;
@@ -350,6 +383,41 @@ fn decline_reason(matched: &[String], uncovered: &[String], index: &[DigestTerm]
     ))
 }
 
+/// Drop from the open set every word the published term index says nothing
+/// about — the words the grill must never offer.
+///
+/// The matched terms arrive from the scan model, whose stem tier answers with
+/// fragments no human ever typed (`waveli` for `waveList`, `split201`, an
+/// interface-prefixed identifier, the package's own name). Asking a user to
+/// define one of those is asking about a word the repository never published,
+/// and the index is what says so: [`group_rarity_x1024`] already answers "did
+/// the corpus publish this word" with `None`. Read off the corpus, never a
+/// hand-written stopword list — a curated list would rot and encode one person's
+/// taste, and this project forbids one.
+///
+/// Fail-open on an empty index: with nothing published, EVERY word looks
+/// unpublished and the offer would be emptied on a missing model rather than on
+/// evidence. No index → no filtering.
+///
+/// Side effect on the verdict, and only this one: a THIN glossary whose whole
+/// open set was fragments has nothing a grill could ask about, so it stops
+/// nudging (`ok`). ABSENCE is left alone — "author a first glossary" is a
+/// decision about the project and never depended on the term list.
+fn keep_only_published(c: &mut Coverage, matched: &[String], index: &[DigestTerm]) {
+    if index.is_empty() {
+        return;
+    }
+    let published: BTreeSet<String> = group_inflections(matched)
+        .into_iter()
+        .filter(|g| group_rarity_x1024(g, index).is_some())
+        .map(|g| g.representative)
+        .collect();
+    c.open.retain(|term| published.contains(term));
+    if c.verdict == "weak" && c.open.is_empty() {
+        c.verdict = "ok";
+    }
+}
+
 /// Turn a `missing`/`weak` verdict into `declined` when the corpus reports that
 /// none of the still-open terms carries domain meaning.
 ///
@@ -361,7 +429,7 @@ fn apply_decline(c: &mut Coverage, matched: &[String], index: &[DigestTerm]) {
     if !matches!(c.verdict, "missing" | "weak") {
         return;
     }
-    if let Some(reason) = decline_reason(matched, &c.uncovered, index) {
+    if let Some(reason) = decline_reason(matched, &c.open, index) {
         c.verdict = DECLINED;
         c.stated_reason = reason;
     }
@@ -403,6 +471,9 @@ fn compute(intent: &str, context: &[String], root: &Path) -> Option<Coverage> {
             .digest(&model)
             .map(|d| d.terms)
             .unwrap_or_default();
+        // Order matters: the fragments leave the open set BEFORE the decline
+        // counts it, so the quorum weighs the words the corpus can judge.
+        keep_only_published(&mut coverage, &matched, &index);
         apply_decline(&mut coverage, &matched, &index);
     }
     Some(coverage)
@@ -427,13 +498,18 @@ fn target_context_file(resolved: &[std::path::PathBuf], requested: &[String]) ->
 
 /// Render the coverage verdict as byte-stable JSON (deterministic key order).
 fn to_json(c: &Coverage) -> serde_json::Value {
+    // Terms are OFFERED only when there is a glossary to extend. With none
+    // authored the answer is "write a first glossary", and a list of words to
+    // interrogate answers the other question — so the key stays (callers read
+    // the shape positionally) and arrives empty.
+    let uncovered: &[String] = if c.present { &c.open } else { &[] };
     json!({
         "verdict": c.verdict,
         "present": c.present,
         "termsTotal": c.total,
         "termsCovered": c.covered,
         "coveragePct": c.pct(),
-        "uncovered": c.uncovered,
+        "uncovered": uncovered,
         "contextFile": c.context_file,
         // Always present (stable shape), non-empty only on `declined` — the
         // sentence the caller hands to `grill-capture --finalize --reason`.
@@ -463,9 +539,32 @@ fn to_json(c: &Coverage) -> serde_json::Value {
 #[allow(dead_code)]
 #[must_use]
 pub fn score_terms(matched: &[String], glossary: &str) -> serde_json::Value {
+    score_terms_with_corpus(matched, glossary, &[])
+}
+
+/// [`score_terms`] with the repository's published term index supplied — the
+/// whole production sequence over inputs a test can state, so the corpus-driven
+/// steps (dropping the words the index never published, then the decline that
+/// judges what is left) are exercised through the SAME JSON contract the command
+/// prints instead of through private shapes.
+///
+/// An empty `index` is exactly the "no corpus" case [`score_terms`] wants: the
+/// filter and the decline both fail open, leaving the ordinary coverage verdict.
+#[allow(dead_code)]
+#[must_use]
+pub fn score_terms_with_corpus(
+    matched: &[String],
+    glossary: &str,
+    index: &[DigestTerm],
+) -> serde_json::Value {
     let blocks = parse_term_blocks(glossary);
     let present = !blocks.is_empty();
-    to_json(&score(matched, &blocks, present))
+    let mut c = score(matched, &blocks, present);
+    if matches!(c.verdict, "missing" | "weak") {
+        keep_only_published(&mut c, matched, index);
+        apply_decline(&mut c, matched, index);
+    }
+    to_json(&c)
 }
 
 /// Dispatch `mustard-rt run glossary-coverage`. Always exits 0.
@@ -503,8 +602,39 @@ mod tests {
         let c = score(&matched, &[], false);
         assert_eq!(c.verdict, "missing");
         assert_eq!(c.covered, 0);
-        assert_eq!(c.uncovered.len(), 2);
+        assert_eq!(c.open.len(), 2, "the words are still tracked internally");
         assert_eq!(c.pct(), 0);
+        // ...but none is OFFERED: absence asks for a first glossary, not for a
+        // queue of words to interrogate.
+        assert_eq!(to_json(&c)["uncovered"], serde_json::json!([]));
+    }
+
+    /// Absence and thinness ask for opposite actions, so they must not publish
+    /// the same payload. Same words, same open set — only the glossary differs.
+    #[test]
+    fn an_absent_glossary_is_not_a_coverage_failure() {
+        let matched = vec![
+            "payable".to_string(),
+            "tenant".to_string(),
+            "ledger".to_string(),
+        ];
+        let absent = to_json(&score(&matched, &[], false));
+        assert_eq!(absent["verdict"], serde_json::json!("missing"));
+        assert_eq!(absent["present"], serde_json::json!(false));
+        assert_eq!(absent["uncovered"], serde_json::json!([]));
+        // The shape is stable — every key is still there to read.
+        assert_eq!(absent["termsTotal"], serde_json::json!(3));
+        assert_eq!(absent["termsCovered"], serde_json::json!(0));
+        assert_eq!(absent["coveragePct"], serde_json::json!(0));
+
+        let blocks = parse_term_blocks("## Payable\nA bill owed.");
+        let thin = to_json(&score(&matched, &blocks, true));
+        assert_eq!(thin["verdict"], serde_json::json!("weak"));
+        assert_eq!(
+            thin["uncovered"],
+            serde_json::json!(["tenant", "ledger"]),
+            "an authored glossary is asked for MORE entries, by name: {thin}"
+        );
     }
 
     #[test]
@@ -514,7 +644,7 @@ mod tests {
         let c = score(&matched, &blocks, true);
         assert_eq!(c.verdict, "ok");
         assert_eq!(c.covered, 2);
-        assert!(c.uncovered.is_empty());
+        assert!(c.open.is_empty());
         assert_eq!(c.pct(), 100);
     }
 
@@ -531,7 +661,7 @@ mod tests {
         let c = score(&matched, &blocks, true);
         assert_eq!(c.verdict, "weak");
         assert_eq!(c.covered, 1);
-        assert_eq!(c.uncovered, vec!["tenant", "ledger", "invoice"]);
+        assert_eq!(c.open, vec!["tenant", "ledger", "invoice"]);
     }
 
     #[test]
@@ -599,7 +729,7 @@ mod tests {
         let c = score(&["spec".to_string(), "specs".to_string()], &blocks, true);
         assert_eq!(c.total, 1, "one word, one slot");
         assert_eq!(c.covered, 1, "any spelling in the group satisfies it");
-        assert!(c.uncovered.is_empty(), "nothing is left open: {:?}", c.uncovered);
+        assert!(c.open.is_empty(), "nothing is left open: {:?}", c.open);
         assert_eq!(c.pct(), 100);
     }
 
@@ -611,7 +741,7 @@ mod tests {
         let blocks = parse_term_blocks("## Spec\nA unit of work.");
         let c = score(&["specs".to_string()], &blocks, true);
         assert_eq!(c.covered, 0);
-        assert_eq!(c.uncovered, vec!["specs"]);
+        assert_eq!(c.open, vec!["specs"]);
     }
 
     #[test]
@@ -703,9 +833,9 @@ mod tests {
             c.stated_reason
         );
 
-        // (e) But the quorum holds the line: when the corpus judged fewer than
-        // half the open terms, it is deciding about words it never saw, so the
-        // decline is refused. Here one judged word against three open ones.
+        // (e) The quorum holds the line for a RAW open set: given one judged word
+        // against three open ones, the corpus would be deciding about words it
+        // never saw, so the decline is refused.
         let matched = vec![
             "run".to_string(),
             "desdobramento".to_string(),
@@ -714,6 +844,20 @@ mod tests {
         let mut c = score(&matched, &[], false);
         apply_decline(&mut c, &matched, &index);
         assert_eq!(c.verdict, "missing", "a minority of judged terms cannot decline");
+
+        // ...and that is exactly the deadlock the corpus filter breaks. Run the
+        // production order — the unpublished words leave the open set first —
+        // and the same input reaches the decline, because what remains is one
+        // repository-wide word and nothing the corpus never saw.
+        let mut c = score(&matched, &[], false);
+        keep_only_published(&mut c, &matched, &index);
+        assert_eq!(c.open, vec!["run"], "only published words stay open: {:?}", c.open);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(
+            c.verdict, DECLINED,
+            "the fragments were both the noise and the blocker: {}",
+            c.stated_reason
+        );
 
         // (f) Fail-open: no index at all (scan model unavailable, or a model
         // from a binary that published no specificity) changes nothing.
@@ -783,6 +927,52 @@ mod tests {
         // a caller can always read it, and only a decline has something to say.
         let ok = to_json(&score(&[], &[], false));
         assert_eq!(ok["statedReason"], serde_json::json!(""));
+    }
+
+    /// A word the published index says nothing about is not vocabulary anyone
+    /// can define — the fragments scan's stem tier answers with (`split201`,
+    /// `completedat`) never reach the user, and what survives is the real
+    /// vocabulary, unchanged.
+    #[test]
+    fn unpublished_fragments_are_not_grill_material() {
+        let index = sample_corpus();
+        // A glossary exists (so terms ARE offered) but defines none of these.
+        let blocks = parse_term_blocks("## Seed\nA starting record.");
+        let matched = vec![
+            "payable".to_string(),
+            "split201".to_string(),
+            "ledger".to_string(),
+            "completedat".to_string(),
+        ];
+        let mut c = score(&matched, &blocks, true);
+        assert_eq!(c.verdict, "weak");
+        keep_only_published(&mut c, &matched, &index);
+        assert_eq!(
+            to_json(&c)["uncovered"],
+            serde_json::json!(["payable", "ledger"]),
+            "only words the corpus published are worth asking about"
+        );
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, "weak", "real domain terms still deserve the grill");
+
+        // Fail-open: no index at all means nothing was judged unpublished, so
+        // the offer is left exactly as scored (a missing model must not empty it).
+        let mut c = score(&matched, &blocks, true);
+        keep_only_published(&mut c, &matched, &[]);
+        assert_eq!(c.open.len(), 4);
+
+        // A thin glossary whose whole open set was fragments has nothing a grill
+        // could ask — it stops nudging instead of nudging with an empty list.
+        let fragments = vec![
+            "split201".to_string(),
+            "completedat".to_string(),
+            "waveli".to_string(),
+        ];
+        let mut c = score(&fragments, &blocks, true);
+        assert_eq!(c.verdict, "weak");
+        keep_only_published(&mut c, &fragments, &index);
+        assert_eq!(c.verdict, "ok", "no words left to ask about");
+        assert_eq!(to_json(&c)["uncovered"], serde_json::json!([]));
     }
 
     #[test]

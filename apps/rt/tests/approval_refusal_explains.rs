@@ -16,7 +16,14 @@
 //! This drives `mustard-rt on PostToolUse` as a subprocess (the same end-to-end
 //! shape as `plan_approval_marker.rs`, since `hooks` is private to the lib) and
 //! asserts the decline is now explained on stderr, while still recording
-//! nothing. What the gate ACCEPTS is unchanged — only what it explains.
+//! nothing.
+//!
+//! A SECOND decline joined it: an answer typed as free text (the harness's
+//! `Other` row / notes field) rather than selected from the offered options is
+//! not an approval whatever words it contains, and its remedy differs — select
+//! the option instead of typing it — so it gets its own explanation. Both
+//! declines record nothing; the one thing the recorder ACCEPTS, a genuine
+//! selection of an approval-stemmed option, is unchanged.
 //!
 //! Lives in `tests/` rather than in-file because the acceptance criterion runs
 //! `cargo test -p mustard-rt approval_refusal_names_the_unmet_condition --
@@ -29,14 +36,29 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Drive `mustard-rt on PostToolUse` with an `AskUserQuestion` answer rooted at
-/// `cwd`, returning the captured stderr. Asserts the clean (exit 0) fail-open
-/// dispatch every hook face owes the session.
-fn answer_and_capture_stderr(cwd: &Path, session: &str, answers: serde_json::Value) -> String {
+/// `cwd`, returning the captured stderr. `offered` are the option labels the
+/// question put on the menu (`tool_input`, authored by the model); `answers` is
+/// what came back. The recorder requires the answer to be exactly one of the
+/// offered labels, so the two are supplied separately — as the harness does.
+/// Asserts the clean (exit 0) fail-open dispatch every hook face owes the
+/// session.
+fn answer_and_capture_stderr(
+    cwd: &Path,
+    session: &str,
+    offered: &[&str],
+    answers: serde_json::Value,
+) -> String {
     let bin = env!("CARGO_BIN_EXE_mustard-rt");
+    let options: Vec<serde_json::Value> = offered
+        .iter()
+        .map(|l| serde_json::json!({ "label": l }))
+        .collect();
     let input = serde_json::json!({
         "hook_event_name": "PostToolUse",
         "tool_name": "AskUserQuestion",
-        "tool_input": {},
+        "tool_input": {
+            "questions": [{ "question": "Approve the plan?", "options": options }]
+        },
         "tool_response": { "questions": [], "answers": answers },
         "session_id": session,
         "cwd": cwd.to_str().unwrap()
@@ -90,10 +112,12 @@ fn approval_refusal_names_the_unmet_condition() {
     let project = tmp.path();
     seed_full_plan_spec(project, "s-decline", "epic");
 
-    // A genuine answer, in words the stem matcher does not recognise.
+    // A genuine SELECTION of an offered option, in words the stem matcher does
+    // not recognise.
     let stderr = answer_and_capture_stderr(
         project,
         "s-decline",
+        &["Sim, pode ir", "Não, revisar"],
         serde_json::json!({ "Approve the plan?": "Sim, pode ir" }),
     );
 
@@ -127,6 +151,7 @@ fn a_recognised_approval_mints_the_marker_and_explains_nothing() {
     let stderr = answer_and_capture_stderr(
         project,
         "s-ok",
+        &["Aprovar e implementar agora", "Rejeitar"],
         serde_json::json!({ "Approve the plan?": "Aprovar e implementar agora" }),
     );
 
@@ -140,6 +165,36 @@ fn a_recognised_approval_mints_the_marker_and_explains_nothing() {
     );
 }
 
+/// The forged approval, end to end: the user typed their own words instead of
+/// picking an option (the harness's `Other` row / notes field), and the text
+/// happens to contain an approval word. Nothing is minted, and the operator is
+/// told the ONE thing that would have worked — selecting the option.
+#[test]
+fn free_text_is_declined_and_told_to_select_instead() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path();
+    seed_full_plan_spec(project, "s-typed", "epic");
+
+    let stderr = answer_and_capture_stderr(
+        project,
+        "s-typed",
+        &["Aprovar e implementar agora", "Rejeitar"],
+        serde_json::json!({
+            "Approve the plan?":
+                "the run died at approve-spec because nobody could approve the plan"
+        }),
+    );
+
+    assert!(
+        !marker(project, "epic").exists(),
+        "free text carrying an approval word must never mint the marker:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("free text") && stderr.contains("SELECTING"),
+        "the operator must be told to select the option instead of typing:\n{stderr}"
+    );
+}
+
 #[test]
 fn a_dismissed_dialog_explains_nothing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -148,7 +203,7 @@ fn a_dismissed_dialog_explains_nothing() {
 
     // An empty answer map is a cancelled dialog: no question was answered, so
     // no condition was failed and there is nothing to tell the author.
-    let stderr = answer_and_capture_stderr(project, "s-cancel", serde_json::json!({}));
+    let stderr = answer_and_capture_stderr(project, "s-cancel", &["Aprovar"], serde_json::json!({}));
 
     assert!(
         !stderr.contains("[approval]"),

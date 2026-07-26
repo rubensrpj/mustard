@@ -1,5 +1,6 @@
 pub mod cli;
 
+pub mod ac_amend;
 pub mod active_specs;
 pub mod approve_spec;
 pub mod change_request;

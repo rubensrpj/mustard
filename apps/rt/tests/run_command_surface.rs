@@ -24,8 +24,10 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 81 declared variants + `help`, which clap generates at build time.
+/// 83 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
+    "ac-amend",
+    "ac-negative-check",
     "active-specs",
     "adapt-cursor",
     "agent-prompt-render",
@@ -234,8 +236,8 @@ fn every_declared_command_keeps_its_help_slot() {
     // clap orders the flat `run --help` listing by `(display_order, name)`.
     // The families are split across `commands/<family>/cli.rs`, so each variant
     // pins its historical slot explicitly. A duplicate or a gap would reshuffle
-    // the published listing — assert the 81 declared commands still carry the
-    // exact permutation 0..=80 (`help` is clap's own, appended last).
+    // the published listing — assert the 83 declared commands still carry the
+    // exact permutation 0..=82 (`help` is clap's own, appended last).
     let cmd = run_command_tree();
     let mut orders: Vec<usize> = cmd
         .get_subcommands()
@@ -328,6 +330,104 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
          makes the guard fail when a surface names it",
     );
     assert!(!RUN_SUBCOMMANDS.contains(&"wave-scaffold"));
+}
+
+/// The amendment path must be PUBLISHED and INSTRUCTED — both halves, or it is
+/// dark surface.
+///
+/// `ac-negative-check` produces the proof ledger at PLAN time and `ac-amend` is
+/// the one door that rewrites a frozen criterion and re-proves the replacement.
+/// A registration nobody is told to type is a command that never runs; and the
+/// dispatch loop used to close its mid-round paragraph by telling the reader to
+/// fold a behaviour change into `## Acceptance Criteria` — the hand edit that
+/// leaves `wave-plan.md` and every wave spec carrying the superseded command.
+/// Both failures are silent, so both are asserted here: the clap tree publishes
+/// the two names, and the shipped prose names the command instead of the hand.
+#[test]
+fn amendment_path_is_published_and_instructed() {
+    let tree = run_command_tree();
+    let published: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
+    for name in ["ac-amend", "ac-negative-check"] {
+        assert!(
+            published.contains(&name),
+            "`mustard-rt run {name}` must stay published — the amendment path is reached by \
+             typing it, and a dropped registration dies on a clap error at runtime"
+        );
+    }
+
+    // Same on-disk read the surface checks above do: `plugin/**` is what the
+    // agent actually loads, so the instruction is asserted where it ships.
+    let loop_md = repo_root().join("plugin/refs/spec/resume-loop.md");
+    let text = fs::read_to_string(&loop_md).expect("plugin/refs/spec/resume-loop.md is the shipped dispatch loop");
+
+    assert!(
+        documented_run_tokens(&text).iter().any(|n| n == "ac-amend"),
+        "the dispatch loop must NAME `mustard-rt run ac-amend` — without an operation to \
+         point at, the mid-round change has only the hand edit it used to prescribe"
+    );
+
+    // Every surviving mention of the criteria heading has to carry the command.
+    // A line that still says "fold this into `## Acceptance Criteria`" and names
+    // no operation IS the hand edit, whatever words it wraps it in.
+    let hand_edits: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("## Acceptance Criteria") && !l.contains("ac-amend"))
+        .collect();
+    assert!(
+        hand_edits.is_empty(),
+        "the dispatch loop still instructs a criterion change with no operation to make it — \
+         a hand edit rewrites only the root and leaves each wave spec on the superseded \
+         command:\n{}",
+        hand_edits.join("\n")
+    );
+
+    // The two surfaces a mid-pipeline change request corrected during this
+    // spec's own run. They were implemented and named by NO criterion, so
+    // reverting either kept the whole suite green — which is the exact failure
+    // the paragraph above forbids, committed one layer up. Asserted here by the
+    // ONE fact each correction turns on, never by a quoted sentence: prose gets
+    // rewritten, and a test that pins wording fails on an edit that changed
+    // nothing.
+    let gate_md = repo_root().join("plugin/pipeline-config.md");
+    let gate_text =
+        fs::read_to_string(&gate_md).expect("plugin/pipeline-config.md declares the gates");
+    assert!(
+        gate_text.contains("ac-negative-check"),
+        "pipeline-config must name the command that mints the proof `approve-spec` now \
+         requires — describing that gate as marker-only sends the reader to a knob that \
+         cannot move it"
+    );
+
+    let grill_md = repo_root().join("plugin/refs/feature/glossary-grill.md");
+    let grill_text =
+        fs::read_to_string(&grill_md).expect("plugin/refs/feature/glossary-grill.md is the grill");
+    // The fact, not the wording: no sample may pair an absent glossary with a
+    // populated term list. That pairing is what the stale document showed, and
+    // the engine can no longer produce it — a reader who copies it learns a
+    // payload that does not exist.
+    // Per BLOCK, never per line: the sample spans several lines, so a line-wise
+    // filter never sees both halves at once and passes on the very payload it
+    // exists to reject. (Found by reverting the file and watching this
+    // assertion stay green — the vacuous criterion this spec is about, caught
+    // in its own test.)
+    let impossible_sample: Vec<&str> = grill_text
+        .split("```")
+        .filter(|block| {
+            let absent = block.replace(' ', "").contains("\"present\":false");
+            let populated = block
+                .split("\"uncovered\"")
+                .nth(1)
+                .and_then(|after| after.split(']').next())
+                .is_some_and(|list| list.contains('"'));
+            absent && populated
+        })
+        .collect();
+    assert!(
+        impossible_sample.is_empty(),
+        "the grill shows a sample pairing `present:false` with a populated `uncovered` — a \
+         payload the report cannot emit since an absent glossary publishes an empty list:\n{}",
+        impossible_sample.join("\n")
+    );
 }
 
 /// The shipped `pr close` ritual must NAME submodules.
