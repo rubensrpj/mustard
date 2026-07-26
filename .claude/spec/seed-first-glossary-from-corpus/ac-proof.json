@@ -1,0 +1,46 @@
+{
+  "spec": "seed-first-glossary-from-corpus",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt --lib glossary_coverage::tests::a_project_with_no_glossary_is_handed_a_seed",
+      "expect": "[1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt --lib glossary_coverage::tests::a_seed_is_empty_rather_than_padded_with_noise",
+      "expect": "[1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-rt --lib glossary_coverage::tests::an_authored_glossary_is_never_offered_a_seed",
+      "expect": "[1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": []
+}
