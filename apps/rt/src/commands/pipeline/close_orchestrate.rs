@@ -9,9 +9,12 @@
 //! ## Deterministic chaining (no LLM judgement)
 //!
 //! When **every** gate passes, the orchestrator auto-chains the close itself —
-//! it calls [`crate::commands::spec::complete_spec::run_complete`] **directly**
+//! it calls [`crate::commands::spec::complete_spec::finalize`] **directly**
 //! (module-qualified, in-process — no subprocess), marking the spec
-//! `completed` and emitting `pipeline.complete`. It then auto-verifies
+//! `completed` and emitting `pipeline.complete`. `finalize`, not `run_complete`:
+//! the gates above ALREADY ran the verification and gated on it, so the
+//! recorded-verdict admission `run_complete` performs would gate the same fact
+//! twice and re-execute every criterion. It then auto-verifies
 //! that the `pipeline.complete` event landed in the per-spec NDJSON window via
 //! [`crate::commands::event::verify_emit::verify_event_landed`] and folds the
 //! boolean into the report (`verified`). The LLM no longer decides whether to

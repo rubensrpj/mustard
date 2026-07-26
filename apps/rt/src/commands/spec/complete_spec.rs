@@ -159,19 +159,6 @@ fn emit_ndjson(cwd: &Path, spec: &str, event_name: &str, payload: &Value, ts: &s
     );
 }
 
-/// Terminal complete — mark the spec `completed` by emitting the coupled
-/// close transition into the per-spec NDJSON sink AND syncing the root
-/// `meta.json`, all in one stage:
-///   1. `pipeline.phase: CLOSE` (idempotent)
-///   2. `pipeline.status` with `{ from: <current>, to: "completed" }`
-///   3. `pipeline.complete` with `{ closedAt, affectedFiles: [...] }`
-///   4. `meta.json` → `Close/Completed/CLOSE` (via `patch_meta_complete`)
-///
-/// Idempotent: skips the whole flip when the projection already shows
-/// `completed` or `cancelled` (mirrors the guard the legacy archive stage used),
-/// so a second call — or `--archive` after the auto-finalize — is a no-op. This
-/// guarantees the event projection and the sidecar never diverge: both end on
-/// `completed`.
 /// The spec's projected lifecycle status, or `None` when the projection carries
 /// none. One reader, so [`mark_complete`] and [`close_admission`] look at the
 /// same fact.
@@ -181,17 +168,44 @@ fn projected_status(cwd: &Path, spec: &str) -> Option<String> {
         .and_then(|v| v.status)
 }
 
-/// The two statuses that make a terminal close a NO-OP.
+/// The statuses that make a terminal close a NO-OP.
 ///
 /// ONE definition on purpose: [`mark_complete`] short-circuits on it (writing no
 /// event) and [`close_admission`] admits on it. A close the flip skips MUST be a
 /// close the admission allows — otherwise the documented hygiene sweep
 /// (`complete-spec {name} --archive` on a spec confirmed done) would start
-/// failing on specs it is meant to leave alone. Pure, total.
+/// failing on specs it is meant to leave alone.
+///
+/// DELIBERATELY NARROWER than the terminal set `emit_pipeline` uses for the same
+/// word (`is_terminal_transition`, which also counts `abandoned` / `superseded` /
+/// `absorbed`). The two answer different questions: that one asks "does this
+/// transition END the spec", this one asks "would the flip below write nothing".
+/// [`mark_complete`] short-circuits on exactly these two, so widening this set
+/// would admit a close that DOES write `pipeline.complete` with no recorded
+/// verdict — reopening the hole this admission exists to shut. Do not "align"
+/// them. Pure, total.
 fn is_terminal_status(status: Option<&str>) -> bool {
     matches!(status, Some("completed" | "cancelled"))
 }
 
+/// Terminal complete — mark the spec `completed` by emitting the coupled
+/// close transition into the per-spec NDJSON sink AND syncing the root
+/// `meta.json`, all in one stage:
+///   1. `pipeline.phase: CLOSE` (idempotent)
+///   2. `pipeline.status` with `{ from: <current>, to: "completed" }`
+///   3. `pipeline.complete` with `{ closedAt, affectedFiles: [...] }`
+///   4. `meta.json` → `Close/Completed/CLOSE` (via `patch_meta_complete`)
+///
+/// Idempotent: skips the whole flip when [`is_terminal_status`] already holds
+/// (mirrors the guard the legacy archive stage used), so a second call — or
+/// `--archive` after the auto-finalize — is a no-op. This guarantees the event
+/// projection and the sidecar never diverge: both end on `completed`.
+///
+/// Gate note: this function writes unconditionally. The recorded-verdict
+/// precondition lives in [`close_admission`], which the CLI face consults
+/// through [`verify_then_admit`] — NOT here, because the composite closes
+/// (`close-pipeline`, `close-orchestrate`) reach this through [`finalize`] after
+/// already running the verification and gating on it.
 fn mark_complete(cwd: &Path, spec: &str) -> Value {
     let affected = collect_affected_files(cwd, spec);
 
@@ -558,24 +572,6 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
     );
 }
 
-/// Terminal close for `spec` (→ `completed` + `pipeline.complete` + meta sync)
-/// as a reusable, non-printing Rust entry point.
-///
-/// Mirrors the default `run(...)` path: the verification, the ADMISSION it
-/// feeds ([`verify_then_admit`]), the coupled terminal complete via
-/// [`mark_complete`], then a fail-open registry rebuild.
-///
-/// `Err` is a REFUSAL, not a crash: no recorded passing verdict, so nothing was
-/// written. `Ok` carries the complete JSON value (`{ ok, mode: "complete", spec,
-/// affectedFiles }`) so a caller can fold it into its own report without
-/// spawning a subprocess. Deterministic and idempotent (the underlying emits are
-/// idempotent on phase/status and short-circuit an already-terminal spec, which
-/// the admission therefore allows).
-///
-/// NOT the entry point for the composite closes: `close-pipeline` and
-/// `close-orchestrate` call [`finalize`] instead, because they already ran the
-/// verification and gated on it — routing them here would re-execute every
-/// criterion and gate the same fact twice.
 /// Whether a TERMINAL close may write `pipeline.complete` for `spec`.
 ///
 /// Two ways in, and only two:
@@ -626,11 +622,37 @@ fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
 /// forgets the gate. Order is load-bearing: the run may RECORD the very verdict
 /// the admission then reads, so admitting first would refuse a spec that is
 /// about to pass.
+///
+/// `cwd` caveat, stated because the signature suggests otherwise:
+/// [`close_admission`] honours this `cwd`, while [`run_qa_fail_open`] resolves
+/// the project through the PROCESS working directory (`qa_run` reads it
+/// internally). The only production caller is [`run`], which passes
+/// `std::env::current_dir()` — so the two agree there. A caller that passes some
+/// OTHER root would verify one tree and admit against another; do not add one
+/// without fixing `qa_run`'s resolution first.
 fn verify_then_admit(cwd: &Path, spec: &str) -> Result<(), String> {
     run_qa_fail_open(cwd, spec);
     close_admission(cwd, spec)
 }
 
+/// Terminal close for `spec` (→ `completed` + `pipeline.complete` + meta sync)
+/// as a reusable, non-printing Rust entry point.
+///
+/// Mirrors the default `run(...)` path: the verification, the ADMISSION it feeds
+/// ([`verify_then_admit`]), the coupled terminal complete via [`mark_complete`],
+/// then a fail-open registry rebuild.
+///
+/// `Err` is a REFUSAL, not a crash: no recorded passing verdict, so nothing was
+/// written. `Ok` carries the complete JSON value (`{ ok, mode: "complete", spec,
+/// affectedFiles }`) so a caller can fold it into its own report without
+/// spawning a subprocess. Deterministic and idempotent (the underlying emits are
+/// idempotent on phase/status and short-circuit an already-terminal spec, which
+/// the admission therefore allows).
+///
+/// NOT the entry point for the composite closes: `close-pipeline` and
+/// `close-orchestrate` call [`finalize`] instead, because they already ran the
+/// verification and gated on it — routing them here would re-execute every
+/// criterion and gate the same fact twice.
 pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Result<Value, String> {
     verify_then_admit(cwd, spec)?;
     Ok(finalize(cwd, spec))
@@ -1411,10 +1433,20 @@ mod tests {
              through — the promise the reader relies on has to name the gate that exists:\n{}",
             misattributed.join("\n")
         );
+        // The other half, which the first assertion alone does not cover: a
+        // ritual reduced to "NEVER hand-call complete-spec", naming no
+        // protection at all, would satisfy the absence check above and still
+        // leave the reader with a prohibition and no reason. So require the
+        // guidance to survive AND to name the consequence that enforces it —
+        // `exit 2`, which is a FACT about `refuse_close`, not a turn of phrase.
+        let names_the_enforcement = text.lines().any(|l| {
+            l.contains("complete-spec") && l.contains("exit 2")
+        });
         assert!(
-            text.contains("complete-spec"),
-            "the ritual must still tell the reader not to hand-call the closer — correcting the \
-             attribution must not delete the guidance"
+            names_the_enforcement,
+            "the ritual must name what actually enforces the refusal (this command exits 2 on \
+             its own) — a bare prohibition tells the reader to obey without telling them what \
+             would stop them, which is how the previous false attribution survived so long"
         );
     }
 }
