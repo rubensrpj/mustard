@@ -172,15 +172,33 @@ fn emit_ndjson(cwd: &Path, spec: &str, event_name: &str, payload: &Value, ts: &s
 /// so a second call — or `--archive` after the auto-finalize — is a no-op. This
 /// guarantees the event projection and the sidecar never diverge: both end on
 /// `completed`.
+/// The spec's projected lifecycle status, or `None` when the projection carries
+/// none. One reader, so [`mark_complete`] and [`close_admission`] look at the
+/// same fact.
+fn projected_status(cwd: &Path, spec: &str) -> Option<String> {
+    let events = read_events_for_spec(cwd, spec);
+    crate::commands::event::event_projections::pipeline_state_from_events(&events, spec, None)
+        .and_then(|v| v.status)
+}
+
+/// The two statuses that make a terminal close a NO-OP.
+///
+/// ONE definition on purpose: [`mark_complete`] short-circuits on it (writing no
+/// event) and [`close_admission`] admits on it. A close the flip skips MUST be a
+/// close the admission allows — otherwise the documented hygiene sweep
+/// (`complete-spec {name} --archive` on a spec confirmed done) would start
+/// failing on specs it is meant to leave alone. Pure, total.
+fn is_terminal_status(status: Option<&str>) -> bool {
+    matches!(status, Some("completed" | "cancelled"))
+}
+
 fn mark_complete(cwd: &Path, spec: &str) -> Value {
     let affected = collect_affected_files(cwd, spec);
 
     // Read current projection status so we can record `from` and short-circuit
     // an already-terminal spec.
-    let events = read_events_for_spec(cwd, spec);
-    let current_status = crate::commands::event::event_projections::pipeline_state_from_events(&events, spec, None)
-        .and_then(|v| v.status);
-    if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
+    let current_status = projected_status(cwd, spec);
+    if is_terminal_status(current_status.as_deref()) {
         return json!({
             "ok": true,
             "mode": "complete",
@@ -543,17 +561,79 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
 /// Terminal close for `spec` (→ `completed` + `pipeline.complete` + meta sync)
 /// as a reusable, non-printing Rust entry point.
 ///
-/// Mirrors the default `run(...)` path: a fail-open QA pass, the coupled
-/// terminal complete via [`mark_complete`], then a fail-open registry rebuild.
-/// Returns the complete JSON value (`{ ok, mode: "complete", spec,
-/// affectedFiles }`) so callers — e.g.
-/// [`crate::commands::pipeline::close_orchestrate`] auto-chaining after every
-/// gate passes — can fold it into their own report without spawning a
-/// subprocess. Deterministic and idempotent (the underlying emits are
-/// idempotent on phase/status and short-circuit an already-terminal spec).
-pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Value {
+/// Mirrors the default `run(...)` path: the verification, the ADMISSION it
+/// feeds ([`verify_then_admit`]), the coupled terminal complete via
+/// [`mark_complete`], then a fail-open registry rebuild.
+///
+/// `Err` is a REFUSAL, not a crash: no recorded passing verdict, so nothing was
+/// written. `Ok` carries the complete JSON value (`{ ok, mode: "complete", spec,
+/// affectedFiles }`) so a caller can fold it into its own report without
+/// spawning a subprocess. Deterministic and idempotent (the underlying emits are
+/// idempotent on phase/status and short-circuit an already-terminal spec, which
+/// the admission therefore allows).
+///
+/// NOT the entry point for the composite closes: `close-pipeline` and
+/// `close-orchestrate` call [`finalize`] instead, because they already ran the
+/// verification and gated on it — routing them here would re-execute every
+/// criterion and gate the same fact twice.
+/// Whether a TERMINAL close may write `pipeline.complete` for `spec`.
+///
+/// Two ways in, and only two:
+///
+/// 1. the spec is ALREADY terminal ([`is_terminal_status`]) — [`mark_complete`]
+///    short-circuits such a close and writes no event, so there is nothing to
+///    gate;
+/// 2. the RECORDED verdict is a pass, read through the single policy
+///    [`crate::commands::event::emit_pipeline::qa_result_passed`] — the very
+///    reader the `emit-pipeline` gate uses, so the two doors to this one event
+///    cannot come to disagree about what "verified" means.
+///
+/// Everything else is refused, INCLUDING an unreadable event store: that mirrors
+/// the stance `emit_pipeline::enforce_qa_gate_or_exit` documents for the same
+/// event, where allowing a complete on a missing store would erase the gate
+/// entirely. So this is one of the few fail-CLOSED reads in this crate — the
+/// crate-wide rule is fail-open, and a reader who assumes it here gets it
+/// backwards, which is why it is spelled out.
+///
+/// Why it exists at all: the shipped close ritual already TOLD its reader never
+/// to hand-call this command past a red gate, explaining that the `emit-pipeline`
+/// gate rejects it anyway. It did not — this command writes the event straight
+/// through the NDJSON writer and never goes through `emit-pipeline`. The contract
+/// was documented and unenforced; this is the enforcement.
+///
+/// `Err` carries the operator-facing reason so the caller only decides how to
+/// print it and which code to exit with. No environment switch relaxes it.
+fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
+    if is_terminal_status(projected_status(cwd, spec).as_deref()) {
+        return Ok(());
+    }
+    if crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec) {
+        return Ok(());
+    }
+    Err(format!(
+        "no `qa.result` event with overall=pass is recorded for {spec}, so completing it would \
+         claim a verification that never happened. Record one first — and run it EXTERNALLY, \
+         because a run inside this binary cannot rebuild the binary its own criteria target and \
+         so records nothing: `mustard-rt run qa-run --spec {spec}`. This refusal is \
+         unconditional; no environment switch relaxes it."
+    ))
+}
+
+/// Run the verification (fail-open — it only REPORTS) and then decide the
+/// admission.
+///
+/// The ONE step both CLI branches share, so a third branch cannot be added that
+/// forgets the gate. Order is load-bearing: the run may RECORD the very verdict
+/// the admission then reads, so admitting first would refuse a spec that is
+/// about to pass.
+fn verify_then_admit(cwd: &Path, spec: &str) -> Result<(), String> {
     run_qa_fail_open(cwd, spec);
-    finalize(cwd, spec)
+    close_admission(cwd, spec)
+}
+
+pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Result<Value, String> {
+    verify_then_admit(cwd, spec)?;
+    Ok(finalize(cwd, spec))
 }
 
 /// The QA-less tail of [`run_complete`]: the coupled terminal complete
@@ -600,7 +680,9 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
     };
 
     if archive_flag {
-        run_qa_fail_open(&cwd, spec);
+        if let Err(reason) = verify_then_admit(&cwd, spec) {
+            refuse_close(spec, "archive", &reason);
+        }
         let (moved_spec, had_state) = archive(&cwd, spec);
         rebuild_one_fail_open(&cwd, spec);
         println!(
@@ -610,8 +692,25 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         return;
     }
 
-    let complete_value = run_complete(&cwd, spec);
-    println!("{complete_value}");
+    match run_complete(&cwd, spec) {
+        Ok(complete_value) => println!("{complete_value}"),
+        Err(reason) => refuse_close(spec, "complete", &reason),
+    }
+}
+
+/// Print the refusal in the SAME `{ ok, mode, spec, … }` shape the success path
+/// prints — the `/close` command parses that line — and exit 2.
+///
+/// Exit 2 on purpose: it is the code `emit-pipeline` already uses to refuse this
+/// very event, so a caller that handles that refusal handles this one
+/// identically. Diverging would make the two doors answer the same refusal with
+/// different codes.
+fn refuse_close(spec: &str, mode: &str, reason: &str) -> ! {
+    println!(
+        "{}",
+        json!({ "ok": false, "mode": mode, "spec": spec, "error": reason })
+    );
+    std::process::exit(2);
 }
 
 fn rebuild_one_fail_open(cwd: &Path, spec: &str) {
@@ -1175,6 +1274,147 @@ mod tests {
         assert!(
             !read_events_for_spec(cwd, spec).iter().any(|e| e.event.starts_with("capability.")),
             "no capability.* events for a Light close"
+        );
+    }
+
+    /// Seed one `qa.result` for `spec` with the given `overall`, through the same
+    /// writer production uses — so the admission reads a real event row, not a
+    /// hand-built fixture that could drift from the shape on disk.
+    fn seed_qa_result(cwd: &Path, spec: &str, overall: &str) {
+        emit_ndjson(
+            cwd,
+            spec,
+            "qa.result",
+            &json!({ "spec": spec, "overall": overall, "criteria": [] }),
+            "2026-07-26T00:00:00.000Z",
+        );
+    }
+
+    /// `true` when a `pipeline.complete` exists for the spec — the ONE observable
+    /// the admission protects.
+    fn completed(cwd: &Path, spec: &str) -> bool {
+        read_events_for_spec(cwd, spec)
+            .iter()
+            .any(|e| e.event == EVENT_PIPELINE_COMPLETE)
+    }
+
+    /// AC-1 — a terminal close with NO recorded passing verdict is refused, and
+    /// nothing is written. The reproduced defect: this command wrote
+    /// `pipeline.complete` straight through the writer while the shipped ritual
+    /// promised another command's gate would stop it.
+    ///
+    /// Both halves asserted: the admission says no, AND the observable it guards
+    /// never appears. A `skip` verdict is planted deliberately — the shape the
+    /// field incident had (a self-invoked run that could attempt almost nothing),
+    /// which the old code read as good enough to close on.
+    #[test]
+    fn a_close_with_no_recorded_pass_is_refused() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "no-verdict-spec";
+        seed_spec_md(cwd, spec, "# S\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `true`\n");
+
+        // Nothing recorded at all.
+        let refusal = close_admission(cwd, spec).expect_err("a close with no verdict must refuse");
+        assert!(
+            refusal.contains("qa-run") && refusal.contains(spec),
+            "the refusal must name the remedy and the spec: {refusal}"
+        );
+        assert!(
+            refusal.contains("unconditional"),
+            "the refusal must say no switch relaxes it: {refusal}"
+        );
+
+        // A recorded SKIP is still not a pass — the exact field shape.
+        seed_qa_result(cwd, spec, "skip");
+        assert!(close_admission(cwd, spec).is_err(), "skip is not a pass");
+        // And a recorded FAIL is not a pass either.
+        seed_qa_result(cwd, spec, "fail");
+        assert!(close_admission(cwd, spec).is_err(), "fail is not a pass");
+
+        // The guarded observable never appeared, and the entry point refuses.
+        assert!(!completed(cwd, spec), "no pipeline.complete may be written");
+        assert!(
+            run_complete(cwd, spec).is_err(),
+            "the entry point must propagate the refusal"
+        );
+        assert!(!completed(cwd, spec), "still nothing written after the refusal");
+    }
+
+    /// AC-2 — the two admitted ways in, so the gate cannot pass by refusing
+    /// everything.
+    ///
+    /// (a) an ALREADY-finished spec is admitted with no verdict at all: its close
+    /// writes no event ([`mark_complete`] short-circuits), so there is nothing to
+    /// gate — and the documented hygiene sweep (`complete-spec {name} --archive`
+    /// on a spec confirmed done) depends on it staying a silent no-op.
+    /// (b) a recorded PASS is admitted and the close really lands.
+    #[test]
+    fn an_already_finished_close_and_a_proven_one_are_both_admitted() {
+        // (a) already finished — no qa.result anywhere.
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let done = "already-done-spec";
+        seed_spec_md(cwd, done, "# S\n");
+        emit_ndjson(
+            cwd,
+            done,
+            "pipeline.status",
+            &json!({ "from": "approved", "to": "completed" }),
+            "2026-07-26T00:00:00.000Z",
+        );
+        assert!(
+            is_terminal_status(projected_status(cwd, done).as_deref()),
+            "the fixture must really project as finished"
+        );
+        assert!(
+            close_admission(cwd, done).is_ok(),
+            "a close that writes nothing must never be refused"
+        );
+
+        // (b) proven — a recorded pass admits, and the close lands for real.
+        let proven = "proven-spec";
+        seed_spec_md(cwd, proven, "# S\n");
+        assert!(close_admission(cwd, proven).is_err(), "no verdict yet");
+        seed_qa_result(cwd, proven, "pass");
+        assert!(close_admission(cwd, proven).is_ok(), "a recorded pass admits");
+        let _ = finalize(cwd, proven);
+        assert!(completed(cwd, proven), "the admitted close must actually complete");
+    }
+
+    /// AC-3 — the shipped ritual must not credit this refusal to a command this
+    /// one never passes through.
+    ///
+    /// Asserted by the FACT, not the wording: no line may pair `complete-spec`
+    /// with `emit-pipeline`, because that pairing IS the false attribution the
+    /// reader relied on (`close.md` told them the `emit-pipeline` gate rejects a
+    /// hand-call; it never sees one). The second half keeps the fix from passing
+    /// by deleting the guidance instead of correcting it.
+    #[test]
+    fn the_shipped_ritual_names_the_protection_that_exists() {
+        let ritual = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("plugin")
+            .join("commands")
+            .join("close.md");
+        let text = std::fs::read_to_string(&ritual)
+            .unwrap_or_else(|e| panic!("the shipped close ritual must be readable: {e}"));
+
+        let misattributed: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("complete-spec") && l.contains("emit-pipeline"))
+            .collect();
+        assert!(
+            misattributed.is_empty(),
+            "the ritual credits this command's refusal to `emit-pipeline`, which it never goes \
+             through — the promise the reader relies on has to name the gate that exists:\n{}",
+            misattributed.join("\n")
+        );
+        assert!(
+            text.contains("complete-spec"),
+            "the ritual must still tell the reader not to hand-call the closer — correcting the \
+             attribution must not delete the guidance"
         );
     }
 }
