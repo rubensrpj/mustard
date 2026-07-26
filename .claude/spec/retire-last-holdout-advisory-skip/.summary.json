@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "retire-last-holdout-advisory-skip",
+  "title": "Retire the last holdout of the advisory skip: the close gate must refuse a spec that declares no criteria, like every other door already does",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

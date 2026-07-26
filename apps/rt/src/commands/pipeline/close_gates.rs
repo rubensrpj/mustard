@@ -1032,17 +1032,28 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
             }
             // warn → fall through.
         } else if overall.as_deref() == Some("skip") {
-            // Two skip shapes, told apart by the criteria the run recorded:
-            // - `criteria` empty → the spec carries nothing testable; the
-            //   historical advisory contract holds — fall through.
-            // - `criteria` non-empty → ACs exist but every one skipped at run
-            //   time (timeout / spawn failure). A silent green here would close
-            //   a spec whose criteria were never exercised; strict routes the
-            //   decision to the user instead.
-            if criteria_count > 0 {
-                let reason = format_gate_message(
-                    "Close Gate",
-                    &spec_ref.map_or_else(
+            // A skip is never a verification, so BOTH shapes are refused. They
+            // are still told apart by the criteria the run recorded, because the
+            // operator's next move is opposite in each case:
+            // - `criteria` empty → the spec declares nothing to verify, so it
+            //   has nothing to claim. The remedy is to AUTHOR a criterion.
+            // - `criteria` non-empty → criteria exist but none was attempted
+            //   (timeout, spawn failure, or a run inside the very binary they
+            //   target). The remedy is to FIX them, or to record the verdict
+            //   from an external run that can attempt them.
+            //
+            // The empty shape used to fall through here — "the historical
+            // advisory contract holds". Every other door (`emit-pipeline`,
+            // `complete-spec`, `close-pipeline`, `close-orchestrate`) had since
+            // stopped honouring it, leaving this adapter as the last
+            // disagreement; the shipped rituals already describe the strict
+            // rule. One rule enforced everywhere but here is not a rule.
+            // All THREE fields differ per shape, not just the remedy: the two
+            // are refused for different reasons, so a merged principle would
+            // hand one shape the other's explanation.
+            let (problem, principle, remedy) = if criteria_count > 0 {
+                (
+                    spec_ref.map_or_else(
                         || format!("QA skipped all {criteria_count} acceptance criteria"),
                         |s| {
                             format!(
@@ -1052,25 +1063,46 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                         },
                     ),
                     "a skip is not a verification — the criteria exist but were never exercised",
-                    "fix the AC commands and re-run /mustard:qa, or confirm the skip with the \
-                     user and set MUSTARD_QA_GATE_MODE=warn to close anyway",
+                    "fix the AC commands and re-run /mustard:qa — or record the verdict from an \
+                     EXTERNAL `mustard-rt run qa-run`, which is the run that can actually attempt \
+                     them; confirm with the user and set MUSTARD_QA_GATE_MODE=warn to close anyway",
+                )
+            } else {
+                (
+                    spec_ref.map_or_else(
+                        || "QA recorded a skip and the spec declares no acceptance criteria"
+                            .to_string(),
+                        |s| {
+                            format!(
+                                "QA for spec \"{s}\" recorded a skip and the spec declares no \
+                                 acceptance criteria at all"
+                            )
+                        },
+                    ),
+                    "a skip is not a verification — and a spec with nothing to verify has nothing \
+                     to claim",
+                    "author one criterion — a command that is red before the work and green after \
+                     — then re-run /mustard:qa; or confirm with the user and set \
+                     MUSTARD_QA_GATE_MODE=warn to close anyway",
+                )
+            };
+            let reason = format_gate_message("Close Gate", &problem, principle, remedy);
+            if qa_mode == GateMode::Strict {
+                emit_close_gate_event(
+                    cwd,
+                    spec_ref,
+                    json!({
+                        "result": "deny-qa-skip",
+                        "mode": mode_str(mode),
+                        "qaMode": mode_str(qa_mode),
+                        "spec": spec_ref,
+                        "criteriaCount": criteria_count,
+                    }),
                 );
-                if qa_mode == GateMode::Strict {
-                    emit_close_gate_event(
-                        cwd,
-                        spec_ref,
-                        json!({
-                            "result": "deny-qa-skip",
-                            "mode": mode_str(mode),
-                            "qaMode": mode_str(qa_mode),
-                            "spec": spec_ref,
-                            "criteriaCount": criteria_count,
-                        }),
-                    );
-                    return Verdict::Deny { reason };
-                }
-                // warn → fall through.
+                return Verdict::Deny { reason };
             }
+            // warn → fall through, both shapes alike: the mode is the operator's
+            // deliberate override and keeps the meaning it always had.
         } else if overall.as_deref() != Some("pass") {
             let failed_str = if failed_count > 0 {
                 format!("{failed_count} criteria failed")
@@ -1525,6 +1557,50 @@ mod tests {
         match verdict {
             Verdict::Deny { reason } => assert!(reason.to_lowercase().contains("qa")),
             other => panic!("expected Deny for missing QA, got {other:?}"),
+        }
+    }
+
+    /// Both skip shapes are refused — and each is told apart, pointed at its OWN
+    /// next move.
+    ///
+    /// The refusals were merged into one branch when the empty-criteria
+    /// carve-out was retired, and that is exactly where a fix like this goes
+    /// wrong: collapsing two situations into one message leaves the operator a
+    /// prohibition with the wrong remedy attached. A spec that declares nothing
+    /// needs a criterion AUTHORED; criteria that exist but were never attempted
+    /// need to be FIXED, or their verdict recorded by a run that can attempt
+    /// them. So the assertion is on the remedy each one carries, not on the fact
+    /// that both are denied.
+    #[test]
+    fn the_two_skip_shapes_are_refused_with_their_own_remedy() {
+        let empty = deny_reason_for_skip(json!([]));
+        let with_acs = deny_reason_for_skip(json!([{ "id": "AC-1", "status": "skip" }]));
+
+        assert!(
+            empty.contains("author"),
+            "a spec declaring nothing must be told to author a criterion: {empty}"
+        );
+        assert!(
+            with_acs.contains("fix the AC commands"),
+            "criteria that exist must be told to fix or re-run them: {with_acs}"
+        );
+        assert_ne!(
+            empty, with_acs,
+            "one message for two opposite situations is the failure this guards"
+        );
+    }
+
+    /// Run the close gates over a spec whose only recorded verdict is a `skip`
+    /// carrying `criteria`, and return the refusal reason. Panics when the gate
+    /// does NOT deny — which is the other half of the assertion.
+    fn deny_reason_for_skip(criteria: Value) -> String {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+        let spec = "skip-shape-spec";
+        write_qa_event(dir.path(), spec, "skip", criteria);
+        match run_close_gates(dir.path().to_str().unwrap(), Some(spec), all_strict()) {
+            Verdict::Deny { reason } => reason,
+            other => panic!("a skip must never open the close, got {other:?}"),
         }
     }
 }
