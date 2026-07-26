@@ -380,6 +380,54 @@ fn amendment_path_is_published_and_instructed() {
          command:\n{}",
         hand_edits.join("\n")
     );
+
+    // The two surfaces a mid-pipeline change request corrected during this
+    // spec's own run. They were implemented and named by NO criterion, so
+    // reverting either kept the whole suite green — which is the exact failure
+    // the paragraph above forbids, committed one layer up. Asserted here by the
+    // ONE fact each correction turns on, never by a quoted sentence: prose gets
+    // rewritten, and a test that pins wording fails on an edit that changed
+    // nothing.
+    let gate_md = repo_root().join("plugin/pipeline-config.md");
+    let gate_text =
+        fs::read_to_string(&gate_md).expect("plugin/pipeline-config.md declares the gates");
+    assert!(
+        gate_text.contains("ac-negative-check"),
+        "pipeline-config must name the command that mints the proof `approve-spec` now \
+         requires — describing that gate as marker-only sends the reader to a knob that \
+         cannot move it"
+    );
+
+    let grill_md = repo_root().join("plugin/refs/feature/glossary-grill.md");
+    let grill_text =
+        fs::read_to_string(&grill_md).expect("plugin/refs/feature/glossary-grill.md is the grill");
+    // The fact, not the wording: no sample may pair an absent glossary with a
+    // populated term list. That pairing is what the stale document showed, and
+    // the engine can no longer produce it — a reader who copies it learns a
+    // payload that does not exist.
+    // Per BLOCK, never per line: the sample spans several lines, so a line-wise
+    // filter never sees both halves at once and passes on the very payload it
+    // exists to reject. (Found by reverting the file and watching this
+    // assertion stay green — the vacuous criterion this spec is about, caught
+    // in its own test.)
+    let impossible_sample: Vec<&str> = grill_text
+        .split("```")
+        .filter(|block| {
+            let absent = block.replace(' ', "").contains("\"present\":false");
+            let populated = block
+                .split("\"uncovered\"")
+                .nth(1)
+                .and_then(|after| after.split(']').next())
+                .is_some_and(|list| list.contains('"'));
+            absent && populated
+        })
+        .collect();
+    assert!(
+        impossible_sample.is_empty(),
+        "the grill shows a sample pairing `present:false` with a populated `uncovered` — a \
+         payload the report cannot emit since an absent glossary publishes an empty list:\n{}",
+        impossible_sample.join("\n")
+    );
 }
 
 /// The shipped `pr close` ritual must NAME submodules.
