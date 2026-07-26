@@ -53,9 +53,12 @@ pub enum ContextCmd {
     /// Deterministic check of how well a `CONTEXT.md` domain glossary covers the
     /// repo-vocabulary terms a feature intent touches (the digest's matched
     /// terms). Emits byte-stable JSON `{verdict, present, termsTotal,
-    /// termsCovered, coveragePct, uncovered, contextFile}` for the `/feature`
-    /// ANALYZE glossary loop — `uncovered` is the weak/missing terms to grill,
-    /// `contextFile` the resolved destination `grill-capture` writes them into.
+    /// termsCovered, coveragePct, uncovered, contextFile, statedReason, seed}`
+    /// for the `/feature` ANALYZE glossary loop — `uncovered` is the thin
+    /// glossary's terms to grill, `seed` the terms a FIRST glossary is worth
+    /// opening with (non-empty only when none is authored), `statedReason` the
+    /// sentence to record when the corpus declines, and `contextFile` the
+    /// resolved destination `grill-capture` writes them into.
     /// Reuses the exact term matcher `context-slice` uses. Fail-open: a missing
     /// model / unreadable glossary degrades to `verdict: "na"`, exit 0.
     #[command(name = "glossary-coverage")]

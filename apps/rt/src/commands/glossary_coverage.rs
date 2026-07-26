@@ -19,8 +19,8 @@
 //! glossary cannot drift.
 //!
 //! Output (stdout, byte-stable pretty JSON): `{ coveragePct, contextFile, present,
-//! statedReason, termsCovered, termsTotal, uncovered, verdict }` — the same keys
-//! on every verdict, so a caller can always read them. The `uncovered` list IS
+//! seed, statedReason, termsCovered, termsTotal, uncovered, verdict }` — the same
+//! keys on every verdict, so a caller can always read them. The `uncovered` list IS
 //! the actionable payload — the domain terms of a THIN glossary (`weak`) that the
 //! orchestrator hands to the inline grill (`grill-capture`) so each confirmed
 //! definition lands in the glossary; `contextFile` names the resolved target to
@@ -96,6 +96,11 @@ struct Coverage {
     /// --reason`, which is what turns the decline into a recorded clarification
     /// instead of a skip nobody wrote down.
     stated_reason: String,
+    /// Terms a FIRST glossary would be worth opening with — non-empty ONLY on
+    /// the `missing` verdict, and only when the corpus judges some word of this
+    /// request concentrated. See [`seed_terms`] for why this is a different
+    /// question from `uncovered` and must not be folded into it.
+    seed: Vec<String>,
 }
 
 impl Coverage {
@@ -227,6 +232,7 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         verdict: "ok",
         context_file: String::new(),
         stated_reason: String::new(),
+        seed: Vec::new(),
     };
     c.verdict = if total == 0 {
         // No domain terms touched → nothing a glossary could cover; never nudge.
@@ -418,6 +424,41 @@ fn keep_only_published(c: &mut Coverage, matched: &[String], index: &[DigestTerm
     }
 }
 
+/// The terms a FIRST glossary would be worth opening with — the answer to the
+/// question an absent glossary actually raises.
+///
+/// `uncovered` answers "which authored entries are thin", which has no meaning
+/// with no file, so it is deliberately empty on `missing`. This answers the
+/// other one: of the words this request touches, which does the repository's own
+/// index report as CONCENTRATED — said in few places rather than everywhere?
+///
+/// The same arithmetic [`decline_reason`] uses, read from the other end. There
+/// it proves a word is repository-wide vocabulary and therefore not worth
+/// defining; here the words at or above [`corpus_rarity_cut`] are exactly the
+/// ones that are. Nothing is written down anywhere, so nothing can rot into one
+/// person's taste.
+///
+/// Offers NOTHING rather than noise, in both directions that matter: a word the
+/// index never published ([`group_rarity_x1024`] answers `None`) is left out —
+/// which keeps scan's stem fragments (`waveli` for `waveList`) out for free —
+/// and a request touching only ubiquitous vocabulary yields an empty list, the
+/// same reading `declined` publishes. A padded list is the theatre that teaches
+/// an operator to skip the step.
+///
+/// Deterministic: the digest's order is kept, and the same inputs always produce
+/// the same list. This NEVER decides what a term means — it names words to ask a
+/// human about.
+fn seed_terms(matched: &[String], index: &[DigestTerm]) -> Vec<String> {
+    let Some(cut) = corpus_rarity_cut(index) else {
+        return Vec::new();
+    };
+    group_inflections(matched)
+        .into_iter()
+        .filter(|group| group_rarity_x1024(group, index).is_some_and(|r| r >= cut))
+        .map(|group| group.representative)
+        .collect()
+}
+
 /// Turn a `missing`/`weak` verdict into `declined` when the corpus reports that
 /// none of the still-open terms carries domain meaning.
 ///
@@ -429,9 +470,27 @@ fn apply_decline(c: &mut Coverage, matched: &[String], index: &[DigestTerm]) {
     if !matches!(c.verdict, "missing" | "weak") {
         return;
     }
+    // The seed answers the question an ABSENT glossary raises, so it is offered
+    // on `missing` only — never on `weak`, where the file exists and `uncovered`
+    // is already the actionable list. Computed before the decline below because
+    // a declined project has nothing worth defining by definition, and the
+    // decline clears it.
+    if c.verdict == "missing" {
+        c.seed = seed_terms(matched, index);
+    }
     if let Some(reason) = decline_reason(matched, &c.open, index) {
         c.verdict = DECLINED;
         c.stated_reason = reason;
+        // Belt and braces, and honest about being exactly that: the two are
+        // mutually exclusive BY CONSTRUCTION today, so this line is currently
+        // unreachable. A non-empty seed means some group sits at or above the
+        // cut; on `missing` every group is still open, and `decline_reason`
+        // returns `None` on the first such group — so a decline and a seed
+        // cannot coexist. Kept because the coupling is indirect (it depends on
+        // `score` putting everything in `open` when no glossary resolved) and a
+        // declined project handed a list to define would contradict itself in
+        // one document. The invariant, not this branch, is what the tests pin.
+        c.seed.clear();
     }
 }
 
@@ -514,6 +573,11 @@ fn to_json(c: &Coverage) -> serde_json::Value {
         // Always present (stable shape), non-empty only on `declined` — the
         // sentence the caller hands to `grill-capture --finalize --reason`.
         "statedReason": c.stated_reason,
+        // Always present, non-empty only on `missing` — the terms a FIRST
+        // glossary is worth opening with. Beside `uncovered`, never inside it:
+        // the two answer different questions, and folding them would re-teach
+        // the caller to read an absent glossary as thin coverage.
+        "seed": c.seed,
     })
 }
 
@@ -581,9 +645,11 @@ pub fn run(intent: &str, context: &[String], root: &Path) {
             "coveragePct": 0,
             "uncovered": [],
             "contextFile": "",
-            // No corpus to ask, so nothing was declined — the shape stays stable
-            // and the caller has no reason to record.
+            // No corpus to ask, so nothing was declined and nothing can be
+            // seeded — the shape stays stable and the caller has no reason to
+            // record or to offer.
             "statedReason": "",
+            "seed": [],
         }),
     };
     println!(
@@ -973,6 +1039,114 @@ mod tests {
         keep_only_published(&mut c, &fragments, &index);
         assert_eq!(c.verdict, "ok", "no words left to ask about");
         assert_eq!(to_json(&c)["uncovered"], serde_json::json!([]));
+    }
+
+    /// AC-1 — a project with NO glossary is handed a starting list.
+    ///
+    /// The gap this closes: the report correctly said the glossary was missing
+    /// and correctly handed back no `uncovered` (there are no authored entries
+    /// to be thin), which left the operator with a correct message and a blank
+    /// page — so the only route out was the stated-reason escape, taken every
+    /// time.
+    #[test]
+    fn a_project_with_no_glossary_is_handed_a_seed() {
+        let index = sample_corpus();
+        // `payable` and `ledger` sit at/above the upper quartile; `run` is said
+        // everywhere. One concentrated word also keeps the decline from firing.
+        let matched = vec!["payable".to_string(), "run".to_string(), "ledger".to_string()];
+        let mut c = score(&matched, &[], false);
+        assert_eq!(c.verdict, "missing");
+        apply_decline(&mut c, &matched, &index);
+
+        assert!(c.seed.contains(&"payable".to_string()), "seed: {:?}", c.seed);
+        assert!(c.seed.contains(&"ledger".to_string()), "seed: {:?}", c.seed);
+        assert!(
+            !c.seed.contains(&"run".to_string()),
+            "a word said everywhere is not worth defining: {:?}",
+            c.seed
+        );
+        // The two questions stay apart — the previous unit's separation holds.
+        assert!(
+            to_json(&c)["uncovered"].as_array().is_some_and(|a| a.is_empty()),
+            "an absent glossary still publishes no open-entry list"
+        );
+        assert_eq!(to_json(&c)["seed"], serde_json::json!(["payable", "ledger"]));
+    }
+
+    /// AC-2 — nothing rather than noise, in both directions that matter.
+    #[test]
+    fn a_seed_is_empty_rather_than_padded_with_noise() {
+        let index = sample_corpus();
+
+        // (a) only ubiquitous vocabulary → the corpus declines and offers
+        // nothing. Stated as the INVARIANT it really is, not as a branch being
+        // exercised: a decline and a non-empty seed are mutually exclusive by
+        // construction, so asserting `seed.is_empty()` here alone would pass
+        // trivially. What is pinned is that the two never coexist — over every
+        // fixture in this test, including the ones that DO seed.
+        let matched = vec!["run".to_string(), "path".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.verdict, DECLINED);
+        assert!(c.seed.is_empty(), "a declined project gets no seed: {:?}", c.seed);
+
+        // (b) words the index never published are left out — this is what keeps
+        // scan's stem fragments (`waveli` for `waveList`) from ever being
+        // offered as vocabulary.
+        let matched = vec!["payable".to_string(), "waveli".to_string()];
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &index);
+        assert_eq!(c.seed, vec!["payable".to_string()], "unpublished words stay out");
+
+        // (c) no corpus at all → nothing to judge, so nothing offered.
+        let mut c = score(&matched, &[], false);
+        apply_decline(&mut c, &matched, &[]);
+        assert!(c.seed.is_empty(), "an empty index cannot mint a seed");
+
+        // The invariant itself, over every shape this test built: a declined
+        // verdict and a seed never appear together. This is what sub-assertion
+        // (a) can only gesture at on its own.
+        for matched in [
+            vec!["run".to_string(), "path".to_string()],
+            vec!["payable".to_string(), "run".to_string()],
+            vec!["payable".to_string(), "ledger".to_string()],
+            vec!["waveli".to_string()],
+        ] {
+            let mut c = score(&matched, &[], false);
+            apply_decline(&mut c, &matched, &index);
+            assert!(
+                c.verdict != DECLINED || c.seed.is_empty(),
+                "a decline and a seed contradict each other: {:?} / {:?}",
+                c.verdict,
+                c.seed
+            );
+        }
+    }
+
+    /// AC-3 — an authored glossary is never offered a seed, however thin it is.
+    ///
+    /// The seed answers "what would a FIRST glossary open with". A project that
+    /// already keeps one is asking the other question, and `uncovered` is
+    /// already its actionable answer — offering both would collapse the
+    /// separation this rests on.
+    #[test]
+    fn an_authored_glossary_is_never_offered_a_seed() {
+        let index = sample_corpus();
+        // A thin-but-present glossary: `weak`, with real open terms.
+        let blocks = parse_term_blocks("## Run\nStart something.");
+        let matched = vec!["run".to_string(), "payable".to_string(), "ledger".to_string()];
+        let mut c = score(&matched, &blocks, true);
+        assert_eq!(c.verdict, "weak", "the fixture must really be thin, not absent");
+        apply_decline(&mut c, &matched, &index);
+
+        assert!(c.seed.is_empty(), "an authored glossary gets no seed: {:?}", c.seed);
+        // And the thin-coverage answer is unchanged: the open terms are still
+        // published, which is what that project acts on.
+        let payload = to_json(&c);
+        assert!(
+            payload["uncovered"].as_array().is_some_and(|a| !a.is_empty()),
+            "a thin glossary still publishes its open terms: {payload}"
+        );
     }
 
     #[test]
