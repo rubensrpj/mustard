@@ -6,8 +6,8 @@
 //! Counterpart of [`crate::commands::git_settle`] (the exit ritual): open cuts
 //! `.claude/worktrees/{base}_{slug}` from a fresh `origin/{base}`; settle
 //! verifies the merge and prunes the same worktree. Cleanup of these worktrees
-//! is git-settle's job EXCLUSIVELY — `worktree-gc` collects `agent-*` dirs
-//! only and never touches work units.
+//! is git-settle's job EXCLUSIVELY — `worktree-gc` collects only worktrees
+//! that are NOT work units ([`is_unit_worktree_name`]) and never touches one.
 //!
 //! Branch naming reuses [`super::event::work_branch`] so the worktree branch
 //! is byte-identical to the `pending-work-branch` marker `emit-pipeline`
@@ -36,12 +36,33 @@ use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_wor
 /// it, leaving the layout to whoever replaces the native `git worktree add`.
 const WORKTREES_RELDIR: &str = ".claude/worktrees";
 
-/// The name prefix Claude Code gives a SUBAGENT's isolated worktree
-/// (`agent-<id>`) — the same prefix `worktree-gc` collects by. It is the ONLY
-/// non-unit shape that carries a wave: a desktop/background worktree has no
-/// dispatched work depending on the tree's state, so the clean-tree
-/// precondition applies here and nowhere else.
-pub(crate) const AGENT_NAME_PREFIX: &str = "agent-";
+/// The declared integration base a worktree NAME belongs to, read from its
+/// longest `{base}_` prefix — `None` when the name is not a work unit's.
+///
+/// This is the ONE criterion that separates a work unit's worktree from every
+/// other worktree the harness may cut, and it is derived from the project's own
+/// `git.flow` rather than from any name SHAPE. There is no `agent-` prefix to
+/// key on: `WorktreeCreate` documents `name` as a slug identifier — a
+/// user-supplied one (`feature-auth`), a `pr-<number>`, or an auto-generated
+/// `bright-running-fox` — and this repository's only harness-cut worktree is
+/// `.claude/worktrees/recursing-benz-063389`. Keying on a prefix that never
+/// appears made the isolation's way OUT match nothing and answer `ok:true`
+/// while a wave's commit sat stranded, so both halves now ask this one
+/// question, of the same declared bases.
+pub(crate) fn unit_base_of_name(name: &str, bases: &[String]) -> Option<String> {
+    bases
+        .iter()
+        .filter(|b| name.starts_with(&format!("{b}_")))
+        .max_by_key(|b| b.len())
+        .cloned()
+}
+
+/// Whether a worktree NAME is a work unit's — see [`unit_base_of_name`].
+/// Everything else (a subagent's isolated checkout, a background session's, a
+/// desktop one) is not a unit, and is what the wave sweeps look at.
+pub(crate) fn is_unit_worktree_name(name: &str, bases: &[String]) -> bool {
+    unit_base_of_name(name, bases).is_some()
+}
 
 /// How many dirty paths the refusal message spells out before summarising.
 const MAX_DIRTY_SHOWN: usize = 20;
@@ -81,9 +102,10 @@ fn ref_exists(dir: &Path, full_ref: &str) -> bool {
 /// The work-unit branch the INVOKING tree sits on, `None` when it sits on
 /// anything else (an integration base, a detached HEAD, an unreadable repo).
 ///
-/// Read from the TREE, never from the requested worktree name: an `agent-*`
-/// name carries no base and no slug, so the unit can only come from where the
-/// hook was invoked. The shape and the longest-match rule mirror
+/// Read from the TREE, never from the requested worktree name: a non-unit name
+/// (a slug such as `recursing-benz-063389`) carries no base and no slug, so the
+/// unit can only come from where the hook was invoked. The shape and the
+/// longest-match rule mirror
 /// `work_branch_gate::base_for` — the parser of what
 /// [`super::event::work_branch`] produces.
 ///
@@ -103,9 +125,9 @@ pub(crate) fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String
         .then(|| branch.to_string())
 }
 
-/// Start ref for a NON-UNIT worktree name (`agent-*`, desktop names), as an
-/// explicit cascade — each step tried ONLY when the one before it does not
-/// resolve:
+/// Start ref for a NON-UNIT worktree name (a subagent's or a desktop session's
+/// slug), as an explicit cascade — each step tried ONLY when the one before it
+/// does not resolve:
 ///
 /// 1. the CURRENT work unit's HEAD, when the invoking tree sits on one. A wave
 ///    dispatched from inside a unit must see that unit's commits; cutting from
@@ -200,12 +222,7 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
             // Longest declared `{B}_` prefix — the gate's rule, minus its
             // primary-base fallback: a branch without a base prefix is not a
             // work unit and is refused (mirrors git-settle's `no-base-prefix`).
-            let Some(prefix) = bases
-                .iter()
-                .filter(|c| b.starts_with(&format!("{c}_")))
-                .max_by_key(|c| c.len())
-                .cloned()
-            else {
+            let Some(prefix) = unit_base_of_name(b, &bases) else {
                 return json!({ "ok": false, "reason": "no-base-prefix", "branch": b });
             };
             if let Some(req) = opts.base.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -325,12 +342,13 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
 ///   `origin/{base}` (attach the branch if it already exists).
 /// - `prefix_…` with an UNDECLARED prefix → `Err` (didactic — almost certainly
 ///   a mistyped base; silent coercion is the disease this crate just cured).
-/// - no `_` at all (`agent-*`, desktop names) → [`non_unit_start`]'s cascade:
-///   the current work unit's HEAD, else `origin/{primary_base}` from the
-///   DECLARED `git.flow`, else the historical `origin/HEAD`/local `HEAD`.
+/// - anything else — the slug the harness actually hands over
+///   (`recursing-benz-063389`, `feature-auth`, `pr-1234`) → [`non_unit_start`]'s
+///   cascade: the current work unit's HEAD, else `origin/{primary_base}` from
+///   the DECLARED `git.flow`, else the historical `origin/HEAD`/local `HEAD`.
 ///   Background isolation must never break.
 ///
-/// An `agent-*` name additionally requires a CLEAN tree. A fresh checkout
+/// A NON-UNIT name additionally requires a CLEAN tree. A fresh checkout
 /// carries only COMMITTED code, so uncommitted work in the invoking tree would
 /// not travel and the wave would run against the older version — most visibly
 /// after `/scan`, which rewrites each subproject's `CLAUDE.md` `## Guards` and
@@ -338,8 +356,11 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
 /// that blocks, and it blocks by `Err`: a non-zero exit ABORTS creation with
 /// stderr shown to the user, which IS this event's protocol (the same way a
 /// `Deny` is a gate's). It mirrors `scan_clean_gate`, which already refuses
-/// `/scan` on a dirty tree for the `add -A` reason. Unit worktrees and
-/// background-session worktrees are untouched — no wave depends on their tree.
+/// `/scan` on a dirty tree for the `add -A` reason. Unit worktrees are
+/// untouched — no wave depends on their tree. The precondition is keyed on
+/// [`is_unit_worktree_name`], the SAME question the cut below asks, so the two
+/// cannot drift; the earlier `agent-` prefix was a shape the platform never
+/// emits, which left this refusal permanently silent.
 ///
 /// The event hands over a NAME, never a path (`worktree_path` is the *Remove*
 /// twin's field), so placing the worktree is this engine's call: it mirrors the
@@ -376,16 +397,23 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     let wt_str = requested.replace('\\', "/");
     let config = mustard_core::ProjectConfig::load(&main);
     let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
-    let unit_base = bases
-        .iter()
-        .filter(|c| name.starts_with(&format!("{c}_")))
-        .max_by_key(|c| c.len())
-        .cloned();
+    let unit_base = unit_base_of_name(&name, &bases);
 
-    // Clean-tree precondition — AGENT worktrees only, and the one refusal in
-    // this engine that is deliberate. Checked on the INVOKING tree, which is
-    // the tree the cascade derives the cut from.
-    if name.starts_with(AGENT_NAME_PREFIX) {
+    // Not a work unit → a mistyped base is refused BEFORE anything else looks
+    // at the tree: it is a naming error, and blaming a dirty tree for it would
+    // be misleading. (Such a name never becomes a worktree at all.)
+    if unit_base.is_none() {
+        if let Some((prefix, _)) = name.split_once('_') {
+            return Err(format!(
+                "WorktreeCreate: '{prefix}' (from '{name}') is not an integration base of this \
+                 project (bases: {}). Declare it in mustard.json#git.flow or use a name without \
+                 '_'.",
+                bases.join(", ")
+            ));
+        }
+        // Clean-tree precondition — NON-UNIT worktrees only, and the one
+        // refusal in this engine that is deliberate. Checked on the INVOKING
+        // tree, which is the tree the cascade derives the cut from.
         let dirty = dirty_paths(cwd);
         if !dirty.is_empty() {
             let shown: Vec<&str> = dirty.iter().take(MAX_DIRTY_SHOWN).map(String::as_str).collect();
@@ -393,7 +421,7 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
             let tail =
                 if more == 0 { String::new() } else { format!("\n  … and {more} more path(s)") };
             return Err(format!(
-                "WorktreeCreate: refusing to cut the agent worktree '{name}' — the working tree \
+                "WorktreeCreate: refusing to cut the isolated worktree '{name}' — the working tree \
                  has uncommitted changes:\n  {}{tail}\n\
                  A fresh worktree carries only COMMITTED code, so this work would NOT travel and \
                  the wave would run against the older version — most visibly after /scan, which \
@@ -416,12 +444,6 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         } else {
             return Err(format!("WorktreeCreate: base '{base}' not found in the repository"));
         }
-    } else if let Some((prefix, _)) = name.split_once('_') {
-        return Err(format!(
-            "WorktreeCreate: '{prefix}' (from '{name}') is not an integration base of this project \
-             (bases: {}). Declare it in mustard.json#git.flow or use a name without '_'.",
-            bases.join(", ")
-        ));
     } else {
         non_unit_start(&main, cwd, &config, &bases)
     };
@@ -655,14 +677,37 @@ mod tests {
     }
 
     #[test]
+    fn unit_name_is_decided_by_the_declared_bases_not_by_a_prefix_shape() {
+        // The criterion, stated on its own: `{base}_` and nothing else. The
+        // slug shapes the platform really emits (`WorktreeCreate#name`:
+        // user-given, `pr-<n>`, or auto-generated) are all NON-units — there is
+        // no `agent-` prefix anywhere in the documented contract, and this
+        // repository's own harness worktree is `recursing-benz-063389`.
+        let bases = vec!["dev".to_string(), "main".to_string()];
+        assert!(is_unit_worktree_name("dev_my-spec", &bases));
+        assert!(is_unit_worktree_name("main_hotfix", &bases));
+        assert!(!is_unit_worktree_name("recursing-benz-063389", &bases));
+        assert!(!is_unit_worktree_name("bright-running-fox", &bases));
+        assert!(!is_unit_worktree_name("feature-auth", &bases));
+        assert!(!is_unit_worktree_name("pr-1234", &bases));
+        assert!(!is_unit_worktree_name("agent-w1", &bases), "no special shape survives");
+        assert!(!is_unit_worktree_name("hml_x", &bases), "an UNDECLARED prefix is not a base");
+        // Longest declared prefix wins, exactly like the branch gate.
+        let nested = vec!["dev".to_string(), "dev_rc".to_string()];
+        assert_eq!(unit_base_of_name("dev_rc_thing", &nested).as_deref(), Some("dev_rc"));
+    }
+
+    #[test]
     fn hook_create_non_unit_name_still_cuts_its_own_branch() {
-        // `agent-*` (no underscore) must never break — background isolation.
+        // A harness slug (no declared `{base}_`) must never break — background
+        // isolation. `recursing-benz-063389` is the real shape, taken from this
+        // repository's own `.claude/worktrees/`.
         let (_dir, main) = fixture();
-        let got = hook_create("agent-bg1", &main).expect("creates");
+        let got = hook_create("recursing-benz-063389", &main).expect("creates");
         assert!(Path::new(&got).is_dir(), "worktree materialized");
         assert_eq!(
             git_out(Path::new(&got), &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
-            "agent-bg1",
+            "recursing-benz-063389",
             "own branch, native-style"
         );
     }
@@ -763,15 +808,31 @@ mod tests {
     #[test]
     fn agent_worktree_refuses_dirty_tree() {
         // A fresh checkout carries only COMMITTED code: uncommitted work would
-        // not travel and the wave would run against the older version.
+        // not travel and the wave would run against the older version. Driven
+        // through the SLUG the harness really hands over — the previous
+        // `agent-dirty` fixture was the only reason this refusal looked alive.
         let (_dir, main) = fixture();
         std::fs::write(main.join("a.txt"), "uncommitted").expect("dirty");
-        let err = hook_create("agent-dirty", &main).unwrap_err();
+        let err = hook_create("recursing-benz-063389", &main).unwrap_err();
         assert!(err.contains("a.txt"), "names the offending path: {err}");
         assert!(
-            !main.join(".claude").join("worktrees").join("agent-dirty").exists(),
+            !main.join(".claude").join("worktrees").join("recursing-benz-063389").exists(),
             "nothing created on refusal",
         );
+    }
+
+    #[test]
+    fn every_non_unit_slug_shape_refuses_a_dirty_tree() {
+        // The refusal is keyed on "not a work unit", so it holds for every name
+        // the platform can generate — not for one prefix.
+        for name in ["bright-running-fox", "feature-auth", "pr-1234", "agent-w1"] {
+            let (_dir, main) = fixture();
+            std::fs::write(main.join("a.txt"), "uncommitted").expect("dirty");
+            let Err(err) = hook_create(name, &main) else {
+                panic!("'{name}' must refuse a dirty tree");
+            };
+            assert!(err.contains("a.txt"), "{name} names the offending path: {err}");
+        }
     }
 
     #[test]

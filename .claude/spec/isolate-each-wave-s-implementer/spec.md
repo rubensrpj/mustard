@@ -101,6 +101,10 @@ Every criterion below is verified by a NAMED test and demands a non-zero pass co
 
 ## Boundaries
 
-IN: the files above, plus their tests in the same crate, and the fix-loop cascades the review produced: `apps/rt/src/commands/agent/render/sections.rs` (two visibility raises so the per-wave path matcher is REUSED by the reclaim attribution instead of a second one being written) and `apps/rt/src/commands/work_unit_open.rs` (the way-in's unit resolver raised so the way-out reads the same tree — the critical finding was precisely that the two halves disagreed).
+IN: the files above, plus their tests in the same crate, and the fix-loop cascades the two reviews produced.
+
+From the first fix loop: `apps/rt/src/commands/agent/render/sections.rs` (two visibility raises so the per-wave path matcher is REUSED by the reclaim attribution instead of a second one being written) and `apps/rt/src/commands/work_unit_open.rs` (the way-in's unit resolver raised so the way-out reads the same tree — the critical finding was precisely that the two halves disagreed).
+
+From the second: an invented worktree-name prefix had been asserted in this spec as fact and propagated into code, so every site repeating it had to be corrected together or the claim would survive in the ones left behind — `apps/rt/src/commands/maint/worktree_gc.rs` (which filtered orphans by that prefix and was therefore inert; widening a DESTRUCTIVE sweep also required the platform's own guarantee that a checkout still holding work is never removed), `apps/rt/src/hooks/worktree_create.rs`, `apps/rt/src/hooks/session/session_start_inject.rs`, `apps/rt/src/commands/wave/cli.rs`, `apps/rt/src/commands/maint/cli.rs`, `apps/rt/src/commands/doctor/docs_stale_check.rs`, `plugin/refs/git/git-flow.md`, plus `apps/rt/src/commands/git_settle.rs` (detached checkouts were invisible to the sweep) and `apps/rt/src/hooks/task/context_budget_gate.rs` (the switch had silently retired the prompt-size block for every dispatch).
 
 OUT: `git add` scope and the `add -A` law; wave decomposition and the dependency model; `worktree.sparsePaths` and build-artifact reuse across checkouts (measure first, size separately); the boundary gate's path matcher; the acceptance-criteria negative test; agent teams; `git-settle`'s unit-level exit ritual, which stays exactly as it is.

@@ -65,7 +65,7 @@ use serde_json::{json, Value};
 use crate::commands::agent::render::sections::{normalise_path, same_file};
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees};
 use crate::commands::pipeline::dispatch_plan::wave_declared_files;
-use crate::commands::work_unit_open::{current_unit_branch, dirty_paths, AGENT_NAME_PREFIX};
+use crate::commands::work_unit_open::{current_unit_branch, dirty_paths, is_unit_worktree_name};
 
 /// Options for `mustard-rt run wave-reclaim`.
 pub struct WaveReclaimOpts {
@@ -84,7 +84,9 @@ pub struct WaveReclaimOpts {
 struct Candidate {
     /// Absolute path of the worktree, forward-slash normalised.
     path: String,
-    /// The branch it has checked out.
+    /// The ref the fold names: the branch it has checked out, or — when the
+    /// checkout is DETACHED — its HEAD sha, which is the only handle such a
+    /// checkout offers. Either way it is what `merge`/`rev-list` are given.
     branch: String,
     /// How many commits it carries that the unit branch does not.
     commits: usize,
@@ -117,34 +119,52 @@ fn conflicting_paths(tree: &Path) -> Vec<String> {
     paths
 }
 
-/// Every registered agent checkout (`.claude/worktrees/agent-*`) that carries at
-/// least one commit `unit` does not, sorted by branch.
+/// Every registered agent checkout that carries at least one commit `unit` does
+/// not, sorted by the ref that names it.
 ///
-/// [`parse_worktrees`] already keeps only the harness-owned entries; the
-/// `agent-` prefix on the DIRECTORY name is what separates a subagent checkout
-/// from a work unit's own worktree — the same signal `worktree-gc` collects by,
-/// and the one the branch name cannot carry (the harness may prefix it).
-fn candidates(main: &Path, unit: &str) -> Vec<Candidate> {
+/// [`parse_worktrees`] already keeps only the harness-owned entries
+/// (`.claude/worktrees/…`); what separates a SUBAGENT's checkout from a work
+/// unit's own worktree is the DIRECTORY name carrying a declared `{base}_`
+/// prefix — [`is_unit_worktree_name`], the very question the way IN asks before
+/// cutting. Asking it here of the same `mustard.json#git.flow` is what keeps
+/// the two halves of the isolation from disagreeing.
+///
+/// It replaced an `agent-` prefix test that matched NOTHING: `WorktreeCreate`
+/// hands over a slug (`recursing-benz-063389`, `feature-auth`, `pr-1234`), never
+/// a prefixed name, so with isolation genuinely on this sweep found no
+/// candidate and the command answered `nothing-to-reclaim` while the wave's
+/// commit stayed in its checkout — a fail-open on the one metric this spec is
+/// measured by.
+///
+/// A DETACHED checkout is included on its HEAD sha (see [`parse_worktrees`]):
+/// it can hold commits just the same, and silence over it would strand them.
+fn candidates(main: &Path, unit: &str, bases: &[String]) -> Vec<Candidate> {
     let entries = git_out(main, &["worktree", "list", "--porcelain"])
         .map(|s| parse_worktrees(&s))
         .unwrap_or_default();
     let mut out = Vec::new();
     for entry in entries {
-        let is_agent = Path::new(&entry.path)
+        let is_unit_checkout = Path::new(&entry.path)
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with(AGENT_NAME_PREFIX));
-        if !is_agent {
+            .is_some_and(|n| is_unit_worktree_name(n, bases));
+        if is_unit_checkout {
             continue;
         }
+        // Detached → no branch name; its HEAD is the only ref there is.
+        let git_ref = if entry.branch.is_empty() { entry.head.clone() } else { entry.branch.clone() };
+        if git_ref.is_empty() {
+            continue; // nothing nameable — never guess at a ref
+        }
         let range = format!("^{unit}");
-        let commits = git_out(main, &["rev-list", "--count", &entry.branch, &range])
+        let commits = git_out(main, &["rev-list", "--count", &git_ref, &range])
             .and_then(|s| s.trim().parse::<usize>().ok())
             .unwrap_or(0);
         if commits > 0 {
-            out.push(Candidate { path: entry.path, branch: entry.branch, commits });
+            out.push(Candidate { path: entry.path, branch: git_ref, commits });
         }
     }
+    out.sort_by(|a, b| a.branch.cmp(&b.branch));
     out
 }
 
@@ -153,7 +173,7 @@ fn candidates(main: &Path, unit: &str) -> Vec<Candidate> {
 /// declared path. Waves dispatched in the same round have disjoint `## Files`
 /// (that is what `wave-overlap-check` audits), so the declaration is the only
 /// wave↔checkout link this repository actually persists — the harness names a
-/// subagent worktree `agent-<id>` and records the id nowhere.
+/// subagent worktree with an opaque slug and records the id nowhere.
 ///
 /// Returns every candidate when the wave declares no files: an empty filter must
 /// never look like "no match" (the caller then fails closed on the ambiguity
@@ -250,7 +270,7 @@ pub(crate) fn reclaim_at(opts: &WaveReclaimOpts) -> Value {
         None if !raw_head.is_empty() && raw_head != "HEAD" => raw_head.clone(),
         None => git_out(&unit_tree, &["rev-parse", "HEAD"]).unwrap_or_else(|| "HEAD".to_string()),
     };
-    let pool = candidates(&main, &exclude);
+    let pool = candidates(&main, &exclude, &bases);
     if pool.is_empty() {
         return nothing;
     }
@@ -421,10 +441,18 @@ mod tests {
         );
     }
 
-    /// A repo on the work unit `dev_unit`, with ONE agent checkout cut from the
-    /// unit's HEAD (exactly what `work_unit_open`'s hook produces) carrying one
-    /// commit. `.claude/` is gitignored, so the worktree never reads as dirt.
-    pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    /// The name the harness really gives a subagent's isolated worktree: an
+    /// opaque slug. Taken verbatim from this repository's own
+    /// `.claude/worktrees/`; `WorktreeCreate#name` documents exactly this shape
+    /// (user-given, `pr-<n>`, or auto-generated) and never a prefixed one.
+    /// Every fixture below drives the SLUG, because an `agent-`-shaped fixture
+    /// is the only reason the old prefix test ever looked alive.
+    pub(super) const AGENT_SLUG: &str = "recursing-benz-063389";
+
+    /// A repo on the work unit `dev_unit`, with ONE agent checkout named
+    /// `name`, cut from the unit's HEAD (exactly what `work_unit_open`'s hook
+    /// produces). `.claude/` is gitignored, so the worktree never reads as dirt.
+    pub(super) fn fixture_named(name: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempdir().expect("tempdir");
         let main = dir.path().join("repo");
         std::fs::create_dir_all(&main).expect("mkdir");
@@ -438,9 +466,14 @@ mod tests {
         git(&main, &["add", "-A"]);
         git(&main, &["commit", "-m", "seed"]);
         git(&main, &["checkout", "-b", "dev_unit"]);
-        git(&main, &["worktree", "add", ".claude/worktrees/agent-w1", "-b", "agent-w1"]);
-        let wt = main.join(".claude").join("worktrees").join("agent-w1");
+        git(&main, &["worktree", "add", &format!(".claude/worktrees/{name}"), "-b", name]);
+        let wt = main.join(".claude").join("worktrees").join(name);
         (dir, main, wt)
+    }
+
+    /// [`fixture_named`] with the real slug shape.
+    pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        fixture_named(AGENT_SLUG)
     }
 
     fn opts(main: &Path) -> WaveReclaimOpts {
@@ -466,7 +499,7 @@ mod tests {
         assert_eq!(v["fastForward"], json!(true), "cut from the unit's HEAD: {v}");
         assert_eq!(
             v["worktree"],
-            json!(".claude/worktrees/agent-w1"),
+            json!(format!(".claude/worktrees/{AGENT_SLUG}")),
             "path reported relative to the main checkout: {v}"
         );
 
@@ -477,7 +510,7 @@ mod tests {
         assert_eq!(v["worktreeRemoved"], json!(true), "{v}");
         assert!(!wt.exists(), "agent checkout pruned after a proven fold");
         assert!(
-            git_out(&main, &["branch", "--list", "agent-w1"]).unwrap_or_default().is_empty(),
+            git_out(&main, &["branch", "--list", AGENT_SLUG]).unwrap_or_default().is_empty(),
             "the merged agent branch is deleted too"
         );
 
@@ -612,7 +645,7 @@ mod tests {
         let v = reclaim_at(&opts(&main));
         assert_eq!(v["ok"], json!(false), "stranded work is never a success: {v}");
         assert_eq!(v["reason"], json!("unattributed-agent-checkout"), "{v}");
-        assert_eq!(v["candidates"], json!(["agent-w1"]), "{v}");
+        assert_eq!(v["candidates"], json!([AGENT_SLUG]), "{v}");
         assert!(wt.exists(), "nothing destroyed");
         assert!(!main.join("undeclared.txt").exists(), "and nothing folded");
 
@@ -650,6 +683,91 @@ mod tests {
         let v = reclaim_at(&opts(&main));
         assert_eq!(v["reason"], json!("unattributed-agent-checkout"), "{v}");
         assert!(!main.join("notsrc").exists(), "nothing folded: {v}");
+    }
+
+    /// The sweep's criterion, both directions.
+    ///
+    /// POSITIVE: the slug the harness really emits is swept. This is the case
+    /// the `agent-` prefix test could not see — with isolation genuinely on it
+    /// found nothing, answered `nothing-to-reclaim`, and `wave-done` reported
+    /// the wave COMPLETE with its commit stranded in the checkout.
+    #[test]
+    fn reclaim_sweeps_a_slug_named_checkout() {
+        for name in ["recursing-benz-063389", "bright-running-fox", "pr-1234"] {
+            let (_dir, main, wt) = fixture_named(name);
+            let wave_sha = commit_wave_work(&wt, "wave.txt");
+
+            let v = reclaim_at(&opts(&main));
+            assert_eq!(v["ok"], json!(true), "{name}: {v}");
+            assert_eq!(v["action"], json!("reclaimed"), "{name}: {v}");
+            assert_eq!(v["branch"], json!(name), "{name}: {v}");
+            assert_eq!(
+                git_out(&main, &["rev-parse", "dev_unit"]).as_deref(),
+                Some(wave_sha.as_str()),
+                "{name}: the wave's commit is on the unit branch",
+            );
+        }
+    }
+
+    /// NEGATIVE: a worktree whose name carries a declared `{base}_` is a WORK
+    /// UNIT's own checkout, never a wave's — even when it holds commits the
+    /// invoking tree lacks. Folding one would merge a sibling unit's work.
+    #[test]
+    fn reclaim_never_sweeps_a_unit_worktree() {
+        let (_dir, main, wt) = fixture();
+        // Retire the agent checkout so the unit worktree is the ONLY thing on
+        // disk that could be mistaken for a candidate.
+        git(&main, &["worktree", "remove", "--force", wt.to_string_lossy().as_ref()]);
+        // A SECOND work unit, in its own worktree, carrying its own commit.
+        git(&main, &["worktree", "add", ".claude/worktrees/dev_sibling", "-b", "dev_sibling"]);
+        let sibling = main.join(".claude").join("worktrees").join("dev_sibling");
+        let sibling_sha = commit_wave_work(&sibling, "sibling.txt");
+
+        let v = reclaim_at(&opts(&main));
+        assert_eq!(
+            v,
+            json!({ "ok": true, "action": "nothing-to-reclaim", "wave": 1 }),
+            "a unit worktree is not a wave's checkout: {v}"
+        );
+        assert_eq!(
+            git_out(&main, &["rev-parse", "dev_sibling"]).as_deref(),
+            Some(sibling_sha.as_str()),
+            "the sibling unit is untouched",
+        );
+        assert!(!main.join("sibling.txt").exists(), "and nothing was folded from it");
+    }
+
+    /// A DETACHED agent checkout carrying commits is work like any other. The
+    /// worktree parser used to drop every branchless entry, so this checkout
+    /// was invisible to the sweep and the command answered `ok:true` over it.
+    #[test]
+    fn reclaim_sees_a_detached_agent_checkout() {
+        let (_dir, main, wt) = fixture();
+        let wave_sha = commit_wave_work(&wt, "wave.txt");
+        // Detach the checkout at that same commit, exactly where it stands.
+        git(&wt, &["checkout", "--detach", &wave_sha]);
+        assert_eq!(
+            git_out(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("HEAD"),
+            "the fixture really is detached",
+        );
+        // Drop the branch so the commit lives ONLY in the detached checkout —
+        // otherwise the branch would be swept and the detachment prove nothing.
+        git(&main, &["branch", "-D", AGENT_SLUG]);
+
+        let v = reclaim_at(&opts(&main));
+        assert_ne!(
+            v["action"],
+            json!("nothing-to-reclaim"),
+            "a detached checkout holding unreclaimed commits is never silence: {v}"
+        );
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["branch"], json!(wave_sha), "named by its HEAD — it has no branch: {v}");
+        assert_eq!(
+            git_out(&main, &["rev-parse", "dev_unit"]).as_deref(),
+            Some(wave_sha.as_str()),
+            "and the commit really landed on the unit: {v}",
+        );
     }
 
     /// A checkout whose work belongs to an integration base has nowhere safe to

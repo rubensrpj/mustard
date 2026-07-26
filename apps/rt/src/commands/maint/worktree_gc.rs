@@ -3,16 +3,34 @@
 //! ## Why
 //!
 //! Every `Task` invocation with `isolation: "worktree"` carves out a fresh git
-//! worktree under `<repo>/.claude/worktrees/agent-<id>/`. When the task ends
+//! worktree under `<repo>/.claude/worktrees/<name>/`. When the task ends
 //! cleanly the orchestrator removes it; when it crashes (process killed,
 //! network drop, panic), the worktree lingers. They mirror the source tree,
 //! so they balloon `docs-stale-check`, `security-scan`, and any other
 //! filesystem walker — and the `locked` marker keeps `git worktree prune`
 //! from reaping them automatically.
 //!
-//! This subcommand enumerates `.claude/worktrees/agent-*`, computes each
-//! one's age, and removes those older than `--age-days N`. Dry-run by
-//! default; `--apply` is required to mutate the filesystem.
+//! ## Which worktrees, and which are off limits
+//!
+//! `<name>` is a SLUG the harness chooses — user-given (`feature-auth`), a
+//! `pr-<number>`, or auto-generated (`bright-running-fox`,
+//! `recursing-benz-063389`). There is no `agent-` prefix: `WorktreeCreate`
+//! documents `name` as a plain identifier, and this collector used to filter on
+//! a prefix the platform never emits, which made it inert against every real
+//! orphan. It now collects by the ONE criterion the rest of the crate uses —
+//! [`crate::commands::work_unit_open::is_unit_worktree_name`]: a worktree whose
+//! name carries a declared `{base}_` is a WORK UNIT's, and cleanup of those is
+//! `git-settle`'s job EXCLUSIVELY. Everything else is collectable.
+//!
+//! Widening what a destructive sweep can see demands the other half of the
+//! platform's own contract, so it is here too: a worktree that still HOLDS WORK
+//! (uncommitted or untracked changes, `.claude/` excepted) is never removed,
+//! whatever its age. What removal can cost is then a checkout with nothing in
+//! it — its branch survives `git worktree remove` untouched.
+//!
+//! This subcommand enumerates those worktrees, computes each one's age, and
+//! removes those older than `--age-days N`. Dry-run by default; `--apply` is
+//! required to mutate the filesystem.
 //!
 //! ## Age signal
 //!
@@ -42,6 +60,7 @@
 //! - `pipeline.economy.operation.invoked { operation: "worktree-gc", duration_ms }`
 //!   — the universal `/economia` operation marker (W12 contract).
 
+use crate::commands::work_unit_open::{dirty_paths, is_unit_worktree_name};
 use crate::shared::context::{current_spec, session_id};
 use mustard_core::time::now_iso8601;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -102,16 +121,19 @@ struct GcReport {
 // Worktree discovery + age resolution
 // ---------------------------------------------------------------------------
 
-/// Enumerate `<repo>/.claude/worktrees/agent-*` directories. Returns an empty
-/// vec when the parent path is missing (fail-open).
+/// Enumerate the collectable directories under `<repo>/.claude/worktrees/` —
+/// every one whose name is NOT a work unit's (see the module header). Returns
+/// an empty vec when the parent path is missing (fail-open).
 ///
 /// `worktrees/` has no typed accessor on `ClaudePaths` (it's a legacy direct
 /// child of `.claude/`); routing via `claude_dir()` keeps the boundary owned
 /// by the canonical handle without expanding W4 scope.
-fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
+fn list_collectable_worktrees(repo: &Path) -> Vec<PathBuf> {
     let Ok(paths) = ClaudePaths::for_project(repo) else {
         return Vec::new();
     };
+    let bases: Vec<String> =
+        mustard_core::ProjectConfig::load(repo).git.integration_bases().into_iter().collect();
     let root = paths.claude_dir().join("worktrees");
     let Ok(read) = std::fs::read_dir(&root) else {
         return Vec::new();
@@ -123,7 +145,7 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("agent-"))
+                .is_some_and(|n| !is_unit_worktree_name(n, &bases))
         })
         .collect();
     out.sort();
@@ -230,7 +252,7 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
 
     let threshold = u64::from(age_days);
 
-    for wt in list_agent_worktrees(repo) {
+    for wt in list_collectable_worktrees(repo) {
         let path = wt.display().to_string();
         let Some(mtime) = age_signal(repo, &wt) else {
             report.kept.push(KeptEntry {
@@ -254,6 +276,20 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
                 path,
                 age_days: Some(age),
                 reason: "below threshold".into(),
+            });
+            continue;
+        }
+
+        // Holds work → never removed, at any age: the exception the platform's
+        // own periodic sweep makes, and what keeps collecting by "not a work
+        // unit" safe rather than merely wider. Asked ONLY of an entry already
+        // over the threshold — the probe that runs at every SessionStart must
+        // not spawn a `git status` per worktree just to report an age.
+        if !dirty_paths(&wt).is_empty() {
+            report.kept.push(KeptEntry {
+                path,
+                age_days: Some(age),
+                reason: "holds uncommitted work".into(),
             });
             continue;
         }
@@ -393,12 +429,16 @@ mod tests {
         file.set_modified(when)
     }
 
-    /// Create a fake agent worktree at `<repo>/.claude/worktrees/agent-<id>`
+    /// Create a fake agent worktree at `<repo>/.claude/worktrees/<slug>`
     /// alongside the matching `.git/worktrees/<basename>/HEAD` marker. The
     /// marker is the file `age_signal` reads first; backdating it controls the
     /// computed age without needing a real `git worktree add`.
+    ///
+    /// The name is a SLUG, the shape `WorktreeCreate` actually hands over — the
+    /// old `agent-<id>` fixture matched a prefix the platform never emits, so
+    /// it was the only thing keeping the old filter looking alive.
     fn fake_worktree(repo: &Path, id: &str, age_days: u64) -> PathBuf {
-        let basename = format!("agent-{id}");
+        let basename = format!("recursing-{id}-063389");
         let wt = repo.join(".claude").join("worktrees").join(&basename);
         fs::create_dir_all(wt.join("src")).unwrap();
         // A token file inside so std::fs::remove_dir_all has something to do.
@@ -418,18 +458,83 @@ mod tests {
     #[test]
     fn list_returns_empty_when_dir_missing() {
         let dir = tempdir().unwrap();
-        assert!(list_agent_worktrees(dir.path()).is_empty());
+        assert!(list_collectable_worktrees(dir.path()).is_empty());
     }
 
     #[test]
-    fn list_skips_non_agent_prefixed_dirs() {
+    fn list_collects_slug_names_and_skips_work_units() {
+        // The criterion is the declared `{base}_`, not a name shape: every slug
+        // the harness can emit is collectable, and a work unit's worktree never
+        // is (git-settle owns those). The old `agent-` filter had it backwards
+        // — it matched only a prefix the platform never produces.
         let dir = tempdir().unwrap();
+        fs::write(dir.path().join("mustard.json"), r#"{"git":{"flow":{"*":"dev"}}}"#).unwrap();
         let root = dir.path().join(".claude").join("worktrees");
-        fs::create_dir_all(root.join("agent-good")).unwrap();
-        fs::create_dir_all(root.join("not-agent")).unwrap();
-        let found = list_agent_worktrees(dir.path());
-        assert_eq!(found.len(), 1);
-        assert!(found[0].ends_with("agent-good"));
+        for name in ["recursing-benz-063389", "bright-running-fox", "pr-1234", "agent-good"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        fs::create_dir_all(root.join("dev_my-unit")).unwrap();
+
+        let found: Vec<String> = list_collectable_worktrees(dir.path())
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect();
+        assert_eq!(
+            found,
+            vec!["agent-good", "bright-running-fox", "pr-1234", "recursing-benz-063389"],
+            "every non-unit name collected, sorted"
+        );
+        assert!(!found.iter().any(|n| n == "dev_my-unit"), "a work unit is never collected");
+    }
+
+    #[test]
+    fn a_worktree_holding_work_is_never_removed() {
+        // The safety half of collecting by "not a work unit": a checkout with
+        // uncommitted or untracked work survives regardless of age. Driven
+        // through a REAL git worktree, because `dirty_paths` asks git.
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "."],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+            vec!["checkout", "-b", "dev"],
+        ] {
+            Command::new("git").args(&args).current_dir(&repo).output().expect("git");
+        }
+        fs::write(repo.join("mustard.json"), r#"{"git":{"flow":{"*":"dev"}}}"#).unwrap();
+        fs::write(repo.join(".gitignore"), ".claude/\n").unwrap();
+        fs::write(repo.join("a.txt"), "seed").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-m", "seed"]] {
+            Command::new("git").args(&args).current_dir(&repo).output().expect("git");
+        }
+        Command::new("git")
+            .args(["worktree", "add", ".claude/worktrees/bright-running-fox"])
+            .current_dir(&repo)
+            .output()
+            .expect("git");
+        let wt = repo.join(".claude").join("worktrees").join("bright-running-fox");
+        fs::write(wt.join("unsaved.txt"), "never committed").unwrap();
+        // Age it well past any threshold.
+        let admin = repo.join(".git").join("worktrees").join("bright-running-fox").join("HEAD");
+        let _ = backdate(&admin, SystemTime::now() - Duration::from_secs(90 * 86_400));
+
+        let report = gc(&repo, 7, /* apply = */ true);
+        assert!(wt.exists(), "a worktree holding work survives the sweep");
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
+        assert!(
+            report.kept.iter().any(|k| k.reason == "holds uncommitted work"),
+            "and the report says why",
+        );
+
+        // The other direction, same fixture minus the work: once clean, the
+        // same over-threshold worktree IS collected — so the guard above is the
+        // work, not the age.
+        std::fs::remove_file(wt.join("unsaved.txt")).unwrap();
+        let report = gc(&repo, 7, /* apply = */ true);
+        assert!(!wt.exists(), "a clean orphan past the threshold is removed");
+        assert_eq!(report.removed.len(), 1, "{:?}", report.kept.len());
     }
 
     #[test]
@@ -461,7 +566,7 @@ mod tests {
         assert!(!old.exists(), "30d worktree must be removed");
 
         assert_eq!(report.removed.len(), 1);
-        assert!(report.removed[0].ends_with("agent-old"));
+        assert!(report.removed[0].ends_with("recursing-old-063389"), "{}", report.removed[0]);
         // The two survivors land in `kept[]` with reason "below threshold".
         let below: Vec<&KeptEntry> = report
             .kept
@@ -501,7 +606,7 @@ mod tests {
         // No admin HEAD, no dir mtime override — the dir was just created so
         // age_days_since returns 0, which is below any positive threshold.
         let dir = tempdir().unwrap();
-        let root = dir.path().join(".claude").join("worktrees").join("agent-new");
+        let root = dir.path().join(".claude").join("worktrees").join("bright-running-fox");
         fs::create_dir_all(&root).unwrap();
         let report = gc(dir.path(), 7, true);
         assert!(report.removed.is_empty(), "fresh dir must not be removed");

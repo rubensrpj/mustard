@@ -130,29 +130,59 @@ fn base_of_branch(branch: &str, bases: &[String]) -> Option<String> {
 #[derive(Debug, PartialEq)]
 pub(crate) struct WorktreeEntry {
     pub(crate) path: String,
+    /// The branch the checkout has out — EMPTY when it is DETACHED.
     pub(crate) branch: String,
+    /// The commit the checkout stands on. Always populated; it is the ONLY
+    /// handle a detached entry has, and the reason such an entry is reported.
+    pub(crate) head: String,
 }
 
 /// Parse `git worktree list --porcelain` into the harness-owned entries only
-/// (paths under `.claude/worktrees/`, forward-slash normalized). Detached or
-/// branchless entries are ignored.
+/// (paths under `.claude/worktrees/`, forward-slash normalized).
+///
+/// A DETACHED checkout is reported too, with an empty `branch` and its `head`
+/// sha. Dropping it — which this parser used to do — hid a checkout that holds
+/// unreclaimed commits from every sweep built on top of it: `wave-reclaim`
+/// answered `nothing-to-reclaim` over work nobody would ever fold, which is
+/// precisely the silence that command exists to prevent.
+///
+/// Callers keyed on a branch NAME are unaffected by construction: an empty
+/// branch equals no work-unit branch, and [`base_of_branch`] refuses it.
 pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     let mut out = Vec::new();
     let mut path: Option<String> = None;
+    let mut head = String::new();
+    // Emit one entry per block, once its ref line is seen — `branch` for an
+    // attached checkout, `detached` for one standing on a bare commit.
+    let push = |path: &Option<String>, branch: &str, head: &str, out: &mut Vec<WorktreeEntry>| {
+        if let Some(p) = path {
+            if p.contains("/.claude/worktrees/") {
+                out.push(WorktreeEntry {
+                    path: p.clone(),
+                    branch: branch.to_string(),
+                    head: head.to_string(),
+                });
+            }
+        }
+    };
     for line in porcelain.lines().chain(std::iter::once("")) {
         if let Some(p) = line.strip_prefix("worktree ") {
             path = Some(p.trim().replace('\\', "/"));
+            head = String::new();
+        } else if let Some(h) = line.strip_prefix("HEAD ") {
+            head = h.trim().to_string();
         } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-            if let Some(p) = path.clone() {
-                if p.contains("/.claude/worktrees/") {
-                    out.push(WorktreeEntry { path: p, branch: b.trim().to_string() });
-                }
-            }
+            push(&path, b.trim(), &head, &mut out);
+        } else if line.trim() == "detached" {
+            push(&path, "", &head, &mut out);
         } else if line.is_empty() {
             path = None;
+            head = String::new();
         }
     }
-    out.sort_by(|a, b| a.branch.cmp(&b.branch));
+    // Path breaks the tie: every detached entry sorts under the same empty
+    // branch, and the crate's determinism Guard admits no arbitrary order.
+    out.sort_by(|a, b| a.branch.cmp(&b.branch).then_with(|| a.path.cmp(&b.path)));
     out
 }
 
@@ -576,11 +606,49 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                WorktreeEntry { path: "C:/repo/.claude/worktrees/dev_b".into(), branch: "dev_b".into() },
-                WorktreeEntry { path: "C:/repo/.claude/worktrees/dev_a".into(), branch: "worktree-dev_a".into() },
+                WorktreeEntry {
+                    path: "C:/repo/.claude/worktrees/dev_b".into(),
+                    branch: "dev_b".into(),
+                    head: "def".into(),
+                },
+                WorktreeEntry {
+                    path: "C:/repo/.claude/worktrees/dev_a".into(),
+                    branch: "worktree-dev_a".into(),
+                    head: "ghi".into(),
+                },
             ],
             "main checkout and foreign paths excluded; sorted by branch"
         );
+    }
+
+    #[test]
+    fn parse_worktrees_reports_a_detached_checkout_by_its_head() {
+        // A DETACHED harness worktree carries no `branch refs/heads/…` line.
+        // Skipping it (the old behaviour) made a checkout that may hold
+        // unreclaimed commits invisible to every sweep — a silent `ok:true`.
+        let porcelain = "worktree C:/repo\nHEAD abc\nbranch refs/heads/dev\n\n\
+                         worktree C:/repo/.claude/worktrees/recursing-benz-063389\nHEAD deadbeef\ndetached\n\n\
+                         worktree C:/repo/.claude/worktrees/dev_b\nHEAD def\nbranch refs/heads/dev_b\n";
+        let got = parse_worktrees(porcelain);
+        assert_eq!(
+            got,
+            vec![
+                WorktreeEntry {
+                    path: "C:/repo/.claude/worktrees/recursing-benz-063389".into(),
+                    branch: String::new(),
+                    head: "deadbeef".into(),
+                },
+                WorktreeEntry {
+                    path: "C:/repo/.claude/worktrees/dev_b".into(),
+                    branch: "dev_b".into(),
+                    head: "def".into(),
+                },
+            ],
+            "the detached entry is reported with an empty branch + its head sha"
+        );
+        // And it can never be mistaken for a work unit: no branch name, so the
+        // base parser refuses it.
+        assert_eq!(base_of_branch(&got[0].branch, &["dev".to_string()]), None);
     }
 
     /// Build the two-unit fixture: a bare origin, a main checkout on `dev`

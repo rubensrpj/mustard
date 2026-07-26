@@ -108,7 +108,8 @@ pub enum WaveCmd {
         mode: String,
     },
     /// Fold a finished wave's commit from its isolated agent checkout
-    /// (`.claude/worktrees/agent-*`) back onto the work-unit branch — the way
+    /// (any `.claude/worktrees/` entry that is not a `{base}_` unit) back onto
+    /// the work-unit branch — the way
     /// OUT that `wave-done` runs before it reports the wave complete.
     ///
     /// The unit is the branch the INVOKING tree sits on (`--root`, the session's

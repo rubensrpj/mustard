@@ -389,9 +389,14 @@ mod tests {
             .expect("wave spec");
 
         // The wave's isolated checkout, cut from the unit's HEAD, rewrites the
-        // shared line…
-        git(&main, &["worktree", "add", ".claude/worktrees/agent-w1", "-b", "agent-w1"]);
-        let wt = main.join(".claude").join("worktrees").join("agent-w1");
+        // shared line… Named with the SLUG the harness really hands over
+        // (`WorktreeCreate#name`), not an invented prefix — a checkout is a
+        // wave's precisely when its name carries no declared `{base}_`.
+        git(
+            &main,
+            &["worktree", "add", ".claude/worktrees/recursing-benz-063389", "-b", "recursing-benz-063389"],
+        );
+        let wt = main.join(".claude").join("worktrees").join("recursing-benz-063389");
         std::fs::write(wt.join("a.txt"), "from the wave\n").expect("wave edit");
         git(&wt, &["add", "-A"]);
         git(&wt, &["commit", "-m", "wave 1 work"]);
