@@ -66,6 +66,45 @@ pub(crate) struct AcResult {
     stderr_excerpt: String,
 }
 
+impl AcResult {
+    /// The outcome class: `pass` / `fail` / `timeout` / `skip`.
+    ///
+    /// Read-only accessors (not `pub` fields) so the negative-test engine can
+    /// judge an execution without gaining the power to forge one.
+    pub(crate) fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// The command's own exit code, when one arrived.
+    pub(crate) fn exit(&self) -> Option<i64> {
+        self.exit
+    }
+
+    /// The bounded excerpt of the command's combined output.
+    pub(crate) fn stderr_excerpt(&self) -> &str {
+        &self.stderr_excerpt
+    }
+}
+
+/// Execute ONE acceptance criterion through the qa-run executor and return its
+/// outcome — the seam `ac-negative-check` reuses.
+///
+/// `pub(crate)` because the negative test must grade a criterion with the SAME
+/// per-AC deadline, pipe drain and `Expect:` regex rules QA itself applies;
+/// copying the executor is how the two verdicts would drift. It runs the command
+/// verbatim: the self-invocation handling stays exactly where it is (the
+/// [`QaRunOptions`] thread-local), untouched by this door.
+pub(crate) fn execute_ac(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
+    runner::run_ac_command(command, expect, cwd)
+}
+
+/// Locate the markdown carrying a spec's acceptance criteria, by slug — the
+/// SAME locator qa-run uses, exposed so the negative test cannot disagree with
+/// QA about which file a spec name names.
+pub(crate) fn spec_file_for(cwd: &Path, spec: &str) -> Option<PathBuf> {
+    runner::find_spec_file(cwd, spec)
+}
+
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
 /// recognizing the EN and PT headings via [`crate::commands::spec::spec_sections`].
 ///

@@ -70,6 +70,18 @@ pub(crate) struct ActiveSpec {
     pub resumo: String,
     pub letter: String,
     pub status: String,
+    /// **Advisory, never blocking.** `true` when this spec's `<spec>/.clarified`
+    /// marker EXISTS but records nothing — no captured term, no stated reason.
+    ///
+    /// `approve-spec` REFUSES on exactly this state, and that refusal lands at
+    /// the worst possible moment: the operator has just asked for the
+    /// implementation. Surfacing the same fact in the listing moves the
+    /// discovery earlier; the refusal itself is untouched. Classified by the
+    /// single definition of "hollow" —
+    /// [`crate::commands::spec::approve_spec::clarify_state`] — never a second
+    /// one.
+    #[serde(rename = "clarifyRecordsNothing")]
+    pub clarify_records_nothing: bool,
 }
 
 /// Full JSON output schema.
@@ -691,6 +703,26 @@ fn find_first_active_wave(spec_dir: &Path) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Hollow-clarification advisory
+// ---------------------------------------------------------------------------
+
+/// `true` when `spec`'s clarification marker EXISTS but records nothing.
+///
+/// Delegates to [`crate::commands::spec::approve_spec::clarify_state`] — the
+/// ONE definition of "hollow" in the crate (it in turn reads
+/// `MarkerProvenance::records_substance`). This wrapper only narrows the
+/// four-state answer to the single state the listing warns about: `Missing` is
+/// not this warning's business (the clarification simply has not run yet) and
+/// `NotGated` / `Recorded` are fine.
+///
+/// Advisory only — the listing never refuses; `approve-spec` still owns the
+/// refusal.
+fn clarify_records_nothing(root: &Path, spec: &str) -> bool {
+    use crate::commands::spec::approve_spec::{clarify_state, ClarifyState};
+    clarify_state(&root.to_string_lossy(), spec) == ClarifyState::Hollow
+}
+
+// ---------------------------------------------------------------------------
 // Scope abbreviation
 // ---------------------------------------------------------------------------
 
@@ -778,6 +810,18 @@ fn render_table(specs: &[ActiveSpec]) -> String {
     lines.push(
         "Esc: lt=light  fl=full  Status: TF→xx=tactical-fix  Wn em exec=wave em execução  ⚠ malformed=meta incompleta  closed-followup=spec fechada com follow-up pendente".to_string(),
     );
+
+    // Advisory block (never blocking): a `.clarified` that records NOTHING is
+    // refused by `approve-spec`. Saying it here costs the operator nothing; not
+    // saying it costs a refusal at the moment the implementation was requested.
+    for spec in specs.iter().filter(|s| s.clarify_records_nothing) {
+        lines.push(format!(
+            "⚠ {name}: `.clarified` existe mas não registra termo nem motivo — approve-spec vai recusar. \
+             Rode `mustard-rt run grill-capture --finalize --spec {name} --term <termo>` (um por termo) \
+             ou `--reason \"<frase>\"`.",
+            name = spec.name
+        ));
+    }
 
     lines.join("\n")
 }
@@ -941,6 +985,10 @@ pub fn run(opts: ActiveSpecsOpts) {
 
         let status = derive_status(candidate, &kind, &parent_aliases);
 
+        // Advisory: reuse the approval gate's own classifier so the listing and
+        // the refusal can never disagree about what "hollow" means.
+        let clarify_records_nothing = clarify_records_nothing(root, &candidate.name);
+
         specs.push(ActiveSpec {
             name: candidate.name.clone(),
             stage,
@@ -952,6 +1000,7 @@ pub fn run(opts: ActiveSpecsOpts) {
             resumo,
             letter,
             status,
+            clarify_records_nothing,
         });
     }
 
@@ -1392,6 +1441,95 @@ mod tests {
     // -----------------------------------------------------------------------
     // spec_date_prefix tests
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Hollow-clarification advisory
+    // -----------------------------------------------------------------------
+
+    /// Seed a Full spec whose `.clarified` marker carries the given body.
+    fn make_full_spec_with_clarify(root: &Path, name: &str, marker_body: &str) {
+        let dir = root.join(".claude").join("spec").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), format!("# {name}\n\n## Resumo\n\nFull spec.\n"))
+            .unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            r#"{"stage":"Plan","outcome":"Active","scope":"full (wave plan)"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join(".clarified"), marker_body).unwrap();
+    }
+
+    /// The listing now SAYS that a `.clarified` marker records nothing, instead
+    /// of staying silent until `approve-spec` refuses.
+    ///
+    /// Asserts both halves: the new signal (flag + the advisory line naming the
+    /// minting command) and the disappearance of the old silence — the rendered
+    /// table used to carry no trace of a hollow marker at all. A marker that
+    /// DOES record something is the control: it must stay silent, so the warning
+    /// is the hollow state and not merely "a marker exists".
+    #[test]
+    fn a_hollow_clarify_marker_is_visible_before_the_approval_gesture() {
+        let td = tempdir().unwrap();
+        // Hollow: `via=` present (so the body parses) but no terms, no reason.
+        make_full_spec_with_clarify(
+            td.path(),
+            "2026-01-01-hollow",
+            "spec=2026-01-01-hollow\nvia=grill-finalize\nsession=s\nat=t\n",
+        );
+        // Control: the same marker, but recording what was settled.
+        make_full_spec_with_clarify(
+            td.path(),
+            "2026-01-02-recorded",
+            "spec=2026-01-02-recorded\nvia=grill-finalize\nsession=s\nat=t\nterms=payable\n",
+        );
+
+        assert!(
+            clarify_records_nothing(td.path(), "2026-01-01-hollow"),
+            "a `.clarified` naming no term and no reason must be flagged"
+        );
+        assert!(
+            !clarify_records_nothing(td.path(), "2026-01-02-recorded"),
+            "a marker that records a term must NOT be flagged"
+        );
+
+        // The rendered listing carries the advisory — the old behaviour (total
+        // silence in the picker) is gone.
+        let hollow = ActiveSpec {
+            name: "2026-01-01-hollow".to_string(),
+            stage: "Plan".to_string(),
+            outcome: "Active".to_string(),
+            scope: Some("full".to_string()),
+            parent: None,
+            parent_alias: None,
+            progress: None,
+            resumo: "Full spec.".to_string(),
+            letter: "a".to_string(),
+            status: "-".to_string(),
+            clarify_records_nothing: true,
+        };
+        let recorded = ActiveSpec {
+            name: "2026-01-02-recorded".to_string(),
+            letter: "b".to_string(),
+            clarify_records_nothing: false,
+            ..hollow.clone()
+        };
+        let table = render_table(&[hollow, recorded]);
+        assert!(
+            table.contains("2026-01-01-hollow: `.clarified` existe mas não registra"),
+            "the advisory must name the hollow spec: {table}"
+        );
+        assert!(
+            table.contains("grill-capture --finalize --spec 2026-01-01-hollow"),
+            "the advisory must name the minting command: {table}"
+        );
+        assert!(
+            !table.contains("2026-01-02-recorded: `.clarified`"),
+            "a spec whose marker records substance must not be warned about: {table}"
+        );
+        // Advisory only — nothing about the row itself changed.
+        assert!(table.contains("| a  | 2026-01-01-hollow"), "row still listed: {table}");
+    }
 
     #[test]
     fn spec_date_prefix_extracts_date() {

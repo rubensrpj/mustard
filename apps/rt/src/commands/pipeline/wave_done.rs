@@ -33,6 +33,7 @@ use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 
 use crate::commands::agent::context_inject;
+use crate::commands::agent::render;
 use crate::commands::event::emit_pipeline::{self, EmitPipelineOpts};
 
 /// Run `mustard-rt run wave-done --spec <name> --wave <N> [--duration-ms <ms>]`.
@@ -286,6 +287,16 @@ fn render_memory_file(dest: &Path, spec: &str, wave: u64, lesson: &Lesson) -> St
 /// wave directory cannot be resolved or the write fails — fail-open, the diff
 /// cache is render context and never load-bearing.
 ///
+/// ## Why the range alone is not the wave
+///
+/// The dispatch loop commits ONCE PER ROUND, not once per wave, so `HEAD~1..HEAD`
+/// is the ROUND's commit: every wave that ran in that round would otherwise cache
+/// the identical digest. That is not cosmetic — this cache feeds the retry
+/// context and the closing summary, so a wave that came back blocked would leak
+/// its half-written files into a finished sibling's record. The range stays as it
+/// is (it is the right WHEN); the breadth is what gets cut, by the files the wave
+/// DECLARED in its own `## Files` section.
+///
 /// `cwd` is threaded in (not read from the environment) so the resolution + write
 /// are unit-testable without mutating the process working directory.
 fn cache_wave_diff(cwd: &Path, spec: &str, wave: u64) -> Option<String> {
@@ -295,7 +306,8 @@ fn cache_wave_diff(cwd: &Path, spec: &str, wave: u64) -> Option<String> {
     // signal for the next wave's implementer/reviewer, "never a file dump". Same
     // fail-open contract: any git error degrades to an empty digest, so `diff.md`
     // is still written (possibly empty) and never load-bearing.
-    let digest = super::diff_digest::build_signature_diff(cwd, "HEAD~1", "HEAD");
+    let declared = declared_wave_files(&wave_dir);
+    let digest = super::diff_digest::build_signature_diff(cwd, "HEAD~1", "HEAD", &declared);
     let body = format!("{}\n", digest.trim_end());
     let dest = wave_dir.join("diff.md");
     fs::write_atomic(&dest, body.as_bytes()).ok()?;
@@ -306,9 +318,24 @@ fn cache_wave_diff(cwd: &Path, spec: &str, wave: u64) -> Option<String> {
     )
 }
 
+/// The files this wave declared, read from the wave's OWN `spec.md` through the
+/// same `## Files` reader the rest of the pipeline uses
+/// ([`render::files_section_paths`] — the reference-files builder and the
+/// conversation-material cut read the identical list), so this scope cannot
+/// disagree with what the wave's agent was told its boundary was.
+///
+/// Fail-open: a missing or unreadable wave `spec.md`, or one with no `## Files`
+/// section, yields an empty list — and an empty scope means the digest keeps
+/// today's un-narrowed behaviour rather than silently caching nothing.
+fn declared_wave_files(wave_dir: &Path) -> Vec<String> {
+    let text = fs::read_to_string(wave_dir.join("spec.md")).unwrap_or_default();
+    render::files_section_paths(&text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     /// The new logic: resolve the `wave-{N}-*` dir and write `diff.md`
     /// atomically. No git repo here, so the diff stat is empty (fail-open) — the
@@ -332,6 +359,105 @@ mod tests {
         assert!(
             !root.join(".claude/spec/demo-wave/wave-9-impl/diff.md").exists(),
             "no stray write for an unresolved wave"
+        );
+    }
+
+    /// Whether `git` is on PATH; mirrors `diff_digest`'s own guard so the
+    /// git-backed test degrades to a silent pass where git is unavailable.
+    fn git_available() -> bool {
+        Command::new("git").arg("--version").output().is_ok()
+    }
+
+    fn git(cwd: &Path, args: &[&str]) {
+        let _ = Command::new("git").args(args).current_dir(cwd).output();
+    }
+
+    /// A repo plus a spec whose waves 1 and 2 declare DISJOINT files, and a
+    /// wave 3 that declares none at all.
+    fn round_repo(root: &Path) {
+        git(root, &["init", "-b", "main"]);
+        git(root, &["config", "user.email", "t@e.x"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("mustard.json"), b"{}").expect("anchor");
+
+        let spec_dir = root.join(".claude/spec/round-spec");
+        for (dir, body) in [
+            ("wave-1-impl", "# W1\n\n## Files\n\n- `src/alpha.rs`\n"),
+            ("wave-2-impl", "# W2\n\n## Files\n\n- `src/beta.rs`\n"),
+            ("wave-3-impl", "# W3\n\n## Tasks\n\n- [ ] no files declared\n"),
+        ] {
+            std::fs::create_dir_all(spec_dir.join(dir)).expect("wave dir");
+            std::fs::write(spec_dir.join(dir).join("spec.md"), body).expect("wave spec");
+        }
+
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(root.join("src/alpha.rs"), "pub fn alpha_seed() {}\n").expect("alpha");
+        std::fs::write(root.join("src/beta.rs"), "pub fn beta_seed() {}\n").expect("beta");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        // ONE commit for the whole round — both waves' work lands together,
+        // which is exactly the shape the dispatch loop produces.
+        std::fs::write(
+            root.join("src/alpha.rs"),
+            "pub fn alpha_seed() {}\npub fn alpha_added() {}\n",
+        )
+        .expect("alpha v2");
+        std::fs::write(
+            root.join("src/beta.rs"),
+            "pub fn beta_seed() {}\npub fn beta_added() {}\n",
+        )
+        .expect("beta v2");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "round 1"]);
+    }
+
+    fn cached_diff(root: &Path, wave_dir: &str) -> String {
+        std::fs::read_to_string(root.join(".claude/spec/round-spec").join(wave_dir).join("diff.md"))
+            .expect("diff.md")
+    }
+
+    /// The round shape: two waves committed together must NOT share one diff.
+    /// `HEAD~1..HEAD` is the ROUND's commit, so the unscoped digest handed every
+    /// wave the same file set — and since this cache feeds the retry context and
+    /// the closing summary, a blocked wave's half-written files leaked into a
+    /// finished sibling's record. Each wave's cached diff must name only the
+    /// files that wave declared.
+    #[test]
+    fn a_wave_caches_only_its_own_declared_files() {
+        if !git_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        round_repo(root);
+
+        assert!(cache_wave_diff(root, "round-spec", 1).is_some(), "wave 1 cached");
+        assert!(cache_wave_diff(root, "round-spec", 2).is_some(), "wave 2 cached");
+        let w1 = cached_diff(root, "wave-1-impl");
+        let w2 = cached_diff(root, "wave-2-impl");
+        // Skip only if git could not produce the range at all (fail-open path,
+        // e.g. a sandbox that refuses to commit) — never if the scoping is wrong.
+        if w1.trim().is_empty() && w2.trim().is_empty() {
+            return;
+        }
+
+        assert!(w1.contains("src/alpha.rs"), "wave 1 names its own file: {w1}");
+        assert!(w1.contains("alpha_added"), "wave 1 carries its own signature: {w1}");
+        assert!(!w1.contains("beta"), "wave 1 leaked its sibling's work: {w1}");
+
+        assert!(w2.contains("src/beta.rs"), "wave 2 names its own file: {w2}");
+        assert!(w2.contains("beta_added"), "wave 2 carries its own signature: {w2}");
+        assert!(!w2.contains("alpha"), "wave 2 leaked its sibling's work: {w2}");
+
+        // A wave that declared nothing keeps today's behaviour — the whole
+        // round — rather than silently caching an empty digest.
+        assert!(cache_wave_diff(root, "round-spec", 3).is_some(), "wave 3 cached");
+        let w3 = cached_diff(root, "wave-3-impl");
+        assert!(
+            w3.contains("src/alpha.rs") && w3.contains("src/beta.rs"),
+            "an undeclared wave still sees the whole round: {w3}"
         );
     }
 

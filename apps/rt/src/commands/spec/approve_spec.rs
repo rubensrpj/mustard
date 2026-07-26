@@ -210,8 +210,14 @@ fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
 /// recorded nothing. Minting it costs the orchestrator one command it can run
 /// seconds before the approval the marker unlocks, so existence alone proves
 /// only that the command ran.
+///
+/// `pub(crate)` because the DISCOVERY of a hollow marker was moved earlier than
+/// the refusal: `active-specs` (the listing) and `resume-bootstrap` (the resume
+/// path) read this same classifier to warn, so there is exactly one definition
+/// of "hollow" in the crate. Those two callers are advisory — the refusal stays
+/// here, in [`run`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClarifyState {
+pub(crate) enum ClarifyState {
     /// Not a Full spec — Light / task specs are never clarify-gated.
     NotGated,
     /// No `<spec>/.clarified` at all.
@@ -232,7 +238,11 @@ enum ClarifyState {
 /// [`ClarifyState::Hollow`] and REFUSES, for the same reason an absent marker
 /// already refused today. A reader who assumes the crate-wide fail-open rule
 /// here would get this backwards, which is why it is spelled out.
-fn clarify_state(root: &str, spec: &str) -> ClarifyState {
+///
+/// Advisory callers (`active-specs`, `resume-bootstrap`) reuse this classifier
+/// instead of re-deriving "hollow" — they only REPORT [`ClarifyState::Hollow`];
+/// the fail-closed refusal lives in [`run`].
+pub(crate) fn clarify_state(root: &str, spec: &str) -> ClarifyState {
     if !spec_is_full(root, spec) {
         return ClarifyState::NotGated;
     }

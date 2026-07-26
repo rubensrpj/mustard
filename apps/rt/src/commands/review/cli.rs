@@ -126,6 +126,22 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Prove every acceptance criterion is ABLE to fail: run each one against
+    /// the tree as it is NOW and require it to come back red.
+    ///
+    /// A criterion clears the proof ONLY by failing; green, timed out, never
+    /// attempted or still carrying an unfilled `<…>` placeholder is UNPROVEN.
+    /// The trailing criterion is exempt (the build-green safety net). Writes the
+    /// proof ledger `<spec-dir>/ac-proof.json` either way, prints one JSON
+    /// document on stdout, and exits 2 when any criterion is unproven.
+    #[command(name = "ac-negative-check")]
+    #[command(display_order = 81)]
+    AcNegativeCheck {
+        /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
+        /// its directory.
+        #[arg(long, alias = "from-spec")]
+        spec: Option<String>,
+    },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
     #[command(display_order = 66)]
@@ -216,6 +232,9 @@ pub fn dispatch(cmd: ReviewCmd) {
             } else {
                 review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format });
             }
+        }
+        ReviewCmd::AcNegativeCheck { spec } => {
+            review::ac_negative_check::run(spec.as_deref());
         }
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

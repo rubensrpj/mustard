@@ -27,6 +27,13 @@ use mustard_rt::commands::RunCmd;
 /// must NOT be parked here — remove the registration instead. Kept sorted.
 const RUNTIME_WHITELIST: &[(&str, &str)] = &[
     (
+        "ac-negative-check",
+        "the PLAN-time producer of the proof ledger \
+         (commands/review/ac_negative_check.rs); the shipped planning prose that \
+         instructs it lands with the rest of the amendment path, and the sibling \
+         ratchet below fails this row the moment it does",
+    ),
+    (
         "adapt-cursor",
         "user-invoked .cursorrules generator (commands/maint/adapt_cursor.rs); its \n         only prose caller was the pre-2.0 `init --cursor` hint, dropped by the \n         thin-init rewrite; a maintenance escape hatch with no scripted caller",
     ),

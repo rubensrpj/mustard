@@ -28,22 +28,28 @@ fn terms(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// An authored glossary that defines none of the words under test — the "thin"
+/// case, which is where open terms are OFFERED. Scoring against no glossary at
+/// all answers a different question (absence asks for a first glossary and
+/// offers no term list), so counting is exercised against a real one.
+const UNRELATED_GLOSSARY: &str = "## Seed\nA starting record.";
+
 #[test]
 fn glossary_terms_collapse_inflections() {
     // --- 1. The count is per word stem, not per inflection -----------------
     // Six matched terms, three words. The old scoring reported six open terms.
     let matched = terms(&["spec", "specs", "wave", "waves", "tenant", "tenants"]);
-    let empty = score_terms(&matched, "");
+    let open = score_terms(&matched, UNRELATED_GLOSSARY);
 
     assert_eq!(
-        empty["termsTotal"],
+        open["termsTotal"],
         json!(3),
-        "six spellings of three words must count as three: {empty}"
+        "six spellings of three words must count as three: {open}"
     );
     assert_eq!(
-        empty["uncovered"],
+        open["uncovered"],
         json!(["spec", "wave", "tenant"]),
-        "each open word is listed ONCE, under the first spelling seen: {empty}"
+        "each open word is listed ONCE, under the first spelling seen: {open}"
     );
 
     // --- 2. A definition of one spelling covers the whole word --------------
@@ -82,7 +88,10 @@ fn glossary_terms_collapse_inflections() {
 fn distinct_words_are_never_merged() {
     // The collapse must not swallow genuinely different terms — that would hide
     // open glossary entries, the opposite failure.
-    let scored = score_terms(&terms(&["payable", "receivable", "ledger", "invoice"]), "");
+    let scored = score_terms(
+        &terms(&["payable", "receivable", "ledger", "invoice"]),
+        UNRELATED_GLOSSARY,
+    );
     assert_eq!(scored["termsTotal"], json!(4), "four unrelated words stay four");
     assert_eq!(
         scored["uncovered"],
