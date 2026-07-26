@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "trim-the-strong-digest-stdout",
+  "title": "trim the strong digest stdout: narrow the published candidate pool and drop the terms anchorsDetail duplicates",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
