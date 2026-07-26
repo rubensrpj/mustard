@@ -113,49 +113,17 @@ enum Role {
     Plan,
     /// `subagent_type == "general-purpose"` with `review` in the description.
     GeneralReview,
-    /// The WRITING role: `subagent_type == "general-purpose"` with any other
-    /// description, or the pipeline's own implementer (see [`classify_role`]).
+    /// `subagent_type == "general-purpose"`, any other description.
     General,
     /// Any other / unknown `subagent_type`.
     Unknown,
 }
 
-/// The `subagent_type` every WRITING role of the pipeline dispatches as, asked
-/// of the single source of truth rather than spelled out here — a literal would
-/// be free to drift from the mapping the dispatcher actually emits, which is
-/// exactly how this classifier came to miss it.
-fn pipeline_impl_type() -> String {
-    crate::commands::agent::agent_prompt_render::recommended_subagent_type("impl")
-        .to_ascii_lowercase()
-}
-
 /// Classify a Task dispatch into a [`Role`] from its `subagent_type` and
 /// `description`. Mirrors the lowercase comparison both JS hooks do.
-///
-/// The plugin implementer is recognised EXPLICITLY, as the writing role it is.
-/// Two reasons to name it rather than fold `Unknown` into the impl budget the
-/// way [`output_budget`] does:
-///
-/// - folding would hand a 30K hard block to every genuinely unknown
-///   `subagent_type`, which `context-budget.js` deliberately leaves
-///   unbudgeted (`getBudget` returns `null`) — a behaviour change nobody asked
-///   for, in the one place here that BLOCKS;
-/// - the label. `prompt_role_label`/`output_role_label` answer `general-purpose`
-///   for this role and the raw type for `Unknown`, so folding would silently
-///   rename the metric of every writing dispatch mid-flight — the pipeline's
-///   writers only moved from `general-purpose` to a plugin agent to gain
-///   `isolation: worktree`; the ROLE they play, and therefore the budget and
-///   the label they are measured under, did not change.
-///
-/// The `review`-in-description rule is NOT applied to it: review work
-/// dispatches as its own read-only agent, so a writing brief that merely
-/// mentions a review must not inherit the tighter review budget.
 fn classify_role(subagent_type: &str, description: &str) -> Role {
     let ty = subagent_type.to_ascii_lowercase();
     let desc = description.to_ascii_lowercase();
-    if ty == pipeline_impl_type() {
-        return Role::General;
-    }
     match ty.as_str() {
         "explore" => Role::Explore,
         "plan" => Role::Plan,
@@ -191,11 +159,6 @@ fn prompt_budget(role: Role) -> Option<usize> {
 }
 
 /// The human role label `context-budget.js` uses in its messages/metrics.
-///
-/// `General` answers `general-purpose` for the plugin implementer too — the
-/// label names the ROLE, not the agent that happens to carry it, and holding it
-/// stable is what keeps every consumer of these metric lines counting the same
-/// series across the switch to an isolated implementer.
 fn prompt_role_label(role: Role, subagent_type: &str) -> String {
     match role {
         Role::GeneralReview => "general-purpose(review)".to_string(),
@@ -779,17 +742,17 @@ mod tests {
         assert!(!verdict_for("some-other-agent", 50_000, "").is_blocking());
     }
 
-    /// The pipeline implementer is still subject to the prompt-size block.
+    /// The role the pipeline dispatches its WRITING work as is still subject to
+    /// the prompt-size block — the one place this gate blocks.
     ///
-    /// Routing the writing roles to `mustard:mustard-impl` dropped them into
-    /// the `Unknown` arm, where `prompt_budget` returns `None` — so the ONE
-    /// hard block in this gate stopped applying to any pipeline dispatch at all,
-    /// and both general budgets became unreachable. Asserted through the
-    /// dispatcher's own mapping so a rename cannot re-open the hole silently.
+    /// Asserted through the dispatcher's own mapping rather than a literal: a
+    /// writing role routed to a `subagent_type` this classifier does not know
+    /// lands in the `Unknown` arm, where `prompt_budget` returns `None`, and the
+    /// hard block silently stops applying to every pipeline dispatch. That is
+    /// exactly what happened once; pinning the two together is what catches it.
     #[test]
-    fn pipeline_implementer_is_still_prompt_budgeted() {
+    fn pipeline_writing_role_is_still_prompt_budgeted() {
         let ty = crate::commands::agent::agent_prompt_render::recommended_subagent_type("impl");
-        assert_eq!(ty, "mustard:mustard-impl", "the mapping this test is pinned to");
 
         // Both directions of the general budget's edge.
         assert_eq!(verdict_for(&ty, 30_000, "Wave 1 impl — rt"), Verdict::Allow);
@@ -798,34 +761,9 @@ mod tests {
             "an oversized implementer briefing must still be refused"
         );
 
-        // …and it is refused AS the writing role, under the label the metric
-        // series has always carried — not as an unknown type.
-        match verdict_for(&ty, 40_000, "Wave 1 impl — rt") {
-            Verdict::Deny { reason } => {
-                assert!(reason.contains("general-purpose"), "{reason}");
-                assert!(!reason.contains("mustard-impl"), "not labelled by agent: {reason}");
-            }
-            other => panic!("expected Deny, got {other:?}"),
-        }
+        // …and it is measured AS the writing role, never as an unknown type.
         assert_eq!(prompt_role_label(classify_role(&ty, ""), &ty), "general-purpose");
         assert_eq!(output_role_label(classify_role(&ty, ""), &ty), "general-purpose");
-    }
-
-    #[test]
-    fn implementer_never_inherits_the_review_budget() {
-        // Review work dispatches as its own read-only agent; a writing brief
-        // that merely mentions a review keeps the writing budget.
-        let ty = crate::commands::agent::agent_prompt_render::recommended_subagent_type("impl");
-        assert_eq!(
-            verdict_for(&ty, 20_000, "address the review findings"),
-            Verdict::Allow,
-            "20K is over the 12K review budget but under the 30K writing one"
-        );
-    }
-
-    #[test]
-    fn implementer_output_budget_is_the_writing_cap() {
-        let ty = crate::commands::agent::agent_prompt_render::recommended_subagent_type("impl");
         assert_eq!(output_budget(classify_role(&ty, "")), 40);
     }
 

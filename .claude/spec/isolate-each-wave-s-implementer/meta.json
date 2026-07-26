@@ -1,6 +1,6 @@
 {
-  "stage": "QaReview",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Cancelled",
   "phase": "CLOSE",
   "scope": "full",
   "lang": "en-US",

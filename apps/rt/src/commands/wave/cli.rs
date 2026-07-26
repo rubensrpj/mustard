@@ -107,36 +107,6 @@ pub enum WaveCmd {
         #[arg(long)]
         mode: String,
     },
-    /// Fold a finished wave's commit from its isolated agent checkout
-    /// (any `.claude/worktrees/` entry that is not a `{base}_` unit) back onto
-    /// the work-unit branch — the way
-    /// OUT that `wave-done` runs before it reports the wave complete.
-    ///
-    /// The unit is the branch the INVOKING tree sits on (`--root`, the session's
-    /// worktree during EXECUTE), never whatever the main checkout has out, and
-    /// the merge runs there. Fast-forwards when the cut descended from the
-    /// unit's HEAD (the common case), merges for real when two waves of a round
-    /// diverged. Fails CLOSED: a conflict, an agent checkout holding UNCOMMITTED
-    /// work, a detached or non-unit HEAD, several checkouts this wave could
-    /// claim, or checkouts none of which its declared `## Files` can claim all
-    /// answer `{ok:false, reason, files:[…]}` and exit 1 — nothing is forced, the
-    /// conflicted merge is aborted, and the agent checkout is left untouched for
-    /// inspection. The prune runs only after the fold is proven. With isolation
-    /// off there is no agent checkout and this is a no-op
-    /// (`{ok:true, action:"nothing-to-reclaim"}`).
-    #[command(name = "wave-reclaim")]
-    #[command(display_order = 80)]
-    WaveReclaim {
-        /// Parent spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// Wave number (1-based).
-        #[arg(long)]
-        wave: u64,
-        /// Any directory inside the repo. Defaults to the current dir.
-        #[arg(long, default_value = ".")]
-        root: std::path::PathBuf,
-    },
 }
 
 /// Dispatch one `wave`-family `run` subcommand.
@@ -152,9 +122,6 @@ pub fn dispatch(cmd: WaveCmd) {
         }
         WaveCmd::WaveCollapse { spec, mode } => {
             wave::wave_collapse::run(wave::wave_collapse::WaveCollapseOpts { spec, mode });
-        }
-        WaveCmd::WaveReclaim { spec, wave: n, root } => {
-            wave::wave_reclaim::run(wave::wave_reclaim::WaveReclaimOpts { root, spec, wave: n });
         }
     }
 }

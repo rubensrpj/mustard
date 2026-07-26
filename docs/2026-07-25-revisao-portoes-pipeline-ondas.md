@@ -1,5 +1,7 @@
 # Revisão — confiabilidade dos portões no pipeline de ondas
 
+> **Correção posterior (2026-07-25, depois da execução).** A rota de **isolamento por onda** que a seção 6 colocou em 1º lugar (R4, absorvendo o R5) foi **descartada** após três revisões adversariais — a última mostrou que ela perderia o trabalho de toda onda em silêncio. O mecanismo foi removido do código; no lugar dele ficou **uma regra de fluxo**: commitar **uma vez por RODADA**, depois que toda onda da rodada voltou (`plugin/refs/spec/resume-loop.md` §B). A razão é a mesma evidência da seção 5.3: ondas da MESMA rodada são independentes por construção e têm `## Files` auditados disjuntos; ondas de rodadas DIFERENTES são sequenciais. A única exposição real era o `git add -A` varrer o trabalho em voo de uma irmã — e o commit por rodada a elimina, sem cópias e sem etapa de transporte. **Leia as seções 2 (R4, R5, R10), 3 e 6 sob essa correção**; as demais permanecem válidas.
+>
 > **O que é este documento.** O cruzamento de três fontes sobre os mesmos dez pontos: um levantamento de campo (PRD), o código do Mustard, e a documentação oficial do Claude Code. A documentação é a autoridade; o levantamento é depoimento; o código é o fato. Onde as três divergiram, este documento registra qual venceu e por quê.
 >
 > **Data.** 2026-07-25. **Base.** `dev`.
@@ -84,7 +86,7 @@ Hoje os passos 4 e 5 são **gratuitos por acidente**: como todos os agentes escr
 | 4 | O portão de fronteira só extrai caminho **entre crases**; o outro leitor da mesma seção `## Files` aceita com ou sem crase. Dois parsers, um contrato | `apps/rt/src/hooks/write/boundary_gate.rs:211` vs `apps/rt/src/commands/review/dependency_precheck.rs:263` | R3 |
 | 5 | Com ondas paralelas, o portão resolve a spec por `wave-{current_wave}-*` — **um** número por spec. Quatro agentes simultâneos são todos julgados contra o `## Files` de uma onda só | `apps/rt/src/hooks/write/boundary_gate.rs:163` | R3 |
 | 6 | O linter de critério **isenta** busca por ausência (`--files-without-match`, `grep -L`, `rg -v`) por considerá-la uma pós-condição real. É justamente a que casa zero e sai verde quando o padrão não bate nada | `apps/rt/src/commands/review/analyze_validation.rs:385` | R2 |
-| 7 | **A causa-raiz do R3.** O checklist da onda guarda a anotação DENTRO do campo de caminho: `"path": "plugin/agents/mustard-impl.md (new)"`. O portão compara um caminho de disco contra uma string que não pode existir — e avisa sobre arquivos corretamente declarados. Pior: a anotação foi **exigida** por outro verificador, que recusa o plano quando um arquivo novo não está marcado `(new)`. Um pede a marca, outro não a retira | `.claude/spec/*/wave-*/meta.json`, campo `path` | R3 |
+| 7 | **A causa-raiz do R3.** O checklist da onda guarda a anotação DENTRO do campo de caminho: `"path": "plugin/agents/<arquivo>.md (new)"`. O portão compara um caminho de disco contra uma string que não pode existir — e avisa sobre arquivos corretamente declarados. Pior: a anotação foi **exigida** por outro verificador, que recusa o plano quando um arquivo novo não está marcado `(new)`. Um pede a marca, outro não a retira | `.claude/spec/*/wave-*/meta.json`, campo `path` | R3 |
 
 O achado 6 é a causa-raiz precisa do sintoma que abriu o levantamento: dois de dez critérios verdes antes de qualquer trabalho existir. O achado 7 foi encontrado por um agente implementador **durante a execução da onda 2** — fora do seu papel e do seu escopo, exatamente a classe de achado que o R8 quer rotear.
 
@@ -140,17 +142,15 @@ Nenhuma dessas foi provocada de propósito. Todas apareceram na primeira execuç
 
 ## 7. Estado da execução
 
-**R4 + R5** → `.claude/spec/isolate-each-wave-s-implementer/`, escopo full, cinco ondas, base `dev`, branch `dev_isolate-each-wave-s-implementer`. **Aprovada em 2026-07-25**; EXECUTE destravado.
+**R4 + R5** → `.claude/spec/isolate-each-wave-s-implementer/`, escopo full, cinco ondas, base `dev`, branch `dev_isolate-each-wave-s-implementer`. Aprovada em 2026-07-25 e **executada por inteiro** — e então **descartada** (ver a correção no topo deste documento): três revisões adversariais reprovaram o mecanismo, a última demonstrando perda silenciosa do trabalho de cada onda. O que **sobreviveu** da execução são três defeitos reais que ela consertou de passagem, independentes do isolamento:
 
 ```
-W1 rt      —        ida: HEAD da unidade · base do git.flow · árvore limpa
-W2 plugin  —        o agente mustard-impl com isolation: worktree
-W3 rt      W1       volta: wave-reclaim, falha fechada
-W4 rt      W2,W3    interruptor: papéis de escrita → implementador isolado
-W5 docs    W4       corrige o mapa documentado + guarda anti-drift
+corte de worktree não-unidade segue o git.flow declarado, não o origin/HEAD do remoto  (achado 1)
+worktree-gc coleta pelo critério declarado {base}_, não por um prefixo agent- inexistente
+git worktree list --porcelain passa a reportar checkout detached
 ```
 
-Nove critérios de aceitação, oito verificados por teste nomeado exigindo contagem de passes não-zero. Enquanto W1 a W3 entram, o pipeline atual segue idêntico; apenas a W4 muda comportamento.
+No lugar do mecanismo ficou a regra de fluxo do `resume-loop.md` §B: **um commit por rodada**.
 
 Os demais oito requisitos permanecem sem trabalho agendado, na ordem da seção 6.
 

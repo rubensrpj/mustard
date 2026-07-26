@@ -72,7 +72,7 @@ Orientation labels (plan-prepare decides on a populated census): light = 1-2 lay
 - Research via the digest; read only the selected anchors (~12), never the repo or `grain.model.json` whole. Settle existence/duplication by Grep enumeration BEFORE any subagent — sampled reading never proves absence: `${CLAUDE_PLUGIN_ROOT}/refs/feature/existence-gate.md`.
 - Trust each subagent briefing as the answer; re-read directly ONLY when a conclusion contradicts the user or claims absence.
 - The scaffold is materialised ONLY by `spec-draft`; never hand-write `spec.md`; never Read back a spec / `meta.json` you just wrote. What the conversation established rides IN through `--material` (§2.2), assembled before the draft — never retyped into the spec afterwards.
-- Prompts only via `agent-prompt-render`; dispatch with the recommended `subagent_type` (`explore`→Explore, `review`/`qa`→`mustard:mustard-review`, `guards`→`mustard:mustard-guards`; writing roles→`mustard:mustard-impl`, which runs `isolation: worktree` so each wave writes in its own checkout — plugin agents namespaced, builtins bare; canonical map: `refs/agent-prompt/agent-prompt.md`).
+- Prompts only via `agent-prompt-render`; dispatch with the recommended `subagent_type` (`explore`→Explore, `review`/`qa`→`mustard:mustard-review`, `guards`→`mustard:mustard-guards`; writing roles→`general-purpose` — plugin agents namespaced, builtins bare; canonical map: `refs/agent-prompt/agent-prompt.md`).
 - Never skip `analyze-validation` or `dependency-precheck`.
 - Flat `.claude/spec/{name}/` layout, lifecycle in `meta.json`, escalation statuses: `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md`.
 

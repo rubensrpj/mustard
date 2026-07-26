@@ -141,10 +141,10 @@ pub(crate) struct WorktreeEntry {
 /// (paths under `.claude/worktrees/`, forward-slash normalized).
 ///
 /// A DETACHED checkout is reported too, with an empty `branch` and its `head`
-/// sha. Dropping it — which this parser used to do — hid a checkout that holds
-/// unreclaimed commits from every sweep built on top of it: `wave-reclaim`
-/// answered `nothing-to-reclaim` over work nobody would ever fold, which is
-/// precisely the silence that command exists to prevent.
+/// sha. Dropping it — which this parser used to do — hid a real checkout, one
+/// that may hold commits nobody has integrated, from every sweep built on top
+/// of this parser: the entry simply did not exist, so a sweep reported success
+/// over work it had never looked at.
 ///
 /// Callers keyed on a branch NAME are unaffected by construction: an empty
 /// branch equals no work-unit branch, and [`base_of_branch`] refuses it.
@@ -625,7 +625,7 @@ mod tests {
     fn parse_worktrees_reports_a_detached_checkout_by_its_head() {
         // A DETACHED harness worktree carries no `branch refs/heads/…` line.
         // Skipping it (the old behaviour) made a checkout that may hold
-        // unreclaimed commits invisible to every sweep — a silent `ok:true`.
+        // unintegrated commits invisible to every sweep built on this parser.
         let porcelain = "worktree C:/repo\nHEAD abc\nbranch refs/heads/dev\n\n\
                          worktree C:/repo/.claude/worktrees/recursing-benz-063389\nHEAD deadbeef\ndetached\n\n\
                          worktree C:/repo/.claude/worktrees/dev_b\nHEAD def\nbranch refs/heads/dev_b\n";

@@ -279,8 +279,8 @@ pub const PLUGIN_NAMESPACE: &str = "mustard";
 
 /// Qualify a plugin-owned agent name with [`PLUGIN_NAMESPACE`]:
 /// `mustard-review` → `mustard:mustard-review`. Only plugin-owned agents go
-/// through here; built-in harness agent types (`Explore`, `Plan`) are not
-/// plugin-registered and stay bare.
+/// through here; built-in harness agent types (`Explore`, `Plan`,
+/// `general-purpose`) are not plugin-registered and stay bare.
 fn qualify_plugin_agent(name: &str) -> String {
     format!("{PLUGIN_NAMESPACE}:{name}")
 }
@@ -294,18 +294,10 @@ fn qualify_plugin_agent(name: &str) -> String {
 /// and `patterns` → `mustard:mustard-patterns` (Read/Grep/Glob only). The
 /// plugin-owned agents carry the [`PLUGIN_NAMESPACE`] prefix (built-ins stay
 /// bare) — without it Claude Code cannot resolve the plugin agent and silently
-/// falls back to `general-purpose`.
-///
-/// Writing roles (`impl` and any other — `backend`, `frontend`, `core`, … all
-/// fall through the catch-all arm) resolve to `mustard:mustard-impl`, the
-/// plugin-owned implementer. The per-role contract and the `scope_guard` hook
-/// still do their work; what only an agent definition can carry is
-/// `isolation: worktree` — a prompt cannot put a wave in its own checkout, so
-/// the writing roles need a plugin agent for the isolation to have anywhere to
-/// live. The namespace is mandatory here for the same reason as above: a bare
-/// `mustard-impl` does not resolve and the dispatch silently degrades to
-/// `general-purpose` — i.e. to a shared checkout. Emitted by `dispatch-plan`
-/// so the orchestrator never picks the agent by hand.
+/// falls back to `general-purpose`. Writing roles (`impl` and any other) stay
+/// `general-purpose`: they need Edit/Write and rely on the per-role contract +
+/// the `scope_guard` hook instead. Emitted by `dispatch-plan` so the
+/// orchestrator never picks the agent by hand.
 #[must_use]
 pub fn recommended_subagent_type(role: &str) -> String {
     match role.trim().to_ascii_lowercase().as_str() {
@@ -314,7 +306,7 @@ pub fn recommended_subagent_type(role: &str) -> String {
         "review" | "qa" => qualify_plugin_agent("mustard-review"),
         "guards" => qualify_plugin_agent("mustard-guards"),
         "patterns" => qualify_plugin_agent("mustard-patterns"),
-        _ => qualify_plugin_agent("mustard-impl"),
+        _ => "general-purpose".to_string(),
     }
 }
 
@@ -425,40 +417,16 @@ mod tests {
 
     #[test]
     fn recommended_subagent_type_locks_read_only_roles() {
-        // Read-only roles map to tool-restricted agents; writing roles map to
-        // the plugin implementer (which carries the worktree isolation).
-        // Case/whitespace-insensitive.
+        // Read-only roles map to tool-restricted agents; writing roles stay
+        // general-purpose. Case/whitespace-insensitive.
         assert_eq!(recommended_subagent_type("explore"), "Explore");
         assert_eq!(recommended_subagent_type("plan"), "Plan");
         assert_eq!(recommended_subagent_type("review"), "mustard:mustard-review");
         assert_eq!(recommended_subagent_type("qa"), "mustard:mustard-review");
         assert_eq!(recommended_subagent_type(" Guards "), "mustard:mustard-guards");
         assert_eq!(recommended_subagent_type("patterns"), "mustard:mustard-patterns");
-        assert_eq!(recommended_subagent_type("impl"), "mustard:mustard-impl");
-        assert_eq!(recommended_subagent_type("backend"), "mustard:mustard-impl");
-    }
-
-    /// Every writing role — the named `impl` and any unknown role, which all
-    /// fall through the catch-all arm — resolves to the plugin-qualified
-    /// implementer. That agent is the only place `isolation: worktree` can be
-    /// declared, so a role that misses it silently runs in the shared checkout.
-    /// The built-in read-only types are deliberately untouched and stay bare.
-    #[test]
-    fn recommended_subagent_type_routes_writing_roles_to_impl() {
-        let expected = format!("{PLUGIN_NAMESPACE}:mustard-impl");
-        for role in ["impl", "backend", " Frontend ", "core", "some-unknown-role"] {
-            assert_eq!(
-                recommended_subagent_type(role),
-                expected,
-                "writing role {role} must resolve to the plugin implementer"
-            );
-        }
-        // The read-only built-ins did not move: still the bare harness types.
-        assert_eq!(recommended_subagent_type("explore"), "Explore");
-        assert_eq!(recommended_subagent_type("plan"), "Plan");
-        for t in [recommended_subagent_type("explore"), recommended_subagent_type("plan")] {
-            assert!(!t.contains(':'), "built-in agent type must stay bare: {t}");
-        }
+        assert_eq!(recommended_subagent_type("impl"), "general-purpose");
+        assert_eq!(recommended_subagent_type("backend"), "general-purpose");
     }
 
     #[test]
@@ -584,10 +552,12 @@ mod tests {
         assert_eq!(recommended_subagent_type("qa"), format!("{ns}mustard-review"));
         assert_eq!(recommended_subagent_type("guards"), format!("{ns}mustard-guards"));
         assert_eq!(recommended_subagent_type("patterns"), format!("{ns}mustard-patterns"));
-        // The implementer is plugin-owned too → qualified like its read-only siblings.
-        assert_eq!(recommended_subagent_type("impl"), format!("{ns}mustard-impl"));
         // Built-in harness types are not plugin-owned → stay bare (no `<ns>:`).
-        for t in [recommended_subagent_type("explore"), recommended_subagent_type("plan")] {
+        for t in [
+            recommended_subagent_type("explore"),
+            recommended_subagent_type("plan"),
+            recommended_subagent_type("impl"),
+        ] {
             assert!(!t.contains(':'), "built-in agent type must stay bare: {t}");
         }
     }

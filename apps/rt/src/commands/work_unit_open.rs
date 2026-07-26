@@ -46,9 +46,8 @@ const WORKTREES_RELDIR: &str = ".claude/worktrees";
 /// user-supplied one (`feature-auth`), a `pr-<number>`, or an auto-generated
 /// `bright-running-fox` — and this repository's only harness-cut worktree is
 /// `.claude/worktrees/recursing-benz-063389`. Keying on a prefix that never
-/// appears made the isolation's way OUT match nothing and answer `ok:true`
-/// while a wave's commit sat stranded, so both halves now ask this one
-/// question, of the same declared bases.
+/// appears made `worktree-gc` match nothing at all, so the collector and this
+/// engine now ask the one same question, of the same declared bases.
 pub(crate) fn unit_base_of_name(name: &str, bases: &[String]) -> Option<String> {
     bases
         .iter()
@@ -59,7 +58,7 @@ pub(crate) fn unit_base_of_name(name: &str, bases: &[String]) -> Option<String> 
 
 /// Whether a worktree NAME is a work unit's — see [`unit_base_of_name`].
 /// Everything else (a subagent's isolated checkout, a background session's, a
-/// desktop one) is not a unit, and is what the wave sweeps look at.
+/// desktop one) is not a unit, and is what `worktree-gc` may collect.
 pub(crate) fn is_unit_worktree_name(name: &str, bases: &[String]) -> bool {
     unit_base_of_name(name, bases).is_some()
 }
@@ -108,11 +107,7 @@ fn ref_exists(dir: &Path, full_ref: &str) -> bool {
 /// longest-match rule mirror
 /// `work_branch_gate::base_for` — the parser of what
 /// [`super::event::work_branch`] produces.
-///
-/// `pub(crate)` so the way OUT reads the unit the SAME way the way in does:
-/// [`crate::commands::wave::wave_reclaim`] folds onto the branch this answers,
-/// and a second resolver there would be free to disagree with this one.
-pub(crate) fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String> {
+fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String> {
     let branch = git_out(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = branch.trim();
     // `HEAD` is git's answer for a detached checkout — not a branch name.
@@ -129,9 +124,9 @@ pub(crate) fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String
 /// slug), as an explicit cascade — each step tried ONLY when the one before it
 /// does not resolve:
 ///
-/// 1. the CURRENT work unit's HEAD, when the invoking tree sits on one. A wave
-///    dispatched from inside a unit must see that unit's commits; cutting from
-///    an integration base would silently hand the agent older code.
+/// 1. the CURRENT work unit's HEAD, when the invoking tree sits on one. A
+///    checkout cut from inside a unit must see that unit's commits; cutting
+///    from an integration base would silently hand the agent older code.
 /// 2. `origin/{primary_base}` from `mustard.json#git.flow`. `origin/HEAD` is
 ///    the REMOTE's opinion of a default (`origin/main` here) while the project
 ///    declares `"*": "dev"` — the declared flow is the authority, and it is
@@ -176,9 +171,9 @@ fn non_unit_start(
 ///
 /// `.claude/` is redirected state, not code (`io::workspace` remaps it to the
 /// MAIN checkout from inside any worktree), so its dirt never belongs to the
-/// code a wave runs against — the same carve-out the harness's other gates
-/// make. Untracked files DO count: a new source file that never travels is the
-/// same defect as a modified one.
+/// code a fresh checkout runs against — the same carve-out the harness's other
+/// gates make. Untracked files DO count: a new source file that never travels
+/// is the same defect as a modified one.
 ///
 /// Fail-open: no git, not a repository, or a failed probe yields an EMPTY list
 /// (read as "clean"). The refusal only ever stands on a positive observation.
@@ -350,17 +345,17 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
 ///
 /// A NON-UNIT name additionally requires a CLEAN tree. A fresh checkout
 /// carries only COMMITTED code, so uncommitted work in the invoking tree would
-/// not travel and the wave would run against the older version — most visibly
+/// not travel and the agent would run against the older version — most visibly
 /// after `/scan`, which rewrites each subproject's `CLAUDE.md` `## Guards` and
 /// its `{role}-pattern` skills next to the code. This is the ONE place here
 /// that blocks, and it blocks by `Err`: a non-zero exit ABORTS creation with
 /// stderr shown to the user, which IS this event's protocol (the same way a
 /// `Deny` is a gate's). It mirrors `scan_clean_gate`, which already refuses
 /// `/scan` on a dirty tree for the `add -A` reason. Unit worktrees are
-/// untouched — no wave depends on their tree. The precondition is keyed on
-/// [`is_unit_worktree_name`], the SAME question the cut below asks, so the two
-/// cannot drift; the earlier `agent-` prefix was a shape the platform never
-/// emits, which left this refusal permanently silent.
+/// untouched — nothing outside them depends on their tree. The precondition is
+/// keyed on [`is_unit_worktree_name`], the SAME question the cut below asks, so
+/// the two cannot drift; the earlier `agent-` prefix was a shape the platform
+/// never emits, which left this refusal permanently silent.
 ///
 /// The event hands over a NAME, never a path (`worktree_path` is the *Remove*
 /// twin's field), so placing the worktree is this engine's call: it mirrors the
@@ -424,7 +419,7 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
                 "WorktreeCreate: refusing to cut the isolated worktree '{name}' — the working tree \
                  has uncommitted changes:\n  {}{tail}\n\
                  A fresh worktree carries only COMMITTED code, so this work would NOT travel and \
-                 the wave would run against the older version — most visibly after /scan, which \
+                 the agent would run against the older version — most visibly after /scan, which \
                  rewrites each subproject's CLAUDE.md ## Guards and its {{role}}-pattern skills \
                  next to the code.\n\
                  Commit or stash the paths above, then re-run. (`.claude/` is exempt — it is \
@@ -714,7 +709,7 @@ mod tests {
 
     #[test]
     fn agent_worktree_cuts_from_unit_head() {
-        // Step 1 of the cascade: a wave dispatched from INSIDE a work unit must
+        // Step 1 of the cascade: a checkout cut from INSIDE a work unit must
         // see that unit's commits. Cutting from the integration base would hand
         // the agent code that predates the unit — silently.
         let (_dir, main) = fixture();
@@ -808,7 +803,7 @@ mod tests {
     #[test]
     fn agent_worktree_refuses_dirty_tree() {
         // A fresh checkout carries only COMMITTED code: uncommitted work would
-        // not travel and the wave would run against the older version. Driven
+        // not travel and the agent would run against the older version. Driven
         // through the SLUG the harness really hands over — the previous
         // `agent-dirty` fixture was the only reason this refusal looked alive.
         let (_dir, main) = fixture();
@@ -857,8 +852,8 @@ mod tests {
 
     #[test]
     fn dirty_tree_still_opens_a_unit_worktree() {
-        // The precondition is scoped to AGENT worktrees: a unit worktree has no
-        // wave depending on the tree's state, so its behaviour is untouched.
+        // The precondition is scoped to AGENT worktrees: nothing outside a unit
+        // worktree depends on its tree state, so its behaviour is untouched.
         let (_dir, main) = fixture();
         std::fs::write(main.join("a.txt"), "uncommitted").expect("dirty");
         let got = hook_create("dev_stillopens", &main).expect("unit worktrees keep behaviour");

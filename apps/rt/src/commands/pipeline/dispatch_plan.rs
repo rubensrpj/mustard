@@ -79,8 +79,7 @@ pub struct DispatchItem {
     /// The `subagent_type` the orchestrator must pass to `Task` for this role.
     /// Read-only roles resolve to tool-restricted agents (`explore` → `Explore`,
     /// `review`/`qa` → `mustard:mustard-review`, `guards` → `mustard:mustard-guards`);
-    /// writing roles resolve to `mustard:mustard-impl` (the plugin implementer,
-    /// which carries the worktree isolation). Picked by the tool — never by hand.
+    /// writing roles stay `general-purpose`. Picked by the tool — never by hand.
     /// See [`crate::commands::agent::agent_prompt_render::recommended_subagent_type`].
     #[serde(rename = "subagent_type")]
     pub subagent_type: String,
@@ -217,7 +216,7 @@ fn render_prompt_cmd(spec: &str, wave: u32, role: &str, subproject: &str) -> Str
 /// - `wave: 0` — real waves are 1-based, so `0` marks "wave-less" while the
 ///   field keeps the numeric shape every consumer already parses.
 /// - `role: "impl"` — the writing role; `recommended_subagent_type` resolves
-///   it to `mustard:mustard-impl` (never hand-picked).
+///   it to `general-purpose` (never hand-picked).
 /// - `prompt_cmd` carries **no** `--wave` flag (`agent-prompt-render` renders
 ///   the spec's own `spec.md` in that case).
 /// - The subproject comes from the spec's `## Files` / `## Arquivos` section
@@ -1032,7 +1031,7 @@ mod tests {
         assert_eq!(item.subproject, "apps/rt");
         assert!(item.depends_on.is_empty());
         assert_eq!(item.level, 0);
-        assert_eq!(item.subagent_type, "mustard:mustard-impl");
+        assert_eq!(item.subagent_type, "general-purpose");
         assert!(item.prompt_cmd.starts_with("mustard-rt run agent-prompt-render "));
         assert!(item.prompt_cmd.contains("--spec flat"));
         assert!(item.prompt_cmd.contains("--role impl"));

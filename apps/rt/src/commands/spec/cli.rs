@@ -265,7 +265,7 @@ pub enum SpecCmd {
     /// without anyone hand-formatting a bullet. A blank instruction is refused
     /// and nothing is written.
     #[command(name = "change-request")]
-    #[command(display_order = 81)]
+    #[command(display_order = 80)]
     ChangeRequest {
         /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
         /// then the active-spec fallback.
