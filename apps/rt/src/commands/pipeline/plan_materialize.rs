@@ -595,7 +595,13 @@ mod tests {
             &plan_path,
             serde_json::to_string(&json!({
                 "waves": [
-                    { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"], "satisfies": ["AC-1"] }
+                    // `files` declared so this fixture trips ONLY the coverage
+                    // gate: a wave that does work and claims a criterion while
+                    // declaring nowhere to do it is a different refusal, and
+                    // leaving it in would make this test pass by the error-marker
+                    // precedence rather than by isolating what it names.
+                    { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                      "files": ["src/a.rs"], "satisfies": ["AC-1"] }
                 ],
                 "total_waves": 1,
                 "lang": "en-US"

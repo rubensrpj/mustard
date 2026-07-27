@@ -466,6 +466,26 @@ struct TraceGaps {
 /// `parent_ac_md` is the monolithic parent spec markdown (`None` for a
 /// standalone scaffold with no parent, in which case only the plan's own
 /// `acceptance` ids define the set — the historical behaviour).
+/// Whether a DECLARED file and a path named by a criterion's command refer to
+/// the same file — one being the other's tail, matched on whole path COMPONENTS.
+///
+/// The boundary is the whole point. A bare suffix compare answers `true` for
+/// `apps/backend/src/data.rs` against a declared `a.rs`, which silences exactly
+/// the mismatch this check exists to surface: a criterion needing a backend no
+/// claiming wave has in scope (found by review, reproduced end-to-end). Both
+/// sides are normalised to `/` first, because a plan may spell a path with
+/// either separator.
+///
+/// Errs toward MATCHING (staying quiet) rather than flagging: the two spellings
+/// this accepts — repo-relative and subproject-relative — are both legitimate in
+/// a `## Files` list, and a false flag on a correct plan costs more trust than a
+/// missed advisory. Pure, total.
+fn same_or_contains_path(declared: &str, named: &str) -> bool {
+    let norm = |s: &str| s.replace('\\', "/");
+    let (d, n) = (norm(declared), norm(named));
+    d == n || d.ends_with(&format!("/{n}")) || n.ends_with(&format!("/{d}"))
+}
+
 fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
     use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
     let norm = |s: &str| s.trim().to_uppercase();
@@ -572,12 +592,19 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
             let Some(declared) = claimant_files.get(&id) else {
                 continue; // unclaimed — that is Gap 2's business, not this one
             };
+            // An EMPTY claimant set means every wave claiming this criterion is
+            // already a Gap 3 refusal. Reporting the same fact a second time,
+            // once per path its command names, buries the refusal that matters
+            // under advisory noise.
+            if declared.is_empty() {
+                continue;
+            }
             for token in it.command.split_whitespace() {
                 let path = token.trim_matches(['`', '"', '\'', '(', ')', ',']);
                 if !crate::commands::review::analyze_validation::looks_like_file_path(path) {
                     continue;
                 }
-                if declared.iter().any(|d| d == path || d.ends_with(path) || path.ends_with(d)) {
+                if declared.iter().any(|d| same_or_contains_path(d, path)) {
                     continue;
                 }
                 criteria_outside_claimants.push(format!(
@@ -2016,6 +2043,61 @@ mod tests {
             ok.criteria_outside_claimants.is_empty(),
             "a declared path must not be flagged: {:?}",
             ok.criteria_outside_claimants
+        );
+
+        // The match is on whole path COMPONENTS, not raw suffixes. A bare
+        // suffix compare answers `true` for `apps/backend/src/data.rs` against a
+        // declared `a.rs` and silences the mismatch — which is the field
+        // scenario this check exists for (a criterion needing a backend no
+        // claiming wave had in scope), found by review and reproduced live.
+        let backend = "# S\n\n## Acceptance Criteria\n\n\
+                       - **AC-1** — a. Command: `rg -q x apps/backend/src/data.rs`\n";
+        let boundary = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["a"], vec!["a.rs"], vec!["AC-1"])]),
+            Some(backend),
+        );
+        assert!(
+            boundary
+                .criteria_outside_claimants
+                .iter()
+                .any(|g| g.contains("apps/backend/src/data.rs")),
+            "a declared `a.rs` must NOT silence `apps/backend/src/data.rs`: {:?}",
+            boundary.criteria_outside_claimants
+        );
+        // And the legitimate subproject-relative spelling still matches, so the
+        // boundary did not turn into a false flag on a correct plan.
+        let relative = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["a"], vec!["src/data.rs"], vec!["AC-1"])]),
+            Some(backend),
+        );
+        assert!(
+            relative.criteria_outside_claimants.is_empty(),
+            "a subproject-relative declaration still matches: {:?}",
+            relative.criteria_outside_claimants
+        );
+    }
+
+    /// A wave already refused by Gap 3 must not ALSO be flagged by Gap 4, once
+    /// per path its criteria name: one fact, one message. Reported by review —
+    /// the advisory noise would bury the refusal that actually matters.
+    #[test]
+    fn a_refused_claim_is_not_also_flagged_path_by_path() {
+        let parent = "# S\n\n## Acceptance Criteria\n\n\
+                      - **AC-1** — a. Command: `rg -q x apps/rt/src/a.rs apps/rt/src/b.rs`\n";
+        let gaps = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["do it"], vec![], vec!["AC-1"])]),
+            Some(parent),
+        );
+        assert_eq!(
+            gaps.unsupportable_claims.len(),
+            1,
+            "the refusal is stated once: {:?}",
+            gaps.unsupportable_claims
+        );
+        assert!(
+            gaps.criteria_outside_claimants.is_empty(),
+            "an already-refused claim must not be flagged path by path: {:?}",
+            gaps.criteria_outside_claimants
         );
     }
 
