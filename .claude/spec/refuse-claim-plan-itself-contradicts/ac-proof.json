@@ -1,0 +1,46 @@
+{
+  "spec": "refuse-claim-plan-itself-contradicts",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt --lib wave_scaffold::tests::a_wave_claiming_a_criterion_with_nowhere_to_work_is_refused",
+      "expect": "[1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt --lib wave_scaffold::tests::a_criterion_pointing_outside_its_claimants_is_flagged_not_refused",
+      "expect": "[1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-rt --lib wave_scaffold::tests::a_consistent_plan_and_an_unjudgeable_one_both_stay_silent",
+      "expect": "[1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": []
+}

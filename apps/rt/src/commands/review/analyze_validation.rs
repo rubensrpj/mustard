@@ -271,7 +271,11 @@ fn ref_resolves(r: &str, spec_dir: &Path, root: &Path, project_roots: &[PathBuf]
 /// carries a path separator or ends in a recognised source extension. Requiring
 /// a KNOWN extension is what keeps prose out — "3.5", "e.g." and
 /// "https://example.com" all fail, while `src/list.rs` and `Cargo.toml` pass.
-fn looks_like_file_path(token: &str) -> bool {
+///
+/// `pub(crate)` so the wave traceability pass decides "does this criterion's
+/// command name a repository path" with the SAME recogniser — one definition of
+/// what reads as a path, tuned in one place to keep prose out.
+pub(crate) fn looks_like_file_path(token: &str) -> bool {
     let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '/'
         && c != '\\' && c != '-' && c != '_');
     if token.is_empty() || !token.contains('.') {

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "refuse-claim-plan-itself-contradicts",
+  "title": "Refuse a claim the plan itself contradicts: a wave cannot cover a criterion while declaring nowhere to do the work",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
