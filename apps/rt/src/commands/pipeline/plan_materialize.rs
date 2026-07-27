@@ -11,20 +11,20 @@
 //! 2. `analyze-validation` — [`crate::commands::review::analyze_validation::validate`]
 //!    (WARN-level, includes the wave-2 AC-parseability check) over the root
 //!    `spec.md`.
-//! 2b. `wave-dependency`'s import-DAG cycle check —
+//! 3. `wave-dependency`'s import-DAG cycle check —
 //!    [`crate::commands::wave::wave_dependency::validate_plan_dag`] over the
 //!    plan's file union (WARN-level). Folded in so the check runs every time,
 //!    not only when the orchestrator relays a separate `wave-dependency` call.
-//! 2c. `ac-negative-check`'s NEGATIVE TEST —
+//! 4. `ac-negative-check`'s NEGATIVE TEST —
 //!    [`crate::commands::review::ac_negative_check::check`] over the parent
-//!    `spec.md`'s own acceptance criteria. BLOCKING, unlike 2 and 2b: a
+//!    `spec.md`'s own acceptance criteria. BLOCKING, unlike 2 and 3: a
 //!    criterion that was not proven ABLE to fail withholds the PLAN transition
 //!    and exits 2, exactly like the uncovered-criteria coverage gate below —
 //!    and, like it, with NO env knob.
-//! 3. `emit-pipeline --kind pipeline.scope` — the typed
+//! 5. `emit-pipeline --kind pipeline.scope` — the typed
 //!    [`PipelineScopePayload`] with `scope: "full"` (this composite exists for
 //!    the Full/wave-plan flow) + the scaffolded wave count.
-//! 4. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
+//! 6. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
 //!    (idempotent on the spec's last phase).
 //!
 //! Pressupposes `spec.md` + `meta.json` already materialised by `spec-draft`
@@ -96,6 +96,13 @@ const ERR_PLAN_UNREADABLE: &str = "plan unreadable";
 /// enforced unconditionally in the pipeline (no env knob).
 const ERR_UNCOVERED_ACS: &str = "uncovered acceptance criteria";
 
+/// Stdout `scaffold.error` marker for a plan that CLAIMS a criterion it cannot
+/// support — a wave doing work that satisfies a criterion while declaring no
+/// files. [`run`] maps it to exit 2 like the coverage gate, and for the same
+/// reason: it is a fact the plan's own contents settle, not a judgement about
+/// whether the declared files would have been enough.
+const ERR_UNSUPPORTABLE_CLAIMS: &str = "unsupportable acceptance-criteria claims";
+
 /// Stdout `proof.error` marker for a spec carrying an acceptance criterion that
 /// was never proven ABLE to fail. [`run`] maps it to exit 2 and [`materialize`]
 /// withholds the PLAN transition — the negative-test gate, enforced
@@ -126,6 +133,7 @@ pub fn run(opts: PlanMaterializeOpts) {
     let proven = report["proof"]["ok"].as_bool().unwrap_or(false);
     if scaffold_err == Some(ERR_PLAN_UNREADABLE)
         || scaffold_err == Some(ERR_UNCOVERED_ACS)
+        || scaffold_err == Some(ERR_UNSUPPORTABLE_CLAIMS)
         || !proven
     {
         std::process::exit(2);
@@ -160,9 +168,14 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         // criterion that no wave covers BLOCKS the PLAN transition. The layout
         // was materialised (idempotent), but `scaffold_ok=false` withholds the
         // events and `run` exits non-zero, so the gap is fixed before EXECUTE.
-        ScaffoldOutcome::Created { created, skipped, refreshed, removed, uncovered_acs }
-            if uncovered_acs.is_empty() =>
-        {
+        ScaffoldOutcome::Created {
+            created,
+            skipped,
+            refreshed,
+            removed,
+            uncovered_acs,
+            unsupportable_claims,
+        } if uncovered_acs.is_empty() && unsupportable_claims.is_empty() => {
             (
                 json!({
                     "created_files": created,
@@ -173,14 +186,30 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                 true,
             )
         }
-        ScaffoldOutcome::Created { created, skipped, refreshed, removed, uncovered_acs } => (
+        // Both lists are settled facts about the plan's own contents, so they
+        // share one refusal — but they are REPORTED apart, because a criterion
+        // that is claimed-but-unsupportable is not the same thing as one nobody
+        // claimed, and a reader acting on the wrong one fixes the wrong plan.
+        ScaffoldOutcome::Created {
+            created,
+            skipped,
+            refreshed,
+            removed,
+            uncovered_acs,
+            unsupportable_claims,
+        } => (
             json!({
                 "created_files": created,
                 "skipped": skipped,
                 "refreshed": refreshed,
                 "removed": removed,
-                "error": ERR_UNCOVERED_ACS,
+                "error": if uncovered_acs.is_empty() {
+                    ERR_UNSUPPORTABLE_CLAIMS
+                } else {
+                    ERR_UNCOVERED_ACS
+                },
                 "uncovered_acs": uncovered_acs,
+                "unsupportable_claims": unsupportable_claims,
             }),
             false,
         ),
@@ -622,8 +651,12 @@ mod tests {
             &plan_path,
             serde_json::to_string(&json!({
                 "waves": [
+                    // `files` is load-bearing here, not decoration: a wave that
+                    // does work and claims a criterion while declaring nowhere
+                    // to do it is refused by the scaffold's claim-support gap,
+                    // and this fixture exists to isolate the PROOF refusal.
                     { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
-                      "satisfies": ["AC-1", "AC-2"] }
+                      "files": ["src/demo.rs"], "satisfies": ["AC-1", "AC-2"] }
                 ],
                 "total_waves": 1,
                 "lang": "en-US"
