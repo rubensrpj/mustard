@@ -20,5 +20,5 @@
 | AC-11 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 | AC-12 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 | AC-13 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
-| AC-9 | PASS | 0 | 1.6s |  |
+| AC-9 | PASS | 0 | 0.5s |  |
 

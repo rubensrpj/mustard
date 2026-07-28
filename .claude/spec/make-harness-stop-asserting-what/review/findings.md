@@ -1,25 +1,20 @@
-## Verdict: REJECTED — 3 critical
+## Verdict: APPROVED — 0 critical
 
-**Build & tests (verified, not taken on trust)**
-- AC-9 `cargo build --workspace` -> green.
-- AC-1...AC-8: each named test run individually -> `test result: ok. 1 passed; 0 failed` (non-zero, satisfies `[1-9][0-9]*`). All eight tests are genuinely two-sided (red-then-green fixtures, controls that must NOT fire) — not tautologies.
-- `cargo clippy --workspace --all-targets` -> **0 errors**, so the `unwrap_used`/`expect_used` deny guard holds.
-- Full workspace suite green on a clean rerun (mustard_rt 1746 + 1751, mustard_core 598, all integration bins 0 failed).
+**Build & tests (run, not taken on trust)**
+- AC-9 `cargo build --workspace` -> exit 0.
+- AC-1...AC-8, AC-10...AC-13: each named test run individually -> `test result: ok. 1 passed; 0 failed` (satisfies `[1-9][0-9]*`). Verified two-sided by reading, not by name: AC-5 has an *accounted* control duty plus a sibling-wave test; AC-7 has a TS control that must NOT carry the skip; AC-8 asserts `dropped:1 / marked:0` events and terminality; AC-13 asserts both the residue removal AND that a command-only amendment leaves prose alone AND that an `Expect:` line inside the block is never eaten; AC-1 asserts the ledger file on disk moved, not just the report.
+- `cargo test --workspace` -> one failure only: `mustard_core io::atomic_md::store::tests::bench_scan_200_files_under_100ms` (`store.rs:277`, a wall-clock <100ms assert). Isolated rerun -> `ok. 1 passed`. `store.rs` is untouched by this branch. Pre-existing flake, not this spec's.
+- `cargo clippy --workspace --all-targets` -> 0 errors (deny `unwrap_used`/`expect_used` holds).
 
-**Guards + molds:** no violation found. `close_gate.rs` stays fail-open with the mode cascade (rt-gate-pattern); `post_edit.rs` `observe()` still returns `()` and returns no verdict (rt-observer-pattern); `--confirm` is a flag on an existing subcommand, so the four-registration rule does not apply; `run` output stayed ordered JSON.
+**Guards + molds** — no violation. No new `run` subcommand (`--confirm`, `--drop/--reason` are flags on existing ones), so the four-registration rule does not apply; `run_command_surface`/`template_parity` ratchets green. `WaveStatus::Dropped` is serde-additive and pinned by a test asserting the four existing words are byte-identical (`packages/core` model-contract guard). No `std::fs` write bypass introduced.
 
-**The blocking findings — all three mid-pipeline change requests were silently dropped.** `git diff --name-only 806da3b4 HEAD -- plugin/` returns exactly two files: `refs/agent-prompt/agent-prompt.md` and `refs/feature/full-plan.md`. None of the three files the operator named was touched.
-
-1. **CRITICAL — CR-1 dropped; the confirm pass ships inert.** `plugin/refs/spec/resume-loop.md` and `plugin/pipeline-config.md` are unmodified. Worse, `ac_negative_check::confirm` has **no production caller**: grep finds it only at `ac_amend.rs:904`, inside `#[cfg(test)] mod tests` (module starts line 670). `plan_materialize.rs:302` still calls `check` (the red pass). So the entire second half of AC-1 is reachable only by a human typing `--confirm`, and nothing anywhere tells anyone it exists. The unit test proves the function works; it does not prove the harness ever takes the confirmation — which is this spec's own thesis about code presence vs. effectiveness.
-
-2. **CRITICAL — `plugin/refs/spec/resume-loop.md:100` now states a falsehood.** It reads: *"the new command is run against the tree as it is and **must itself come back RED**. A replacement that already passes ... is REFUSED."* AC-2 deliberately changed that (`ac_amend.rs:526`, `predecessor_inexecutable`). The operator-facing prose now contradicts shipped behaviour and will send a reader to abandon the one sanctioned repair path this spec built.
-
-3. **CRITICAL — CR-3 dropped; `neverDispatched` is emitted and undiscoverable.** Field at `resume_bootstrap/mod.rs:127-128`, printed at `:455`. `plugin/refs/spec/resume-loop.md:25` still instructs the orchestrator to read `isWavePlan/totalWaves/currentWave` only; grep for `neverDispatched` across `plugin/` returns nothing.
+**The three prior criticals are genuinely closed, and I checked the mechanism, not just the prose**
+1. `close_pipeline.rs:153` calls `ac_negative_check::confirm_in_process` — a real production caller, before the terminal event; `resume-loop.md` + `pipeline-config.md` now teach all three readings (`taken:false`/`unproven`/advisory).
+2. `resume-loop.md:111` no longer contradicts `ac_amend.rs:589`; the inexecutable-predecessor exception is documented, and `confirm_one` (`ac_negative_check.rs:604`) refuses to confirm anything whose `proof != Red`, so `evidenced()`'s second half cannot be used to smuggle a vacuous criterion past `approve-spec`.
+3. `neverDispatched` and the `Onde` legend now have readers, and `AC-12`'s test enforces *proximity* to `currentWave`, not mere presence.
 
 **Non-blocking**
-- MAJOR — CR-2 dropped. `active_specs.rs:1097` prints an `Onde` column, but `plugin/commands/spec.md:25` — a block that section 2 orders printed "literally" — still lists only `#`/`Esc`/`Prog`/Stage/Status.
-- MAJOR — none of the three requests got an Acceptance Criterion; `spec.md` still carries AC-1...AC-9 unchanged. `resume-loop.md:92` is the harness's own rule against exactly this: *"a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it."* Here they were not even implemented, so QA reports green over three dropped requests.
-- MINOR — one unreproducible failure: while two cargo jobs ran concurrently, the mustard_core lib binary reported `test result: FAILED. 597 passed; 1 failed; 3 ignored`. Five isolated reruns and a clean full-workspace rerun were all `598 passed; 0 failed`. I could not name it; recording rather than dismissing it.
-- MINOR — `wave_advance.rs`, `close_gate.rs`, `post_edit.rs` edited outside their waves' `## Files`. Both cascades are correct and necessary, and the deviations are already recorded as accepted decisions.
-
-The eight fixes themselves are well built and honestly tested. What blocks is that three mechanisms this spec shipped — the confirmation pass, `neverDispatched`, and the `Onde` column — reach no reader, and one doc now actively misstates the code. That is the same failure the spec was written to remove.
+- MAJOR — `plugin/refs/spec/resume-loop.md:64` still says `{ok:true}`/absent -> dispatch. AC-7's `skipped` marker now rides the trim (`wave_advance.rs:390`) but the documented reader is still told to treat `ok:true` as dispatch-green. Same shape as CR-1/CR-3, one file away; AC-7's literal wording ("the caller surfaces") is met, so it does not block.
+- MAJOR — AC-13 ships `verdict:unproven / proof:green` (`ac-proof.json:44-53`). `approve_spec.rs:437` is fail-closed on exactly that, so this spec would not clear its own approval gate if re-run. The red half *was* takeable (the CR landed 30 min before the commit; writing the criterion first would have yielded red) — the honest ledger is the right call, but "unprovable" is not accurate. CLOSE does not gate on the ledger, so it does not block the close.
+- MINOR — AC-13's ledger `reason` is the canned `REASON_GREEN`: *"this criterion cannot tell done from not-done — rewrite the command"*. That is false here (the test genuinely fails without the `consumed` logic), and contradicts the spec's own Decision. A reader of the ledger alone is pointed at the wrong action.
+- MINOR — `ac-proof.json` carries no `confirmation` key on any entry, including the round-2 ones: the ledger was written by an installed binary predating wave 1. Harmless (`#[serde(default)]`), but the ledger you are reading was not produced by the code you are shipping.
