@@ -120,12 +120,13 @@ pub(crate) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
 }
 
 /// The running executable named the way a refusal must name it: relative to
-/// `cwd` when it lives inside the project, which is exactly the case a refusal
-/// happens in. Falls back to a description when the path cannot be resolved —
-/// the reason still has to read as a sentence.
+/// `cwd` when it lives inside the project, its bare file name when it lives
+/// outside (never an absolute machine path — these labels reach versioned
+/// files). Falls back to a description when the path cannot be resolved at all
+/// — the reason still has to read as a sentence.
 pub(crate) fn running_binary_label(cwd: &Path) -> String {
     std::env::current_exe().map_or_else(
-        |_| "the binary running this pass".to_string(),
+        |_| runner::UNNAMEABLE_BINARY.to_string(),
         |exe| runner::running_binary_label(cwd, &exe),
     )
 }

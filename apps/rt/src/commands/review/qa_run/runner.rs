@@ -18,6 +18,11 @@ use super::{AcResult, QaRunOptions};
 /// `AC_TIMEOUT_MS` in `qa-run.js`.
 const AC_TIMEOUT_SECS: u64 = 120;
 
+/// How a refusal names the running executable when no machine-independent name
+/// can be produced for it. The reason still has to read as a sentence, and it
+/// must never degrade into an absolute path — see [`running_binary_label`].
+pub(super) const UNNAMEABLE_BINARY: &str = "the binary running this pass";
+
 /// Per-AC timeout ceiling (10 min) for commands invoking `cargo `: a
 /// `cargo build`/`cargo test` AC that runs right after an edit must recompile,
 /// and a cold compile routinely exceeds the 120 s default (real case:
@@ -152,11 +157,24 @@ fn overwrites_running_binary(command: &str, target_root: &Path, running: &Path) 
 }
 
 /// The running binary named the way a refusal must name it: relative to the
-/// project when it lives inside it — which is exactly when a refusal happens —
-/// so the committed QA report carries `target/debug/mustard-rt.exe` and never
-/// an absolute path that only exists on one machine.
+/// project when it lives inside it, so the committed QA report carries
+/// `target/debug/mustard-rt.exe` and never an absolute path that only exists on
+/// one machine.
+///
+/// The binary can also sit OUTSIDE the project and still be refused: with
+/// `CARGO_TARGET_DIR` pointing somewhere absolute, the build target and the
+/// running file coincide out there. Falling back to the raw path would
+/// interpolate a machine path into `stderr_excerpt` → `qa/report.md` and into
+/// `reason` → `ac-proof.json`, both versioned files, breaking this crate's
+/// "deterministic output, no volatile paths" guard. So the fallback keeps the
+/// file NAME only — which is all the refusal needs to name what it protects.
 pub(super) fn running_binary_label(cwd: &Path, running: &Path) -> String {
-    running.strip_prefix(cwd).unwrap_or(running).to_string_lossy().replace('\\', "/")
+    match running.strip_prefix(cwd) {
+        Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
+        Err(_) => running
+            .file_name()
+            .map_or_else(|| UNNAMEABLE_BINARY.to_string(), |name| name.to_string_lossy().to_string()),
+    }
 }
 
 /// Per-AC timeout for `command`, env-aware.
@@ -796,16 +814,31 @@ mod tests {
         );
     }
 
-    /// The other side of the same wiring: `self_invoked` is still set, but this
-    /// process runs from somewhere else, so nothing is refused — cargo really
-    /// spawns and fails fast in a directory with no package.
+    /// The other side of the same wiring, taking the branch it names: the path
+    /// question is ANSWERABLE here (the tempdir carries a `Cargo.toml`, so a
+    /// target root resolves) and the answer is "different files" — the process
+    /// runs from an installed-style path beside the target dir, not inside it.
+    /// So nothing is refused and cargo really spawns.
+    ///
+    /// The earlier version of this test used a tempdir with no `Cargo.toml`,
+    /// which made `cargo_target_root` return `None`: the guard short-circuited
+    /// on the UNANSWERABLE branch and the path comparison was never exercised.
     #[test]
     fn qa_self_invoked_runs_the_command_when_the_paths_differ() {
         let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let target_root = cargo_target_root(dir.path()).expect("a Cargo.toml makes a target root");
         let elsewhere = dir
             .path()
             .join("installed")
             .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        // The branch under test, named directly: the target root resolved, and
+        // the file the build writes is NOT the file this process runs from.
+        assert!(!overwrites_running_binary(
+            "cargo test -p mustard-rt --offline",
+            &target_root,
+            &elsewhere
+        ));
         QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
         let res = run_ac_command_with_timeout(
             "cargo test -p mustard-rt --offline",
@@ -816,11 +849,33 @@ mod tests {
         );
         QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
         assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
+        assert!(res.exit.is_some(), "the command really spawned: {}", res.stderr_excerpt);
         assert!(
-            res.stderr_excerpt.contains("Cargo.toml"),
-            "cargo must have actually run: {}",
+            !res.stderr_excerpt.contains("self-invocation"),
+            "nothing may be refused when the paths differ: {}",
             res.stderr_excerpt
         );
+    }
+
+    /// The label never leaks a machine path. When the running binary lives
+    /// OUTSIDE the project — reachable with an absolute `CARGO_TARGET_DIR`,
+    /// where a refusal is still possible — the reason falls back to the bare
+    /// file name instead of interpolating an absolute path into `qa/report.md`
+    /// and `ac-proof.json`, which are versioned.
+    #[test]
+    fn running_binary_label_never_leaks_an_absolute_path() {
+        let project = PathBuf::from("no-such-workspace");
+        let outside = if cfg!(windows) {
+            PathBuf::from(r"D:\somewhere\else\target\debug")
+        } else {
+            PathBuf::from("/somewhere/else/target/debug")
+        }
+        .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        let label = running_binary_label(&project, &outside);
+        assert_eq!(label, format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        assert!(!label.contains("somewhere"), "no machine path may survive: {label}");
+        // And a path with no file name at all still reads as a sentence.
+        assert_eq!(running_binary_label(&project, Path::new("/")), UNNAMEABLE_BINARY);
     }
 
     /// With `self_invoked=false` (external invocation) the command runs
