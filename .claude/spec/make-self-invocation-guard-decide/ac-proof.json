@@ -1,0 +1,36 @@
+{
+  "spec": "make-self-invocation-guard-decide",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt guard_allows_when_build_target_is_not_the_running_binary",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-core v0.1.0 (C:\\Atiz\\mustard\\packages\\core)\n   Compiling mustard-rt v0.1.0 (C:\\Ati"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt guard_refuses_when_build_target_is_the_running_binary",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": []
+}
