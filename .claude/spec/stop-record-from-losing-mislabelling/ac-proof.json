@@ -62,18 +62,6 @@
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s\n     Running unittests src\\lib."
     },
     {
-      "id": "AC-6",
-      "command": "cargo test -p mustard-rt close_removes_no_file_outside_the_spec_dir",
-      "expect": "ok\\. [1-9][0-9]* passed",
-      "verdict": "proven",
-      "proof": "red",
-      "confirmation": "not-taken",
-      "exit": 0,
-      "confirmation_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.74s\n     Running unittests src\\lib."
-    },
-    {
       "id": "AC-7",
       "command": "cargo build --workspace",
       "expect": null,

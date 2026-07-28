@@ -77,11 +77,6 @@ what refuses to read that as success.
   it teaches the skip marker beside the ok reading
   Command: `cargo test -p mustard-rt dispatch_prose_teaches_the_precheck_skip`
   Expect: `ok\. [1-9][0-9]* passed`
-- **AC-6** — when a spec is closed, then no file outside the spec's own directory
-  is removed from the project — a tracked file at the repository root survives
-  the close untouched
-  Command: `cargo test -p mustard-rt close_removes_no_file_outside_the_spec_dir`
-  Expect: `ok\. [1-9][0-9]* passed`
 - **AC-7** — the project build passes green
   Command: `cargo build --workspace`
 
@@ -96,14 +91,13 @@ what refuses to read that as success.
       for different subprojects never carry the same task text.
 - [ ] T5 — The dispatch prose teaches the precheck skip marker beside the ok
       reading.
-- [ ] T6 — Find and stop whatever removes files from the project root during a
-      close. Observed twice in one session: MUSTARD-COMMANDS.md (716 lines) and
-      install-retrieval.ps1 vanished, once after an implementer returned and once
-      during close-pipeline, both restored byte-exact. Both exist on dev and
-      template_parity.rs:221 requires the first, so the deletion is wrong. Two
-      suspects are already REFUTED, so start by reproducing rather than by
-      reading: no code under apps/rt/src names either file, and claude-dir-prune
-      only walks .claude/ and only removes under --apply, which was never run.
+- [x] T6 — DROPPED, not done. The premise was false: the operator deleted
+      MUSTARD-COMMANDS.md and install-retrieval.ps1 by hand, by mistake. No
+      mechanism removed them, so there is nothing to stop and no invariant worth
+      locking. Both restorations were correct and the files are tracked and
+      byte-exact again. Three suspects had been refuted by verification before the
+      real cause was simply stated — the answer was one question away the whole
+      time, and nobody asked it.
 
 ## Definitions
 
