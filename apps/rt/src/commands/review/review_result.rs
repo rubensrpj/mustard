@@ -111,14 +111,26 @@ fn write_review_findings_md(
     if fs::create_dir_all(&review_dir).is_err() {
         return;
     }
-    // The unscoped file stays, so every existing reader keeps working.
-    let _ = fs::write_atomic(review_dir.join(FINDINGS_FILE), content.as_bytes());
-    // …and, when the review named a subproject, a file only that subproject's
-    // retry can read. Without it, one `findings.md` per SPEC served every
-    // subproject, and two fix-loop prompts came out carrying the same findings —
-    // two writers sent into one set of files.
-    if let Some(name) = scoped_findings_name(subproject) {
-        let _ = fs::write_atomic(review_dir.join(name), content.as_bytes());
+    // A review that named a subproject writes ONE file, and it is that
+    // subproject's. Writing the spec-wide `findings.md` too — which this used to
+    // do "so every existing reader keeps working" — put the last reviewer's
+    // findings, whoever that was, under the name every OTHER subproject reads.
+    // The retry renderer defends itself against that (`read_scoped_findings`
+    // refuses the unscoped file once any scoped file exists), but the defence
+    // only covers the one reader that has it; a human, or the next reader
+    // written, still opens `findings.md` and sees another subproject's review.
+    // So the leak is closed at the WRITER, where it cannot be reintroduced by a
+    // reader that forgets.
+    //
+    // A review that named no subproject still writes `findings.md`: that IS its
+    // scope, and it stays the fallback a retry reads when no scoped file exists.
+    match scoped_findings_name(subproject) {
+        Some(name) => {
+            let _ = fs::write_atomic(review_dir.join(name), content.as_bytes());
+        }
+        None => {
+            let _ = fs::write_atomic(review_dir.join(FINDINGS_FILE), content.as_bytes());
+        }
     }
 }
 
@@ -284,9 +296,14 @@ mod tests {
         assert!(md.contains("Subproject: `api`"));
     }
 
-    /// B1: `--findings-file` persists the reviewer's findings to
-    /// `.claude/spec/{spec}/review/findings.md` beside `verdict.md`; absent, no
-    /// findings file is written (backward-compatible).
+    /// B1: `--findings-file` persists the reviewer's findings beside
+    /// `verdict.md`; absent, no findings file is written (backward-compatible).
+    ///
+    /// A review that NAMES a subproject writes only that subproject's file. The
+    /// spec-wide `findings.md` used to be written too, which meant the last
+    /// reviewer of any subproject owned the name every other subproject reads —
+    /// a cross-subproject leak the retry renderer had to defend against instead
+    /// of one the writer never created.
     #[test]
     fn findings_file_is_persisted_when_supplied() {
         let dir = tempdir().unwrap();
@@ -295,17 +312,33 @@ mod tests {
 
         record_review(dir.path(), "demo", "rejected", 1, Some("api"), Some(&src));
 
-        let findings_path = ClaudePaths::for_project(dir.path())
+        let review_dir = ClaudePaths::for_project(dir.path())
             .unwrap()
             .for_spec("demo")
             .unwrap()
             .dir()
+            .join("review");
+        let scoped = review_dir.join("findings-api.md");
+        let md = std::fs::read_to_string(&scoped).expect("findings-api.md written");
+        assert!(md.contains("null deref in parse()"), "findings body: {md}");
+        assert!(
+            !review_dir.join("findings.md").exists(),
+            "a scoped review must not also claim the spec-wide name"
+        );
+
+        // A review that names NO subproject still writes the spec-wide file —
+        // that is its scope, and the retry's fallback when nothing is scoped.
+        record_review(dir.path(), "wide", "rejected", 1, None, Some(&src));
+        let wide = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .for_spec("wide")
+            .unwrap()
+            .dir()
             .join("review")
             .join("findings.md");
-        let md = std::fs::read_to_string(&findings_path).expect("findings.md written");
-        assert!(md.contains("null deref in parse()"), "findings body: {md}");
+        assert!(wide.exists(), "an unscoped review writes findings.md");
 
-        // No --findings-file → no findings.md (verdict.md still written).
+        // No --findings-file → no findings file at all (verdict.md still written).
         record_review(dir.path(), "bare", "approved", 0, None, None);
         let bare = ClaudePaths::for_project(dir.path())
             .unwrap()

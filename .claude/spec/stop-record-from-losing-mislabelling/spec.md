@@ -82,14 +82,37 @@ what refuses to read that as success.
 
 ## Checklist
 
-- [ ] T1 — Every wave keeps its own memory: the capture is scoped to the wave that
+- [x] T1 — Every wave keeps its own memory: the capture is scoped to the wave that
       emitted it, and no memory is dropped when several waves close in one round.
-- [ ] T2 — The obligation match compares identifiers, not fragments.
-- [ ] T3 — The close report gives its two unproven cases distinct wordings, as the
+      The wave now travels a route production actually populates. The first
+      attempt read `MUSTARD_ACTIVE_WAVE`, which NOTHING in this repository sets,
+      so every real `decision` row carried `wave: null` and every memory file said
+      `unknown` while the test — which set the field by hand — stayed green. The
+      dispatch now stamps `<!-- mustard:wave=N -->` into the prompt it expands
+      (the wave comes from the rendered prompt's own path), Claude Code persists
+      that prompt verbatim as the child's first transcript line, and the
+      SubagentStop capture reads it back off `agent_transcript_path`. Being
+      per-child, it stays right while a whole round of siblings is in flight —
+      which is exactly when the old attribution went wrong.
+      The "none dropped" half: the measured five-emitted/four-written loss was
+      DIAGNOSED, not assumed. The run's own log holds five captured decisions and
+      four files; the fifth was rejected by the VALUE FILTER, not lost by the
+      writer — it names its alternative but states no consequence, and
+      `lesson_qualifies` requires both clauses. Adding a consequence and changing
+      nothing else makes it qualify, which is what names the failing clause. That
+      is a false reject by a filter whose own doc says a false reject costs one
+      lesson that stays on the event log — which is how the operator recovered it.
+      Both facts are locked by tests under the AC-1 filter.
+- [x] T2 — The obligation match compares identifiers, not fragments.
+- [x] T3 — The close report gives its two unproven cases distinct wordings, as the
       module's own doc already requires.
-- [ ] T4 — The retry context is assembled per subproject, so two prompts rendered
+- [x] T4 — The retry context is assembled per subproject, so two prompts rendered
       for different subprojects never carry the same task text.
-- [ ] T5 — The dispatch prose teaches the precheck skip marker beside the ok
+      Closed at the WRITER too: a review that names a subproject no longer also
+      overwrites the spec-wide `review/findings.md`. The reader's guard only
+      protected the one reader that had it; any other reader (a human, the next
+      one written) still opened `findings.md` and saw another subproject's review.
+- [x] T5 — The dispatch prose teaches the precheck skip marker beside the ok
       reading.
 - [x] T6 — DROPPED, not done. The premise was false: the operator deleted
       MUSTARD-COMMANDS.md and install-retrieval.ps1 by hand, by mistake. No
