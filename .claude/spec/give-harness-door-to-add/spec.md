@@ -65,6 +65,9 @@ what refuses to read that as success.
 - **AC-3** — when the work a criterion describes is taken away again, then a criterion still green there is reported as verifying nothing, and one whose own evidence the strip took away is DECLINED by name instead of being booked as a proven red
   Command: `cargo test -p mustard-rt removal_refuses_a_survivor_and_declines_what_it_cannot_judge`
   Expect: `ok\. [1-9][0-9]* passed`
+- **AC-5** — when a criterion carries no Command line, then the whole statement block it supersedes is replaced rather than left orphaned under the new header
+  Command: `cargo test -p mustard-rt a_criterion_without_a_command_line_still_loses_its_whole_statement_block`
+  Expect: `ok\. [1-9][0-9]* passed`
 - **AC-4** — the project build passes green
   Command: `cargo build --workspace`
 

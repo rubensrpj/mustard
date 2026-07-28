@@ -1,6 +1,7 @@
 # Review Verdict
 
 - Spec: `stop-record-from-losing-mislabelling`
-- Verdict: **REJECTED**
-- Critical findings: 1
+- Verdict: **APPROVED**
+- Critical findings: 0
+- Subproject: `apps/rt`
 

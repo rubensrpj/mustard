@@ -90,25 +90,40 @@ impl RemovedTree {
     /// file name of every file the strip deleted outright.
     ///
     /// This is what lets the caller read a red honestly. A criterion whose
-    /// command names one of these words — a test function name, a file path, a
-    /// marker string — had its OWN evidence taken away by the strip, so its red
-    /// is guaranteed and says nothing about the behaviour. See
-    /// [`taken_away_word`].
+    /// command OR `Expect:` regex names one of these words — a test function
+    /// name, a file path, a marker string — had its OWN evidence taken away by
+    /// the strip, so its red is guaranteed and says nothing about the
+    /// behaviour. See [`taken_away_word`].
     pub(crate) fn removed_text(&self) -> &BTreeSet<String> {
         &self.removed_text
     }
 }
 
-/// The first word of `command` that `removed_text` says the strip took away, or
-/// `None` when the command names nothing the removal deleted.
+/// The first word of the criterion's OWN EVIDENCE that `removed_text` says the
+/// strip took away, or `None` when the evidence names nothing the removal
+/// deleted.
 ///
-/// Pure and total, and the ONE place a command is matched against the strip, so
-/// the words are split the same way on both sides. Deliberately conservative:
-/// a word that merely MOVED between two stripped files still reads as taken
-/// away, which costs an honest "cannot judge" — the safe direction. The unsafe
-/// direction is the one this exists to close: reading a guaranteed red as proof.
-pub(crate) fn taken_away_word(removed_text: &BTreeSet<String>, command: &str) -> Option<String> {
-    words(command).find(|w| removed_text.contains(w))
+/// The evidence is BOTH halves the executor grades with: the `command` and the
+/// `Expect:` regex. Taking only the command would leave the whole class of
+/// criteria whose marker lives in the expectation — ``Command: `type lib.txt`
+/// Expect: `beta_marker` `` — with their red manufactured by the strip and
+/// booked as proof, which is the exact defect the decline exists to close. The
+/// two are one argument here so no caller can consult half of it.
+///
+/// Pure and total, and the ONE place a criterion is matched against the strip,
+/// so the words are split the same way on both sides. Deliberately
+/// conservative: a word that merely MOVED between two stripped files still
+/// reads as taken away, which costs an honest "cannot judge" — the safe
+/// direction. The unsafe direction is the one this exists to close: reading a
+/// guaranteed red as proof.
+pub(crate) fn taken_away_word(
+    removed_text: &BTreeSet<String>,
+    command: &str,
+    expect: Option<&str>,
+) -> Option<String> {
+    words(command)
+        .chain(words(expect.unwrap_or_default()))
+        .find(|w| removed_text.contains(w))
 }
 
 /// The words of `text` as the removal compares them: runs of the characters a
@@ -449,12 +464,26 @@ mod tests {
             !removed_text.contains("before"),
             "a word the strip put BACK is not removed: {removed_text:?}"
         );
-        // And the matcher reads a command through the same split, both ways.
+        // And the matcher reads a criterion through the same split, both ways
+        // and BOTH HALVES: a marker that lives only in the `Expect:` regex is
+        // evidence the strip took away exactly as much as one named in the
+        // command, so consulting the command alone would hand that whole class
+        // a manufactured red.
         assert_eq!(
-            taken_away_word(removed_text, "findstr marker_added added.txt").as_deref(),
+            taken_away_word(removed_text, "findstr marker_added added.txt", None).as_deref(),
             Some("marker_added")
         );
-        assert_eq!(taken_away_word(removed_text, "cd kept.txt"), None);
+        assert_eq!(
+            taken_away_word(removed_text, "type kept.txt", Some("marker_kept")).as_deref(),
+            Some("marker_kept"),
+            "the expectation is evidence too"
+        );
+        assert_eq!(taken_away_word(removed_text, "cd kept.txt", None), None);
+        assert_eq!(
+            taken_away_word(removed_text, "cd kept.txt", Some("before")),
+            None,
+            "and an expectation naming nothing the strip took is not a decline"
+        );
 
         // The live checkout is untouched — the whole reason the strip happens
         // somewhere else.

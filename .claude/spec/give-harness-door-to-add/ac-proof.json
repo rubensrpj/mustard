@@ -10,6 +10,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s\n     Running unittests src\\lib."
     },
@@ -22,6 +24,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 2.32s\n     Running unittests src\\lib."
     },
@@ -34,6 +38,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
     },
@@ -46,8 +52,24 @@
       "confirmation": "not-taken",
       "exit": null,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
       "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo test -p mustard-rt a_criterion_without_a_command_line_still_loses_its_whole_statement_block",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "not-taken",
+      "exit": 101,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s\n     Running unittests src\\lib."
     }
   ],
   "amendments": [
@@ -62,6 +84,19 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "statement": "when the work a criterion describes is taken away again, then a criterion still green there is reported as verifying nothing, and one whose own evidence the strip took away is DECLINED by name instead of being booked as a proven red",
       "rewrote": [
+        ".claude/spec/give-harness-door-to-add/spec.md"
+      ]
+    }
+  ],
+  "additions": [
+    {
+      "id": "AC-5",
+      "at": "2026-07-28T14:04:16.967Z",
+      "reason": "Review MAJOR: T3 shipped named by no criterion, so the close would report green having verified nothing about the orphan fix.",
+      "statement": "when a criterion carries no Command line, then the whole statement block it supersedes is replaced rather than left orphaned under the new header",
+      "command": "cargo test -p mustard-rt a_criterion_without_a_command_line_still_loses_its_whole_statement_block",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "wrote": [
         ".claude/spec/give-harness-door-to-add/spec.md"
       ]
     }
