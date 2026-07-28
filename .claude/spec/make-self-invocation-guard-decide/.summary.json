@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "make-self-invocation-guard-decide",
+  "title": "Make the self-invocation guard decide by path instead of by crate name: refuse a QA criterion only when the command would overwrite the very binary running it, so a spec whose criteria test the harness itself can be verified and closed",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

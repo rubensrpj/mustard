@@ -7,11 +7,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-core v0.1.0 (C:\\Atiz\\mustard\\packages\\core)\n   Compiling mustard-rt v0.1.0 (C:\\Ati"
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-2",
@@ -19,11 +19,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-3",
@@ -46,7 +46,7 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
-      "reason": "the proof was TAKEN and the command came back green against the tree as it is, so this criterion cannot tell done from not-done — rewrite the command so it asserts the new behaviour",
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
       "stderr_excerpt": ""
     }
   ],
