@@ -723,8 +723,20 @@ const MEMORY_STEM_SEGMENTS: usize = 6;
 ///
 /// Kebab-casing goes through the project's single slug maker
 /// ([`i18n::slugify`]) so there is no second, hand-rolled stopword list.
+///
+/// The wave in the name is the EMITTING wave, never the wave that happened to
+/// materialise the lesson: a memory swept by a sibling's close used to be
+/// stamped with the sibling's number, which is an attribution the record could
+/// not support. `None` is the honest spelling for a lesson whose event carried
+/// no wave — spelled `waveunknown` rather than dropped or defaulted, so the name
+/// states the fact instead of borrowing a number nobody established. It stays
+/// ONE token for the same ranking reason `wave{N}` does.
 #[must_use]
-pub(crate) fn memory_file_stem(lesson: &str, wave: u64) -> String {
+pub(crate) fn memory_file_stem_for(lesson: &str, wave: Option<u64>) -> String {
+    let marker = match wave {
+        Some(n) => format!("wave{n}"),
+        None => "waveunknown".to_string(),
+    };
     let slug = i18n::slugify(&normalize_lesson(lesson), Locale::EnUs);
     let kept: Vec<&str> = slug
         .split('-')
@@ -732,9 +744,9 @@ pub(crate) fn memory_file_stem(lesson: &str, wave: u64) -> String {
         .take(MEMORY_STEM_SEGMENTS)
         .collect();
     if kept.is_empty() {
-        return format!("lesson-wave{wave}");
+        return format!("lesson-{marker}");
     }
-    format!("{}-wave{wave}", kept.join("-"))
+    format!("{}-{marker}", kept.join("-"))
 }
 
 /// Render a `## SPEC MEMORY` block from matched principle files.
@@ -1084,12 +1096,20 @@ mod tests {
 
     #[test]
     fn memory_file_stem_carries_the_wave_without_a_generic_wave_stem() {
-        let stem = memory_file_stem(
-            "Chose the porcelain parser over slicing fixed columns because the helper trims",
-            1,
-        );
+        let lesson =
+            "Chose the porcelain parser over slicing fixed columns because the helper trims";
+        let stem = memory_file_stem_for(lesson, Some(1));
         assert!(stem.ends_with("-wave1"), "the wave is part of the name: {stem}");
         assert!(stem.contains("porcelain"), "{stem}");
+        // A lesson whose event recorded no wave says so instead of borrowing
+        // one, and the marker stays ONE token for the same ranking reason.
+        let unknown = memory_file_stem_for(lesson, None);
+        assert!(unknown.ends_with("-waveunknown"), "{unknown}");
+        assert!(
+            !name_stems(&unknown).iter().any(|s| s == "wave"),
+            "got {:?}",
+            name_stems(&unknown)
+        );
         // The whole point of `wave1` over `wave-1`: no bare `wave` stem, which
         // would fire in nearly every dispatch intent and flatten the ranking.
         let stems = name_stems(&stem);

@@ -36,7 +36,7 @@ The placeholders the renderer substitutes — `TEMPLATE_PLACEHOLDERS` in `apps/r
 | `{cross_wave_memory}` | renderer-internal (capability blocks + spec-memory `<spec>/memory/*.md` + vocabulary regression) | VARIABLE — empty when none apply. The memory files are PROCESS memory, written by `wave-done` as each wave closes; see below. |
 | `{reference_files}` | scan-derived neighbours — the spec's `## Files`/`## Arquivos` list + those files' public signatures (tree-sitter) | 2-3 file references. |
 | `{skills_list}` | the subproject's skill shelf — names + trigger descriptions, never bodies | The agent loads each via the Skill tool; empty for the `patterns` role by design. |
-| `{retry_context}` | renderer-composed (`compose_retry_context`): last `review.result` verdict + critical count, last `pipeline.wave.failed` signal, persisted `<spec>/review/findings.md`, prior-wave diff, change log | Empty in `first`; composed in `granular`/`fix-loop`; `--retry-context-file` overrides with hand-supplied text. |
+| `{retry_context}` | renderer-composed (`compose_retry_context`): last `review.result` verdict + critical count, last `pipeline.wave.failed` signal, the persisted findings for THIS subproject (`<spec>/review/findings-{sub}.md`, falling back to the spec-wide `findings.md` only while no scoped file exists), prior-wave diff, change log | Empty in `first`; composed in `granular`/`fix-loop`; `--retry-context-file` overrides with hand-supplied text. |
 
 ## `## CONVERSATION MATERIAL` — the per-wave cut
 

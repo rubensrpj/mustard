@@ -63,7 +63,7 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
 
     // 2. Materialize this wave's qualifying lessons as spec-memory files, so
     //    the NEXT round's render can pick them up — fail-open.
-    let memories = materialize_wave_memory(&cwd, spec, wave);
+    let memories = materialize_wave_memory(&cwd, spec);
 
     // 3. Cache the wave diff for the next round's render — fail-open.
     let diff_cached = cache_wave_diff(&cwd, spec, wave);
@@ -127,7 +127,7 @@ fn unaccounted_reality_obligations(cwd: &Path, spec: &str, wave: u64) -> Vec<Str
     let recorded = recorded_return_text(&spec_paths.events_dir());
     duties
         .into_iter()
-        .filter(|(id, _)| !recorded.contains(id.as_str()))
+        .filter(|(id, _)| !accounts_for(&recorded, id))
         .map(|(id, duty)| {
             format!(
                 "{id} — no account of this duty in anything wave {wave} recorded: \"{duty}\". \
@@ -135,6 +135,36 @@ fn unaccounted_reality_obligations(cwd: &Path, spec: &str, wave: u64) -> Vec<Str
             )
         })
         .collect()
+}
+
+/// `true` when `recorded` accounts for the obligation `id` — the id appears as
+/// an IDENTIFIER, not merely as a run of characters.
+///
+/// A bare `contains` is wrong in the one way that matters here: obligation ids
+/// share prefixes (`RO-3.1` is a prefix of `RO-3.10`), so a wave reporting
+/// `RO-3.10` also cleared `RO-3.1`, turning an account of one duty into a silent
+/// discharge of another. Both sides of a hit must therefore end the identifier:
+/// the characters an id is made of are ASCII alphanumerics, `-` and `.`, so a
+/// neighbouring one of those means the match landed INSIDE a longer id.
+///
+/// Case-sensitive on purpose — ids are generated uppercase by
+/// [`crate::commands::wave::wave_scaffold`], and folding case here would only
+/// widen a test that exists to be narrow.
+fn accounts_for(recorded: &str, id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    let bytes = recorded.as_bytes();
+    // Byte-indexed rather than sliced, so a multi-byte neighbour can never split
+    // a char boundary. A continuation byte is not ASCII, so it correctly reads
+    // as "not part of an id".
+    let is_id_char = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'.';
+    recorded.match_indices(id).any(|(start, hit)| {
+        let end = start + hit.len();
+        let left_ok = start == 0 || !is_id_char(bytes[start - 1]);
+        let right_ok = end >= bytes.len() || !is_id_char(bytes[end]);
+        left_ok && right_ok
+    })
 }
 
 /// Everything the waves of this spec recorded on their way back, concatenated —
@@ -181,9 +211,23 @@ fn recorded_return_text(events_dir: &Path) -> String {
 ///
 /// ## Attribution and idempotency
 ///
-/// A decision not yet on disk is attributed to the wave closing NOW — which is
-/// the wave that produced it, since this runs at every wave's close. A lesson
-/// already materialized is skipped by body comparison, so re-running
+/// A lesson is attributed to the wave RECORDED ON ITS OWN EVENT, never to the
+/// wave closing now. The two used to be conflated on the premise that wave-done
+/// runs at every wave's close — which is true, but says nothing about ORDER: a
+/// round closes several waves, and the first `wave-done` of the round sees every
+/// sibling's decision already on the log. It swept them all and stamped each
+/// with its own number, so a wave's lesson was filed under a sibling. Measured
+/// on the run that produced this spec: two rounds, four memory files, two of
+/// them attributed to a wave that did not write them.
+///
+/// So the sweep stays — whichever `wave-done` gets there first materializes
+/// everything pending, which is what keeps a lesson from being lost when its own
+/// wave's close already ran — but the WAVE in the file comes from the event.
+/// When the event carries none, the file says `unknown` rather than borrowing
+/// the closing wave's number: the harness must not assert an attribution it
+/// never established.
+///
+/// A lesson already materialized is skipped by body comparison, so re-running
 /// `wave-done`, or closing a later wave, never re-attributes or duplicates an
 /// earlier wave's lesson.
 ///
@@ -200,7 +244,9 @@ fn recorded_return_text(events_dir: &Path) -> String {
 /// reported done.
 ///
 /// Returns the repo-relative paths written, for the composite's JSON report.
-fn materialize_wave_memory(cwd: &Path, spec: &str, wave: u64) -> Vec<String> {
+///
+/// Takes no wave: the closing wave is exactly the number this must NOT use.
+fn materialize_wave_memory(cwd: &Path, spec: &str) -> Vec<String> {
     let Ok(spec_paths) = ClaudePaths::for_project(cwd).and_then(|p| p.for_spec(spec)) else {
         return Vec::new();
     };
@@ -220,6 +266,10 @@ fn materialize_wave_memory(cwd: &Path, spec: &str, wave: u64) -> Vec<String> {
             );
             context_inject::lesson_qualifies(&text).then(|| Lesson {
                 text,
+                // The wave the EVENT recorded. `0` is the schema's "outside a
+                // wave plan" and here means nobody established one, so it
+                // becomes `None` and the file will say so.
+                wave: (e.wave > 0).then(|| u64::from(e.wave)),
                 role: e.payload.get("role").and_then(Value::as_str).unwrap_or_default().to_string(),
                 session: e.session_id.clone(),
                 recorded: e.ts.clone(),
@@ -239,10 +289,10 @@ fn materialize_wave_memory(cwd: &Path, spec: &str, wave: u64) -> Vec<String> {
         if fs::create_dir_all(&memory_dir).is_err() {
             return written;
         }
-        let Some(dest) = free_memory_path(&memory_dir, &lesson.text, wave) else {
+        let Some(dest) = free_memory_path(&memory_dir, &lesson.text, lesson.wave) else {
             continue;
         };
-        let body = render_memory_file(&dest, spec, wave, &lesson);
+        let body = render_memory_file(&dest, spec, &lesson);
         if fs::write_atomic(&dest, body.as_bytes()).is_err() {
             continue;
         }
@@ -256,10 +306,12 @@ fn materialize_wave_memory(cwd: &Path, spec: &str, wave: u64) -> Vec<String> {
     written
 }
 
-/// One captured lesson plus the provenance that makes it checkable: the role
-/// that emitted it, the run (session) it belongs to, and when it was recorded.
+/// One captured lesson plus the provenance that makes it checkable: the wave
+/// that emitted it (`None` when its event recorded none), the role that emitted
+/// it, the run (session) it belongs to, and when it was recorded.
 struct Lesson {
     text: String,
+    wave: Option<u64>,
     role: String,
     session: String,
     recorded: String,
@@ -303,13 +355,15 @@ fn memory_body(text: &str) -> String {
 
 /// Resolve a free path for `lesson` under `memory_dir`.
 ///
-/// The stem is deterministic ([`context_inject::memory_file_stem`]), so two
-/// different lessons closing in the same wave can collide on it; a numeric
-/// suffix disambiguates. A path whose file already holds a DIFFERENT lesson is
-/// never overwritten. `None` when every candidate is taken — fail-open, that
-/// lesson is simply not materialized.
-fn free_memory_path(memory_dir: &Path, lesson: &str, wave: u64) -> Option<PathBuf> {
-    let stem = context_inject::memory_file_stem(lesson, wave);
+/// The stem is deterministic ([`context_inject::memory_file_stem_for`]), so two
+/// different lessons from the same wave can collide on it; a numeric suffix
+/// disambiguates. A path whose file already holds a DIFFERENT lesson is never
+/// overwritten. `None` when every candidate is taken — fail-open, that lesson is
+/// simply not materialized.
+///
+/// `wave` is the EMITTING wave, `None` when its event recorded none.
+fn free_memory_path(memory_dir: &Path, lesson: &str, wave: Option<u64>) -> Option<PathBuf> {
+    let stem = context_inject::memory_file_stem_for(lesson, wave);
     for n in 1..=9u8 {
         let name = if n == 1 {
             format!("{stem}.md")
@@ -337,11 +391,18 @@ fn free_memory_path(memory_dir: &Path, lesson: &str, wave: u64) -> Option<PathBu
 /// inline summary, and `description_stems` mines the frontmatter `description:`
 /// line as a secondary relevance signal — so the lesson appears in both, once as
 /// the header field the matcher reads and once as the body the reader reads.
-fn render_memory_file(dest: &Path, spec: &str, wave: u64, lesson: &Lesson) -> String {
+///
+/// The `wave:` field is the EMITTING wave and reads `unknown` when its event
+/// recorded none. A number here is a claim about who learned this; the closing
+/// wave's number would be a claim nothing established.
+fn render_memory_file(dest: &Path, spec: &str, lesson: &Lesson) -> String {
     let name = dest
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    let wave = lesson
+        .wave
+        .map_or_else(|| "unknown".to_string(), |w| w.to_string());
     format!(
         "---\n\
          name: {name}\n\
@@ -554,13 +615,13 @@ mod tests {
     /// `hooks::task::subagent_inject::capture_memory_decision` writes in
     /// production, so this exercises the real channel rather than a parallel
     /// fixture format that could silently drift from the real writer.
-    fn seed_decision(root: &Path, spec: &str, title: &str, session: &str) {
+    fn seed_decision(root: &Path, spec: &str, wave: u32, title: &str, session: &str) {
         use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
             ts: mustard_core::time::now_iso8601(),
             session_id: session.to_string(),
-            wave: 0,
+            wave,
             actor: Actor {
                 kind: ActorKind::Hook,
                 id: Some("subagent_inject".to_string()),
@@ -612,9 +673,9 @@ mod tests {
 
         let lesson = "Chose the porcelain parser over slicing fixed columns \
                       because the shared git helper trims the whole output";
-        seed_decision(root, spec, lesson, "run-42");
+        seed_decision(root, spec, 1, lesson, "run-42");
 
-        let written = materialize_wave_memory(root, spec, 1);
+        let written = materialize_wave_memory(root, spec);
         assert_eq!(written.len(), 1, "one qualifying lesson → one memory file: {written:?}");
 
         // The file NAMES its wave, and its frontmatter names the run it belongs
@@ -653,9 +714,345 @@ mod tests {
 
         // Closing a later wave neither duplicates the file nor re-attributes it
         // to that later wave — the lesson stays owned by the wave that had it.
-        let again = materialize_wave_memory(root, spec, 2);
+        let again = materialize_wave_memory(root, spec);
         assert!(again.is_empty(), "already materialized: {again:?}");
         assert_eq!(memory_files(root, spec), names, "no duplicate, no re-attribution");
+    }
+
+    /// AC-1: a ROUND closes several waves, and each one's memory is written
+    /// under the wave that emitted it — none stamped with a sibling's number,
+    /// and none dropped.
+    ///
+    /// The measured defect this locks: `wave-done` attributed every pending
+    /// lesson to the wave closing NOW. Because a round's waves all close in
+    /// sequence, the FIRST close of the round swept its siblings' decisions too
+    /// and filed them under its own number. Two rounds of the run that produced
+    /// this spec left four memory files, two of them naming a wave that had not
+    /// written them.
+    ///
+    /// So the test drives ONE close over a log that already carries three waves'
+    /// decisions — exactly the state the first close of a round sees.
+    #[test]
+    fn every_wave_keeps_its_own_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "one-round-three-waves";
+        anchored_spec(root, spec);
+
+        seed_decision(
+            root,
+            spec,
+            3,
+            "Chose the porcelain parser over slicing fixed columns because the shared git \
+             helper trims the whole output",
+            "run-1",
+        );
+        seed_decision(
+            root,
+            spec,
+            4,
+            "Chose an atomic write over a plain write because a mid-write crash corrupts the \
+             ledger",
+            "run-1",
+        );
+        seed_decision(
+            root,
+            spec,
+            5,
+            "Chose the id match over the substring match because RO-3.10 would otherwise \
+             discharge RO-3.1",
+            "run-1",
+        );
+
+        // The first close of the round. It sees all three, and it must not keep
+        // any of them for itself.
+        let written = materialize_wave_memory(root, spec);
+        assert_eq!(written.len(), 3, "none dropped: {written:?}");
+
+        let names = memory_files(root, spec);
+        assert_eq!(names.len(), 3, "one file per emitted memory: {names:?}");
+        for wave in [3u32, 4, 5] {
+            let marker = format!("-wave{wave}.md");
+            let name = names
+                .iter()
+                .find(|n| n.ends_with(&marker))
+                .unwrap_or_else(|| panic!("no file for wave {wave}: {names:?}"));
+            let body = std::fs::read_to_string(
+                root.join(".claude/spec").join(spec).join("memory").join(name),
+            )
+            .expect("memory file");
+            assert!(
+                body.contains(&format!("\nwave: {wave}\n")),
+                "wave {wave}'s file carries another wave's number: {body}"
+            );
+        }
+
+        // The closes of the round's other waves add nothing and re-file nothing.
+        assert!(materialize_wave_memory(root, spec).is_empty(), "idempotent");
+        assert_eq!(memory_files(root, spec), names, "no re-attribution");
+    }
+
+    /// The diagnosis of the "five emitted, four written" loss the spec was
+    /// written from — measured, not reasoned.
+    ///
+    /// What the run's own event log shows: five `decision` rows were captured by
+    /// `subagent_inject` for that spec, and four memory files exist. The fifth is
+    /// the sentence below, verbatim from
+    /// `.claude/spec/make-harness-stop-asserting-what/.events/` — the wave-4
+    /// lesson the operator later re-entered by hand.
+    ///
+    /// It was not dropped by the writer. It never reached the writer: the VALUE
+    /// FILTER rejected it. The lesson names its alternative ("not
+    /// `pipeline.task.dispatch`") but states no consequence of going the other
+    /// way, and `lesson_qualifies` requires BOTH clauses. The proof that clause
+    /// (b) is the one that failed is the second half of this test: the same
+    /// sentence, with a consequence added and nothing else changed, becomes a
+    /// file.
+    ///
+    /// So the loss is a false reject by a filter whose own doc calls itself loose
+    /// and says a false reject costs one lesson that stays on the event log —
+    /// which is exactly what happened, and how the operator recovered it. Nothing
+    /// here is a bug to fix; it is a fact that had to be established rather than
+    /// left as "undiagnosed", and this test is what keeps it established.
+    #[test]
+    fn every_wave_keeps_its_own_memory_and_the_fifth_was_value_filtered_not_dropped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "the-fifth-lesson";
+        anchored_spec(root, spec);
+
+        let lost = r#"The trustworthy "was this wave dispatched" signal is `pipeline.wave.start` (emitted by wave-advance itself), not `pipeline.task.dispatch` (orchestrator-relayed and unenforced, per wave-advance's own module docs). Anything asking whether work actually started should key on wave.start first."#;
+
+        assert!(
+            !crate::commands::agent::context_inject::lesson_qualifies(lost),
+            "the measured fifth lesson must be the value filter's rejection, not the writer's"
+        );
+
+        seed_decision(root, spec, 4, lost, "run-measured");
+        assert!(
+            materialize_wave_memory(root, spec).is_empty(),
+            "a lesson the filter rejects must not reach the writer at all"
+        );
+
+        // The SAME sentence with a consequence — clause (b) — and nothing else
+        // changed. It qualifies, which names the clause that failed above.
+        let with_consequence = format!("{lost} Keying on the dispatch event instead reports work that never started.");
+        assert!(
+            crate::commands::agent::context_inject::lesson_qualifies(&with_consequence),
+            "adding the consequence clause must be enough: {with_consequence}"
+        );
+        seed_decision(root, spec, 4, &with_consequence, "run-measured");
+        assert_eq!(
+            materialize_wave_memory(root, spec).len(),
+            1,
+            "the writer drops nothing that clears the filter"
+        );
+    }
+
+    /// AC-1, through the chain a real run actually walks — no hand-seeded wave
+    /// anywhere.
+    ///
+    /// Why this test exists next to [`every_wave_keeps_its_own_memory`]: that one
+    /// writes the `wave` field into the event itself, so it proves the
+    /// materializer and nothing about whether a real run can ever produce that
+    /// field. Review measured that it could not. The capture read the wave from
+    /// `MUSTARD_ACTIVE_WAVE`, which nothing in this repository sets, so every
+    /// `decision` row on every real spec log carries `wave: null` and every
+    /// memory file a real run wrote said `unknown`. Green test, inert feature.
+    ///
+    /// So this drives the producers end to end, exactly as the pipeline does:
+    ///
+    /// 1. `agent-prompt-render --emit ref` writes `wave-{N}-…prompt.md` and hands
+    ///    the orchestrator a 2-line stub (here: the stub, written by hand in the
+    ///    marker's own format, plus the file the renderer would have written);
+    /// 2. the PreToolUse hook expands the stub and STAMPS the wave into the
+    ///    prompt it rewrites;
+    /// 3. Claude Code persists that prompt verbatim as the child's first
+    ///    transcript line (here: written to disk in that shape);
+    /// 4. the SubagentStop hook harvests the `<MEMORY>` block and reads the wave
+    ///    back off the child's OWN transcript;
+    /// 5. `materialize_wave_memory` files each lesson under the wave that emitted
+    ///    it.
+    ///
+    /// Three sibling waves are in flight at once — the round shape that made the
+    /// old attribution wrong — and one close sees all three returns.
+    #[test]
+    fn every_wave_keeps_its_own_memory_through_the_real_dispatch_chain() {
+        use crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER;
+        use crate::hooks::task::subagent_inject::SubagentInject;
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "real-chain-three-waves";
+        anchored_spec(root, spec);
+        let cwd = root.to_string_lossy().to_string();
+        // Bind the session→spec the way a live pipeline does, so the capture
+        // resolves the spec through its own production lookup. The hook resolves
+        // the AMBIENT session id (the value a live hook process carries), so bind
+        // that one — binding an invented id would leave the capture spec-less and
+        // silently no-op, which is the shape of the very defect being fixed.
+        let sid = crate::shared::context::session_id();
+        crate::shared::context::bind_session_spec(&cwd, &sid, spec);
+        // Belt for a host whose ambient session id is `unknown` (which the
+        // binding refuses): the legacy state file `current_spec` reads.
+        let states = root.join(".claude/.pipeline-states");
+        std::fs::create_dir_all(&states).expect("states dir");
+        std::fs::write(states.join(format!("{spec}.json")), b"{}").expect("state file");
+        // Fail LOUDLY if the capture would resolve no spec (or another one): a
+        // spec-less capture is a silent no-op, and a test that silently captured
+        // nothing would assert exactly as much as the inert one it replaces.
+        assert_eq!(
+            crate::shared::context::spec_for_session(&cwd, &sid)
+                .or_else(|| crate::shared::context::current_spec(&cwd))
+                .as_deref(),
+            Some(spec),
+            "the capture's own spec lookup must land on this spec"
+        );
+
+        let dispatch_dir = root.join(".claude/spec").join(spec).join(".dispatch");
+        std::fs::create_dir_all(&dispatch_dir).expect("dispatch dir");
+        let transcripts = root.join("transcripts");
+        std::fs::create_dir_all(&transcripts).expect("transcripts dir");
+
+        let lessons = [
+            (3u32, "Chose the porcelain parser over slicing fixed columns because the shared git \
+                    helper trims the whole output"),
+            (4, "Chose an atomic write over a plain write because a mid-write crash corrupts the \
+                 ledger"),
+            (5, "Chose the id match over the substring match because RO-3.10 would otherwise \
+                 discharge RO-3.1"),
+        ];
+
+        for (wave, lesson) in lessons {
+            // (1) what `--emit ref` leaves on disk, and the stub it returns.
+            let rel = format!(".claude/spec/{spec}/.dispatch/wave-{wave}-impl-apps-rt.first.prompt.md");
+            std::fs::write(root.join(&rel), "<!-- PREFIX-STABLE -->\n## ROLE\nROLE: impl\n")
+                .expect("rendered prompt");
+            let stub = format!("{PROMPT_REF_MARKER} {rel}\nDispatch stub — pass verbatim.\n");
+
+            // (2) the PreToolUse hook expands + stamps it.
+            let pre = HookInput {
+                tool_name: Some("Task".to_string()),
+                tool_input: json!({ "prompt": stub, "subagent_type": "impl" }),
+                hook_event_name: Some("PreToolUse".to_string()),
+                ..HookInput::default()
+            };
+            let verdict = SubagentInject
+                .evaluate(
+                    &pre,
+                    &Ctx {
+                        project_dir: cwd.clone(),
+                        trigger: Some(Trigger::PreToolUse),
+                        workspace_root: None,
+                    },
+                )
+                .expect("hook must not error");
+            let Verdict::Rewrite { tool_input } = verdict else {
+                panic!("a ref stub must be rewritten, got {verdict:?}");
+            };
+            let expanded = tool_input
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .expect("rewritten prompt")
+                .to_string();
+
+            // (3) the child's own transcript — first line is that prompt verbatim.
+            let transcript = transcripts.join(format!("agent-wave{wave}.jsonl"));
+            let line = json!({
+                "type": "user",
+                "isSidechain": true,
+                "agentId": format!("agent-wave{wave}"),
+                "message": { "role": "user", "content": expanded },
+            });
+            std::fs::write(&transcript, format!("{line}\n")).expect("transcript");
+
+            // (4) the child returns with its lesson; the stop hook captures it.
+            let stop = HookInput {
+                hook_event_name: Some("SubagentStop".to_string()),
+                agent_type: Some("impl".to_string()),
+                agent_id: Some(format!("agent-wave{wave}")),
+                raw: json!({
+                    "agent_id": format!("agent-wave{wave}"),
+                    "agent_transcript_path": transcript.to_string_lossy(),
+                    "last_assistant_message": format!("Done.\n<MEMORY>{lesson}</MEMORY>"),
+                }),
+                ..HookInput::default()
+            };
+            SubagentInject
+                .evaluate(
+                    &stop,
+                    &Ctx {
+                        project_dir: cwd.clone(),
+                        trigger: Some(Trigger::SubagentStop),
+                        workspace_root: None,
+                    },
+                )
+                .expect("hook must not error");
+        }
+
+        // (5) ONE close sees all three returns — the state the first close of a
+        //     round sees, and the one that used to stamp its siblings' lessons
+        //     with its own number.
+        let written = materialize_wave_memory(root, spec);
+        assert_eq!(written.len(), 3, "none dropped: {written:?}");
+
+        let names = memory_files(root, spec);
+        assert_eq!(names.len(), 3, "one file per emitted memory: {names:?}");
+        for (wave, _) in lessons {
+            let marker = format!("-wave{wave}.md");
+            let name = names
+                .iter()
+                .find(|n| n.ends_with(&marker))
+                .unwrap_or_else(|| panic!("no file for wave {wave}: {names:?}"));
+            let body = std::fs::read_to_string(
+                root.join(".claude/spec").join(spec).join("memory").join(name),
+            )
+            .expect("memory file");
+            assert!(
+                body.contains(&format!("\nwave: {wave}\n")),
+                "wave {wave}'s file carries another wave's number: {body}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n.ends_with("-waveunknown.md")),
+            "a wave the dispatch named must never file as unknown: {names:?}"
+        );
+    }
+
+    /// The other half of AC-1: a decision whose event recorded NO wave is still
+    /// materialized — never dropped — and the file says `unknown` instead of
+    /// borrowing the closing wave's number. Asserting the drop alone would pass
+    /// on a writer that simply refused every unattributed lesson.
+    #[test]
+    fn a_memory_with_no_recorded_wave_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "unattributed-spec";
+        anchored_spec(root, spec);
+
+        seed_decision(
+            root,
+            spec,
+            0,
+            "Chose the event's own wave over the closing wave because a round's first close \
+             sees every sibling's decision",
+            "run-1",
+        );
+
+        let written = materialize_wave_memory(root, spec);
+        assert_eq!(written.len(), 1, "not dropped: {written:?}");
+        let names = memory_files(root, spec);
+        assert_eq!(names.len(), 1, "got {names:?}");
+        assert!(
+            names[0].ends_with("-waveunknown.md"),
+            "the name claims a wave nobody established: {}",
+            names[0]
+        );
+        let body =
+            std::fs::read_to_string(root.join(".claude/spec").join(spec).join("memory").join(&names[0]))
+                .expect("memory file");
+        assert!(body.contains("\nwave: unknown\n"), "{body}");
     }
 
     /// AC-10: the value filter has an input it REJECTS. Both directions are
@@ -674,19 +1071,21 @@ mod tests {
         seed_decision(
             root,
             spec,
+            1,
             "Fixed the wave-done regression and updated the tests that covered it",
             "run-1",
         );
         seed_decision(
             root,
             spec,
+            1,
             "Interrupted before the build finished, so not everything was verified",
             "run-1",
         );
-        seed_decision(root, spec, "src/a.rs src/b.rs tests/c.rs tests/d.rs", "run-1");
+        seed_decision(root, spec, 1, "src/a.rs src/b.rs tests/c.rs tests/d.rs", "run-1");
 
         assert!(
-            materialize_wave_memory(root, spec, 1).is_empty(),
+            materialize_wave_memory(root, spec).is_empty(),
             "process residue must not become durable memory"
         );
         assert!(
@@ -700,11 +1099,12 @@ mod tests {
         seed_decision(
             root,
             spec,
+            1,
             "Chose wave-close over spec-close for materializing lessons because at spec close \
              every later wave has already run without them",
             "run-1",
         );
-        let written = materialize_wave_memory(root, spec, 1);
+        let written = materialize_wave_memory(root, spec);
         assert_eq!(written.len(), 1, "the qualifying lesson survives: {written:?}");
         assert_eq!(memory_files(root, spec).len(), 1);
     }
@@ -815,5 +1215,58 @@ mod tests {
         let sibling = unaccounted_reality_obligations(root, spec, 4);
         assert_eq!(sibling.len(), 1, "wave 4's duty stays open: {sibling:?}");
         assert!(sibling[0].starts_with("RO-4.1"), "{sibling:?}");
+    }
+
+    /// AC-2: an account of `RO-3.10` leaves `RO-3.1` unaccounted.
+    ///
+    /// The match was a bare `contains`, and obligation ids share prefixes by
+    /// construction — the tenth duty of a wave spells the first one inside
+    /// itself. So a wave that reported ONE duty silently discharged another, and
+    /// the report of a duty became the discharge of a duty nobody checked.
+    ///
+    /// Both directions in one test: the id that WAS accounted for must still
+    /// clear, or a matcher that answers "no" to everything would pass.
+    #[test]
+    fn obligation_match_is_by_id_not_substring() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "prefix-collision-spec";
+        anchored_spec(root, spec);
+        let wave_dir = root.join(".claude/spec").join(spec).join("wave-3-impl");
+        std::fs::create_dir_all(&wave_dir).expect("wave dir");
+        std::fs::write(
+            wave_dir.join("spec.md"),
+            "# W3\n\n## Reality Obligations\n\n\
+             - **RO-3.1** — read the provider's doc for the retry semantics\n\
+             - **RO-3.10** — read one stored row and confirm the status column\n",
+        )
+        .expect("wave spec");
+
+        // The returning agent accounted for the TENTH duty only.
+        seed_agent_stop(root, spec, "Done. RO-3.10: the row's status column reads `paid`.");
+
+        let flagged = unaccounted_reality_obligations(root, spec, 3);
+        assert_eq!(flagged.len(), 1, "exactly one duty stays open: {flagged:?}");
+        assert!(
+            flagged[0].starts_with("RO-3.1 "),
+            "RO-3.1 was discharged by the substring inside RO-3.10: {flagged:?}"
+        );
+        assert!(
+            !flagged.iter().any(|f| f.starts_with("RO-3.10")),
+            "the duty the wave DID account for must not be flagged: {flagged:?}"
+        );
+
+        // The boundary rule itself, on both sides of a hit.
+        assert!(accounts_for("checked RO-3.1 today", "RO-3.1"));
+        assert!(accounts_for("RO-3.1", "RO-3.1"));
+        assert!(accounts_for("(RO-3.1)", "RO-3.1"));
+        assert!(!accounts_for("checked RO-3.10 today", "RO-3.1"));
+        assert!(!accounts_for("checked XRO-3.1 today", "RO-3.1"));
+        assert!(!accounts_for("", "RO-3.1"));
+        assert!(!accounts_for("RO-3.1", ""));
+        // A hit inside a longer id does not hide a real one later in the text.
+        assert!(accounts_for("RO-3.10 and also RO-3.1 itself", "RO-3.1"));
+        // Multi-byte neighbours are not id characters and never split a slice.
+        assert!(accounts_for("verifiquei «RO-3.1» hoje", "RO-3.1"));
     }
 }

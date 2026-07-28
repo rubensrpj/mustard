@@ -36,6 +36,14 @@
 //!    (`wave_scaffold.rs`). A criterion amended only at the root leaves the
 //!    dispatched agent reading the superseded command.
 //!
+//! ## What this door does NOT do: ADD
+//!
+//! Every refusal here presupposes a PREDECESSOR — the replacement must prove it
+//! can fail against a tree where the criterion it supersedes already lived. An
+//! id the spec does not carry has no predecessor, so it is not an amendment at
+//! all and this door refuses it (`unknown_criterion`). Introducing one is
+//! [`super::ac_add`], a door of its own taking the same negative proof.
+//!
 //! ## The name
 //!
 //! `ac-amend`, never a bare `amend`: `amend-finalize`
@@ -77,7 +85,11 @@ use mustard_core::io::fs as mfs;
 
 /// The canonical section key of the acceptance-criteria heading, in the one
 /// spelling the shared resolver understands (EN and PT both resolve through it).
-const AC_SECTION_KEY: &str = "acceptanceCriteria";
+///
+/// `pub(super)` so the ADD door ([`super::ac_add`]) resolves the same heading:
+/// two spellings of "which section holds the criteria" is how a writer would
+/// land a criterion where no reader looks.
+pub(super) const AC_SECTION_KEY: &str = "acceptanceCriteria";
 
 /// Options for `mustard-rt run ac-amend`.
 #[derive(Debug, Clone)]
@@ -192,7 +204,11 @@ struct Rewrite {
 
 /// Normalise a criterion id to the spelling the parser yields: uppercase, and
 /// `AC-` prefixed when the caller passed the bare number. Pure, total.
-fn normalise_id(raw: &str) -> String {
+///
+/// `pub(super)` so the ADD door normalises an id EXACTLY as the amend door
+/// does — otherwise `--ac 5` would add `AC-5` through one door and fail to find
+/// it through the other.
+pub(super) fn normalise_id(raw: &str) -> String {
     let id = raw.trim().to_uppercase();
     if id.starts_with("AC-") {
         id
@@ -334,6 +350,12 @@ fn is_statement_continuation(line: &str) -> bool {
 /// dropped. Lines carrying a marker are never dropped — see
 /// [`is_statement_continuation`].
 ///
+/// And the block STOPS where the parser's lookahead stops, not where the
+/// command sits: a criterion carrying no `Command:` line at all (a wave-plan
+/// bullet, a criterion whose command was cut) still has continuation lines, and
+/// deriving the boundary from the command line is what left that ONE shape
+/// orphaned after the multi-line fix.
+///
 /// `None` when the document carries nothing to change.
 fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
     let lines: Vec<&str> = body.split('\n').collect();
@@ -365,28 +387,36 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
                 out[j] = replace_statement(&out[j], off, statement);
                 changed = true;
             }
+            // Where this criterion's block STOPS — the same rule the parser's
+            // lookahead applies. Computed BEFORE the command is located, because
+            // a criterion carrying NO `Command:` line still has a statement
+            // block to replace; deriving the boundary from the command line
+            // would leave exactly that shape orphaned.
+            let mut block_end = j + 1;
+            while block_end < end && !ends_block(lines[block_end]) {
+                block_end += 1;
+            }
             // The command sits on the header line (one-line form) or on the
             // first `Command:` line of the block (drafter form).
             let inline = marker_end(lines[j], "command:").is_some();
             let cmd_line = if inline {
                 Some(j)
             } else {
-                (j + 1..end)
-                    .take_while(|k| !ends_block(lines[*k]))
-                    .find(|k| marker_end(lines[*k], "command:").is_some())
+                (j + 1..block_end).find(|k| marker_end(lines[*k], "command:").is_some())
             };
-            let Some(k) = cmd_line else { continue };
             // The rest of the statement BLOCK: every pure-prose line between the
-            // header and the command. A new statement replaces all of it, so
+            // header and the command — or, when there is no command line at all,
+            // to the end of the block. A new statement replaces all of it, so
             // what it does not replace it removes.
             if plan.statement.is_some() && !inline {
-                for m in j + 1..k {
+                for m in j + 1..cmd_line.unwrap_or(block_end) {
                     if is_statement_continuation(lines[m]) {
                         consumed[m] = true;
                         changed = true;
                     }
                 }
             }
+            let Some(k) = cmd_line else { continue };
             if let Some(rewritten) = replace_marker_value(&out[k], "command:", &plan.command) {
                 out[k] = rewritten;
                 changed = true;
@@ -399,8 +429,7 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
             let expect_line = if marker_end(&out[k], "expect:").is_some() || inline {
                 k
             } else {
-                (k + 1..end)
-                    .take_while(|m| !ends_block(lines[*m]))
+                (k + 1..block_end)
                     .find(|m| marker_end(lines[*m], "expect:").is_some())
                     .unwrap_or(k)
             };
@@ -454,7 +483,10 @@ fn artefacts(spec_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The criteria a markdown document declares, through the shared parser.
-fn criteria_of(markdown: &str) -> Vec<qa_run::AcItem> {
+///
+/// `pub(super)` — the ADD door asks the same reader whether an id already
+/// exists and whether its own write landed.
+pub(super) fn criteria_of(markdown: &str) -> Vec<qa_run::AcItem> {
     qa_run::extract_ac_section(markdown)
         .map(|section| qa_run::parse_ac_items(&section))
         .unwrap_or_default()
@@ -462,7 +494,10 @@ fn criteria_of(markdown: &str) -> Vec<qa_run::AcItem> {
 
 /// `true` when `path` now declares `id` with exactly `command` — the RE-READ
 /// that turns "the write landed" from an assumption into a report.
-fn landed(path: &Path, id: &str, command: &str) -> bool {
+///
+/// `pub(super)` — the ADD door owes the same re-read for exactly the same
+/// reason: a write nobody read back is a write nobody can report.
+pub(super) fn landed(path: &Path, id: &str, command: &str) -> bool {
     mfs::read_to_string(path).is_ok_and(|body| {
         criteria_of(&body)
             .iter()
@@ -476,7 +511,10 @@ fn landed(path: &Path, id: &str, command: &str) -> bool {
 
 /// Read the ledger beside the spec markdown. An absent or unreadable file
 /// yields an empty ledger, exactly as the negative test treats it.
-fn read_ledger(path: &Path) -> AcProofLedger {
+///
+/// `pub(super)` — shared with the ADD door so both criterion-editing doors
+/// read and write ONE ledger through one pair of functions.
+pub(super) fn read_ledger(path: &Path) -> AcProofLedger {
     mfs::read_to_string(path)
         .ok()
         .and_then(|body| serde_json::from_str::<AcProofLedger>(&body).ok())
@@ -484,7 +522,9 @@ fn read_ledger(path: &Path) -> AcProofLedger {
 }
 
 /// Serialize and write the ledger. `false` when nothing landed on disk.
-fn write_ledger(path: &Path, ledger: &AcProofLedger) -> bool {
+///
+/// `pub(super)` — see [`read_ledger`].
+pub(super) fn write_ledger(path: &Path, ledger: &AcProofLedger) -> bool {
     let Ok(mut body) = serde_json::to_string_pretty(ledger) else {
         return false;
     };
@@ -1183,6 +1223,48 @@ mod tests {
         let kept = rewrite_markdown(odd, "AC-1", &plan).expect("the criterion changed");
         assert!(kept.contains("Expect: `1 passed`"), "marker line eaten: {kept:?}");
         assert!(!kept.contains("over two lines"), "{kept:?}");
+    }
+
+    /// The shape the multi-line fix did NOT reach: a criterion carrying no
+    /// `Command:` line at all. The block boundary used to be derived from the
+    /// command line, so with no command the rewrite gave up AFTER replacing the
+    /// header — leaving the superseded continuation lines orphaned underneath
+    /// the new statement, which is the very defect in a different shape.
+    ///
+    /// Two-sided: the residue is gone from the command-less criterion, and the
+    /// NEXT criterion's own statement block — which begins right after it — is
+    /// untouched, so the fix cannot pass by eating everything below the header.
+    #[test]
+    fn a_criterion_without_a_command_line_still_loses_its_whole_statement_block() {
+        let commandless = "## Acceptance Criteria\n\
+                           - **AC-1** — when the plan is read, then the duty is\n  \
+                           stated in full over several lines\n  \
+                           and ends with nothing to run\n\
+                           - **AC-2** — the sibling keeps its own wrapped\n  \
+                           statement intact\n  \
+                           Command: `cd other`\n";
+        let plan = Rewrite {
+            command: "cd new".to_string(),
+            expect: None,
+            statement: Some("when the plan is read, then the duty is stated once".to_string()),
+        };
+        let updated = rewrite_markdown(commandless, "AC-1", &plan)
+            .expect("the command-less criterion changed");
+        for orphan in ["stated in full over several lines", "and ends with nothing to run"] {
+            assert!(
+                !updated.contains(orphan),
+                "superseded line survived under a criterion with no Command ({orphan:?}): {updated:?}"
+            );
+        }
+        assert!(
+            updated.contains("when the plan is read, then the duty is stated once"),
+            "the new statement is what the reader gets: {updated:?}"
+        );
+        // The sibling's block starts where AC-1's stops — it must be untouched.
+        assert!(
+            updated.contains("statement intact") && updated.contains("Command: `cd other`"),
+            "the next criterion's block was eaten: {updated:?}"
+        );
     }
 
     /// Criterion ids are normalised to the spelling the parser yields, so a

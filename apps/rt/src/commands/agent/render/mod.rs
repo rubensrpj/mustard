@@ -425,9 +425,14 @@ pub(crate) fn render_prompt_at(
     let retry_context = match (mode, retry_context_file) {
         (RenderMode::First, _) => String::new(),
         (_, Some(path)) => mfs::read_to_string(path).unwrap_or_default(),
-        (_, None) => {
-            compose_retry_context(&project, spec, &spec_dir, &prior_wave_diff, &change_log)
-        }
+        (_, None) => compose_retry_context(
+            &project,
+            spec,
+            &spec_dir,
+            Some(subproject_str.as_str()),
+            &prior_wave_diff,
+            &change_log,
+        ),
     };
 
     // No size budget: every placeholder rides in full. Relevance is the only

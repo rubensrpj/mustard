@@ -7,9 +7,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-10",
@@ -17,9 +19,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-11",
@@ -27,9 +31,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-12",
@@ -37,9 +43,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-13",
@@ -47,8 +55,10 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "unproven",
       "proof": "green",
+      "confirmation": "not-taken",
       "exit": 0,
-      "reason": "the proof was TAKEN and the command came back green against the tree as it is, so this criterion cannot tell done from not-done — rewrite the command so it asserts the new behaviour",
+      "confirmation_exit": null,
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
       "stderr_excerpt": ""
     },
     {
@@ -57,9 +67,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 2.06s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-3",
@@ -67,9 +79,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-4",
@@ -77,9 +91,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-5",
@@ -87,9 +103,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-6",
@@ -97,9 +115,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-7",
@@ -107,9 +127,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-8",
@@ -117,9 +139,11 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "green",
       "exit": 0,
+      "confirmation_exit": 0,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-9",
@@ -127,7 +151,9 @@
       "expect": null,
       "verdict": "exempt",
       "proof": "not-attempted",
+      "confirmation": "not-taken",
       "exit": null,
+      "confirmation_exit": null,
       "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
       "stderr_excerpt": ""
     }
