@@ -1331,6 +1331,9 @@ const fn wave_status_string(s: mustard_core::WaveStatus) -> &'static str {
         WaveStatus::InProgress => "in_progress",
         WaveStatus::Completed => "completed",
         WaveStatus::Failed => "failed",
+        // Work let go on purpose — distinct from `queued` (never started) and
+        // `failed` (attempted, did not pass).
+        WaveStatus::Dropped => "dropped",
     }
 }
 

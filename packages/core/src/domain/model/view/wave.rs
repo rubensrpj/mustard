@@ -2,11 +2,16 @@
 //!
 //! Waves are how Mustard parallelises EXECUTE: each one is a unit of work
 //! dispatched to one or more agents. The status enum is the deliberate
-//! 4-state model the dashboard wants — `Queued` (declared, not started),
+//! 5-state model the dashboard wants — `Queued` (declared, not started),
 //! `InProgress` (dispatched, no completion event yet), `Completed` (matching
 //! `pipeline.wave.complete`), `Failed` (matching `pipeline.wave.failed` or a
-//! fix-loop cap). No `Unknown` variant; an absent wave is just absent from
-//! the returned `Vec<WaveView>`.
+//! fix-loop cap), `Dropped` (the pipeline was cancelled/abandoned while the
+//! wave was still open — work let go on purpose). No `Unknown` variant; an
+//! absent wave is just absent from the returned `Vec<WaveView>`.
+//!
+//! `Dropped` exists because the four states could not tell a decision from an
+//! omission: a wave nobody will ever run sat at `Queued` forever, reading
+//! months later exactly like a wave still waiting its turn.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +27,16 @@ pub enum WaveStatus {
     Completed,
     /// Matching `pipeline.wave.failed` event or fix-loop cap hit.
     Failed,
+    /// Let go on purpose: the pipeline reached a deliberate terminal outcome
+    /// (`cancelled` / `abandoned`) while this wave was still open, so its work
+    /// will never be done. Distinct from `Failed` (attempted and did not pass)
+    /// and from `Queued` (still waiting its turn) — that distinction is the
+    /// whole point of the variant.
+    ///
+    /// Serde-additive: the wire word is the kebab-case `"dropped"`, and no
+    /// existing status string changes, so renderers that only knew the four
+    /// keep working on every event stream they already handled.
+    Dropped,
 }
 
 impl WaveStatus {
@@ -31,6 +46,14 @@ impl WaveStatus {
     #[must_use]
     pub const fn is_running(self) -> bool {
         matches!(self, Self::InProgress)
+    }
+
+    /// Whether the wave has settled — nothing more will happen to it. A
+    /// dropped wave is settled the same way a completed or failed one is; a
+    /// queued one is not.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Dropped)
     }
 }
 
@@ -94,5 +117,44 @@ mod tests {
         assert!(!WaveStatus::Queued.is_running());
         assert!(!WaveStatus::Completed.is_running());
         assert!(!WaveStatus::Failed.is_running());
+        assert!(!WaveStatus::Dropped.is_running());
+    }
+
+    #[test]
+    fn dropped_is_terminal_and_distinct_from_queued_and_failed() {
+        // The distinction the variant exists for: work let go on purpose is
+        // settled, and is neither "still waiting its turn" nor "it failed".
+        assert!(WaveStatus::Dropped.is_terminal());
+        assert!(!WaveStatus::Queued.is_terminal());
+        assert_ne!(WaveStatus::Dropped, WaveStatus::Queued);
+        assert_ne!(WaveStatus::Dropped, WaveStatus::Failed);
+    }
+
+    #[test]
+    fn dropped_serialises_as_kebab_case_without_touching_the_other_words() {
+        // The serde contract other crates render against: the new word is
+        // additive, the four existing ones are byte-identical.
+        let words: Vec<String> = [
+            WaveStatus::Queued,
+            WaveStatus::InProgress,
+            WaveStatus::Completed,
+            WaveStatus::Failed,
+            WaveStatus::Dropped,
+        ]
+        .iter()
+        .map(|s| serde_json::to_string(s).expect("serialises"))
+        .collect();
+        assert_eq!(
+            words,
+            vec![
+                "\"queued\"",
+                "\"in-progress\"",
+                "\"completed\"",
+                "\"failed\"",
+                "\"dropped\"",
+            ]
+        );
+        let back: WaveStatus = serde_json::from_str("\"dropped\"").expect("round-trips");
+        assert_eq!(back, WaveStatus::Dropped);
     }
 }

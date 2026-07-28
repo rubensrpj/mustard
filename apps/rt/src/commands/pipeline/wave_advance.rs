@@ -97,6 +97,9 @@ pub(crate) struct AdvanceItem {
     /// reads this instead of one CLI round-trip per wave; the `ok:false` →
     /// AskUserQuestion decision (and the skip on a `continued` resume /
     /// `MODE=off`) stays with the orchestrator.
+    ///
+    /// A `skipped` field means the gate DECLINED to judge (unsupported stack):
+    /// the `ok:true` beside it stands for "did not look", not for a pass.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub precheck: Option<Value>,
     /// `true` when this item's subproject is its OWN nested git repository (a
@@ -373,14 +376,28 @@ fn wave_precheck(spec_dir: &Path, wave: u32, role: &str, subproject: &str) -> Op
 /// bare `{ok:true}` from being read as "safe to dispatch" when all the gate
 /// established was that the symbols exist (the field incident where a wave
 /// dispatched on a green pre-gate came back blocked on a missing capability).
+///
+/// `skipped` survives for the same reason and is stronger: on an unsupported
+/// stack the gate DECLINES to judge and reports `ok: true` with an empty scope.
+/// Trimming that marker away hands the orchestrator a bare green for a wave
+/// nothing ever looked at. The sentence the gate already writes must reach
+/// whoever is about to dispatch.
 fn lean_precheck(full: &Value) -> Value {
     let ok = full.get("ok").and_then(Value::as_bool).unwrap_or(true);
     let checks = full
         .get("checks_performed")
         .cloned()
         .unwrap_or_else(|| json!([]));
+    let skipped = dependency_precheck::skip_reason(full);
     if ok {
-        return json!({ "ok": true, "checks_performed": checks });
+        let mut lean = json!({ "ok": true, "checks_performed": checks });
+        if let (Some(reason), Some(obj)) = (skipped, lean.as_object_mut()) {
+            obj.insert(
+                dependency_precheck::SKIPPED_KEY.to_string(),
+                Value::String(reason.to_string()),
+            );
+        }
+        return lean;
     }
     json!({
         "ok": false,
@@ -874,5 +891,70 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].subproject, "apps/sub");
         assert!(items[0].own_git_root, "advance item carries the git-boundary flag");
+    }
+
+    /// Seed a single-wave spec at `slug` whose wave-1 spec declares `files`.
+    fn seed_one_wave(project: &Path, slug: &str, role: &str, files: &str) -> PathBuf {
+        let spec_dir = project.join(".claude").join("spec").join(slug);
+        let wave_dir = spec_dir.join(format!("wave-1-{role}"));
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            format!(
+                "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-{role}]] | {role} | — | x |
+"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            wave_dir.join("spec.md"),
+            format!("# w1\n\n## Files\n{files}\n\n## Tasks\n\n- [ ] t\n"),
+        )
+        .unwrap();
+        spec_dir
+    }
+
+    /// AC-7 — on a stack it cannot parse, the precheck declines to judge and
+    /// says so; `ok: true` there means "did not look", not "looked and found
+    /// nothing". The round annotation is the trim that decides whether that
+    /// sentence survives to the orchestrator, so the marker must ride along —
+    /// otherwise the wave dispatches on a green that stands for nothing.
+    #[test]
+    fn dependency_precheck_skip_is_surfaced() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+
+        // A C# wave: the JSX/import extractor and the `export`/`pub` grep have
+        // nothing to say about it, so `check` takes the skip branch.
+        seed_one_wave(project, "cs", "api", "- apps/api/Domain/Payable.cs");
+        let items = advance(project, "cs");
+        assert_eq!(items.len(), 1);
+        let pc = items[0].precheck.as_ref().expect("impl item carries a precheck");
+        assert_eq!(pc["ok"], json!(true), "declining to judge stays fail-open: {pc}");
+        assert_eq!(
+            pc.get(dependency_precheck::SKIPPED_KEY).and_then(Value::as_str),
+            Some(dependency_precheck::SKIPPED_STACK_UNSUPPORTED),
+            "the trim must carry the skip to whoever dispatches: {pc}"
+        );
+        assert_eq!(
+            pc["checks_performed"],
+            json!([]),
+            "a declined gate performed no checks: {pc}"
+        );
+
+        // Control: a TS wave IS judged, so no skip marker is invented for it.
+        seed_one_wave(project, "ts", "web", "- apps/web/src/Panel.tsx");
+        let items = advance(project, "ts");
+        assert_eq!(items.len(), 1);
+        let pc = items[0].precheck.as_ref().expect("impl item carries a precheck");
+        assert_eq!(pc["ok"], json!(true));
+        assert!(
+            pc.get(dependency_precheck::SKIPPED_KEY).is_none(),
+            "a stack the gate understands is not reported as skipped: {pc}"
+        );
     }
 }

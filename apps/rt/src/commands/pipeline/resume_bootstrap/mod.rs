@@ -60,6 +60,7 @@ use stage_resolver::{
 };
 use wave_progress::{
     count_wave_progress_from_fs, derive_role_from_wave_path, find_wave_spec_path,
+    wave_dispatch_recorded,
 };
 
 /// Window inside which auto-continue applies (10 minutes since last event).
@@ -101,13 +102,30 @@ pub struct ResumeBootstrap {
     /// Whether the spec uses a wave plan.
     #[serde(rename = "isWavePlan")]
     pub is_wave_plan: bool,
-    /// Current wave index (0-based, matching `wave-N-*` directory names).
-    /// `0` when not a wave plan or when no waves have completed yet.
+    /// Wave to work on NEXT (1-based, matching the `wave-N-*` directory names —
+    /// there is no `wave-0-*`). `0` when not a wave plan.
+    ///
+    /// This names a wave, it does not claim one started: read it together with
+    /// [`Self::never_dispatched`], which is the only field that separates a
+    /// scaffolded-but-untouched plan from one whose first wave is in flight.
     #[serde(rename = "currentWave")]
     pub current_wave: u32,
     /// Total wave count. `0` when not a wave plan.
     #[serde(rename = "totalWaves")]
     pub total_waves: u32,
+    /// `true` when NOTHING was ever dispatched for this spec — no
+    /// `pipeline.wave.start`, no `pipeline.task.dispatch`, no completed wave.
+    ///
+    /// `wave-scaffold` materialises every `wave-N-*` directory before a single
+    /// agent runs, so the filesystem reports `wave 1 of 5` for a plan nobody has
+    /// touched and for a plan whose wave 1 is in flight alike. The dispatch
+    /// record is what tells them apart, and this field carries its answer so the
+    /// caller stops reading a directory count as progress.
+    ///
+    /// Fail-open default `false` — "assume something ran", the reading that
+    /// predates this field.
+    #[serde(rename = "neverDispatched")]
+    pub never_dispatched: bool,
     /// `true` when the operational spec is a stub (Stage: Plan + no `## Files`/`## Tasks`).
     #[serde(rename = "isStub")]
     pub is_stub: bool,
@@ -255,6 +273,15 @@ pub fn run(spec: &str, json_flag: bool) {
     // Note: wave directories are 1-based in Mustard (wave-1-*, wave-2-*, …);
     // there is no wave-0. When no events exist yet, current_wave is the first
     // wave: 1.
+
+    // --- Was any of that ever dispatched? ---
+    //
+    // `current_wave` above was derived from directories and completion headers
+    // — a census, never a start signal. `wave-scaffold` writes all N wave dirs
+    // before an agent runs, so a plan nobody touched and a plan whose wave 1 is
+    // in flight both surface as `wave 1 of N`. Only the event log knows which,
+    // so ask it and say so instead of letting the count imply progress.
+    out.never_dispatched = !wave_dispatch_recorded(&events, spec);
 
     // --- Resolve operational spec path. ---
     let op_path = if out.is_wave_plan {
@@ -425,6 +452,7 @@ fn print_table(out: &ResumeBootstrap) {
     println!("isWavePlan       : {}", out.is_wave_plan);
     println!("currentWave      : {}", out.current_wave);
     println!("totalWaves       : {}", out.total_waves);
+    println!("neverDispatched  : {}", out.never_dispatched);
     println!("isStub           : {}", out.is_stub);
     let failure_str = match out.last_dispatch_failure.as_ref() {
         None => "(none)".to_string(),
@@ -527,6 +555,93 @@ mod tests {
         assert_eq!(derive_role_from_wave_path(p).as_deref(), Some("ui"));
         let p2 = Path::new("/x/.claude/spec/foo/spec.md");
         assert_eq!(derive_role_from_wave_path(p2), None);
+    }
+
+    /// AC-6 — a scaffolded plan and a running one are the SAME on disk.
+    ///
+    /// `wave-scaffold` writes every `wave-N-*` directory before an agent runs,
+    /// so the FS census answers `wave 1 of 5` whether the plan was dispatched or
+    /// merely materialised. The event log is the only witness, and
+    /// `neverDispatched` is where its answer reaches the caller — without it,
+    /// the directory count reads as progress that never happened.
+    #[test]
+    fn wave_progress_distinguishes_never_dispatched() {
+        use mustard_core::domain::model::event::{
+            Actor, ActorKind, HarnessEvent, EVENT_PIPELINE_WAVE_START, SCHEMA_VERSION,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        for (n, role) in [(1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e")] {
+            let wave = spec_dir.join(format!("wave-{n}-{role}"));
+            std::fs::create_dir_all(&wave).unwrap();
+            std::fs::write(wave.join("spec.md"), "### Stage: Plan\n### Outcome: Active\n").unwrap();
+        }
+
+        // The census is identical in both states — this is the count that must
+        // NOT be read as progress on its own.
+        assert_eq!(
+            count_wave_progress_from_fs(spec_dir),
+            (1, 5),
+            "five scaffolded dirs, none closed ⇒ next wave 1 of 5"
+        );
+
+        // Scaffolded and never dispatched: nothing in the log names the spec.
+        assert!(
+            !wave_dispatch_recorded(&[], "sc"),
+            "an empty log is not a dispatch"
+        );
+
+        // A wave actually handed out: `wave-advance` emits `pipeline.wave.start`
+        // itself, so this record exists independently of the orchestrator relay.
+        let started = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-07-27T00:00:00.000Z".to_string(),
+            session_id: "test-session".to_string(),
+            wave: 1,
+            actor: Actor {
+                kind: ActorKind::Orchestrator,
+                id: Some("wave-advance".to_string()),
+                actor_type: None,
+            },
+            event: EVENT_PIPELINE_WAVE_START.to_string(),
+            payload: serde_json::json!({ "wave": 1 }),
+            spec: Some("sc".to_string()),
+        };
+        let log = std::slice::from_ref(&started);
+        assert!(
+            wave_dispatch_recorded(log, "sc"),
+            "a wave.start for the spec IS the dispatch record"
+        );
+        assert!(
+            !wave_dispatch_recorded(log, "other"),
+            "another spec's dispatch must not answer for this one"
+        );
+
+        // The FS census is unmoved by either verdict — proof the two facts are
+        // independent and that only the record can separate the states.
+        assert_eq!(count_wave_progress_from_fs(spec_dir), (1, 5));
+
+        // And the verdict reaches the caller under its own name, next to the
+        // count it qualifies.
+        let out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 1,
+            total_waves: 5,
+            never_dispatched: !wave_dispatch_recorded(&[], "sc"),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&out).expect("report serialises");
+        assert_eq!(json["currentWave"], serde_json::json!(1));
+        assert_eq!(
+            json["neverDispatched"],
+            serde_json::json!(true),
+            "the report must SAY the plan never started, not imply wave 1: {json}"
+        );
+        assert!(
+            !ResumeBootstrap::default().never_dispatched,
+            "fail-open default is the pre-field reading (assume it ran)"
+        );
     }
 
     #[test]

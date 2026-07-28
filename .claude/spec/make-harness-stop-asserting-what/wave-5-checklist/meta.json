@@ -1,21 +1,21 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": null,
+  "checkpoint": "2026-07-28T00:33:11.755Z",
   "parent": "make-harness-stop-asserting-what",
   "checklist": [
     {
       "label": "apps/rt/src/commands/checklist/mark_checklist_item.rs",
       "path": "apps/rt/src/commands/checklist/mark_checklist_item.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "packages/core/src/domain/model/view/wave.rs",
       "path": "packages/core/src/domain/model/view/wave.rs",
-      "done": false
+      "done": true
     }
   ]
 }

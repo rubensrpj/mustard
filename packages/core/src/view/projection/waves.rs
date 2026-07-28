@@ -14,12 +14,16 @@
 //! - `pipeline.wave.complete` flips the row to `Completed` with `completed_at`
 //!   and computes `duration_ms`.
 //! - `pipeline.wave.failed` flips the row to `Failed`.
+//! - `pipeline.status` / `pipeline.outcome` transitioning the SPEC to a
+//!   deliberate terminal outcome (`cancelled` / `abandoned`) flips every wave
+//!   still open to `Dropped` — the work was let go on purpose, and leaving it
+//!   at `Queued` is what made a decision read as a pending task.
 //!
 //! Waves that only appear in a `pipeline.wave.complete` event (e.g. when the
 //! dispatch event was filtered out by attribution gaps pre-v2) still get a
 //! row, but with `Completed` status and no agent metadata.
 
-use crate::domain::model::view::{WaveStatus, WaveView};
+use crate::domain::model::view::{Outcome, WaveStatus, WaveView};
 use crate::domain::model::event::{
     HarnessEvent, PipelineTaskCompletePayload, PipelineTaskDispatchPayload,
 };
@@ -42,6 +46,7 @@ pub fn project_waves(spec_name: &str, events: &[HarnessEvent]) -> Vec<WaveView> 
             "pipeline.task.complete" => apply_complete(&mut by_wave, ev),
             "pipeline.wave.complete" => apply_wave_complete(&mut by_wave, ev),
             "pipeline.wave.failed" => apply_wave_failed(&mut by_wave, ev),
+            "pipeline.status" | "pipeline.outcome" => apply_spec_outcome(&mut by_wave, ev),
             _ => {}
         }
     }
@@ -68,12 +73,22 @@ fn apply_wave_start(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
         return;
     };
     let row = ensure_wave(by_wave, wave);
-    if row.status == WaveStatus::Queued {
+    if reopens_into_progress(row.status) {
         row.status = WaveStatus::InProgress;
     }
     if row.started_at.is_none() {
         row.started_at = Some(ev.ts.clone());
     }
+}
+
+/// Whether a start/dispatch signal may move the row to `InProgress`. A queued
+/// wave obviously may. A DROPPED one may too: the drop was a decision, and a
+/// later dispatch is the harness observing that the decision was reversed —
+/// keeping it `Dropped` would state something the event stream denies.
+/// `Completed` / `Failed` never regress (a late, out-of-order start must not
+/// resurrect a finished wave).
+const fn reopens_into_progress(status: WaveStatus) -> bool {
+    matches!(status, WaveStatus::Queued | WaveStatus::Dropped)
 }
 
 fn apply_dispatch(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
@@ -84,7 +99,7 @@ fn apply_dispatch(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
     };
     let Some(wave) = payload.wave else { return };
     let row = ensure_wave(by_wave, wave);
-    if row.status == WaveStatus::Queued {
+    if reopens_into_progress(row.status) {
         row.status = WaveStatus::InProgress;
     }
     if row.started_at.is_none() {
@@ -136,6 +151,43 @@ fn apply_wave_complete(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent)
     // Sort the deduplicated file list once on close so downstream renders
     // are stable across queries.
     row.files_changed.sort();
+}
+
+/// `pipeline.status` / `pipeline.outcome` — a SPEC-level transition. Only the
+/// two deliberate terminal outcomes matter here: `cancelled` and `abandoned`
+/// both mean somebody decided the remaining work will not happen. Every wave
+/// row that has not settled becomes `Dropped` (with the transition's timestamp
+/// as `completed_at`, so the row reads as closed rather than open-forever).
+///
+/// A `wave` in the payload narrows the drop to that single wave — the shape
+/// used when only one wave was let go and the spec itself carries on. Waves
+/// that already reached a terminal state are left exactly as they were: a
+/// finished wave was not dropped, and a failed one failed.
+fn apply_spec_outcome(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
+    let is_deliberate_stop = ev
+        .payload
+        .get("to")
+        .and_then(serde_json::Value::as_str)
+        .and_then(Outcome::parse)
+        .is_some_and(|o| matches!(o, Outcome::Cancelled | Outcome::Abandoned));
+    if !is_deliberate_stop {
+        return;
+    }
+    let only = ev
+        .payload
+        .get("wave")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|w| u32::try_from(w).ok());
+    for (n, row) in by_wave.iter_mut() {
+        if only.is_some_and(|w| w != *n) || row.status.is_terminal() {
+            continue;
+        }
+        row.status = WaveStatus::Dropped;
+        row.completed_at = Some(ev.ts.clone());
+        if let Some(start) = row.started_at.as_deref() {
+            row.duration_ms = iso_diff_ms(start, &ev.ts);
+        }
+    }
 }
 
 fn apply_wave_failed(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
@@ -293,6 +345,101 @@ mod tests {
         let waves = project_waves("auth", &events);
         assert_eq!(waves[0].status, WaveStatus::Failed);
         assert!(waves[0].completed_at.is_some());
+    }
+
+    #[test]
+    fn abandoning_the_spec_drops_the_waves_still_open() {
+        // Wave 1 finished, wave 2 was in flight, wave 3 never started. The
+        // operator abandons the pipeline: the two unfinished waves are work
+        // let go ON PURPOSE, and must stop reading as "still to do".
+        let events = vec![
+            ev("auth", "2026-05-20T10:00:00Z", "pipeline.wave.start", json!({ "wave": 1 })),
+            ev("auth", "2026-05-20T10:05:00Z", "pipeline.wave.complete", json!({ "wave": 1 })),
+            ev("auth", "2026-05-20T10:06:00Z", "pipeline.wave.start", json!({ "wave": 2 })),
+            ev(
+                "auth",
+                "2026-05-20T10:07:00Z",
+                "pipeline.task.dispatch",
+                json!({ "wave": 3, "name": "docs" }),
+            ),
+            ev("auth", "2026-05-20T11:00:00Z", "pipeline.status", json!({ "to": "abandoned" })),
+        ];
+        let waves = project_waves("auth", &events);
+        assert_eq!(waves[0].status, WaveStatus::Completed, "a finished wave was not dropped");
+        assert_eq!(waves[1].status, WaveStatus::Dropped);
+        assert_eq!(waves[2].status, WaveStatus::Dropped);
+        assert_eq!(
+            waves[1].completed_at.as_deref(),
+            Some("2026-05-20T11:00:00Z"),
+            "the dropped wave closes at the decision, not open-forever"
+        );
+        assert_eq!(waves[1].duration_ms, Some(3_240_000));
+    }
+
+    #[test]
+    fn cancelling_one_wave_leaves_the_others_alone() {
+        // A `wave` in the payload narrows the drop to that wave; and a wave
+        // that FAILED keeps its failure — dropped and failed are not the same
+        // answer.
+        let events = vec![
+            ev(
+                "auth",
+                "2026-05-20T10:00:00Z",
+                "pipeline.task.dispatch",
+                json!({ "wave": 1, "name": "core" }),
+            ),
+            ev(
+                "auth",
+                "2026-05-20T10:01:00Z",
+                "pipeline.task.dispatch",
+                json!({ "wave": 2, "name": "ui" }),
+            ),
+            ev("auth", "2026-05-20T10:02:00Z", "pipeline.wave.failed", json!({ "wave": 1 })),
+            ev(
+                "auth",
+                "2026-05-20T10:03:00Z",
+                "pipeline.outcome",
+                json!({ "to": "cancelled", "wave": 2 }),
+            ),
+        ];
+        let waves = project_waves("auth", &events);
+        assert_eq!(waves[0].status, WaveStatus::Failed, "the failure is not overwritten");
+        assert_eq!(waves[1].status, WaveStatus::Dropped);
+    }
+
+    #[test]
+    fn a_non_terminal_status_never_drops_a_wave() {
+        // Only a deliberate terminal outcome drops. A `blocked` / `completed`
+        // spec transition must not silently mark waves as let-go.
+        let events = vec![
+            ev(
+                "auth",
+                "2026-05-20T10:00:00Z",
+                "pipeline.task.dispatch",
+                json!({ "wave": 1, "name": "core" }),
+            ),
+            ev("auth", "2026-05-20T10:01:00Z", "pipeline.status", json!({ "to": "blocked" })),
+            ev("auth", "2026-05-20T10:02:00Z", "pipeline.status", json!({ "to": "completed" })),
+        ];
+        assert_eq!(project_waves("auth", &events)[0].status, WaveStatus::InProgress);
+    }
+
+    #[test]
+    fn a_dispatch_after_the_drop_reopens_the_wave() {
+        // The drop was a decision; a later dispatch is the harness watching
+        // that decision be reversed. Reporting `Dropped` then would state
+        // something this very event stream denies.
+        let events = vec![
+            ev("auth", "2026-05-20T10:00:00Z", "pipeline.wave.start", json!({ "wave": 1 })),
+            ev("auth", "2026-05-20T10:01:00Z", "pipeline.status", json!({ "to": "abandoned" })),
+            ev(
+                "auth",
+                "2026-05-20T12:00:00Z",
+                "pipeline.task.dispatch",
+                json!({ "wave": 1, "name": "core" }),
+            ),
+        ];
+        assert_eq!(project_waves("auth", &events)[0].status, WaveStatus::InProgress);
     }
 
     #[test]

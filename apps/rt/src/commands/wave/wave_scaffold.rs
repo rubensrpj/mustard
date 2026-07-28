@@ -25,7 +25,8 @@
 //!       "depends_on": [],
 //!       "tasks": ["wire the contract", "add the handler"],
 //!       "files": ["src/api/handler.rs", "src/api/mod.rs"],
-//!       "acceptance": ["**AC-1** — handler returns 200. Command: `curl -sf …`"]
+//!       "acceptance": ["**AC-1** — handler returns 200. Command: `curl -sf …`"],
+//!       "reality_obligations": ["read the provider's official webhook doc"]
 //!     },
 //!     { "n": 2, "role": "general", "summary": "…", "depends_on": ["wave-1-general"] }
 //!   ],
@@ -49,6 +50,11 @@
 //!   union across waves is carried into `wave-plan.md` under
 //!   `## Acceptance Criteria`/`## Critérios de Aceitação`, where the QA gate
 //!   reads it via `spec_sections::section_block(_, "acceptanceCriteria")`.
+//! - `reality_obligations` — duties to check the world OUTSIDE the repository
+//!   before writing the code they govern. Materialised as
+//!   `## Reality Obligations` with `- **RO-{n}.{i}** — {duty}` items; the
+//!   dispatch prompt renders them as their own section and `wave-done` reads
+//!   them back to name the duties the returning wave left unaccounted for.
 //!
 //! Each is `#[serde(default)]`: a plan that predates these fields (summary-only)
 //! still deserialises, and a wave that omits them materialises with no task /
@@ -126,6 +132,19 @@ pub(crate) struct WavePlanEntry {
     /// finds it. `#[serde(default)]` for the same retrocompat reason as `tasks`.
     #[serde(default)]
     pub(crate) acceptance: Vec<String>,
+    /// Reality obligations for this wave — duties to verify something OUTSIDE
+    /// the repository (read an official document, call a live endpoint, read a
+    /// stored row) before writing the code they govern. Materialised as a
+    /// `## Reality Obligations` section of `- **RO-{n}.{i}** — {duty}` lines in
+    /// the wave's `spec.md`, which the dispatch prompt renders as its own
+    /// section and `wave-done` reads back to report the duties the returning
+    /// wave left unaccounted for.
+    ///
+    /// `#[serde(default)]` for the same retrocompat reason as `tasks`: every
+    /// plan written before this field still deserialises, and a wave that
+    /// declares no duty materialises exactly as it did before (no heading).
+    #[serde(default, alias = "realityObligations")]
+    pub(crate) reality_obligations: Vec<String>,
     /// AC ids this wave is responsible for satisfying (e.g. `["AC-1", "AC-3"]`),
     /// tracing the parent spec's criteria onto the wave that implements them.
     /// `#[serde(default)]` retrocompat: a plan predating the field (or one that
@@ -177,6 +196,9 @@ pub(crate) struct Headings<'a> {
     tasks: &'a str,
     /// `## Files`/`## Arquivos` heading for the per-wave file census.
     files: &'a str,
+    /// `## Reality Obligations` heading for the per-wave duties to check the
+    /// world outside the repository.
+    reality_obligations: &'a str,
     /// `## Acceptance Criteria`/`## Critérios de Aceitação` heading for the
     /// AC union carried into `wave-plan.md`.
     acceptance: &'a str,
@@ -204,6 +226,7 @@ pub(crate) fn headings() -> Headings<'static> {
         depends_on: "Depends on",
         tasks: "## Tasks",
         files: "## Files",
+        reality_obligations: "## Reality Obligations",
         acceptance: "## Acceptance Criteria",
     }
 }
@@ -381,6 +404,80 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
         for file in &w.files {
             let _ = writeln!(out, "- `{file}`", file = file.trim());
         }
+    }
+    // The duties this wave owes the world outside the repository. Each carries
+    // an id so the dispatched agent can account for it BY NAME and `wave-done`
+    // can say which duty has no account — a bare prose line would leave both
+    // sides guessing which sentence answered which duty. Emitted only when the
+    // plan declares one, so a plan without them renders byte-identically to a
+    // plan written before the field existed.
+    if !w.reality_obligations.is_empty() {
+        let _ = write!(out, "\n{}\n\n", hd.reality_obligations);
+        for (i, duty) in w.reality_obligations.iter().enumerate() {
+            let duty = duty.trim();
+            if duty.is_empty() {
+                continue;
+            }
+            let _ = writeln!(
+                out,
+                "- **{id}** — {duty}",
+                id = reality_obligation_id(w.n, i)
+            );
+        }
+    }
+    out
+}
+
+/// The id of the `i`-th (0-based) reality obligation of wave `n` — `RO-{n}.{i+1}`.
+///
+/// The wave number is IN the id on purpose: `wave-done` looks for an account of
+/// a duty in what the wave recorded on the spec's own event log, which is
+/// per-spec and not per-wave. A bare `RO-1` would let one wave's account clear
+/// another wave's duty; `RO-3.1` cannot be confused with `RO-4.1`.
+fn reality_obligation_id(n: u32, i: usize) -> String {
+    format!("RO-{n}.{}", i + 1)
+}
+
+/// Parse a rendered `## Reality Obligations` section back into `(id, duty)`
+/// pairs — the reader twin of [`render_wave_spec`]'s writer, kept in the same
+/// file so the two cannot drift into different notions of what a duty line is.
+///
+/// `md` is a whole wave `spec.md`; the section is located through the canonical
+/// [`is_heading`](crate::commands::spec::spec_sections::is_heading) resolver, so
+/// a localised heading resolves here exactly as it does everywhere else. Lines
+/// that do not carry the `- **{id}** — {duty}` shape are skipped rather than
+/// guessed at. Pure and total: no section, or a section of prose, yields an
+/// empty list.
+pub(crate) fn parse_reality_obligations(md: &str) -> Vec<(String, String)> {
+    use crate::commands::spec::spec_sections::{is_heading, section_end};
+    let lines: Vec<&str> = md.lines().collect();
+    let Some(start) = lines
+        .iter()
+        .position(|l| is_heading(l, "reality-obligations"))
+    else {
+        return Vec::new();
+    };
+    let end = section_end(&lines, start);
+    let mut out = Vec::new();
+    for line in &lines[start + 1..end] {
+        let Some(rest) = line.trim_start().strip_prefix("- **") else {
+            continue;
+        };
+        let Some((id, tail)) = rest.split_once("**") else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        // The separator is an em dash in the rendered form; tolerate a plain
+        // hyphen so a hand-edited wave spec still parses.
+        let duty = tail
+            .trim_start()
+            .trim_start_matches(['—', '-'])
+            .trim()
+            .to_string();
+        out.push((id.to_string(), duty));
     }
     out
 }
@@ -633,6 +730,7 @@ fn checklist_from_files(files: &[String]) -> Vec<ChecklistItem> {
             label: f.to_string(),
             path: Some(f.to_string()),
             done: false,
+            dropped: None,
         })
         .collect()
 }
@@ -1275,6 +1373,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec![],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -1285,6 +1384,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec![],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
             ],
             total_waves: Some(2),
@@ -1682,6 +1782,7 @@ mod tests {
             files: vec!["src/api/handler.rs".to_string(), "src/api/mod.rs".to_string()],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let hd = headings();
         let spec = render_wave_spec("epic", &w, &hd);
@@ -1722,6 +1823,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec!["**AC-1** — builds. Command: `true`".to_string()],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -1732,6 +1834,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec!["**AC-2** — renders. Command: `true`".to_string()],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
             ],
             total_waves: Some(2),
@@ -1770,6 +1873,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let spec = render_wave_spec(
             "epic",
@@ -1801,6 +1905,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
@@ -1925,6 +2030,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
@@ -1948,6 +2054,7 @@ mod tests {
             files: files.into_iter().map(String::from).collect(),
             acceptance: vec![],
             satisfies: satisfies.into_iter().map(String::from).collect(),
+            reality_obligations: Vec::new(),
         }
     }
 
@@ -2166,6 +2273,7 @@ mod tests {
             files: vec![],
             acceptance: acceptance.into_iter().map(String::from).collect(),
             satisfies: satisfies.into_iter().map(String::from).collect(),
+            reality_obligations: Vec::new(),
         };
         let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1), lang: None };
 
@@ -2226,6 +2334,7 @@ mod tests {
                 files: vec![],
                 acceptance: vec![],
                 satisfies: vec!["AC-1".to_string()],
+                reality_obligations: Vec::new(),
             }],
             total_waves: Some(1),
             lang: None,
@@ -2263,6 +2372,7 @@ mod tests {
                 // Same id via an acceptance line, NOT an explicit satisfies.
                 acceptance: vec!["**AC-1** — first. Command: `true`".to_string()],
                 satisfies: vec![],
+                reality_obligations: Vec::new(),
             }],
             total_waves: Some(1),
             lang: None,

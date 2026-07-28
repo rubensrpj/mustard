@@ -18,6 +18,11 @@
 //!      through [`fs::write_atomic`], generated with the same fail-open,
 //!      rtk-aware git helper the rest of the pipeline uses.
 //!
+//!   4. naming the wave's REALITY OBLIGATIONS that nothing it recorded accounts
+//!      for. See [`unaccounted_reality_obligations`]; it reports a fact about the
+//!      record ("no text this wave left behind names `RO-3.1`"), never a claim
+//!      that the duty went unmet — which is why it prints and never blocks.
+//!
 //! Pure consolidation of the emit + cache steps — same event, same meta sync,
 //! same path. The cached diff is a deterministic SIGNATURE digest
 //! ([`diff_digest`]) rather than a `--stat` line-count. Only the orchestrator's turn count drops
@@ -63,6 +68,13 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
     // 3. Cache the wave diff for the next round's render — fail-open.
     let diff_cached = cache_wave_diff(&cwd, spec, wave);
 
+    // 4. Name the reality obligations this wave carried and left without an
+    //    account in anything it recorded — fail-open, and a REPORT, never a gate.
+    let unaccounted = unaccounted_reality_obligations(&cwd, spec, wave);
+    for line in &unaccounted {
+        eprintln!("[wave-done] WARN: {line}");
+    }
+
     println!(
         "{}",
         json!({
@@ -70,8 +82,76 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
             "waveComplete": true,
             "diffCached": diff_cached,
             "memoriesWritten": memories,
+            "realityUnaccounted": unaccounted,
         })
     );
+}
+
+/// The reality obligations this wave was given that nothing it recorded accounts
+/// for, each named by its id plus the duty verbatim.
+///
+/// ## What is actually being checked
+///
+/// NOT whether the duty was met — no code can know that. What is checked is a
+/// fact about the RECORD: the wave declared duty `RO-3.1`, and no text the wave
+/// left behind names `RO-3.1`. That is why the field is called *unaccounted* and
+/// not *unmet*, and why this is printed rather than enforced: a duty with no
+/// account may have been honoured by an agent that forgot to say so, and a gate
+/// here would be the harness asserting what it did not verify — the exact habit
+/// the spec this ships with exists to remove.
+///
+/// ## Where an account comes from
+///
+/// The wave's own recorded return: the `agent.stop` telemetry (whose payload
+/// carries the returning agent's report) and the `decision` events harvested
+/// from its `<MEMORY>` blocks, both on the spec's OWN NDJSON log. No new channel
+/// and no new flag — the dispatch prompt instructs the agent to account for each
+/// duty by its id, and the ids carry the wave number
+/// ([`wave_scaffold::parse_reality_obligations`]'s writer twin), so one wave's
+/// report can never clear another wave's duty even though the log is per-spec.
+///
+/// Fail-open at every step: an unresolvable spec or wave, an unreadable wave
+/// `spec.md`, or a wave that declared no duty all yield an empty list.
+fn unaccounted_reality_obligations(cwd: &Path, spec: &str, wave: u64) -> Vec<String> {
+    let Some(wave_dir) = emit_pipeline::wave_spec_path(cwd, spec, wave) else {
+        return Vec::new();
+    };
+    let text = fs::read_to_string(wave_dir.join("spec.md")).unwrap_or_default();
+    let duties = crate::commands::wave::wave_scaffold::parse_reality_obligations(&text);
+    if duties.is_empty() {
+        return Vec::new();
+    }
+    let Ok(spec_paths) = ClaudePaths::for_project(cwd).and_then(|p| p.for_spec(spec)) else {
+        return Vec::new();
+    };
+    let recorded = recorded_return_text(&spec_paths.events_dir());
+    duties
+        .into_iter()
+        .filter(|(id, _)| !recorded.contains(id.as_str()))
+        .map(|(id, duty)| {
+            format!(
+                "{id} — no account of this duty in anything wave {wave} recorded: \"{duty}\". \
+                 Either the world was never checked, or the check was never reported by id"
+            )
+        })
+        .collect()
+}
+
+/// Everything the waves of this spec recorded on their way back, concatenated —
+/// the substrate an obligation id is looked for in.
+///
+/// Only the two event kinds that carry an agent's OWN words are read: `agent.stop`
+/// (the returning report) and `decision` (a harvested `<MEMORY>` block). The
+/// whole payload is serialised rather than one named field, because the report
+/// key has moved before and a missed rename would silently turn every duty into
+/// an unaccounted one. Fail-open: an unreadable log yields "".
+fn recorded_return_text(events_dir: &Path) -> String {
+    mustard_core::view::projection::read_harness_events_from_ndjson_dir(events_dir)
+        .iter()
+        .filter(|e| e.event == "agent.stop" || e.event == "decision")
+        .map(|e| e.payload.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Materialize the lessons this wave produced into `{spec}/memory/*.md` — the
@@ -627,5 +707,113 @@ mod tests {
         let written = materialize_wave_memory(root, spec, 1);
         assert_eq!(written.len(), 1, "the qualifying lesson survives: {written:?}");
         assert_eq!(memory_files(root, spec).len(), 1);
+    }
+
+    // --- reality obligations: the duties owed to the world -------------------
+
+    /// Seed an `agent.stop` event carrying a returning agent's report — the same
+    /// event `hooks::task::subagent_observer` emits at PostToolUse, so the test
+    /// exercises the real channel rather than a fixture shape that could drift.
+    fn seed_agent_stop(root: &Path, spec: &str, summary: &str) {
+        use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: mustard_core::time::now_iso8601(),
+            session_id: "run-7".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Hook,
+                id: Some("subagent-tracker".to_string()),
+                actor_type: None,
+            },
+            event: "agent.stop".to_string(),
+            payload: json!({ "summary": summary }),
+            spec: Some(spec.to_string()),
+        };
+        let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
+    }
+
+    /// AC-5: a wave that closes without reporting a duty it was given has that
+    /// duty named — by id, with the duty verbatim.
+    ///
+    /// Two-sided on purpose: the SAME wave carries a second duty the returning
+    /// report DOES account for, and that one must not be named. A check that
+    /// flags every declared duty is indistinguishable from one that flags none,
+    /// and asserting only the flagged side cannot tell them apart.
+    #[test]
+    fn wave_done_flags_unreported_reality_obligation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "reality-duty-spec";
+        anchored_spec(root, spec);
+        let wave_dir = root.join(".claude/spec").join(spec).join("wave-3-impl");
+        std::fs::create_dir_all(&wave_dir).expect("wave dir");
+        std::fs::write(
+            wave_dir.join("spec.md"),
+            "# W3\n\n## Tasks\n\n- [ ] wire the webhook\n\n## Reality Obligations\n\n\
+             - **RO-3.1** — read the provider's official webhook doc for the retry semantics\n\
+             - **RO-3.2** — read one stored subscription row and confirm the status column\n",
+        )
+        .expect("wave spec");
+
+        // The returning agent accounted for the FIRST duty only.
+        seed_agent_stop(
+            root,
+            spec,
+            "Wired the webhook. RO-3.1: the official doc says retries are at-least-once.",
+        );
+
+        let flagged = unaccounted_reality_obligations(root, spec, 3);
+        assert_eq!(flagged.len(), 1, "exactly the unaccounted duty is named: {flagged:?}");
+        assert!(flagged[0].starts_with("RO-3.2"), "named by id: {flagged:?}");
+        assert!(
+            flagged[0].contains("confirm the status column"),
+            "the duty rides verbatim so the reader knows what was skipped: {flagged:?}"
+        );
+        assert!(
+            !flagged.iter().any(|f| f.starts_with("RO-3.1")),
+            "the accounted duty must not be flagged: {flagged:?}"
+        );
+
+        // A wave that declares no duty at all is silent — the report never
+        // invents an obligation nobody wrote.
+        let plain = root.join(".claude/spec").join(spec).join("wave-4-impl");
+        std::fs::create_dir_all(&plain).expect("plain wave dir");
+        std::fs::write(plain.join("spec.md"), "# W4\n\n## Tasks\n\n- [ ] plain work\n")
+            .expect("plain wave spec");
+        assert!(
+            unaccounted_reality_obligations(root, spec, 4).is_empty(),
+            "a wave with no declared duty is never flagged"
+        );
+    }
+
+    /// One wave's account must not clear another wave's duty. The ids carry the
+    /// wave number precisely because the event log is per-SPEC, not per-wave —
+    /// without that, a sibling's report closing a duty here would be the harness
+    /// asserting a check that never happened.
+    #[test]
+    fn a_sibling_waves_report_does_not_clear_this_waves_duty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "reality-crosstalk-spec";
+        anchored_spec(root, spec);
+        for (n, id) in [(3, "RO-3.1"), (4, "RO-4.1")] {
+            let wave_dir = root.join(".claude/spec").join(spec).join(format!("wave-{n}-impl"));
+            std::fs::create_dir_all(&wave_dir).expect("wave dir");
+            std::fs::write(
+                wave_dir.join("spec.md"),
+                format!("# W{n}\n\n## Reality Obligations\n\n- **{id}** — check the world\n"),
+            )
+            .expect("wave spec");
+        }
+        seed_agent_stop(root, spec, "wave 3 done. RO-3.1: checked, the doc agrees.");
+
+        assert!(
+            unaccounted_reality_obligations(root, spec, 3).is_empty(),
+            "wave 3's own account clears wave 3's duty"
+        );
+        let sibling = unaccounted_reality_obligations(root, spec, 4);
+        assert_eq!(sibling.len(), 1, "wave 4's duty stays open: {sibling:?}");
+        assert!(sibling[0].starts_with("RO-4.1"), "{sibling:?}");
     }
 }

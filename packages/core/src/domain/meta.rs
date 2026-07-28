@@ -526,15 +526,29 @@ mod tests {
             None,
         );
         meta.checklist = vec![
-            ChecklistItem { label: "T1".into(), path: Some("src/lib.rs".into()), done: true },
-            ChecklistItem { label: "T2".into(), path: None, done: false },
+            ChecklistItem {
+                label: "T1".into(),
+                path: Some("src/lib.rs".into()),
+                done: true,
+                dropped: None,
+            },
+            ChecklistItem { label: "T2".into(), path: None, done: false, dropped: None },
+            ChecklistItem {
+                label: "T3".into(),
+                path: None,
+                done: false,
+                dropped: Some("folded into T1".into()),
+            },
         ];
         write_meta(&path, &meta).unwrap();
         let back = read_meta(&path).expect("reads");
-        assert_eq!(back.checklist.len(), 2);
+        assert_eq!(back.checklist.len(), 3);
         assert!(back.checklist[0].done);
         assert_eq!(back.checklist[0].path.as_deref(), Some("src/lib.rs"));
         assert!(!back.checklist[1].done);
+        // The third position survives the sidecar round-trip with its reason.
+        assert_eq!(back.checklist[2].drop_reason(), Some("folded into T1"));
+        assert!(!back.checklist[2].is_open(), "a dropped item is not pending work");
         // The typed field owns the key — it must not leak into the `raw`
         // flatten catch-all.
         assert!(back.raw.get("checklist").is_none());

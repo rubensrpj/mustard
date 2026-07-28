@@ -5,6 +5,7 @@ import {
   XCircle,
   Loader2,
   Circle,
+  CircleSlash,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useNavigate } from "react-router";
@@ -56,6 +57,9 @@ const STATUS_CLS: Record<string, string> = {
   in_progress: "bg-[--primary]/15 text-[--primary]",
   failed:      "bg-[--intent-error]/15 text-[--intent-error]",
   queued:      "bg-muted text-muted-foreground",
+  // Work let go on purpose — muted like queued, but struck through so it
+  // never reads as a wave still waiting its turn.
+  dropped:     "bg-muted text-muted-foreground line-through",
 };
 
 const STATUS_LABEL_KEYS: Record<string, string> = {
@@ -63,20 +67,23 @@ const STATUS_LABEL_KEYS: Record<string, string> = {
   in_progress: "specWaves.status.in_progress",
   failed:      "specWaves.status.failed",
   queued:      "specWaves.status.queued",
+  dropped:     "specWaves.status.dropped",
 };
 
 /**
  * Per-status marker icon for the wave row. The icon makes the wave's stage
  * legible at a glance independent of the colour-coded pill: a completed wave
  * shows a static check (never the in-progress spinner), the live wave spins,
- * a failed wave shows an X, and a queued wave shows an empty ring. `spin`
- * gates the only animated marker so a finished wave reads as settled.
+ * a failed wave shows an X, a queued wave shows an empty ring, and a dropped
+ * wave shows a struck-through circle — settled, but not done. `spin` gates the
+ * only animated marker so a finished wave reads as settled.
  */
 const STATUS_ICON: Record<string, { Icon: LucideIcon; cls: string; spin?: boolean }> = {
   completed:   { Icon: CheckCircle2, cls: "text-[--intent-success]" },
   in_progress: { Icon: Loader2,     cls: "text-[--primary]", spin: true },
   failed:      { Icon: XCircle,     cls: "text-[--intent-error]" },
   queued:      { Icon: Circle,      cls: "text-muted-foreground/50" },
+  dropped:     { Icon: CircleSlash, cls: "text-muted-foreground/50" },
 };
 
 /**

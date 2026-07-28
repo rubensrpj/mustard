@@ -428,7 +428,10 @@ fn meta_checklist_unmarked(dir: &Path) -> Option<Vec<String>> {
     Some(
         meta.checklist
             .iter()
-            .filter(|i| !i.done)
+            // `is_open()` and not `!done`: an item dropped on purpose is
+            // settled work, so it must not hold CLOSE hostage as if someone
+            // had forgotten it.
+            .filter(|i| i.is_open())
             .map(|i| {
                 match i
                     .path
@@ -969,9 +972,12 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                     "an incomplete checklist means the spec is not done",
                     &format!(
                         "mark each via `mustard-rt run mark-checklist-item \
-                         --spec {} --item \"<text>\"`, or set \
-                         MUSTARD_CHECKLIST_GATE_MODE=warn",
-                        spec_ref.unwrap_or("")
+                         --spec {spec} --item \"<text>\"`; for work you decided \
+                         NOT to do, record the decision instead of marking it \
+                         done: `mustard-rt run mark-checklist-item --spec \
+                         {spec} --item \"<text>\" --drop --reason \"<why>\"`. \
+                         Or set MUSTARD_CHECKLIST_GATE_MODE=warn",
+                        spec = spec_ref.unwrap_or("")
                     ),
                 )
             );

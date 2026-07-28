@@ -16,5 +16,5 @@
 | AC-6 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 | AC-7 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 | AC-8 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
-| AC-9 | PASS | 0 | 1.0s |  |
+| AC-9 | PASS | 0 | 4.5s |  |
 

@@ -1,21 +1,21 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": null,
+  "checkpoint": "2026-07-28T00:33:11.733Z",
   "parent": "make-harness-stop-asserting-what",
   "checklist": [
     {
       "label": "plugin/refs/feature/full-plan.md",
       "path": "plugin/refs/feature/full-plan.md",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/pipeline/plan_materialize.rs",
       "path": "apps/rt/src/commands/pipeline/plan_materialize.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/agent/agent_prompt_render.rs",
@@ -25,7 +25,7 @@
     {
       "label": "apps/rt/src/commands/pipeline/wave_done.rs",
       "path": "apps/rt/src/commands/pipeline/wave_done.rs",
-      "done": false
+      "done": true
     }
   ]
 }

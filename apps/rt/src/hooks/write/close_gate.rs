@@ -666,6 +666,40 @@ mod tests {
         );
     }
 
+    /// The third position at the gate: an item dropped ON PURPOSE (a stated
+    /// reason in the sidecar) is settled work, so it neither blocks CLOSE nor
+    /// is reported as something someone forgot.
+    #[test]
+    fn close_gate_does_not_count_a_dropped_item_as_unmarked() {
+        let dir = make_project();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic-drop").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic\n\n## Network\n- coord\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":1}"#,
+        )
+        .unwrap();
+        let wave_dir = sp.dir().join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(wave_dir.join("spec.md"), "# Wave 1\n").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"epic-drop","checklist":[{"label":"src/a.rs","path":"src/a.rs","done":true},{"label":"src/b.rs","path":"src/b.rs","done":false,"dropped":"folded into src/a.rs"}]}"#,
+        )
+        .unwrap();
+
+        let (found, unmarked) =
+            find_unmarked_checklist(dir.path().to_str().unwrap(), Some("epic-drop"));
+        assert!(found, "the gate still has something to enforce");
+        assert!(unmarked.is_empty(), "a dropped item is not unmarked work: {unmarked:?}");
+        let input = close_input(dir.path(), "epic-drop");
+        assert_eq!(
+            close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa()),
+            Verdict::Allow
+        );
+    }
+
     #[test]
     fn close_gate_passes_fully_marked_checklist() {
         let dir = make_project();
