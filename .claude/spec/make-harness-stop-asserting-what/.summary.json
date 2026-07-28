@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "spec": "make-harness-stop-asserting-what",
+  "title": "Make the harness stop asserting what it has not verified: prove every acceptance criterion both red-before and green-after, give a criterion found inexecutable a sanctioned repair path, let a plan declare duties to verify the world outside the repository, surface the dependency-precheck skip on unsupported stacks, discover in-flight specs across work branches, distinguish a never-dispatched plan from wave 1, and record a deliberately dropped checklist item as a decision instead of a pending one",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "proof",
+      "summary": "The criterion proof gains its second half — red before, green after — and a criterion proven inexecutable gets a sanctioned repair path.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "discovery",
+      "summary": "Active-spec discovery stops reporting absence it did not verify: a spec on an unmerged work branch is listed as in-flight, with the branch that holds it.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "plan",
+      "summary": "A plan can oblige a wave to verify something outside the repository, and the closing of that wave reports whether the duty was met.",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "bootstrap",
+      "summary": "Resume bootstrap and the dependency precheck stop implying what they did not check — one about progress, the other about a stack it cannot parse.",
+      "status": "in_progress"
+    },
+    {
+      "n": 5,
+      "role": "checklist",
+      "summary": "Work dropped on purpose is recorded as a decision, so it stops reading as work someone forgot.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
