@@ -11,3 +11,7 @@ _Solicitações registradas automaticamente durante o pipeline (mid-spec). O `sp
 - **2026-07-28T07:23:51.835Z** _(QaReview)_ — pode emendar o AC-1 e disparar a correção
 - **2026-07-28T07:26:19.509Z** _(QaReview)_ — **Instruction:** ac-amend replaces only the FIRST line of a multi-line criterion statement. Amending AC-1 in this spec left the old statement's continuation lines orphaned under the new one in spec.md (wave-plan.md and the wave spec were unaffected because the line fits there). The residue was cleaned by hand; the writer must rewrite the whole statement block — every continuation line up to the Command: line — not just the first. Covered by the same wave that owns ac_amend.rs.
 - **2026-07-28T08:15:24.311Z** _(QaReview)_ — A
+- **2026-07-28T08:18:04.814Z** _(QaReview)_ — abre o PR
+- **2026-07-28T08:22:19.720Z** _(QaReview)_ — quais são esses pontos deixados para depois?
+- **2026-07-28T08:26:08.444Z** _(QaReview)_ — Como resolver todos, faça análise
+- **2026-07-28T08:28:36.431Z** _(QaReview)_ — sim, valida a hipótese e começa a spec 1
