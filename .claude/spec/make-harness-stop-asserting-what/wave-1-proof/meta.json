@@ -10,17 +10,17 @@
     {
       "label": "apps/rt/src/commands/review/ac_negative_check.rs",
       "path": "apps/rt/src/commands/review/ac_negative_check.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/spec/ac_amend.rs",
       "path": "apps/rt/src/commands/spec/ac_amend.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/spec/approve_spec.rs",
       "path": "apps/rt/src/commands/spec/approve_spec.rs",
-      "done": false
+      "done": true
     }
   ]
 }
