@@ -1,38 +1,22 @@
-## Verdict — REJECTED (1 critical) — SECOND round of the same defect, one column over
+## Verdict — APPROVED (0 critical)
 
-Commands: `cargo build --workspace` green; `cargo test --workspace` green on re-runs; the three named AC tests each `ok. 1 passed` in both suites; `cargo clippy -p mustard-rt --all-targets` no `error:`; both `target/debug/mustard-rt.exe` AND the INSTALLED `~/.cargo/bin/mustard-rt.exe` driven against two throwaway git repos. Tree clean, no worktree leaked.
+The round-2 CRITICAL is genuinely fixed, verified in production, not only in unit tests.
 
-**T1 — PASS in production.** `run ac-add --spec probe --ac AC-9 --command "cd outside"` -> ok:true, proof red, criterion written ABOVE the trailing build criterion, ledger `additions` written, no timestamp on stdout. Four registrations present.
+**T4 / previous CRITICAL — FIXED.** `taken_away_word` now takes command AND `Expect:` as one argument (`work_removed.rs:119`); the single call site passes both (`ac_negative_check.rs:917`). Reproduced the exact defect shape end to end in a throwaway git repo (`Command: type lib.txt`, `Expect: beta_marker`, work appends the marker, `diff.md` declares `lib.txt`): `removed_red: 0, survived: 0, evidence_removed: 1`, `"removal": "evidence-removed"`, `removal_exit: null`, reason names `beta_marker`. Previously this was `removed_red: 1 / "proven"`. Same result from the INSTALLED `~/.cargo/bin/mustard-rt.exe`.
 
-**T2 — PASS.** `criterion_not_proven`, `duplicate_criterion` (including an id only a wave artefact carries — prior MINOR fixed and tested), blank reason/statement, unknown spec; each writes nothing, exit 1.
+**Not over-declining (the other direction).** Second production repro, criterion pointing at a file the work never declared: `survived: 1, ok: false, EXIT=2`. The falsifying half still fires, so the decline did not swallow the pass.
 
-**T3 (code) — PASS.** `block_end` computed before the `Command:` lookup; test two-sided. Prior MINOR fixed: `prune_empty_parents` confirmed live.
+**Two-sidedness of the new AC-3 case is real.** AC-4's command names nothing in `removed_text`, and the stripped tree holds the file WITHOUT the marker — with the expect half ignored it would run, exit 0, miss `Expect:` and land as a proven red, failing the `EvidenceRemoved` assertion.
 
-**T4 — CRITICAL.** The command-side decline is real and reproduces the previous probe (`findstr vacuous_marker code.rs` -> `evidence-removed`, `removal_exit:null`, survivor still `survived:1`, exit 2). The mechanism is not inert.
+**AC tests — each `ok. 1 passed`**: `ac_add_lands_only_after_taking_the_proof`, `ac_add_refuses_a_criterion_that_cannot_fail`, `removal_refuses_a_survivor_and_declines_what_it_cannot_judge`, `a_criterion_without_a_command_line_still_loses_its_whole_statement_block` (two-sided). `cargo build --workspace` green; `cargo test --workspace` EXIT=0, 4434 passed, no FAILED (the 100 ms bench flake no longer reproduces).
 
-But `remove_one` matches ONLY the command (`ac_negative_check.rs:902`), never `record.expect` — while `qa_run::execute_ac` grades with BOTH. A criterion whose evidence lives in the `Expect:` regex therefore has its red manufactured by the strip and booked as proof. Reproduced end to end:
+**T3 named by a criterion — round-2 MAJOR CLEARED.** AC-5 was added through the door itself, ledger `additions[0]`, proof `red` with `exit: 101` and a `stderr_excerpt` showing the test COMPILED and FAILED — so the red came from reverting the fix, not from a filter matching zero tests. That distinction is what makes it a real proof.
 
-    spec:  Command: `type lib.txt`   Expect: `beta_marker`   (work appends beta_marker to lib.txt)
-    proof red -> confirm green -> removal --from <base>:
-      "removed_red": 1, "survived": 0, "evidence_removed": 0
-      AC-1: "verdict": "proven", "removal": "red"     EXIT=0
+**Guards — all respected.** Clippy clean (unwrap/expect deny), no new `run` subcommand this round, `ac-add`'s four registrations intact, observers/`main.rs`/hook degradation untouched, new stdout fields carry no timestamps, no worktree leaked. **Molds — none apply.**
 
-`beta_marker` IS in `removed_text` — the information is in hand one line away and is not consulted. This falsifies three shipped statements at once:
-- `ac_negative_check.rs:82-84` — "RED with the criterion's own evidence still intact is a red the behaviour earned"
-- `plugin/refs/spec/resume-loop.md:130` — "what it never does is certify a criterion it could not have failed"
-- the amended AC-3 itself — "one whose own evidence the strip took away is DECLINED by name instead of being booked as a proven red". Here it was booked.
-
-The AC-3 test cannot catch this: it injects a synthetic `removed_text` and gives no criterion an `Expect:` at all.
-
-**MAJOR — T3 ships named by no criterion.** Nothing runs `a_criterion_without_a_command_line_still_loses_its_whole_statement_block`, so the close would report green having verified nothing about the orphan fix — the exact shape this spec exists to remove. It can no longer be added through the new door either: `ac-add` demands a RED proof and that test is green now.
-
-**MINOR — pre-existing flake outside apps/rt.** `mustard-core` `bench_scan_200_files_under_100ms` failed 1 run in 4 (101.3ms vs 100ms limit), making `cargo test --workspace` non-deterministic.
-
-**MINOR** — the "instale tudo" change request is verified done (the installed binary reproduces the shipped behaviour) but is named by no criterion; an install assertion is machine-local and not reviewable in CI.
-
-Molds: none apply. Guards: all respected.
-
-### What the fix loop must do — LAST of the two allowed rounds
-1. Match `taken_away_word` against the criterion's `Expect:` regex as well as its command, OR narrow the shipped claims (AC-3, `ac_negative_check.rs:82-84`, `resume-loop.md:130`) to say the decline covers the command only. Whichever is chosen, the words and the code must agree.
-2. Extend the AC-3 test with a criterion whose evidence lives SOLELY in `Expect:`.
-3. Name T3 with a criterion. It needs a red — e.g. prove it against the tree with the `ac_amend.rs` rewrite reverted.
+Non-blocking findings:
+- MINOR `store.rs:271` — bench limit relaxed 100ms -> 1s; the flake is gone and the doc now states the budget only catches order-of-magnitude regressions, but it remains a wall-clock assertion (outside apps/rt).
+- MINOR `ac_negative_check.rs:933` — `stderr_excerpt` carries absolute machine paths and elapsed times into `run` stdout and the versioned `ac-proof.json`; pre-existing (shipped in an earlier merged spec) but now also flows through the new `ac-add` report, brushing the byte-stability guard.
+- MINOR `work_removed.rs:124` — words from a standard `Expect:` regex (`passed`, `1-9`, `0-9`) participate in the match, so a strip removing those words anywhere can decline a criterion that should have been judged. Safe direction and visible via `evidence_removed`, but it can silence a survivor finding.
+- MINOR — the installed plugin cache carries neither `ac-add` nor `ac-negative-check` prose, so the prose half of "install everything" is not live. Pre-existing/systemic: the cache is a frozen photocopy refreshed by a release plus `claude plugin update`.
+- MINOR `ac-proof.json` — every criterion still shows `confirmation: "not-taken"`; the green half is QA's step and is not recorded yet.

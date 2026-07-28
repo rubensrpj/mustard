@@ -1,7 +1,7 @@
 # Review Verdict
 
 - Spec: `give-harness-door-to-add`
-- Verdict: **REJECTED**
-- Critical findings: 1
+- Verdict: **APPROVED**
+- Critical findings: 0
 - Subproject: `apps/rt`
 

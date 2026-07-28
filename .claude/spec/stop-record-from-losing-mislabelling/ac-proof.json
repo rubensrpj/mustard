@@ -7,13 +7,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-2",
@@ -21,13 +21,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-3",
@@ -35,13 +35,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-4",
@@ -49,13 +49,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-5",
@@ -63,13 +63,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-6",
@@ -77,13 +77,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-7",
@@ -105,13 +105,13 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
+      "stderr_excerpt": ""
     }
   ],
   "amendments": [],
