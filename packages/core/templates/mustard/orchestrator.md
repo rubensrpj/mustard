@@ -29,7 +29,7 @@ mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short
 
 ## Delegate via Task
 
-Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new code, refactor ≥3 files, any agent-typed work. Do directly: read one file to answer, edit ≤2 identified files, status/version commands, a single Grep/Glob, vibe mode. Verdict rule: a runtime symptom the user reported cannot be refuted by static reading — verify a contradiction by reading before relaying it.
+Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new code, refactor ≥3 files, any agent-typed work. Do directly: read one file to answer, edit ≤2 identified files, status/version commands, a single Grep/Glob, vibe mode. Verdict rule — two claims are never relayed on a briefing alone. (1) A runtime symptom the user reported cannot be refuted by static reading: verify a contradiction by reading before relaying it. (2) A MEASUREMENT an agent says it took — a suite that passed, a count, a verdict, a close that completed — is not evidence until you take it yourself; re-run the command and read the output. Everything else in a briefing IS the answer: do not re-derive what the agent already did, and do not spend a subagent double-checking your own work.
 
 ## Phases
 
