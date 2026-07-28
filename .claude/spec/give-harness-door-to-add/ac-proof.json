@@ -1,0 +1,36 @@
+{
+  "spec": "give-harness-door-to-add",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt ac_add_lands_only_after_taking_the_proof",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt ac_add_refuses_a_criterion_that_cannot_fail",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 2.32s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": []
+}

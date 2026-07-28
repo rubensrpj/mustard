@@ -1,0 +1,66 @@
+{
+  "spec": "stop-record-from-losing-mislabelling",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt every_wave_keeps_its_own_memory",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt obligation_match_is_by_id_not_substring",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-rt close_report_spells_the_two_unproven_cases_apart",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo test -p mustard-rt retry_context_is_scoped_to_its_subproject",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo test -p mustard-rt dispatch_prose_teaches_the_precheck_skip",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-6",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": []
+}

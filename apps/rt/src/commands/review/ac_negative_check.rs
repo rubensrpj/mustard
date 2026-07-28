@@ -347,14 +347,23 @@ const REASON_INEXECUTABLE: &str = "the confirmation was TAKEN and the command co
      attempted AT ALL after its work landed, so the criterion itself is inexecutable — repair it \
      through `mustard-rt run ac-amend`, which accepts a passing replacement for exactly this case";
 
-/// The reason a confirmation was NOT taken by a pass running inside the very
-/// binary the criterion rebuilds. It is deliberately NOT
+/// The reason a confirmation was NOT taken by a pass whose own executable is
+/// the file the criterion's command would overwrite. It is deliberately NOT
 /// [`REASON_INEXECUTABLE`]: the command was never attempted here, so calling it
 /// broken would order the reader to rewrite a criterion nothing is wrong with —
 /// the exact "answer that reads like the fact" this whole path exists to refuse.
-const REASON_CONFIRM_NOT_HERE: &str = "the confirmation was NOT TAKEN here: this command rebuilds \
-     the binary that is running it, so the close could not attempt it — take it from a shell with \
-     `mustard-rt run ac-negative-check --confirm --spec <slug>`";
+///
+/// It names the FILE, relative to `root`, rather than a crate: the crate name
+/// was never the fact — two files with the same crate behind them are not in
+/// conflict, and the ledger this reason lands in is committed.
+fn reason_confirm_not_here(root: &Path) -> String {
+    let running = qa_run::running_binary_label(root);
+    format!(
+        "the confirmation was NOT TAKEN here: this command overwrites `{running}`, the file this \
+         process is executing from, so the close could not attempt it — take it from a shell with \
+         `mustard-rt run ac-negative-check --confirm --spec <slug>`"
+    )
+}
 
 /// The reason a criterion has no confirmation to take. Naming the missing RED
 /// proof rather than the missing confirmation is deliberate: taking the
@@ -608,15 +617,17 @@ pub(crate) fn confirm_one(
             ..record
         };
     }
-    // Asked BEFORE anything is spawned: from inside the binary this command
-    // rebuilds, attempting it buys a doomed compile and — worse — a `skip` the
-    // classifier would read as INEXECUTABLE. The honest answer is that nobody
-    // looked, and the reason names the shell that can.
-    if in_process && qa_run::targets_running_crate(&record.command) {
+    // Asked BEFORE anything is spawned, and asked of the PATHS: only when the
+    // command would overwrite this very executable does attempting it buy a
+    // doomed compile and — worse — a `skip` the classifier would read as
+    // INEXECUTABLE. The honest answer there is that nobody looked, and the
+    // reason names the shell that can. When the two files differ, the
+    // criterion is confirmed like any other.
+    if in_process && qa_run::targets_running_binary(&record.command, root) {
         return AcProof {
             verdict: Verdict::Unproven,
             confirmation: Confirmation::NotTaken,
-            reason: Some(REASON_CONFIRM_NOT_HERE.to_string()),
+            reason: Some(reason_confirm_not_here(root)),
             ..record
         };
     }
