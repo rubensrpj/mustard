@@ -22,7 +22,7 @@ rtk mustard-rt run active-specs --format table
 
 Print stdout verbatim, then these two blocks literally:
 
-**Siglas** — `#` letter (a-z), `Esc` Scope (`lt` light / `fl` full / `-`), `Prog` waves done/total. Stage `PLAN` planejar / `EXEC` executar. Status `TF` tactical-fix, `TF→{alias}` TF parent, `W{N}` wave N, `BLOCK` blocked, `em exec` dispatched, `-` none.
+**Siglas** — `#` letter (a-z), `Esc` Scope (`lt` light / `fl` full / `-`), `Prog` waves done/total. Stage `PLAN` planejar / `EXEC` executar. Status `TF` tactical-fix, `TF→{alias}` TF parent, `W{N}` wave N, `BLOCK` blocked, `em exec` dispatched, `-` none. `Onde` where the spec LIVES: `-` na árvore atual; `{branch}` = spec **em voo** — o diretório só existe nesse branch de trabalho, troque de branch antes de agir nessa linha. A closing line stating the branch scan could not run means the listing covers the checkout ONLY — print it too; it is a different claim from *"estas são todas"*.
 
 **Modo de seleção** — `a-z` act on row (PLAN approve / EXEC continue). `a-z+r` (e.g. `ar`) pre-answers *implement now* — the approval (ExitPlanMode accept / approval AskUserQuestion) still happens; `r` never bypasses it (EXEC ignores `r`). A spec name jumps straight to it (no table). Anything else → error + re-render.
 

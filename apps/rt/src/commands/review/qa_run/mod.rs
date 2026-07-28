@@ -103,6 +103,22 @@ pub(crate) fn execute_ac(command: &str, expect: Option<&str>, cwd: &Path) -> AcR
     runner::run_ac_command(command, expect, cwd)
 }
 
+/// `true` when `command` rebuilds the very binary that would be running it —
+/// `cargo build`/`cargo test` targeting `mustard-rt` (or the dashboard)
+/// DIRECTLY through `-p`/`--package`.
+///
+/// The one spelling of that question in the crate, exposed so a caller running
+/// INSIDE this binary can decline to attempt such a command instead of
+/// discovering the failure. `run_ac_command` already refuses it under
+/// [`QaRunOptions::self_invoked`]; the confirmation pass
+/// ([`crate::commands::review::ac_negative_check::confirm_in_process`]) asks
+/// FIRST, because for it the difference between "not attempted here" and
+/// "inexecutable" is the difference between a note and an order to rewrite a
+/// perfectly good criterion. Pure, total.
+pub(crate) fn targets_running_crate(command: &str) -> bool {
+    runner::targets_running_crate(command)
+}
+
 /// Locate the markdown carrying a spec's acceptance criteria, by slug — the
 /// SAME locator qa-run uses, exposed so the negative test cannot disagree with
 /// QA about which file a spec name names.

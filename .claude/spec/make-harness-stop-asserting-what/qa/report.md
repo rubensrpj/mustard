@@ -2,7 +2,7 @@
 
 - Spec: `make-harness-stop-asserting-what`
 - Overall: **SKIP**
-- Criteria: 9
+- Criteria: 13
 
 ## Acceptance Criteria
 
@@ -16,5 +16,9 @@
 | AC-6 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 | AC-7 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
 | AC-8 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
-| AC-9 | PASS | 0 | 4.5s |  |
+| AC-10 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-11 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-12 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-13 | SKIP | n/a | 0.0s | self-invocation: cannot rebuild the running binary; run this AC externally |
+| AC-9 | PASS | 0 | 1.6s |  |
 

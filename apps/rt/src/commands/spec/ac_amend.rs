@@ -292,6 +292,17 @@ fn ends_block(line: &str) -> bool {
     qa_run::parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
 }
 
+/// `true` when `line` carries neither a `Command:` nor an `Expect:` marker — a
+/// line inside an AC block that is nothing but prose.
+///
+/// Used to decide which lines a statement rewrite CONSUMES: everything between
+/// the header and the command line that is pure prose is part of the statement
+/// being replaced. Anything carrying a marker is data the rewrite must not eat,
+/// however odd its position.
+fn is_statement_continuation(line: &str) -> bool {
+    marker_end(line, "command:").is_none() && marker_end(line, "expect:").is_none()
+}
+
 /// Rewrite every criterion line for `id` in one markdown document.
 ///
 /// Only `## Acceptance Criteria` sections are touched (the i18n-aware heading
@@ -300,10 +311,37 @@ fn ends_block(line: &str) -> bool {
 /// legacy drafts duplicated the heading, and a rewrite that skipped the extra
 /// copy would leave a superseded command on disk.
 ///
+/// ## A statement is a BLOCK, not a line
+///
+/// The drafter wraps a long EARS statement over several lines:
+///
+/// ```text
+/// - **AC-1** — when a spec is closed, then the pipeline takes the
+///   confirmation pass and records the verdict, instead of clearing on
+///   the red proof alone
+///   Command: `cargo test …`
+/// ```
+///
+/// [`qa_run::parse_ac_header`] only ever reads the FIRST of those lines, so a
+/// rewrite that replaces just it leaves the remaining lines on disk, orphaned
+/// under a statement they no longer continue — the reader gets the new sentence
+/// welded to the tail of the old one. Found in review (2026-07-28) after
+/// amending AC-1 of this very spec, and cleaned by hand; the hand is exactly
+/// what this door exists to replace.
+///
+/// So a `--statement` rewrite consumes the WHOLE block: the header line is
+/// replaced and every pure-prose line between it and the `Command:` line is
+/// dropped. Lines carrying a marker are never dropped — see
+/// [`is_statement_continuation`].
+///
 /// `None` when the document carries nothing to change.
 fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
     let lines: Vec<&str> = body.split('\n').collect();
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    // Lines the statement rewrite consumed. Marked rather than removed as we
+    // go: `out` is index-parallel to `lines`, and a mid-loop deletion would
+    // shift every offset the surgery below still needs.
+    let mut consumed = vec![false; lines.len()];
     let mut changed = false;
 
     let mut i = 0;
@@ -338,6 +376,17 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
                     .find(|k| marker_end(lines[*k], "command:").is_some())
             };
             let Some(k) = cmd_line else { continue };
+            // The rest of the statement BLOCK: every pure-prose line between the
+            // header and the command. A new statement replaces all of it, so
+            // what it does not replace it removes.
+            if plan.statement.is_some() && !inline {
+                for m in j + 1..k {
+                    if is_statement_continuation(lines[m]) {
+                        consumed[m] = true;
+                        changed = true;
+                    }
+                }
+            }
             if let Some(rewritten) = replace_marker_value(&out[k], "command:", &plan.command) {
                 out[k] = rewritten;
                 changed = true;
@@ -360,7 +409,13 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
         }
         i = end;
     }
-    changed.then(|| out.join("\n"))
+    changed.then(|| {
+        out.into_iter()
+            .zip(consumed)
+            .filter_map(|(line, dropped)| (!dropped).then_some(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1102,87 @@ mod tests {
         assert!(updated.contains("  Command: `cd new`"), "{updated}");
         // A document with nothing to change reports exactly that.
         assert!(rewrite_markdown("## Acceptance Criteria\n\n- **AC-1** — x.\n  Command: `cd a`\n", "AC-2", &plan).is_none());
+    }
+
+    /// A `--statement` rewrite replaces the WHOLE statement block, not just the
+    /// line the parser reads.
+    ///
+    /// The defect this pins, found in review on 2026-07-28: amending AC-1 of the
+    /// spec that built this door left the superseded statement's continuation
+    /// lines on disk, orphaned under the new sentence — the reader saw the new
+    /// statement welded to the tail of the old one, and it had to be cleaned by
+    /// hand. `wave-plan.md` and the wave spec were untouched only because the
+    /// line happened to fit there, which is luck, not a rule.
+    ///
+    /// Two-sided:
+    ///
+    /// 1. **The residue is gone.** No fragment of the old statement survives,
+    ///    the new one is what the parser reads back, and the command line below
+    ///    it is untouched.
+    /// 2. **Nothing else is eaten.** Without `--statement` the continuation
+    ///    lines stay exactly where they were (a command-only amendment must not
+    ///    rewrite prose), and a line carrying an `Expect:` marker is never
+    ///    dropped even when it sits inside the block.
+    #[test]
+    fn ac_amend_rewrites_the_whole_statement_block() {
+        // The drafter's wrapped shape: header + two continuation lines.
+        let wrapped = "## Acceptance Criteria\n\
+                       - **AC-1** — when the criterion being replaced is recorded as\n  \
+                       inexecutable, then ac-amend accepts a substitute that passes,\n  \
+                       instead of refusing everything that is not red\n  \
+                       Command: `cd old`\n  Expect: `1 passed`\n";
+
+        // --- 1. With a statement: the block is replaced whole ---------------
+        let plan = Rewrite {
+            command: "cd new".to_string(),
+            expect: None,
+            statement: Some("when a spec is closed, then the pipeline takes the confirmation"
+                .to_string()),
+        };
+        let updated = rewrite_markdown(wrapped, "AC-1", &plan).expect("the criterion changed");
+        let item = criteria_of(&updated)
+            .into_iter()
+            .find(|i| i.id == "AC-1")
+            .unwrap_or_else(|| panic!("AC-1 unreadable after rewrite: {updated:?}"));
+        assert_eq!(item.statement, plan.statement.clone().unwrap_or_default(), "{updated:?}");
+        assert_eq!(item.command, "cd new", "{updated:?}");
+        // The orphaned residue: every fragment of the old statement is gone.
+        for orphan in [
+            "inexecutable, then ac-amend accepts",
+            "instead of refusing everything that is not red",
+            "recorded as",
+        ] {
+            assert!(
+                !updated.contains(orphan),
+                "superseded statement line survived ({orphan:?}): {updated:?}"
+            );
+        }
+        // The command block below it is intact — only the statement was eaten.
+        assert!(updated.contains("  Command: `cd new`"), "{updated:?}");
+        assert!(updated.contains("  Expect: `1 passed`"), "{updated:?}");
+
+        // --- 2. Without a statement: the prose is left ALONE -----------------
+        let command_only = Rewrite {
+            command: "cd new".to_string(),
+            expect: None,
+            statement: None,
+        };
+        let untouched =
+            rewrite_markdown(wrapped, "AC-1", &command_only).expect("the command changed");
+        assert!(
+            untouched.contains("instead of refusing everything that is not red"),
+            "a command-only amendment must not rewrite prose: {untouched:?}"
+        );
+
+        // --- 3. A marker line inside the block is never dropped -------------
+        let odd = "## Acceptance Criteria\n\
+                   - **AC-1** — old statement wrapped\n  \
+                   over two lines\n  \
+                   Expect: `1 passed`\n  \
+                   Command: `cd old`\n";
+        let kept = rewrite_markdown(odd, "AC-1", &plan).expect("the criterion changed");
+        assert!(kept.contains("Expect: `1 passed`"), "marker line eaten: {kept:?}");
+        assert!(!kept.contains("over two lines"), "{kept:?}");
     }
 
     /// Criterion ids are normalised to the spelling the parser yields, so a

@@ -29,6 +29,12 @@
 //! at PLAN time, before its work exists, where red is the CORRECT answer — the
 //! approval gate would then refuse every honest spec.
 //!
+//! What is NOT left to memory is WHO takes the confirmation once the work has
+//! landed: [`crate::commands::pipeline::close_pipeline`] takes it itself, on
+//! every close, through [`confirm_in_process`]. A flag nobody is told about is
+//! a mechanism that ships inert — the close is the moment the second half is
+//! due, so the close is what asks for it.
+//!
 //! [`Confirmation`] is the second column in the record, beside [`Proof`]; the
 //! two are never collapsed, for the same reason `NotAttempted` and `Green` are
 //! never collapsed. Its `Inexecutable` value is the one finding no red pass can
@@ -341,6 +347,15 @@ const REASON_INEXECUTABLE: &str = "the confirmation was TAKEN and the command co
      attempted AT ALL after its work landed, so the criterion itself is inexecutable — repair it \
      through `mustard-rt run ac-amend`, which accepts a passing replacement for exactly this case";
 
+/// The reason a confirmation was NOT taken by a pass running inside the very
+/// binary the criterion rebuilds. It is deliberately NOT
+/// [`REASON_INEXECUTABLE`]: the command was never attempted here, so calling it
+/// broken would order the reader to rewrite a criterion nothing is wrong with —
+/// the exact "answer that reads like the fact" this whole path exists to refuse.
+const REASON_CONFIRM_NOT_HERE: &str = "the confirmation was NOT TAKEN here: this command rebuilds \
+     the binary that is running it, so the close could not attempt it — take it from a shell with \
+     `mustard-rt run ac-negative-check --confirm --spec <slug>`";
+
 /// The reason a criterion has no confirmation to take. Naming the missing RED
 /// proof rather than the missing confirmation is deliberate: taking the
 /// confirmation is not what clears it.
@@ -560,12 +575,19 @@ pub(crate) fn prove_one(
 /// The red columns ([`AcProof::proof`], [`AcProof::exit`]) are carried over
 /// verbatim. Confirming a criterion must never overwrite the record of what it
 /// did before its work existed; that record is the expensive half.
+///
+/// `in_process` says this pass is running INSIDE `mustard-rt` itself (the
+/// `close-pipeline` composite). A criterion whose command rebuilds that very
+/// binary cannot be attempted from here, and is recorded as a confirmation NOT
+/// TAKEN — never as [`Confirmation::Inexecutable`], which is an order to
+/// rewrite the criterion.
 pub(crate) fn confirm_one(
     root: &Path,
     id: &str,
     command: &str,
     expect: Option<&str>,
     previous: Option<&AcProof>,
+    in_process: bool,
 ) -> AcProof {
     let record = previous.cloned().unwrap_or(AcProof {
         id: id.to_string(),
@@ -583,6 +605,18 @@ pub(crate) fn confirm_one(
         return AcProof {
             verdict: Verdict::Unproven,
             reason: Some(REASON_NOTHING_TO_CONFIRM.to_string()),
+            ..record
+        };
+    }
+    // Asked BEFORE anything is spawned: from inside the binary this command
+    // rebuilds, attempting it buys a doomed compile and — worse — a `skip` the
+    // classifier would read as INEXECUTABLE. The honest answer is that nobody
+    // looked, and the reason names the shell that can.
+    if in_process && qa_run::targets_running_crate(&record.command) {
+        return AcProof {
+            verdict: Verdict::Unproven,
+            confirmation: Confirmation::NotTaken,
+            reason: Some(REASON_CONFIRM_NOT_HERE.to_string()),
             ..record
         };
     }
@@ -606,7 +640,7 @@ pub(crate) fn confirm_one(
 /// the caller remembering to pass it. Every criterion's command runs WITH `root`
 /// as its working directory, which is where AC commands are written to run.
 pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, Pass::Proof)
+    run_pass(root, spec, Pass::Proof, false)
 }
 
 /// Take the CONFIRMATION for `spec` against an explicit project `root`: run each
@@ -617,11 +651,28 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
 /// second half. Its earlier failure stays in the record ([`AcProof::proof`]);
 /// what it no longer does is clear the criterion on its own.
 pub(crate) fn confirm(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, Pass::Confirm)
+    run_pass(root, spec, Pass::Confirm, false)
+}
+
+/// The CONFIRMATION taken from INSIDE `mustard-rt` itself — what
+/// [`crate::commands::pipeline::close_pipeline`] runs, so the pipeline takes
+/// the second half of the proof instead of leaving it to whoever remembers the
+/// `--confirm` flag.
+///
+/// The only difference from [`confirm`] is what it does with a criterion whose
+/// command rebuilds this binary: it declines to attempt it and says so
+/// ([`Confirmation::NotTaken`]), rather than spending the deadline on a compile
+/// that cannot link and recording the resulting non-answer as a finding about
+/// the criterion.
+pub(crate) fn confirm_in_process(root: &Path, spec: &str) -> NegativeCheckReport {
+    run_pass(root, spec, Pass::Confirm, true)
 }
 
 /// Both passes, in one engine — see [`Pass`] for why it is a parameter.
-fn run_pass(root: &Path, spec: &str, pass: Pass) -> NegativeCheckReport {
+///
+/// `in_process` is only ever read by the confirmation pass — see
+/// [`confirm_in_process`].
+fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCheckReport {
     let Some(spec_file) = resolve_spec_file(root, spec) else {
         return NegativeCheckReport::aborted(pass, Some(spec.to_string()), "spec-not-found");
     };
@@ -655,7 +706,14 @@ fn run_pass(root: &Path, spec: &str, pass: Pass) -> NegativeCheckReport {
             // The confirmation only ever speaks about a criterion the ledger
             // already carries. One it does not is missing its RED proof, and a
             // green run here would answer a question nobody asked.
-            criteria.push(confirm_one(root, &item.id, &item.command, expect, recorded));
+            criteria.push(confirm_one(
+                root,
+                &item.id,
+                &item.command,
+                expect,
+                recorded,
+                in_process,
+            ));
             continue;
         }
         // A proof already recorded for this exact command is kept as it is: the

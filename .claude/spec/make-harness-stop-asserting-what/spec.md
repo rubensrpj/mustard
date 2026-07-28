@@ -56,10 +56,8 @@ Each criterion below names the test that proves it and demands a non-zero pass
 count, because a filter that matches nothing exits 0 and prints "0 passed" — a
 green that proves nothing. `[1-9][0-9]*` is what refuses that reading.
 
-- **AC-1** — when the criterion proof is taken again after a wave's work has
-  landed, then a criterion that still comes back red is reported as unproven
-  instead of clearing on its earlier failure alone
-  Command: `cargo test -p mustard-rt ac_proof_requires_green_after`
+- **AC-1** — when a spec is closed after its work has landed, then the pipeline itself TAKES the confirmation pass over the criteria proven red at plan time and records the verdict, instead of clearing on the red proof alone
+  Command: `cargo test -p mustard-rt close_pipeline_takes_the_confirmation_pass`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-2** — when the criterion being replaced is recorded as inexecutable, then
   ac-amend accepts a substitute that passes, instead of refusing everything that
@@ -91,6 +89,18 @@ green that proves nothing. `[1-9][0-9]*` is what refuses that reading.
 - **AC-8** — when a checklist item is dropped on purpose with a stated reason,
   then it is recorded as a decision and stays distinct from an unchecked item
   Command: `cargo test -p mustard-rt checklist_records_dropped_with_reason`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-10** — when the CLOSE prose is read, then it teaches the confirmation pass the pipeline now takes, instead of describing only the red half and leaving the second one undiscovered
+  Command: `cargo test -p mustard-rt close_prose_teaches_the_confirmation_pass`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-11** — when the picker prose spells the Siglas out literally, then it carries the `Onde` legend for the column the table now prints
+  Command: `cargo test -p mustard-rt picker_prose_teaches_the_onde_column`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-12** — when the resume prose tells the orchestrator which wave-progress fields to read, then it names `neverDispatched` beside `currentWave`
+  Command: `cargo test -p mustard-rt resume_prose_teaches_never_dispatched`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-13** — when a criterion whose statement spans several lines is amended, then the whole statement block is rewritten, instead of leaving the superseded continuation lines orphaned under the new statement
+  Command: `cargo test -p mustard-rt ac_amend_rewrites_the_whole_statement_block`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-9** — the project build passes green
   Command: `cargo build --workspace`
@@ -127,6 +137,15 @@ Wave 5 — a dropped item is recorded as a decision:
 - `apps/rt/src/commands/checklist/mark_checklist_item.rs`
 - `packages/core/src/domain/model/view/wave.rs`
 
+Round 2 — the mechanisms reach a reader (the three mid-pipeline change requests,
+plus the production caller the confirmation pass was missing):
+
+- `apps/rt/src/commands/pipeline/close_pipeline.rs`
+- `apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs`
+- `plugin/refs/spec/resume-loop.md`
+- `plugin/pipeline-config.md`
+- `plugin/commands/spec.md`
+
 ## Boundaries
 
 IN: the eight fixes above, each landing in the mechanism named by its own
@@ -162,6 +181,10 @@ spec belongs with the work it describes.
   Reason: the cause is the never-updated scope list; blocking today would turn twenty advisories into twenty blocks
 - base is dev
   Reason: mustard.json#git.flow declares '*': 'dev', and every recent spec cut from it
+- the confirmation pass is TAKEN by close-pipeline and stays ADVISORY there
+  Reason: taking it is what the review found missing — the flag existed and nothing called it. Blocking on it would refuse every spec whose ledger predates the second column, and QA already blocks the close on the same commands; what the pass adds is the RECORD that a criterion was seen to pass, instead of a spec clearing on its red proof alone
+- AC-13's RED half could not be taken, and the ledger says so instead of pretending otherwise
+  Reason: the criterion was written in round 2, in the same parallel round in which the ac-amend fix it names had already landed, so the command was green the first time it was ever run. The ledger records `proof: green / verdict: unproven` — the honest reading. Backdating it, or dropping the criterion to keep the ledger tidy, would each be the habit this spec exists to remove; the remaining three round-2 criteria (AC-10..AC-12) were proven red before their work
 
 ## Evidence
 
