@@ -62,10 +62,8 @@ what refuses to read that as success.
   as it is, then the addition is refused and nothing is written anywhere
   Command: `cargo test -p mustard-rt ac_add_refuses_a_criterion_that_cannot_fail`
   Expect: `ok\. [1-9][0-9]* passed`
-- **AC-3** — when the work a criterion describes is taken away again, then the
-  criterion comes back red, so a command that is satisfied by a comment rather
-  than by the behaviour is reported as verifying nothing
-  Command: `cargo test -p mustard-rt criterion_returns_red_when_the_work_is_removed`
+- **AC-3** — when the work a criterion describes is taken away again, then a criterion still green there is reported as verifying nothing, and one whose own evidence the strip took away is DECLINED by name instead of being booked as a proven red
+  Command: `cargo test -p mustard-rt removal_refuses_a_survivor_and_declines_what_it_cannot_judge`
   Expect: `ok\. [1-9][0-9]* passed`
 - **AC-4** — the project build passes green
   Command: `cargo build --workspace`

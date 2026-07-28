@@ -44,22 +44,44 @@
 //!
 //! # The third transition: the removal
 //!
-//! Red before and green after still leave one gap, and it is the one the field
-//! keeps falling into. A criterion whose command matches a WORD the work
-//! dragged along — the term in a comment, a file that exists and is never
-//! called — was legitimately red before (the word did not exist) and is
-//! legitimately green after (it does now), while asserting nothing about the
-//! behaviour. Both passes are satisfied and the criterion verifies nothing.
+//! Red before and green after still leave a gap. A criterion can be red before
+//! its work (the thing it names did not exist yet) and green after it (it does
+//! now) while asserting nothing the work actually DOES — the classic shape is a
+//! command pointing at a subsystem the waves never touched, which both earlier
+//! passes wave through.
 //!
-//! The REMOVAL pass ([`removal`], reached by `--removal`) closes it: each
-//! CONFIRMED criterion runs against a checkout with the work taken away again
-//! and must come back RED. One that stays green SURVIVED the removal, and is
-//! reported as verifying nothing — [`Removal::Survived`], the third column.
+//! The REMOVAL pass ([`removal`], reached by `--removal`) runs each CONFIRMED
+//! criterion against a checkout with the work taken away again. One that is
+//! STILL GREEN there SURVIVED the removal and is reported as verifying nothing
+//! — [`Removal::Survived`], the third column, and the finding this pass exists
+//! to produce.
 //!
 //! What "the work" is comes off the record, not a guess: each wave already
 //! caches the digest of the files it changed, and [`super::work_removed`] reads
 //! that set and strips it in a scratch worktree. The live checkout is never
 //! written to.
+//!
+//! ## What a RED here does and does not mean — the limit, stated
+//!
+//! This pass is a FALSIFIER, not a certificate, and saying otherwise would be
+//! the habit the rest of this module exists to remove. The strip is
+//! file-grained, because file paths are all the cached digest carries, so it
+//! takes away the criterion's own evidence whenever that evidence shares a file
+//! with the behaviour — for a project whose tests live beside the code they
+//! test, that is every test criterion there is. A red from such a run was
+//! guaranteed before the command was even spawned.
+//!
+//! So the pass does NOT report those as proven. [`super::work_removed`]
+//! publishes the words the strip took out of the tree, and a criterion whose
+//! command names one of them is recorded as [`Removal::EvidenceRemoved`]: the
+//! removal was NOT TAKEN for it, because taking it could only have produced an
+//! answer about the strip. Its remedy is the honest one — assert the behaviour
+//! through evidence the work does not carry away with it, or accept that this
+//! transition has nothing to say about this criterion.
+//!
+//! What survives, then, is exactly one sound reading each way: GREEN with the
+//! work gone is a finding about the criterion; RED with the criterion's own
+//! evidence still intact is a red the behaviour earned.
 //!
 //! # Why a static linter cannot answer this
 //!
@@ -102,6 +124,7 @@
 //! `analyze_validation::validate` takes its `root`).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::commands::review::qa_run;
@@ -171,10 +194,9 @@ pub(crate) enum Confirmation {
 ///
 /// The transition nobody was testing. The red proof says the criterion failed
 /// BEFORE its work existed and the confirmation says it passed AFTER, and a
-/// criterion satisfied by something the work merely dragged along — a comment
-/// carrying the word, a file that exists but is never called — clears both. Only
-/// removing the work again separates "asserts the behaviour" from "asserts a
-/// string that happens to be there".
+/// criterion pointing at something the work never did clears both. Removing the
+/// work again is what catches it — see the module's own statement of what this
+/// column can and cannot say.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Removal {
@@ -182,8 +204,9 @@ pub(crate) enum Removal {
     /// ledger written before this column existed reads as the truth about it.
     #[default]
     NotTaken,
-    /// TAKEN — the command came back RED with the work removed. The only
-    /// outcome that shows the criterion is tied to the behaviour.
+    /// TAKEN — the command came back RED with the work removed, and the strip
+    /// left the criterion's own evidence in place, so the red is one the
+    /// missing behaviour earned rather than one the strip manufactured.
     Red,
     /// TAKEN — the command came back GREEN with the work removed, so it
     /// SURVIVED the removal: it verifies something the work did not do.
@@ -192,6 +215,13 @@ pub(crate) enum Removal {
     NoVerdict,
     /// TAKEN — the command could not be attempted against the stripped tree.
     NotAttempted,
+    /// NOT TAKEN — the strip took away the criterion's OWN evidence along with
+    /// the behaviour (its command names a word the removal deleted from the
+    /// tree), so the command was guaranteed to come back red before it was even
+    /// spawned. Running it would have produced a fact about the strip dressed
+    /// as a fact about the criterion, which is the one answer this whole module
+    /// refuses — so the command is not run, and this says so.
+    EvidenceRemoved,
 }
 
 /// Whether a criterion cleared the negative test.
@@ -350,13 +380,17 @@ pub(crate) struct NegativeCheckReport {
     /// How many non-exempt criteria do NOT. In the `proof` pass this is every
     /// one of them by construction: the confirmation is not due yet.
     pub(crate) unconfirmed: usize,
-    /// How many came back RED with their work taken away — the third
-    /// transition, and the only column that says a criterion tracks the
-    /// behaviour rather than a word the work left behind.
+    /// How many came back RED with their work taken away AND with their own
+    /// evidence intact — the reds the missing behaviour earned.
     pub(crate) removed_red: usize,
     /// How many SURVIVED the removal: still green with the work gone, so they
     /// verify nothing. Each is named in `criteria` with its reason.
     pub(crate) survived: usize,
+    /// How many the removal declined to judge because the strip took away the
+    /// criterion's own evidence. Counted APART from `removed_red` on purpose:
+    /// folding a guaranteed red into the proven column is precisely how this
+    /// pass would report a coverage it never had.
+    pub(crate) evidence_removed: usize,
     /// The files whose work the removal pass actually took away, as repo paths.
     /// Reported rather than assumed: a removal is only as good as the strip it
     /// ran against, and an operator reading `red` owes a look at WHAT was
@@ -384,6 +418,7 @@ impl NegativeCheckReport {
             unconfirmed: 0,
             removed_red: 0,
             survived: 0,
+            evidence_removed: 0,
             taken_away: Vec::new(),
             criteria: Vec::new(),
             error: Some(error.to_string()),
@@ -450,12 +485,12 @@ fn reason_confirm_not_here(root: &Path) -> String {
 
 /// The reason a criterion SURVIVED the removal of its own work — the finding
 /// the third transition exists to produce. It names the shape the field keeps
-/// producing: the command matches a word the work left behind (a comment, a
-/// file name, an unused symbol) rather than the behaviour.
+/// producing: the command is satisfied by something the waves never touched, so
+/// the work could not have been what made it go green.
 const REASON_SURVIVED: &str = "the REMOVAL was TAKEN and the command still came back green with \
      the work taken away, so this criterion is satisfied by something the work did not do — a \
-     comment, a name or a file that survives the removal. Rewrite the command so it asserts the \
-     BEHAVIOUR, then take the proof again";
+     path, a name or a subsystem that outlives the removal entirely. Rewrite the command so it \
+     asserts the BEHAVIOUR, then take the proof again";
 
 /// The reason a removal that timed out proves nothing.
 const REASON_REMOVAL_NO_VERDICT: &str = "the REMOVAL was TAKEN but the command was killed by its \
@@ -468,6 +503,23 @@ const REASON_REMOVAL_NO_VERDICT: &str = "the REMOVAL was TAKEN but the command w
 const REASON_REMOVAL_NOT_ATTEMPTED: &str = "the REMOVAL was NOT TAKEN: the command could not be \
      attempted against the tree with the work removed — check the scratch checkout is complete, \
      then take the removal again";
+
+/// The reason the removal declined to judge a criterion whose own evidence the
+/// strip took away, naming the WORD that gave it away.
+///
+/// It is deliberately not a finding against the criterion: nothing about the
+/// command is wrong, and ordering a rewrite here would be the fourth answer
+/// that reads like the fact. It states the limit and the only two things that
+/// change it.
+fn reason_evidence_removed(word: &str) -> String {
+    format!(
+        "the REMOVAL was NOT TAKEN: this criterion's command names `{word}`, which the strip \
+         itself deleted from the tree, so the command was going to come back red whatever the \
+         behaviour does — that red would be a fact about the strip, not about the criterion. \
+         This transition has nothing to say here; it speaks only about a criterion whose evidence \
+         outlives the work it checks"
+    )
+}
 
 /// The reason a criterion has nothing to remove. Naming the missing GREEN
 /// confirmation is deliberate: removing the work answers nothing about a
@@ -568,9 +620,13 @@ fn classify_confirmation(status: &str) -> (Verdict, Confirmation, Option<String>
 /// Classify ONE removal run from the executor's status.
 ///
 /// The rule is [`classify`]'s again, one transition later and for the opposite
-/// tree: with the work taken away, `fail` — red — is the ONLY status that shows
-/// the criterion is tied to the behaviour. `pass` is the finding: the command
-/// SURVIVED the removal, so it verifies something else. Pure and total.
+/// tree: with the work taken away, `fail` — red — is the only status the
+/// criterion clears on. `pass` is the finding: the command SURVIVED the
+/// removal, so it verifies something the work did not do. Pure and total.
+///
+/// This function is only ever reached for a criterion the strip left able to
+/// answer — [`remove_one`] decides that BEFORE spawning anything, so no
+/// guaranteed red ever arrives here to be read as a proof.
 fn classify_removal(status: &str) -> (Verdict, Removal, Option<String>) {
     match status {
         "fail" => (Verdict::Proven, Removal::Red, None),
@@ -799,6 +855,18 @@ pub(crate) fn confirm_one(
 /// it is returned untouched but for the reason naming what is actually missing,
 /// and NOTHING is run for it.
 ///
+/// `removed_text` is the set of words [`super::work_removed`] says the strip
+/// took OUT of the tree. A criterion whose command names one of them had its own
+/// evidence stripped along with the behaviour, so its red was decided before the
+/// command ran — it is recorded as [`Removal::EvidenceRemoved`] and, like the
+/// unconfirmed case, NOTHING is run for it. Deciding this before spawning is
+/// what keeps a guaranteed red out of the proven column instead of trying to
+/// read one back out of it afterwards.
+///
+/// A criterion declined this way keeps the verdict its earlier passes earned:
+/// the removal did not speak about it, and turning silence into a failure is the
+/// same error as turning it into a proof.
+///
 /// The earlier columns are carried over verbatim, for the reason
 /// [`confirm_one`] carries its own: a later pass must never overwrite the record
 /// of an earlier one.
@@ -808,6 +876,7 @@ pub(crate) fn remove_one(
     command: &str,
     expect: Option<&str>,
     previous: Option<&AcProof>,
+    removed_text: &BTreeSet<String>,
 ) -> AcProof {
     let record = previous.cloned().unwrap_or(AcProof {
         id: id.to_string(),
@@ -827,6 +896,13 @@ pub(crate) fn remove_one(
         return AcProof {
             verdict: Verdict::Unproven,
             reason: Some(REASON_NOTHING_TO_REMOVE.to_string()),
+            ..record
+        };
+    }
+    if let Some(word) = super::work_removed::taken_away_word(removed_text, &record.command) {
+        return AcProof {
+            removal: Removal::EvidenceRemoved,
+            reason: Some(reason_evidence_removed(&word)),
             ..record
         };
     }
@@ -850,7 +926,7 @@ pub(crate) fn remove_one(
 /// the caller remembering to pass it. Every criterion's command runs WITH `root`
 /// as its working directory, which is where AC commands are written to run.
 pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, root, Pass::Proof, false)
+    run_pass(root, spec, root, Pass::Proof, false, &BTreeSet::new())
 }
 
 /// Take the CONFIRMATION for `spec` against an explicit project `root`: run each
@@ -861,19 +937,29 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
 /// second half. Its earlier failure stays in the record ([`AcProof::proof`]);
 /// what it no longer does is clear the criterion on its own.
 pub(crate) fn confirm(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, root, Pass::Confirm, false)
+    run_pass(root, spec, root, Pass::Confirm, false, &BTreeSet::new())
 }
 
 /// Take the REMOVAL pass for `spec`: run each criterion that was CONFIRMED
 /// green against `tree` — a checkout of the project with the work taken away —
-/// and require it to come back red.
+/// and refuse the ones still green there.
+///
+/// `removed_text` is what the strip took OUT of that tree
+/// ([`super::work_removed::RemovedTree::removed_text`]); it is what lets the
+/// pass decline the criteria whose own evidence went with the work instead of
+/// booking their guaranteed red as a proof.
 ///
 /// The spec artefacts and the ledger are read and written under `root`; only
 /// the commands run in `tree`. Keeping the two apart is the whole safety
 /// property of this pass: the record of a run lands beside the spec, never
 /// inside the scratch checkout that is about to be deleted.
-pub(crate) fn removal(root: &Path, spec: &str, tree: &Path) -> NegativeCheckReport {
-    run_pass(root, spec, tree, Pass::Removal, false)
+pub(crate) fn removal(
+    root: &Path,
+    spec: &str,
+    tree: &Path,
+    removed_text: &BTreeSet<String>,
+) -> NegativeCheckReport {
+    run_pass(root, spec, tree, Pass::Removal, false, removed_text)
 }
 
 /// The CONFIRMATION taken from INSIDE `mustard-rt` itself — what
@@ -887,7 +973,7 @@ pub(crate) fn removal(root: &Path, spec: &str, tree: &Path) -> NegativeCheckRepo
 /// that cannot link and recording the resulting non-answer as a finding about
 /// the criterion.
 pub(crate) fn confirm_in_process(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, root, Pass::Confirm, true)
+    run_pass(root, spec, root, Pass::Confirm, true, &BTreeSet::new())
 }
 
 /// All three passes, in one engine — see [`Pass`] for why it is a parameter.
@@ -898,13 +984,15 @@ pub(crate) fn confirm_in_process(root: &Path, spec: &str) -> NegativeCheckReport
 /// from `root`.
 ///
 /// `in_process` is only ever read by the confirmation pass — see
-/// [`confirm_in_process`].
+/// [`confirm_in_process`]; `removed_text` only by the removal pass — see
+/// [`removal`]. Both are empty for the passes that do not answer to them.
 fn run_pass(
     root: &Path,
     spec: &str,
     tree: &Path,
     pass: Pass,
     in_process: bool,
+    removed_text: &BTreeSet<String>,
 ) -> NegativeCheckReport {
     let Some(spec_file) = resolve_spec_file(root, spec) else {
         return NegativeCheckReport::aborted(pass, Some(spec.to_string()), "spec-not-found");
@@ -938,7 +1026,14 @@ fn run_pass(
         if pass == Pass::Removal {
             // The third transition. It speaks only about a criterion the ledger
             // already carries with a GREEN confirmation — see `remove_one`.
-            criteria.push(remove_one(tree, &item.id, &item.command, expect, recorded));
+            criteria.push(remove_one(
+                tree,
+                &item.id,
+                &item.command,
+                expect,
+                recorded,
+                removed_text,
+            ));
             continue;
         }
         if pass == Pass::Confirm {
@@ -983,6 +1078,10 @@ fn run_pass(
         .iter()
         .filter(|c| c.removal == Removal::Survived)
         .count();
+    let evidence_removed = criteria
+        .iter()
+        .filter(|c| c.removal == Removal::EvidenceRemoved)
+        .count();
 
     // The ledger is written whichever way the verdicts fell: the proofs already
     // obtained are the expensive part of this run and must not be lost because a
@@ -1012,6 +1111,7 @@ fn run_pass(
         unconfirmed,
         removed_red,
         survived,
+        evidence_removed,
         taken_away: Vec::new(),
         criteria,
         error: (!written).then(|| "ledger-write-failed".to_string()),
@@ -1076,7 +1176,7 @@ fn take_removal(root: &Path, spec: &str, from: &str) -> NegativeCheckReport {
     let spec_dir = spec_file.parent().unwrap_or(root).to_path_buf();
     match super::work_removed::build(root, &spec_dir, from) {
         Ok(tree) => {
-            let mut report = removal(root, spec, tree.path());
+            let mut report = removal(root, spec, tree.path(), tree.removed_text());
             report.taken_away = tree.taken_away().to_vec();
             report
         }
@@ -1432,61 +1532,71 @@ mod tests {
         );
     }
 
-    /// AC-3 — the THIRD transition. A criterion that was red before its work
-    /// and green after it must come back RED once the work is taken away
-    /// again; one that stays green SURVIVED the removal and is reported as
-    /// verifying nothing.
+    /// AC-3 — the THIRD transition, and the LIMIT it declares instead of
+    /// papering over.
     ///
-    /// The two criteria are built so the difference is the whole test, with the
-    /// work materialised literally as a directory:
+    /// Three criteria, built so the differences between them are the whole
+    /// test, with the work materialised literally as directories:
     ///
-    /// * `AC-1` asserts the directory the work creates — `cd` into it. It is
-    ///   red before, green after, and red again in a tree without it: the
-    ///   criterion is TIED to the behaviour.
-    /// * `AC-2` asserts something the work merely dragged along — a directory
-    ///   that exists on both trees, standing for the comment carrying the word.
-    ///   It is red before (it did not exist then), green after, and STILL green
-    ///   with the work removed. That is the finding no earlier pass can make.
+    /// * `AC-1` asserts the directory the work creates — `cd` into it. Red
+    ///   before, green after, red again in a tree without it, and its own
+    ///   evidence (the command's words) outlives the strip: a red the missing
+    ///   behaviour earned.
+    /// * `AC-2` asserts something OUTSIDE the work — a directory on both trees.
+    ///   Red before (it did not exist then), green after, and STILL green with
+    ///   the work removed. That is the finding no earlier pass can make.
+    /// * `AC-3` names a word the STRIP ITSELF deleted. Its red is guaranteed
+    ///   before anything runs, so booking it as proof would be the pass
+    ///   claiming a coverage it never had. It is declined by name instead —
+    ///   never run, never counted with the reds.
     ///
-    /// Two-sided by construction: the same pass, over the same ledger, reports
-    /// opposite verdicts for the two, so it cannot pass by calling everything
-    /// red or everything survived.
+    /// Two-sided three ways over the SAME pass and the SAME ledger, so it
+    /// cannot pass by calling everything red, everything survived, or
+    /// everything unjudgeable.
     #[test]
-    fn criterion_returns_red_when_the_work_is_removed() {
+    fn removal_refuses_a_survivor_and_declines_what_it_cannot_judge() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // The tree WITH the work: both directories exist.
+        // The tree WITH the work: all three directories exist.
         let with_work = root.join("with-work");
         std::fs::create_dir_all(with_work.join("behaviour")).unwrap();
         std::fs::create_dir_all(with_work.join("dragged-along")).unwrap();
+        std::fs::create_dir_all(with_work.join("own-evidence")).unwrap();
         // The tree with the work TAKEN AWAY: only the dragged-along one.
         let stripped = root.join("stripped");
         std::fs::create_dir_all(stripped.join("dragged-along")).unwrap();
+        // What the strip took OUT of that tree, as `work_removed` reports it.
+        // `behaviour` is deliberately NOT in it: the strip removed the
+        // directory, not the criterion's ability to ask about it.
+        let removed_text: BTreeSet<String> = ["own-evidence".to_string()].into_iter().collect();
 
         let body = "# S\n\n## Acceptance Criteria\n\
              - **AC-1** — the behaviour is there.\n  Command: `cd behaviour`\n\
-             - **AC-2** — a word the work dragged along.\n  Command: `cd dragged-along`\n\
-             - **AC-3** — build green.\n  Command: `cd .`\n";
+             - **AC-2** — a word from outside the work.\n  Command: `cd dragged-along`\n\
+             - **AC-3** — a word the strip itself deleted.\n  Command: `cd own-evidence`\n\
+             - **AC-4** — build green.\n  Command: `cd .`\n";
         let spec_dir = seed(root, "third", body);
 
-        // 1. The RED proof, against a tree carrying neither directory — `root`
-        //    itself holds only the two scratch trees.
+        // 1. The RED proof, against a tree carrying none of the directories —
+        //    `root` itself holds only the two scratch trees.
         let proof = check(root, "third");
         assert_eq!(entry(&proof, "AC-1").proof, Proof::Red);
         assert_eq!(entry(&proof, "AC-2").proof, Proof::Red, "red before, honestly");
+        assert_eq!(entry(&proof, "AC-3").proof, Proof::Red);
         assert_eq!(
             entry(&proof, "AC-1").removal,
             Removal::NotTaken,
             "the red pass never claims a removal it did not take"
         );
 
-        // 2. The CONFIRMATION, against the tree WITH the work: both pass.
+        // 2. The CONFIRMATION, against the tree WITH the work: all three pass.
         let confirmed = removal_free_confirm(&with_work, root, "third");
         assert_eq!(entry(&confirmed, "AC-1").confirmation, Confirmation::Green);
         assert_eq!(entry(&confirmed, "AC-2").confirmation, Confirmation::Green);
+        assert_eq!(entry(&confirmed, "AC-3").confirmation, Confirmation::Green);
 
         // 3. The REMOVAL, against the tree with the work taken away.
-        let removed = removal(root, "third", &stripped);
+        let removed = removal(root, "third", &stripped, &removed_text);
         assert_eq!(removed.pass, "removal");
 
         let tied = entry(&removed, "AC-1");
@@ -1513,16 +1623,43 @@ mod tests {
             reason.contains("asserts the BEHAVIOUR"),
             "the remedy names what to rewrite it into: {reason}"
         );
-        assert_eq!((removed.removed_red, removed.survived), (1, 1));
+
+        // The limit, stated by the mechanism rather than by a comment. `cd
+        // own-evidence` WOULD have come back red in the stripped tree — the
+        // directory is not there — and that red says nothing, because the strip
+        // is what took the directory away. It is declined, not booked.
+        let unjudgeable = entry(&removed, "AC-3");
+        assert_eq!(unjudgeable.removal, Removal::EvidenceRemoved);
+        assert!(
+            unjudgeable.removal_exit.is_none(),
+            "the command must not even be spawned: a guaranteed red is not evidence"
+        );
+        assert_eq!(
+            unjudgeable.verdict,
+            Verdict::Proven,
+            "the removal did not speak, so it does not unmake what the earlier passes proved"
+        );
+        let declined = unjudgeable.reason.clone().unwrap_or_default();
+        assert!(declined.contains("own-evidence"), "it names the word: {declined}");
+        assert!(
+            declined.contains("NOT TAKEN"),
+            "and says the removal was not taken, never that the criterion failed: {declined}"
+        );
+
+        assert_eq!(
+            (removed.removed_red, removed.survived, removed.evidence_removed),
+            (1, 1, 1),
+            "the declined criterion is counted apart from the reds"
+        );
         assert!(!removed.ok, "a survivor must not report ok");
         assert_eq!(exit_code(&removed), 2, "the blocking exit code");
 
         // 4. A criterion nobody CONFIRMED has nothing to remove, and the removal
         //    does not become a back door to clearing it.
-        let unconfirmed = removal(root, "third", &stripped);
-        let ac3 = entry(&unconfirmed, "AC-3");
-        assert_eq!(ac3.verdict, Verdict::Exempt, "the trailing criterion stays exempt");
-        assert_eq!(ac3.removal, Removal::NotTaken, "and is never run");
+        let unconfirmed = removal(root, "third", &stripped, &removed_text);
+        let ac4 = entry(&unconfirmed, "AC-4");
+        assert_eq!(ac4.verdict, Verdict::Exempt, "the trailing criterion stays exempt");
+        assert_eq!(ac4.removal, Removal::NotTaken, "and is never run");
 
         // The ledger carries all three columns, so a later reader never re-runs
         // anything to know what happened at each transition.
@@ -1540,7 +1677,7 @@ mod tests {
     /// ledger stay under `root` — the shape the removal pass needs to set up,
     /// expressed through the same engine so the test cannot drift from it.
     fn removal_free_confirm(tree: &Path, root: &Path, spec: &str) -> NegativeCheckReport {
-        run_pass(root, spec, tree, Pass::Confirm, false)
+        run_pass(root, spec, tree, Pass::Confirm, false, &BTreeSet::new())
     }
 
     /// The removal classification, as a table — the third mirror. `fail` is the
@@ -1564,6 +1701,13 @@ mod tests {
         // same separation the other two columns draw between absence and a
         // wrong colour.
         assert_eq!(Removal::default(), Removal::NotTaken);
+        // And neither does any status produce EVIDENCE REMOVED: that value says
+        // the command was never spawned, so a function that reads an executor
+        // status must be unable to reach it — otherwise "not run" and "ran and
+        // failed" would share a spelling again.
+        for status in ["fail", "pass", "timeout", "skip", "anything-else"] {
+            assert_ne!(classify_removal(status).1, Removal::EvidenceRemoved, "{status}");
+        }
     }
 
     /// The confirmation classification, as a table — the mirror of

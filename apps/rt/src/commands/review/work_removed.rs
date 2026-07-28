@@ -5,9 +5,23 @@
 //!
 //! [`super::ac_negative_check`] proves a criterion RED before its work exists
 //! and GREEN after it landed. Both are satisfied by a criterion that verifies
-//! something the work merely dragged along — a comment carrying the word, a
-//! file that exists and is never called. The transition that separates the two
-//! is the third: take the work away and require the criterion to go red again.
+//! something OUTSIDE the work — a subsystem the waves never touched, a path
+//! that was already there. The transition that finds those is the third: take
+//! the work away and refuse a criterion that is still green.
+//!
+//! ## What the strip can and cannot separate — read this before trusting a red
+//!
+//! The strip is FILE-GRAINED, because file paths are all the record carries. So
+//! it takes away the criterion's own evidence together with the behaviour
+//! whenever the two live in the same file — which for an inline-test project is
+//! every test criterion there is. A red from such a run says "something the
+//! command needed is gone" and CANNOT say which of the two it was.
+//!
+//! That is why this module publishes [`RemovedTree::removed_text`]: the words
+//! the strip took out of the tree, so the caller can tell a criterion whose own
+//! evidence went with the strip from one that ran against an intact command.
+//! Reporting the first as a proven red is the exact "answer that reads like the
+//! fact" the pass exists to refuse.
 //!
 //! ## What "the work" is — read, never guessed
 //!
@@ -34,6 +48,7 @@
 //! named `Err` the caller reports as an ENGINE error, never a verdict about a
 //! criterion.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::commands::git_settle::{git_ok, git_out};
@@ -54,6 +69,8 @@ pub(crate) struct RemovedTree {
     tree: PathBuf,
     /// The files whose work was actually taken away, as repo paths.
     taken_away: Vec<String>,
+    /// The words the strip took OUT of the tree — see [`RemovedTree::removed_text`].
+    removed_text: BTreeSet<String>,
 }
 
 impl RemovedTree {
@@ -67,6 +84,41 @@ impl RemovedTree {
     pub(crate) fn taken_away(&self) -> &[String] {
         &self.taken_away
     }
+
+    /// The words the strip took OUT of the tree: present in some declared file
+    /// BEFORE the strip and in NONE of them after it, plus the repo path and
+    /// file name of every file the strip deleted outright.
+    ///
+    /// This is what lets the caller read a red honestly. A criterion whose
+    /// command names one of these words — a test function name, a file path, a
+    /// marker string — had its OWN evidence taken away by the strip, so its red
+    /// is guaranteed and says nothing about the behaviour. See
+    /// [`taken_away_word`].
+    pub(crate) fn removed_text(&self) -> &BTreeSet<String> {
+        &self.removed_text
+    }
+}
+
+/// The first word of `command` that `removed_text` says the strip took away, or
+/// `None` when the command names nothing the removal deleted.
+///
+/// Pure and total, and the ONE place a command is matched against the strip, so
+/// the words are split the same way on both sides. Deliberately conservative:
+/// a word that merely MOVED between two stripped files still reads as taken
+/// away, which costs an honest "cannot judge" — the safe direction. The unsafe
+/// direction is the one this exists to close: reading a guaranteed red as proof.
+pub(crate) fn taken_away_word(removed_text: &BTreeSet<String>, command: &str) -> Option<String> {
+    words(command).find(|w| removed_text.contains(w))
+}
+
+/// The words of `text` as the removal compares them: runs of the characters a
+/// command can name — letters, digits, `_`, `-`, `.` and `/` — at least three
+/// long, lowercased so a command and a source file that disagree about case
+/// still meet. Pure, total.
+fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/')))
+        .filter(|w| w.len() >= 3)
+        .map(str::to_ascii_lowercase)
 }
 
 impl Drop for RemovedTree {
@@ -154,26 +206,92 @@ pub(crate) fn build(root: &Path, spec_dir: &Path, from: &str) -> Result<RemovedT
         root: root.to_path_buf(),
         tree,
         taken_away: Vec::new(),
+        removed_text: BTreeSet::new(),
     };
+    // The two sides of the word ledger. `before` is what the declared files
+    // said WITH the work; `after` is what they say without it. Only the
+    // difference is genuinely gone: a word that survives in ANY declared file
+    // is still in the tree, and calling it removed would turn honest reds into
+    // non-answers.
+    let mut before: BTreeSet<String> = BTreeSet::new();
+    let mut after: BTreeSet<String> = BTreeSet::new();
+    let mut deleted: BTreeSet<String> = BTreeSet::new();
     for path in &paths {
-        if strip_one(&removed.tree, &base, path) {
-            removed.taken_away.push(path.clone());
+        let full = removed.tree.join(path);
+        let pre = std::fs::read_to_string(&full).unwrap_or_default();
+        match strip_one(&removed.tree, &base, path) {
+            Stripped::Untouched => continue,
+            Stripped::Restored => {
+                let post = std::fs::read_to_string(&full).unwrap_or_default();
+                before.extend(words(&pre));
+                after.extend(words(&post));
+            }
+            Stripped::Deleted => {
+                before.extend(words(&pre));
+                // The file itself is gone, so its path and name are gone from
+                // the tree whatever any other file still says about them — a
+                // criterion naming either was reading THIS file.
+                deleted.extend(words(path));
+                if let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) {
+                    deleted.extend(words(name));
+                }
+            }
         }
+        removed.taken_away.push(path.clone());
     }
     if removed.taken_away.is_empty() {
         return Err("nothing-taken-away".to_string());
     }
+    removed.removed_text = before.difference(&after).cloned().collect();
+    removed.removed_text.extend(deleted);
     Ok(removed)
 }
 
+/// What the strip did to one declared file.
+enum Stripped {
+    /// The file went back to its `base` content — the work in it is gone, the
+    /// file is not.
+    Restored,
+    /// `base` never carried the file, so the file IS the work: it was deleted.
+    Deleted,
+    /// Nothing changed — git declined, or the path is not there to strip.
+    Untouched,
+}
+
 /// Restore ONE path in `tree` to its `base` content, or delete it when `base`
-/// never carried it (the file IS the work). `true` when the tree changed.
-fn strip_one(tree: &Path, base: &str, path: &str) -> bool {
+/// never carried it (the file IS the work).
+fn strip_one(tree: &Path, base: &str, path: &str) -> Stripped {
     let at_base = format!("{base}:{path}");
     if git_ok(tree, &["cat-file", "-e", &at_base]) {
-        return git_ok(tree, &["checkout", base, "--", path]);
+        if git_ok(tree, &["checkout", base, "--", path]) {
+            return Stripped::Restored;
+        }
+        return Stripped::Untouched;
     }
-    std::fs::remove_file(tree.join(path)).is_ok()
+    let full = tree.join(path);
+    if std::fs::remove_file(&full).is_err() {
+        return Stripped::Untouched;
+    }
+    prune_empty_parents(tree, &full);
+    Stripped::Deleted
+}
+
+/// Delete the directories `file` leaves behind once it is gone, up to (never
+/// including) `tree`.
+///
+/// Without this the strip removes a file the work created and leaves the
+/// directory that only ever held it, so a criterion asserting the DIRECTORY
+/// finds it intact and is reported as having survived a removal that never
+/// reached it. `remove_dir` refuses a non-empty directory, which is exactly the
+/// stopping rule: a directory that still holds anything was not the work.
+fn prune_empty_parents(tree: &Path, file: &Path) {
+    let mut current = file.parent().map(Path::to_path_buf);
+    while let Some(dir) = current {
+        if dir == tree || !dir.starts_with(tree) || std::fs::remove_dir(&dir).is_err() {
+            return;
+        }
+        current = dir.parent().map(Path::to_path_buf);
+    }
 }
 
 /// A scratch path outside the project: the system temp directory, named for
@@ -266,9 +384,12 @@ mod tests {
             return;
         };
 
-        // THE WORK: one file edited, one file created.
-        std::fs::write(root.join("kept.txt"), "after\n").unwrap();
-        std::fs::write(root.join("added.txt"), "new\n").unwrap();
+        // THE WORK: one file edited, one file created, one file created inside
+        // a directory that exists only to hold it.
+        std::fs::write(root.join("kept.txt"), "after marker_kept\n").unwrap();
+        std::fs::write(root.join("added.txt"), "new marker_added\n").unwrap();
+        std::fs::create_dir_all(root.join("feature")).unwrap();
+        std::fs::write(root.join("feature").join("impl.txt"), "body\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "work"]);
 
@@ -277,7 +398,7 @@ mod tests {
         std::fs::create_dir_all(spec_dir.join("wave-1-rt")).unwrap();
         std::fs::write(
             spec_dir.join("wave-1-rt").join(WAVE_DIFF),
-            "- `kept.txt` (modified)\n- `added.txt` (new)\n",
+            "- `kept.txt` (modified)\n- `added.txt` (new)\n- `feature/impl.txt` (new)\n",
         )
         .unwrap();
 
@@ -294,13 +415,52 @@ mod tests {
             !scratch.join("added.txt").exists(),
             "a file the work created IS the work — taking it away deletes it"
         );
-        assert_eq!(removed.taken_away().len(), 2, "{:?}", removed.taken_away());
+        assert_eq!(removed.taken_away().len(), 3, "{:?}", removed.taken_away());
+
+        // The directory that only ever held the work goes with it. Leaving it
+        // standing is how a criterion asserting the DIRECTORY reports having
+        // survived a removal that never reached it.
+        assert!(
+            !scratch.join("feature").exists(),
+            "the emptied parent directory survived the strip"
+        );
+
+        // The word ledger — what makes a red readable. Both shapes are asserted
+        // AND their two-sided counterpart: a word the strip did not take out of
+        // the tree must not be listed, or every red would read as a non-answer.
+        let removed_text = removed.removed_text();
+        assert!(
+            removed_text.contains("marker_added"),
+            "a word that lived only in a deleted file is gone: {removed_text:?}"
+        );
+        assert!(
+            removed_text.contains("marker_kept"),
+            "a word the work added to a surviving file is gone too: {removed_text:?}"
+        );
+        assert!(
+            removed_text.contains("added.txt") && removed_text.contains("feature/impl.txt"),
+            "a deleted file's own path is gone: {removed_text:?}"
+        );
+        assert!(
+            !removed_text.contains("kept.txt"),
+            "a file the strip only RESTORED is still there — naming it is not evidence removed"
+        );
+        assert!(
+            !removed_text.contains("before"),
+            "a word the strip put BACK is not removed: {removed_text:?}"
+        );
+        // And the matcher reads a command through the same split, both ways.
+        assert_eq!(
+            taken_away_word(removed_text, "findstr marker_added added.txt").as_deref(),
+            Some("marker_added")
+        );
+        assert_eq!(taken_away_word(removed_text, "cd kept.txt"), None);
 
         // The live checkout is untouched — the whole reason the strip happens
         // somewhere else.
         assert_eq!(
             std::fs::read_to_string(root.join("kept.txt")).unwrap().trim(),
-            "after"
+            "after marker_kept"
         );
         assert!(root.join("added.txt").is_file());
 

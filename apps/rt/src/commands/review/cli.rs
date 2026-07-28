@@ -142,10 +142,11 @@ pub enum ReviewCmd {
     ///
     /// With `--removal` it takes the THIRD transition: each confirmed criterion
     /// runs against a scratch checkout with the work the waves recorded taken
-    /// away, and must come back RED. One that stays green SURVIVED the removal —
-    /// it is satisfied by a comment, a name or a file the work left behind
-    /// rather than by the behaviour, which neither of the first two passes can
-    /// tell apart.
+    /// away. One that stays green SURVIVED the removal — it verifies something
+    /// OUTSIDE the work, which neither of the first two passes can tell apart.
+    /// A criterion whose command names a word the strip itself deleted is
+    /// DECLINED rather than run: its red was guaranteed, so it would say
+    /// nothing.
     #[command(name = "ac-negative-check")]
     #[command(display_order = 81)]
     AcNegativeCheck {
@@ -159,9 +160,10 @@ pub enum ReviewCmd {
         confirm: bool,
         /// Take the REMOVAL pass — the third transition. Each criterion that
         /// was CONFIRMED green is run against a scratch checkout with the work
-        /// the waves recorded taken away, and must come back RED. One that
-        /// stays green SURVIVED the removal: it verifies a word the work left
-        /// behind, not the behaviour. Wins over `--confirm` when both are given.
+        /// the waves recorded taken away. One that stays green SURVIVED the
+        /// removal: it verifies something the work never did. One whose command
+        /// names a word the strip deleted is declined, not run. Wins over
+        /// `--confirm` when both are given.
         #[arg(long)]
         removal: bool,
         /// The revision the removal restores the work to. Omitted: the merge

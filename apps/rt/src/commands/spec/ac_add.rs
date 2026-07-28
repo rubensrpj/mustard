@@ -332,7 +332,7 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     };
     let spec_dir = spec_file.parent().unwrap_or(root).to_path_buf();
 
-    let Ok(markdown) = mfs::read_to_string(&spec_file) else {
+    let Ok(_markdown) = mfs::read_to_string(&spec_file) else {
         return AcAddReport::refused(
             opts,
             &id,
@@ -340,11 +340,20 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
             "the spec markdown could not be read — check the file exists and is readable",
         );
     };
-    let items = criteria_of(&markdown);
     // An id the spec ALREADY carries is an amendment, and amendments have their
     // own door with their own rule. Routing it here would let a replacement skip
     // the supersession record entirely.
-    if items.iter().any(|item| item.id == id) {
+    //
+    // Every plan artefact is asked, not just the root: the write below lands the
+    // criterion in all of them, so a root-only check would insert a SECOND copy
+    // under an id a wave spec already declares — the duplicate the refusal
+    // exists to stop, in the one place nobody looks.
+    let carries_id = plan_artefacts(&spec_dir).into_iter().any(|path| {
+        mfs::read_to_string(&path)
+            .map(|body| criteria_of(&body).iter().any(|item| item.id == id))
+            .unwrap_or(false)
+    });
+    if carries_id {
         return AcAddReport::refused(
             opts,
             &id,
@@ -677,6 +686,31 @@ mod tests {
         let remedy = dup.remedy.unwrap_or_default();
         assert!(remedy.contains("ac-amend"), "{remedy}");
         assert!(remedy.contains("AMENDMENT"), "{remedy}");
+
+        // An id only a WAVE artefact carries is a duplicate too. The write lands
+        // in every artefact, so reading the root alone would insert a second
+        // copy under an id the dispatched agent already reads — a duplicate in
+        // the one file nobody opens.
+        let wave = spec_dir.join("wave-1-rt").join("spec.md");
+        let wave_before = std::fs::read_to_string(&wave).unwrap();
+        std::fs::write(
+            &wave,
+            wave_before.replace(
+                "- **AC-2**",
+                &format!(
+                    "- **AC-9** — only the wave carries this one.\n  Command: `{RED_COMMAND}`\n\
+                     - **AC-2**"
+                ),
+            ),
+        )
+        .unwrap();
+        let wave_only = add(dir.path(), &opts("refused", "AC-9", RED_COMMAND));
+        assert_eq!(
+            wave_only.error.as_deref(),
+            Some("duplicate_criterion"),
+            "an id a wave artefact declares is not free to be added again"
+        );
+        assert!(wave_only.written.is_empty(), "{:?}", wave_only.written);
 
         // Two-sided: the same seed accepts a RED criterion.
         let ok = add(dir.path(), &opts("refused", "AC-3", RED_COMMAND));

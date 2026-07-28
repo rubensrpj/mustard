@@ -7,7 +7,9 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "not-taken",
       "exit": 0,
+      "confirmation_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s\n     Running unittests src\\lib."
     },
@@ -17,19 +19,23 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "not-taken",
       "exit": 0,
+      "confirmation_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 2.32s\n     Running unittests src\\lib."
     },
     {
       "id": "AC-3",
-      "command": "cargo test -p mustard-rt criterion_returns_red_when_the_work_is_removed",
+      "command": "cargo test -p mustard-rt removal_refuses_a_survivor_and_declines_what_it_cannot_judge",
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "not-taken",
       "exit": 0,
+      "confirmation_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s\n     Running unittests src\\lib."
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
     },
     {
       "id": "AC-4",
@@ -37,10 +43,27 @@
       "expect": null,
       "verdict": "exempt",
       "proof": "not-attempted",
+      "confirmation": "not-taken",
       "exit": null,
+      "confirmation_exit": null,
       "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
       "stderr_excerpt": ""
     }
   ],
-  "amendments": []
+  "amendments": [
+    {
+      "id": "AC-3",
+      "at": "2026-07-28T13:17:32.473Z",
+      "reason": "review reproduced that the shipped statement was false: the strip deletes the comment together with the code, so the red it demanded was guaranteed and separated nothing. The criterion now names what the pass actually does — refuse a survivor, decline a criterion whose own evidence went with the work",
+      "superseded_command": "cargo test -p mustard-rt criterion_returns_red_when_the_work_is_removed",
+      "superseded_expect": "ok\\. [1-9][0-9]* passed",
+      "superseded_statement": "when the work a criterion describes is taken away again, then the",
+      "command": "cargo test -p mustard-rt removal_refuses_a_survivor_and_declines_what_it_cannot_judge",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "statement": "when the work a criterion describes is taken away again, then a criterion still green there is reported as verifying nothing, and one whose own evidence the strip took away is DECLINED by name instead of being booked as a proven red",
+      "rewrote": [
+        ".claude/spec/give-harness-door-to-add/spec.md"
+      ]
+    }
+  ]
 }

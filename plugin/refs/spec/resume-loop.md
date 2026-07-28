@@ -119,13 +119,15 @@ mustard-rt run ac-add --spec {spec} --ac AC-9 --statement "when <trigger>, then 
 
 It takes the SAME negative proof a planned criterion takes: the command is run against the tree as it is and **must come back RED**, or the addition is refused and nothing is written — along with a blank reason, a blank statement, an unknown spec, and an id the spec already carries (that one points you back at `ac-amend`). It lands in every plan artefact — the root, `wave-plan.md` and each `wave-*/spec.md` — directly ABOVE the trailing build-green criterion, so the positional exemption stays where it belongs. The record goes to the ledger's `additions`, kept apart from `amendments` because nothing was superseded.
 
-**The third transition, when a criterion looks suspiciously easy to satisfy.** Red before the work and green after it are both satisfied by a criterion that matches a word the work merely dragged along — the term in a comment, a file that exists and is never called. Only removing the work again tells the two apart:
+**The third transition, when a criterion looks suspiciously easy to satisfy.** Red before the work and green after it are both satisfied by a criterion that verifies something the work never did — the classic shape is a command pointing at a subsystem the waves never touched. Only removing the work again catches that:
 
 ```bash
 mustard-rt run ac-negative-check --spec {spec} --removal
 ```
 
-It cuts a scratch checkout with the files the waves cached as changed taken away, re-runs each CONFIRMED criterion there, and requires RED. One that stays green **survived** the removal and is reported as verifying nothing — rewrite it through the door above. It is not automatic and should not be: the scratch tree has no build cache, so a test criterion compiles from scratch there. Ask for it when a criterion's green looks too cheap.
+It cuts a scratch checkout with the files the waves cached as changed taken away and re-runs each CONFIRMED criterion there. One that stays green **survived** the removal and is reported as verifying nothing — rewrite it through the door above. It is not automatic and should not be: the scratch tree has no build cache, so a test criterion compiles from scratch there. Ask for it when a criterion's green looks too cheap.
+
+**Read its limit before reading its reds.** The strip is file-grained, because file paths are all the cached diff carries, so it takes the criterion's own evidence away whenever that evidence shares a file with the behaviour — which for a project whose tests live beside the code they test is every test criterion there is. The pass does not book those as proof: a criterion whose command names a word the strip deleted comes back `evidence-removed` and is counted apart from the reds, with the reason naming the word. So the pass falsifies (a green with the work gone is a finding) and declines (a guaranteed red is not); what it never does is certify a criterion it could not have failed.
 
 Then re-run QA. The narrative of `spec.md` stays frozen either way — an amendment touches the criterion, never the prose.
 

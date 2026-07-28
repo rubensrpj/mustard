@@ -31,6 +31,8 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_rt::commands::agent::render::recommended_subagent_type;
+
 /// The repository root — two levels up from this crate's manifest.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -202,3 +204,152 @@ fn dispatch_prose_teaches_the_precheck_skip() {
         "wave-advance trims the marker away again, so no dispatch ever sees it",
     );
 }
+
+/// AC-6 — the orchestrator's Verdict rule names a MEASUREMENT an agent claims
+/// as the second thing never relayed on a briefing alone.
+///
+/// The rule used to cover one claim only: a runtime symptom the user reported.
+/// So an orchestrator following it to the letter relayed "13 of 13 passed"
+/// because an agent said so — which happened, and was false. The second half
+/// says a measurement is not evidence until the orchestrator takes it itself.
+///
+/// The counterweight is asserted too, and deliberately: a rule that only added
+/// "verify more" would license re-deriving the whole briefing and spending a
+/// subagent to double-check one's own work. Both halves must survive together
+/// or the sentence teaches the opposite failure.
+#[test]
+fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
+    // --- 1. The shipped seed states both claims, measurement second -------
+    // The compiled-in seed is what `upsert` lays down in every project, so
+    // this reads the text that actually ships — not a stray copy on disk.
+    let seed = mustard_core::ORCHESTRATOR_MD;
+    let verdict =
+        line_with(seed, "Verdict rule").expect("the orchestrator seed states no Verdict rule");
+
+    let symptom_at = verdict
+        .find("runtime symptom")
+        .expect("the Verdict rule dropped its first half — the user-reported symptom");
+    let measurement_at = verdict.find("MEASUREMENT").unwrap_or_else(|| {
+        panic!("the Verdict rule never names a measurement an agent claims: {verdict}")
+    });
+    assert!(
+        measurement_at > symptom_at,
+        "the measurement claim must be the SECOND thing the rule refuses to relay, \
+         after the reported symptom (symptom at {symptom_at}, measurement at {measurement_at})",
+    );
+
+    // Naming it is not teaching it: the line must say what turns the claim
+    // into evidence, which is taking the measurement again.
+    assert!(
+        verdict.contains("take it yourself"),
+        "the rule names a claimed measurement without saying who has to take it: {verdict}",
+    );
+    assert!(
+        verdict.contains("re-run the command"),
+        "the rule must name the act that settles it — re-running the command: {verdict}",
+    );
+
+    // The counterweight, so the rule cannot be read as "verify everything".
+    assert!(
+        verdict.contains("double-checking your own work"),
+        "the rule adds verification without its limit — the rest of a briefing IS \
+         the answer, and no subagent re-checks your own work: {verdict}",
+    );
+
+    // --- 2. The seed is really the file a session reads -------------------
+    // Without this half the sentence is a template nobody is served.
+    let project_seed = read("packages/core/src/platform/project_seed.rs");
+    assert!(
+        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD)"),
+        "nothing seeds orchestrator.md any more, so the rule reaches no window",
+    );
+    let config = read("packages/core/src/domain/config.rs");
+    assert!(
+        config.contains(".claude/mustard/orchestrator.md"),
+        "the default inject no longer declares the orchestrator injectable",
+    );
+
+    // --- 3. This repository's own delivered copy has not drifted -----------
+    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
+    // the template does not update an already-seeded project. Silent drift is
+    // the whole failure mode: the rule would ship to new projects while the
+    // one that wrote it kept the old text.
+    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered_verdict = line_with(&delivered, "Verdict rule")
+        .expect("the delivered injectable states no Verdict rule");
+    assert_eq!(
+        delivered_verdict, verdict,
+        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
+         re-seed it, or this project never reads the rule it just wrote",
+    );
+}
+
+/// AC-8 — the plan schema names the reserved role names that resolve to
+/// read-only agents.
+///
+/// `role` reads like a free label in the schema example, and it is not: five
+/// names pick a tool-restricted agent. A writing wave named `plan` received an
+/// agent that physically cannot write while its rendered prompt still said
+/// "you implement" — the two halves disagreed and the wave produced nothing.
+#[test]
+fn plan_prose_teaches_the_reserved_role_names() {
+    // --- 1. The prose warns where the schema is documented ----------------
+    let plan = read("plugin/refs/feature/full-plan.md");
+    let reserved = line_with(&plan, "RESERVED")
+        .expect("full-plan.md never warns that some role names are reserved");
+
+    // Anchored: the warning belongs beside the schema a reader is copying,
+    // not in an unrelated section further down.
+    let schema_at = plan
+        .find("\"role\":")
+        .expect("full-plan.md no longer shows the wave schema with a role field");
+    let reserved_at = plan.find("RESERVED").expect("checked above");
+    assert!(
+        reserved_at > schema_at && reserved_at - schema_at < 2000,
+        "the reserved-role warning must sit with the schema it qualifies \
+         (schema at {schema_at}, warning at {reserved_at})",
+    );
+
+    for role in RESERVED_ROLES {
+        assert!(
+            reserved.contains(&format!("`{role}`")),
+            "the warning omits the reserved role `{role}`: {reserved}",
+        );
+    }
+    // Naming them is not teaching them: say what the reservation costs.
+    assert!(
+        reserved.contains("read-only") || reserved.contains("cannot write"),
+        "the warning lists names without saying they cannot write: {reserved}",
+    );
+    for role in WRITING_ROLE_EXAMPLES {
+        assert!(
+            reserved.contains(&format!("`{role}`")),
+            "the warning must show a name that IS a writing role, and `{role}` is gone: {reserved}",
+        );
+    }
+
+    // --- 2. The dispatch really restricts exactly those names -------------
+    // Without this half the paragraph outlives the map it describes — and a
+    // reader would trust a reservation the dispatch stopped honouring.
+    for role in RESERVED_ROLES {
+        assert_ne!(
+            recommended_subagent_type(role),
+            "general-purpose",
+            "the prose calls `{role}` reserved but the dispatch hands it the writing agent",
+        );
+    }
+    for role in WRITING_ROLE_EXAMPLES {
+        assert_eq!(
+            recommended_subagent_type(role),
+            "general-purpose",
+            "the prose calls `{role}` a writing role but the dispatch restricts it",
+        );
+    }
+}
+
+/// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
+/// of names for one agent, which is why six names spell five reservations.
+const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];
+
+/// The names that same paragraph offers as ordinary writing roles.
+const WRITING_ROLE_EXAMPLES: &[&str] = &["backend", "proof", "discovery", "bootstrap"];
