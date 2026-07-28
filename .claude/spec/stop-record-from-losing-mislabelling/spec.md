@@ -77,6 +77,12 @@ what refuses to read that as success.
   it teaches the skip marker beside the ok reading
   Command: `cargo test -p mustard-rt dispatch_prose_teaches_the_precheck_skip`
   Expect: `ok\. [1-9][0-9]* passed`
+- **AC-6** — when the orchestrator prose states the Verdict rule, then it names a measurement an agent claims as the second thing never relayed on a briefing alone
+  Command: `cargo test -p mustard-rt orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-8** — when the plan schema documents the wave role field, then it names the reserved role names that resolve to read-only agents
+  Command: `cargo test -p mustard-rt plan_prose_teaches_the_reserved_role_names`
+  Expect: `ok\. [1-9][0-9]* passed`
 - **AC-7** — the project build passes green
   Command: `cargo build --workspace`
 

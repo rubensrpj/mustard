@@ -10,6 +10,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s\n     Running unittests src\\lib."
     },
@@ -22,6 +24,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s\n     Running unittests src\\lib."
     },
@@ -34,6 +38,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s\n     Running unittests src\\lib."
     },
@@ -46,6 +52,8 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s\n     Running unittests src\\lib."
     },
@@ -58,8 +66,24 @@
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-6",
+      "command": "cargo test -p mustard-rt orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s\n     Running unittests src\\lib."
     },
     {
       "id": "AC-7",
@@ -70,9 +94,49 @@
       "confirmation": "not-taken",
       "exit": null,
       "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
       "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
       "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "command": "cargo test -p mustard-rt plan_prose_teaches_the_reserved_role_names",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
     }
   ],
-  "amendments": []
+  "amendments": [],
+  "additions": [
+    {
+      "id": "AC-6",
+      "at": "2026-07-28T12:57:18.193Z",
+      "reason": "The Verdict rule was rewritten to separate two laws — refuting a user-reported symptom, and taking a measurement an agent claims. Nothing asserts it: template_parity and plugin_prose were green before the edit and would stay green if it were reverted.",
+      "statement": "when the orchestrator prose states the Verdict rule, then it names a measurement an agent claims as the second thing never relayed on a briefing alone",
+      "command": "cargo test -p mustard-rt orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/stop-record-from-losing-mislabelling/spec.md"
+      ]
+    },
+    {
+      "id": "AC-8",
+      "at": "2026-07-28T12:57:41.742Z",
+      "reason": "The reserved-role paragraph was added to full-plan.md after a writing wave was named 'plan' and received a read-only agent while its prompt said 'you implement'. Nothing asserts the paragraph exists.",
+      "statement": "when the plan schema documents the wave role field, then it names the reserved role names that resolve to read-only agents",
+      "command": "cargo test -p mustard-rt plan_prose_teaches_the_reserved_role_names",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/stop-record-from-losing-mislabelling/spec.md"
+      ]
+    }
+  ]
 }

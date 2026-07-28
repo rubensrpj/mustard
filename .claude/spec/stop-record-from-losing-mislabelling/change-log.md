@@ -7,3 +7,5 @@ _Solicitações registradas automaticamente durante o pipeline (mid-spec). O `sp
 - **2026-07-28T11:49:29.979Z** _(Plan)_ — Com base nesse documento o que podemos absorver?
 - **2026-07-28T11:56:37.506Z** _(Plan)_ — Vamos então resolver pontos levantados
 - **2026-07-28T12:14:38.919Z** _(Plan)_ — Preciso que avalie todas as instruções para que fiquemos aptos a esse novo modelo, retirar redundâncias, pontos ruins que atrapalhem
+- **2026-07-28T12:26:08.792Z** _(Plan)_ — Qual é o plano agora para resolver.
+- **2026-07-28T12:43:18.937Z** _(Plan)_ — Mas precisam ser verificados
