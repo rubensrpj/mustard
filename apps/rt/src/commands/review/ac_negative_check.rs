@@ -42,6 +42,25 @@
 //! is broken whatever the work does, and that is the single state
 //! [`crate::commands::spec::ac_amend`] accepts a PASSING replacement for.
 //!
+//! # The third transition: the removal
+//!
+//! Red before and green after still leave one gap, and it is the one the field
+//! keeps falling into. A criterion whose command matches a WORD the work
+//! dragged along — the term in a comment, a file that exists and is never
+//! called — was legitimately red before (the word did not exist) and is
+//! legitimately green after (it does now), while asserting nothing about the
+//! behaviour. Both passes are satisfied and the criterion verifies nothing.
+//!
+//! The REMOVAL pass ([`removal`], reached by `--removal`) closes it: each
+//! CONFIRMED criterion runs against a checkout with the work taken away again
+//! and must come back RED. One that stays green SURVIVED the removal, and is
+//! reported as verifying nothing — [`Removal::Survived`], the third column.
+//!
+//! What "the work" is comes off the record, not a guess: each wave already
+//! caches the digest of the files it changed, and [`super::work_removed`] reads
+//! that set and strips it in a scratch worktree. The live checkout is never
+//! written to.
+//!
 //! # Why a static linter cannot answer this
 //!
 //! Whether a command CAN fail is a fact about the repository it runs against,
@@ -147,6 +166,34 @@ pub(crate) enum Confirmation {
     Inexecutable,
 }
 
+/// What happened when a criterion's command was run against a tree with the
+/// work it describes TAKEN AWAY — the third column of the record.
+///
+/// The transition nobody was testing. The red proof says the criterion failed
+/// BEFORE its work existed and the confirmation says it passed AFTER, and a
+/// criterion satisfied by something the work merely dragged along — a comment
+/// carrying the word, a file that exists but is never called — clears both. Only
+/// removing the work again separates "asserts the behaviour" from "asserts a
+/// string that happens to be there".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Removal {
+    /// NEVER TAKEN — nobody removed the work and asked. The default, so every
+    /// ledger written before this column existed reads as the truth about it.
+    #[default]
+    NotTaken,
+    /// TAKEN — the command came back RED with the work removed. The only
+    /// outcome that shows the criterion is tied to the behaviour.
+    Red,
+    /// TAKEN — the command came back GREEN with the work removed, so it
+    /// SURVIVED the removal: it verifies something the work did not do.
+    Survived,
+    /// TAKEN — the command was killed by its deadline, so no verdict arrived.
+    NoVerdict,
+    /// TAKEN — the command could not be attempted against the stripped tree.
+    NotAttempted,
+}
+
 /// Whether a criterion cleared the negative test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -188,6 +235,15 @@ pub(crate) struct AcProof {
     /// of what it did before its work existed.
     #[serde(default)]
     pub(crate) confirmation_exit: Option<i64>,
+    /// The REMOVED column: what happened when the command ran against a tree
+    /// with the work taken away again. Defaults to [`Removal::NotTaken`].
+    #[serde(default)]
+    pub(crate) removal: Removal,
+    /// The command's own exit code in the REMOVAL pass. Kept apart from the
+    /// other two for the same reason they are apart from each other: a later
+    /// pass must never overwrite the record of an earlier one.
+    #[serde(default)]
+    pub(crate) removal_exit: Option<i64>,
     /// A short human reason: what happened and the one action that clears it.
     /// Absent only for a criterion that is already proven. Whichever pass spoke
     /// last owns it — a criterion has ONE next action, not one per column.
@@ -232,13 +288,21 @@ pub(crate) struct AcProofLedger {
     /// amendment operation owns this array, the negative test only preserves it.
     #[serde(default)]
     pub(crate) amendments: Vec<serde_json::Value>,
+    /// The ADDITION history — criteria introduced after the artefacts were
+    /// frozen ([`crate::commands::spec::ac_add`]). Kept apart from
+    /// [`AcProofLedger::amendments`] for the reason the two doors are apart: an
+    /// amendment SUPERSEDES a predecessor and an addition has none, so folding
+    /// them would make the audit trail unable to say which happened. Read back
+    /// and written out untouched by every other pass.
+    #[serde(default)]
+    pub(crate) additions: Vec<serde_json::Value>,
 }
 
-/// Which of the two passes a run takes.
+/// Which of the three passes a run takes.
 ///
-/// A parameter rather than two engines: the spec resolution, the shared parser,
-/// the ledger read/write and the report are identical, and only the per-criterion
-/// question changes. Two engines is how the two halves would drift.
+/// A parameter rather than three engines: the spec resolution, the shared
+/// parser, the ledger read/write and the report are identical, and only the
+/// per-criterion question changes. Three engines is how the halves would drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pass {
     /// Run each criterion against the tree BEFORE its work exists; red clears.
@@ -246,6 +310,9 @@ pub(crate) enum Pass {
     /// Run each already-proven criterion AGAIN, after its work landed; green
     /// clears.
     Confirm,
+    /// Run each already-confirmed criterion against a tree with the work TAKEN
+    /// AWAY; red clears. The third transition.
+    Removal,
 }
 
 impl Pass {
@@ -255,6 +322,7 @@ impl Pass {
         match self {
             Pass::Proof => "proof",
             Pass::Confirm => "confirm",
+            Pass::Removal => "removal",
         }
     }
 }
@@ -282,6 +350,18 @@ pub(crate) struct NegativeCheckReport {
     /// How many non-exempt criteria do NOT. In the `proof` pass this is every
     /// one of them by construction: the confirmation is not due yet.
     pub(crate) unconfirmed: usize,
+    /// How many came back RED with their work taken away — the third
+    /// transition, and the only column that says a criterion tracks the
+    /// behaviour rather than a word the work left behind.
+    pub(crate) removed_red: usize,
+    /// How many SURVIVED the removal: still green with the work gone, so they
+    /// verify nothing. Each is named in `criteria` with its reason.
+    pub(crate) survived: usize,
+    /// The files whose work the removal pass actually took away, as repo paths.
+    /// Reported rather than assumed: a removal is only as good as the strip it
+    /// ran against, and an operator reading `red` owes a look at WHAT was
+    /// removed. Empty for the other two passes, which remove nothing.
+    pub(crate) taken_away: Vec<String>,
     /// Every criterion's record, sorted by id.
     pub(crate) criteria: Vec<AcProof>,
     /// Why the engine could not run at all: `spec-required`, `spec-not-found`,
@@ -302,6 +382,9 @@ impl NegativeCheckReport {
             exempt: 0,
             confirmed: 0,
             unconfirmed: 0,
+            removed_red: 0,
+            survived: 0,
+            taken_away: Vec::new(),
             criteria: Vec::new(),
             error: Some(error.to_string()),
         }
@@ -364,6 +447,34 @@ fn reason_confirm_not_here(root: &Path) -> String {
          `mustard-rt run ac-negative-check --confirm --spec <slug>`"
     )
 }
+
+/// The reason a criterion SURVIVED the removal of its own work — the finding
+/// the third transition exists to produce. It names the shape the field keeps
+/// producing: the command matches a word the work left behind (a comment, a
+/// file name, an unused symbol) rather than the behaviour.
+const REASON_SURVIVED: &str = "the REMOVAL was TAKEN and the command still came back green with \
+     the work taken away, so this criterion is satisfied by something the work did not do — a \
+     comment, a name or a file that survives the removal. Rewrite the command so it asserts the \
+     BEHAVIOUR, then take the proof again";
+
+/// The reason a removal that timed out proves nothing.
+const REASON_REMOVAL_NO_VERDICT: &str = "the REMOVAL was TAKEN but the command was killed by its \
+     deadline, so no verdict ever arrived — narrow the command and take the removal again";
+
+/// The reason a removal that could not be attempted proves nothing. Unlike the
+/// confirmation's INEXECUTABLE, this is NOT a finding about the criterion: the
+/// tree it ran against is a scratch checkout, so a failure to attempt is far
+/// more likely to be about that tree than about the command.
+const REASON_REMOVAL_NOT_ATTEMPTED: &str = "the REMOVAL was NOT TAKEN: the command could not be \
+     attempted against the tree with the work removed — check the scratch checkout is complete, \
+     then take the removal again";
+
+/// The reason a criterion has nothing to remove. Naming the missing GREEN
+/// confirmation is deliberate: removing the work answers nothing about a
+/// criterion nobody has seen pass WITH the work.
+const REASON_NOTHING_TO_REMOVE: &str = "there is no GREEN confirmation to test against for the \
+     command this criterion carries today — take the confirmation first with `mustard-rt run \
+     ac-negative-check --confirm --spec <slug>`";
 
 /// The reason a criterion has no confirmation to take. Naming the missing RED
 /// proof rather than the missing confirmation is deliberate: taking the
@@ -450,6 +561,34 @@ fn classify_confirmation(status: &str) -> (Verdict, Confirmation, Option<String>
             Verdict::Unproven,
             Confirmation::Inexecutable,
             Some(REASON_INEXECUTABLE.to_string()),
+        ),
+    }
+}
+
+/// Classify ONE removal run from the executor's status.
+///
+/// The rule is [`classify`]'s again, one transition later and for the opposite
+/// tree: with the work taken away, `fail` — red — is the ONLY status that shows
+/// the criterion is tied to the behaviour. `pass` is the finding: the command
+/// SURVIVED the removal, so it verifies something else. Pure and total.
+fn classify_removal(status: &str) -> (Verdict, Removal, Option<String>) {
+    match status {
+        "fail" => (Verdict::Proven, Removal::Red, None),
+        "pass" => (
+            Verdict::Unproven,
+            Removal::Survived,
+            Some(REASON_SURVIVED.to_string()),
+        ),
+        "timeout" => (
+            Verdict::Unproven,
+            Removal::NoVerdict,
+            Some(REASON_REMOVAL_NO_VERDICT.to_string()),
+        ),
+        // `skip` and any future status: nothing was actually run.
+        _ => (
+            Verdict::Unproven,
+            Removal::NotAttempted,
+            Some(REASON_REMOVAL_NOT_ATTEMPTED.to_string()),
         ),
     }
 }
@@ -547,6 +686,8 @@ pub(crate) fn prove_one(
         confirmation: Confirmation::NotTaken,
         exit: None,
         confirmation_exit: None,
+        removal: Removal::NotTaken,
+        removal_exit: None,
         reason: Some(reason.to_string()),
         stderr_excerpt: String::new(),
     };
@@ -567,6 +708,8 @@ pub(crate) fn prove_one(
         confirmation: Confirmation::NotTaken,
         exit: result.exit(),
         confirmation_exit: None,
+        removal: Removal::NotTaken,
+        removal_exit: None,
         reason,
         stderr_excerpt: result.stderr_excerpt().to_string(),
     }
@@ -607,6 +750,8 @@ pub(crate) fn confirm_one(
         confirmation: Confirmation::NotTaken,
         exit: None,
         confirmation_exit: None,
+        removal: Removal::NotTaken,
+        removal_exit: None,
         reason: None,
         stderr_excerpt: String::new(),
     });
@@ -643,6 +788,60 @@ pub(crate) fn confirm_one(
     }
 }
 
+/// Take the REMOVAL for ONE criterion and build its updated record.
+///
+/// `tree` is a checkout of the project with the work the criterion describes
+/// TAKEN AWAY — never the live root, which is why it is a parameter rather than
+/// something derived here. The command runs there and must come back RED.
+///
+/// Only a criterion carrying a GREEN confirmation has anything to remove: one
+/// nobody has seen pass WITH the work says nothing about a tree without it, so
+/// it is returned untouched but for the reason naming what is actually missing,
+/// and NOTHING is run for it.
+///
+/// The earlier columns are carried over verbatim, for the reason
+/// [`confirm_one`] carries its own: a later pass must never overwrite the record
+/// of an earlier one.
+pub(crate) fn remove_one(
+    tree: &Path,
+    id: &str,
+    command: &str,
+    expect: Option<&str>,
+    previous: Option<&AcProof>,
+) -> AcProof {
+    let record = previous.cloned().unwrap_or(AcProof {
+        id: id.to_string(),
+        command: command.to_string(),
+        expect: expect.map(str::to_string),
+        verdict: Verdict::Unproven,
+        proof: Proof::NotAttempted,
+        confirmation: Confirmation::NotTaken,
+        exit: None,
+        confirmation_exit: None,
+        removal: Removal::NotTaken,
+        removal_exit: None,
+        reason: None,
+        stderr_excerpt: String::new(),
+    });
+    if record.confirmation != Confirmation::Green {
+        return AcProof {
+            verdict: Verdict::Unproven,
+            reason: Some(REASON_NOTHING_TO_REMOVE.to_string()),
+            ..record
+        };
+    }
+    let result = qa_run::execute_ac(&record.command, record.expect.as_deref(), tree);
+    let (verdict, removal, reason) = classify_removal(result.status());
+    AcProof {
+        verdict,
+        removal,
+        removal_exit: result.exit(),
+        reason,
+        stderr_excerpt: result.stderr_excerpt().to_string(),
+        ..record
+    }
+}
+
 /// Run the negative test for `spec` against an explicit project `root`, write
 /// the ledger, and return the report.
 ///
@@ -651,7 +850,7 @@ pub(crate) fn confirm_one(
 /// the caller remembering to pass it. Every criterion's command runs WITH `root`
 /// as its working directory, which is where AC commands are written to run.
 pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, Pass::Proof, false)
+    run_pass(root, spec, root, Pass::Proof, false)
 }
 
 /// Take the CONFIRMATION for `spec` against an explicit project `root`: run each
@@ -662,7 +861,19 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
 /// second half. Its earlier failure stays in the record ([`AcProof::proof`]);
 /// what it no longer does is clear the criterion on its own.
 pub(crate) fn confirm(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, Pass::Confirm, false)
+    run_pass(root, spec, root, Pass::Confirm, false)
+}
+
+/// Take the REMOVAL pass for `spec`: run each criterion that was CONFIRMED
+/// green against `tree` — a checkout of the project with the work taken away —
+/// and require it to come back red.
+///
+/// The spec artefacts and the ledger are read and written under `root`; only
+/// the commands run in `tree`. Keeping the two apart is the whole safety
+/// property of this pass: the record of a run lands beside the spec, never
+/// inside the scratch checkout that is about to be deleted.
+pub(crate) fn removal(root: &Path, spec: &str, tree: &Path) -> NegativeCheckReport {
+    run_pass(root, spec, tree, Pass::Removal, false)
 }
 
 /// The CONFIRMATION taken from INSIDE `mustard-rt` itself — what
@@ -676,14 +887,25 @@ pub(crate) fn confirm(root: &Path, spec: &str) -> NegativeCheckReport {
 /// that cannot link and recording the resulting non-answer as a finding about
 /// the criterion.
 pub(crate) fn confirm_in_process(root: &Path, spec: &str) -> NegativeCheckReport {
-    run_pass(root, spec, Pass::Confirm, true)
+    run_pass(root, spec, root, Pass::Confirm, true)
 }
 
-/// Both passes, in one engine — see [`Pass`] for why it is a parameter.
+/// All three passes, in one engine — see [`Pass`] for why it is a parameter.
+///
+/// `tree` is the working directory each criterion's command runs in. It is
+/// `root` for both of the first two passes and a stripped scratch checkout for
+/// the removal pass; the spec, the ledger and every reported path always come
+/// from `root`.
 ///
 /// `in_process` is only ever read by the confirmation pass — see
 /// [`confirm_in_process`].
-fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCheckReport {
+fn run_pass(
+    root: &Path,
+    spec: &str,
+    tree: &Path,
+    pass: Pass,
+    in_process: bool,
+) -> NegativeCheckReport {
     let Some(spec_file) = resolve_spec_file(root, spec) else {
         return NegativeCheckReport::aborted(pass, Some(spec.to_string()), "spec-not-found");
     };
@@ -713,12 +935,18 @@ fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCh
             continue;
         }
         let recorded = recorded_proof(&previous, &item.id, &item.command, expect);
+        if pass == Pass::Removal {
+            // The third transition. It speaks only about a criterion the ledger
+            // already carries with a GREEN confirmation — see `remove_one`.
+            criteria.push(remove_one(tree, &item.id, &item.command, expect, recorded));
+            continue;
+        }
         if pass == Pass::Confirm {
             // The confirmation only ever speaks about a criterion the ledger
             // already carries. One it does not is missing its RED proof, and a
             // green run here would answer a question nobody asked.
             criteria.push(confirm_one(
-                root,
+                tree,
                 &item.id,
                 &item.command,
                 expect,
@@ -750,6 +978,11 @@ fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCh
         .iter()
         .filter(|c| c.verdict != Verdict::Exempt && c.confirmation != Confirmation::Green)
         .count();
+    let removed_red = criteria.iter().filter(|c| c.removal == Removal::Red).count();
+    let survived = criteria
+        .iter()
+        .filter(|c| c.removal == Removal::Survived)
+        .count();
 
     // The ledger is written whichever way the verdicts fell: the proofs already
     // obtained are the expensive part of this run and must not be lost because a
@@ -759,6 +992,8 @@ fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCh
         criteria: criteria.clone(),
         // Preserved verbatim — the amendment operation is this array's author.
         amendments: previous.amendments,
+        // Likewise: the ADD door writes this one, every pass preserves it.
+        additions: previous.additions,
     };
     let written = write_ledger(&ledger_path, &ledger);
 
@@ -775,6 +1010,9 @@ fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCh
         exempt,
         confirmed,
         unconfirmed,
+        removed_red,
+        survived,
+        taken_away: Vec::new(),
         criteria,
         error: (!written).then(|| "ledger-write-failed".to_string()),
     }
@@ -820,22 +1058,89 @@ fn exit_code(report: &NegativeCheckReport) -> i32 {
     }
 }
 
+/// Take the REMOVAL pass end to end: cut the scratch tree, run the pass in it,
+/// and let the handle drop so the tree is removed either way.
+///
+/// A tree that could not be built is an ENGINE error, never a verdict — the
+/// same separation `spec-not-found` already draws. `removal-<reason>` names
+/// which half failed, because "no cached diff" and "git could not cut a
+/// worktree" ask for different actions.
+fn take_removal(root: &Path, spec: &str, from: &str) -> NegativeCheckReport {
+    let Some(spec_file) = resolve_spec_file(root, spec) else {
+        return NegativeCheckReport::aborted(
+            Pass::Removal,
+            Some(spec.to_string()),
+            "spec-not-found",
+        );
+    };
+    let spec_dir = spec_file.parent().unwrap_or(root).to_path_buf();
+    match super::work_removed::build(root, &spec_dir, from) {
+        Ok(tree) => {
+            let mut report = removal(root, spec, tree.path());
+            report.taken_away = tree.taken_away().to_vec();
+            report
+        }
+        Err(reason) => NegativeCheckReport::aborted(
+            Pass::Removal,
+            Some(spec.to_string()),
+            &format!("removal-{reason}"),
+        ),
+    }
+}
+
+/// The revision the removal pass restores the work to when the caller names
+/// none: the merge base of `HEAD` and the project's primary integration base
+/// (`mustard.json#git.flow`), which is where the spec's work branch was cut
+/// from. Agnostic — the branch name is the project's, never a literal here.
+fn default_removal_from(root: &Path) -> String {
+    let base = crate::shared::context::project_config_cached(root)
+        .git
+        .primary_base();
+    for candidate in [format!("origin/{base}"), base] {
+        if let Some(merge_base) =
+            crate::commands::git_settle::git_out(root, &["merge-base", "HEAD", &candidate])
+        {
+            if !merge_base.is_empty() {
+                return merge_base;
+            }
+        }
+    }
+    // Nothing resolved: the previous commit is the smallest honest guess, and
+    // `unknown-revision` reports it when even that does not exist.
+    "HEAD~1".to_string()
+}
+
 /// Dispatch `mustard-rt run ac-negative-check`.
 ///
 /// `confirm` selects the SECOND pass (`--confirm`): the criteria that cleared
 /// the red proof are run again, after their work has landed, and must now come
-/// back green. Two invocations rather than one automatic pair, because red is
-/// the correct answer at PLAN time and the wrong one after EXECUTE.
-pub fn run(spec: Option<&str>, confirm: bool) {
+/// back green. `removal` selects the THIRD (`--removal`): each confirmed
+/// criterion runs against a scratch tree with its work taken away and must come
+/// back red. Three invocations rather than one automatic chain, because each
+/// answer is correct only at its own moment — red at PLAN, green after EXECUTE,
+/// red again only once somebody pays for the scratch tree.
+pub fn run(spec: Option<&str>, confirm: bool, removal: bool, from: Option<&str>) {
     let root = PathBuf::from(crate::shared::context::project_dir());
-    let take = if confirm { self::confirm } else { check };
+    let pass = if removal {
+        Pass::Removal
+    } else if confirm {
+        Pass::Confirm
+    } else {
+        Pass::Proof
+    };
     let report = match spec.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(spec) => take(&root, spec),
-        None => NegativeCheckReport::aborted(
-            if confirm { Pass::Confirm } else { Pass::Proof },
-            None,
-            "spec-required",
-        ),
+        Some(spec) => match pass {
+            Pass::Removal => {
+                let from = from
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map_or_else(|| default_removal_from(&root), str::to_string);
+                take_removal(&root, spec, &from)
+            }
+            Pass::Confirm => self::confirm(&root, spec),
+            Pass::Proof => check(&root, spec),
+        },
+        None => NegativeCheckReport::aborted(pass, None, "spec-required"),
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
@@ -974,10 +1279,13 @@ mod tests {
                 confirmation: Confirmation::NotTaken,
                 exit: Some(1),
                 confirmation_exit: None,
+                removal: Removal::NotTaken,
+                removal_exit: None,
                 reason: None,
                 stderr_excerpt: String::new(),
             }],
             amendments: vec![serde_json::json!({ "id": "AC-1", "reason": "from wave 3" })],
+            additions: Vec::new(),
         };
         std::fs::write(
             spec_dir.join(AC_PROOF_JSON),
@@ -1122,6 +1430,140 @@ mod tests {
             "{:?}",
             ac2.reason
         );
+    }
+
+    /// AC-3 — the THIRD transition. A criterion that was red before its work
+    /// and green after it must come back RED once the work is taken away
+    /// again; one that stays green SURVIVED the removal and is reported as
+    /// verifying nothing.
+    ///
+    /// The two criteria are built so the difference is the whole test, with the
+    /// work materialised literally as a directory:
+    ///
+    /// * `AC-1` asserts the directory the work creates — `cd` into it. It is
+    ///   red before, green after, and red again in a tree without it: the
+    ///   criterion is TIED to the behaviour.
+    /// * `AC-2` asserts something the work merely dragged along — a directory
+    ///   that exists on both trees, standing for the comment carrying the word.
+    ///   It is red before (it did not exist then), green after, and STILL green
+    ///   with the work removed. That is the finding no earlier pass can make.
+    ///
+    /// Two-sided by construction: the same pass, over the same ledger, reports
+    /// opposite verdicts for the two, so it cannot pass by calling everything
+    /// red or everything survived.
+    #[test]
+    fn criterion_returns_red_when_the_work_is_removed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // The tree WITH the work: both directories exist.
+        let with_work = root.join("with-work");
+        std::fs::create_dir_all(with_work.join("behaviour")).unwrap();
+        std::fs::create_dir_all(with_work.join("dragged-along")).unwrap();
+        // The tree with the work TAKEN AWAY: only the dragged-along one.
+        let stripped = root.join("stripped");
+        std::fs::create_dir_all(stripped.join("dragged-along")).unwrap();
+
+        let body = "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — the behaviour is there.\n  Command: `cd behaviour`\n\
+             - **AC-2** — a word the work dragged along.\n  Command: `cd dragged-along`\n\
+             - **AC-3** — build green.\n  Command: `cd .`\n";
+        let spec_dir = seed(root, "third", body);
+
+        // 1. The RED proof, against a tree carrying neither directory — `root`
+        //    itself holds only the two scratch trees.
+        let proof = check(root, "third");
+        assert_eq!(entry(&proof, "AC-1").proof, Proof::Red);
+        assert_eq!(entry(&proof, "AC-2").proof, Proof::Red, "red before, honestly");
+        assert_eq!(
+            entry(&proof, "AC-1").removal,
+            Removal::NotTaken,
+            "the red pass never claims a removal it did not take"
+        );
+
+        // 2. The CONFIRMATION, against the tree WITH the work: both pass.
+        let confirmed = removal_free_confirm(&with_work, root, "third");
+        assert_eq!(entry(&confirmed, "AC-1").confirmation, Confirmation::Green);
+        assert_eq!(entry(&confirmed, "AC-2").confirmation, Confirmation::Green);
+
+        // 3. The REMOVAL, against the tree with the work taken away.
+        let removed = removal(root, "third", &stripped);
+        assert_eq!(removed.pass, "removal");
+
+        let tied = entry(&removed, "AC-1");
+        assert_eq!(tied.verdict, Verdict::Proven, "red with the work gone clears it");
+        assert_eq!(tied.removal, Removal::Red);
+        assert!(tied.removal_exit.is_some(), "the command genuinely ran");
+        assert!(tied.reason.is_none(), "a criterion tied to the behaviour needs no remedy");
+        assert_eq!(
+            (tied.proof, tied.confirmation),
+            (Proof::Red, Confirmation::Green),
+            "the earlier columns are carried over, never overwritten"
+        );
+
+        let vacuous = entry(&removed, "AC-2");
+        assert_eq!(
+            vacuous.verdict,
+            Verdict::Unproven,
+            "a criterion that survives its own work's removal verifies nothing"
+        );
+        assert_eq!(vacuous.removal, Removal::Survived);
+        let reason = vacuous.reason.clone().unwrap_or_default();
+        assert!(reason.contains("with the work taken away"), "{reason}");
+        assert!(
+            reason.contains("asserts the BEHAVIOUR"),
+            "the remedy names what to rewrite it into: {reason}"
+        );
+        assert_eq!((removed.removed_red, removed.survived), (1, 1));
+        assert!(!removed.ok, "a survivor must not report ok");
+        assert_eq!(exit_code(&removed), 2, "the blocking exit code");
+
+        // 4. A criterion nobody CONFIRMED has nothing to remove, and the removal
+        //    does not become a back door to clearing it.
+        let unconfirmed = removal(root, "third", &stripped);
+        let ac3 = entry(&unconfirmed, "AC-3");
+        assert_eq!(ac3.verdict, Verdict::Exempt, "the trailing criterion stays exempt");
+        assert_eq!(ac3.removal, Removal::NotTaken, "and is never run");
+
+        // The ledger carries all three columns, so a later reader never re-runs
+        // anything to know what happened at each transition.
+        let ledger: AcProofLedger =
+            serde_json::from_str(&std::fs::read_to_string(spec_dir.join(AC_PROOF_JSON)).unwrap())
+                .unwrap();
+        let recorded = ledger.criteria.iter().find(|c| c.id == "AC-1").unwrap();
+        assert_eq!(
+            (recorded.proof, recorded.confirmation, recorded.removal),
+            (Proof::Red, Confirmation::Green, Removal::Red)
+        );
+    }
+
+    /// Take the confirmation with the criteria RUN in `tree` while the spec and
+    /// ledger stay under `root` — the shape the removal pass needs to set up,
+    /// expressed through the same engine so the test cannot drift from it.
+    fn removal_free_confirm(tree: &Path, root: &Path, spec: &str) -> NegativeCheckReport {
+        run_pass(root, spec, tree, Pass::Confirm, false)
+    }
+
+    /// The removal classification, as a table — the third mirror. `fail` is the
+    /// ONLY status that clears, and `pass` earns its own SURVIVED value: a
+    /// command still green with its work gone is a finding, not an absence.
+    #[test]
+    fn only_a_failing_command_clears_the_removal() {
+        assert_eq!(classify_removal("fail").0, Verdict::Proven);
+        assert_eq!(classify_removal("fail").1, Removal::Red);
+        assert!(classify_removal("fail").2.is_none());
+        assert_eq!(classify_removal("pass").1, Removal::Survived);
+        assert_eq!(classify_removal("timeout").1, Removal::NoVerdict);
+        assert_eq!(classify_removal("skip").1, Removal::NotAttempted);
+        for status in ["pass", "timeout", "skip"] {
+            let (verdict, removal, reason) = classify_removal(status);
+            assert_eq!(verdict, Verdict::Unproven, "{status}");
+            assert!(reason.is_some(), "{status} must name its remedy");
+            assert_ne!(removal, Removal::NotTaken, "{status} WAS taken");
+        }
+        // NEVER TAKEN is the default and no executed status produces it — the
+        // same separation the other two columns draw between absence and a
+        // wrong colour.
+        assert_eq!(Removal::default(), Removal::NotTaken);
     }
 
     /// The confirmation classification, as a table — the mirror of

@@ -10,3 +10,4 @@ pub mod analyze_validation;
 pub mod ac_negative_check;
 pub mod security_scan;
 pub mod dependency_precheck;
+pub mod work_removed;

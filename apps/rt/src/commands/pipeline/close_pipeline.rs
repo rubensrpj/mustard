@@ -67,7 +67,7 @@
 //! (which includes each AC's measured `duration_ms`, the existing contract).
 
 use crate::commands::pipeline::{dispatch_plan, pipeline_summary};
-use crate::commands::review::ac_negative_check::{self, Verdict};
+use crate::commands::review::ac_negative_check::{self, Confirmation, Verdict};
 use crate::commands::review::qa_run::{self, QaRunOptions};
 use crate::commands::spec::complete_spec;
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -155,7 +155,7 @@ fn take_confirmation(cwd: &Path, spec: &str) -> Value {
         .criteria
         .iter()
         .filter(|c| c.verdict == Verdict::Unproven)
-        .map(|c| json!(c.id))
+        .map(unproven_entry)
         .collect();
     json!({
         "taken": true,
@@ -165,6 +165,56 @@ fn take_confirmation(cwd: &Path, spec: &str) -> Value {
         "unproven": unproven,
         "reason": report.error,
     })
+}
+
+/// One unproven criterion's entry in the close report: its id, the confirmation
+/// column verbatim, and what that column SAYS ([`unproven_wording`]).
+///
+/// The entry used to be the bare id, which is why this exists at all — see
+/// [`unproven_wording`] for what that collapsed.
+fn unproven_entry(c: &ac_negative_check::AcProof) -> Value {
+    json!({
+        "id": c.id,
+        "confirmation": c.confirmation,
+        "says": unproven_wording(c.confirmation),
+    })
+}
+
+/// What an unproven criterion's `confirmation` column actually says, in words.
+///
+/// The list this feeds used to be bare ids, which collapsed the two cases the
+/// [`ac_negative_check::Confirmation`] enum exists to keep apart: a pass that
+/// was NEVER TAKEN and a pass that was taken and came back RED. Its own doc
+/// states they "ask for opposite actions — take the confirmation, versus finish
+/// (or repair) the work", and until now only the ledger on disk drew that line;
+/// the close report — the thing an operator actually reads — spelled both the
+/// same. Every arm below names the ONE action that clears its case, and no two
+/// arms open with the same words.
+fn unproven_wording(confirmation: Confirmation) -> &'static str {
+    match confirmation {
+        Confirmation::NotTaken => {
+            "NEVER TAKEN: the confirmation pass did not reach this criterion, so nothing is \
+             known about it after its work landed — take the confirmation"
+        }
+        Confirmation::Red => {
+            "TAKEN and came back RED: the command ran after its work landed and still failed — \
+             finish the work, or repair a command that never asserted it"
+        }
+        Confirmation::NoVerdict => {
+            "TAKEN but killed by its deadline: no verdict ever arrived — re-run it, or give the \
+             criterion a command that can finish"
+        }
+        Confirmation::Inexecutable => {
+            "TAKEN and could not be attempted AT ALL: the criterion itself is broken rather than \
+             unmet — amend it with a replacement that runs"
+        }
+        // A green confirmation is what makes a criterion proven, so an unproven
+        // entry cannot carry one. Say exactly that rather than invent an action.
+        Confirmation::Green => {
+            "GREEN confirmation on an UNPROVEN criterion — the ledger contradicts itself; re-take \
+             the confirmation pass"
+        }
+    }
 }
 
 /// The report for a confirmation that was NEVER TAKEN.
@@ -458,7 +508,15 @@ mod tests {
             json!(false),
             "a criterion whose red half was never taken does not clear: {report}",
         );
-        assert_eq!(report["confirmation"]["unproven"], json!(["AC-1"]), "{report}");
+        // The entry names the criterion AND what its confirmation column says —
+        // the two unproven cases are never spelled alike (see
+        // `close_report_spells_the_two_unproven_cases_apart`).
+        assert_eq!(report["confirmation"]["unproven"][0]["id"], json!("AC-1"), "{report}");
+        assert_eq!(
+            report["confirmation"]["unproven"][1],
+            Value::Null,
+            "exactly one criterion is unproven: {report}",
+        );
 
         // --- 3. QA failed ⇒ NOT TAKEN, and it says so --------------------
         let dir = tempdir().unwrap();
@@ -502,5 +560,142 @@ mod tests {
         assert_eq!(report["completed"], json!(false), "{report}");
         assert_eq!(report["reviews"], json!([]), "{report}");
         assert_eq!(report["summary"], Value::Null, "{report}");
+    }
+
+    /// A criterion record with only the fields this report reads.
+    fn proof(id: &str, confirmation: Confirmation) -> ac_negative_check::AcProof {
+        ac_negative_check::AcProof {
+            id: id.to_string(),
+            command: "cargo test -p mustard-rt something".to_string(),
+            expect: None,
+            verdict: Verdict::Unproven,
+            proof: ac_negative_check::Proof::Red,
+            confirmation,
+            exit: Some(1),
+            confirmation_exit: None,
+            removal: ac_negative_check::Removal::NotTaken,
+            removal_exit: None,
+            reason: None,
+            stderr_excerpt: String::new(),
+        }
+    }
+
+    /// AC-3: the close report spells its two unproven cases apart.
+    ///
+    /// `Confirmation`'s own doc says [`Confirmation::NotTaken`] and
+    /// [`Confirmation::Red`] "ask for opposite actions — take the confirmation,
+    /// versus finish (or repair) the work". The ledger on disk drew that line;
+    /// the report an operator actually reads emitted both as a bare id under one
+    /// key, so a pass nobody took looked exactly like work that came back red.
+    #[test]
+    fn close_report_spells_the_two_unproven_cases_apart() {
+        let never = unproven_entry(&proof("AC-1", Confirmation::NotTaken));
+        let red = unproven_entry(&proof("AC-2", Confirmation::Red));
+
+        // The id is still there — this widens the entry, it does not replace it.
+        assert_eq!(never["id"], json!("AC-1"), "{never}");
+        assert_eq!(red["id"], json!("AC-2"), "{red}");
+
+        // The column itself, verbatim, so a machine reader never has to parse
+        // the sentence.
+        assert_eq!(never["confirmation"], json!("not-taken"), "{never}");
+        assert_eq!(red["confirmation"], json!("red"), "{red}");
+
+        // And the sentence a human reads, which is what AC-3 is about.
+        let never_says = never["says"].as_str().unwrap_or_default();
+        let red_says = red["says"].as_str().unwrap_or_default();
+        assert_ne!(never_says, red_says, "the two unproven cases read alike");
+        assert!(never_says.contains("NEVER TAKEN"), "{never_says}");
+        assert!(red_says.contains("came back RED"), "{red_says}");
+        assert!(
+            !never_says.contains("came back RED"),
+            "a pass nobody took must not read as a failure: {never_says}"
+        );
+        assert!(
+            !red_says.contains("NEVER TAKEN"),
+            "a failure must not read as a pass nobody took: {red_says}"
+        );
+
+        // Every other unproven column is distinct too — three shapes collapsing
+        // into two is the same defect one step down.
+        let all: Vec<String> = [
+            Confirmation::NotTaken,
+            Confirmation::Red,
+            Confirmation::NoVerdict,
+            Confirmation::Inexecutable,
+            Confirmation::Green,
+        ]
+        .iter()
+        .map(|c| unproven_wording(*c).to_string())
+        .collect();
+        let mut unique = all.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), all.len(), "two columns share a wording: {all:?}");
+    }
+
+    /// Every path under `root`, relative and slash-normalised, sorted.
+    fn tree_snapshot(root: &Path) -> Vec<String> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+                if path.is_dir() {
+                    walk(&path, root, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// AC-6: closing a spec removes no file outside that spec's own directory.
+    ///
+    /// Observed twice in one session: `MUSTARD-COMMANDS.md` (716 lines) and
+    /// `install-retrieval.ps1` vanished from the repository root — once after an
+    /// implementer returned, once during a close — and were restored byte-exact
+    /// both times. No code under `apps/rt/src` names either file, so the
+    /// invariant is what has to be held, not a call site.
+    ///
+    /// The check is a whole-tree before/after over a real `close`, not a probe
+    /// of the two file names: a deletion this test is meant to catch would not
+    /// announce itself by touching the same files twice. The close is driven to
+    /// its LONGEST path — QA passes, so the confirmation, the finalize and the
+    /// summary all run — because the short-circuit path executes almost nothing.
+    #[test]
+    fn close_removes_no_file_outside_the_spec_dir() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec = "close-keeps-the-tree";
+        seed_spec(project, spec, "echo ok");
+        emit_review(project, spec, "approved", 0, "2026-06-09T00:00:01.000Z");
+
+        // Root files with nothing to do with this spec — the shape of the two
+        // that disappeared.
+        std::fs::write(project.join("MUSTARD-COMMANDS.md"), b"# commands\n").unwrap();
+        std::fs::write(project.join("install-retrieval.ps1"), b"Write-Host ok\n").unwrap();
+        std::fs::create_dir_all(project.join("apps/rt/src")).unwrap();
+        std::fs::write(project.join("apps/rt/src/main.rs"), b"fn main() {}\n").unwrap();
+
+        let before = tree_snapshot(project);
+        let report = close(project, spec);
+        assert_eq!(report["completed"], json!(true), "the close must really run: {report}");
+        let after = tree_snapshot(project);
+
+        let spec_prefix = format!(".claude/spec/{spec}");
+        let gone: Vec<&String> = before
+            .iter()
+            .filter(|p| !after.contains(*p))
+            .filter(|p| !p.starts_with(&spec_prefix))
+            .collect();
+        assert!(gone.is_empty(), "the close removed files outside its spec dir: {gone:?}");
     }
 }

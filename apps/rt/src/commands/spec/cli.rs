@@ -313,6 +313,42 @@ pub enum SpecCmd {
         #[arg(long)]
         reason: String,
     },
+    /// ADD an acceptance criterion the spec does not yet carry, after the
+    /// artefacts are frozen, taking the SAME negative proof a planned one takes.
+    ///
+    /// A door of its own, never a flag on `ac-amend`: an amendment supersedes a
+    /// predecessor and an added id has no predecessor, so folding the two would
+    /// blur the rule that makes amend trustworthy. The command is run through
+    /// `ac-negative-check` and REFUSED unless it comes back red — a criterion
+    /// that already passes would join the spec verifying nothing. On acceptance
+    /// it is written into every PLAN artefact under the spec directory (the root
+    /// `spec.md`, `wave-plan.md` and each `wave-*/spec.md`), directly ABOVE the
+    /// trailing build-green criterion so the positional exemption does not move
+    /// onto it, and the addition is appended to the proof ledger's `additions`.
+    #[command(name = "ac-add")]
+    #[command(display_order = 83)]
+    AcAdd {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// The criterion id to introduce (`AC-9`, `AC-W4-3`, …). An id the spec
+        /// already carries is refused — that is an amendment.
+        #[arg(long)]
+        ac: String,
+        /// The EARS statement the criterion asserts. A blank statement is
+        /// refused.
+        #[arg(long)]
+        statement: String,
+        /// The command that asserts the new behaviour.
+        #[arg(long)]
+        command: String,
+        /// The `Expect:` evidence regex, when the criterion carries one.
+        #[arg(long)]
+        expect: Option<String>,
+        /// Why the criterion is being added. A blank reason is refused.
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -410,6 +446,23 @@ pub fn dispatch(cmd: SpecCmd) {
                 command,
                 expect,
                 statement,
+                reason,
+            });
+        }
+        SpecCmd::AcAdd {
+            spec: slug,
+            ac,
+            statement,
+            command,
+            expect,
+            reason,
+        } => {
+            spec::ac_add::run(spec::ac_add::AcAddOpts {
+                spec: slug,
+                ac,
+                statement,
+                command,
+                expect,
                 reason,
             });
         }

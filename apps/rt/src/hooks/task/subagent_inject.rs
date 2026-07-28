@@ -453,7 +453,15 @@ fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookI
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
         session_id: sid.to_string(),
-        wave: 0,
+        // The wave this lesson belongs to, when the run establishes one. It is
+        // what `wave_done::materialize_wave_memory` files the memory under, and
+        // the reason it is read HERE: at wave close every sibling's decision is
+        // already on the log, so the closing wave cannot tell them apart. `0` is
+        // the schema's "outside a wave plan" and the memory file will then say
+        // `unknown` rather than borrow a number.
+        wave: super::common::current_wave_id()
+            .and_then(|w| w.parse::<u32>().ok())
+            .unwrap_or(0),
         actor: Actor {
             kind: ActorKind::Hook,
             id: Some("subagent_inject".to_string()),

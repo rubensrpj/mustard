@@ -139,6 +139,13 @@ pub enum ReviewCmd {
     /// landed, every criterion that cleared the red proof is run AGAIN and must
     /// now come back GREEN. One still red is reported unproven — it does not
     /// clear on its earlier failure alone.
+    ///
+    /// With `--removal` it takes the THIRD transition: each confirmed criterion
+    /// runs against a scratch checkout with the work the waves recorded taken
+    /// away, and must come back RED. One that stays green SURVIVED the removal —
+    /// it is satisfied by a comment, a name or a file the work left behind
+    /// rather than by the behaviour, which neither of the first two passes can
+    /// tell apart.
     #[command(name = "ac-negative-check")]
     #[command(display_order = 81)]
     AcNegativeCheck {
@@ -150,6 +157,17 @@ pub enum ReviewCmd {
         /// proof pass (red before it). Run it after a wave's work has landed.
         #[arg(long)]
         confirm: bool,
+        /// Take the REMOVAL pass — the third transition. Each criterion that
+        /// was CONFIRMED green is run against a scratch checkout with the work
+        /// the waves recorded taken away, and must come back RED. One that
+        /// stays green SURVIVED the removal: it verifies a word the work left
+        /// behind, not the behaviour. Wins over `--confirm` when both are given.
+        #[arg(long)]
+        removal: bool,
+        /// The revision the removal restores the work to. Omitted: the merge
+        /// base of `HEAD` and the project's primary integration base.
+        #[arg(long)]
+        from: Option<String>,
     },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
@@ -242,8 +260,8 @@ pub fn dispatch(cmd: ReviewCmd) {
                 review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format });
             }
         }
-        ReviewCmd::AcNegativeCheck { spec, confirm } => {
-            review::ac_negative_check::run(spec.as_deref(), confirm);
+        ReviewCmd::AcNegativeCheck { spec, confirm, removal, from } => {
+            review::ac_negative_check::run(spec.as_deref(), confirm, removal, from.as_deref());
         }
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

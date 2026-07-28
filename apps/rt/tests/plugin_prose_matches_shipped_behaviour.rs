@@ -162,3 +162,43 @@ fn resume_prose_teaches_never_dispatched() {
         "the prose sends the reader to a field resume-bootstrap no longer emits",
     );
 }
+
+/// AC-5 — the dispatch prose teaches the precheck SKIP marker beside the `ok`
+/// reading.
+///
+/// On an unsupported stack the dependency gate DECLINES to judge: it answers
+/// `ok: true` with an empty scope and a `skipped` reason, and `wave-advance`
+/// deliberately carries that marker through its trim. The prose still taught
+/// `{ok:true}` → dispatch and nothing else, so the one green that means "nobody
+/// looked" reached the operator spelled exactly like the one that means "the
+/// symbols are there" — a mechanism with no documented reader.
+#[test]
+fn dispatch_prose_teaches_the_precheck_skip() {
+    // --- 1. The prose teaches it where it teaches the dispatch decision -----
+    let loop_ref = read("plugin/refs/spec/resume-loop.md");
+    let dispatch_line = line_with(&loop_ref, "check its `precheck`")
+        .expect("the loop ref no longer tells the orchestrator to read the precheck");
+    assert!(
+        dispatch_line.contains("skipped"),
+        "the precheck reading omits the skip marker: {dispatch_line}",
+    );
+    // Naming the key is not teaching it — the line must say what the marker
+    // MEANS, which is that the green is not a clearance.
+    assert!(
+        dispatch_line.contains("DECLINED") || dispatch_line.contains("nobody looked"),
+        "the prose names `skipped` without saying the green is not a clearance: {dispatch_line}",
+    );
+
+    // --- 2. The marker really survives to the reader ------------------------
+    // Without this half the sentence above outlives the mechanism it describes.
+    let precheck = read("apps/rt/src/commands/review/dependency_precheck.rs");
+    assert!(
+        precheck.contains("pub(crate) const SKIPPED_KEY: &str = \"skipped\""),
+        "the gate no longer emits the `skipped` key the prose teaches",
+    );
+    let advance = read("apps/rt/src/commands/pipeline/wave_advance.rs");
+    assert!(
+        advance.contains("dependency_precheck::skip_reason"),
+        "wave-advance trims the marker away again, so no dispatch ever sees it",
+    );
+}
