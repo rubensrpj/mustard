@@ -62,7 +62,12 @@ what refuses to read that as success.
   as it is, then the addition is refused and nothing is written anywhere
   Command: `cargo test -p mustard-rt ac_add_refuses_a_criterion_that_cannot_fail`
   Expect: `ok\. [1-9][0-9]* passed`
-- **AC-3** — the project build passes green
+- **AC-3** — when the work a criterion describes is taken away again, then the
+  criterion comes back red, so a command that is satisfied by a comment rather
+  than by the behaviour is reported as verifying nothing
+  Command: `cargo test -p mustard-rt criterion_returns_red_when_the_work_is_removed`
+  Expect: `ok\. [1-9][0-9]* passed`
+- **AC-4** — the project build passes green
   Command: `cargo build --workspace`
 
 ## Checklist
@@ -75,6 +80,10 @@ what refuses to read that as success.
 - [ ] T3 — Reach the orphan the multi-line rewrite cannot: a criterion carrying no
       Command line must have its whole statement block replaced, not just its
       header.
+- [ ] T4 — Take the third transition: run the criterion against the tree with the
+      work it describes taken away, and require it to come back red. The wave's
+      own cached diff is what says which change to take away, so no guessing is
+      needed about what "the work" was.
 
 ## Definitions
 

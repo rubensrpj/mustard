@@ -23,6 +23,16 @@
     },
     {
       "id": "AC-3",
+      "command": "cargo test -p mustard-rt criterion_returns_red_when_the_work_is_removed",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-4",
       "command": "cargo build --workspace",
       "expect": null,
       "verdict": "exempt",
