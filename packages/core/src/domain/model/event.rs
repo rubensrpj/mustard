@@ -150,6 +150,13 @@ pub const EVENT_PIPELINE_AMEND_CLOSE: &str = "pipeline.amend_close";
 /// the rt-side auto-mark hook / `mark-checklist-item` (Wave 2).
 pub const EVENT_CHECKLIST_ITEM_MARKED: &str = "checklist.item.marked";
 
+/// Records that one trackable checklist item was dropped ON PURPOSE (`- [ ]`
+/// → `- [~]`), carrying the stated reason. Deliberately NOT
+/// [`EVENT_CHECKLIST_ITEM_MARKED`]: a drop is a decision, not progress, and
+/// folding it into the marked-item count would report work as done that
+/// nobody did. Payload: [`ChecklistItemDroppedPayload`].
+pub const EVENT_CHECKLIST_ITEM_DROPPED: &str = "checklist.item.dropped";
+
 // ---------------------------------------------------------------------------
 // Typed payload structs — typed views over `HarnessEvent::payload: Value`.
 //
@@ -441,6 +448,28 @@ pub struct ChecklistItemMarkedPayload {
     /// Auto-mark anchor path (the ` → <path>` target), when the item has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+}
+
+/// Payload for [`EVENT_CHECKLIST_ITEM_DROPPED`].
+///
+/// Same correlation fields as [`ChecklistItemMarkedPayload`] plus the one
+/// field that makes the drop a decision instead of a disappearance: `reason`.
+/// It is required — a producer with nothing to state has no business emitting
+/// this event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChecklistItemDroppedPayload {
+    /// Spec slug that owns the checklist.
+    pub spec: String,
+    /// Wave number the item belongs to (`0` outside a wave plan).
+    #[serde(default)]
+    pub wave: u32,
+    /// Checklist item label, exactly as it appears in the spec's checklist.
+    pub item: String,
+    /// Auto-mark anchor path (the ` → <path>` target), when the item has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Why the item was let go. Stated by whoever dropped it.
+    pub reason: String,
 }
 
 #[cfg(test)]

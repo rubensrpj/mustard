@@ -14,6 +14,34 @@
 //! every unproven entry carries a short human reason naming the ONE action that
 //! clears it.
 //!
+//! # The second half: the confirmation
+//!
+//! Failing before the work is only half an answer. A command that is BROKEN and
+//! a command whose behaviour is merely absent are both red, so the red pass
+//! alone cannot tell them apart. The CONFIRMATION pass ([`confirm`], reached by
+//! `--confirm`) closes that: once the work has landed, each criterion that
+//! cleared the red pass is run AGAIN and must now come back GREEN. One still
+//! red there is reported UNPROVEN — it does not get to clear on its earlier
+//! failure alone.
+//!
+//! The two passes are separate commands because they answer at opposite
+//! moments. Taking the confirmation automatically would re-run every criterion
+//! at PLAN time, before its work exists, where red is the CORRECT answer — the
+//! approval gate would then refuse every honest spec.
+//!
+//! What is NOT left to memory is WHO takes the confirmation once the work has
+//! landed: [`crate::commands::pipeline::close_pipeline`] takes it itself, on
+//! every close, through [`confirm_in_process`]. A flag nobody is told about is
+//! a mechanism that ships inert — the close is the moment the second half is
+//! due, so the close is what asks for it.
+//!
+//! [`Confirmation`] is the second column in the record, beside [`Proof`]; the
+//! two are never collapsed, for the same reason `NotAttempted` and `Green` are
+//! never collapsed. Its `Inexecutable` value is the one finding no red pass can
+//! produce: a command that could not be attempted at all AFTER its work landed
+//! is broken whatever the work does, and that is the single state
+//! [`crate::commands::spec::ac_amend`] accepts a PASSING replacement for.
+//!
 //! # Why a static linter cannot answer this
 //!
 //! Whether a command CAN fail is a fact about the repository it runs against,
@@ -88,11 +116,43 @@ pub(crate) enum Proof {
     NotAttempted,
 }
 
+/// What happened when a criterion's command was run AGAIN, after the work it
+/// describes had landed — the second column of the record.
+///
+/// The distinction this enum exists for is the same one [`Proof`] draws, one
+/// pass later: [`Confirmation::NotTaken`] is a confirmation that was NEVER
+/// TAKEN, while [`Confirmation::Red`] is one that WAS taken and came back the
+/// wrong colour. They ask for opposite actions — take the confirmation, versus
+/// finish (or repair) the work — so they are opposite values here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Confirmation {
+    /// NEVER TAKEN — the confirmation pass has not reached this criterion. The
+    /// default, so every ledger written before this column existed reads as the
+    /// truth about it: nobody asked.
+    #[default]
+    NotTaken,
+    /// TAKEN — the command ran after the work landed and came back GREEN. This
+    /// is the only outcome that confirms the criterion.
+    Green,
+    /// TAKEN — the command ran after the work landed and STILL came back red.
+    /// Either the work is not there, or the command never asserted it.
+    Red,
+    /// TAKEN — the command was killed by its deadline, so no verdict arrived.
+    NoVerdict,
+    /// TAKEN — the command could not be attempted AT ALL after its work landed.
+    /// Nothing the work does will change that, so this is the one state that
+    /// says the criterion itself is broken rather than unmet — and the only one
+    /// [`crate::commands::spec::ac_amend`] repairs with a PASSING replacement.
+    Inexecutable,
+}
+
 /// Whether a criterion cleared the negative test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Verdict {
-    /// The command came back red — the criterion can tell done from not-done.
+    /// The criterion cleared the pass that ran: RED before its work in the
+    /// proof pass, GREEN after it in the confirmation pass.
     Proven,
     /// Anything else. The entry's `reason` names the one action that clears it.
     Unproven,
@@ -112,18 +172,50 @@ pub(crate) struct AcProof {
     pub(crate) expect: Option<String>,
     /// Whether the criterion cleared the proof.
     pub(crate) verdict: Verdict,
-    /// What happened when the command ran — including NOT having run at all.
+    /// The RED column: what happened when the command ran BEFORE its work
+    /// existed — including NOT having run at all.
     pub(crate) proof: Proof,
-    /// The command's own exit code, when one arrived.
+    /// The CONFIRMED column: what happened when the command ran AGAIN, after
+    /// its work landed. Defaults to [`Confirmation::NotTaken`], so a ledger
+    /// written before this column existed says only that nobody asked.
+    #[serde(default)]
+    pub(crate) confirmation: Confirmation,
+    /// The command's own exit code in the RED pass, when one arrived.
     #[serde(default)]
     pub(crate) exit: Option<i64>,
+    /// The command's own exit code in the CONFIRMATION pass. Kept apart from
+    /// [`AcProof::exit`] so confirming a criterion never overwrites the record
+    /// of what it did before its work existed.
+    #[serde(default)]
+    pub(crate) confirmation_exit: Option<i64>,
     /// A short human reason: what happened and the one action that clears it.
-    /// Absent only for a criterion that is already proven.
+    /// Absent only for a criterion that is already proven. Whichever pass spoke
+    /// last owns it — a criterion has ONE next action, not one per column.
     #[serde(default)]
     pub(crate) reason: Option<String>,
-    /// Bounded excerpt of the command's own output, as the executor captured it.
+    /// Bounded excerpt of the command's own output, as the executor captured it
+    /// on the most recent run.
     #[serde(default)]
     pub(crate) stderr_excerpt: String,
+}
+
+impl AcProof {
+    /// `true` when this record carries evidence an approval gate can act on:
+    /// the criterion was shown ABLE to fail before its work (the red column),
+    /// or it has since been shown to actually PASS after it (the confirmed
+    /// column).
+    ///
+    /// The second half is not a softening — it is the only way an amendment
+    /// accepted for an INEXECUTABLE predecessor can ever satisfy the gate, and
+    /// that amendment's own door already refused everything else.
+    ///
+    /// Reading the RED column rather than [`AcProof::verdict`] is deliberate: a
+    /// confirmation that came back red turns the verdict Unproven, and that is
+    /// a CLOSE-time finding about the work — it must not retroactively unmake
+    /// an approval the red proof legitimately earned.
+    pub(crate) fn evidenced(&self) -> bool {
+        self.proof == Proof::Red || self.confirmation == Confirmation::Green
+    }
 }
 
 /// The on-disk proof ledger: one record per criterion plus the amendment
@@ -142,11 +234,38 @@ pub(crate) struct AcProofLedger {
     pub(crate) amendments: Vec<serde_json::Value>,
 }
 
+/// Which of the two passes a run takes.
+///
+/// A parameter rather than two engines: the spec resolution, the shared parser,
+/// the ledger read/write and the report are identical, and only the per-criterion
+/// question changes. Two engines is how the two halves would drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pass {
+    /// Run each criterion against the tree BEFORE its work exists; red clears.
+    Proof,
+    /// Run each already-proven criterion AGAIN, after its work landed; green
+    /// clears.
+    Confirm,
+}
+
+impl Pass {
+    /// The pass name published in the report, so a reader knows which question
+    /// the numbers below it answer.
+    fn name(self) -> &'static str {
+        match self {
+            Pass::Proof => "proof",
+            Pass::Confirm => "confirm",
+        }
+    }
+}
+
 /// The JSON document printed on stdout.
 #[derive(Debug, Serialize)]
 pub(crate) struct NegativeCheckReport {
-    /// `true` only when every non-exempt criterion is proven.
+    /// `true` only when every non-exempt criterion cleared the pass that ran.
     pub(crate) ok: bool,
+    /// Which pass ran: `proof` (red before the work) or `confirm` (green after).
+    pub(crate) pass: &'static str,
     /// The spec whose criteria were tested (`None` when none resolved).
     pub(crate) spec: Option<String>,
     /// Where the ledger was written, relative to the project root and with
@@ -158,6 +277,11 @@ pub(crate) struct NegativeCheckReport {
     pub(crate) unproven: usize,
     /// How many are exempt by position (the trailing safety criterion).
     pub(crate) exempt: usize,
+    /// How many carry a GREEN confirmation — the second half of the proof.
+    pub(crate) confirmed: usize,
+    /// How many non-exempt criteria do NOT. In the `proof` pass this is every
+    /// one of them by construction: the confirmation is not due yet.
+    pub(crate) unconfirmed: usize,
     /// Every criterion's record, sorted by id.
     pub(crate) criteria: Vec<AcProof>,
     /// Why the engine could not run at all: `spec-required`, `spec-not-found`,
@@ -167,14 +291,17 @@ pub(crate) struct NegativeCheckReport {
 
 impl NegativeCheckReport {
     /// A report for a run that never got as far as testing a criterion.
-    fn aborted(spec: Option<String>, error: &str) -> Self {
+    fn aborted(pass: Pass, spec: Option<String>, error: &str) -> Self {
         Self {
             ok: false,
+            pass: pass.name(),
             spec,
             ledger: None,
             proven: 0,
             unproven: 0,
             exempt: 0,
+            confirmed: 0,
+            unconfirmed: 0,
             criteria: Vec::new(),
             error: Some(error.to_string()),
         }
@@ -201,6 +328,40 @@ const REASON_PLACEHOLDER: &str = "the proof was NEVER TAKEN: the command still c
 /// Why the trailing criterion is not tested.
 const REASON_EXEMPT: &str = "exempt by position: the trailing criterion is the build-green \
      safety net, green before the work by design";
+
+/// The reason a criterion that is STILL red after its work landed is unproven.
+/// It names the opposite action to [`REASON_GREEN`]: finish the work, do not
+/// rewrite the command.
+const REASON_STILL_RED: &str = "the confirmation was TAKEN and the command still came back red \
+     AFTER its work landed, so this criterion does not clear on its earlier failure alone — \
+     finish the work the criterion describes, then take the confirmation again";
+
+/// The reason a confirmation that timed out proves nothing.
+const REASON_CONFIRM_NO_VERDICT: &str = "the confirmation was TAKEN but the command was killed by \
+     its deadline, so no verdict ever arrived — narrow the command and take the confirmation again";
+
+/// The reason an INEXECUTABLE criterion is unproven, and the ONE door that
+/// repairs it. A command that cannot be attempted at all after its work landed
+/// is broken whatever the work does, so re-running it is not the remedy.
+const REASON_INEXECUTABLE: &str = "the confirmation was TAKEN and the command could not be \
+     attempted AT ALL after its work landed, so the criterion itself is inexecutable — repair it \
+     through `mustard-rt run ac-amend`, which accepts a passing replacement for exactly this case";
+
+/// The reason a confirmation was NOT taken by a pass running inside the very
+/// binary the criterion rebuilds. It is deliberately NOT
+/// [`REASON_INEXECUTABLE`]: the command was never attempted here, so calling it
+/// broken would order the reader to rewrite a criterion nothing is wrong with —
+/// the exact "answer that reads like the fact" this whole path exists to refuse.
+const REASON_CONFIRM_NOT_HERE: &str = "the confirmation was NOT TAKEN here: this command rebuilds \
+     the binary that is running it, so the close could not attempt it — take it from a shell with \
+     `mustard-rt run ac-negative-check --confirm --spec <slug>`";
+
+/// The reason a criterion has no confirmation to take. Naming the missing RED
+/// proof rather than the missing confirmation is deliberate: taking the
+/// confirmation is not what clears it.
+const REASON_NOTHING_TO_CONFIRM: &str = "there is no RED proof to confirm for the command this \
+     criterion carries today — take the proof first with `mustard-rt run ac-negative-check \
+     --spec <slug>`";
 
 /// `true` when the criterion at `index` of a `total`-item list is the trailing
 /// safety criterion, exempt from the negative test.
@@ -250,6 +411,36 @@ fn classify(status: &str) -> (Verdict, Proof, Option<String>) {
             Verdict::Unproven,
             Proof::NotAttempted,
             Some(REASON_NOT_ATTEMPTED.to_string()),
+        ),
+    }
+}
+
+/// Classify ONE confirmation run from the executor's status.
+///
+/// The mirror image of [`classify`], one pass later: `pass` — the command came
+/// back green once its work existed — is the ONLY status that confirms
+/// anything. Pure and total, so the classification is unit-testable without
+/// spawning a command.
+fn classify_confirmation(status: &str) -> (Verdict, Confirmation, Option<String>) {
+    match status {
+        "pass" => (Verdict::Proven, Confirmation::Green, None),
+        "fail" => (
+            Verdict::Unproven,
+            Confirmation::Red,
+            Some(REASON_STILL_RED.to_string()),
+        ),
+        "timeout" => (
+            Verdict::Unproven,
+            Confirmation::NoVerdict,
+            Some(REASON_CONFIRM_NO_VERDICT.to_string()),
+        ),
+        // `skip` and any future status: the executor could not attempt the
+        // command at all, which after the work has landed means the criterion
+        // is broken rather than unmet.
+        _ => (
+            Verdict::Unproven,
+            Confirmation::Inexecutable,
+            Some(REASON_INEXECUTABLE.to_string()),
         ),
     }
 }
@@ -344,7 +535,9 @@ pub(crate) fn prove_one(
         expect: expect.map(str::to_string),
         verdict,
         proof,
+        confirmation: Confirmation::NotTaken,
         exit: None,
+        confirmation_exit: None,
         reason: Some(reason.to_string()),
         stderr_excerpt: String::new(),
     };
@@ -362,9 +555,80 @@ pub(crate) fn prove_one(
         expect: expect.map(str::to_string),
         verdict,
         proof,
+        confirmation: Confirmation::NotTaken,
         exit: result.exit(),
+        confirmation_exit: None,
         reason,
         stderr_excerpt: result.stderr_excerpt().to_string(),
+    }
+}
+
+/// Take the CONFIRMATION for ONE criterion and build its updated record.
+///
+/// `previous` is the criterion's record from the ledger, already matched on id
+/// AND command AND expect by [`recorded_proof`]. Only a record that cleared the
+/// RED pass has anything to confirm: a criterion that never came back red is
+/// returned untouched but for the reason naming what is actually missing, and
+/// NOTHING is run for it — taking a confirmation is not how a missing proof is
+/// obtained.
+///
+/// The red columns ([`AcProof::proof`], [`AcProof::exit`]) are carried over
+/// verbatim. Confirming a criterion must never overwrite the record of what it
+/// did before its work existed; that record is the expensive half.
+///
+/// `in_process` says this pass is running INSIDE `mustard-rt` itself (the
+/// `close-pipeline` composite). A criterion whose command rebuilds that very
+/// binary cannot be attempted from here, and is recorded as a confirmation NOT
+/// TAKEN — never as [`Confirmation::Inexecutable`], which is an order to
+/// rewrite the criterion.
+pub(crate) fn confirm_one(
+    root: &Path,
+    id: &str,
+    command: &str,
+    expect: Option<&str>,
+    previous: Option<&AcProof>,
+    in_process: bool,
+) -> AcProof {
+    let record = previous.cloned().unwrap_or(AcProof {
+        id: id.to_string(),
+        command: command.to_string(),
+        expect: expect.map(str::to_string),
+        verdict: Verdict::Unproven,
+        proof: Proof::NotAttempted,
+        confirmation: Confirmation::NotTaken,
+        exit: None,
+        confirmation_exit: None,
+        reason: None,
+        stderr_excerpt: String::new(),
+    });
+    if record.proof != Proof::Red {
+        return AcProof {
+            verdict: Verdict::Unproven,
+            reason: Some(REASON_NOTHING_TO_CONFIRM.to_string()),
+            ..record
+        };
+    }
+    // Asked BEFORE anything is spawned: from inside the binary this command
+    // rebuilds, attempting it buys a doomed compile and — worse — a `skip` the
+    // classifier would read as INEXECUTABLE. The honest answer is that nobody
+    // looked, and the reason names the shell that can.
+    if in_process && qa_run::targets_running_crate(&record.command) {
+        return AcProof {
+            verdict: Verdict::Unproven,
+            confirmation: Confirmation::NotTaken,
+            reason: Some(REASON_CONFIRM_NOT_HERE.to_string()),
+            ..record
+        };
+    }
+    let result = qa_run::execute_ac(&record.command, record.expect.as_deref(), root);
+    let (verdict, confirmation, reason) = classify_confirmation(result.status());
+    AcProof {
+        verdict,
+        confirmation,
+        confirmation_exit: result.exit(),
+        reason,
+        stderr_excerpt: result.stderr_excerpt().to_string(),
+        ..record
     }
 }
 
@@ -376,11 +640,44 @@ pub(crate) fn prove_one(
 /// the caller remembering to pass it. Every criterion's command runs WITH `root`
 /// as its working directory, which is where AC commands are written to run.
 pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
+    run_pass(root, spec, Pass::Proof, false)
+}
+
+/// Take the CONFIRMATION for `spec` against an explicit project `root`: run each
+/// criterion that cleared the red pass AGAIN, now that its work has landed, and
+/// require it to come back green.
+///
+/// A criterion still red here is reported UNPROVEN — the whole point of the
+/// second half. Its earlier failure stays in the record ([`AcProof::proof`]);
+/// what it no longer does is clear the criterion on its own.
+pub(crate) fn confirm(root: &Path, spec: &str) -> NegativeCheckReport {
+    run_pass(root, spec, Pass::Confirm, false)
+}
+
+/// The CONFIRMATION taken from INSIDE `mustard-rt` itself — what
+/// [`crate::commands::pipeline::close_pipeline`] runs, so the pipeline takes
+/// the second half of the proof instead of leaving it to whoever remembers the
+/// `--confirm` flag.
+///
+/// The only difference from [`confirm`] is what it does with a criterion whose
+/// command rebuilds this binary: it declines to attempt it and says so
+/// ([`Confirmation::NotTaken`]), rather than spending the deadline on a compile
+/// that cannot link and recording the resulting non-answer as a finding about
+/// the criterion.
+pub(crate) fn confirm_in_process(root: &Path, spec: &str) -> NegativeCheckReport {
+    run_pass(root, spec, Pass::Confirm, true)
+}
+
+/// Both passes, in one engine — see [`Pass`] for why it is a parameter.
+///
+/// `in_process` is only ever read by the confirmation pass — see
+/// [`confirm_in_process`].
+fn run_pass(root: &Path, spec: &str, pass: Pass, in_process: bool) -> NegativeCheckReport {
     let Some(spec_file) = resolve_spec_file(root, spec) else {
-        return NegativeCheckReport::aborted(Some(spec.to_string()), "spec-not-found");
+        return NegativeCheckReport::aborted(pass, Some(spec.to_string()), "spec-not-found");
     };
     let Ok(markdown) = fs::read_to_string(&spec_file) else {
-        return NegativeCheckReport::aborted(Some(spec.to_string()), "spec-unreadable");
+        return NegativeCheckReport::aborted(pass, Some(spec.to_string()), "spec-unreadable");
     };
     let spec_dir = spec_file.parent().unwrap_or(root).to_path_buf();
     let slug = spec_dir
@@ -398,14 +695,31 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
     let mut criteria: Vec<AcProof> = Vec::with_capacity(total);
     for (index, item) in items.iter().enumerate() {
         let expect = item.expect.as_deref();
+        // Exempt in BOTH passes, for the one reason: the trailing criterion is
+        // the build-green safety net, so neither colour tells anyone anything.
         if is_exempt(index, total) {
             criteria.push(prove_one(root, &item.id, &item.command, expect, true));
+            continue;
+        }
+        let recorded = recorded_proof(&previous, &item.id, &item.command, expect);
+        if pass == Pass::Confirm {
+            // The confirmation only ever speaks about a criterion the ledger
+            // already carries. One it does not is missing its RED proof, and a
+            // green run here would answer a question nobody asked.
+            criteria.push(confirm_one(
+                root,
+                &item.id,
+                &item.command,
+                expect,
+                recorded,
+                in_process,
+            ));
             continue;
         }
         // A proof already recorded for this exact command is kept as it is: the
         // command WILL start passing once the work exists, and re-running it
         // then would turn every recorded red into a green nobody can act on.
-        if let Some(kept) = recorded_proof(&previous, &item.id, &item.command, expect) {
+        if let Some(kept) = recorded {
             criteria.push(kept.clone());
             continue;
         }
@@ -417,6 +731,14 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
     let proven = criteria.iter().filter(|c| c.verdict == Verdict::Proven).count();
     let unproven = criteria.iter().filter(|c| c.verdict == Verdict::Unproven).count();
     let exempt = criteria.iter().filter(|c| c.verdict == Verdict::Exempt).count();
+    let confirmed = criteria
+        .iter()
+        .filter(|c| c.confirmation == Confirmation::Green)
+        .count();
+    let unconfirmed = criteria
+        .iter()
+        .filter(|c| c.verdict != Verdict::Exempt && c.confirmation != Confirmation::Green)
+        .count();
 
     // The ledger is written whichever way the verdicts fell: the proofs already
     // obtained are the expensive part of this run and must not be lost because a
@@ -429,13 +751,19 @@ pub(crate) fn check(root: &Path, spec: &str) -> NegativeCheckReport {
     };
     let written = write_ledger(&ledger_path, &ledger);
 
+    // Each pass is judged by its OWN question: red before the work, green
+    // after. `unproven` already carries both — the confirm pass writes an
+    // Unproven verdict for every criterion it did not confirm.
     NegativeCheckReport {
         ok: written && unproven == 0,
+        pass: pass.name(),
         spec: Some(slug),
         ledger: written.then(|| repo_relative(root, &ledger_path)),
         proven,
         unproven,
         exempt,
+        confirmed,
+        unconfirmed,
         criteria,
         error: (!written).then(|| "ledger-write-failed".to_string()),
     }
@@ -482,11 +810,21 @@ fn exit_code(report: &NegativeCheckReport) -> i32 {
 }
 
 /// Dispatch `mustard-rt run ac-negative-check`.
-pub fn run(spec: Option<&str>) {
+///
+/// `confirm` selects the SECOND pass (`--confirm`): the criteria that cleared
+/// the red proof are run again, after their work has landed, and must now come
+/// back green. Two invocations rather than one automatic pair, because red is
+/// the correct answer at PLAN time and the wrong one after EXECUTE.
+pub fn run(spec: Option<&str>, confirm: bool) {
     let root = PathBuf::from(crate::shared::context::project_dir());
+    let take = if confirm { self::confirm } else { check };
     let report = match spec.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(spec) => check(&root, spec),
-        None => NegativeCheckReport::aborted(None, "spec-required"),
+        Some(spec) => take(&root, spec),
+        None => NegativeCheckReport::aborted(
+            if confirm { Pass::Confirm } else { Pass::Proof },
+            None,
+            "spec-required",
+        ),
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
@@ -622,7 +960,9 @@ mod tests {
                 expect: None,
                 verdict: Verdict::Proven,
                 proof: Proof::Red,
+                confirmation: Confirmation::NotTaken,
                 exit: Some(1),
+                confirmation_exit: None,
                 reason: None,
                 stderr_excerpt: String::new(),
             }],
@@ -685,6 +1025,123 @@ mod tests {
         assert!(
             !reason.contains("came back green"),
             "a proof never taken is not a proof that came back green: {reason}"
+        );
+    }
+
+    /// AC-1 — the second half of the proof. A criterion that cleared the red
+    /// pass must come back GREEN once its work has landed; one that is STILL
+    /// red there is reported unproven instead of clearing on its earlier
+    /// failure alone.
+    ///
+    /// The "work" is materialised literally: [`RED_COMMAND`] is `cd` into a
+    /// directory that does not exist, so CREATING that directory is exactly the
+    /// event the criterion asserts. The same command, the same ledger — only
+    /// the tree changes, which is the whole claim under test.
+    ///
+    /// Two-sided by construction: the first confirmation refuses, the second
+    /// (after the "work") clears, so the assertion cannot pass by the pass
+    /// being permanently red or permanently green.
+    #[test]
+    fn ac_proof_requires_green_after() {
+        let dir = tempdir().unwrap();
+        let spec_dir = seed(dir.path(), "second-half", &vacuous_spec_body());
+
+        // The RED pass, unchanged: AC-1 fails now, so it is proven able to fail.
+        // (AC-2 is vacuous and AC-3 exempt — neither is what this test judges.)
+        let proof = check(dir.path(), "second-half");
+        assert_eq!(entry(&proof, "AC-1").verdict, Verdict::Proven);
+        assert_eq!(entry(&proof, "AC-1").proof, Proof::Red);
+        assert_eq!(
+            entry(&proof, "AC-1").confirmation,
+            Confirmation::NotTaken,
+            "the red pass never claims a confirmation it did not take"
+        );
+        assert_eq!(proof.pass, "proof");
+        assert_eq!(proof.confirmed, 0, "nothing is confirmed before the work");
+
+        // The CONFIRMATION pass, with the work still absent: STILL red.
+        let still_red = confirm(dir.path(), "second-half");
+        let ac1 = entry(&still_red, "AC-1");
+        assert_eq!(
+            ac1.verdict,
+            Verdict::Unproven,
+            "a criterion still red after its work must not clear on its earlier failure"
+        );
+        assert_eq!(ac1.confirmation, Confirmation::Red);
+        assert_eq!(ac1.proof, Proof::Red, "the earlier failure stays in the record");
+        assert!(ac1.exit.is_some(), "and so does the exit code it produced then");
+        let reason = ac1.reason.clone().unwrap_or_default();
+        assert!(reason.contains("still came back red"), "{reason}");
+        assert!(
+            reason.contains("finish the work"),
+            "the remedy is the OPPOSITE of the green one — finish, not rewrite: {reason}"
+        );
+        assert_eq!(still_red.pass, "confirm");
+        assert!(!still_red.ok, "an unconfirmed criterion must not report ok");
+        assert_eq!(exit_code(&still_red), 2, "the blocking exit code");
+
+        // THE WORK LANDS: the directory the criterion asserts now exists, so the
+        // very same command comes back green.
+        std::fs::create_dir(dir.path().join("no-such-directory-abc")).unwrap();
+        let green = confirm(dir.path(), "second-half");
+        let ac1 = entry(&green, "AC-1");
+        assert_eq!(ac1.verdict, Verdict::Proven, "green after the work clears it");
+        assert_eq!(ac1.confirmation, Confirmation::Green);
+        assert_eq!(ac1.confirmation_exit, Some(0));
+        assert!(ac1.reason.is_none(), "a confirmed criterion needs no remedy");
+        assert_eq!(green.confirmed, 1, "AC-1 alone: AC-2 never cleared the red pass");
+        assert!(ac1.evidenced(), "a green confirmation is evidence a gate can act on");
+
+        // The ledger carries BOTH columns, so a later reader never has to re-run
+        // anything to know what happened on each side of the work.
+        let ledger: AcProofLedger = serde_json::from_str(
+            &std::fs::read_to_string(spec_dir.join(AC_PROOF_JSON)).unwrap(),
+        )
+        .unwrap();
+        let recorded = ledger.criteria.iter().find(|c| c.id == "AC-1").unwrap();
+        assert_eq!((recorded.proof, recorded.confirmation), (Proof::Red, Confirmation::Green));
+
+        // A criterion that never cleared the RED pass has nothing to confirm,
+        // and the confirmation does not become a back door to clearing it.
+        let ac2 = entry(&green, "AC-2");
+        assert_eq!(ac2.verdict, Verdict::Unproven);
+        assert_eq!(ac2.confirmation, Confirmation::NotTaken);
+        assert!(
+            ac2.reason.clone().unwrap_or_default().contains("no RED proof to confirm"),
+            "{:?}",
+            ac2.reason
+        );
+    }
+
+    /// The confirmation classification, as a table — the mirror of
+    /// [`only_a_failing_command_clears_the_proof`]. `pass` is the ONLY status
+    /// that confirms anything, and `skip` earns its own INEXECUTABLE value:
+    /// a command that cannot be attempted after its work landed is broken
+    /// whatever the work does, so its remedy is the amendment door, not a
+    /// re-run.
+    #[test]
+    fn only_a_passing_command_clears_the_confirmation() {
+        assert_eq!(classify_confirmation("pass").0, Verdict::Proven);
+        assert_eq!(classify_confirmation("pass").1, Confirmation::Green);
+        assert!(classify_confirmation("pass").2.is_none());
+        assert_eq!(classify_confirmation("fail").1, Confirmation::Red);
+        assert_eq!(classify_confirmation("timeout").1, Confirmation::NoVerdict);
+        assert_eq!(classify_confirmation("skip").1, Confirmation::Inexecutable);
+        for status in ["fail", "timeout", "skip"] {
+            let (verdict, confirmation, reason) = classify_confirmation(status);
+            assert_eq!(verdict, Verdict::Unproven, "{status}");
+            assert_ne!(confirmation, Confirmation::NotTaken, "{status} WAS taken");
+            assert!(reason.is_some(), "{status} must name its remedy");
+        }
+        // NEVER TAKEN is the default, and no executed status can produce it —
+        // the same separation `Proof` draws between absence and a wrong colour.
+        assert_eq!(Confirmation::default(), Confirmation::NotTaken);
+        assert!(
+            classify_confirmation("skip")
+                .2
+                .unwrap_or_default()
+                .contains("ac-amend"),
+            "the inexecutable remedy names the one door that repairs it"
         );
     }
 

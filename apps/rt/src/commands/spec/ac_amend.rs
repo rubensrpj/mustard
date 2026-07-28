@@ -14,6 +14,23 @@
 //!    So this door asks the SAME engine about the replacement and REFUSES it on
 //!    anything but a red. A replacement that already passes proves exactly as
 //!    little as the original did.
+//!
+//! ## The one exception: an INEXECUTABLE predecessor
+//!
+//! There is exactly one criterion the red rule cannot repair. When the
+//! confirmation pass finds a criterion the executor could not attempt AT ALL
+//! after its work landed
+//! ([`ac_negative_check::Confirmation::Inexecutable`]), the command is broken
+//! whatever the work does — and by then the work IS done, so the corrected
+//! command legitimately PASSES. Demanding a red there is demanding a criterion
+//! that lies about a feature that exists.
+//!
+//! So for that ONE recorded state, and only it, a replacement that comes back
+//! GREEN is accepted, and its record carries a green CONFIRMATION — the
+//! evidence the approval gate reads. Everything else keeps refusing a
+//! replacement that is not red. The exception is not a knob and cannot be
+//! asked for: it is unlocked by a finding the engine itself recorded, which is
+//! why it cannot be used to smuggle a vacuous criterion past the door.
 //! 2. **Only the root is edited.** `wave-plan.md` and each `wave-*/spec.md`
 //!    carry the criterion lines too, and the scaffold is frozen after approval
 //!    (`wave_scaffold.rs`). A criterion amended only at the root leaves the
@@ -52,7 +69,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use crate::commands::review::ac_negative_check::{
-    self, AcProof, AcProofLedger, Verdict, AC_PROOF_JSON,
+    self, AcProof, AcProofLedger, Confirmation, Proof, Verdict, AC_PROOF_JSON,
 };
 use crate::commands::review::qa_run;
 use crate::commands::spec::spec_sections;
@@ -275,6 +292,17 @@ fn ends_block(line: &str) -> bool {
     qa_run::parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
 }
 
+/// `true` when `line` carries neither a `Command:` nor an `Expect:` marker — a
+/// line inside an AC block that is nothing but prose.
+///
+/// Used to decide which lines a statement rewrite CONSUMES: everything between
+/// the header and the command line that is pure prose is part of the statement
+/// being replaced. Anything carrying a marker is data the rewrite must not eat,
+/// however odd its position.
+fn is_statement_continuation(line: &str) -> bool {
+    marker_end(line, "command:").is_none() && marker_end(line, "expect:").is_none()
+}
+
 /// Rewrite every criterion line for `id` in one markdown document.
 ///
 /// Only `## Acceptance Criteria` sections are touched (the i18n-aware heading
@@ -283,10 +311,37 @@ fn ends_block(line: &str) -> bool {
 /// legacy drafts duplicated the heading, and a rewrite that skipped the extra
 /// copy would leave a superseded command on disk.
 ///
+/// ## A statement is a BLOCK, not a line
+///
+/// The drafter wraps a long EARS statement over several lines:
+///
+/// ```text
+/// - **AC-1** — when a spec is closed, then the pipeline takes the
+///   confirmation pass and records the verdict, instead of clearing on
+///   the red proof alone
+///   Command: `cargo test …`
+/// ```
+///
+/// [`qa_run::parse_ac_header`] only ever reads the FIRST of those lines, so a
+/// rewrite that replaces just it leaves the remaining lines on disk, orphaned
+/// under a statement they no longer continue — the reader gets the new sentence
+/// welded to the tail of the old one. Found in review (2026-07-28) after
+/// amending AC-1 of this very spec, and cleaned by hand; the hand is exactly
+/// what this door exists to replace.
+///
+/// So a `--statement` rewrite consumes the WHOLE block: the header line is
+/// replaced and every pure-prose line between it and the `Command:` line is
+/// dropped. Lines carrying a marker are never dropped — see
+/// [`is_statement_continuation`].
+///
 /// `None` when the document carries nothing to change.
 fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
     let lines: Vec<&str> = body.split('\n').collect();
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    // Lines the statement rewrite consumed. Marked rather than removed as we
+    // go: `out` is index-parallel to `lines`, and a mid-loop deletion would
+    // shift every offset the surgery below still needs.
+    let mut consumed = vec![false; lines.len()];
     let mut changed = false;
 
     let mut i = 0;
@@ -321,6 +376,17 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
                     .find(|k| marker_end(lines[*k], "command:").is_some())
             };
             let Some(k) = cmd_line else { continue };
+            // The rest of the statement BLOCK: every pure-prose line between the
+            // header and the command. A new statement replaces all of it, so
+            // what it does not replace it removes.
+            if plan.statement.is_some() && !inline {
+                for m in j + 1..k {
+                    if is_statement_continuation(lines[m]) {
+                        consumed[m] = true;
+                        changed = true;
+                    }
+                }
+            }
             if let Some(rewritten) = replace_marker_value(&out[k], "command:", &plan.command) {
                 out[k] = rewritten;
                 changed = true;
@@ -343,7 +409,13 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
         }
         i = end;
     }
-    changed.then(|| out.join("\n"))
+    changed.then(|| {
+        out.into_iter()
+            .zip(consumed)
+            .filter_map(|(line, dropped)| (!dropped).then_some(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -488,17 +560,43 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         .filter(|e| !e.trim().is_empty())
         .or_else(|| superseded.expect.clone());
 
+    let ledger_path = spec_dir.join(AC_PROOF_JSON);
+
     // THE gate. The trailing criterion is exempt here for the same reason it is
     // exempt from the negative test itself — it is the build-green safety net,
     // green before the work by design.
     let exempt = ac_negative_check::is_exempt(index, items.len());
-    let proof = ac_negative_check::prove_one(
+    let mut proof = ac_negative_check::prove_one(
         root,
         &id,
         &opts.command,
         expect.as_deref(),
         exempt,
     );
+
+    // The ONE recorded state the red rule cannot repair (see the module doc).
+    // Looked up through the producer's own rule, against the command AND regex
+    // the criterion carries TODAY, so a hand-edited line can never claim a
+    // finding the engine made about some other command.
+    let predecessor_inexecutable = ac_negative_check::recorded_proof(
+        &read_ledger(&ledger_path),
+        &id,
+        &superseded.command,
+        superseded.expect.as_deref(),
+    )
+    .is_some_and(|p| p.confirmation == Confirmation::Inexecutable);
+
+    if predecessor_inexecutable && proof.proof == Proof::Green {
+        // The replacement PASSES against a tree in which the work already
+        // exists — which is precisely a green CONFIRMATION, and is recorded as
+        // one. The red column keeps saying green, because green is what
+        // happened; nothing here rewrites history to look like a red proof.
+        proof.verdict = Verdict::Proven;
+        proof.confirmation = Confirmation::Green;
+        proof.confirmation_exit = proof.exit;
+        proof.reason = None;
+    }
+
     if proof.verdict == Verdict::Unproven {
         let reason = proof.reason.clone().unwrap_or_default();
         let mut report = AcAmendReport::refused(
@@ -567,7 +665,6 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         return report;
     }
 
-    let ledger_path = spec_dir.join(AC_PROOF_JSON);
     let mut ledger = read_ledger(&ledger_path);
     ledger.spec = spec_dir
         .file_name()
@@ -817,6 +914,106 @@ mod tests {
         assert!(!printed.contains("\"at\""), "no timestamp on stdout: {printed}");
     }
 
+    /// AC-2 — the one case the red rule cannot express. A criterion the engine
+    /// itself recorded as INEXECUTABLE is repaired by a substitute that PASSES,
+    /// because by the time inexecutability is discovered the work is done and
+    /// the corrected command legitimately passes.
+    ///
+    /// The inexecutability is produced, not asserted: `AC-1` declares an
+    /// `Expect:` regex that is not valid, so while the command exits non-zero
+    /// the executor never looks at the regex (a genuine RED proof), and the
+    /// moment the work lands and the command exits 0 the invalid regex makes it
+    /// unattemptable. That is exactly the field shape — a criterion whose flaw
+    /// only surfaces after its work exists.
+    ///
+    /// Two-sided: the SAME passing substitute against a predecessor with no
+    /// such recorded finding is still refused, so the exception cannot be read
+    /// as "green is now acceptable".
+    #[test]
+    fn ac_amend_accepts_inexecutable_predecessor() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // AC-1's evidence regex is not a valid regex; AC-2 is the trailing
+        // build-green safety criterion.
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — when the work lands, then the directory is there.\n  \
+             Command: `{RED_COMMAND}`\n  Expect: `[unterminated`\n\
+             - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        let spec_dir = root.join(".claude").join("spec").join("inexecutable");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), &body).unwrap();
+
+        // 1. The RED proof: the command fails now, so the regex is never read.
+        let proof = ac_negative_check::check(root, "inexecutable");
+        let recorded = proof.criteria.iter().find(|c| c.id == "AC-1").unwrap();
+        assert_eq!(recorded.verdict, Verdict::Proven, "{recorded:?}");
+        assert_eq!(recorded.proof, Proof::Red);
+
+        // 2. THE WORK LANDS — the directory the criterion asserts now exists.
+        std::fs::create_dir(root.join("no-such-directory-abc")).unwrap();
+
+        // 3. The CONFIRMATION discovers the criterion is inexecutable: the
+        //    command exits 0, and now the invalid regex makes it unattemptable.
+        let confirmed = ac_negative_check::confirm(root, "inexecutable");
+        let found = confirmed.criteria.iter().find(|c| c.id == "AC-1").unwrap();
+        assert_eq!(
+            found.confirmation,
+            Confirmation::Inexecutable,
+            "the confirmation must discover the criterion is broken: {found:?}"
+        );
+        assert_eq!(found.verdict, Verdict::Unproven);
+
+        // 4. The repair: a substitute that PASSES is accepted for this ONE
+        //    recorded state, and its record carries a GREEN confirmation.
+        let mut o = opts(
+            "inexecutable",
+            "AC-1",
+            "echo confirmed",
+            "the declared Expect regex is not a valid regex, so the criterion can never be run",
+        );
+        o.expect = Some("confirmed".to_string());
+        let report = amend(root, &o);
+        assert!(report.ok, "unexpected refusal: {:?} / {:?}", report.error, report.remedy);
+        let accepted = report.proof.clone().expect("the amendment records its proof");
+        assert_eq!(accepted.proof, Proof::Green, "the substitute genuinely passes");
+        assert_eq!(
+            accepted.confirmation,
+            Confirmation::Green,
+            "and that pass is recorded as the CONFIRMATION, which is what it is"
+        );
+        assert!(accepted.evidenced(), "so the approval gate can act on it");
+        assert_eq!(
+            report.rewritten,
+            vec![".claude/spec/inexecutable/spec.md".to_string()],
+            "the criterion line is rewritten"
+        );
+        // The audit trail names why, as every amendment must.
+        let ledger: Value =
+            serde_json::from_str(&std::fs::read_to_string(spec_dir.join(AC_PROOF_JSON)).unwrap())
+                .unwrap();
+        assert_eq!(ledger["amendments"][0]["superseded_command"], RED_COMMAND);
+        assert!(ledger["amendments"][0]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("not a valid regex")));
+
+        // 5. Two-sided — the same passing substitute against a predecessor the
+        //    engine recorded NOTHING about is still refused. Nothing about the
+        //    exception generalises to "a green replacement is acceptable".
+        let plain = seed(root, "plain");
+        let refused = amend(
+            root,
+            &opts("plain", "AC-2", GREEN_COMMAND, "swap one green for another"),
+        );
+        assert!(!refused.ok, "a green substitute with no such finding must be refused");
+        assert_eq!(refused.error.as_deref(), Some("replacement_not_proven"));
+        assert!(
+            !plain.join(AC_PROOF_JSON).exists(),
+            "and the refusal still writes nothing"
+        );
+    }
+
     /// The three refusals that guard the inputs. Each writes nothing and names
     /// the one action that clears it.
     #[test]
@@ -905,6 +1102,87 @@ mod tests {
         assert!(updated.contains("  Command: `cd new`"), "{updated}");
         // A document with nothing to change reports exactly that.
         assert!(rewrite_markdown("## Acceptance Criteria\n\n- **AC-1** — x.\n  Command: `cd a`\n", "AC-2", &plan).is_none());
+    }
+
+    /// A `--statement` rewrite replaces the WHOLE statement block, not just the
+    /// line the parser reads.
+    ///
+    /// The defect this pins, found in review on 2026-07-28: amending AC-1 of the
+    /// spec that built this door left the superseded statement's continuation
+    /// lines on disk, orphaned under the new sentence — the reader saw the new
+    /// statement welded to the tail of the old one, and it had to be cleaned by
+    /// hand. `wave-plan.md` and the wave spec were untouched only because the
+    /// line happened to fit there, which is luck, not a rule.
+    ///
+    /// Two-sided:
+    ///
+    /// 1. **The residue is gone.** No fragment of the old statement survives,
+    ///    the new one is what the parser reads back, and the command line below
+    ///    it is untouched.
+    /// 2. **Nothing else is eaten.** Without `--statement` the continuation
+    ///    lines stay exactly where they were (a command-only amendment must not
+    ///    rewrite prose), and a line carrying an `Expect:` marker is never
+    ///    dropped even when it sits inside the block.
+    #[test]
+    fn ac_amend_rewrites_the_whole_statement_block() {
+        // The drafter's wrapped shape: header + two continuation lines.
+        let wrapped = "## Acceptance Criteria\n\
+                       - **AC-1** — when the criterion being replaced is recorded as\n  \
+                       inexecutable, then ac-amend accepts a substitute that passes,\n  \
+                       instead of refusing everything that is not red\n  \
+                       Command: `cd old`\n  Expect: `1 passed`\n";
+
+        // --- 1. With a statement: the block is replaced whole ---------------
+        let plan = Rewrite {
+            command: "cd new".to_string(),
+            expect: None,
+            statement: Some("when a spec is closed, then the pipeline takes the confirmation"
+                .to_string()),
+        };
+        let updated = rewrite_markdown(wrapped, "AC-1", &plan).expect("the criterion changed");
+        let item = criteria_of(&updated)
+            .into_iter()
+            .find(|i| i.id == "AC-1")
+            .unwrap_or_else(|| panic!("AC-1 unreadable after rewrite: {updated:?}"));
+        assert_eq!(item.statement, plan.statement.clone().unwrap_or_default(), "{updated:?}");
+        assert_eq!(item.command, "cd new", "{updated:?}");
+        // The orphaned residue: every fragment of the old statement is gone.
+        for orphan in [
+            "inexecutable, then ac-amend accepts",
+            "instead of refusing everything that is not red",
+            "recorded as",
+        ] {
+            assert!(
+                !updated.contains(orphan),
+                "superseded statement line survived ({orphan:?}): {updated:?}"
+            );
+        }
+        // The command block below it is intact — only the statement was eaten.
+        assert!(updated.contains("  Command: `cd new`"), "{updated:?}");
+        assert!(updated.contains("  Expect: `1 passed`"), "{updated:?}");
+
+        // --- 2. Without a statement: the prose is left ALONE -----------------
+        let command_only = Rewrite {
+            command: "cd new".to_string(),
+            expect: None,
+            statement: None,
+        };
+        let untouched =
+            rewrite_markdown(wrapped, "AC-1", &command_only).expect("the command changed");
+        assert!(
+            untouched.contains("instead of refusing everything that is not red"),
+            "a command-only amendment must not rewrite prose: {untouched:?}"
+        );
+
+        // --- 3. A marker line inside the block is never dropped -------------
+        let odd = "## Acceptance Criteria\n\
+                   - **AC-1** — old statement wrapped\n  \
+                   over two lines\n  \
+                   Expect: `1 passed`\n  \
+                   Command: `cd old`\n";
+        let kept = rewrite_markdown(odd, "AC-1", &plan).expect("the criterion changed");
+        assert!(kept.contains("Expect: `1 passed`"), "marker line eaten: {kept:?}");
+        assert!(!kept.contains("over two lines"), "{kept:?}");
     }
 
     /// Criterion ids are normalised to the spelling the parser yields, so a

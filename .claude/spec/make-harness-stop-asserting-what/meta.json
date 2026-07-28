@@ -1,0 +1,18 @@
+{
+  "stage": "QaReview",
+  "outcome": "Active",
+  "phase": "CLOSE",
+  "scope": "full",
+  "lang": "en-US",
+  "checkpoint": "2026-07-28T01:13:19.455Z",
+  "isWavePlan": true,
+  "totalWaves": 5,
+  "currentWave": 5,
+  "completedWaves": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ]
+}

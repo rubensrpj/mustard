@@ -134,6 +134,11 @@ pub enum ReviewCmd {
     /// The trailing criterion is exempt (the build-green safety net). Writes the
     /// proof ledger `<spec-dir>/ac-proof.json` either way, prints one JSON
     /// document on stdout, and exits 2 when any criterion is unproven.
+    ///
+    /// With `--confirm` it takes the SECOND half instead: once the work has
+    /// landed, every criterion that cleared the red proof is run AGAIN and must
+    /// now come back GREEN. One still red is reported unproven — it does not
+    /// clear on its earlier failure alone.
     #[command(name = "ac-negative-check")]
     #[command(display_order = 81)]
     AcNegativeCheck {
@@ -141,6 +146,10 @@ pub enum ReviewCmd {
         /// its directory.
         #[arg(long, alias = "from-spec")]
         spec: Option<String>,
+        /// Take the CONFIRMATION pass (green after the work) instead of the RED
+        /// proof pass (red before it). Run it after a wave's work has landed.
+        #[arg(long)]
+        confirm: bool,
     },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
@@ -233,8 +242,8 @@ pub fn dispatch(cmd: ReviewCmd) {
                 review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format });
             }
         }
-        ReviewCmd::AcNegativeCheck { spec } => {
-            review::ac_negative_check::run(spec.as_deref());
+        ReviewCmd::AcNegativeCheck { spec, confirm } => {
+            review::ac_negative_check::run(spec.as_deref(), confirm);
         }
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

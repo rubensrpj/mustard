@@ -23,6 +23,8 @@ A spec has two layers — `## PRD` (what & why) + `## Plan` (how). Approving app
 
 **Wave plan exists:**
 1. `mustard-rt run event-projections --view pipeline-state --spec {spec}` → snapshot (`isWavePlan:true`, `totalWaves`, `currentWave`, `completedWaves`).
+
+   **Read `neverDispatched` off the `resume-bootstrap` output you already have** (`${CLAUDE_PLUGIN_ROOT}/commands/spec.md` §3 ran it). `true` means the plan was scaffolded and NOBODY ever dispatched a wave — `currentWave: 1` there is a starting position, not progress. Say *"{totalWaves} ondas — nenhuma despachada ainda"*, never *"na onda 1"*: the two read the same and ask for opposite actions (start it versus resume it), and the wave directories alone cannot tell them apart.
 2. Print the full `wave-plan.md` as a fenced block; list each wave-spec path below.
 3. **Advisory audits (non-blocking).** Two deterministic wave-plan lints; each WARNS, neither blocks:
    - **Size:** `mustard-rt run wave-size-check --spec-dir .claude/spec/{spec}`. On `action:"audited"` + `oversizedCount>0`, print one `⚠ Wave {N} ({folder}) — {files} files, {layers} layer(s)` per oversized wave. Silent otherwise.
@@ -71,7 +73,15 @@ Returns the **current round** — `[{wave, role, subproject, subagent_type, prom
 | `dispatch-review` | fallback only (resumed/missing verdict) — dispatch one review Task per `reviewRoles`; prefer the in-loop review round |
 | `run-qa` / `emit-complete` | `mustard-rt run close-pipeline --spec {spec}` |
 
-`close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) without `qa.result overall=pass`**.
+`close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — the **confirmation pass** + `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) without `qa.result overall=pass`**.
+
+**The confirmation is the second half of the criterion proof, and CLOSE is where it comes due.** At PLAN time every criterion had to come back RED (`ac-negative-check`) — the proof it knows how to fail. That half never asks whether it passes NOW, so a command that is BROKEN and a behaviour that is merely ABSENT read exactly alike. So `close-pipeline` runs each red-proven criterion AGAIN, after the work landed, and writes the verdict into the second column of `<spec>/ac-proof.json`. Read the `confirmation` block it returns:
+
+- `taken:true, ok:true` — every criterion was seen to PASS after its work landed. This is the only reading that says the proof is complete.
+- `taken:true, ok:false` — `unproven` NAMES each criterion that did not clear. Either the work is not there, or the criterion never asserted it; the ledger's `reason` says which and what clears it.
+- `taken:false` — NOT TAKEN (QA did not pass, so nothing closed and the confirmation was not due). `ok` is `null`, never `false`: nobody looked is not the same answer as it failed.
+
+It is **advisory** — QA already blocks the close on the same commands — so it stops nothing. What it ends is the spec clearing on its red proof alone. To take it by hand outside a close (e.g. after a fix loop, before re-running QA): `mustard-rt run ac-negative-check --spec {spec} --confirm`.
 
 **MIXED ROUND — one wave finished, its sibling came back `BLOCKED`.** Two rules above are both true here and neither one covers it: *commit once per round, after every wave has returned* (step 2) and *`BLOCKED` → STOP, do not advance* (§ Escalation). Every wave HAS returned, so the commit condition is met; one of them failed, so the round is not done. Do all three, in this order:
 
@@ -98,7 +108,8 @@ mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that ass
 Two things the hand cannot do, and this is why the hand does not do it:
 
 - **The replacement is PROVEN.** It goes through the same negative test the plan took (`ac-negative-check`): the new command is run against the tree as it is and **must itself come back RED**. A replacement that already passes proves exactly as little as the criterion it replaces, so the amendment is REFUSED — along with a blank reason, an unknown spec and an unknown AC id. Every refusal writes nothing, anywhere.
-- **Every artefact is rewritten.** `wave-plan.md` and each `wave-*/spec.md` carry the criterion lines too, and the scaffold is frozen after approval — a root-only edit leaves the dispatched agent reading the superseded command. `ac-amend` rewrites each artefact carrying that id and appends the supersession to `<spec>/ac-proof.json`'s `amendments`, so the change is auditable instead of being a `decision` event that is a trail, not a path.
+  **The one exception, and it cannot be asked for.** When the confirmation pass already recorded the criterion being replaced as INEXECUTABLE — its command could not be attempted AT ALL after its work landed — the command is broken whatever the work does, and by then the work IS done, so a corrected command legitimately PASSES. Demanding a red there demands a criterion that lies about a feature that exists. For that ONE recorded state, a GREEN replacement is accepted and its record carries a green CONFIRMATION (the evidence the approval gate reads). The door is unlocked by a finding the engine itself wrote into `<spec>/ac-proof.json`, never by a flag — so it cannot be used to smuggle a vacuous criterion past the gate. If you meet `replacement_not_proven` on a command you believe is correct, take the confirmation first (`ac-negative-check --spec {spec} --confirm`): it is what records the finding this exception reads.
+- **Every artefact is rewritten.** `wave-plan.md` and each `wave-*/spec.md` carry the criterion lines too, and the scaffold is frozen after approval — a root-only edit leaves the dispatched agent reading the superseded command. `ac-amend` rewrites each artefact carrying that id and appends the supersession to `<spec>/ac-proof.json`'s `amendments`, so the change is auditable instead of being a `decision` event that is a trail, not a path. `--statement` replaces the WHOLE statement, including the continuation lines a long EARS sentence wraps onto — the parser only ever reads the first of them, so replacing just that line would leave the rest orphaned under a sentence they no longer continue (found in review, 2026-07-28, on this spec's own AC-1).
 
 Then re-run QA. The narrative of `spec.md` stays frozen either way — an amendment touches the criterion, never the prose.
 

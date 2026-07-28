@@ -8,19 +8,36 @@
 //! multi-dev gap: after a `git pull`, a teammate's spec is on disk but has no
 //! local events).
 //!
+//! ## Two places a spec can live
+//!
+//! The working tree is not the whole project. A spec directory belongs with the
+//! work it describes, so while that work is in flight the directory exists ONLY
+//! on its work branch — and a listing that globs the checkout answers "nothing
+//! in progress" when it means "I only looked at one branch". Discovery
+//! therefore ALSO reads the spec area of every work branch, through
+//! `git ls-tree` + `git show`, without checking anything out; each row then
+//! carries where it lives ([`ActiveSpec::location`] / [`ActiveSpec::branch`]),
+//! so an in-flight spec is never mistaken for one present in the checkout.
+//!
 //! ## Fail-open contract
 //!
 //! Every error path prints a warning on stderr and continues. The process exits
 //! `0` regardless. Missing directories, unparseable headers, and SQLite failures
-//! all degrade to partial results, never to a panic or non-zero exit.
+//! all degrade to partial results, never to a panic or non-zero exit. The
+//! cross-branch scan keeps the same contract with one addition: when git cannot
+//! answer, the listing degrades to the working-tree answer AND says so
+//! ([`BranchScan::reason`]) — never a silent empty list that reads like a
+//! verified absence, which is the exact habit this module was fixed to stop.
 
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use mustard_core::domain::meta;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+use crate::commands::git_settle::git_out;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -36,6 +53,27 @@ struct SpecHeader {
     checkpoint: Option<String>,
 }
 
+/// Where a discovered spec's directory physically lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpecLocation {
+    /// Present in the CURRENT working tree, under `.claude/spec/`.
+    Tree,
+    /// Absent from the working tree; carried only by this work branch.
+    Branch(String),
+}
+
+/// The facts a branch-carried spec cannot get from the filesystem, because its
+/// directory is not there. Read from the branch's own tree instead.
+#[derive(Debug, Clone, Default)]
+struct BranchFacts {
+    /// One-line summary, extracted from the branch's `spec.md` blob.
+    resumo: String,
+    /// Wave progress, counted over the branch's `wave-N-*` subtrees.
+    progress: Option<WaveProgress>,
+    /// Number of the first wave the branch still has `Outcome=Active`.
+    first_active_wave: Option<String>,
+}
+
 /// A discovered spec candidate before filtering.
 #[derive(Debug, Clone)]
 struct SpecCandidate {
@@ -44,6 +82,12 @@ struct SpecCandidate {
     spec_md: PathBuf,
     is_wave_plan: bool,
     header: SpecHeader,
+    /// Working tree, or the work branch that carries the directory.
+    location: SpecLocation,
+    /// `Some` exactly when `location` is [`SpecLocation::Branch`] — the paths
+    /// above do NOT exist on disk for such a candidate, so everything the
+    /// filesystem would have answered is precomputed here instead.
+    branch_facts: Option<BranchFacts>,
 }
 
 /// Progress for a wave-plan spec.
@@ -82,6 +126,35 @@ pub(crate) struct ActiveSpec {
     /// one.
     #[serde(rename = "clarifyRecordsNothing")]
     pub clarify_records_nothing: bool,
+    /// `"tree"` when the spec directory exists in the current working tree;
+    /// `"branch"` when it exists ONLY on the work branch named by
+    /// [`Self::branch`] — an **in-flight** spec, whose work has not merged yet.
+    ///
+    /// The distinction is the point: acting on a `branch` row means switching
+    /// to that branch first, and a caller that cannot tell the two apart will
+    /// look for a directory that is not there.
+    pub location: String,
+    /// The work branch carrying this spec — `Some` exactly when `location` is
+    /// `"branch"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// What the cross-branch scan managed to do, reported alongside the specs.
+///
+/// This is the honest half of the fail-open contract: `ok:false` plus a
+/// `reason` says the listing covers the working tree ONLY, which is a different
+/// claim from "these are all the active specs".
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct BranchScan {
+    /// `true` when the work branches were actually enumerated and read.
+    pub ok: bool,
+    /// Why the scan could not run — present ONLY when `ok` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The work branches inspected, sorted. Empty with `ok:true` simply means
+    /// the project has no work branch other than the one checked out.
+    pub branches: Vec<String>,
 }
 
 /// Full JSON output schema.
@@ -90,6 +163,8 @@ pub(crate) struct ActiveSpecsOutput {
     pub specs: Vec<ActiveSpec>,
     #[serde(rename = "parentMap")]
     pub parent_map: HashMap<String, String>,
+    #[serde(rename = "branchScan")]
+    pub branch_scan: BranchScan,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,20 +208,31 @@ fn read_header_bytes(path: &Path) -> Option<String> {
 /// [`SpecHeader`] (picker uses a narrower projection — `phase` /
 /// `isWavePlan` / `totalWaves` are not needed here).
 fn parse_header_from_meta(spec_file: &Path) -> Option<SpecHeader> {
-    let m = meta::read_meta_beside(spec_file)?;
+    // NOTE: we no longer drop incomplete sidecars here.  A sidecar with
+    // missing stage/outcome is returned as-is; classify_spec() will flag it
+    // as malformed so it shows up in the picker with "??" instead of being
+    // silently hidden.
+    Some(header_from_meta(meta::read_meta_beside(spec_file)?))
+}
+
+/// Narrow a parsed [`meta::Meta`] to the picker's [`SpecHeader`] projection
+/// (`phase` / `isWavePlan` / `totalWaves` are not needed here).
+fn header_from_meta(m: meta::Meta) -> SpecHeader {
     let nonempty = |opt: Option<String>| opt.filter(|s| !s.is_empty());
-    let header = SpecHeader {
+    SpecHeader {
         stage: nonempty(m.stage),
         outcome: nonempty(m.outcome),
         scope: nonempty(m.scope),
         parent: nonempty(m.parent).map(|s| strip_wikilink(&s)),
         checkpoint: nonempty(m.checkpoint),
-    };
-    // NOTE: we no longer drop incomplete sidecars here.  A sidecar with
-    // missing stage/outcome is returned as-is; classify_spec() will flag it
-    // as malformed so it shows up in the picker with "??" instead of being
-    // silently hidden.
-    Some(header)
+    }
+}
+
+/// [`parse_header_from_meta`] over a sidecar's BYTES rather than its path — the
+/// door the cross-branch scan comes through, since a branch-carried `meta.json`
+/// has no path in this checkout. Same lenient parse, same projection.
+fn header_from_meta_text(text: &str) -> Option<SpecHeader> {
+    serde_json::from_str::<meta::Meta>(text).ok().map(header_from_meta)
 }
 
 /// Parse the header fields, preferring `meta.json` sidecar (W3 onward),
@@ -169,7 +255,13 @@ fn parse_header(path: &Path) -> SpecHeader {
     let Some(text) = read_header_bytes(path) else {
         return SpecHeader::default();
     };
+    parse_header_md(&text)
+}
 
+/// The legacy `### Key:` markdown header parser, over TEXT — shared by the
+/// path-based [`parse_header`] and by the cross-branch scan, which holds the
+/// `spec.md` as a blob rather than a file.
+fn parse_header_md(text: &str) -> SpecHeader {
     let mut header = SpecHeader::default();
     let mut last_header_line = false;
     let mut past_header = false;
@@ -279,10 +371,231 @@ fn discover_root_specs(root: &Path) -> Vec<SpecCandidate> {
             spec_md: spec_md.clone(),
             is_wave_plan,
             header,
+            location: SpecLocation::Tree,
+            branch_facts: None,
         });
     }
 
     candidates
+}
+
+// ---------------------------------------------------------------------------
+// Cross-branch discovery
+// ---------------------------------------------------------------------------
+
+/// Read one blob out of `branch` without checking anything out. `None` when the
+/// path is absent on that branch (or git fails) — indistinguishable on purpose:
+/// both mean "this listing has nothing to say about that file".
+fn show_blob(root: &Path, branch: &str, path: &str) -> Option<String> {
+    git_out(root, &["show", &format!("{branch}:{path}")])
+}
+
+/// Enumerate the project's WORK branches and the active specs they carry but
+/// the current working tree does not.
+///
+/// A work branch is one whose name starts with `{base}_` for a base the project
+/// itself declares (`mustard.json#git.flow` via
+/// [`mustard_core::domain::config::GitConfig::integration_bases`]) — the same
+/// question `work-unit-open` and the work-branch gate ask, so no branch name is
+/// hardcoded here either. The branch that is checked out is skipped: its specs
+/// ARE the working tree.
+///
+/// `seen` carries every spec name already accounted for and is extended as
+/// branches are read, so the checkout always wins over a branch and the first
+/// branch (alphabetically) wins over the rest — one row per spec, never a
+/// duplicate wearing two locations.
+///
+/// **Fail-open.** Any git step that cannot answer returns the working-tree
+/// answer with `ok:false` and a stated reason. It never panics and never
+/// reports an empty branch set as a verified "nothing else in flight".
+fn scan_work_branches(
+    root: &Path,
+    seen: &mut BTreeSet<String>,
+) -> (Vec<SpecCandidate>, BranchScan) {
+    let mut scan = BranchScan { ok: false, reason: None, branches: Vec::new() };
+
+    if git_out(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+        scan.reason = Some("git indisponível ou diretório fora de um repositório".to_string());
+        return (Vec::new(), scan);
+    }
+
+    // `.claude/spec` as GIT names it: relative to the repository root, which is
+    // not necessarily `root` (a subproject checkout carries a prefix).
+    let prefix = git_out(root, &["rev-parse", "--show-prefix"]).unwrap_or_default();
+    let spec_root = format!("{prefix}.claude/spec");
+
+    let current = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+
+    let Some(listing) = git_out(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+    else {
+        scan.reason = Some("git for-each-ref falhou — branches de trabalho não enumerados".to_string());
+        return (Vec::new(), scan);
+    };
+
+    let bases: Vec<String> =
+        mustard_core::ProjectConfig::load(root).git.integration_bases().into_iter().collect();
+
+    let mut branches: Vec<String> = listing
+        .lines()
+        .map(str::trim)
+        .filter(|b| !b.is_empty() && *b != current)
+        .filter(|b| bases.iter().any(|base| b.starts_with(&format!("{base}_"))))
+        .map(str::to_string)
+        .collect();
+    branches.sort();
+    branches.dedup();
+
+    scan.ok = true;
+    scan.branches = branches.clone();
+
+    let mut candidates: Vec<SpecCandidate> = Vec::new();
+    for branch in &branches {
+        candidates.extend(specs_on_branch(root, branch, &spec_root, seen));
+    }
+    (candidates, scan)
+}
+
+/// The active-spec candidates `branch` carries whose name is not already in
+/// `seen`; kept names are added to `seen`.
+///
+/// ONE `git ls-tree -r` describes the branch's whole spec area; every further
+/// read is a `git show` of a single blob, so the cost tracks what is actually
+/// in flight rather than the size of the repository.
+fn specs_on_branch(
+    root: &Path,
+    branch: &str,
+    spec_root: &str,
+    seen: &mut BTreeSet<String>,
+) -> Vec<SpecCandidate> {
+    let dir = format!("{spec_root}/");
+    let Some(listing) = git_out(root, &["ls-tree", "-r", "--name-only", branch, "--", &dir]) else {
+        return Vec::new();
+    };
+
+    // spec name → its paths, relative to `<spec_root>/<name>/`.
+    let mut by_spec: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for line in listing.lines() {
+        let Some(rest) = line.trim().strip_prefix(dir.as_str()) else { continue };
+        let Some((name, inner)) = rest.split_once('/') else { continue };
+        if name.is_empty() || inner.is_empty() {
+            continue;
+        }
+        by_spec.entry(name.to_string()).or_default().insert(inner.to_string());
+    }
+
+    let mut out: Vec<SpecCandidate> = Vec::new();
+    for (name, files) in by_spec {
+        if seen.contains(&name) {
+            continue;
+        }
+        let has_spec_md = files.contains("spec.md");
+        let is_wave_plan = files.contains("wave-plan.md");
+        if !has_spec_md && !is_wave_plan {
+            continue;
+        }
+
+        let spec_md_text =
+            has_spec_md.then(|| show_blob(root, branch, &format!("{spec_root}/{name}/spec.md"))).flatten();
+        // Same resolution order as on disk: `meta.json` is authoritative, the
+        // legacy `.md` header is the fallback.
+        let header = show_blob(root, branch, &format!("{spec_root}/{name}/meta.json"))
+            .as_deref()
+            .and_then(header_from_meta_text)
+            .or_else(|| spec_md_text.as_deref().map(parse_header_md))
+            .unwrap_or_default();
+
+        // A terminal spec on an old branch is not in flight — leave it out AND
+        // leave `seen` alone, so a later branch carrying an active copy of the
+        // same slug still gets its turn.
+        if classify_spec(&header).is_none() {
+            continue;
+        }
+        seen.insert(name.clone());
+
+        let (progress, first_active_wave) =
+            branch_wave_facts(root, branch, spec_root, &name, &files);
+        let facts = BranchFacts {
+            resumo: spec_md_text.as_deref().map(extract_resumo_text).unwrap_or_default(),
+            progress,
+            first_active_wave,
+        };
+
+        let spec_dir = ClaudePaths::spec_dir_or_unchecked(root, &name);
+        out.push(SpecCandidate {
+            name,
+            spec_md: spec_dir.join("spec.md"),
+            spec_dir,
+            is_wave_plan,
+            header,
+            location: SpecLocation::Branch(branch.to_string()),
+            branch_facts: Some(facts),
+        });
+    }
+    out
+}
+
+/// Wave progress + the first still-active wave, read from `branch`'s tree.
+///
+/// Mirrors [`count_wave_progress`] and [`find_first_active_wave`] over blobs
+/// instead of directory entries — one pass, so "done" and "first active" keep
+/// the one definition they already had (`Close`+`Completed`, `Active`).
+fn branch_wave_facts(
+    root: &Path,
+    branch: &str,
+    spec_root: &str,
+    name: &str,
+    files: &BTreeSet<String>,
+) -> (Option<WaveProgress>, Option<String>) {
+    // wave dir → its files.
+    let mut waves: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for rel in files {
+        let Some((wave_dir, inner)) = rel.split_once('/') else { continue };
+        let Some(after) = wave_dir.strip_prefix("wave-") else { continue };
+        if !after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        waves.entry(wave_dir.to_string()).or_default().insert(inner.to_string());
+    }
+
+    let mut total = 0usize;
+    let mut done = 0usize;
+    let mut active: Vec<u32> = Vec::new();
+
+    for (wave_dir, inner) in &waves {
+        if !inner.contains("spec.md") {
+            continue;
+        }
+        total += 1;
+        let base = format!("{spec_root}/{name}/{wave_dir}");
+        let hdr = show_blob(root, branch, &format!("{base}/meta.json"))
+            .as_deref()
+            .and_then(header_from_meta_text)
+            .or_else(|| {
+                show_blob(root, branch, &format!("{base}/spec.md"))
+                    .as_deref()
+                    .map(parse_header_md)
+            })
+            .unwrap_or_default();
+
+        let stage_close =
+            hdr.stage.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("close"));
+        let outcome_completed =
+            hdr.outcome.as_deref().is_some_and(|o| o.eq_ignore_ascii_case("completed"));
+        if stage_close && outcome_completed {
+            done += 1;
+        }
+        if hdr.outcome.as_deref().is_some_and(|o| o.eq_ignore_ascii_case("active")) {
+            let num: String =
+                wave_dir["wave-".len()..].chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(n) = num.parse::<u32>() {
+                active.push(n);
+            }
+        }
+    }
+
+    let progress = (total > 0).then_some(WaveProgress { done, total });
+    active.sort_unstable();
+    (progress, active.first().map(u32::to_string))
 }
 
 // ---------------------------------------------------------------------------
@@ -468,11 +781,16 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 /// bold/italic. Truncates to 70 chars with `…`.
 fn extract_resumo(path: &Path) -> String {
     let Ok(text) = std::fs::read_to_string(path) else { return String::new() };
+    extract_resumo_text(&text)
+}
 
+/// [`extract_resumo`] over TEXT — the door the cross-branch scan comes through,
+/// holding a `spec.md` blob instead of a file.
+fn extract_resumo_text(text: &str) -> String {
     // Try headings in priority order
     let headings = ["## Resumo", "## Contexto", "## Summary", "## Context"];
     for heading in headings {
-        if let Some(first) = find_section_first_line(&text, heading) {
+        if let Some(first) = find_section_first_line(text, heading) {
             if first.is_empty() {
                 continue;
             }
@@ -630,10 +948,15 @@ fn make_unique_from_chars(s: &str, used: &HashMap<String, String>) -> String {
 // ---------------------------------------------------------------------------
 
 /// Derive the display status for a spec row in the table.
+///
+/// `first_active_wave` is supplied by the caller because the answer has two
+/// sources — the filesystem for a checked-out spec, the branch's tree for an
+/// in-flight one — and this function must not care which.
 fn derive_status(
     spec: &SpecCandidate,
     kind: &SpecKind,
     parent_aliases: &HashMap<String, String>,
+    first_active_wave: Option<&str>,
 ) -> String {
     // Special kinds override the normal status derivation.
     match kind {
@@ -653,8 +976,8 @@ fn derive_status(
     }
     // Wave plan with active waves: derive "W{N} em exec" for the first active wave
     if spec.is_wave_plan {
-        if let Some(first_active_wave) = find_first_active_wave(&spec.spec_dir) {
-            return format!("W{first_active_wave} em exec");
+        if let Some(wave) = first_active_wave {
+            return format!("W{wave} em exec");
         }
     }
     "-".to_string()
@@ -762,13 +1085,17 @@ fn stage_abbrev(stage: &str) -> String {
 // Table rendering
 // ---------------------------------------------------------------------------
 
+/// Width of the `Onde` column — long enough for a `{base}_{slug}` branch to
+/// stay recognisable, short enough not to push `Resumo` off the screen.
+const ONDE_WIDTH: usize = 20;
+
 /// Generate a markdown table from the list of active specs.
 ///
-/// Columns: `#`, `Spec`, `Esc`, `Estágio`, `Prog`, `Status`, `Resumo`
-fn render_table(specs: &[ActiveSpec]) -> String {
+/// Columns: `#`, `Spec`, `Esc`, `Estágio`, `Prog`, `Status`, `Onde`, `Resumo`
+fn render_table(specs: &[ActiveSpec], scan: &BranchScan) -> String {
     // Column headers
-    let header = "| #  | Spec                                          | Esc | Estágio | Prog | Status     | Resumo";
-    let separator = "|----|-----------------------------------------------|-----|---------|------|------------|-----------------------------------------------------|";
+    let header = "| #  | Spec                                          | Esc | Estágio | Prog | Status     | Onde                 | Resumo";
+    let separator = "|----|-----------------------------------------------|-----|---------|------|------------|----------------------|-----------------------------------------------------|";
 
     let mut lines: Vec<String> = Vec::new();
     lines.push(header.to_string());
@@ -794,10 +1121,17 @@ fn render_table(specs: &[ActiveSpec]) -> String {
         let stage_col = format!("{stage_str:<7}");
         let prog_col = format!("{prog:>4}");
         let status_col = format!("{:<10}", spec.status);
+        // `-` for the checkout, the branch name for an in-flight spec: the eye
+        // only catches the rows that are NOT where the operator is standing.
+        let onde = spec
+            .branch
+            .as_deref()
+            .map_or_else(|| "-".to_string(), |b| truncate_str(b, ONDE_WIDTH - 1));
+        let onde_col = format!("{onde:<width$}", width = ONDE_WIDTH);
         let resumo_col = &spec.resumo;
 
         lines.push(format!(
-            "| {letter} | {name} | {esc} | {stage_col} | {prog_col} | {status_col} | {resumo_col}"
+            "| {letter} | {name} | {esc} | {stage_col} | {prog_col} | {status_col} | {onde_col} | {resumo_col}"
         ));
     }
 
@@ -810,6 +1144,19 @@ fn render_table(specs: &[ActiveSpec]) -> String {
     lines.push(
         "Esc: lt=light  fl=full  Status: TF→xx=tactical-fix  Wn em exec=wave em execução  ⚠ malformed=meta incompleta  closed-followup=spec fechada com follow-up pendente".to_string(),
     );
+    lines.push(
+        "Onde: -=na árvore atual  {branch}=spec em voo, o diretório só existe nesse branch (troque de branch antes de agir)".to_string(),
+    );
+
+    // Fail-open, said out loud: without the branch scan this listing covers the
+    // checkout ONLY, which is a different claim from "estas são todas".
+    if !scan.ok {
+        lines.push(format!(
+            "⚠ Varredura de branches indisponível ({reason}) — a listagem cobre APENAS a árvore atual; \
+             specs em voo em outros branches podem não aparecer.",
+            reason = scan.reason.as_deref().unwrap_or("motivo não informado")
+        ));
+    }
 
     // Advisory block (never blocking): a `.clarified` that records NOTHING is
     // refused by `approve-spec`. Saying it here costs the operator nothing; not
@@ -864,7 +1211,13 @@ fn spec_date_prefix(name: &str) -> &str {
 ///
 /// Uses the same deterministic projection as [`run`] —
 /// [`discover_root_specs`] + [`classify_spec`] — so the gate's count and the
-/// `active-specs` picker can never disagree.
+/// `active-specs` picker can never disagree about the working tree.
+///
+/// **The working tree ONLY** — deliberately, unlike [`run`], which also lists
+/// the specs other work branches carry. This number gates an EDIT, and an edit
+/// happens in one checkout: a pipeline parked on a branch nobody has out is not
+/// competing for attention here, and counting it would refuse writes over work
+/// that is not in the room.
 ///
 /// **Fail-open by construction.** Every discovery step degrades to "fewer
 /// specs" on an IO error (a missing / unreadable `.claude/spec` reads as an
@@ -893,17 +1246,46 @@ pub struct ActiveSpecsOpts {
 
 /// Main entry point for `mustard-rt run active-specs`.
 pub fn run(opts: ActiveSpecsOpts) {
-    let root = &opts.root;
+    let (output, extra) = build_output(&opts.root);
 
-    // 1. Discover all root-level spec.md / wave-plan.md
+    match opts.format.as_str() {
+        "json" => {
+            println!("{}", render_json(&output));
+        }
+        _ => {
+            // table (default)
+            println!("{}", render_table(&output.specs, &output.branch_scan));
+            if extra > 0 {
+                println!("\n({extra} specs adicionais)");
+            }
+        }
+    }
+}
+
+/// Build the whole listing for `root` — the projection with no stdout in it, so
+/// the rendering above and the tests below read the SAME answer.
+///
+/// Returns the output plus how many active specs the 26-letter cap left out.
+fn build_output(root: &Path) -> (ActiveSpecsOutput, usize) {
+    // 1. Discover all root-level spec.md / wave-plan.md in the WORKING TREE
     let mut candidates = discover_root_specs(root);
 
-    // 2. Parse headers and filter to active specs
+    // 2. Extend beyond the checkout: the specs the project's work branches
+    //    carry and this tree does not. Every tree name — active or not — is
+    //    already `seen`, so the checkout always wins the slug.
+    let mut seen: BTreeSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
+    let (branch_candidates, branch_scan) = scan_work_branches(root, &mut seen);
+    candidates.extend(branch_candidates);
+
+    // 3. Parse headers and filter to active specs
     candidates = filter_active(candidates);
 
-    // 3. Sort by date descending (newest first)
+    // 4. Sort by date descending (newest first), name ascending to break ties —
+    //    two sources merge here, so the order must not depend on read_dir.
     candidates.sort_by(|a, b| {
-        spec_date_prefix(&b.name).cmp(spec_date_prefix(&a.name))
+        spec_date_prefix(&b.name)
+            .cmp(spec_date_prefix(&a.name))
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     // 4. Collect all unique parents for alias resolution
@@ -971,19 +1353,35 @@ pub fn run(opts: ActiveSpecsOpts) {
             .and_then(|p| parent_aliases.get(p))
             .cloned();
 
-        let progress = if candidate.is_wave_plan {
-            count_wave_progress(&candidate.spec_dir)
-        } else {
-            None
+        // An in-flight spec has no directory here: everything the filesystem
+        // would have answered was read from its branch's tree instead.
+        let facts = candidate.branch_facts.as_ref();
+
+        let progress = match (candidate.is_wave_plan, facts) {
+            (false, _) => None,
+            (true, Some(f)) => f.progress.clone(),
+            (true, None) => count_wave_progress(&candidate.spec_dir),
         };
 
-        let resumo = if candidate.spec_md.is_file() {
-            extract_resumo(&candidate.spec_md)
-        } else {
-            String::new()
+        let resumo = match facts {
+            Some(f) => f.resumo.clone(),
+            None if candidate.spec_md.is_file() => extract_resumo(&candidate.spec_md),
+            None => String::new(),
         };
 
-        let status = derive_status(candidate, &kind, &parent_aliases);
+        let first_active_wave = match (candidate.is_wave_plan, facts) {
+            (false, _) => None,
+            (true, Some(f)) => f.first_active_wave.clone(),
+            (true, None) => find_first_active_wave(&candidate.spec_dir),
+        };
+
+        let status =
+            derive_status(candidate, &kind, &parent_aliases, first_active_wave.as_deref());
+
+        let (location, branch) = match &candidate.location {
+            SpecLocation::Tree => ("tree".to_string(), None),
+            SpecLocation::Branch(b) => ("branch".to_string(), Some(b.clone())),
+        };
 
         // Advisory: reuse the approval gate's own classifier so the listing and
         // the refusal can never disagree about what "hollow" means.
@@ -1001,30 +1399,21 @@ pub fn run(opts: ActiveSpecsOpts) {
             letter,
             status,
             clarify_records_nothing,
+            location,
+            branch,
         });
     }
 
     // 7. Note if there were more than 26 specs
     let extra = candidates.len().saturating_sub(26);
 
-    // 8. Emit output
+    // 8. Assemble
     let output = ActiveSpecsOutput {
         specs,
         parent_map: parent_aliases.into_iter().map(|(k, v)| (v, k)).collect(),
+        branch_scan,
     };
-
-    match opts.format.as_str() {
-        "json" => {
-            println!("{}", render_json(&output));
-        }
-        _ => {
-            // table (default)
-            println!("{}", render_table(&output.specs));
-            if extra > 0 {
-                println!("\n({extra} specs adicionais)");
-            }
-        }
-    }
+    (output, extra)
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +1428,12 @@ mod tests {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /// A branch scan that succeeded and found nothing — the neutral value for
+    /// tests that are not about the cross-branch advisory.
+    fn ok_scan() -> BranchScan {
+        BranchScan { ok: true, reason: None, branches: Vec::new() }
+    }
 
     fn make_wave_spec(root: &Path, parent: &str, wave: &str, stage: &str, outcome: &str) {
         let dir = root
@@ -1127,6 +1522,8 @@ mod tests {
                 parent: None,
                 checkpoint: None,
             },
+            location: SpecLocation::Tree,
+            branch_facts: None,
         }
     }
 
@@ -1507,6 +1904,8 @@ mod tests {
             letter: "a".to_string(),
             status: "-".to_string(),
             clarify_records_nothing: true,
+            location: "tree".to_string(),
+            branch: None,
         };
         let recorded = ActiveSpec {
             name: "2026-01-02-recorded".to_string(),
@@ -1514,7 +1913,7 @@ mod tests {
             clarify_records_nothing: false,
             ..hollow.clone()
         };
-        let table = render_table(&[hollow, recorded]);
+        let table = render_table(&[hollow, recorded], &ok_scan());
         assert!(
             table.contains("2026-01-01-hollow: `.clarified` existe mas não registra"),
             "the advisory must name the hollow spec: {table}"
@@ -1529,6 +1928,169 @@ mod tests {
         );
         // Advisory only — nothing about the row itself changed.
         assert!(table.contains("| a  | 2026-01-01-hollow"), "row still listed: {table}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-branch discovery
+    // -----------------------------------------------------------------------
+
+    /// Run git in `dir`, failing the test loudly — a fixture that half-built
+    /// would make the assertions below prove nothing.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Write `body` at `<root>/<rel>`, creating parents.
+    fn seed(root: &Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&path, body).expect("write");
+    }
+
+    /// A repo on `dev` (flow `{*: dev, dev: main}`) carrying one spec in the
+    /// working tree, plus a wave-plan spec that exists ONLY on the work branch
+    /// `dev_in-flight` — the shape of a spec whose work has not merged yet.
+    fn branch_fixture() -> tempfile::TempDir {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        git(root, &["checkout", "-b", "dev"]);
+        seed(root, "mustard.json", r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        // `-f`: a user-level excludes file that ignores `.claude/` must not be
+        // able to hollow out this fixture.
+        git(root, &["add", "-A", "-f", "."]);
+        git(root, &["commit", "-m", "seed"]);
+
+        // The in-flight spec is authored on its own work branch and stays there.
+        git(root, &["checkout", "-b", "dev_in-flight"]);
+        let spec = ".claude/spec/2026-01-09-in-flight";
+        seed(root, &format!("{spec}/spec.md"), "# in-flight\n\n## Resumo\n\nEm voo.\n");
+        seed(root, &format!("{spec}/wave-plan.md"), "# wave plan\n");
+        seed(root, &format!("{spec}/meta.json"), r#"{"stage":"Execute","outcome":"Active"}"#);
+        seed(root, &format!("{spec}/wave-1-a/spec.md"), "# w1\n");
+        seed(root, &format!("{spec}/wave-1-a/meta.json"), r#"{"stage":"Close","outcome":"Completed"}"#);
+        seed(root, &format!("{spec}/wave-2-b/spec.md"), "# w2\n");
+        seed(root, &format!("{spec}/wave-2-b/meta.json"), r#"{"stage":"Execute","outcome":"Active"}"#);
+        // `-f`: a user-level excludes file that ignores `.claude/` must not be
+        // able to hollow out this fixture.
+        git(root, &["add", "-A", "-f", "."]);
+        git(root, &["commit", "-m", "spec on work branch"]);
+
+        // Back on dev the directory is gone from the tree — the exact state in
+        // which discovery used to answer "nothing in progress".
+        git(root, &["checkout", "dev"]);
+        assert!(!root.join(spec).exists(), "fixture: the spec must NOT be in the dev tree");
+
+        // One ordinary spec that IS in the checkout, as the control.
+        seed(
+            root,
+            ".claude/spec/2026-01-08-on-dev/spec.md",
+            "# on dev\n\n## Resumo\n\nNa árvore.\n",
+        );
+        seed(
+            root,
+            ".claude/spec/2026-01-08-on-dev/meta.json",
+            r#"{"stage":"Plan","outcome":"Active"}"#,
+        );
+        td
+    }
+
+    /// **AC-3.** A spec living on an unmerged work branch is listed as
+    /// in-flight, naming the branch that holds it — instead of being reported
+    /// as absent because the checkout does not carry its directory.
+    ///
+    /// The control in the same table is the working-tree spec: it must stay
+    /// `location:"tree"` with no branch, so the two are never confused.
+    #[test]
+    fn active_specs_lists_in_flight_from_other_branches() {
+        let td = branch_fixture();
+        let (out, _) = build_output(td.path());
+
+        // The scan actually ran and looked at the work branch.
+        assert!(out.branch_scan.ok, "branch scan must run: {:?}", out.branch_scan);
+        assert!(
+            out.branch_scan.branches.iter().any(|b| b == "dev_in-flight"),
+            "the work branch must be inspected: {:?}",
+            out.branch_scan.branches
+        );
+
+        let in_flight = out
+            .specs
+            .iter()
+            .find(|s| s.name == "2026-01-09-in-flight")
+            .expect("a spec on an unmerged work branch must be listed, not reported absent");
+        assert_eq!(in_flight.location, "branch");
+        assert_eq!(
+            in_flight.branch.as_deref(),
+            Some("dev_in-flight"),
+            "the row must name the branch that holds it"
+        );
+        assert_eq!(in_flight.stage, "Execute", "state read from the branch's meta.json");
+        assert_eq!(in_flight.resumo, "Em voo.", "resumo read from the branch's spec.md");
+        // Wave facts come from the branch's tree too — 1 of 2 done, wave 2 live.
+        let progress = in_flight.progress.as_ref().expect("wave progress from the branch");
+        assert_eq!((progress.done, progress.total), (1, 2));
+        assert_eq!(in_flight.status, "W2 em exec");
+
+        // The control: a spec in the checkout is marked as such.
+        let on_dev = out
+            .specs
+            .iter()
+            .find(|s| s.name == "2026-01-08-on-dev")
+            .expect("the working-tree spec must still be listed");
+        assert_eq!(on_dev.location, "tree");
+        assert_eq!(on_dev.branch, None);
+
+        // And the operator SEES the difference in the rendered table.
+        let table = render_table(&out.specs, &out.branch_scan);
+        assert!(
+            table.contains("dev_in-flight"),
+            "the table must show where the in-flight spec lives: {table}"
+        );
+    }
+
+    /// The fail-open half: with no git to ask, the listing degrades to the
+    /// working-tree answer AND says why — never a silent empty list that reads
+    /// like a verified absence, and never a panic.
+    #[test]
+    fn active_specs_states_the_reason_when_the_branch_scan_cannot_run() {
+        let td = tempdir().expect("tempdir");
+        // A plain directory: no repository, so no branch can be enumerated.
+        make_spec_with_meta(td.path(), "2026-01-07-local-only", "Plan", "Active");
+
+        let (out, _) = build_output(td.path());
+        assert!(!out.branch_scan.ok, "no repository → the scan did not run");
+        assert!(
+            out.branch_scan.reason.is_some(),
+            "a scan that did not run must say why: {:?}",
+            out.branch_scan
+        );
+        // The working-tree answer survives intact.
+        assert!(
+            out.specs.iter().any(|s| s.name == "2026-01-07-local-only" && s.location == "tree"),
+            "the current-tree answer must survive: {:?}",
+            out.specs.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        // And the table admits the gap instead of implying completeness.
+        let table = render_table(&out.specs, &out.branch_scan);
+        assert!(
+            table.contains("Varredura de branches indisponível"),
+            "the table must state the gap: {table}"
+        );
     }
 
     #[test]

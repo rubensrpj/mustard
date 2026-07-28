@@ -43,7 +43,8 @@ export interface SpecState {
 
 // ── spec-children-tree (W2 `mustard-rt run spec-children-tree`) ───────────────
 // Mirrors `apps/rt/src/run/spec_children_tree.rs` 1:1. `WaveChild.status` is a
-// `WaveStatus` (kebab-case: queued | in-progress | completed | failed);
+// `WaveStatus` (kebab-case: queued | in-progress | completed | failed |
+// dropped);
 // `AcChild.status` is an `AcStatus` (lowercase: pass | fail | skip | pending);
 // `SubSpecChild` mirrors `mustard_core::SpecChild` (the `subspecs` element).
 
@@ -51,7 +52,8 @@ export interface SpecState {
 export interface WaveChild {
   idx: number;
   role: string;
-  /** queued | in-progress | completed | failed (WaveStatus, kebab-case). */
+  /** queued | in-progress | completed | failed | dropped (WaveStatus,
+   *  kebab-case). `dropped` = work let go on purpose. */
   status: string;
   started_at: string | null;
   completed_at: string | null;

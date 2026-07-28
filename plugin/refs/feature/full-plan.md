@@ -50,7 +50,8 @@ Spec layout — canonical section keys (EN, language-agnostic; heading localises
     { "n": 2, "role": "frontend", "summary": "...",
       "depends_on": ["wave-1-backend"],
       "tasks": ["render the page"], "files": ["src/ui/page.tsx"],
-      "acceptance": ["AC-2 — page renders. Command: `...`"] }
+      "acceptance": ["AC-2 — page renders. Command: `...`"],
+      "reality_obligations": ["read the provider's official webhook doc for the retry semantics"] }
   ],
   "total_waves": 2, "lang": "pt-BR"
 }
@@ -76,4 +77,4 @@ A spec with `children_specs.length > 0` may enter COORDINATE: the orchestrator t
 - Full STOPS at PLAN and REQUIRES `/spec` before any EXECUTE. /feature must NEVER emit `pipeline.stage: Execute`, dispatch, Edit, or Write production code for a `scope=full` spec — `scope_guard` enforces it.
 - The scaffold is materialised ONLY by `mustard-rt run spec-draft`; fold `scan spec` bodies in with `Edit`. NEVER hand-write `spec.md`, NEVER hand-author a wave body after `plan-materialize` renders it — emit it in the plan JSON.
 - ALWAYS compile each net-new unit with `mustard-rt run scan spec` (create-only mold); an enhancement unit consumes the digest anchors.
-- The locator is 100% deterministic — the digest (and `scan spec` for net-new) is the whole research step; NO judge layer. NEVER dispatch a model to re-rank, partition, or validate it — work from the flat anchors (pruned by provenance) and `concerns` when ≥2.
+- The locator is 100% deterministic — the digest (and `scan spec` for net-new) is the whole research step; NO judge layer. NEVER dispatch a model to re-rank, partition, or validate it — work from the flat anchors (pruned by provenance) and `concerns` when ≥2. That research covers the CODEBASE and nothing else: when a wave's correctness depends on something the repository cannot answer — a provider's official semantics, a live endpoint's real response, the actual shape of a stored row — declare it as a `reality_obligations` entry on that wave (see the schema above) instead of writing it as prose and hoping it is read. `plan-materialize` materialises each duty into the wave's `## Reality Obligations` with its own `RO-{n}.{i}` id, `agent-prompt-render` delivers them as the prompt's `## REALITY OBLIGATIONS` section (instructing the agent to account for each BY ID in its report), and `wave-done` names every id no text the wave recorded accounts for. That last step reports the RECORD, never the world: an unaccounted duty is "nobody said", not "nobody checked" — it prints and never blocks.

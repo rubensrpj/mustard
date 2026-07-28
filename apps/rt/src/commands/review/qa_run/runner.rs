@@ -142,7 +142,12 @@ fn rewrite_self_invoked_cargo(command: &str) -> String {
 /// `Acesso negado. (os error 5)` on Windows. [`run_ac_command`] uses this to
 /// skip such ACs immediately (when [`QaRunOptions::self_invoked`] is set)
 /// instead of burning the whole timeout on a doomed compile.
-fn targets_running_crate(command: &str) -> bool {
+///
+/// `pub(super)` so the CONFIRMATION pass can ask the SAME question BEFORE it
+/// spawns anything: a confirmation taken from inside this binary must answer
+/// "not taken here" for such a command, never "inexecutable" — see
+/// [`crate::commands::review::ac_negative_check::confirm_in_process`].
+pub(super) fn targets_running_crate(command: &str) -> bool {
     let lower = command.to_ascii_lowercase();
     if !(lower.contains("cargo build") || lower.contains("cargo test")) {
         return false;

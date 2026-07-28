@@ -309,8 +309,8 @@ pub(crate) enum ProofState {
     /// not there to read). Nothing to prove, so nothing to refuse — this gate
     /// must not invent a refusal for a spec that made no claims.
     NotGated,
-    /// Every non-exempt criterion carries a PROVEN record for the exact command
-    /// it carries today.
+    /// Every non-exempt criterion carries evidence for the exact command it
+    /// carries today — a RED proof, or a GREEN confirmation.
     Proven,
     /// No readable `<spec>/ac-proof.json` — the fail-closed case.
     LedgerUnreadable,
@@ -347,6 +347,48 @@ const WHY_NO_VERDICT: &str = "the proof was TAKEN but the command was killed by 
 const WHY_NOT_ATTEMPTED: &str =
     "the proof was NEVER TAKEN: the producer could not attempt the command at all";
 
+/// The CONFIRMED column came back red — read, never re-run. It asks for the
+/// work to be finished, which is the opposite of [`WHY_GREEN`]'s remedy.
+const WHY_CONFIRMATION_RED: &str = "the confirmation was TAKEN and the command still came back \
+     RED after its work landed, and no RED proof stands for it either";
+
+/// The CONFIRMED column produced no verdict.
+const WHY_CONFIRMATION_NO_VERDICT: &str = "the confirmation was TAKEN but the command was killed \
+     by its deadline, so no verdict arrived, and no RED proof stands for it either";
+
+/// The CONFIRMED column found the criterion unrunnable. Naming `ac-amend` is
+/// the point: re-running is not the remedy for a command that cannot run.
+const WHY_INEXECUTABLE: &str = "the confirmation found the command INEXECUTABLE after its work \
+     landed, so the criterion itself is broken — repair it with `mustard-rt run ac-amend`, the \
+     one door that accepts a passing replacement for this case";
+
+/// Why a recorded criterion satisfies neither column — the one action that
+/// clears it, in the wording of whichever column last spoke.
+///
+/// The CONFIRMED column is consulted first because it is the later finding: a
+/// criterion whose confirmation says the command is INEXECUTABLE is not fixed
+/// by anything the red column suggests. Pure, total — no re-run happens here,
+/// exactly as none happens for the red column.
+fn why_unsatisfied(p: &ac_negative_check::AcProof) -> &'static str {
+    use ac_negative_check::{Confirmation, Proof};
+    match p.confirmation {
+        Confirmation::Red => WHY_CONFIRMATION_RED,
+        Confirmation::NoVerdict => WHY_CONFIRMATION_NO_VERDICT,
+        Confirmation::Inexecutable => WHY_INEXECUTABLE,
+        // A green confirmation is evidence, so `evidenced()` already returned
+        // above; a record reaching here has no confirmation to speak of, and
+        // the red column answers.
+        Confirmation::Green | Confirmation::NotTaken => match p.proof {
+            Proof::Green => WHY_GREEN,
+            Proof::NoVerdict => WHY_NO_VERDICT,
+            Proof::NotAttempted => WHY_NOT_ATTEMPTED,
+            // A red proof IS evidence, so this arm is likewise unreachable;
+            // treat any such record as no record at all.
+            Proof::Red => WHY_NEVER_TAKEN,
+        },
+    }
+}
+
 /// Read `<spec>/ac-proof.json` and classify the spec's acceptance criteria.
 ///
 /// Reads the ledger through the type its producer defined
@@ -356,6 +398,15 @@ const WHY_NOT_ATTEMPTED: &str =
 /// still match). There is no second parser and no second lookup rule for this
 /// file, so a hand-edited command silently keeping its old proof is impossible
 /// by construction rather than by care.
+///
+/// BOTH columns of the record are read, through the producer's own
+/// [`ac_negative_check::AcProof::evidenced`]: the RED proof (able to fail
+/// before its work) or the GREEN confirmation (shown to actually pass after
+/// it). Reading only the red column would deadlock the amendment door — a
+/// criterion repaired for being INEXECUTABLE is accepted on a replacement that
+/// PASSES, so its evidence lives in the confirmed column by construction.
+/// Neither column is ever re-run here: the user is waiting at the approval
+/// gesture and the proofs take minutes.
 ///
 /// The criteria themselves come from the SHARED `qa_run` parser, so this gate
 /// and QA cannot disagree about which criteria a spec declares. The trailing
@@ -399,15 +450,8 @@ pub(crate) fn proof_state(root: &str, spec: &str) -> ProofState {
             &item.command,
             item.expect.as_deref(),
         ) {
-            Some(p) if p.verdict == ac_negative_check::Verdict::Proven => continue,
-            Some(p) => match p.proof {
-                ac_negative_check::Proof::Green => WHY_GREEN,
-                ac_negative_check::Proof::NoVerdict => WHY_NO_VERDICT,
-                ac_negative_check::Proof::NotAttempted => WHY_NOT_ATTEMPTED,
-                // A red proof whose verdict is not `proven` cannot be produced
-                // by the engine; treat any such record as no record at all.
-                ac_negative_check::Proof::Red => WHY_NEVER_TAKEN,
-            },
+            Some(p) if p.evidenced() => continue,
+            Some(p) => why_unsatisfied(p),
             None => WHY_NEVER_TAKEN,
         };
         unproven.push(format!("{} — {why}", item.id));
@@ -1502,6 +1546,84 @@ mod tests {
             .expect("a proven criterion approves");
         assert!(report.approved);
         assert_eq!(emitted.borrow().len(), 2, "plan + approved: {:?}", emitted.borrow());
+    }
+
+    /// The gate reads the CONFIRMED column too, and re-runs nothing to do it.
+    ///
+    /// The record under test is the one the amendment door writes when it
+    /// repairs an INEXECUTABLE criterion: the red column says GREEN (the
+    /// replacement passes, which is the point) and the evidence lives in the
+    /// confirmation. Reading only the red column would refuse it forever.
+    ///
+    /// Two-sided: the same record with the confirmation NOT taken is refused,
+    /// and the refusal names the confirmed column's own finding — so the gate
+    /// cannot pass by accepting any record that merely mentions a confirmation.
+    #[test]
+    fn approval_reads_the_confirmation_column() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        let spec = "epic";
+        let command = "cargo test -p mustard-rt --lib the_repaired_unit";
+        seed_full_spec(root, spec);
+        seed_criteria(root, spec, command);
+        let ledger_path = mustard_core::ClaudePaths::for_project(root)
+            .unwrap()
+            .for_spec(spec)
+            .unwrap()
+            .dir()
+            .join("ac-proof.json");
+
+        // A record whose RED column is green and whose CONFIRMED column is not
+        // taken: no evidence at all, refused — and the wording comes from the
+        // red column, because that is the only one that spoke.
+        let record = |confirmation: &str| {
+            serde_json::json!({
+                "spec": spec,
+                "criteria": [{
+                    "id": "AC-1", "command": command, "expect": null,
+                    "verdict": "unproven", "proof": "green", "confirmation": confirmation,
+                    "exit": 0, "confirmation_exit": 0, "reason": null, "stderr_excerpt": ""
+                }],
+                "amendments": []
+            })
+        };
+        std::fs::write(&ledger_path, record("not-taken").to_string()).unwrap();
+        let ProofState::Unproven(entries) = proof_state(root_str, spec) else {
+            panic!("a record with neither column is not evidence");
+        };
+        assert!(entries[0].contains("came back GREEN"), "{entries:?}");
+
+        // The confirmed column found the criterion INEXECUTABLE: still refused,
+        // and now the refusal names the amendment door instead of a re-run.
+        std::fs::write(&ledger_path, record("inexecutable").to_string()).unwrap();
+        let ProofState::Unproven(entries) = proof_state(root_str, spec) else {
+            panic!("an inexecutable criterion is not evidence");
+        };
+        assert!(entries[0].contains("INEXECUTABLE"), "{entries:?}");
+        assert!(entries[0].contains("ac-amend"), "names the repair door: {entries:?}");
+
+        // And the accepted direction: a GREEN confirmation IS evidence.
+        std::fs::write(&ledger_path, record("green").to_string()).unwrap();
+        assert_eq!(
+            proof_state(root_str, spec),
+            ProofState::Proven,
+            "a criterion shown to actually pass after its work satisfies the gate"
+        );
+
+        // A ledger written before the confirmed column existed still reads as
+        // the truth about it — nobody asked — so the red column governs alone.
+        let legacy = serde_json::json!({
+            "spec": spec,
+            "criteria": [{
+                "id": "AC-1", "command": command, "expect": null,
+                "verdict": "proven", "proof": "red", "exit": 1,
+                "reason": null, "stderr_excerpt": ""
+            }],
+            "amendments": []
+        });
+        std::fs::write(&ledger_path, legacy.to_string()).unwrap();
+        assert_eq!(proof_state(root_str, spec), ProofState::Proven);
     }
 
     /// The proof precondition is UNCONDITIONAL, and it invents no refusal for a

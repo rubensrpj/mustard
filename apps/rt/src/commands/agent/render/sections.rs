@@ -9,6 +9,7 @@ use super::reference::files_section_paths;
 use crate::commands::scan_claude::GUARDS_PENDING_OPEN;
 use crate::commands::spec::spec_sections::{is_heading, section_end};
 use mustard_core::io::fs as mfs;
+use std::fmt::Write as _;
 use std::path::Path;
 
 /// Prefixed to a `## Guards` body that is still the `/scan` scaffold.
@@ -146,6 +147,39 @@ fn cut_tasks_section(text: &str) -> String {
         return String::new();
     }
     lines[start..end].join("\n").trim_end().to_string()
+}
+
+/// Build the `## REALITY OBLIGATIONS` body for a wave — the duties the plan
+/// declared against the world OUTSIDE the repository (an official document, a
+/// live endpoint, a stored row), rendered into the wave's `spec.md` by the
+/// wave-scaffold renderer.
+///
+/// The instruction line is composed HERE rather than sitting statically under
+/// the template heading, because a static body would keep the heading alive for
+/// every wave that declares no duty — and a section that is present and empty
+/// reads as "there are no duties" when it means "this plan never said". Empty
+/// when the wave declares none, which collapses the heading like any other.
+///
+/// Fail-open: an unreadable spec yields "". EN by the agent-prompt policy, like
+/// the vocabulary block and `## GIT BOUNDARY`.
+pub(crate) fn read_reality_obligations(spec_path: &Path) -> String {
+    let text = mfs::read_to_string(spec_path).unwrap_or_default();
+    let duties = crate::commands::wave::wave_scaffold::parse_reality_obligations(&text);
+    if duties.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "These duties are about the WORLD, not the code: verify each one against the source \
+         outside this repository (the official document, the live endpoint, the stored row) \
+         BEFORE writing the code it governs. Do NOT infer the answer from the codebase. In \
+         your final report, account for each duty BY ITS ID — what you checked and what it \
+         said — including an id you could not check and why.",
+    );
+    out.push('\n');
+    for (id, duty) in duties {
+        let _ = write!(out, "\n- **{id}** — {duty}");
+    }
+    out
 }
 
 /// Build a TASK block from the spec body when no structured `## Tasks` section

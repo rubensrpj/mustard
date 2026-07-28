@@ -938,7 +938,10 @@ fn mark_meta_checklists(cwd: &str, spec_path: &str, spec_name: &str, edited: &st
             .unwrap_or(0);
         let mut flipped: Vec<usize> = Vec::new();
         for (i, item) in meta.checklist.iter_mut().enumerate() {
-            if item.done || !meta_item_matches_edit(item, &norm_edited, &edited_base) {
+            // `is_open()` and not `!done`: an item dropped on purpose is a
+            // decision, and an edit of the file it named must not silently
+            // flip that decision into progress.
+            if !item.is_open() || !meta_item_matches_edit(item, &norm_edited, &edited_base) {
                 continue;
             }
             item.done = true;
@@ -1350,6 +1353,44 @@ mod tests {
     /// Meta-first auto-mark (checklist-progresso-por-onda W2): a Write of a
     /// checklist target file flips the matching item in the WAVE's
     /// `meta.json#checklist` (idempotently) and emits `checklist.item.marked`.
+    /// An item dropped ON PURPOSE names a file; editing that file must NOT
+    /// flip the decision into progress. The auto-mark hook is the silent
+    /// writer here, so this is the resurrection nobody would have noticed.
+    #[test]
+    fn checklist_auto_mark_never_flips_a_dropped_item() {
+        let dir = tempdir().unwrap();
+        setup_spec(dir.path(), "demo", "# Spec\n\n## Notes\n");
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("demo").unwrap();
+        let wave_dir = sp.dir().join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(wave_dir.join("spec.md"), "# wave-1-rt\n").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"demo","checklist":[{"label":"src/Services/UserService.cs","path":"src/Services/UserService.cs","done":false,"dropped":"the service moved to the gateway spec"}]}"#,
+        )
+        .unwrap();
+
+        let edited = dir.path().join("src").join("Services").join("UserService.cs");
+        let input = edit_input(&edited.to_string_lossy(), "whatever");
+        PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
+
+        let meta = mustard_core::read_meta(&wave_dir.join("meta.json")).unwrap();
+        assert!(!meta.checklist[0].done, "a dropped item is not flipped done by an edit");
+        assert_eq!(
+            meta.checklist[0].drop_reason(),
+            Some("the service moved to the gateway spec"),
+            "the stated reason survives"
+        );
+        // And no `checklist.item.marked` was emitted for it.
+        let events_dir = sp.events_dir();
+        let marked = std::fs::read_dir(&events_dir).into_iter().flatten().flatten().any(|f| {
+            std::fs::read_to_string(f.path())
+                .unwrap_or_default()
+                .contains("\"event\":\"checklist.item.marked\"")
+        });
+        assert!(!marked, "no progress event for work nobody did");
+    }
+
     #[test]
     fn checklist_marks_wave_meta_item_and_emits_event() {
         let dir = tempdir().unwrap();

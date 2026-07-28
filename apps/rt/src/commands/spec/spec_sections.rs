@@ -46,6 +46,15 @@ fn variants(key: &str) -> Option<&'static [&'static str]> {
         // resolver instead of growing a second parser.
         "definitions" => &["Definitions", "Definições"],
         "evidence" => &["Evidence", "Evidências"],
+        // The reality obligations a plan declares per wave — duties to check the
+        // world OUTSIDE the repository (an official document, a live endpoint, a
+        // stored row) before writing the code they govern. Rendered into each
+        // wave's `spec.md` by the wave-scaffold renderer and read back by the
+        // dispatch prompt and by `wave-done`; registered HERE so all three resolve
+        // the heading through the one resolver instead of matching a literal.
+        "reality-obligations" | "realityobligations" => {
+            &["Reality Obligations", "Obrigações de Realidade"]
+        }
         "dependencies" => &["Dependencies", "Dependências"],
         "entityinfo" => &["Entity Info", "Informações da Entidade"],
         "symptom" => &["Symptom", "Sintoma"],

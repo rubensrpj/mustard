@@ -126,6 +126,25 @@ const CHECK_SYMBOLS_RESOLVE: &str = "imported-symbols-resolve-in-subproject";
 /// against what the governing wave plan's parent waves promised to deliver.
 const CHECK_PARENT_WAVE_PROMISES: &str = "parent-wave-promises-classified";
 
+/// JSON key carrying the reason this gate DECLINED to judge. Its presence is
+/// the difference between "checked and found nothing wrong" and "did not look",
+/// both of which ship as `ok: true`.
+pub(crate) const SKIPPED_KEY: &str = "skipped";
+
+/// The one reason the gate currently declines: the target is affirmatively
+/// foreign to the JS/TS extractor (see the skip branch in [`check`]).
+pub(crate) const SKIPPED_STACK_UNSUPPORTED: &str = "stack-unsupported";
+
+/// The reason a report declined to judge, or `None` when it actually judged.
+///
+/// Callers that TRIM a report (`wave-advance` folds the per-wave verdict into
+/// its round) must carry this through: a skip that is dropped on the way out
+/// arrives as a bare `ok: true` and gets read as a clean pass — which is the
+/// one thing the skip branch exists to prevent.
+pub(crate) fn skip_reason(report: &Value) -> Option<&str> {
+    report.get(SKIPPED_KEY).and_then(Value::as_str)
+}
+
 /// One detected dependency reference.
 #[derive(Debug, Clone)]
 struct Dep {
@@ -1097,7 +1116,7 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
             "mode": mode,
             "ok": true,
             "promise_violations": [],
-            "skipped": "stack-unsupported",
+            SKIPPED_KEY: SKIPPED_STACK_UNSUPPORTED,
             "spec": spec_slug,
             "subproject": subproject_field,
             "suggested_tactical_fix_files": [],

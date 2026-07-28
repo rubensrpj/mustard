@@ -742,4 +742,91 @@ mod tests {
             "a proven plan materialises normally: {allowed}"
         );
     }
+
+    /// AC-4: a duty declared in the PLAN reaches the dispatched agent's prompt
+    /// as its OWN section — the whole path, plan JSON → wave scaffold → rendered
+    /// prompt, because each hop alone proves nothing about the one after it.
+    ///
+    /// Two-sided: the sibling wave declares no duty and must render NO such
+    /// section, so the assertion cannot pass by the section appearing everywhere.
+    #[test]
+    fn plan_reality_obligations_reach_wave_prompt() {
+        use crate::commands::agent::render::{render_prompt_at, RenderMode};
+
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        std::fs::write(project.join("mustard.json"), b"{}").unwrap();
+        let spec_dir = project.join(".claude").join("spec").join("reality-plan");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Demo\n\n## Files\n- `a.rs` (create)\n").unwrap();
+        let plan_path = project.join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "wire it", "tasks": ["wire the webhook"],
+                      "files": ["src/hook.rs"],
+                      "reality_obligations": [
+                          "read the provider's official webhook doc for the retry semantics"
+                      ] },
+                    { "n": 2, "role": "cli", "summary": "render it", "tasks": ["render it"],
+                      "files": ["src/cli.rs"] }
+                ],
+                "total_waves": 2,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = materialize(project, &spec_dir, &plan_path);
+        assert!(report["scaffold"]["error"].is_null(), "{report}");
+
+        // The scaffold materialised the duty into the wave's own spec.
+        let wave1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        assert!(wave1.contains("## Reality Obligations"), "{wave1}");
+        assert!(wave1.contains("**RO-1.1**"), "the duty carries an id: {wave1}");
+
+        // ...and the dispatch prompt carries it as its own section.
+        let rendered = render_prompt_at(
+            project,
+            Some("reality-plan"),
+            Some(1),
+            "impl",
+            Path::new("."),
+            RenderMode::First,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            rendered.contains("## REALITY OBLIGATIONS"),
+            "no reality section in the prompt: {rendered}"
+        );
+        assert!(
+            rendered.contains("RO-1.1") && rendered.contains("official webhook doc"),
+            "the duty did not reach the prompt: {rendered}"
+        );
+        assert!(
+            rendered.contains("account for each duty BY ITS ID"),
+            "the agent is never told how to report back: {rendered}"
+        );
+
+        // The sibling wave declared none: no heading at all, not an empty one.
+        let sibling = render_prompt_at(
+            project,
+            Some("reality-plan"),
+            Some(2),
+            "impl",
+            Path::new("."),
+            RenderMode::First,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !sibling.contains("## REALITY OBLIGATIONS"),
+            "a wave with no duty must render no section: {sibling}"
+        );
+    }
 }

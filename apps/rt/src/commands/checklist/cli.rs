@@ -18,7 +18,8 @@ use crate::commands::{checklist};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ChecklistCmd {
-    /// Mark a `## Checklist` item done in a spec.
+    /// Mark a `## Checklist` item done in a spec — or, with `--drop
+    /// --reason`, record it as dropped on purpose.
     #[command(display_order = 17)]
     MarkChecklistItem {
         /// Spec name or absolute `spec.md` path.
@@ -33,6 +34,13 @@ pub enum ChecklistCmd {
         /// Project root override.
         #[arg(long)]
         cwd: Option<String>,
+        /// Record the item as dropped on purpose instead of done. Requires
+        /// `--reason` — a drop with nothing stated is refused (exit 2).
+        #[arg(long = "drop")]
+        drop_item: bool,
+        /// Why the item was dropped. Only meaningful with `--drop`.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -44,6 +52,15 @@ pub fn dispatch(cmd: ChecklistCmd) {
             item,
             line,
             cwd,
-        } => checklist::mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
+            drop_item,
+            reason,
+        } => checklist::mark_checklist_item::run(
+            spec.as_deref(),
+            item.as_deref(),
+            line,
+            cwd.as_deref(),
+            drop_item,
+            reason.as_deref(),
+        ),
     }
 }
