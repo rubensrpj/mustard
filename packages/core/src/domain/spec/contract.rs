@@ -118,6 +118,65 @@ pub struct ChecklistItem {
     /// `false`, and [`render_checklist_item`] emits `- [x]` when set.
     #[serde(default)]
     pub done: bool,
+    /// Why the item was dropped ON PURPOSE — the third position, next to open
+    /// and done. The reason IS the state: there is no `dropped: bool` to set
+    /// without saying why, and a blank/whitespace reason does not count
+    /// ([`ChecklistItem::state`] ignores it), so a drop can never be recorded
+    /// mutely. Additive + serde-compatible: historical JSON without the field
+    /// deserialises to `None` (never dropped) and the field is omitted from
+    /// output while absent, keeping written sidecars byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<String>,
+}
+
+/// Where a checklist item stands. Two positions were the whole model until an
+/// item deliberately let go had nowhere to be recorded and stayed
+/// indistinguishable from one someone forgot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChecklistState {
+    /// Still owed — an unchecked `- [ ]`.
+    Open,
+    /// Landed — a checked `- [x]`.
+    Done,
+    /// Let go on purpose, with a stated reason — a `- [~]`. Terminal: no
+    /// marker turns it back into [`ChecklistState::Open`].
+    Dropped,
+}
+
+impl ChecklistItem {
+    /// The item's position. `Dropped` wins over `done`, because a stated
+    /// reason is a decision someone wrote down and `done` may be legacy noise;
+    /// a reason that is blank or whitespace is no reason at all and the item
+    /// keeps its open/done position.
+    #[must_use]
+    pub fn state(&self) -> ChecklistState {
+        match self.drop_reason() {
+            Some(_) => ChecklistState::Dropped,
+            None if self.done => ChecklistState::Done,
+            None => ChecklistState::Open,
+        }
+    }
+
+    /// The stated reason for the drop, trimmed — `None` when the item was not
+    /// dropped (or carries only whitespace where a reason should be).
+    #[must_use]
+    pub fn drop_reason(&self) -> Option<&str> {
+        self.dropped.as_deref().map(str::trim).filter(|r| !r.is_empty())
+    }
+
+    /// `true` when the item was dropped on purpose.
+    #[must_use]
+    pub fn is_dropped(&self) -> bool {
+        self.drop_reason().is_some()
+    }
+
+    /// `true` when the item is still owed — neither done nor dropped. This is
+    /// the predicate a gate must use to decide "someone still has to do this":
+    /// a plain `!done` counts a dropped decision as forgotten work.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.state() == ChecklistState::Open
+    }
 }
 
 /// Strip any pre-existing markdown checkbox/bullet prefix (`- [ ]`, `- [x]`,
@@ -143,6 +202,7 @@ pub fn normalize_task_label(raw: &str) -> String {
         .strip_prefix("- [ ]")
         .or_else(|| label.strip_prefix("- [x]"))
         .or_else(|| label.strip_prefix("- [X]"))
+        .or_else(|| label.strip_prefix("- [~]"))
         .or_else(|| label.strip_prefix("- "))
     {
         label = rest.trim_start();
@@ -158,14 +218,45 @@ pub fn normalize_task_label(raw: &str) -> String {
 /// already carries a checkbox/bullet prefix never renders doubled — the
 /// rendered checked state comes from the typed `done` field only, never from
 /// a leftover `- [x]` prefix in the label text.
+///
+/// A dropped item renders `- [~] <label> [→ <path>] — dropped: <reason>`: the
+/// glyph is deliberately NOT `[ ]` or `[x]`, so neither the close-gate's
+/// unmarked scan nor the auto-mark hook reads a decision as pending work, and
+/// the reason travels on the line where the reader is.
 #[must_use]
 pub fn render_checklist_item(item: &ChecklistItem) -> String {
     let label = normalize_task_label(&item.label);
-    let mark = if item.done { "x" } else { " " };
-    match item.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    let mark = match item.state() {
+        ChecklistState::Open => " ",
+        ChecklistState::Done => "x",
+        ChecklistState::Dropped => "~",
+    };
+    let head = match item.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         Some(path) => format!("- [{mark}] {label} → {path}"),
         None => format!("- [{mark}] {label}"),
+    };
+    match item.drop_reason() {
+        // The reason is free text: fold any newline back into the line so one
+        // item stays one markdown line.
+        Some(reason) => format!("{head} — dropped: {}", one_line(reason)),
+        None => head,
     }
+}
+
+/// Collapse newlines/tabs in free text to single spaces so it can sit inside
+/// one markdown line without splitting the item in two.
+fn one_line(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_space = false;
+    for ch in raw.chars() {
+        let c = if ch == '\n' || ch == '\r' || ch == '\t' { ' ' } else { ch };
+        if c == ' ' && prev_space {
+            continue;
+        }
+        prev_space = c == ' ';
+        out.push(c);
+    }
+    out.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +558,7 @@ mod tests {
                 label: "T1".into(),
                 path: Some("src/lib.rs".into()),
                 done: false,
+                dropped: None,
             }],
         }
     }
@@ -617,16 +709,23 @@ mod tests {
             label: "Add list view".into(),
             path: Some("src/list.rs".into()),
             done: false,
+            dropped: None,
         };
         assert_eq!(render_checklist_item(&item), "- [ ] Add list view → src/list.rs");
     }
 
     #[test]
     fn render_checklist_item_without_path_is_plain() {
-        let item = ChecklistItem { label: "Write docs".into(), path: None, done: false };
+        let item =
+            ChecklistItem { label: "Write docs".into(), path: None, done: false, dropped: None };
         assert_eq!(render_checklist_item(&item), "- [ ] Write docs");
         // An empty/whitespace path degrades to the plain form (no dangling arrow).
-        let item2 = ChecklistItem { label: "X".into(), path: Some("  ".into()), done: false };
+        let item2 = ChecklistItem {
+            label: "X".into(),
+            path: Some("  ".into()),
+            done: false,
+            dropped: None,
+        };
         assert_eq!(render_checklist_item(&item2), "- [ ] X");
     }
 
@@ -657,7 +756,12 @@ mod tests {
         // the auto-mark hook / mark-checklist-item on the materialised spec.
         assert_eq!(normalize_task_label("- [x] add the route"), "add the route");
         assert_eq!(normalize_task_label("- [X] add the route"), "add the route");
-        let item = ChecklistItem { label: "- [x] add the route".into(), path: None, done: false };
+        let item = ChecklistItem {
+            label: "- [x] add the route".into(),
+            path: None,
+            done: false,
+            dropped: None,
+        };
         assert_eq!(render_checklist_item(&item), "- [ ] add the route");
     }
 
@@ -679,13 +783,19 @@ mod tests {
             label: "- [ ] wire the handler".into(),
             path: Some("src/handler.rs".into()),
             done: false,
+            dropped: None,
         };
         assert_eq!(
             render_checklist_item(&pre),
             "- [ ] wire the handler → src/handler.rs"
         );
         // ...and a bare label still gains exactly one.
-        let bare = ChecklistItem { label: "wire the handler".into(), path: None, done: false };
+        let bare = ChecklistItem {
+            label: "wire the handler".into(),
+            path: None,
+            done: false,
+            dropped: None,
+        };
         assert_eq!(render_checklist_item(&bare), "- [ ] wire the handler");
     }
 
@@ -697,12 +807,14 @@ mod tests {
             label: "Add list view".into(),
             path: Some("src/list.rs".into()),
             done: true,
+            dropped: None,
         };
         assert_eq!(
             render_checklist_item(&with_path),
             "- [x] Add list view → src/list.rs"
         );
-        let plain = ChecklistItem { label: "Write docs".into(), path: None, done: true };
+        let plain =
+            ChecklistItem { label: "Write docs".into(), path: None, done: true, dropped: None };
         assert_eq!(render_checklist_item(&plain), "- [x] Write docs");
     }
 
@@ -715,9 +827,79 @@ mod tests {
         assert!(!item.done);
         assert_eq!(item.label, "T1");
         // And the field round-trips once set.
-        let marked = ChecklistItem { label: "T1".into(), path: None, done: true };
+        let marked =
+            ChecklistItem { label: "T1".into(), path: None, done: true, dropped: None };
         let text = serde_json::to_string(&marked).expect("serializes");
         let back: ChecklistItem = serde_json::from_str(&text).expect("round-trips");
         assert!(back.done);
+    }
+
+    // --- the third position: dropped on purpose -----------------------------
+
+    #[test]
+    fn checklist_item_is_dropped_only_with_a_stated_reason() {
+        // Legacy JSON (no field) → never dropped; the two historical positions
+        // are unchanged.
+        let legacy: ChecklistItem =
+            serde_json::from_str(r#"{"label":"T1","path":"src/lib.rs"}"#).expect("parses");
+        assert_eq!(legacy.state(), ChecklistState::Open);
+        assert!(!legacy.is_dropped());
+        assert!(legacy.is_open());
+
+        // A blank reason is no reason at all — the item keeps its position
+        // instead of silently becoming a decision nobody explained.
+        let blank = ChecklistItem {
+            label: "T1".into(),
+            path: None,
+            done: false,
+            dropped: Some("   ".into()),
+        };
+        assert_eq!(blank.state(), ChecklistState::Open);
+        assert!(blank.is_open(), "a mute drop does not take the item off the list");
+
+        // A stated reason is the drop: terminal, and NOT open work.
+        let dropped = ChecklistItem {
+            label: "T1".into(),
+            path: None,
+            done: false,
+            dropped: Some("superseded by wave 3".into()),
+        };
+        assert_eq!(dropped.state(), ChecklistState::Dropped);
+        assert_eq!(dropped.drop_reason(), Some("superseded by wave 3"));
+        assert!(!dropped.is_open(), "a dropped item is not pending work");
+    }
+
+    #[test]
+    fn render_checklist_item_dropped_uses_tilde_and_carries_the_reason() {
+        let item = ChecklistItem {
+            label: "Add list view".into(),
+            path: Some("src/list.rs".into()),
+            done: false,
+            dropped: Some("the view moved to the\nsidebar spec".into()),
+        };
+        // `[~]` is neither `[ ]` nor `[x]`: the unmarked scan does not see
+        // pending work, and the reason travels on the same line.
+        assert_eq!(
+            render_checklist_item(&item),
+            "- [~] Add list view → src/list.rs — dropped: the view moved to the sidebar spec"
+        );
+        // A dropped line fed back through the label normaliser collapses like
+        // any other checkbox prefix.
+        assert_eq!(normalize_task_label("- [~] Add list view"), "Add list view");
+    }
+
+    #[test]
+    fn checklist_item_dropped_field_is_omitted_while_absent() {
+        // Byte-stability of existing sidecars: an item that was never dropped
+        // serialises exactly as it did before the field existed.
+        let open =
+            ChecklistItem { label: "T1".into(), path: None, done: false, dropped: None };
+        let text = serde_json::to_string(&open).expect("serializes");
+        assert!(!text.contains("dropped"), "{text}");
+        let round: ChecklistItem = serde_json::from_str(
+            r#"{"label":"T1","done":false,"dropped":"out of scope"}"#,
+        )
+        .expect("round-trips");
+        assert_eq!(round.state(), ChecklistState::Dropped);
     }
 }

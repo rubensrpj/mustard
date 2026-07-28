@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-28T01:13:18.783Z",
+  "parent": "make-harness-stop-asserting-what",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/wave_progress.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/wave_progress.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/dependency_precheck.rs",
+      "path": "apps/rt/src/commands/review/dependency_precheck.rs",
+      "done": true
+    }
+  ]
+}

@@ -42,6 +42,9 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 ## CHANGE REQUESTS
 {change_log}
 
+## REALITY OBLIGATIONS
+{reality_obligations}
+
 ## TASK
 {task_steps}
 

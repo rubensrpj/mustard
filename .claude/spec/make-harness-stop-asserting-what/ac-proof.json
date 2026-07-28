@@ -1,0 +1,180 @@
+{
+  "spec": "make-harness-stop-asserting-what",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt close_pipeline_takes_the_confirmation_pass",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-10",
+      "command": "cargo test -p mustard-rt close_prose_teaches_the_confirmation_pass",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-11",
+      "command": "cargo test -p mustard-rt picker_prose_teaches_the_onde_column",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-12",
+      "command": "cargo test -p mustard-rt resume_prose_teaches_never_dispatched",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-13",
+      "command": "cargo test -p mustard-rt ac_amend_rewrites_the_whole_statement_block",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "unproven",
+      "proof": "green",
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt ac_amend_accepts_inexecutable_predecessor",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-rt active_specs_lists_in_flight_from_other_branches",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo test -p mustard-rt plan_reality_obligations_reach_wave_prompt",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo test -p mustard-rt wave_done_flags_unreported_reality_obligation",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "command": "cargo test -p mustard-rt wave_progress_distinguishes_never_dispatched",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "command": "cargo test -p mustard-rt dependency_precheck_skip_is_surfaced",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "command": "cargo test -p mustard-rt checklist_records_dropped_with_reason",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-9",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [
+    {
+      "id": "AC-1",
+      "at": "2026-07-28T07:24:51.044Z",
+      "reason": "As written, AC-1 proved the confirmation function exists and behaves — and it passed green over a mechanism nothing in production ever calls. Both reviewers found the second half of the proof inert: the only caller of ac_negative_check::confirm is a unit test at ac_amend.rs:904, while plan_materialize.rs:302 still takes the red pass alone. A criterion a dead mechanism satisfies is precisely the habit this spec exists to remove, so the criterion now asserts that the pipeline TAKES the confirmation, not that the function compiles.",
+      "superseded_command": "cargo test -p mustard-rt ac_proof_requires_green_after",
+      "superseded_expect": "ok\\. [1-9][0-9]* passed",
+      "superseded_statement": "when the criterion proof is taken again after a wave's work has",
+      "command": "cargo test -p mustard-rt close_pipeline_takes_the_confirmation_pass",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "statement": "when a spec is closed after its work has landed, then the pipeline itself TAKES the confirmation pass over the criteria proven red at plan time and records the verdict, instead of clearing on the red proof alone",
+      "rewrote": [
+        ".claude/spec/make-harness-stop-asserting-what/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/make-harness-stop-asserting-what/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/make-harness-stop-asserting-what/spec.md",
+        ".claude/spec/make-harness-stop-asserting-what/wave-plan.md"
+      ]
+    }
+  ]
+}

@@ -374,6 +374,7 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["specWaves.status.in_progress", { pt: "em execução", en: "in progress" }],
   ["specWaves.status.failed", { pt: "falhou", en: "failed" }],
   ["specWaves.status.queued", { pt: "aguardando", en: "queued" }],
+  ["specWaves.status.dropped", { pt: "abandonada", en: "dropped" }],
   ["specWaves.source.event", { pt: "evento", en: "event" }],
   ["specWaves.source.header", { pt: "header", en: "header" }],
   ["specWaves.source.both", { pt: "ambos", en: "both" }],

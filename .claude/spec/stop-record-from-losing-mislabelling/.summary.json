@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "stop-record-from-losing-mislabelling",
+  "title": "Stop the record from losing and mislabelling: keep every wave memory with its own wave, match reality obligations by id instead of substring, spell the two unproven cases apart in the close report, teach the precheck skip in the dispatch prose, and scope the fix-loop retry context to its subproject",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

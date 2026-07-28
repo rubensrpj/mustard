@@ -18,6 +18,11 @@ use super::{AcResult, QaRunOptions};
 /// `AC_TIMEOUT_MS` in `qa-run.js`.
 const AC_TIMEOUT_SECS: u64 = 120;
 
+/// How a refusal names the running executable when no machine-independent name
+/// can be produced for it. The reason still has to read as a sentence, and it
+/// must never degrade into an absolute path — see [`running_binary_label`].
+pub(super) const UNNAMEABLE_BINARY: &str = "the binary running this pass";
+
 /// Per-AC timeout ceiling (10 min) for commands invoking `cargo `: a
 /// `cargo build`/`cargo test` AC that runs right after an edit must recompile,
 /// and a cold compile routinely exceeds the 120 s default (real case:
@@ -25,11 +30,152 @@ const AC_TIMEOUT_SECS: u64 = 120;
 /// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in `verify-pipeline`.
 const AC_TIMEOUT_CARGO_SECS: u64 = 600;
 
-/// Crates whose binaries can be the very process running qa-run. A
-/// self-invoked qa-run must never let an AC rebuild them — see
-/// [`rewrite_self_invoked_cargo`] (the `--workspace` form, rewritten) and
-/// [`targets_running_crate`] (the direct `-p`/`--package` form, skipped).
-const SELF_CRATES: [&str; 2] = ["mustard-rt", "mustard-dashboard"];
+/// The cargo target directory a build launched from `cwd` would write into:
+/// `CARGO_TARGET_DIR` when it is set, otherwise `<workspace root>/target`,
+/// where the workspace root is the TOPMOST ancestor of `cwd` carrying a
+/// `Cargo.toml`.
+///
+/// `None` when `cwd` is not inside a cargo project at all — a build launched
+/// there writes nothing this process could be executing from.
+fn cargo_target_root(cwd: &Path) -> Option<PathBuf> {
+    let root = cwd.ancestors().filter(|dir| dir.join("Cargo.toml").is_file()).last()?;
+    let configured = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| !dir.as_os_str().is_empty());
+    Some(match configured {
+        Some(dir) if dir.is_absolute() => dir,
+        Some(dir) => root.join(dir),
+        None => root.join("target"),
+    })
+}
+
+/// `path` rendered for comparison: resolved through the filesystem when it
+/// exists, with the Windows verbatim prefix, separators and case flattened.
+///
+/// Two spellings of the same file must compare equal; a path cargo has not
+/// written yet simply compares as itself (canonicalization fails there, which
+/// is the right answer — a file that does not exist is not the file this
+/// process is executing from).
+fn comparable(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy().to_string();
+    if cfg!(windows) {
+        text.replace('\\', "/").trim_start_matches("//?/").to_ascii_lowercase()
+    } else {
+        text
+    }
+}
+
+/// `true` when both paths name the same file on this machine.
+fn same_file(a: &Path, b: &Path) -> bool {
+    comparable(a) == comparable(b)
+}
+
+/// `true` for the two cargo subcommands that relink a crate's binary.
+fn is_cargo_build_or_test(lower_command: &str) -> bool {
+    lower_command.contains("cargo build") || lower_command.contains("cargo test")
+}
+
+/// The profile directory cargo writes into for this command: `release` under
+/// `--release`, the `--profile` value otherwise (`dev`/`test` both land in
+/// `debug`, `bench` in `release`), and `debug` when nothing is said.
+fn profile_dir(tokens: &[&str]) -> String {
+    let mut profile = "debug".to_string();
+    for (i, token) in tokens.iter().enumerate() {
+        if *token == "--release" {
+            profile = "release".to_string();
+        } else if let Some(name) = token
+            .strip_prefix("--profile=")
+            .or_else(|| (*token == "--profile").then(|| tokens.get(i + 1).copied()).flatten())
+        {
+            profile = match name {
+                "dev" | "test" => "debug".to_string(),
+                "bench" => "release".to_string(),
+                other => other.to_string(),
+            };
+        }
+    }
+    profile
+}
+
+/// The packages `command` names DIRECTLY via `-p`/`--package`, in both the
+/// split (`-p mustard-rt`) and glued (`-p=mustard-rt`) spellings, matched on
+/// token boundaries so `-p mustard-rt-extras` is a different package.
+fn named_packages<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
+    tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(i, token)| {
+            if *token == "-p" || *token == "--package" {
+                return tokens.get(i + 1).copied();
+            }
+            token.strip_prefix("-p=").or_else(|| token.strip_prefix("--package="))
+        })
+        .collect()
+}
+
+/// The package whose freshly-built binary WOULD BE the file `running`, for a
+/// build described by `command` under `target_root` — the path question, asked
+/// once and shared by both callers below.
+///
+/// `None` whenever the directory this command writes into is not the directory
+/// the running binary lives in, which is the ordinary case: the process runs
+/// from an installed path (`~/.cargo/bin/mustard-rt`) while cargo writes
+/// `target/debug/mustard-rt.exe`. Two different files, no conflict to protect
+/// against.
+fn package_shadowing_running(command: &str, target_root: &Path, running: &Path) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    if !is_cargo_build_or_test(&lower) {
+        return None;
+    }
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let out_dir = target_root.join(profile_dir(&tokens));
+    if !same_file(running.parent()?, &out_dir) {
+        return None;
+    }
+    Some(running.file_stem()?.to_string_lossy().to_string())
+}
+
+/// THE question the self-invocation guard asks: would running `command`
+/// overwrite the very file this process is executing from?
+///
+/// It compares PATHS — the build target the command would write against the
+/// running executable — instead of matching crate names in the command text.
+/// The text match refused `cargo test -p mustard-rt` by spelling alone, even
+/// when the two files were plainly different, and one refusal is enough to
+/// deny a whole QA run.
+///
+/// Only the DIRECT `-p`/`--package` form is answered here; the `--workspace`
+/// form is salvaged instead of refused — see [`rewrite_workspace_exclusion`].
+fn overwrites_running_binary(command: &str, target_root: &Path, running: &Path) -> bool {
+    let Some(package) = package_shadowing_running(command, target_root, running) else {
+        return false;
+    };
+    let lower = command.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    named_packages(&tokens).iter().any(|named| named.eq_ignore_ascii_case(&package))
+}
+
+/// The running binary named the way a refusal must name it: relative to the
+/// project when it lives inside it, so the committed QA report carries
+/// `target/debug/mustard-rt.exe` and never an absolute path that only exists on
+/// one machine.
+///
+/// The binary can also sit OUTSIDE the project and still be refused: with
+/// `CARGO_TARGET_DIR` pointing somewhere absolute, the build target and the
+/// running file coincide out there. Falling back to the raw path would
+/// interpolate a machine path into `stderr_excerpt` → `qa/report.md` and into
+/// `reason` → `ac-proof.json`, both versioned files, breaking this crate's
+/// "deterministic output, no volatile paths" guard. So the fallback keeps the
+/// file NAME only — which is all the refusal needs to name what it protects.
+pub(super) fn running_binary_label(cwd: &Path, running: &Path) -> String {
+    match running.strip_prefix(cwd) {
+        Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
+        Err(_) => running
+            .file_name()
+            .map_or_else(|| UNNAMEABLE_BINARY.to_string(), |name| name.to_string_lossy().to_string()),
+    }
+}
 
 /// Per-AC timeout for `command`, env-aware.
 ///
@@ -79,86 +225,61 @@ pub(super) fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.exists())
 }
 
-/// Rewrite a `cargo build/test --workspace` command to skip the crate(s) in
-/// execution when qa-run is invoked from inside `complete-spec`.
+/// Rewrite a `cargo build/test --workspace` command so the workspace build
+/// leaves out the one crate whose output IS the running binary.
 ///
 /// **The catch-22 this solves:** `complete-spec` calls
-/// [`run_for_spec_with_options`] which forks shell commands for each AC. An
-/// AC like `cargo build --workspace` then tries to relink the very
-/// `mustard-rt.exe` that is currently the foreground process —
-/// `Acesso negado. (os error 5)` on Windows. Same story when `dashboard.exe`
-/// is held by a user testing the UI.
+/// [`run_for_spec_with_options`] which forks shell commands for each AC. When
+/// this process is itself running from `target/debug`, an AC like
+/// `cargo build --workspace` tries to relink the very executable in the
+/// foreground — `Acesso negado. (os error 5)` on Windows.
 ///
-/// Gated by [`QaRunOptions::self_invoked`] (stored in the [`QA_OPTIONS`]
-/// thread-local). When `false`, the rewrite is a no-op — external
-/// `mustard-rt run qa-run` invocations from CI / standalone shells see the
-/// original command untouched.
-///
-/// When `true`, every `cargo (build|test) ... --workspace ...` token sequence
-/// gets `--exclude mustard-rt --exclude mustard-dashboard` appended.
-/// Idempotent: won't double-add if the AC already excluded them.
+/// The exclusion is appended ONLY when the paths say it is needed: a process
+/// running from an installed path is not the file a workspace build writes, so
+/// the command goes to the shell verbatim and the criterion is really
+/// verified. Idempotent — it won't double-add an exclusion the AC already has.
 ///
 /// This rewrite only covers the `--workspace` form. The DIRECT form
-/// (`-p mustard-rt` / `--package mustard-rt`) has no salvaging rewrite — the
-/// command's entire point is rebuilding the running binary — so
-/// [`run_ac_command`] skips it outright via [`targets_running_crate`].
-fn rewrite_self_invoked_cargo(command: &str) -> String {
-    let opts = QA_OPTIONS.with(std::cell::Cell::get);
-    if !opts.self_invoked {
-        return command.to_string();
-    }
-    // Cheap detection: token sequence `cargo (build|test) ... --workspace`.
+/// (`-p mustard-rt`) has no salvaging rewrite — the command's entire point is
+/// rebuilding that crate — so [`run_ac_command`] refuses it outright via
+/// [`overwrites_running_binary`], and only when the paths coincide.
+fn rewrite_workspace_exclusion(command: &str, target_root: &Path, running: &Path) -> String {
     let lower = command.to_ascii_lowercase();
-    if !(lower.contains("cargo build") || lower.contains("cargo test")) {
+    if !is_cargo_build_or_test(&lower) || !lower.contains("--workspace") {
         return command.to_string();
     }
-    if !lower.contains("--workspace") {
+    let Some(package) = package_shadowing_running(command, target_root, running) else {
+        return command.to_string();
+    };
+    let needle = package.to_ascii_lowercase();
+    if lower.contains(&format!("--exclude {needle}")) || lower.contains(&format!("--exclude={needle}"))
+    {
         return command.to_string();
     }
-    let mut out = command.to_string();
-    for crate_name in SELF_CRATES {
-        let needle_explicit = format!("--exclude {crate_name}");
-        let needle_eq = format!("--exclude={crate_name}");
-        if out.contains(&needle_explicit) || out.contains(&needle_eq) {
-            continue;
-        }
-        // Append at the end — `cargo` accepts flags positionally after
-        // `--workspace`. Adding to the tail keeps any post-`--` script args
-        // (passed to the test binary) untouched.
-        out.push_str(" --exclude ");
-        out.push_str(crate_name);
-    }
-    out
+    // Append at the end — `cargo` accepts flags positionally after
+    // `--workspace`. Adding to the tail keeps any post-`--` script args
+    // (passed to the test binary) untouched.
+    format!("{command} --exclude {package}")
 }
 
-/// `true` when `command` is a `cargo build`/`cargo test` invocation that
-/// targets one of [`SELF_CRATES`] DIRECTLY via `-p`/`--package` — both the
-/// split (`-p mustard-rt`) and glued (`-p=mustard-rt`) spellings, matched on
-/// token boundaries so `-p mustard-rt-extras` does NOT match.
+/// `true` when `command` would overwrite the file THIS process is executing
+/// from, resolving both sides itself: the running executable from
+/// [`std::env::current_exe`], the build target from the cargo layout under
+/// `cwd`.
 ///
-/// Companion to [`rewrite_self_invoked_cargo`]: the `--workspace` form can be
-/// salvaged by appending `--exclude`, but the direct form cannot — executed
-/// from inside the very binary it rebuilds, the link step hits
-/// `Acesso negado. (os error 5)` on Windows. [`run_ac_command`] uses this to
-/// skip such ACs immediately (when [`QaRunOptions::self_invoked`] is set)
-/// instead of burning the whole timeout on a doomed compile.
-fn targets_running_crate(command: &str) -> bool {
-    let lower = command.to_ascii_lowercase();
-    if !(lower.contains("cargo build") || lower.contains("cargo test")) {
+/// `false` when either side cannot be resolved — an unanswerable path question
+/// is not evidence of a conflict, and refusing on it would be the crate-name
+/// guess this spec removed, wearing a different hat.
+///
+/// `pub(super)` so the CONFIRMATION pass can ask the SAME question BEFORE it
+/// spawns anything: a confirmation taken from inside this binary must answer
+/// "not taken here" for such a command, never "inexecutable" — see
+/// [`crate::commands::review::ac_negative_check::confirm_in_process`].
+pub(super) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
+    let (Ok(running), Some(target_root)) = (std::env::current_exe(), cargo_target_root(cwd)) else {
         return false;
-    }
-    let tokens: Vec<&str> = lower.split_whitespace().collect();
-    tokens.iter().enumerate().any(|(i, tok)| {
-        SELF_CRATES.iter().any(|crate_name| {
-            let split_form = (*tok == "-p" || *tok == "--package")
-                && tokens.get(i + 1).is_some_and(|next| next == crate_name);
-            let glued_form = tok
-                .strip_prefix("-p=")
-                .or_else(|| tok.strip_prefix("--package="))
-                .is_some_and(|value| value == *crate_name);
-            split_form || glued_form
-        })
-    })
+    };
+    overwrites_running_binary(command, &target_root, &running)
 }
 
 /// The verdict of evaluating an AC's optional `Expect:` evidence regex against
@@ -210,12 +331,14 @@ fn excerpt(s: &str) -> String {
 /// absent, the exit-code-only verdict is byte-for-byte the historical one.
 pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
     let timeout = Duration::from_secs(ac_timeout_secs(command));
-    run_ac_command_with_timeout(command, expect, cwd, timeout)
+    let running = std::env::current_exe().ok();
+    run_ac_command_with_timeout(command, expect, cwd, timeout, running.as_deref())
 }
 
-/// Deterministic core of [`run_ac_command`]: the deadline is injected as a
-/// parameter instead of being read from env inside, so the timeout branch is
-/// unit-testable in a second rather than in two minutes (env mutation would
+/// Deterministic core of [`run_ac_command`]: the deadline AND the running
+/// executable are injected as parameters instead of being read from the
+/// environment inside, so both the timeout branch and the self-invocation
+/// branch are unit-testable without owning the process (env mutation would
 /// need `unsafe` under Rust 2024 — forbidden in this crate). Mirrors the same
 /// injected-override seam [`ac_timeout_secs_with_override`] already uses.
 fn run_ac_command_with_timeout(
@@ -223,29 +346,47 @@ fn run_ac_command_with_timeout(
     expect: Option<&str>,
     cwd: &Path,
     timeout: Duration,
+    running: Option<&Path>,
 ) -> AcResult {
     let t0 = Instant::now();
-    // Self-invocation guard for the DIRECT `-p`/`--package` form: no rewrite
-    // can save this command (unlike `--workspace`, which gets `--exclude`d in
-    // `rewrite_self_invoked_cargo`) — skip immediately instead of burning the
-    // timeout on a compile that dies relinking the running exe (os error 5).
+    // Both halves of the path question, resolved once: where cargo would write
+    // and what this process is executing from. `None` on either side means the
+    // question cannot be answered here, and the command simply runs.
+    let paths = cargo_target_root(cwd).zip(running.map(Path::to_path_buf));
     let opts = QA_OPTIONS.with(std::cell::Cell::get);
-    if opts.self_invoked && targets_running_crate(command) {
+    // Self-invocation guard for the DIRECT `-p`/`--package` form: no rewrite
+    // can save a command whose output file IS this executable (unlike
+    // `--workspace`, which gets `--exclude`d below) — refuse immediately
+    // instead of burning the timeout on a compile that dies relinking the
+    // running exe (os error 5). Only when the two paths really coincide.
+    if opts.self_invoked
+        && paths
+            .as_ref()
+            .is_some_and(|(root, exe)| overwrites_running_binary(command, root, exe))
+    {
+        let label = paths
+            .as_ref()
+            .map(|(_, exe)| running_binary_label(cwd, exe))
+            .unwrap_or_default();
         return AcResult {
             id: String::new(),
             status: "skip".to_string(),
             exit: None,
             duration_ms: t0.elapsed().as_millis(),
-            stderr_excerpt:
-                "self-invocation: cannot rebuild the running binary; run this AC externally"
-                    .to_string(),
+            stderr_excerpt: format!(
+                "self-invocation: this command overwrites `{label}`, the file this process is \
+                 executing from; run this AC externally"
+            ),
         };
     }
     // POSIX-style AC commands assume a shell; the shared runner uses the
     // platform shell. Windows AC are documented to be cross-shell-safe
     // (`node -e`, `bash -c`). Self-invoked rewrite first — see
-    // `rewrite_self_invoked_cargo` for why.
-    let rewritten = rewrite_self_invoked_cargo(command);
+    // `rewrite_workspace_exclusion` for why.
+    let rewritten = match (opts.self_invoked, paths.as_ref()) {
+        (true, Some((root, exe))) => rewrite_workspace_exclusion(command, root, exe),
+        _ => command.to_string(),
+    };
     // The spawn + concurrent pipe drain + deadline poll live in ONE place
     // ([`crate::shared::proc::run_shell_with_deadline`]), shared with
     // `verify-pipeline`. The drain is load-bearing here too: an AC whose
@@ -382,7 +523,7 @@ thread_local! {
     /// Active [`QaRunOptions`] for the current thread's qa-run.
     ///
     /// Set by [`run_for_spec_with_options`] and read by
-    /// [`rewrite_self_invoked_cargo`]. A `thread_local!` Cell — not an env
+    /// [`run_ac_command_with_timeout`]. A `thread_local!` Cell — not an env
     /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
     /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
     /// is plain safe Rust.
@@ -561,43 +702,180 @@ mod tests {
         assert_eq!(ac_timeout_secs_with_override("echo ok", Some("")), AC_TIMEOUT_SECS);
     }
 
-    /// With `self_invoked=true`, a direct `-p` cargo test on a self crate is
-    /// an IMMEDIATE skip with the explicit reason — it never spawns. (A
-    /// pass-through in this empty tempdir would have spawned cargo and come
-    /// back as `fail`, not `skip`: there is no Cargo.toml here.)
+    /// The file name cargo writes for `package` in `profile` — spelled once so
+    /// the tests below read the same on Windows (`.exe`) and Unix.
+    fn built(target_root: &Path, profile: &str, package: &str) -> PathBuf {
+        target_root
+            .join(profile)
+            .join(format!("{package}{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    /// AC-1 — the guard's question is about PATHS, not spelling. A command that
+    /// rebuilds this crate while writing to a file OTHER than the one this
+    /// process executes from is RUN, not refused: that is the shipped shape
+    /// (installed binary, workspace `target/`), and refusing it by crate name
+    /// denied a whole QA run over criteria that would have passed.
     #[test]
-    fn qa_self_invoked_direct_p_self_crate_skips_immediately() {
-        let dir = tempdir().unwrap();
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
-        let res = run_ac_command("cargo test -p mustard-rt qa_run", None, dir.path());
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
-        assert_eq!(res.status, "skip");
-        assert_eq!(res.exit, None);
+    fn guard_allows_when_build_target_is_not_the_running_binary() {
+        let target_root = PathBuf::from("no-such-workspace").join("target");
+        let installed = PathBuf::from("no-such-home")
+            .join(".cargo")
+            .join("bin")
+            .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        // The shipped shape: two different files, so there is no conflict to
+        // protect against — both spellings of the direct form simply run.
+        assert!(!overwrites_running_binary("cargo test -p mustard-rt", &target_root, &installed));
+        assert!(!overwrites_running_binary(
+            "cargo build --package=mustard-rt",
+            &target_root,
+            &installed
+        ));
+
+        let debug_exe = built(&target_root, "debug", "mustard-rt");
+        // Same directory tree, different profile: `--release` writes elsewhere.
+        assert!(!overwrites_running_binary(
+            "cargo build -p mustard-rt --release",
+            &target_root,
+            &debug_exe
+        ));
+        // Another package's output is another file.
+        assert!(!overwrites_running_binary("cargo test -p mustard-core", &target_root, &debug_exe));
+        // Token boundary: a prefix-sharing name is a different package.
+        assert!(!overwrites_running_binary(
+            "cargo test -p mustard-rt-extras",
+            &target_root,
+            &debug_exe
+        ));
+        // Only `build`/`test` relink a crate's binary.
+        assert!(!overwrites_running_binary("cargo fmt -p mustard-rt", &target_root, &debug_exe));
+        assert!(!overwrites_running_binary("echo -p mustard-rt", &target_root, &debug_exe));
+        // The `--workspace` form is salvaged by an exclusion, never refused.
+        assert!(!overwrites_running_binary("cargo test --workspace", &target_root, &debug_exe));
+    }
+
+    /// AC-2 — and the refusal STANDS when the two paths coincide: a harness
+    /// started from its own build directory really would be overwritten. The
+    /// reason names that file, relative to the project, so the committed QA
+    /// report says `target/debug/mustard-rt` and not a path off one machine.
+    #[test]
+    fn guard_refuses_when_build_target_is_the_running_binary() {
+        let project = PathBuf::from("no-such-workspace");
+        let target_root = project.join("target");
+        let running = built(&target_root, "debug", "mustard-rt");
+        for command in [
+            "cargo test -p mustard-rt qa_run",
+            "cargo test -p=mustard-rt -- --nocapture",
+            "cargo build --package mustard-rt",
+            "cargo build --package=mustard-rt",
+        ] {
+            assert!(
+                overwrites_running_binary(command, &target_root, &running),
+                "must refuse: {command}"
+            );
+        }
+        // A release build refuses too, when THAT is where the process runs from.
+        let released = built(&target_root, "release", "mustard-rt");
+        assert!(overwrites_running_binary(
+            "cargo build -p mustard-rt --release",
+            &target_root,
+            &released
+        ));
         assert_eq!(
-            res.stderr_excerpt,
-            "self-invocation: cannot rebuild the running binary; run this AC externally"
+            running_binary_label(&project, &running),
+            format!("target/debug/mustard-rt{}", std::env::consts::EXE_SUFFIX)
         );
     }
 
-    /// Token-boundary detection across the accepted spellings, plus the
-    /// negatives that must NOT match: other crates, prefix-sharing crate
-    /// names, non-build/test cargo subcommands, non-cargo commands.
+    /// The refusal is really wired into the executor: with `self_invoked` set
+    /// and the running binary sitting in the directory the command builds into,
+    /// the AC is skipped without spawning and the reason names the file.
     #[test]
-    fn qa_self_invoked_detection_token_boundaries() {
-        // Split and glued spellings, both self crates.
-        assert!(targets_running_crate("cargo test -p mustard-rt"));
-        assert!(targets_running_crate("cargo test -p=mustard-rt -- --nocapture"));
-        assert!(targets_running_crate("cargo build --package mustard-dashboard"));
-        assert!(targets_running_crate("cargo build --package=mustard-dashboard --release"));
-        // Token boundary: prefix-sharing names must not match.
-        assert!(!targets_running_crate("cargo test -p mustard-rt-extras"));
-        assert!(!targets_running_crate("cargo test -p=mustard-rt-extras"));
-        // Other crates / no -p at all.
-        assert!(!targets_running_crate("cargo test -p mustard-core"));
-        assert!(!targets_running_crate("cargo test --workspace"));
-        // Only build/test relink the binary's crate via -p here.
-        assert!(!targets_running_crate("cargo fmt -p mustard-rt"));
-        assert!(!targets_running_crate("echo -p mustard-rt"));
+    fn qa_self_invoked_refusal_names_the_file_it_protects() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let target_root = cargo_target_root(dir.path()).expect("a Cargo.toml makes a target root");
+        let running = built(&target_root, "debug", "mustard-rt");
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
+        let res = run_ac_command_with_timeout(
+            "cargo test -p mustard-rt qa_run",
+            None,
+            dir.path(),
+            Duration::from_secs(60),
+            Some(&running),
+        );
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+        assert_eq!(res.status, "skip");
+        assert_eq!(res.exit, None);
+        assert!(res.stderr_excerpt.contains("mustard-rt"), "{}", res.stderr_excerpt);
+        assert!(
+            res.stderr_excerpt.contains("the file this process is executing from"),
+            "the reason names the file, not the crate: {}",
+            res.stderr_excerpt
+        );
+    }
+
+    /// The other side of the same wiring, taking the branch it names: the path
+    /// question is ANSWERABLE here (the tempdir carries a `Cargo.toml`, so a
+    /// target root resolves) and the answer is "different files" — the process
+    /// runs from an installed-style path beside the target dir, not inside it.
+    /// So nothing is refused and cargo really spawns.
+    ///
+    /// The earlier version of this test used a tempdir with no `Cargo.toml`,
+    /// which made `cargo_target_root` return `None`: the guard short-circuited
+    /// on the UNANSWERABLE branch and the path comparison was never exercised.
+    #[test]
+    fn qa_self_invoked_runs_the_command_when_the_paths_differ() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let target_root = cargo_target_root(dir.path()).expect("a Cargo.toml makes a target root");
+        let elsewhere = dir
+            .path()
+            .join("installed")
+            .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        // The branch under test, named directly: the target root resolved, and
+        // the file the build writes is NOT the file this process runs from.
+        assert!(!overwrites_running_binary(
+            "cargo test -p mustard-rt --offline",
+            &target_root,
+            &elsewhere
+        ));
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
+        let res = run_ac_command_with_timeout(
+            "cargo test -p mustard-rt --offline",
+            None,
+            dir.path(),
+            Duration::from_secs(120),
+            Some(&elsewhere),
+        );
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+        assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
+        assert!(res.exit.is_some(), "the command really spawned: {}", res.stderr_excerpt);
+        assert!(
+            !res.stderr_excerpt.contains("self-invocation"),
+            "nothing may be refused when the paths differ: {}",
+            res.stderr_excerpt
+        );
+    }
+
+    /// The label never leaks a machine path. When the running binary lives
+    /// OUTSIDE the project — reachable with an absolute `CARGO_TARGET_DIR`,
+    /// where a refusal is still possible — the reason falls back to the bare
+    /// file name instead of interpolating an absolute path into `qa/report.md`
+    /// and `ac-proof.json`, which are versioned.
+    #[test]
+    fn running_binary_label_never_leaks_an_absolute_path() {
+        let project = PathBuf::from("no-such-workspace");
+        let outside = if cfg!(windows) {
+            PathBuf::from(r"D:\somewhere\else\target\debug")
+        } else {
+            PathBuf::from("/somewhere/else/target/debug")
+        }
+        .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        let label = running_binary_label(&project, &outside);
+        assert_eq!(label, format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        assert!(!label.contains("somewhere"), "no machine path may survive: {label}");
+        // And a path with no file name at all still reads as a sentence.
+        assert_eq!(running_binary_label(&project, Path::new("/")), UNNAMEABLE_BINARY);
     }
 
     /// With `self_invoked=false` (external invocation) the command runs
@@ -617,26 +895,42 @@ mod tests {
         );
     }
 
-    /// The `--workspace` rewrite path is unchanged by the direct-form guard:
-    /// self-invoked workspace tests still get the `--exclude` pair appended,
-    /// non-workspace forms pass through the rewrite verbatim, and with
-    /// `self_invoked=false` everything is verbatim.
+    /// The `--workspace` salvage asks the SAME path question: the exclusion is
+    /// appended only when the workspace build would overwrite the running
+    /// binary. A process running from an installed path gets the command
+    /// verbatim — which is how a `cargo build --workspace` criterion gets
+    /// genuinely verified instead of quietly not building this crate.
     #[test]
-    fn qa_self_invoked_workspace_rewrite_unchanged() {
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
-        let workspace = rewrite_self_invoked_cargo("cargo test --workspace");
-        let direct_other = rewrite_self_invoked_cargo("cargo test -p mustard-core");
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+    fn qa_workspace_rewrite_excludes_only_the_running_binary() {
+        let target_root = PathBuf::from("no-such-workspace").join("target");
+        let running = built(&target_root, "debug", "mustard-rt");
         assert_eq!(
-            workspace,
-            "cargo test --workspace --exclude mustard-rt --exclude mustard-dashboard"
+            rewrite_workspace_exclusion("cargo test --workspace", &target_root, &running),
+            "cargo test --workspace --exclude mustard-rt"
         );
-        // The rewrite never touches non-workspace forms (the direct SELF form
-        // is handled upstream by the immediate skip, not by rewriting).
-        assert_eq!(direct_other, "cargo test -p mustard-core");
-        // External invocation: verbatim.
+        // Idempotent: an AC that already excludes it is left alone.
         assert_eq!(
-            rewrite_self_invoked_cargo("cargo test --workspace"),
+            rewrite_workspace_exclusion(
+                "cargo test --workspace --exclude mustard-rt",
+                &target_root,
+                &running
+            ),
+            "cargo test --workspace --exclude mustard-rt"
+        );
+        // The rewrite never touches non-workspace forms (the direct form is
+        // handled upstream by the refusal, not by rewriting).
+        assert_eq!(
+            rewrite_workspace_exclusion("cargo test -p mustard-core", &target_root, &running),
+            "cargo test -p mustard-core"
+        );
+        // Running from an installed path: nothing to exclude, the workspace
+        // build really builds every crate.
+        let installed = PathBuf::from("no-such-home")
+            .join(".cargo")
+            .join("bin")
+            .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
+        assert_eq!(
+            rewrite_workspace_exclusion("cargo test --workspace", &target_root, &installed),
             "cargo test --workspace"
         );
     }
@@ -741,6 +1035,7 @@ mod tests {
             None,
             dir.path(),
             Duration::from_secs(1),
+            None,
         );
         assert_eq!(res.status, "timeout", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, None, "a killed command has no exit code");

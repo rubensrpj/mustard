@@ -25,7 +25,8 @@
 //!       "depends_on": [],
 //!       "tasks": ["wire the contract", "add the handler"],
 //!       "files": ["src/api/handler.rs", "src/api/mod.rs"],
-//!       "acceptance": ["**AC-1** — handler returns 200. Command: `curl -sf …`"]
+//!       "acceptance": ["**AC-1** — handler returns 200. Command: `curl -sf …`"],
+//!       "reality_obligations": ["read the provider's official webhook doc"]
 //!     },
 //!     { "n": 2, "role": "general", "summary": "…", "depends_on": ["wave-1-general"] }
 //!   ],
@@ -49,6 +50,11 @@
 //!   union across waves is carried into `wave-plan.md` under
 //!   `## Acceptance Criteria`/`## Critérios de Aceitação`, where the QA gate
 //!   reads it via `spec_sections::section_block(_, "acceptanceCriteria")`.
+//! - `reality_obligations` — duties to check the world OUTSIDE the repository
+//!   before writing the code they govern. Materialised as
+//!   `## Reality Obligations` with `- **RO-{n}.{i}** — {duty}` items; the
+//!   dispatch prompt renders them as their own section and `wave-done` reads
+//!   them back to name the duties the returning wave left unaccounted for.
 //!
 //! Each is `#[serde(default)]`: a plan that predates these fields (summary-only)
 //! still deserialises, and a wave that omits them materialises with no task /
@@ -126,6 +132,19 @@ pub(crate) struct WavePlanEntry {
     /// finds it. `#[serde(default)]` for the same retrocompat reason as `tasks`.
     #[serde(default)]
     pub(crate) acceptance: Vec<String>,
+    /// Reality obligations for this wave — duties to verify something OUTSIDE
+    /// the repository (read an official document, call a live endpoint, read a
+    /// stored row) before writing the code they govern. Materialised as a
+    /// `## Reality Obligations` section of `- **RO-{n}.{i}** — {duty}` lines in
+    /// the wave's `spec.md`, which the dispatch prompt renders as its own
+    /// section and `wave-done` reads back to report the duties the returning
+    /// wave left unaccounted for.
+    ///
+    /// `#[serde(default)]` for the same retrocompat reason as `tasks`: every
+    /// plan written before this field still deserialises, and a wave that
+    /// declares no duty materialises exactly as it did before (no heading).
+    #[serde(default, alias = "realityObligations")]
+    pub(crate) reality_obligations: Vec<String>,
     /// AC ids this wave is responsible for satisfying (e.g. `["AC-1", "AC-3"]`),
     /// tracing the parent spec's criteria onto the wave that implements them.
     /// `#[serde(default)]` retrocompat: a plan predating the field (or one that
@@ -177,6 +196,9 @@ pub(crate) struct Headings<'a> {
     tasks: &'a str,
     /// `## Files`/`## Arquivos` heading for the per-wave file census.
     files: &'a str,
+    /// `## Reality Obligations` heading for the per-wave duties to check the
+    /// world outside the repository.
+    reality_obligations: &'a str,
     /// `## Acceptance Criteria`/`## Critérios de Aceitação` heading for the
     /// AC union carried into `wave-plan.md`.
     acceptance: &'a str,
@@ -204,6 +226,7 @@ pub(crate) fn headings() -> Headings<'static> {
         depends_on: "Depends on",
         tasks: "## Tasks",
         files: "## Files",
+        reality_obligations: "## Reality Obligations",
         acceptance: "## Acceptance Criteria",
     }
 }
@@ -382,6 +405,80 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
             let _ = writeln!(out, "- `{file}`", file = file.trim());
         }
     }
+    // The duties this wave owes the world outside the repository. Each carries
+    // an id so the dispatched agent can account for it BY NAME and `wave-done`
+    // can say which duty has no account — a bare prose line would leave both
+    // sides guessing which sentence answered which duty. Emitted only when the
+    // plan declares one, so a plan without them renders byte-identically to a
+    // plan written before the field existed.
+    if !w.reality_obligations.is_empty() {
+        let _ = write!(out, "\n{}\n\n", hd.reality_obligations);
+        for (i, duty) in w.reality_obligations.iter().enumerate() {
+            let duty = duty.trim();
+            if duty.is_empty() {
+                continue;
+            }
+            let _ = writeln!(
+                out,
+                "- **{id}** — {duty}",
+                id = reality_obligation_id(w.n, i)
+            );
+        }
+    }
+    out
+}
+
+/// The id of the `i`-th (0-based) reality obligation of wave `n` — `RO-{n}.{i+1}`.
+///
+/// The wave number is IN the id on purpose: `wave-done` looks for an account of
+/// a duty in what the wave recorded on the spec's own event log, which is
+/// per-spec and not per-wave. A bare `RO-1` would let one wave's account clear
+/// another wave's duty; `RO-3.1` cannot be confused with `RO-4.1`.
+fn reality_obligation_id(n: u32, i: usize) -> String {
+    format!("RO-{n}.{}", i + 1)
+}
+
+/// Parse a rendered `## Reality Obligations` section back into `(id, duty)`
+/// pairs — the reader twin of [`render_wave_spec`]'s writer, kept in the same
+/// file so the two cannot drift into different notions of what a duty line is.
+///
+/// `md` is a whole wave `spec.md`; the section is located through the canonical
+/// [`is_heading`](crate::commands::spec::spec_sections::is_heading) resolver, so
+/// a localised heading resolves here exactly as it does everywhere else. Lines
+/// that do not carry the `- **{id}** — {duty}` shape are skipped rather than
+/// guessed at. Pure and total: no section, or a section of prose, yields an
+/// empty list.
+pub(crate) fn parse_reality_obligations(md: &str) -> Vec<(String, String)> {
+    use crate::commands::spec::spec_sections::{is_heading, section_end};
+    let lines: Vec<&str> = md.lines().collect();
+    let Some(start) = lines
+        .iter()
+        .position(|l| is_heading(l, "reality-obligations"))
+    else {
+        return Vec::new();
+    };
+    let end = section_end(&lines, start);
+    let mut out = Vec::new();
+    for line in &lines[start + 1..end] {
+        let Some(rest) = line.trim_start().strip_prefix("- **") else {
+            continue;
+        };
+        let Some((id, tail)) = rest.split_once("**") else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        // The separator is an em dash in the rendered form; tolerate a plain
+        // hyphen so a hand-edited wave spec still parses.
+        let duty = tail
+            .trim_start()
+            .trim_start_matches(['—', '-'])
+            .trim()
+            .to_string();
+        out.push((id.to_string(), duty));
+    }
     out
 }
 
@@ -432,6 +529,17 @@ struct TraceGaps {
     /// `## Acceptance Criteria` ids, so a criterion the plan forgot to route
     /// onto a wave is caught. This is the escalatable gap.
     uncovered_acs: Vec<String>,
+    /// Gap 3 — a claim the plan's own contents REFUTE: a wave that satisfies a
+    /// criterion while declaring no files. It says it will do the work and, in
+    /// the same document, that it has nowhere to do it. Escalatable, alongside
+    /// Gap 2, because no reading of the plan makes it hold — this is a
+    /// contradiction, not a judgement.
+    unsupportable_claims: Vec<String>,
+    /// Gap 4 — a criterion whose command names a repository path that none of
+    /// its claimants declares. WARN-level: a command may name a path it only
+    /// READS, and telling that apart from a missing file would require the work
+    /// to already be done.
+    criteria_outside_claimants: Vec<String>,
 }
 
 /// Compute AC↔wave traceability gaps, splitting the untraced-wave signal
@@ -455,12 +563,37 @@ struct TraceGaps {
 /// `parent_ac_md` is the monolithic parent spec markdown (`None` for a
 /// standalone scaffold with no parent, in which case only the plan's own
 /// `acceptance` ids define the set — the historical behaviour).
+/// Whether a DECLARED file and a path named by a criterion's command refer to
+/// the same file — one being the other's tail, matched on whole path COMPONENTS.
+///
+/// The boundary is the whole point. A bare suffix compare answers `true` for
+/// `apps/backend/src/data.rs` against a declared `a.rs`, which silences exactly
+/// the mismatch this check exists to surface: a criterion needing a backend no
+/// claiming wave has in scope (found by review, reproduced end-to-end). Both
+/// sides are normalised to `/` first, because a plan may spell a path with
+/// either separator.
+///
+/// Errs toward MATCHING (staying quiet) rather than flagging: the two spellings
+/// this accepts — repo-relative and subproject-relative — are both legitimate in
+/// a `## Files` list, and a false flag on a correct plan costs more trust than a
+/// missed advisory. Pure, total.
+fn same_or_contains_path(declared: &str, named: &str) -> bool {
+    let norm = |s: &str| s.replace('\\', "/");
+    let (d, n) = (norm(declared), norm(named));
+    d == n || d.ends_with(&format!("/{n}")) || n.ends_with(&format!("/{d}"))
+}
+
 fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
     use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
     let norm = |s: &str| s.trim().to_uppercase();
     let mut untraced_waves: Vec<String> = Vec::new();
     let mut defined: BTreeSet<String> = BTreeSet::new();
     let mut covered: BTreeSet<String> = BTreeSet::new();
+    let mut unsupportable_claims: Vec<String> = Vec::new();
+    // Per criterion, the union of the files declared by every wave claiming it —
+    // the other half of the question the claim resolution above already answers.
+    let mut claimant_files: std::collections::BTreeMap<String, BTreeSet<String>> =
+        std::collections::BTreeMap::new();
 
     // The parent spec's own criteria are authoritative — every one must be
     // claimed by some wave. Read via the shared qa-run extractor + parser so
@@ -509,12 +642,77 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
                 role = w.role,
             ));
         }
+        // Gap 3 — a claim the plan's own contents refute. The wave says it
+        // covers these criteria and, in the same document, declares nowhere to
+        // do the work. No reading makes that hold, which is why it joins the
+        // escalatable gap rather than the advisory one.
+        // `!tasks.is_empty()` is the SAME "does work" predicate Gap 1 uses: a
+        // summary-only stub that carries a `satisfies` but no tasks is a
+        // placeholder mid-authoring, not a commitment, and refusing it would
+        // block a plan being written rather than a plan that contradicts itself.
+        if !w.tasks.is_empty() && !satisfied.is_empty() && w.files.is_empty() {
+            for id in &satisfied {
+                unsupportable_claims.push(format!(
+                    "{id} — claimed by wave-{n}-{role}, which declares NO files: the plan says \
+                     this wave covers the criterion and, in the same breath, that it has nowhere \
+                     to do the work. Give the wave the files it will touch, or move the claim to \
+                     the wave that has them",
+                    n = w.n,
+                    role = w.role,
+                ));
+            }
+        }
+        for id in &satisfied {
+            claimant_files
+                .entry(id.clone())
+                .or_default()
+                .extend(w.files.iter().map(|f| f.trim().to_string()));
+        }
     }
     let uncovered_acs: Vec<String> = defined
         .difference(&covered)
         .map(|id| format!("{id} — no wave satisfies it (add it to a wave's `satisfies` or `acceptance`)"))
         .collect();
-    TraceGaps { untraced_waves, uncovered_acs }
+
+    // Gap 4 — a criterion whose OWN command names a repository path that none of
+    // its claimants declares: it points at something nobody in that group will
+    // touch. Advisory, not a refusal: a command may legitimately name a path it
+    // only READS (a fixture, a doc it greps), and telling those apart would need
+    // the work to already be done. A criterion whose command names no path at
+    // all is not judged — most criteria here run a NAMED TEST, so the path lives
+    // inside the test rather than in the command, and guessing there would be
+    // the heuristic-dressed-as-a-gate this check exists to avoid.
+    let mut criteria_outside_claimants: Vec<String> = Vec::new();
+    if let Some(section) = parent_ac_md.and_then(extract_ac_section) {
+        for it in parse_ac_items(&section) {
+            let id = norm(&it.id);
+            let Some(declared) = claimant_files.get(&id) else {
+                continue; // unclaimed — that is Gap 2's business, not this one
+            };
+            // An EMPTY claimant set means every wave claiming this criterion is
+            // already a Gap 3 refusal. Reporting the same fact a second time,
+            // once per path its command names, buries the refusal that matters
+            // under advisory noise.
+            if declared.is_empty() {
+                continue;
+            }
+            for token in it.command.split_whitespace() {
+                let path = token.trim_matches(['`', '"', '\'', '(', ')', ',']);
+                if !crate::commands::review::analyze_validation::looks_like_file_path(path) {
+                    continue;
+                }
+                if declared.iter().any(|d| same_or_contains_path(d, path)) {
+                    continue;
+                }
+                criteria_outside_claimants.push(format!(
+                    "{id} — its command names `{path}`, which no wave claiming it declares. \
+                     Either the claimant is missing that file, or the criterion only reads it"
+                ));
+            }
+        }
+    }
+
+    TraceGaps { untraced_waves, uncovered_acs, unsupportable_claims, criteria_outside_claimants }
 }
 
 /// Seed the per-wave trackable checklist from the wave's file census — one
@@ -532,6 +730,7 @@ fn checklist_from_files(files: &[String]) -> Vec<ChecklistItem> {
             label: f.to_string(),
             path: Some(f.to_string()),
             done: false,
+            dropped: None,
         })
         .collect()
 }
@@ -852,6 +1051,11 @@ pub(crate) enum ScaffoldOutcome {
         /// them ([`WriteMode::Reconcile`] only). Sorted, and always present.
         removed: Vec<String>,
         uncovered_acs: Vec<String>,
+        /// Claims the plan's own contents refute — a wave that does work and
+        /// satisfies a criterion while declaring no files. Escalatable like
+        /// `uncovered_acs`, and kept SEPARATE from it: one list answering two
+        /// questions would tell a consumer a claimed criterion is uncovered.
+        unsupportable_claims: Vec<String>,
     },
     /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
     EmptyPlan,
@@ -977,9 +1181,22 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     for gap in &gaps.uncovered_acs {
         eprintln!("[wave-scaffold] WARN: {gap}");
     }
+    for gap in &gaps.criteria_outside_claimants {
+        eprintln!("[wave-scaffold] WARN: {gap}");
+    }
+    for gap in &gaps.unsupportable_claims {
+        eprintln!("[wave-scaffold] WARN: {gap}");
+    }
     // `scaffold` never exits — it stays reusable in-process (plan-materialize),
-    // which blocks the PLAN transition when this list is non-empty.
+    // which blocks the PLAN transition when either list is non-empty.
+    //
+    // The two travel SEPARATELY even though they share a severity. Folding the
+    // unsupportable claims into the uncovered list was tried and reverted: a
+    // consumer asking "is AC-1 uncovered" would then get `true` for a criterion
+    // that IS claimed, just not supportably — one list answering two questions,
+    // which is the blunt merge this codebase keeps paying for.
     let uncovered_acs = gaps.uncovered_acs;
+    let unsupportable_claims = gaps.unsupportable_claims;
 
     // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
@@ -1052,7 +1269,14 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     }
     // Sorted so stdout stays byte-stable regardless of directory-read order.
     refreshed.sort();
-    ScaffoldOutcome::Created { created, skipped, refreshed, removed, uncovered_acs }
+    ScaffoldOutcome::Created {
+        created,
+        skipped,
+        refreshed,
+        removed,
+        uncovered_acs,
+        unsupportable_claims,
+    }
 }
 
 /// Write / reconcile the wave-plan PARENT `meta.json` (the wave-plan root).
@@ -1102,7 +1326,7 @@ fn write_parent_meta(dir: &Path, approved: bool, fresh: Meta) -> bool {
             let scope_upgrade = existing
                 .scope
                 .as_deref()
-                .map_or(true, |s| !s.starts_with("full"));
+                .is_none_or(|s| !s.starts_with("full"));
             if approved
                 && (existing.total_waves != fresh.total_waves
                     || existing.is_wave_plan != fresh.is_wave_plan
@@ -1149,6 +1373,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec![],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -1159,6 +1384,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec![],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
             ],
             total_waves: Some(2),
@@ -1556,6 +1782,7 @@ mod tests {
             files: vec!["src/api/handler.rs".to_string(), "src/api/mod.rs".to_string()],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let hd = headings();
         let spec = render_wave_spec("epic", &w, &hd);
@@ -1596,6 +1823,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec!["**AC-1** — builds. Command: `true`".to_string()],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
                 WavePlanEntry {
                     n: 2,
@@ -1606,6 +1834,7 @@ mod tests {
                     files: vec![],
                     acceptance: vec!["**AC-2** — renders. Command: `true`".to_string()],
                     satisfies: Vec::new(),
+                    reality_obligations: Vec::new(),
                 },
             ],
             total_waves: Some(2),
@@ -1644,6 +1873,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let spec = render_wave_spec(
             "epic",
@@ -1675,6 +1905,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
@@ -1799,9 +2030,233 @@ mod tests {
             files: vec![],
             acceptance: vec![],
             satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
         };
         let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
+    }
+
+    /// One wave, fully specified — the fixture the claim-support gaps need,
+    /// since they turn on `files` as much as on `satisfies`.
+    fn claim_wave(
+        n: u32,
+        role: &str,
+        tasks: Vec<&str>,
+        files: Vec<&str>,
+        satisfies: Vec<&str>,
+    ) -> WavePlanEntry {
+        WavePlanEntry {
+            n,
+            role: role.to_string(),
+            summary: "s".to_string(),
+            depends_on: vec![],
+            tasks: tasks.into_iter().map(String::from).collect(),
+            files: files.into_iter().map(String::from).collect(),
+            acceptance: vec![],
+            satisfies: satisfies.into_iter().map(String::from).collect(),
+            reality_obligations: Vec::new(),
+        }
+    }
+
+    fn claim_plan(waves: Vec<WavePlanEntry>) -> Plan {
+        let total = waves.len() as u32;
+        Plan { waves, total_waves: Some(total), lang: None }
+    }
+
+    /// AC-1 — a claim the plan's own contents refute: the wave says it covers
+    /// the criterion and, in the same document, declares nowhere to do the work.
+    ///
+    /// It joins the ESCALATABLE list (the one `plan-materialize` refuses on)
+    /// rather than the advisory one, because no reading of the plan makes it
+    /// hold — this is a contradiction, not a judgement about sufficiency.
+    #[test]
+    fn a_wave_claiming_a_criterion_with_nowhere_to_work_is_refused() {
+        let parent = "# S\n\n## Acceptance Criteria\n\n- **AC-1** — it holds. Command: `true`\n";
+        let gaps = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["do it"], vec![], vec!["AC-1"])]),
+            Some(parent),
+        );
+        assert!(
+            gaps.unsupportable_claims
+                .iter()
+                .any(|g| g.contains("AC-1") && g.contains("wave-1-rt") && g.contains("NO files")),
+            "the refusal must name the criterion AND the wave that cannot support it: {:?}",
+            gaps.unsupportable_claims
+        );
+
+        // A summary-only STUB is not a commitment: no tasks means the plan is
+        // still being written, and refusing it would block authoring rather than
+        // a contradiction.
+        let stub = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec![], vec![], vec!["AC-1"])]),
+            Some(parent),
+        );
+        assert!(
+            stub.unsupportable_claims.is_empty(),
+            "a stub with no tasks must not be refused: {:?}",
+            stub.unsupportable_claims
+        );
+    }
+
+    /// AC-2 — a criterion whose command names a path none of its claimants
+    /// declares is FLAGGED, never refused.
+    ///
+    /// Advisory on purpose: the command may name a path it only READS (a
+    /// fixture, a doc it greps), and telling that apart from a missing file
+    /// would need the work to already be done. So the signal earns attention,
+    /// not a refusal — and the test pins both halves of that.
+    #[test]
+    fn a_criterion_pointing_outside_its_claimants_is_flagged_not_refused() {
+        let parent = "# S\n\n## Acceptance Criteria\n\n\
+                      - **AC-1** — the doc says it. Command: `rg -q Modelo plugin/commands/close.md`\n";
+        // Wave 1 claims AC-1 but declares only its own source file.
+        let gaps = traceability_gaps(
+            &claim_plan(vec![claim_wave(
+                1,
+                "rt",
+                vec!["do it"],
+                vec!["apps/rt/src/lib.rs"],
+                vec!["AC-1"],
+            )]),
+            Some(parent),
+        );
+        assert!(
+            gaps.criteria_outside_claimants
+                .iter()
+                .any(|g| g.contains("AC-1") && g.contains("plugin/commands/close.md")),
+            "the flag must name the criterion and the path: {:?}",
+            gaps.criteria_outside_claimants
+        );
+        assert!(
+            gaps.unsupportable_claims.is_empty() && gaps.uncovered_acs.is_empty(),
+            "a path mismatch must NOT reach the refusal channel: {:?} / {:?}",
+            gaps.unsupportable_claims,
+            gaps.uncovered_acs
+        );
+
+        // The claimant declaring that very path is clean — so the check is not
+        // simply flagging every criterion that names anything.
+        let ok = traceability_gaps(
+            &claim_plan(vec![claim_wave(
+                1,
+                "rt",
+                vec!["do it"],
+                vec!["plugin/commands/close.md"],
+                vec!["AC-1"],
+            )]),
+            Some(parent),
+        );
+        assert!(
+            ok.criteria_outside_claimants.is_empty(),
+            "a declared path must not be flagged: {:?}",
+            ok.criteria_outside_claimants
+        );
+
+        // The match is on whole path COMPONENTS, not raw suffixes. A bare
+        // suffix compare answers `true` for `apps/backend/src/data.rs` against a
+        // declared `a.rs` and silences the mismatch — which is the field
+        // scenario this check exists for (a criterion needing a backend no
+        // claiming wave had in scope), found by review and reproduced live.
+        let backend = "# S\n\n## Acceptance Criteria\n\n\
+                       - **AC-1** — a. Command: `rg -q x apps/backend/src/data.rs`\n";
+        let boundary = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["a"], vec!["a.rs"], vec!["AC-1"])]),
+            Some(backend),
+        );
+        assert!(
+            boundary
+                .criteria_outside_claimants
+                .iter()
+                .any(|g| g.contains("apps/backend/src/data.rs")),
+            "a declared `a.rs` must NOT silence `apps/backend/src/data.rs`: {:?}",
+            boundary.criteria_outside_claimants
+        );
+        // And the legitimate subproject-relative spelling still matches, so the
+        // boundary did not turn into a false flag on a correct plan.
+        let relative = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["a"], vec!["src/data.rs"], vec!["AC-1"])]),
+            Some(backend),
+        );
+        assert!(
+            relative.criteria_outside_claimants.is_empty(),
+            "a subproject-relative declaration still matches: {:?}",
+            relative.criteria_outside_claimants
+        );
+    }
+
+    /// A wave already refused by Gap 3 must not ALSO be flagged by Gap 4, once
+    /// per path its criteria name: one fact, one message. Reported by review —
+    /// the advisory noise would bury the refusal that actually matters.
+    #[test]
+    fn a_refused_claim_is_not_also_flagged_path_by_path() {
+        let parent = "# S\n\n## Acceptance Criteria\n\n\
+                      - **AC-1** — a. Command: `rg -q x apps/rt/src/a.rs apps/rt/src/b.rs`\n";
+        let gaps = traceability_gaps(
+            &claim_plan(vec![claim_wave(1, "rt", vec!["do it"], vec![], vec!["AC-1"])]),
+            Some(parent),
+        );
+        assert_eq!(
+            gaps.unsupportable_claims.len(),
+            1,
+            "the refusal is stated once: {:?}",
+            gaps.unsupportable_claims
+        );
+        assert!(
+            gaps.criteria_outside_claimants.is_empty(),
+            "an already-refused claim must not be flagged path by path: {:?}",
+            gaps.criteria_outside_claimants
+        );
+    }
+
+    /// AC-3 — silence where the plan is consistent, AND silence where the check
+    /// cannot judge.
+    ///
+    /// The second half is the load-bearing one: most criteria here run a NAMED
+    /// TEST, so the path lives inside the test rather than in the command. Those
+    /// must pass untouched — a check that guessed there would be the heuristic
+    /// dressed as a gate this whole line of work exists to remove.
+    #[test]
+    fn a_consistent_plan_and_an_unjudgeable_one_both_stay_silent() {
+        // (a) consistent: two waves, each claiming what it declares.
+        let parent = "# S\n\n## Acceptance Criteria\n\n\
+                      - **AC-1** — a. Command: `rg -q x apps/rt/src/a.rs`\n\
+                      - **AC-2** — b. Command: `rg -q y apps/rt/src/b.rs`\n";
+        let gaps = traceability_gaps(
+            &claim_plan(vec![
+                claim_wave(1, "rt", vec!["a"], vec!["apps/rt/src/a.rs"], vec!["AC-1"]),
+                claim_wave(2, "rt", vec!["b"], vec!["apps/rt/src/b.rs"], vec!["AC-2"]),
+            ]),
+            Some(parent),
+        );
+        assert!(
+            gaps.unsupportable_claims.is_empty() && gaps.criteria_outside_claimants.is_empty(),
+            "a consistent plan fires neither signal: {:?} / {:?}",
+            gaps.unsupportable_claims,
+            gaps.criteria_outside_claimants
+        );
+
+        // (b) unjudgeable: the command names a TEST, not a path. The claimant
+        // declares a file that has nothing to do with the command's text, and
+        // that must still be silent — the check sees no path, so it says
+        // nothing rather than guessing.
+        let named_test = "# S\n\n## Acceptance Criteria\n\n\
+                          - **AC-1** — the case passes. Command: `cargo test -p mustard-rt --lib m::tests::c`\n";
+        let quiet = traceability_gaps(
+            &claim_plan(vec![claim_wave(
+                1,
+                "rt",
+                vec!["a"],
+                vec!["apps/rt/src/unrelated.rs"],
+                vec!["AC-1"],
+            )]),
+            Some(named_test),
+        );
+        assert!(
+            quiet.criteria_outside_claimants.is_empty(),
+            "a command naming no path must not be judged: {:?}",
+            quiet.criteria_outside_claimants
+        );
+        assert!(quiet.unsupportable_claims.is_empty(), "and it supports its claim");
     }
 
     /// F6 traceability: a wave that does work (`tasks`) but satisfies no AC is a
@@ -1818,6 +2273,7 @@ mod tests {
             files: vec![],
             acceptance: acceptance.into_iter().map(String::from).collect(),
             satisfies: satisfies.into_iter().map(String::from).collect(),
+            reality_obligations: Vec::new(),
         };
         let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1), lang: None };
 
@@ -1829,15 +2285,17 @@ mod tests {
             gaps.untraced_waves
         );
         assert!(gaps.uncovered_acs.is_empty(), "no defined ACs → no uncovered gap");
-        // (b) declares AND satisfies its own AC → clean on both axes.
-        let clean = traceability_gaps(
-            &plan(wave(
-                vec!["do it"],
-                vec!["**AC-1** — works. Command: `true`"],
-                vec!["AC-1"],
-            )),
-            None,
+        // (b) declares AND satisfies its own AC → clean on both axes. It also
+        // declares a file: a wave that does work and claims a criterion while
+        // declaring nowhere to do it is Gap 3, so the fixture has to be a
+        // genuinely consistent plan to prove the clean case.
+        let mut supported = wave(
+            vec!["do it"],
+            vec!["**AC-1** — works. Command: `true`"],
+            vec!["AC-1"],
         );
+        supported.files = vec!["src/lib.rs".to_string()];
+        let clean = traceability_gaps(&plan(supported), None);
         assert!(clean.untraced_waves.is_empty() && clean.uncovered_acs.is_empty(), "well-traced wave is clean");
         // (c) defines AC-1 but satisfies only AC-2 → AC-1 is an uncovered gap (Gap 2).
         let orphan = traceability_gaps(
@@ -1876,6 +2334,7 @@ mod tests {
                 files: vec![],
                 acceptance: vec![],
                 satisfies: vec!["AC-1".to_string()],
+                reality_obligations: Vec::new(),
             }],
             total_waves: Some(1),
             lang: None,
@@ -1913,6 +2372,7 @@ mod tests {
                 // Same id via an acceptance line, NOT an explicit satisfies.
                 acceptance: vec!["**AC-1** — first. Command: `true`".to_string()],
                 satisfies: vec![],
+                reality_obligations: Vec::new(),
             }],
             total_waves: Some(1),
             lang: None,

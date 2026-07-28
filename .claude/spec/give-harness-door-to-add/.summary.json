@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "give-harness-door-to-add",
+  "title": "Give the harness a door to ADD an acceptance criterion, taking the same negative proof a planned one takes, and stop the statement rewrite from orphaning continuation lines when a criterion carries no Command line",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

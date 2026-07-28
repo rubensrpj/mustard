@@ -9,12 +9,22 @@
 //! emitted to the per-spec NDJSON sink. The markdown `## Checklist` section
 //! remains the legacy fallback for un-migrated specs.
 //!
-//! Output (stdout): one line — `marked` | `already-marked` | `error: <reason>`.
+//! **Dropping (`--drop --reason "<why>"`):** the third position. An item let
+//! go on purpose is recorded as a decision — `dropped: "<reason>"` in the
+//! sidecar, `- [~] … — dropped: <reason>` in the markdown — and a
+//! `checklist.item.dropped` event carries the reason to the NDJSON sink. The
+//! reason is mandatory: `--drop` without one is a bad-argument exit, so a
+//! decision can never be recorded mutely. Dropping is terminal in both
+//! directions: this command never marks a dropped item done, and never
+//! re-opens it.
+//!
+//! Output (stdout): one line — `marked` | `already-marked` | `dropped` |
+//! `already-dropped` | `error: <reason>`.
 //! Exit codes: 0 success/no-op, 1 not-found/no-section/not-located, 2 bad args.
 
 use mustard_core::domain::model::event::{
-    Actor, ActorKind, ChecklistItemMarkedPayload, EVENT_CHECKLIST_ITEM_MARKED, HarnessEvent,
-    SCHEMA_VERSION,
+    Actor, ActorKind, ChecklistItemDroppedPayload, ChecklistItemMarkedPayload,
+    EVENT_CHECKLIST_ITEM_DROPPED, EVENT_CHECKLIST_ITEM_MARKED, HarnessEvent, SCHEMA_VERSION,
 };
 use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
@@ -128,6 +138,43 @@ pub(crate) fn emit_item_marked(
     let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
+/// Emit the `checklist.item.dropped` harness event — the decision half of the
+/// pair. Best-effort telemetry, fail-open like [`emit_item_marked`]. It is a
+/// separate event on purpose: a consumer counting `checklist.item.marked`
+/// must not see a drop and report progress that never happened.
+fn emit_item_dropped(
+    project_dir: &str,
+    actor_id: &str,
+    spec: &str,
+    wave: u32,
+    item: &ChecklistItem,
+    reason: &str,
+) {
+    let payload = ChecklistItemDroppedPayload {
+        spec: spec.to_string(),
+        wave,
+        item: item.label.clone(),
+        path: item.path.clone(),
+        reason: reason.to_string(),
+    };
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        // The router resolves the real session id (env / newest session dir).
+        session_id: "unknown".to_string(),
+        wave,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some(actor_id.to_string()),
+            actor_type: None,
+        },
+        event: EVENT_CHECKLIST_ITEM_DROPPED.to_string(),
+        payload: serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(project_dir, &event);
+}
+
 /// `true` when a checklist item matches the `--item` needle: a substring of
 /// the label (the historical markdown contract), or a normalised exact /
 /// segment-suffix / basename match against the item's path anchor.
@@ -163,40 +210,86 @@ fn meta_candidate_dirs(spec_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Outcome of the meta-first marking attempt.
+/// What the caller asked the marker to do with the located item.
+#[derive(Debug, Clone, Copy)]
+enum Move<'a> {
+    /// Flip an open item to done.
+    Mark,
+    /// Record an open item as dropped on purpose, with the stated reason.
+    /// There is no reason-less variant — the type refuses a mute drop.
+    Drop(&'a str),
+}
+
+/// Outcome of the meta-first attempt.
+#[derive(Debug)]
 enum MetaMark {
-    /// An un-done item matched and was flipped (event emitted).
+    /// An open item matched and was flipped done (event emitted).
     Marked,
     /// The only matches were already done — idempotent no-op.
     AlreadyMarked,
-    /// A match was found but the sidecar write failed.
+    /// An open item matched and was recorded as dropped (event emitted).
+    Dropped,
+    /// The only matches were already dropped — idempotent no-op, and the
+    /// refusal that keeps a decision from being turned back into a task.
+    AlreadyDropped,
+    /// A match was found but the move was refused, or the sidecar write failed.
     Error(String),
 }
 
-/// Flip `checklist[idx]` to done in `dir`'s sidecar, persist atomically, and
-/// emit `checklist.item.marked`. The caller has verified `idx` is in bounds
-/// and the item is not yet done.
-fn flip_and_emit(cwd: &Path, dir: &Path, meta: &mut Meta, idx: usize) -> Result<(), String> {
-    meta.checklist[idx].done = true;
+/// Apply `mv` to `checklist[idx]` in `dir`'s sidecar, persist atomically, and
+/// emit the matching event. The caller has verified `idx` is in bounds and the
+/// item is open.
+fn apply_and_emit(
+    cwd: &Path,
+    dir: &Path,
+    meta: &mut Meta,
+    idx: usize,
+    mv: Move<'_>,
+) -> Result<(), String> {
+    match mv {
+        Move::Mark => meta.checklist[idx].done = true,
+        Move::Drop(reason) => meta.checklist[idx].dropped = Some(reason.to_string()),
+    }
     write_meta(&dir.join("meta.json"), meta)
         .map_err(|e| format!("cannot write meta.json: {e}"))?;
     let (slug, wave) = spec_and_wave_of(&dir.join("spec.md"));
-    emit_item_marked(
-        &cwd.to_string_lossy(),
-        ActorKind::Cli,
-        "mark-checklist-item",
-        &slug,
-        wave,
-        &meta.checklist[idx],
-    );
+    let project = cwd.to_string_lossy();
+    match mv {
+        Move::Mark => emit_item_marked(
+            &project,
+            ActorKind::Cli,
+            "mark-checklist-item",
+            &slug,
+            wave,
+            &meta.checklist[idx],
+        ),
+        Move::Drop(reason) => emit_item_dropped(
+            &project,
+            "mark-checklist-item",
+            &slug,
+            wave,
+            &meta.checklist[idx],
+            reason,
+        ),
+    }
     Ok(())
 }
 
-/// Try the meta-first marking across the spec's own dir + its wave subdirs.
+/// Try the meta-first move across the spec's own dir + its wave subdirs.
 /// Returns `None` when no sidecar checklist carried a match at all — the
 /// caller then falls back to the legacy markdown `## Checklist` path.
-fn try_mark_in_metas(cwd: &Path, spec_dir: &Path, needle: &str) -> Option<MetaMark> {
-    let mut already = false;
+///
+/// Only an OPEN item is ever moved. A dropped item is invisible to both moves:
+/// marking it would resurrect a decision as progress, and dropping it twice
+/// would overwrite the first reason.
+fn try_move_in_metas(
+    cwd: &Path,
+    spec_dir: &Path,
+    needle: &str,
+    mv: Move<'_>,
+) -> Option<MetaMark> {
+    let mut already_done = false;
+    let mut already_dropped = false;
     for dir in meta_candidate_dirs(spec_dir) {
         let Some(mut meta) = read_meta(&dir.join("meta.json")) else {
             continue;
@@ -207,16 +300,35 @@ fn try_mark_in_metas(cwd: &Path, spec_dir: &Path, needle: &str) -> Option<MetaMa
         if let Some(i) = meta
             .checklist
             .iter()
-            .position(|it| !it.done && item_matches(it, needle))
+            .position(|it| it.is_open() && item_matches(it, needle))
         {
-            return Some(match flip_and_emit(cwd, &dir, &mut meta, i) {
-                Ok(()) => MetaMark::Marked,
-                Err(e) => MetaMark::Error(e),
+            return Some(match (apply_and_emit(cwd, &dir, &mut meta, i, mv), mv) {
+                (Ok(()), Move::Mark) => MetaMark::Marked,
+                (Ok(()), Move::Drop(_)) => MetaMark::Dropped,
+                (Err(e), _) => MetaMark::Error(e),
             });
         }
-        already = already || meta.checklist.iter().any(|it| it.done && item_matches(it, needle));
+        for it in &meta.checklist {
+            if !item_matches(it, needle) {
+                continue;
+            }
+            already_dropped = already_dropped || it.is_dropped();
+            already_done = already_done || (it.done && !it.is_dropped());
+        }
     }
-    already.then_some(MetaMark::AlreadyMarked)
+    match mv {
+        // A mark request satisfied by an already-done item is the historical
+        // idempotent no-op; when the only match is a DROPPED item, say so
+        // instead of flipping it — that is the resurrection this refuses.
+        Move::Mark if already_done => Some(MetaMark::AlreadyMarked),
+        Move::Mark if already_dropped => Some(MetaMark::AlreadyDropped),
+        Move::Drop(_) if already_dropped => Some(MetaMark::AlreadyDropped),
+        // Dropping finished work would rewrite history: the work exists.
+        Move::Drop(_) if already_done => Some(MetaMark::Error(format!(
+            "cannot drop an item that is already done: {needle}"
+        ))),
+        _ => None,
+    }
 }
 
 /// Locate the `## Checklist` section. Returns `(start_idx, end_idx)` where
@@ -250,7 +362,9 @@ fn find_checklist_section(lines: &[&str]) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-/// Parsed checkbox line: `(prefix, state, gap, text)`.
+/// Parsed checkbox line: `(prefix, state, gap, text)`. `state` is one of
+/// `' '` (open), `'x'`/`'X'` (done), `'~'` (dropped on purpose — the text then
+/// carries the ` — dropped: <reason>` tail).
 struct Checkbox<'a> {
     prefix: &'a str,
     state: char,
@@ -258,7 +372,19 @@ struct Checkbox<'a> {
     text: &'a str,
 }
 
-/// Parse a `^(\s*-\s+)\[([ xX])\](\s+)(.*)$` checkbox line.
+impl Checkbox<'_> {
+    /// `true` when the line records work someone let go on purpose.
+    const fn is_dropped(&self) -> bool {
+        self.state == '~'
+    }
+
+    /// `true` when the line records finished work.
+    const fn is_done(&self) -> bool {
+        self.state == 'x' || self.state == 'X'
+    }
+}
+
+/// Parse a `^(\s*-\s+)\[([ xX~])\](\s+)(.*)$` checkbox line.
 fn parse_checkbox(line: &str) -> Option<Checkbox<'_>> {
     let trimmed_start = line.len() - line.trim_start().len();
     let after_ws = &line[trimmed_start..];
@@ -271,7 +397,7 @@ fn parse_checkbox(line: &str) -> Option<Checkbox<'_>> {
     let body = &line[prefix_end..];
     let inner = body.strip_prefix('[')?;
     let state = inner.chars().next()?;
-    if !matches!(state, ' ' | 'x' | 'X') {
+    if !matches!(state, ' ' | 'x' | 'X' | '~') {
         return None;
     }
     let after_state = &inner[state.len_utf8()..];
@@ -289,8 +415,37 @@ fn parse_checkbox(line: &str) -> Option<Checkbox<'_>> {
     })
 }
 
+/// Resolve the requested move from the two drop arguments, refusing a drop
+/// that states no reason (exit 2, before anything is read or written).
+///
+/// This is where "cannot be written without a stated reason" is enforced for
+/// the caller: a `--drop` with a blank reason never reaches the sidecar, and
+/// a `--reason` without `--drop` is a mistake worth naming rather than
+/// silently ignoring.
+fn resolve_move(drop: bool, reason: Option<&str>) -> Move<'_> {
+    let stated = reason.map(str::trim).filter(|r| !r.is_empty());
+    match (drop, stated) {
+        (true, Some(r)) => Move::Drop(r),
+        (true, None) => die(
+            2,
+            "--drop requires --reason \"<why>\": a dropped item is a decision, \
+             and a decision without a stated reason is indistinguishable from \
+             a forgotten task",
+        ),
+        (false, Some(_)) => die(2, "--reason is only meaningful with --drop"),
+        (false, None) => Move::Mark,
+    }
+}
+
 /// Dispatch `mustard-rt run mark-checklist-item`.
-pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg: Option<&str>) {
+pub fn run(
+    spec: Option<&str>,
+    item: Option<&str>,
+    line: Option<usize>,
+    cwd_arg: Option<&str>,
+    drop: bool,
+    reason: Option<&str>,
+) {
     let Some(spec) = spec else {
         die(2, "--spec is required");
     };
@@ -300,6 +455,7 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
     if item.is_some() && line.is_some() {
         die(2, "--item and --line are mutually exclusive");
     }
+    let mv = resolve_move(drop, reason);
 
     let cwd = cwd_arg
         .map_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), PathBuf::from);
@@ -326,19 +482,38 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
                         ),
                     );
                 }
-                if meta.checklist[n - 1].done {
-                    println!("already-marked");
+                let target = &meta.checklist[n - 1];
+                // Terminal positions answer without moving: a dropped item is
+                // never re-opened, and finished work is never dropped.
+                if target.is_dropped() {
+                    println!("already-dropped");
                     std::process::exit(0);
                 }
-                match flip_and_emit(&cwd, &spec_dir, &mut meta, n - 1) {
-                    Ok(()) => {
+                if target.done {
+                    match mv {
+                        Move::Mark => {
+                            println!("already-marked");
+                            std::process::exit(0);
+                        }
+                        Move::Drop(_) => die(
+                            1,
+                            &format!("cannot drop an item that is already done: --line {n}"),
+                        ),
+                    }
+                }
+                match (apply_and_emit(&cwd, &spec_dir, &mut meta, n - 1, mv), mv) {
+                    (Ok(()), Move::Mark) => {
                         println!("marked");
                         std::process::exit(0);
                     }
-                    Err(e) => die(1, &e),
+                    (Ok(()), Move::Drop(_)) => {
+                        println!("dropped");
+                        std::process::exit(0);
+                    }
+                    (Err(e), _) => die(1, &e),
                 }
             }
-        } else if let Some(outcome) = try_mark_in_metas(&cwd, &spec_dir, item.unwrap_or("")) {
+        } else if let Some(outcome) = try_move_in_metas(&cwd, &spec_dir, item.unwrap_or(""), mv) {
             match outcome {
                 MetaMark::Marked => {
                     println!("marked");
@@ -346,6 +521,14 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
                 }
                 MetaMark::AlreadyMarked => {
                     println!("already-marked");
+                    std::process::exit(0);
+                }
+                MetaMark::Dropped => {
+                    println!("dropped");
+                    std::process::exit(0);
+                }
+                MetaMark::AlreadyDropped => {
+                    println!("already-dropped");
                     std::process::exit(0);
                 }
                 MetaMark::Error(e) => die(1, &e),
@@ -392,12 +575,29 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
         match found {
             Some(i) => i,
             None => {
-                // Idempotency: was the only match already `[x]`?
+                // No OPEN match. Before refusing, answer from the terminal
+                // positions — but never by moving one: a `- [~]` line is a
+                // decision, and turning it back into a task is the very thing
+                // this command must not do.
                 for line in lines.iter().take(end).skip(start) {
-                    if let Some(cb) = parse_checkbox(line) {
-                        if (cb.state == 'x' || cb.state == 'X') && cb.text.contains(item) {
-                            println!("already-marked");
-                            std::process::exit(0);
+                    let Some(cb) = parse_checkbox(line) else { continue };
+                    if !cb.text.contains(item) {
+                        continue;
+                    }
+                    if cb.is_dropped() {
+                        println!("already-dropped");
+                        std::process::exit(0);
+                    }
+                    if cb.is_done() {
+                        match mv {
+                            Move::Mark => {
+                                println!("already-marked");
+                                std::process::exit(0);
+                            }
+                            Move::Drop(_) => die(
+                                1,
+                                &format!("cannot drop an item that is already done: {item}"),
+                            ),
                         }
                     }
                 }
@@ -408,18 +608,50 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
 
     let new_line = {
         let Some(cb) = parse_checkbox(&lines[target_idx]) else { die(1, "target line is not a checkbox") };
-        if cb.state == 'x' || cb.state == 'X' {
-            println!("already-marked");
+        if cb.is_dropped() {
+            println!("already-dropped");
             std::process::exit(0);
         }
-        format!("{}[x]{}{}", cb.prefix, cb.gap, cb.text)
+        match mv {
+            Move::Mark => {
+                if cb.is_done() {
+                    println!("already-marked");
+                    std::process::exit(0);
+                }
+                format!("{}[x]{}{}", cb.prefix, cb.gap, cb.text)
+            }
+            Move::Drop(reason) => {
+                if cb.is_done() {
+                    die(1, "cannot drop an item that is already done");
+                }
+                // `[~]` plus the reason on the same line: the record a reader
+                // months later needs in order to tell a decision from a task
+                // nobody got to.
+                format!(
+                    "{}[~]{}{} — dropped: {}",
+                    cb.prefix,
+                    cb.gap,
+                    cb.text,
+                    one_line(reason)
+                )
+            }
+        }
     };
     lines[target_idx] = new_line;
 
     if let Err(e) = fs::write_atomic(&spec_path, lines.join("\n").as_bytes()) {
         die(1, &format!("cannot write spec: {e}"));
     }
-    println!("marked");
+    match mv {
+        Move::Mark => println!("marked"),
+        Move::Drop(_) => println!("dropped"),
+    }
+}
+
+/// Collapse newlines/tabs in the stated reason so one item stays one markdown
+/// line (the section is parsed line-by-line by three consumers).
+fn one_line(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -478,6 +710,7 @@ mod tests {
             label: "src/api/handler.rs".to_string(),
             path: Some("src/api/handler.rs".to_string()),
             done: false,
+            dropped: None,
         };
         assert!(item_matches(&it, "handler.rs"), "basename");
         assert!(item_matches(&it, "api/handler.rs"), "segment suffix");
@@ -515,13 +748,13 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = try_mark_in_metas(project.path(), &spec_dir, "handler.rs");
+        let outcome = try_move_in_metas(project.path(), &spec_dir, "handler.rs", Move::Mark);
         assert!(matches!(outcome, Some(MetaMark::Marked)), "first call marks");
         let meta = read_meta(&wave_dir.join("meta.json")).unwrap();
         assert!(meta.checklist[0].done, "done flipped in the wave sidecar");
 
         // Idempotent: a second call is a no-op `already-marked`.
-        let again = try_mark_in_metas(project.path(), &spec_dir, "handler.rs");
+        let again = try_move_in_metas(project.path(), &spec_dir, "handler.rs", Move::Mark);
         assert!(matches!(again, Some(MetaMark::AlreadyMarked)));
 
         // The NDJSON event landed under the spec's events sink with wave=1.
@@ -554,6 +787,155 @@ mod tests {
             r#"{"stage":"Execute","outcome":"Active"}"#,
         )
         .unwrap();
-        assert!(try_mark_in_metas(project.path(), &spec_dir, "a").is_none());
+        assert!(try_move_in_metas(project.path(), &spec_dir, "a", Move::Mark).is_none());
+    }
+
+    // --- the third position: dropped on purpose (AC-8) ----------------------
+
+    /// Seed a wave-plan spec with one open checklist item; returns
+    /// `(project, spec_dir, wave_dir)`.
+    fn seed_wave_checklist(items_json: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let project = tempdir().unwrap();
+        let paths = ClaudePaths::for_project(project.path()).unwrap();
+        let sp = paths.for_spec("demo").unwrap();
+        let spec_dir = sp.dir().to_path_buf();
+        let wave_dir = spec_dir.join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Demo\n").unwrap();
+        std::fs::write(wave_dir.join("spec.md"), "# wave-1-rt\n").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            format!(
+                r#"{{"stage":"Execute","outcome":"Active","parent":"demo","checklist":{items_json}}}"#
+            ),
+        )
+        .unwrap();
+        (project, spec_dir, wave_dir)
+    }
+
+    /// AC-8 — a checklist item dropped on purpose WITH a stated reason is
+    /// recorded as a decision (sidecar + `checklist.item.dropped` event) and
+    /// stays distinct from an unchecked item: it is not open work, it is not
+    /// done, and no later mark turns it back into either.
+    #[test]
+    fn checklist_records_dropped_with_reason() {
+        let (project, spec_dir, wave_dir) = seed_wave_checklist(
+            r#"[{"label":"src/api/handler.rs","path":"src/api/handler.rs","done":false}]"#,
+        );
+
+        // The drop carries a reason, and the reason IS the record.
+        let outcome = try_move_in_metas(
+            project.path(),
+            &spec_dir,
+            "handler.rs",
+            Move::Drop("the endpoint moved to the gateway spec"),
+        );
+        assert!(matches!(outcome, Some(MetaMark::Dropped)), "the drop is recorded");
+
+        let meta = read_meta(&wave_dir.join("meta.json")).unwrap();
+        let item = &meta.checklist[0];
+        assert_eq!(item.drop_reason(), Some("the endpoint moved to the gateway spec"));
+        // Distinct from an unchecked item AND from a done one.
+        assert!(!item.is_open(), "a dropped item is not pending work");
+        assert!(!item.done, "dropping never claims the work was done");
+
+        // The decision landed in the event stream as its OWN kind, carrying
+        // the reason — a consumer counting `checklist.item.marked` must not
+        // see it and report progress nobody made.
+        let sp = ClaudePaths::for_project(project.path()).unwrap().for_spec("demo").unwrap();
+        let mut dropped_lines = 0;
+        let mut marked_lines = 0;
+        for f in std::fs::read_dir(sp.events_dir()).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            for l in body.lines() {
+                if l.contains("\"event\":\"checklist.item.dropped\"") {
+                    assert!(l.contains("the endpoint moved to the gateway spec"), "{l}");
+                    assert!(l.contains("\"wave\":1"), "{l}");
+                    dropped_lines += 1;
+                }
+                marked_lines += usize::from(l.contains("\"event\":\"checklist.item.marked\""));
+            }
+        }
+        assert_eq!(dropped_lines, 1, "exactly one checklist.item.dropped line");
+        assert_eq!(marked_lines, 0, "a drop is never reported as a mark");
+
+        // Idempotent, and terminal: dropping again is a no-op, and MARKING it
+        // refuses instead of resurrecting the decision as progress.
+        assert!(matches!(
+            try_move_in_metas(project.path(), &spec_dir, "handler.rs", Move::Drop("again")),
+            Some(MetaMark::AlreadyDropped)
+        ));
+        assert!(matches!(
+            try_move_in_metas(project.path(), &spec_dir, "handler.rs", Move::Mark),
+            Some(MetaMark::AlreadyDropped)
+        ));
+        let after = read_meta(&wave_dir.join("meta.json")).unwrap();
+        assert!(!after.checklist[0].done, "the mark did not flip a dropped item");
+        assert_eq!(
+            after.checklist[0].drop_reason(),
+            Some("the endpoint moved to the gateway spec"),
+            "the first reason was not overwritten"
+        );
+    }
+
+    /// Finished work cannot be re-labelled a decision, and a drop still
+    /// refuses what it cannot find — the marker's refusal stays honest.
+    #[test]
+    fn drop_refuses_done_items_and_missing_items() {
+        let (project, spec_dir, _wave) = seed_wave_checklist(
+            r#"[{"label":"src/api/handler.rs","path":"src/api/handler.rs","done":true}]"#,
+        );
+        match try_move_in_metas(project.path(), &spec_dir, "handler.rs", Move::Drop("late")) {
+            Some(MetaMark::Error(e)) => assert!(e.contains("already done"), "{e}"),
+            other => panic!("expected a refusal for a done item, got {other:?}"),
+        }
+        // Nothing matches at all → `None`: the caller falls through to the
+        // markdown pass, which dies rather than inventing an item.
+        assert!(
+            try_move_in_metas(project.path(), &spec_dir, "nowhere.rs", Move::Drop("x")).is_none()
+        );
+    }
+
+    /// `resolve_move` is the gate that makes a reason mandatory: a bare
+    /// `--drop` never produces a `Move::Drop`.
+    #[test]
+    fn a_drop_without_a_reason_is_not_a_move() {
+        assert!(matches!(resolve_move(false, None), Move::Mark));
+        assert!(matches!(resolve_move(true, Some("out of scope")), Move::Drop("out of scope")));
+        // Trimmed: the stored reason never carries the caller's whitespace.
+        assert!(matches!(resolve_move(true, Some("  spaced  ")), Move::Drop("spaced")));
+    }
+
+    /// The legacy markdown path gets the same third position: `- [~]` with
+    /// the reason on the line, and it is not an unchecked item afterwards.
+    #[test]
+    fn markdown_dropped_line_parses_as_its_own_state() {
+        let (_d, path) = write_spec(
+            "## Checklist\n- [ ] alpha\n- [~] beta — dropped: folded into alpha\n",
+        );
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = raw.split('\n').collect();
+        let (start, end) = find_checklist_section(&lines).unwrap();
+
+        let open = parse_checkbox(lines[start]).unwrap();
+        assert!(!open.is_dropped() && !open.is_done());
+
+        let dropped = parse_checkbox(lines[start + 1]).unwrap();
+        assert!(dropped.is_dropped(), "`[~]` is its own state, not a checked box");
+        assert!(!dropped.is_done(), "dropped is not done");
+        assert!(dropped.text.contains("dropped: folded into alpha"), "{}", dropped.text);
+
+        // The mark pass scans for `state == ' '` only, so the dropped line is
+        // invisible to it — exactly one open item in the section.
+        let open_count = lines[start..end]
+            .iter()
+            .filter(|l| parse_checkbox(l).is_some_and(|cb| cb.state == ' '))
+            .count();
+        assert_eq!(open_count, 1);
+    }
+
+    #[test]
+    fn one_line_folds_a_multiline_reason() {
+        assert_eq!(one_line("moved to\n  the gateway\tspec"), "moved to the gateway spec");
     }
 }

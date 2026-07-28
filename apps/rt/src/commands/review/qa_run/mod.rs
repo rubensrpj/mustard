@@ -103,6 +103,34 @@ pub(crate) fn execute_ac(command: &str, expect: Option<&str>, cwd: &Path) -> AcR
     runner::run_ac_command(command, expect, cwd)
 }
 
+/// `true` when `command` would overwrite the very file this process is
+/// executing from — a `cargo build`/`cargo test` whose build target under
+/// `cwd` resolves to the running executable itself.
+///
+/// The one spelling of that question in the crate, exposed so a caller running
+/// INSIDE this binary can decline to attempt such a command instead of
+/// discovering the failure. `run_ac_command` already refuses it under
+/// [`QaRunOptions::self_invoked`]; the confirmation pass
+/// ([`crate::commands::review::ac_negative_check::confirm_in_process`]) asks
+/// FIRST, because for it the difference between "not attempted here" and
+/// "inexecutable" is the difference between a note and an order to rewrite a
+/// perfectly good criterion. Total.
+pub(crate) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
+    runner::targets_running_binary(command, cwd)
+}
+
+/// The running executable named the way a refusal must name it: relative to
+/// `cwd` when it lives inside the project, its bare file name when it lives
+/// outside (never an absolute machine path — these labels reach versioned
+/// files). Falls back to a description when the path cannot be resolved at all
+/// — the reason still has to read as a sentence.
+pub(crate) fn running_binary_label(cwd: &Path) -> String {
+    std::env::current_exe().map_or_else(
+        |_| runner::UNNAMEABLE_BINARY.to_string(),
+        |exe| runner::running_binary_label(cwd, &exe),
+    )
+}
+
 /// Locate the markdown carrying a spec's acceptance criteria, by slug — the
 /// SAME locator qa-run uses, exposed so the negative test cannot disagree with
 /// QA about which file a spec name names.
@@ -426,18 +454,18 @@ pub struct QaSpecOutcome {
 /// Options for [`run_for_spec_with_options`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QaRunOptions {
-    /// `true` when invoked from a process that **is itself** the binary
-    /// some AC commands try to rebuild (`mustard-rt`/`mustard-dashboard`).
+    /// `true` when invoked from a process that **could be** the binary some AC
+    /// commands rebuild — this very `mustard-rt`.
     ///
-    /// Setting this flag makes [`rewrite_self_invoked_cargo`] auto-append
-    /// `--exclude mustard-rt --exclude mustard-dashboard` to any
-    /// `cargo build|test ... --workspace ...` command, so the AC does not
-    /// fail with `failed to remove file mustard-rt.exe` (Windows os error 5)
-    /// just because the very process running qa-run is holding the exe.
-    /// It also makes [`run_ac_command`] skip outright (with an explicit
-    /// reason) any `cargo build|test` that targets a [`SELF_CRATES`] member
-    /// DIRECTLY via `-p`/`--package` — that form cannot be rewritten, only
-    /// run externally. See [`targets_running_crate`].
+    /// Setting this flag lets the executor ask the PATH question before
+    /// spawning: when the file a `cargo build|test` would write IS the file
+    /// this process is executing from, a `--workspace` command gets
+    /// `--exclude <package>` appended and a direct `-p` command is refused
+    /// outright with a reason naming that file, instead of failing with
+    /// `failed to remove file mustard-rt.exe` (Windows os error 5). When the
+    /// two paths differ — the shipped shape, an installed binary against the
+    /// workspace `target/` — nothing is rewritten and nothing is refused. See
+    /// [`targets_running_binary`].
     ///
     /// `complete_spec::run_qa_fail_open` sets this. External callers
     /// (`mustard-rt run qa-run --spec X` from a CI shell) leave it `false`.
@@ -980,8 +1008,9 @@ mod tests {
     }
 
     /// The reproduced shape: a self-invoked run whose criteria that exercise
-    /// the feature all target the very binary executing QA (skipped without
-    /// spawning) plus one incidental green. It used to read `pass` and record a
+    /// the feature all came back `skip` (here through the fail-open path of an
+    /// uncompilable `Expect:` — the portable way to make a criterion verify
+    /// nothing) plus one incidental green. It used to read `pass` and record a
     /// `qa.result` for a spec where nothing had been implemented — the verdict
     /// let skips ride along, and the emission guard's "verified nothing" meant
     /// EVERY criterion skipped, which the one incidental pass defeated.
@@ -998,8 +1027,8 @@ mod tests {
             cwd,
             "almost-nothing",
             "# R\n\n## Acceptance Criteria\n\
-             - **AC-1** — exercises the feature.\n  Command: `cargo test -p mustard-rt one`\n\
-             - **AC-2** — exercises the feature.\n  Command: `cargo test -p mustard-rt two`\n\
+             - **AC-1** — exercises the feature.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
+             - **AC-2** — exercises the feature.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
              - **AC-3** — incidental green.\n  Command: `cd .`\n",
         );
         let almost = run_qa_with_options(cwd, "almost-nothing", QaRunOptions { self_invoked: true });
@@ -1078,12 +1107,12 @@ mod tests {
     fn self_invoked_all_skipped_run_writes_no_qa_result() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        // The only AC rebuilds the very binary running QA ⇒ skipped without
-        // even spawning (see `targets_running_crate`).
+        // The only AC verifies nothing: it exits 0 but its `Expect:` does not
+        // compile, the fail-open path that yields `skip`.
         seed_spec_md(
             cwd,
             "self-skip",
-            "# S\n\n## Acceptance Criteria\n- **AC-1** — rebuilds self.\n  Command: `cargo test -p mustard-rt`\n",
+            "# S\n\n## Acceptance Criteria\n- **AC-1** — verifies nothing.\n  Command: `cd .`\n  Expect: `[unterminated`\n",
         );
         let skipped = run_qa_with_options(cwd, "self-skip", QaRunOptions { self_invoked: true });
         assert_eq!(skipped.overall, "skip");

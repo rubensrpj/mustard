@@ -134,6 +134,19 @@ pub enum ReviewCmd {
     /// The trailing criterion is exempt (the build-green safety net). Writes the
     /// proof ledger `<spec-dir>/ac-proof.json` either way, prints one JSON
     /// document on stdout, and exits 2 when any criterion is unproven.
+    ///
+    /// With `--confirm` it takes the SECOND half instead: once the work has
+    /// landed, every criterion that cleared the red proof is run AGAIN and must
+    /// now come back GREEN. One still red is reported unproven — it does not
+    /// clear on its earlier failure alone.
+    ///
+    /// With `--removal` it takes the THIRD transition: each confirmed criterion
+    /// runs against a scratch checkout with the work the waves recorded taken
+    /// away. One that stays green SURVIVED the removal — it verifies something
+    /// OUTSIDE the work, which neither of the first two passes can tell apart.
+    /// A criterion whose OWN EVIDENCE — the command or the `Expect:` regex the
+    /// executor grades with — names a word the strip itself deleted is DECLINED
+    /// rather than run: its red was guaranteed, so it would say nothing.
     #[command(name = "ac-negative-check")]
     #[command(display_order = 81)]
     AcNegativeCheck {
@@ -141,6 +154,23 @@ pub enum ReviewCmd {
         /// its directory.
         #[arg(long, alias = "from-spec")]
         spec: Option<String>,
+        /// Take the CONFIRMATION pass (green after the work) instead of the RED
+        /// proof pass (red before it). Run it after a wave's work has landed.
+        #[arg(long)]
+        confirm: bool,
+        /// Take the REMOVAL pass — the third transition. Each criterion that
+        /// was CONFIRMED green is run against a scratch checkout with the work
+        /// the waves recorded taken away. One that stays green SURVIVED the
+        /// removal: it verifies something the work never did. One whose own
+        /// evidence — its command OR its `Expect:` regex — names a word the
+        /// strip deleted is declined, not run. Wins over `--confirm` when both
+        /// are given.
+        #[arg(long)]
+        removal: bool,
+        /// The revision the removal restores the work to. Omitted: the merge
+        /// base of `HEAD` and the project's primary integration base.
+        #[arg(long)]
+        from: Option<String>,
     },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
@@ -233,8 +263,8 @@ pub fn dispatch(cmd: ReviewCmd) {
                 review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format });
             }
         }
-        ReviewCmd::AcNegativeCheck { spec } => {
-            review::ac_negative_check::run(spec.as_deref());
+        ReviewCmd::AcNegativeCheck { spec, confirm, removal, from } => {
+            review::ac_negative_check::run(spec.as_deref(), confirm, removal, from.as_deref());
         }
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

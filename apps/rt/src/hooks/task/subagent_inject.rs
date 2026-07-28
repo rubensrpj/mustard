@@ -115,12 +115,113 @@ fn expand_prompt_ref(project: &Path, cwd: &str, input: &HookInput) -> Option<Ver
             report_unexpanded(cwd, &rel, reason);
             None
         }
-        RefStub::Expanded { body, .. } => {
+        RefStub::Expanded { rel, body } => {
             let mut tool_input = input.tool_input.clone();
-            tool_input.as_object_mut()?.insert("prompt".to_string(), serde_json::Value::String(body));
+            tool_input
+                .as_object_mut()?
+                .insert("prompt".to_string(), serde_json::Value::String(stamp_wave(&rel, body)));
             Some(Verdict::Rewrite { tool_input })
         }
     }
+}
+
+/// The machine marker a wave dispatch carries so the WAVE survives the trip into
+/// the child and back out again.
+///
+/// It exists because nothing else on the return says which wave returned. The
+/// `SubagentStop` payload names the child (`agent_id`, `agent_type`) and hands
+/// over its transcript, but it carries no wave; `MUSTARD_ACTIVE_WAVE` — what the
+/// rest of this crate reads for attribution — is set by NOBODY in this
+/// repository (`wave_advance.rs` says so in its own module docs), so every event
+/// that sourced the wave from it recorded `0`. Reading it here was therefore
+/// inert: every captured lesson landed "outside a wave plan" and every memory
+/// file said `unknown`.
+///
+/// The stamp closes that gap with the one fact the hook already holds at
+/// dispatch: the rendered prompt's own path (`.dispatch/wave-{N}-{role}…`),
+/// which `agent-prompt-render` derived from the wave it rendered for. Appending
+/// it to the expanded prompt means the wave rides INSIDE the child's first user
+/// message — which Claude Code persists verbatim as the first line of the
+/// child's own transcript (`agent_transcript_path`). That is what
+/// [`wave_from_child_transcript`] reads back.
+///
+/// It is appended, never prepended: the rendered prompt opens with
+/// `<!-- PREFIX-STABLE -->` and the prefix is what prompt caching keys on.
+const WAVE_STAMP_OPEN: &str = "<!-- mustard:wave=";
+
+/// How many leading transcript lines [`wave_from_child_transcript`] scans for the
+/// stamp. The dispatch prompt is line ONE (the child's first user message); the
+/// small margin absorbs a harness that prepends a header record. Bounded on
+/// purpose — a finished child's transcript runs to hundreds of KB, and the stamp
+/// can only ever be near the top. Scanning further would also start matching a
+/// SIBLING wave's prompt that the child happened to read.
+const TRANSCRIPT_STAMP_SCAN_LINES: usize = 4;
+
+/// Append the wave stamp to a rendered dispatch body, when the ref path names a
+/// wave. See [`WAVE_STAMP_OPEN`] for why the wave has to travel this way.
+///
+/// Unstamped on purpose when the path names no wave or names wave `0`: `0` is
+/// the schema's "outside a wave plan" (the single-spec fallback and every
+/// spec-less `/task` render), so stamping it would assert a wave that does not
+/// exist.
+fn stamp_wave(rel: &str, body: String) -> String {
+    match wave_from_ref_rel(rel) {
+        Some(w) => format!("{body}\n{WAVE_STAMP_OPEN}{w} -->\n"),
+        None => body,
+    }
+}
+
+/// The wave number a rendered-prompt path was rendered for, from its file name
+/// (`.claude/spec/{spec}/.dispatch/wave-{n}-{role}[-{sub}].{mode}.prompt.md` —
+/// the writer is `render::prompt_ref::prompt_ref_rel_path`). `None` for wave `0`
+/// and for the spec-less `.claude/.dispatch/{role}-{hash}.prompt.md` shape,
+/// which names no wave at all.
+fn wave_from_ref_rel(rel: &str) -> Option<u32> {
+    let file = rel.rsplit(['/', '\\']).next()?;
+    let digits: String = file
+        .strip_prefix("wave-")?
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<u32>().ok().filter(|w| *w > 0)
+}
+
+/// The wave a returning child was dispatched for, read back from the stamp its
+/// own transcript carries. `None` when the stop names no transcript, the file
+/// cannot be read, or its leading lines carry no stamp (an ad-hoc `Task`, a
+/// wave-less render, or a dispatch the hook never expanded).
+///
+/// The path key is `agent_transcript_path` — the SUBAGENT's transcript, which is
+/// what makes this per-child correct even when a whole round of sibling waves is
+/// in flight at once. `transcript_path` is a secondary read for a harness that
+/// spells it the shorter way; when it resolves to the parent session transcript
+/// instead, the leading lines carry no stamp and this simply yields `None`.
+///
+/// Fail-open throughout: this feeds telemetry attribution, never a decision.
+fn wave_from_child_transcript(input: &HookInput) -> Option<u32> {
+    use std::io::BufRead;
+
+    let path = ["agent_transcript_path", "transcript_path"]
+        .iter()
+        .find_map(|k| input.raw.get(*k).and_then(serde_json::Value::as_str))
+        .filter(|s| !s.is_empty())?;
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(TRANSCRIPT_STAMP_SCAN_LINES)
+        .map_while(Result::ok)
+        .find_map(|line| wave_from_stamp(&line))
+}
+
+/// The wave number in the FIRST [`WAVE_STAMP_OPEN`] stamp of `text`, if any.
+///
+/// A plain substring scan is correct over a JSON transcript line: every byte of
+/// the stamp is a character JSON leaves unescaped, so the marker survives
+/// serialisation of the prompt verbatim.
+fn wave_from_stamp(text: &str) -> Option<u32> {
+    let at = text.find(WAVE_STAMP_OPEN)? + WAVE_STAMP_OPEN.len();
+    let digits: String = text[at..].chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<u32>().ok().filter(|w| *w > 0)
 }
 
 /// Surface a ref stub the hook could NOT expand — transparency, never a block.
@@ -453,7 +554,24 @@ fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookI
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
         session_id: sid.to_string(),
-        wave: 0,
+        // The wave this lesson belongs to, when the run establishes one. It is
+        // what `wave_done::materialize_wave_memory` files the memory under, and
+        // the reason it is read HERE: at wave close every sibling's decision is
+        // already on the log, so the closing wave cannot tell them apart. `0` is
+        // the schema's "outside a wave plan" and the memory file will then say
+        // `unknown` rather than borrow a number.
+        //
+        // Source order, and why the first one had to be added: the env var the
+        // fallback reads (`MUSTARD_ACTIVE_WAVE`) is set by nothing in this
+        // repository, so it recorded `0` for every lesson a real run ever
+        // captured. The stamp the dispatch carries into the child's own
+        // transcript is the source production actually populates — and being
+        // per-child, it stays correct while a whole round of sibling waves is in
+        // flight, which is exactly when the attribution used to go wrong. The
+        // env read stays as a fallback for a caller that does set it.
+        wave: wave_from_child_transcript(input)
+            .or_else(|| super::common::current_wave_id().and_then(|w| w.parse::<u32>().ok()))
+            .unwrap_or(0),
         actor: Actor {
             kind: ActorKind::Hook,
             id: Some("subagent_inject".to_string()),
@@ -795,6 +913,88 @@ mod tests {
             }
             other => panic!("expected Rewrite, got {other:?}"),
         }
+    }
+
+    /// The wave a dispatch was rendered for comes from the rendered prompt's own
+    /// path — and wave `0` (the single-spec fallback) and the spec-less shape
+    /// name no wave at all, so they must not be stamped with one.
+    #[test]
+    fn wave_from_ref_rel_reads_the_rendered_prompt_path() {
+        assert_eq!(
+            wave_from_ref_rel(".claude/spec/demo/.dispatch/wave-3-plan-apps-rt.first.prompt.md"),
+            Some(3)
+        );
+        assert_eq!(
+            wave_from_ref_rel(".claude/spec/demo/.dispatch/wave-12-checklist.fix-loop.prompt.md"),
+            Some(12)
+        );
+        // Wave 0 IS the schema's "outside a wave plan" — never a wave.
+        assert_eq!(
+            wave_from_ref_rel(".claude/spec/demo/.dispatch/wave-0-review.first.prompt.md"),
+            None
+        );
+        // The spec-less render names no wave.
+        assert_eq!(wave_from_ref_rel(".claude/.dispatch/explore-0badc0de.prompt.md"), None);
+        assert_eq!(wave_from_ref_rel("wave-.first.prompt.md"), None, "no digits ⇒ no wave");
+    }
+
+    /// The wave the dispatch stamped must survive into the child and come back
+    /// out: the rewritten prompt carries the stamp, and reading it off a
+    /// transcript line that holds that prompt verbatim returns the same number.
+    ///
+    /// This is the seam the whole attribution rests on. Before it, the capture
+    /// sourced the wave from `MUSTARD_ACTIVE_WAVE` — set by nothing in this
+    /// repository — so every real run recorded `0` and every memory file said
+    /// `unknown` while the tests, which set the field by hand, stayed green.
+    #[test]
+    fn the_dispatch_stamps_its_wave_and_the_child_s_transcript_gives_it_back() {
+        let dir = tempdir().unwrap();
+        let rel = ".claude/spec/demo/.dispatch/wave-7-impl-apps-rt.first.prompt.md";
+        let full = dir.path().join(rel);
+        std::fs::create_dir_all(full.parent().expect("parent")).unwrap();
+        std::fs::write(&full, "<!-- PREFIX-STABLE -->\nROLE: impl\n").unwrap();
+
+        let stub = format!("MUSTARD-PROMPT-REF: {rel}\nDispatch stub — fallback line.");
+        let v = SubagentInject
+            .evaluate(&task_input(&stub, "impl"), &ctx_for(dir.path()))
+            .unwrap();
+        let Verdict::Rewrite { tool_input } = v else {
+            panic!("expected Rewrite, got {v:?}");
+        };
+        let prompt = tool_input["prompt"].as_str().expect("prompt string").to_string();
+        assert!(prompt.contains("<!-- mustard:wave=7 -->"), "unstamped: {prompt}");
+        assert!(
+            prompt.starts_with("<!-- PREFIX-STABLE -->"),
+            "the stamp must not disturb the cache-stable prefix: {prompt}"
+        );
+
+        // The child's own transcript, first line = that prompt verbatim.
+        let transcript = dir.path().join("agent-x.jsonl");
+        let line = serde_json::json!({ "type": "user", "message": { "content": prompt } });
+        std::fs::write(&transcript, format!("{line}\n")).unwrap();
+
+        let stop = HookInput {
+            hook_event_name: Some("SubagentStop".to_string()),
+            agent_type: Some("impl".to_string()),
+            raw: serde_json::json!({
+                "agent_transcript_path": transcript.to_string_lossy(),
+                "last_assistant_message": "done",
+            }),
+            ..HookInput::default()
+        };
+        assert_eq!(wave_from_child_transcript(&stop), Some(7));
+
+        // A stop naming no transcript, or one with no stamp, yields None — the
+        // fail-open path that lets the memory file say `unknown` honestly.
+        let unstamped = dir.path().join("agent-plain.jsonl");
+        std::fs::write(&unstamped, "{\"type\":\"user\",\"message\":{\"content\":\"just do it\"}}\n")
+            .unwrap();
+        let bare = HookInput {
+            raw: serde_json::json!({ "agent_transcript_path": unstamped.to_string_lossy() }),
+            ..HookInput::default()
+        };
+        assert_eq!(wave_from_child_transcript(&bare), None);
+        assert_eq!(wave_from_child_transcript(&HookInput::default()), None);
     }
 
     /// A stub naming a missing file must NOT rewrite — the dispatch proceeds

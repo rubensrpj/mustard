@@ -79,7 +79,7 @@ use retry::compose_retry_context;
 use role::{build_role_block, patterns_task_block};
 use sections::{
     build_conversation_material, collapse_empty_sections, filter_task_lines, read_guards_block,
-    read_spec_lang, scan_unfilled, strip_unfilled_template_tokens,
+    read_reality_obligations, read_spec_lang, scan_unfilled, strip_unfilled_template_tokens,
 };
 use skills::build_skills_list;
 
@@ -108,6 +108,7 @@ pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
     "{context_md}",
     "{prior_wave_diff}",
     "{change_log}",
+    "{reality_obligations}",
     "{conversation_material}",
     "{cross_wave_memory}",
     "{reference_files}",
@@ -311,6 +312,14 @@ pub(crate) fn render_prompt_at(
     // The spec's mid-pipeline change-log (`## CHANGE REQUESTS`) — bullets only,
     // empty (so the heading collapses) for spec-less renders or a spec with none.
     let change_log = spec.map(|_| read_change_log(&spec_dir)).unwrap_or_default();
+    // The duties this wave owes the WORLD, declared in the plan and materialised
+    // into the wave's own `spec.md`. They ride as their OWN section rather than
+    // inside `## TASK`, because a duty to check something outside the repository
+    // is not a step of the work — it is a precondition for it, and the one time
+    // it caught a provider-semantics inversion in the field it was prose someone
+    // happened to write. Empty for a wave that declares none (heading collapses)
+    // and for spec-less renders, which have no wave spec to read.
+    let reality_obligations = read_reality_obligations(&op_spec_path);
     // What the CONVERSATION established, carried in by `spec-draft --material`
     // and living ONCE in the PARENT spec (`## Definitions` / `## Decisions` /
     // `## Evidence`). A per-wave copy would drift, so the cut happens HERE:
@@ -416,9 +425,14 @@ pub(crate) fn render_prompt_at(
     let retry_context = match (mode, retry_context_file) {
         (RenderMode::First, _) => String::new(),
         (_, Some(path)) => mfs::read_to_string(path).unwrap_or_default(),
-        (_, None) => {
-            compose_retry_context(&project, spec, &spec_dir, &prior_wave_diff, &change_log)
-        }
+        (_, None) => compose_retry_context(
+            &project,
+            spec,
+            &spec_dir,
+            Some(subproject_str.as_str()),
+            &prior_wave_diff,
+            &change_log,
+        ),
     };
 
     // No size budget: every placeholder rides in full. Relevance is the only
@@ -438,6 +452,7 @@ pub(crate) fn render_prompt_at(
         &context_md,
         &prior_wave_diff,
         &change_log,
+        &reality_obligations,
         &conversation_material,
         &cross_wave_memory,
         &reference_files,
@@ -870,6 +885,7 @@ mod tests {
             ("{context_md}", ""),
             ("{prior_wave_diff}", ""),
             ("{change_log}", ""),
+            ("{reality_obligations}", ""),
             ("{conversation_material}", ""),
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),

@@ -849,6 +849,7 @@ fn build_checklist(lang: Locale) -> Vec<ChecklistItem> {
         label: translate("checklist.first_task", lang).to_string(),
         path: None,
         done: false,
+        dropped: None,
     }]
 }
 

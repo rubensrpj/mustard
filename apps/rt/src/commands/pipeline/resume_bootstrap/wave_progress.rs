@@ -1,13 +1,49 @@
-//! Wave-plan filesystem reconnaissance: progress counting, operational-spec
+//! Wave-plan progress reconnaissance: the filesystem census, the dispatch
+//! record that says whether that census was ever acted on, operational-spec
 //! path resolution, and role derivation.
 //!
 //! All readers fail-open: an unreadable `spec_dir` degrades to `(0, 0)` /
-//! `None` / empty so [`super::run`] never panics. Wave directories are 0-based
-//! (`wave-0-*`, `wave-1-*`, …).
+//! `None` / empty and an unreadable event log degrades to "no dispatch on
+//! record", so [`super::run`] never panics. Wave directories are 1-based
+//! (`wave-1-*`, `wave-2-*`, …) — there is no `wave-0-*`.
 
 use super::stage_resolver::{parse_header_value, read_first_lines};
+use mustard_core::domain::model::event::{
+    HarnessEvent, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
+    EVENT_PIPELINE_WAVE_START,
+};
 use mustard_core::io::fs as mfs;
 use std::path::{Path, PathBuf};
+
+/// Event kinds that PROVE at least one wave of a spec was actually handed out.
+///
+/// `pipeline.wave.start` is the strongest: `wave-advance` emits it itself for
+/// every wave it returns, so it lands whether or not the orchestrator relayed
+/// anything back. `pipeline.task.dispatch` is orchestrator-relayed (see the
+/// `wave-advance` module docs — not enforced) and `pipeline.wave.complete` is
+/// retroactive proof; both are kept so an older log still answers.
+const DISPATCH_RECORD_EVENTS: &[&str] = &[
+    EVENT_PIPELINE_WAVE_START,
+    EVENT_PIPELINE_TASK_DISPATCH,
+    EVENT_PIPELINE_WAVE_COMPLETE,
+];
+
+/// Whether ANY wave of `spec` was ever dispatched, per the event log.
+///
+/// This is the one fact the filesystem cannot supply. `wave-scaffold`
+/// materialises every `wave-N-*` directory up front, so a plan that was
+/// scaffolded and never started is byte-identical on disk to one whose first
+/// wave is in flight — [`count_wave_progress_from_fs`] reports `wave 1 of N`
+/// for both. Only the dispatch record separates them, and it is what
+/// [`super::ResumeBootstrap::never_dispatched`] reports.
+///
+/// Fail-open: an empty or unreadable log answers `false`, which is exactly what
+/// an empty log means — nothing on record.
+pub(super) fn wave_dispatch_recorded(events: &[HarnessEvent], spec: &str) -> bool {
+    events.iter().any(|e| {
+        e.spec.as_deref() == Some(spec) && DISPATCH_RECORD_EVENTS.contains(&e.event.as_str())
+    })
+}
 
 /// Walk the spec dir for `wave-{N}-*/spec.md`. Returns the first match.
 pub(super) fn find_wave_spec_path(spec_dir: &Path, wave: u32) -> Option<PathBuf> {
@@ -28,8 +64,15 @@ pub(super) fn find_wave_spec_path(spec_dir: &Path, wave: u32) -> Option<PathBuf>
     None
 }
 
-/// Best-effort FS-side (current, total) progress for a wave-plan when no
-/// events are available. `current = done + 1` capped at `total`.
+/// Best-effort FS-side `(current, total)` census for a wave-plan when no events
+/// are available. `total` counts `wave-N-*` directories; `done` counts the ones
+/// whose header reads closed + completed; `current = done + 1`.
+///
+/// **A directory count is not progress.** `current` names the wave that comes
+/// NEXT, never a wave that started: `wave-scaffold` writes all N directories
+/// before anything is dispatched, so a plan nobody touched yields the same
+/// `(1, N)` as a plan whose first wave is in flight. The caller must pair this
+/// with [`wave_dispatch_recorded`] before rendering the pair as progress.
 pub(super) fn count_wave_progress_from_fs(spec_dir: &Path) -> (u32, u32) {
     let Ok(entries) = mfs::read_dir(spec_dir) else {
         return (0, 0);
