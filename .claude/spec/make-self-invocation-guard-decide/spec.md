@@ -67,6 +67,11 @@ what refuses to read that as success.
   then the refusal stands and names that file as the reason
   Command: `cargo test -p mustard-rt guard_refuses_when_build_target_is_the_running_binary`
   Expect: `ok\. [1-9][0-9]* passed`
+- **AC-4** — when the refusal names the file it is protecting, then the name it
+  writes is never an absolute machine path, because that text lands in versioned
+  files
+  Command: `cargo test -p mustard-rt running_binary_label_never_leaks_an_absolute_path`
+  Expect: `ok\. [1-9][0-9]* passed`
 - **AC-3** — the project build passes green
   Command: `cargo build --workspace`
 

@@ -7,7 +7,9 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "not-taken",
       "exit": 0,
+      "confirmation_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-core v0.1.0 (C:\\Atiz\\mustard\\packages\\core)\n   Compiling mustard-rt v0.1.0 (C:\\Ati"
     },
@@ -17,7 +19,9 @@
       "expect": "ok\\. [1-9][0-9]* passed",
       "verdict": "proven",
       "proof": "red",
+      "confirmation": "not-taken",
       "exit": 0,
+      "confirmation_exit": null,
       "reason": null,
       "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s\n     Running unittests src\\lib."
     },
@@ -27,8 +31,22 @@
       "expect": null,
       "verdict": "exempt",
       "proof": "not-attempted",
+      "confirmation": "not-taken",
       "exit": null,
+      "confirmation_exit": null,
       "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo test -p mustard-rt running_binary_label_never_leaks_an_absolute_path",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "unproven",
+      "proof": "green",
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "reason": "the proof was TAKEN and the command came back green against the tree as it is, so this criterion cannot tell done from not-done — rewrite the command so it asserts the new behaviour",
       "stderr_excerpt": ""
     }
   ],
