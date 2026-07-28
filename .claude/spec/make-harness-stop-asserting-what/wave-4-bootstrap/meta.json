@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-harness-stop-asserting-what",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/wave_progress.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/wave_progress.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/review/dependency_precheck.rs",
+      "path": "apps/rt/src/commands/review/dependency_precheck.rs",
+      "done": false
+    }
+  ]
+}

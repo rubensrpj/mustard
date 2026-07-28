@@ -1,0 +1,21 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-harness-stop-asserting-what",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/checklist/mark_checklist_item.rs",
+      "path": "apps/rt/src/commands/checklist/mark_checklist_item.rs",
+      "done": false
+    },
+    {
+      "label": "packages/core/src/domain/model/view/wave.rs",
+      "path": "packages/core/src/domain/model/view/wave.rs",
+      "done": false
+    }
+  ]
+}

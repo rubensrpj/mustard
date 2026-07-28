@@ -1,0 +1,16 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "make-harness-stop-asserting-what",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/active_specs.rs",
+      "path": "apps/rt/src/commands/spec/active_specs.rs",
+      "done": false
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "spec": "make-harness-stop-asserting-what",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt ac_proof_requires_green_after",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt ac_amend_accepts_inexecutable_predecessor",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 2.06s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-rt active_specs_lists_in_flight_from_other_branches",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo test -p mustard-rt plan_reality_obligations_reach_wave_prompt",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo test -p mustard-rt wave_done_flags_unreported_reality_obligation",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-6",
+      "command": "cargo test -p mustard-rt wave_progress_distinguishes_never_dispatched",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-7",
+      "command": "cargo test -p mustard-rt dependency_precheck_skip_is_surfaced",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-8",
+      "command": "cargo test -p mustard-rt checklist_records_dropped_with_reason",
+      "expect": "ok\\. [1-9][0-9]* passed",
+      "verdict": "proven",
+      "proof": "red",
+      "exit": 0,
+      "reason": null,
+      "stderr_excerpt": "Expect `ok\\. [1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-9",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": []
+}
