@@ -1,15 +1,56 @@
 # Acceptance Criteria — Cross-Shell Pattern
 
-> Detail for `/feature` spec authoring: AC commands that run on both Windows (cmd.exe) and Unix shells.
+> Detail for `/feature` spec authoring: what an AC command can rely on, and the one thing it still cannot.
 
-`mustard-rt run qa-run` executes each AC command via `execSync` with `shell: true`. On Windows that shell is `cmd.exe`, which does NOT understand bash syntax (`for`, `test $? -eq 0`, `[ $n -gt 200 ]`, single-quoted heredocs). Write every AC command in one of these portable forms:
+`mustard-rt run qa-run` executes each AC command through the shell that
+`crate::util::platform::build_shell_command` resolves: `sh -c` on Unix, and on
+Windows the POSIX shell that ships beside `git`, located from the `git.exe` on
+PATH. **Write AC commands in ordinary POSIX shell.** Single quotes, `test`,
+`[ … ]`, `$(…)`, pipes, `&&`, `wc`, `grep` and heredocs all work on every
+platform this harness runs on.
 
-- Single command, exit code is the verdict: e.g. `mustard-rt run verify-pipeline` — execSync throws on non-zero, passes on 0. No wrapper needed.
-- Multi-step assertion: wrap the whole logic in `node -e "..."`:
-  ```
-  node -e "const fs=require('fs');for(const f of ['a.md','b.md']){if(fs.readFileSync(f,'utf8').split('\n').length>200)process.exit(1)}"
-  ```
-- Pipes/grep: keep the pipe INSIDE node rather than the shell — `node -e "const o=require('child_process').execSync('mycmd',{encoding:'utf8',stdio:['ignore','pipe','ignore']});if(!/needle/.test(o))process.exit(1)"`. Shell-level `|` and stdio redirects (`2>&1`) on cmd.exe combined with `node -e` quoting mangle nested quotes; pulling the exec inside node sidesteps it.
-- Real shell needed (heredocs, complex pipelines): prefix with `bash -c '...'` so cmd.exe spawns bash explicitly.
-- Avoid backslash regex escapes (`\b`, `\d`, `\w`) in inline regex literals — the escape does not survive the markdown → cmd.exe → `node -e` round-trip; the regex silently fails to match even when the output is correct. Use plain substrings (`/lsp/i`), character classes (`/[^a-z]lsp[^a-z]/i`), or build the `RegExp` from a string inside node.
-- Avoid: raw `for f in ...; do ...; done`, `test $? -eq 0`, `$(...)` substitution, `[ ... ]` brackets — all bash-only and silently fail on Windows with cryptic errors like "f foi inesperado neste momento".
+## Why this page used to say the opposite
+
+The Windows shell was `cmd.exe`, and this page taught the workarounds for it —
+`node -e "…"` wrappers, explicit `bash -c '…'` prefixes, and a list of POSIX
+constructs to avoid. That guidance made a defect invisible instead of fixing it.
+Under `cmd.exe` the single quote is **not** a quote character, so `rg 'token' path`
+searched for a literal `'token'`, matched nothing in any tree state, exited 1
+with an empty stderr — and `ac-negative-check`, whose whole red rule is
+`exit != 0`, stamped it `proven: red`. A criterion that could never go green
+entered the plan, and the failure resurfaced at QA looking like the
+implementer's fault. Teaching authors to route around a shell is not the same as
+giving them one.
+
+## The one residual: backslash paths
+
+`\` is an escape character in a POSIX shell, so `apps\rt\src\x.rs` collapses to
+`appsrtsrcx.rs`. **Write paths with forward slashes** — they resolve on Windows
+too, and every tool this project uses accepts them.
+
+This failure is loud: the program names the mangled path on stderr and the
+`stderr_excerpt` carries it. It degrades to a visible error, never to a silent
+red.
+
+## Two verdicts that are NOT failures
+
+- **Exit 127** — the shell could not find the command. Reported `skip`, never
+  `fail`, because a command that did not run discriminates nothing. Fix the
+  command or install the tool; do not read it as a red.
+- **Spawn failure** — the OS refused. Also `skip`, carrying the OS error rather
+  than a guess about its cause.
+
+Both stay out of `ac-negative-check`'s red ledger by design: an unrunnable
+criterion must never be mistaken for a discriminating one.
+
+## Still worth avoiding
+
+- **Backslash regex escapes inside a `node -e` literal** (`\b`, `\d`, `\w`). The
+  escape does not survive the markdown → shell → `node -e` round-trip, and the
+  regex silently fails to match even when the output is correct. Use plain
+  substrings (`/lsp/i`), character classes (`/[^a-z]lsp[^a-z]/i`), or build the
+  `RegExp` from a string inside node. Prefer `rg` with an `Expect:` regex over a
+  nested `node -e` in the first place.
+- **A lone build-green** (`cargo build`, a bare `grep`). It verifies nothing
+  about the behaviour; `analyze-validation` warns on it and `ac-negative-check`
+  refuses it for not being able to fail. Only the trailing criterion is exempt.
