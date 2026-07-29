@@ -34,14 +34,26 @@ red.
 
 ## Two verdicts that are NOT failures
 
-- **Exit 127** — the shell could not find the command. Reported `skip`, never
-  `fail`, because a command that did not run discriminates nothing. Fix the
-  command or install the tool; do not read it as a red.
-- **Spawn failure** — the OS refused. Also `skip`, carrying the OS error rather
-  than a guess about its cause.
+- **Spawn failure** — the OS could not start the command at all. Reported
+  `skip`, carrying the OS error rather than a guess about its cause.
 
-Both stay out of `ac-negative-check`'s red ledger by design: an unrunnable
-criterion must never be mistaken for a discriminating one.
+`skip` never counts as a proof: `ac-negative-check` records it `unproven`, so an
+unrunnable criterion is never mistaken for a discriminating one.
+
+## Exit 127 — one code, two correct verdicts
+
+A command the shell cannot FIND is a case apart, and the two readers of that
+result answer opposite questions, so they reach opposite verdicts on purpose:
+
+- **`qa-run` fails on it.** A criterion nobody could run must block CLOSE.
+  Grading it `skip` would let it ride along beside a passing criterion, because
+  an external run tolerates a skip next to a pass — that regression shipped once.
+- **`ac-negative-check` records it `unproven`.** Its red rule is exit≠0, so a
+  missing program would otherwise be stamped `proven: red` and enter the plan
+  carrying a proof about the shell rather than about the behaviour.
+
+The remedy is the same in both readings and neither reading suggests the wrong
+one: fix the program name, or install the tool.
 
 ## Still worth avoiding
 
