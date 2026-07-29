@@ -368,9 +368,20 @@ fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
     );
     let lower = body.to_lowercase();
     assert!(
-        line_with(&lower, "127").is_some_and(|l| l.contains("skip") || lower.contains("`skip`")),
-        "the ref must name the verdict an unrunnable command gets, or an author \
-         reads `skip` as a failure",
+        line_with(&lower, "127").is_some(),
+        "the ref must name the code an unrunnable command comes back with",
+    );
+    // The two readers of exit 127 answer opposite questions and must BOTH be
+    // named. A ref that mentions only the negative test's `unproven` reads as if
+    // an unrunnable criterion were tolerated at QA — which is the regression
+    // that shipped, written down as guidance.
+    assert!(
+        lower.contains("qa-run") && lower.contains("block"),
+        "the ref must say a criterion nobody could run BLOCKS the close",
+    );
+    assert!(
+        lower.contains("unproven"),
+        "and that the negative test refuses to count it as proof",
     );
 
     // --- 2. The shell really consumes POSIX quoting ------------------------

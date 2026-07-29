@@ -371,12 +371,19 @@ fn exclude_orchestrator_crate(command: &str) -> String {
 /// exit 0, `Err(excerpt)` otherwise. Timeout picked by [`effective_timeout`]
 /// (Rust 600 s, TS/Python 120-180 s; env-overridable).
 fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
-    // On Windows the gate shell is `cmd.exe`; `mustard-rt`'s own shell-spawning
-    // tests deadlock when launched with that `cmd.exe` as their process-tree
-    // root, so a `cargo test --workspace` here burns the whole 600 s timeout on
-    // the orchestrator crate. Exclude it — the gate still tests every other
-    // member. On Unix (the gate shell is `sh`) the suite runs clean, so keep
+    // `mustard-rt`'s own shell-spawning tests deadlocked when launched with
+    // `cmd.exe` as their process-tree root, so a `cargo test --workspace` here
+    // burned the whole 600 s timeout on the orchestrator crate. Exclude it — the
+    // gate still tests every other member. On Unix the suite runs clean, so keep
     // full workspace coverage.
+    //
+    // Stale-justification notice: the Windows gate shell is NO LONGER `cmd.exe`.
+    // `crate::util::platform::build_shell_command` now resolves the POSIX shell
+    // beside `git`, so the process-tree root this exclusion was written against
+    // is gone. Whether the deadlock went with it has NOT been measured, and the
+    // exclusion is kept for exactly that reason: dropping it on the strength of
+    // a changed premise would be asserting a result nobody observed. Reproduce
+    // the deadlock under the POSIX shell before removing this.
     let rewritten = if cfg!(windows) {
         exclude_orchestrator_crate(command)
     } else {
