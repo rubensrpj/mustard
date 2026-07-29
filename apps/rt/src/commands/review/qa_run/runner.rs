@@ -379,10 +379,14 @@ fn run_ac_command_with_timeout(
             ),
         };
     }
-    // POSIX-style AC commands assume a shell; the shared runner uses the
-    // platform shell. Windows AC are documented to be cross-shell-safe
-    // (`node -e`, `bash -c`). Self-invoked rewrite first — see
-    // `rewrite_workspace_exclusion` for why.
+    // POSIX-style AC commands assume a POSIX shell, and now GET one: the shared
+    // runner resolves the shell that ships beside `git` on Windows
+    // (`crate::util::platform::build_shell_command`). This used to be a
+    // documented constraint on the AC author — "Windows AC are cross-shell-safe
+    // (`node -e`, `bash -c`)" — which is not a guarantee, and under `cmd.exe`
+    // the single quotes in `rg 'token' path` reached the program as literal
+    // characters, so the criterion could never match and never go green.
+    // Self-invoked rewrite first — see `rewrite_workspace_exclusion` for why.
     let rewritten = match (opts.self_invoked, paths.as_ref()) {
         (true, Some((root, exe))) => rewrite_workspace_exclusion(command, root, exe),
         _ => command.to_string(),
@@ -464,6 +468,23 @@ fn run_ac_command_with_timeout(
                     "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
                 ),
             },
+        };
+    }
+    // 127 is the POSIX shell's own "command not found". The criterion was never
+    // attempted, so it discriminates NOTHING — and calling that `fail` is what
+    // let `ac_negative_check` stamp an unrunnable criterion `proven: red`, since
+    // exit≠0 is the whole of its red rule. Same class as `SpawnFailed` above,
+    // one layer down: there the OS refused, here the shell did.
+    if status.code() == Some(127) {
+        return AcResult {
+            id: String::new(),
+            status: "skip".to_string(),
+            exit: Some(127),
+            duration_ms,
+            stderr_excerpt: format!(
+                "the shell could not find the command (exit 127): {}",
+                excerpt(&combined_full)
+            ),
         };
     }
     AcResult {
@@ -646,6 +667,42 @@ mod tests {
         let res = run_ac_command(cmd, None, dir.path());
         assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, Some(0));
+    }
+
+    /// THE regression this fix exists for, in both senses. A criterion written
+    /// POSIX-style — the shape the flow's own prose teaches — must be able to go
+    /// GREEN when its evidence is there and RED when it is not. Under `cmd.exe`
+    /// the apostrophes reached `echo` as literal characters, so the output was
+    /// `'a b'`, the `Expect:` never matched, and BOTH senses came back red: a
+    /// criterion that could not pass in any tree state, stamped `proven: red` by
+    /// the negative test and blamed on the implementer at QA.
+    #[test]
+    fn an_ac_written_with_single_quotes_can_go_both_ways() {
+        let dir = tempdir().unwrap();
+        let green = run_ac_command("echo 'a b'", Some("^a b$"), dir.path());
+        assert_eq!(
+            green.status, "pass",
+            "single-quoted AC must be able to pass, stderr: {}",
+            green.stderr_excerpt
+        );
+        let red = run_ac_command("echo 'a b'", Some("^zzz$"), dir.path());
+        assert_eq!(
+            red.status, "fail",
+            "and must still fail on absent evidence, stderr: {}",
+            red.stderr_excerpt
+        );
+    }
+
+    /// A command the shell cannot find verified NOTHING, so it is `skip` — the
+    /// same class as a spawn failure, one layer down. Calling it `fail` is what
+    /// made an unrunnable criterion indistinguishable from a discriminating one,
+    /// since `ac_negative_check` reads any exit≠0 as its red proof.
+    #[test]
+    fn a_command_the_shell_cannot_find_is_skip_not_fail() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command("mustard-no-such-program-9f3c --version", None, dir.path());
+        assert_eq!(res.status, "skip", "stderr: {}", res.stderr_excerpt);
+        assert_eq!(res.exit, Some(127), "the shell's own not-found code");
     }
 
     /// Commands invoking `cargo ` get the compile-aware ceiling (600 s): a
@@ -992,14 +1049,24 @@ mod tests {
     }
 
     /// A shell command that prints ~90 KB — far past the ~64 KB OS pipe buffer
-    /// — and then exits 3. Per-platform because the AC shell is `cmd.exe` on
-    /// Windows and `sh` elsewhere.
-    #[cfg(windows)]
-    const BIG_OUTPUT_EXIT_3: &str =
-        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
-    #[cfg(not(windows))]
-    const BIG_OUTPUT_EXIT_3: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
+    /// — and then exits 3. The POSIX form is what runs whenever a POSIX shell
+    /// was resolved, which on Windows is now the normal case; the `cmd.exe`
+    /// form is kept for the fallback so the test still drives the REAL shell on
+    /// a machine carrying no `git` install beside one.
+    const BIG_OUTPUT_EXIT_3_POSIX: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
          while [ $i -lt 12 ]; do s=\"$s$s\"; i=$((i+1)); done; echo \"$s\"; exit 3";
+    #[cfg(windows)]
+    const BIG_OUTPUT_EXIT_3_CMD: &str =
+        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
+
+    /// The form matching the shell this process will actually spawn.
+    fn big_output_exit_3() -> &'static str {
+        #[cfg(windows)]
+        if crate::util::platform::posix_shell().is_none() {
+            return BIG_OUTPUT_EXIT_3_CMD;
+        }
+        BIG_OUTPUT_EXIT_3_POSIX
+    }
 
     /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
     #[cfg(windows)]
@@ -1015,7 +1082,7 @@ mod tests {
     #[test]
     fn ac_command_past_the_pipe_buffer_is_judged_by_exit_code() {
         let dir = tempdir().unwrap();
-        let res = run_ac_command(BIG_OUTPUT_EXIT_3, None, dir.path());
+        let res = run_ac_command(big_output_exit_3(), None, dir.path());
         assert_eq!(
             res.status, "fail",
             "verdict comes from the exit code, stderr: {}",

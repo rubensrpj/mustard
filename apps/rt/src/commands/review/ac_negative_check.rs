@@ -1275,6 +1275,11 @@ mod tests {
     /// A command that comes back GREEN on both shells — `cd .` is a builtin
     /// everywhere and always succeeds.
     const GREEN_COMMAND: &str = "cd .";
+    /// A DIFFERENT green command, for the tests that need the recorded proof to
+    /// stop applying because the command STRING changed. It must differ as text
+    /// while staying green on both shells — appending an argument does not
+    /// qualify, since a POSIX shell refuses `cd` with two of them.
+    const OTHER_GREEN_COMMAND: &str = "cd \".\"";
 
     /// Seed `<root>/.claude/spec/<spec>/spec.md` with `body`; returns the dir.
     fn seed(root: &Path, spec: &str, body: &str) -> PathBuf {
@@ -1427,7 +1432,7 @@ mod tests {
         // criterion is asked again, and now reads green.
         let changed = format!(
             "# S\n\n## Acceptance Criteria\n\
-             - **AC-1** — the behaviour holds.\n  Command: `{GREEN_COMMAND} .`\n\
+             - **AC-1** — the behaviour holds.\n  Command: `{OTHER_GREEN_COMMAND}`\n\
              - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
         );
         std::fs::write(spec_dir.join("spec.md"), changed).unwrap();
@@ -1581,9 +1586,21 @@ mod tests {
     fn removal_refuses_a_survivor_and_declines_what_it_cannot_judge() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // `type` on Windows, `cat` elsewhere: the AC shell is `cmd.exe` there
-        // and `sh` here, and only the spelling of "read this file" differs.
-        let read = if cfg!(windows) { "type" } else { "cat" };
+        // "read this file" is spelled `type` by `cmd.exe` and `cat` by a POSIX
+        // shell. Chosen at RUN time, not compile time: on Windows the AC shell
+        // is now whichever one `crate::util::platform` resolves, so a
+        // `cfg!(windows)` fixture would hand `type` to a POSIX shell — where it
+        // is a builtin that reports command types and never reads a file.
+        let read = {
+            #[cfg(windows)]
+            {
+                if crate::util::platform::posix_shell().is_some() { "cat" } else { "type" }
+            }
+            #[cfg(not(windows))]
+            {
+                "cat"
+            }
+        };
         // The tree WITH the work: all three directories, plus the file AC-4
         // reads — its marker lives in the CONTENT, never in the command.
         let with_work = root.join("with-work");

@@ -381,14 +381,24 @@ mod tests {
     use super::*;
 
     /// A shell command that prints ~90 KB — far past the ~64 KB OS pipe buffer
-    /// — and then exits 3. Per-platform because the shell is `cmd.exe` on
-    /// Windows and `sh` elsewhere.
-    #[cfg(windows)]
-    const BIG_OUTPUT_EXIT_3: &str =
-        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
-    #[cfg(not(windows))]
-    const BIG_OUTPUT_EXIT_3: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
+    /// — and then exits 3. Selected at RUN time, not compile time: the Windows
+    /// shell is now whichever one [`crate::util::platform::build_shell_command`]
+    /// resolves, so a `cfg!(windows)` fixture would drive `cmd.exe` syntax into
+    /// a POSIX shell.
+    const BIG_OUTPUT_EXIT_3_POSIX: &str = "s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; i=0; \
          while [ $i -lt 12 ]; do s=\"$s$s\"; i=$((i+1)); done; echo \"$s\"; exit 3";
+    #[cfg(windows)]
+    const BIG_OUTPUT_EXIT_3_CMD: &str =
+        "(for /L %i in (1,1,3000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) & exit 3";
+
+    /// The form matching the shell this process will actually spawn.
+    fn big_output_exit_3() -> &'static str {
+        #[cfg(windows)]
+        if crate::util::platform::posix_shell().is_none() {
+            return BIG_OUTPUT_EXIT_3_CMD;
+        }
+        BIG_OUTPUT_EXIT_3_POSIX
+    }
 
     /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
     #[cfg(windows)]
@@ -403,7 +413,7 @@ mod tests {
     #[test]
     fn shell_drains_beyond_the_pipe_buffer_and_reports_exit_code() {
         let dir = std::env::temp_dir();
-        let outcome = run_shell_with_deadline(BIG_OUTPUT_EXIT_3, &dir, Duration::from_secs(60));
+        let outcome = run_shell_with_deadline(big_output_exit_3(), &dir, Duration::from_secs(60));
         match outcome {
             ShellOutcome::Exited { status, stdout, .. } => {
                 assert_eq!(status.code(), Some(3), "judged by its own exit code");
