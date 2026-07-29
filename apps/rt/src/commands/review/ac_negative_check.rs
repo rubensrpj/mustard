@@ -450,6 +450,14 @@ const REASON_NOT_ATTEMPTED: &str = "the proof was NEVER TAKEN: the command could
 const REASON_PLACEHOLDER: &str = "the proof was NEVER TAKEN: the command still carries an \
      unfilled `<…>` placeholder — fill it in, then take the proof";
 
+/// The reason a command the shell could not FIND is unproven. Apart from
+/// [`REASON_NOT_ATTEMPTED`] because the action differs: there the criterion was
+/// never spawned at all, here it ran and the shell reported the program
+/// missing, so the fix is the program name or the tool — not the command shape.
+const REASON_NOT_FOUND: &str = "the proof was NEVER TAKEN: the shell could not find the \
+     command (exit 127), so its red says nothing about the behaviour — fix the program name \
+     or install the tool, then take the proof";
+
 /// Why the trailing criterion is not tested.
 const REASON_EXEMPT: &str = "exempt by position: the trailing criterion is the build-green \
      safety net, green before the work by design";
@@ -766,6 +774,22 @@ pub(crate) fn prove_one(
         return base(Verdict::Unproven, Proof::NotAttempted, REASON_PLACEHOLDER);
     }
     let result = qa_run::execute_ac(command, expect, root);
+    // A command the shell could not FIND came back red for a reason that has
+    // nothing to do with the behaviour, and this pass's whole red rule is
+    // exit≠0 — so without this arm an unrunnable criterion is stamped
+    // `proven: red` and rides into the plan.
+    //
+    // The executor grades 127 `fail`, deliberately, because `qa-run` shares it
+    // and a criterion nobody could run must not let a QA run read green. The
+    // two readers therefore reach OPPOSITE verdicts off the same record, each
+    // correct for its own question, by looking at the exit code rather than at
+    // a shared status one of them would have to misread.
+    if result.exit() == Some(qa_run::EXIT_COMMAND_NOT_FOUND) {
+        let mut record = base(Verdict::Unproven, Proof::NotAttempted, REASON_NOT_FOUND);
+        record.exit = result.exit();
+        record.stderr_excerpt = result.stderr_excerpt().to_string();
+        return record;
+    }
     let (verdict, proof, reason) = classify(result.status());
     AcProof {
         id: id.to_string(),
@@ -845,6 +869,22 @@ pub(crate) fn confirm_one(
         };
     }
     let result = qa_run::execute_ac(&record.command, record.expect.as_deref(), root);
+    // A command the shell cannot FIND, asked AFTER its work landed, is broken
+    // whatever the work does — which is precisely what [`Confirmation::Inexecutable`]
+    // means, and the single state `ac_amend` accepts a passing replacement for.
+    // The executor grades 127 `fail` for `qa-run`'s sake, so reading the status
+    // alone would book this as [`Confirmation::Red`] — "finish the work" —
+    // pointing the reader at the one action that cannot help.
+    if result.exit() == Some(qa_run::EXIT_COMMAND_NOT_FOUND) {
+        return AcProof {
+            verdict: Verdict::Unproven,
+            confirmation: Confirmation::Inexecutable,
+            confirmation_exit: result.exit(),
+            reason: Some(REASON_INEXECUTABLE.to_string()),
+            stderr_excerpt: result.stderr_excerpt().to_string(),
+            ..record
+        };
+    }
     let (verdict, confirmation, reason) = classify_confirmation(result.status());
     AcProof {
         verdict,
@@ -1275,6 +1315,11 @@ mod tests {
     /// A command that comes back GREEN on both shells — `cd .` is a builtin
     /// everywhere and always succeeds.
     const GREEN_COMMAND: &str = "cd .";
+    /// A DIFFERENT green command, for the tests that need the recorded proof to
+    /// stop applying because the command STRING changed. It must differ as text
+    /// while staying green on both shells — appending an argument does not
+    /// qualify, since a POSIX shell refuses `cd` with two of them.
+    const OTHER_GREEN_COMMAND: &str = "cd \".\"";
 
     /// Seed `<root>/.claude/spec/<spec>/spec.md` with `body`; returns the dir.
     fn seed(root: &Path, spec: &str, body: &str) -> PathBuf {
@@ -1427,13 +1472,41 @@ mod tests {
         // criterion is asked again, and now reads green.
         let changed = format!(
             "# S\n\n## Acceptance Criteria\n\
-             - **AC-1** — the behaviour holds.\n  Command: `{GREEN_COMMAND} .`\n\
+             - **AC-1** — the behaviour holds.\n  Command: `{OTHER_GREEN_COMMAND}`\n\
              - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
         );
         std::fs::write(spec_dir.join("spec.md"), changed).unwrap();
         let rechecked = check(dir.path(), "kept");
         assert_eq!(entry(&rechecked, "AC-1").verdict, Verdict::Unproven);
         assert_eq!(entry(&rechecked, "AC-1").proof, Proof::Green);
+    }
+
+    /// A criterion whose PROGRAM does not exist is NEVER TAKEN — never proven
+    /// red.
+    ///
+    /// This pass's red rule is exit≠0, and a shell's "command not found" is
+    /// exit 127, so without the exit-code arm the criterion enters the plan
+    /// carrying a proof about the shell instead of about the behaviour. The
+    /// executor still grades that `fail`, because `qa-run` shares it and an
+    /// unrunnable criterion must block a QA run — the two readers disagree on
+    /// purpose, off the exit code rather than off a status one of them would
+    /// have to misread.
+    #[test]
+    fn a_command_the_shell_cannot_find_is_never_taken_not_proven_red() {
+        let dir = tempdir().unwrap();
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — the program does not exist.\n  \
+             Command: `mustard-no-such-program-9f3c`\n\
+             - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        seed(dir.path(), "notfound", &body);
+        let report = check(dir.path(), "notfound");
+        let e = entry(&report, "AC-1");
+        assert_eq!(e.verdict, Verdict::Unproven, "reason: {:?}", e.reason);
+        assert_eq!(e.proof, Proof::NotAttempted, "a proof about the shell is no proof");
+        assert_eq!(e.exit, Some(qa_run::EXIT_COMMAND_NOT_FOUND));
+        assert!(!report.ok, "and an unproven criterion withholds the plan");
     }
 
     /// A criterion still carrying an unfilled `<…>` placeholder was NEVER
@@ -1581,9 +1654,21 @@ mod tests {
     fn removal_refuses_a_survivor_and_declines_what_it_cannot_judge() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // `type` on Windows, `cat` elsewhere: the AC shell is `cmd.exe` there
-        // and `sh` here, and only the spelling of "read this file" differs.
-        let read = if cfg!(windows) { "type" } else { "cat" };
+        // "read this file" is spelled `type` by `cmd.exe` and `cat` by a POSIX
+        // shell. Chosen at RUN time, not compile time: on Windows the AC shell
+        // is now whichever one `crate::util::platform` resolves, so a
+        // `cfg!(windows)` fixture would hand `type` to a POSIX shell — where it
+        // is a builtin that reports command types and never reads a file.
+        let read = {
+            #[cfg(windows)]
+            {
+                if crate::util::platform::posix_shell().is_some() { "cat" } else { "type" }
+            }
+            #[cfg(not(windows))]
+            {
+                "cat"
+            }
+        };
         // The tree WITH the work: all three directories, plus the file AC-4
         // reads — its marker lives in the CONTENT, never in the command.
         let with_work = root.join("with-work");

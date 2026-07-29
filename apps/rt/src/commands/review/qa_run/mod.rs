@@ -36,6 +36,11 @@ use std::path::{Path, PathBuf};
 mod render;
 mod runner;
 
+/// Re-exported so `ac_negative_check` can tell an unrunnable command from a
+/// discriminating one WITHOUT the executor having to grade them alike. See the
+/// constant's own doc for why the two readers must disagree here.
+pub(crate) use runner::EXIT_COMMAND_NOT_FOUND;
+
 /// A parsed AC item: `- [ ] AC-N: description — Command: `cmd``.
 ///
 /// `pub(crate)` (not `pub`) because `analyze_validation` reuses the exact
@@ -1005,6 +1010,40 @@ mod tests {
         // Empty stays `skip` under both modes (the no-criteria contract).
         assert_eq!(overall_verdict(&[], true), "skip");
         assert_eq!(overall_verdict(&[], false), "skip");
+    }
+
+    /// End-to-end: a criterion whose PROGRAM does not exist must not let an
+    /// EXTERNAL run read `pass`.
+    ///
+    /// The regression this pins actually shipped. The executor briefly graded
+    /// exit 127 `skip`, so `ac_negative_check` would stop reading an unrunnable
+    /// command as red proof — but [`overall_verdict`] tolerates a `skip` beside
+    /// a `pass` on the external path, which is the path the close gate reads.
+    /// One typo'd program name beside one green criterion was enough to close a
+    /// spec on a criterion nobody had ever run.
+    ///
+    /// Driven end to end rather than through `overall_verdict` alone: the defect
+    /// was the SEAM between the executor's status and this verdict, and a unit
+    /// test on either side passes while the seam is broken.
+    #[test]
+    fn an_unrunnable_criterion_does_not_let_an_external_run_pass() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        seed_spec_md(
+            cwd,
+            "unrunnable",
+            "# R\n\n## Acceptance Criteria\n\
+             - **AC-1** — the program does not exist.\n  Command: `mustard-no-such-program-9f3c`\n\
+             - **AC-2** — incidental green.\n  Command: `cd .`\n",
+        );
+        let out = run_qa_with_options(cwd, "unrunnable", QaRunOptions { self_invoked: false });
+        assert_eq!(out.criteria.len(), 2, "the shape under test");
+        assert_ne!(
+            out.overall, "pass",
+            "a criterion nobody could run must never read as a passing QA: {:?}",
+            out.criteria.iter().map(|c| (&c.id, &c.status)).collect::<Vec<_>>()
+        );
+        assert_eq!(out.overall, "fail", "and it fails, so the close gate blocks");
     }
 
     /// The reproduced shape: a self-invoked run whose criteria that exercise

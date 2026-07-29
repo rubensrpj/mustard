@@ -11,10 +11,18 @@
 # Espelha o que o .deb faz no Linux: os binários do CLI ficam JUNTO do binário
 # do Dashboard dentro do .app, com a pasta `templates/` ao lado, de modo que a
 # resolução `<dir-do-exe>/templates` funcione para TODOS (CLI e Dashboard) — o
-# mesmo invariante de `mustard_cli::resolve_templates_dir`. Nenhum código Rust
-# muda. O script de pós-instalação do .pkg cria os symlinks do CLI no PATH
-# (/usr/local/bin); current_exe() resolve o symlink para o caminho real dentro
-# do .app, então a resolução de templates continua valendo via PATH também.
+# mesmo invariante de `mustard_cli::resolve_templates_dir`. O script de
+# pós-instalação do .pkg cria os symlinks do CLI no PATH (/usr/local/bin).
+#
+# CUIDADO com o invariante que sustenta esses symlinks: current_exe() NÃO
+# resolve symlink sozinho. No macOS o _NSGetExecutablePath devolve "a path",
+# não "a real path" (dyld(3)), e a doc do Rust não garante nenhum dos dois
+# comportamentos. Quem resolve é o resolve_templates_dir, que CANONICALIZA o
+# caminho do executável antes de procurar o templates/ ao lado dele. Sem essa
+# canonicalização o `mustard init` chamado pelo nome procura em
+# /usr/local/bin/templates e morre — foi exatamente o defeito de 2026-07-29.
+# Este comentário afirmava o contrário e foi o que legitimou o layout: não
+# reintroduzir a premissa de que o symlink se resolve sozinho.
 #
 # Binários UNIVERSAIS (Intel x86_64 + Apple Silicon arm64 via `lipo`): um único
 # .pkg roda nos dois tipos de Mac.

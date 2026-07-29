@@ -289,13 +289,44 @@ fn report_migration(outcome: &mustard_core::MigrationOutcome) {
     }
 }
 
+/// The `templates/` payload shipped beside `exe`, if there is one.
+///
+/// Covers both installed layouts: the payload in the binary's OWN directory
+/// (the macOS `.pkg`, which puts CLI + payload inside `.app/Contents/MacOS`)
+/// and one level up (the `.deb`, whose binaries live in `/usr/lib/mustard/bin`
+/// next to `/usr/lib/mustard/templates`).
+///
+/// `exe` must be the CANONICAL executable path — a symlink's own directory
+/// holds no payload; see [`resolve_templates_dir`]. Kept pure (nothing but
+/// `is_dir` probes, no process env) so a test can drive it with a real symlink
+/// instead of reasoning about the platform — see
+/// `templates_resolve_through_a_symlinked_exe`.
+fn templates_beside_exe(exe: &Path) -> Option<PathBuf> {
+    let exe_dir = exe.parent()?;
+    [exe_dir.join("templates"), exe_dir.join("../templates")]
+        .into_iter()
+        .find(|candidate| candidate.is_dir())
+}
+
 /// Resolve the bundled `templates/` directory.
 ///
 /// Resolution order:
 /// 1. the `MUSTARD_TEMPLATES_DIR` environment variable (explicit override —
 ///    used by tests and by the Tauri backend, which knows its own layout);
-/// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout);
+/// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout),
+///    resolved from the CANONICALIZED executable path;
 /// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout, for `cargo run`).
+///
+/// Step 2 canonicalizes because `current_exe` promises nothing about symlinks:
+/// the std docs state that some platforms return the path of the symlink and
+/// others the path of its target, and on macOS the underlying
+/// `_NSGetExecutablePath` is documented (dyld(3)) to return "a path", not "a
+/// real path". Every installed layout ships the payload beside the REAL binary
+/// and exposes symlinks on `PATH` — `/usr/local/bin` → inside the `.app`
+/// (macOS), `/usr/bin` → `/usr/lib/mustard/bin` (Linux). Without
+/// canonicalizing, `mustard init` invoked by name probes the LINK's directory
+/// and never reaches the payload: that is precisely how macOS broke while
+/// Linux, whose `/proc/self/exe` is pre-resolved by the kernel, did not.
 fn resolve_templates_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("MUSTARD_TEMPLATES_DIR") {
         let path = PathBuf::from(dir);
@@ -304,12 +335,23 @@ fn resolve_templates_dir() -> Result<PathBuf> {
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            for candidate in [exe_dir.join("templates"), exe_dir.join("../templates")] {
-                if candidate.is_dir() {
-                    return Ok(candidate);
-                }
+    let exe = std::env::current_exe().ok();
+    if let Some(exe) = exe.as_deref() {
+        // Fail-open: an unresolvable path degrades to the original, never to an
+        // error — resolution must not become more brittle than it was.
+        let real = match std::fs::canonicalize(exe) {
+            Ok(real) => real,
+            Err(_) => exe.to_path_buf(),
+        };
+        if let Some(found) = templates_beside_exe(&real) {
+            return Ok(found);
+        }
+        // Safety net: the pre-canonical path is still probed, so a canonical
+        // form that points somewhere unhelpful can never resolve LESS than the
+        // previous behaviour did.
+        if real.as_path() != exe {
+            if let Some(found) = templates_beside_exe(exe) {
+                return Ok(found);
             }
         }
     }
@@ -319,9 +361,20 @@ fn resolve_templates_dir() -> Result<PathBuf> {
         return Ok(manifest);
     }
 
+    // Name what was probed: the bare "set the env var" hint left the reader with
+    // no way to tell an unpackaged binary from a payload that IS installed but
+    // sits beside the symlink's target rather than the symlink.
+    let exe_display = exe
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
     anyhow::bail!(
-        "could not locate the Mustard `templates/` directory \
-         (set MUSTARD_TEMPLATES_DIR to override)"
+        "could not locate the Mustard `templates/` directory.\n\
+         Probed next to the running binary ({exe_display}) and at the \
+         compile-time path ({}).\n\
+         An installed Mustard ships the payload beside the REAL binary, not \
+         beside the symlink on PATH; set MUSTARD_TEMPLATES_DIR to override.",
+        manifest.display(),
     )
 }
 
@@ -801,6 +854,75 @@ mod tests {
             offenders.is_empty(),
             "templates must not reference the obsolete standalone guards file:\n{}",
             offenders.join("\n")
+        );
+    }
+
+    /// Both installed layouts resolve, and an unpackaged binary resolves to
+    /// nothing. Runs everywhere — the symlink half of the contract needs a
+    /// privilege Windows may withhold, so it lives in the `#[cfg(unix)]` test
+    /// below; this one keeps the candidate list itself covered on every host.
+    #[test]
+    fn templates_beside_exe_covers_both_installed_layouts() {
+        let dir = tempdir().unwrap();
+
+        // `.pkg` layout: payload in the binary's OWN directory.
+        let pkg = dir.path().join("pkg");
+        fs::create_dir_all(pkg.join("templates")).unwrap();
+        assert!(templates_beside_exe(&pkg.join("mustard")).is_some());
+
+        // `.deb` layout: payload one level up from the binary's directory.
+        let deb = dir.path().join("deb");
+        fs::create_dir_all(deb.join("bin")).unwrap();
+        fs::create_dir_all(deb.join("templates")).unwrap();
+        assert!(templates_beside_exe(&deb.join("bin/mustard")).is_some());
+
+        // Neither: a bare binary with no payload anywhere near it.
+        let bare = dir.path().join("bare/bin");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(templates_beside_exe(&bare.join("mustard")).is_none());
+    }
+
+    /// Regression guard (2026-07-29): `mustard init` on macOS died with
+    /// "could not locate the Mustard `templates/` directory". The `.pkg`
+    /// installs the real binary + payload inside the `.app` and exposes
+    /// `/usr/local/bin/mustard` as a SYMLINK — and `current_exe` is not
+    /// required to resolve symlinks (on macOS `_NSGetExecutablePath` returns
+    /// "a path", not "a real path", per dyld(3)). Probing the LINK's own
+    /// directory therefore finds nothing, which is why the resolution
+    /// canonicalizes first.
+    ///
+    /// Unix-only: creating a symlink on Windows needs a privilege the test
+    /// host may not hold. The candidate list itself is covered on every host
+    /// by `templates_beside_exe_covers_both_installed_layouts`.
+    #[cfg(unix)]
+    #[test]
+    fn templates_resolve_through_a_symlinked_exe() {
+        let dir = tempdir().unwrap();
+        let real_bin = dir.path().join("real/bin");
+        let link_dir = dir.path().join("link");
+        fs::create_dir_all(real_bin.join("templates")).unwrap();
+        fs::create_dir_all(&link_dir).unwrap();
+
+        let real_exe = real_bin.join("mustard");
+        fs::write(&real_exe, "").unwrap();
+        let link_exe = link_dir.join("mustard");
+        std::os::unix::fs::symlink(&real_exe, &link_exe).unwrap();
+
+        // The defect, stated as an assertion: the symlink's own directory
+        // holds no payload, so probing it (the pre-fix behaviour) finds
+        // nothing. If this ever passes, the fixture stopped reproducing.
+        assert!(
+            templates_beside_exe(&link_exe).is_none(),
+            "fixture broken: the symlink's directory must not hold a payload",
+        );
+
+        // The fix: canonicalize, then probe — the payload beside the TARGET.
+        let canonical = fs::canonicalize(&link_exe).unwrap();
+        let found = templates_beside_exe(&canonical)
+            .expect("templates/ beside the symlink target must resolve");
+        assert_eq!(
+            fs::canonicalize(found).unwrap(),
+            fs::canonicalize(real_bin.join("templates")).unwrap(),
         );
     }
 
