@@ -347,6 +347,46 @@ fn plan_prose_teaches_the_reserved_role_names() {
     }
 }
 
+/// The AC-authoring ref teaches the shell the executor actually spawns.
+///
+/// This one is here because its absence had a cost. The ref taught `cmd.exe`
+/// workarounds — `bash -c '…'` prefixes, a list of POSIX constructs to avoid —
+/// and that guidance made a defect invisible rather than fixing it: under
+/// `cmd.exe` the single quote is not a quote character, so `rg 'token' path`
+/// searched for a literal `'token'`, matched nothing in any tree state, exited 1
+/// with an empty stderr, and `ac-negative-check` (whose whole red rule is
+/// `exit != 0`) stamped it `proven: red`. Nothing checked that page against the
+/// executor, so it kept teaching the workaround after the shell was fixed.
+#[test]
+fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
+    let body = read("plugin/refs/feature/ac-cross-shell.md");
+
+    // --- 1. The prose no longer teaches the routed-around contract ---------
+    assert!(
+        !body.contains("prefix with `bash -c"),
+        "the ref still teaches the explicit `bash -c` workaround the fix removed",
+    );
+    let lower = body.to_lowercase();
+    assert!(
+        line_with(&lower, "127").is_some_and(|l| l.contains("skip") || lower.contains("`skip`")),
+        "the ref must name the verdict an unrunnable command gets, or an author \
+         reads `skip` as a failure",
+    );
+
+    // --- 2. The shell really consumes POSIX quoting ------------------------
+    // Without this half the sentence outlives the selection it describes: the
+    // page would keep promising POSIX after a regression put `cmd.exe` back,
+    // which is the exact pairing that went missing the first time.
+    let out = mustard_rt::util::platform::build_shell_command("echo 'a b'")
+        .output()
+        .expect("the platform shell spawns");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "a b",
+        "the ref promises ordinary POSIX, but the shell handed the quotes to the program",
+    );
+}
+
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
 /// of names for one agent, which is why six names spell five reservations.
 const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];
