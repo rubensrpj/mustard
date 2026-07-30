@@ -289,9 +289,35 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 /// to reach an answer, which is what keeps the sweep honest offline. Fail-open
 /// per base: a base with no local ref simply contributes nothing.
 pub(crate) fn merged_refs(git: GitOut<'_>, bases: &[String]) -> BTreeSet<String> {
+    try_merged_refs(git, bases).0
+}
+
+/// [`merged_refs`], keeping apart "git ANSWERED, nothing is contained" from
+/// "git never answered" — the same split [`BranchEnumerator::try_sweep`] draws,
+/// and for the same reason.
+///
+/// The two are indistinguishable in the set alone, and they ask for opposite
+/// verdicts: the first says a merged branch really moved past its merge, the
+/// second says nobody looked. Handing the flag to
+/// [`StateClassifier::measured`] is what keeps the second from being printed as
+/// the first.
+///
+/// **How the answer is recognised.** A `--merged <base>` read that answered
+/// always carries at least the base's own ref — a commit is reachable from
+/// itself. An EMPTY listing is therefore git declining (absent base, unreadable
+/// repository), never a repository in which nothing is contained. One base
+/// answering is enough: a base with no local ref legitimately contributes
+/// nothing, so demanding all of them would report a healthy read as unmeasured.
+pub(crate) fn try_merged_refs(git: GitOut<'_>, bases: &[String]) -> (BTreeSet<String>, bool) {
     let mut merged: BTreeSet<String> = BTreeSet::new();
+    let mut measured = false;
     for base in bases {
-        for refname in refs_merged_into(git, base) {
+        let listing = refs_merged_into(git, base);
+        if listing.is_empty() {
+            continue;
+        }
+        measured = true;
+        for refname in listing {
             let is_unit =
                 split_ref(&refname).and_then(|(_, name)| base_of_branch(name, bases)).is_some();
             if is_unit {
@@ -299,7 +325,7 @@ pub(crate) fn merged_refs(git: GitOut<'_>, bases: &[String]) -> BTreeSet<String>
             }
         }
     }
-    merged
+    (merged, measured)
 }
 
 /// The work-branch names carrying at least ONE commit of their own — the units
@@ -736,13 +762,34 @@ pub(crate) struct BranchState {
 pub(crate) struct StateClassifier<'a> {
     pr: &'a dyn PrLookup,
     reach: &'a dyn Reachability,
+    /// Whether the containment read behind `merged` actually ANSWERED.
+    ///
+    /// [`merged_refs`] is fail-open: a git that will not answer yields an empty
+    /// set, which is indistinguishable from "nothing is contained". Told apart,
+    /// the two ask for opposite verdicts — the second means the branch really
+    /// moved past its merge, the first means nobody looked — and printing the
+    /// unmeasured one as the measured one is principle 3 of this module broken
+    /// from the other side (found in review, 2026-07-30).
+    reach_measured: bool,
 }
 
 impl<'a> StateClassifier<'a> {
     /// Bind a classifier to its two ports: what the provider knows, and what
     /// git can reach.
+    ///
+    /// Assumes the containment read answered; a caller that KNOWS otherwise
+    /// says so with [`measured`](Self::measured). The default is the safe one
+    /// for a hand-built set (a test's fixture is always a measurement).
     pub(crate) fn new(pr: &'a dyn PrLookup, reach: &'a dyn Reachability) -> Self {
-        Self { pr, reach }
+        Self { pr, reach, reach_measured: true }
+    }
+
+    /// Declare whether the containment read answered — see
+    /// [`try_merged_refs`], which is what produces the flag.
+    #[must_use]
+    pub(crate) fn measured(mut self, measured: bool) -> Self {
+        self.reach_measured = measured;
+        self
     }
 
     /// One verdict per enumerated branch, in the enumerator's order.
@@ -770,7 +817,7 @@ impl<'a> StateClassifier<'a> {
                 let accounted = all_refs_accounted(&refs);
                 let carries_own = ahead.contains(&unit.branch);
                 let pr = evidence.status;
-                let state = verdict(unit, accounted, carries_own, pr);
+                let state = verdict(unit, accounted, carries_own, pr, self.reach_measured);
                 BranchState {
                     branch: unit.branch.clone(),
                     base: unit.base.clone(),
@@ -804,7 +851,13 @@ impl<'a> StateClassifier<'a> {
 ///
 /// Only the conjunction of `accounted` and `delivered` authorises the pruning
 /// states; a merge whose refs moved is [`UnitState::MovedAfterMerge`].
-fn verdict(unit: &BranchRefs, accounted: bool, ahead: bool, pr: PrStatus) -> UnitState {
+fn verdict(
+    unit: &BranchRefs,
+    accounted: bool,
+    ahead: bool,
+    pr: PrStatus,
+    reach_measured: bool,
+) -> UnitState {
     // Delivery: a commit of its own, or a merge the provider confirms. A freshly
     // cut branch has neither, which is what keeps live work off the prune list.
     let delivered = ahead || pr == PrStatus::Merged;
@@ -824,8 +877,14 @@ fn verdict(unit: &BranchRefs, accounted: bool, ahead: bool, pr: PrStatus) -> Uni
     // before `RemoteOnly` for the same reason as above: the ref that moved is
     // usually the remote one, and filing it as "only on the server" would hide
     // precisely the unintegrated commits this state exists to name.
+    //
+    // …unless the containment read never ANSWERED. Then nothing was measured,
+    // and "the branch moved past its merge" would be a claim nobody checked —
+    // the same lie as an unmeasured PR printed as "no PR", which principle 3
+    // of this module exists to refuse. Neither state is prunable, so the
+    // correction costs nothing but the truth of the label.
     if pr == PrStatus::Merged {
-        return UnitState::MovedAfterMerge;
+        return if reach_measured { UnitState::MovedAfterMerge } else { UnitState::Unmeasured };
     }
     if !unit.local {
         return UnitState::RemoteOnly;
@@ -865,10 +924,11 @@ pub(crate) fn awaiting_prune(
     bases: &[String],
 ) -> Vec<BranchState> {
     let units = BranchEnumerator::sweep(git, bases);
-    let merged = merged_refs(git, bases);
+    let (merged, measured) = try_merged_refs(git, bases);
     let ahead = refs_ahead_of_base(git, units.units(), bases);
     let reach = GitReachability::new(git);
     StateClassifier::new(pr, &reach)
+        .measured(measured)
         .classify(units.units(), &merged, &ahead)
         .into_iter()
         .filter(|state| state.state.is_awaiting_prune())

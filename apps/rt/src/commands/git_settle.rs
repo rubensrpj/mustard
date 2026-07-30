@@ -426,8 +426,17 @@ fn update_bases(main: &Path, bases: &[String], submodules: &[String]) -> (Value,
         .iter()
         .filter(|b| *b != &current)
         .map(|b| {
-            let updated = git_ok(main, &["fetch", "origin", &format!("{b}:{b}")]);
-            json!({ "branch": b, "updated": updated })
+            if git_ok(main, &["fetch", "origin", &format!("{b}:{b}")]) {
+                return json!({ "branch": b, "updated": true });
+            }
+            // A refused fetch is not one situation but three, and only one of
+            // them is "behind". Asked of git rather than assumed: a base that
+            // already CONTAINS origin's is ahead, not behind; anything else is
+            // a genuine divergence or a ref another worktree holds. The probe
+            // runs only on the failing path, so the happy one costs nothing.
+            let ahead = git_ok(main, &["merge-base", "--is-ancestor", &format!("origin/{b}"), b]);
+            let reason = if ahead { "ahead-of-origin" } else { "non-ff-or-unavailable" };
+            json!({ "branch": b, "updated": false, "reason": reason })
         })
         .collect();
     (current_report, others)
@@ -715,6 +724,27 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     });
     if !ok {
         report["reason"] = json!("base-behind");
+        // WHY it did not advance, named rather than assumed. `base-behind` is
+        // the shape the caller acts on and stays put, but the same
+        // `updated:false` also covers a base that is AHEAD of origin, or one
+        // git refused to fast-forward because another worktree has it checked
+        // out — neither of which is "behind". Reporting only the verdict made
+        // those read as the one case they are not (found in review,
+        // 2026-07-30). Absent reason → the base was simply never described.
+        let named = if base_report["branch"] == json!(base) {
+            base_report["reason"].clone()
+        } else {
+            other_bases
+                .iter()
+                .find(|b| b["branch"] == json!(base))
+                .and_then(|b| b.get("reason").cloned())
+                .unwrap_or(Value::Null)
+        };
+        report["baseAdvance"] = json!({
+            "branch": base,
+            "advanced": false,
+            "reason": if named.is_null() { json!("unreported") } else { named },
+        });
     }
     report
 }
@@ -772,11 +802,13 @@ fn repo_inventory(repo: &Path, label: &str, bases: &[String], provider: &str) ->
             "awaitingPrune": [],
         });
     };
-    let merged = branch_state::merged_refs(&git_read, bases);
+    let (merged, measured) = branch_state::try_merged_refs(&git_read, bases);
     let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), bases);
     let lookup = ProviderPrCli::new(repo, provider);
     let reach = GitReachability::new(&git_read);
-    let states = StateClassifier::new(&lookup, &reach).classify(units.units(), &merged, &ahead);
+    let states = StateClassifier::new(&lookup, &reach)
+        .measured(measured)
+        .classify(units.units(), &merged, &ahead);
     branch_state::report_value(label, &states)
 }
 
@@ -1528,6 +1560,42 @@ mod tests {
         let v = settle_at(&main2, Some("dev_done"));
         assert_eq!(v["baseCheckout"]["reason"], json!("dirty-tree"), "{v}");
         assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
+
+        // And the OTHER side of the sync rule — the benign half, which nothing
+        // asserted: a submodule standing DETACHED really is re-seated. Asserted
+        // by EFFECT, not by the token alone: the checkout is parked off the
+        // pointer and has to come back to it. Without this, a
+        // `sync_submodule_pointers` that never updated anything would still
+        // pass every assertion above (found in review, 2026-07-30).
+        let (_dir3, main3) = fixture_with_submodule();
+        let sub3 = main3.join("sub");
+        let parked = git_out(&sub3, &["rev-parse", "dev_done"]).expect("sub work commit");
+        let pointer_before = git_out(&main3, &["rev-parse", "HEAD:sub"]).expect("gitlink");
+        assert_ne!(parked, pointer_before, "the fixture must park the submodule OFF the pointer");
+        git(&sub3, &["checkout", "--detach", &parked]);
+        assert_eq!(
+            git_out(&sub3, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("HEAD"),
+            "the fixture must reproduce the DETACHED shape",
+        );
+
+        let v = settle_at(&main3, Some("dev_done"));
+        assert_eq!(
+            v["submodulePointers"],
+            json!([{ "path": "sub", "action": "updated" }]),
+            "a DETACHED submodule is re-seated, not left behind: {v}",
+        );
+        let pointer_now = git_out(&main3, &["rev-parse", "HEAD:sub"]).expect("gitlink after");
+        assert_eq!(
+            git_out(&sub3, &["rev-parse", "HEAD"]).as_deref(),
+            Some(pointer_now.as_str()),
+            "…and the checkout really moved onto the pointer the base now names",
+        );
+        assert_ne!(
+            git_out(&sub3, &["rev-parse", "HEAD"]).as_deref(),
+            Some(parked.as_str()),
+            "the re-seat is an EFFECT: an inert sync would leave it where it was parked",
+        );
     }
 
     /// A FINISHING pass that left the unit's own base behind must not answer
