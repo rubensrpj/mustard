@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "close-eleven-harness-defects-found",
+  "title": "Close eleven harness defects found by cross-checking a field report against the code, plus the session binding that makes two gates name the wrong spec: reports and gates that assert as fact something they never measured. The negative proof is made to bite, AC-per-wave coverage becomes sufficiency, the placeholder predicate stops rejecting legitimate syntax, the files section accepts tables and names the real cause, the digest stops publishing generated files as exemplars, the tautology linter reads the proof ledger before contradicting it, wave-dependency emits the declared or derived topology, the work branch record reconciles with the real branch, the session binding reaches the session the hooks read, and emit-phase confirms its transition.",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "proof",
+      "summary": "The negative proof bites: a blocking confirmation, a caller for the removal pass, the Control command, sufficiency instead of coverage, one placeholder predicate instead of four, and a linter that rea",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "reporting",
+      "summary": "Every reader names what it actually measured: the files section reads a table and says so when it cannot, the digest stops publishing machine-written modules, wave-dependency emits real edges with the",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "binding",
+      "summary": "The record reaches whoever reads it: the session binding lands under the session the hooks resolve, the boundary gate names the boundary it checked, and the work branch record reconciles with the bran",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
