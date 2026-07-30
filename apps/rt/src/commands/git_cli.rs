@@ -27,7 +27,9 @@ pub enum GitCmd {
     /// `fetch base:base` on the rest), then prunes the unit's worktree +
     /// local branch (remote delete fail-open). Inside the unit's own worktree
     /// it verifies + updates and answers `exit-and-rerun` — leave, then
-    /// finish with `--unit <branch>` from the main checkout.
+    /// finish with `--unit <branch>` from the main checkout. `--report` is the
+    /// same ritual's READING face: it classifies every work branch of every
+    /// repo (local and remote alike) and prints, settling nothing.
     #[command(name = "git-settle")]
     #[command(display_order = 1)]
     GitSettle {
@@ -35,6 +37,12 @@ pub enum GitCmd {
         /// directory's HEAD (which must NOT be an integration base).
         #[arg(long)]
         unit: Option<String>,
+        /// Report only: one entry per repository listing every work branch
+        /// (local AND remote) with the single state it is in — abandoned draft,
+        /// pushed without PR, in review, awaiting prune, danger, remote-only.
+        /// Nothing is settled, pruned or pushed.
+        #[arg(long)]
+        report: bool,
         /// Any directory inside the repo (worktrees welcome — the command
         /// resolves the main checkout itself). Defaults to the current dir.
         #[arg(long, default_value = ".")]
@@ -74,7 +82,9 @@ pub enum GitCmd {
 /// Dispatch one `git`-family `run` subcommand.
 pub fn dispatch(cmd: GitCmd) {
     match cmd {
-        GitCmd::GitSettle { unit, root } => git_settle::run(&root, unit.as_deref()),
+        GitCmd::GitSettle { unit, report, root } => {
+            git_settle::run(&root, unit.as_deref(), report);
+        }
         GitCmd::WorkUnitOpen { branch, spec, intent, base, root } => {
             work_unit_open::run(work_unit_open::WorkUnitOpenOpts { root, branch, spec, intent, base });
         }

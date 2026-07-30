@@ -7,10 +7,13 @@
 //!    base it only runs with an explicit `--unit <branch>` (the finish step
 //!    of the dance below).
 //! 2. **100% merged or nothing**: the unit's branch must verifiably be on its
-//!    base — true ancestry first, `gh pr list --state merged` as the
-//!    squash-merge fallback (this repo squash-merges, which breaks pure
-//!    ancestry). Not merged → `{ok:false, reason:"not-merged"}` and NOTHING
-//!    is touched.
+//!    base — true ancestry first, the provider's merged-PR query as the
+//!    fallback. The fallback is not decoration: a portal that squashes on merge
+//!    rewrites the commits, so the unit's tip is no longer an ancestor of the
+//!    base even though the work landed. Which of the two answers first is a
+//!    property of the PROJECT's merge settings, measured per repository — this
+//!    doc asserts nothing about it. Not merged by EITHER →
+//!    `{ok:false, reason:"not-merged"}` and NOTHING is touched.
 //! 3. **Back to an up-to-date base**: every local base advances — the one the
 //!    MAIN checkout sits on via `merge --ff-only` (clean tree only; the
 //!    harness-owned `.claude/worktrees/` dir is exempt from the dirty check),
@@ -28,6 +31,11 @@
 //!    exit — check out the base (the ff advance above is the "pull"), then
 //!    delete the branch. A checkout git refuses degrades to `"partial"`.
 //!
+//! `--report` is the READING face of the same ritual: it classifies every work
+//! branch of every repo (`shared::branch_state`) and prints, touching nothing.
+//! The separation is structural — the reading path builds its answer out of
+//! plain state values that carry no way to act on the repository.
+//!
 //! Output: one JSON report (sorted arrays, no timestamps), including `repos` —
 //! one entry per repository the unit lives in (the repo settle acted on, plus
 //! every submodule that still carries the unit branch) and the global
@@ -42,6 +50,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{json, Value};
+
+use crate::shared::branch_state::{
+    self, base_of_branch, BranchEnumerator, ProviderPrCli, StateClassifier,
+};
 
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
@@ -115,15 +127,6 @@ fn config_root(repo: &Path) -> (PathBuf, Option<PathBuf>) {
         root = parent;
     }
     (root, superproject)
-}
-
-/// The base a work branch integrates into, read from its `{base}_` prefix
-/// (tolerating the harness's `worktree-` prefix). `None` when the prefix names
-/// no known base — such a branch is never settled.
-fn base_of_branch(branch: &str, bases: &[String]) -> Option<String> {
-    let name = branch.strip_prefix("worktree-").unwrap_or(branch);
-    let (prefix, _) = name.split_once('_')?;
-    bases.iter().find(|b| b.as_str() == prefix).cloned()
 }
 
 /// One `.claude/worktrees/` entry from `git worktree list --porcelain`.
@@ -316,9 +319,16 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
     }))
 }
 
-/// Whether `branch` already landed on `origin/<base>`: true ancestry first;
-/// squash-merge fallback via `gh pr list --state merged`. This is the 100%
-/// gate — no evidence means NOT merged (conservative, never fail-open).
+/// Whether `branch` already landed on `origin/<base>`: true ancestry first, the
+/// provider's merged-PR query as the fallback.
+///
+/// The fallback covers a portal that REWRITES the commits when it merges — the
+/// unit's tip then stops being an ancestor of the base although the work landed.
+/// Which of the two answers first is a property of the PROJECT's merge settings,
+/// measured per repository; this doc asserts nothing about it.
+///
+/// This is the 100% gate — no evidence means NOT merged (conservative, never
+/// fail-open).
 fn is_merged(main: &Path, branch: &str, base: &str) -> bool {
     if git_ok(main, &["merge-base", "--is-ancestor", branch, &format!("origin/{base}")]) {
         return true;
@@ -540,13 +550,29 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     }
     let complete = repos.iter().all(|r| r["settled"] == json!(true));
 
-    // Other merged harness worktrees — informative only (settle acts on ONE
-    // unit; the user decides about the rest, each via its own settle).
-    let also_mergeable: Vec<String> = entries
+    // Other merged units — informative only (settle acts on ONE unit; the user
+    // decides about the rest, each via its own settle).
+    //
+    // Enumerated from the REFS, not from the worktree table. Keyed on worktrees
+    // this field lied by omission: the work-branch gate cuts a unit IN PLACE by
+    // default — on the main checkout, no worktree — so a repository holding six
+    // merged units answered `[]`. The enumerator sees local and remote refs
+    // alike, so an in-place unit and one that lives only on the server are both
+    // reported.
+    let git_read = |args: &[&str]| git_out(&main, args);
+    let enumerated = BranchEnumerator::sweep(&git_read, &bases);
+    let ahead = branch_state::refs_ahead_of_base(&git_read, enumerated.units(), &bases);
+    let also_mergeable: Vec<String> = enumerated
+        .units()
         .iter()
-        .filter(|e| e.branch != unit_branch)
-        .filter(|e| base_of_branch(&e.branch, &bases).is_some_and(|b| is_merged(&main, &e.branch, &b)))
-        .map(|e| e.branch.clone())
+        .filter(|u| u.branch != unit_branch)
+        // A branch carrying no commit of its own delivered nothing: it is
+        // reachable from its base because it was CUT from it, and `is_merged`
+        // cannot see that difference. Listing it here would tell the user their
+        // live work is ready to be pruned.
+        .filter(|u| ahead.contains(&u.branch))
+        .filter(|u| is_merged(&main, &u.branch, &u.base))
+        .map(|u| u.branch.clone())
         .collect();
 
     json!({
@@ -570,9 +596,70 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     })
 }
 
-/// Run `git-settle` from `root` and print the JSON report.
-pub fn run(root: &Path, unit: Option<&str>) {
-    let result = settle_at(root, unit);
+/// The READING pass — every work branch of every repo of the project, each with
+/// the ONE state it is in. Acts on nothing, by construction: it holds no
+/// deleting step, and what it hands the printer is a list of plain state values
+/// (`shared::branch_state::BranchState`) that carry no handle to a repository.
+///
+/// Per repository, like `repos` in [`settle_at`]: the acting side of this
+/// command is per-repo, so the reading side has to be too — a monorepo answer
+/// that folded the submodules into the parent would hide exactly the branches
+/// the exit ritual keeps having to be told about.
+pub(crate) fn report_at(start: &Path) -> Value {
+    let Some(main) = main_checkout_root(start) else {
+        return json!({
+            "ok": false,
+            "reason": "not-a-git-repo",
+            "path": show(start),
+            "exists": start.exists(),
+            "hint": "git não resolveu repositório nesse caminho — confira o --root",
+        });
+    };
+    let (cfg_root, _superproject) = config_root(&main);
+    let cfg = mustard_core::ProjectConfig::load(&cfg_root);
+    let bases: Vec<String> = cfg.git.integration_bases().into_iter().collect();
+    let provider = cfg.git.provider.clone();
+
+    let mut repos = vec![repo_inventory(&main, ".", &bases, &provider)];
+    let submodules = git_out(&main, &["submodule", "status"])
+        .map(|s| parse_submodule_paths(&s))
+        .unwrap_or_default();
+    for rel in submodules {
+        repos.push(repo_inventory(&main.join(&rel), &rel, &bases, &provider));
+    }
+    json!({ "ok": true, "bases": bases, "repos": repos })
+}
+
+/// One repository's inventory: sweep its refs, measure ancestry locally, then
+/// let the PR port confirm. The provider is whatever `mustard.json` declares —
+/// this command names no CLI of its own.
+///
+/// Asked through the enumerator's FALLIBLE face, because this is a REPORTING
+/// consumer: a sweep git never answered, printed as an empty inventory, is the
+/// same lie as an unmeasured PR printed as "no PR" — and refusing that lie is
+/// why this module exists. A repository whose refs would not read says so.
+fn repo_inventory(repo: &Path, label: &str, bases: &[String], provider: &str) -> Value {
+    let git_read = |args: &[&str]| git_out(repo, args);
+    let Some(units) = BranchEnumerator::try_sweep(&git_read, bases) else {
+        return json!({
+            "repo": label,
+            "ok": false,
+            "reason": "refs-unreadable",
+            "units": [],
+            "awaitingPrune": [],
+        });
+    };
+    let merged = branch_state::merged_refs(&git_read, bases);
+    let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), bases);
+    let lookup = ProviderPrCli::new(repo, provider);
+    let states = StateClassifier::new(&lookup).classify(units.units(), &merged, &ahead);
+    branch_state::report_value(label, &states)
+}
+
+/// Run `git-settle` from `root` and print the JSON report. `report` selects the
+/// reading pass, which settles nothing.
+pub fn run(root: &Path, unit: Option<&str>, report: bool) {
+    let result = if report { report_at(root) } else { settle_at(root, unit) };
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
@@ -879,6 +966,143 @@ mod tests {
         let local = git_out(&main, &["rev-parse", "dev"]).expect("local");
         let remote = git_out(&main, &["rev-parse", "origin/dev"]).expect("remote");
         assert_eq!(local, remote, "base fast-forwarded to origin");
+    }
+
+    /// AC-3 — an IN-PLACE merged unit (cut on the main checkout, no worktree —
+    /// the default shape the work-branch gate produces) must appear among the
+    /// units still awaiting a prune.
+    ///
+    /// Keyed on the worktree table, this field answered `[]` in exactly that
+    /// case: it enumerated checkouts, and an in-place unit has none. Measured in
+    /// the field as six local and six remote branches invisible to the report.
+    #[test]
+    fn in_place_merged_unit_is_reported_pending() {
+        let (_dir, main) = fixture();
+        // An in-place unit: cut on the MAIN checkout, merged into origin/dev,
+        // never given a worktree. Local dev is rewound afterwards so the shared
+        // fixture's `dev_done` stays settleable.
+        git(&main, &["merge", "--ff-only", "origin/dev"]);
+        git(&main, &["checkout", "-b", "dev_inplace"]);
+        std::fs::write(main.join("inplace.txt"), "z").expect("file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "in-place work"]);
+        git(&main, &["checkout", "dev"]);
+        git(&main, &["merge", "--no-ff", "dev_inplace", "-m", "merge dev_inplace"]);
+        git(&main, &["push", "origin", "dev"]);
+        git(&main, &["reset", "--hard", "HEAD~1"]);
+        assert!(
+            !main.join(".claude").join("worktrees").join("dev_inplace").exists(),
+            "the fixture must reproduce the IN-PLACE shape: no worktree for this unit",
+        );
+
+        // Settle a DIFFERENT unit; the in-place one is what the report must not
+        // hide.
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(
+            v["alsoMergeable"],
+            json!(["dev_inplace"]),
+            "the merged in-place unit must be reported pending: {v}",
+        );
+    }
+
+    /// The READING face at the COMMAND level: what `--report` actually prints.
+    ///
+    /// The other tests of this ritual classify through the shared module; this
+    /// one goes through `report_at`, because that is the face the field
+    /// measurement read — and what it read of a branch cut seconds earlier was
+    /// `awaiting-prune-local`, the unit the user was editing announced as
+    /// delivered. Both halves, so the assertions can fail: a unit that really
+    /// landed is in the same report, listed.
+    #[test]
+    fn report_lists_delivered_units_and_never_a_freshly_cut_one() {
+        let (_dir, main) = fixture();
+        // A unit that really landed: commits of its own, merged into the base,
+        // branch alive on both sides.
+        git(&main, &["checkout", "-b", "dev_landed"]);
+        std::fs::write(main.join("landed.txt"), "l").expect("file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "landed work"]);
+        git(&main, &["push", "origin", "dev_landed"]);
+        git(&main, &["checkout", "dev"]);
+        git(&main, &["merge", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
+        // And a unit shaped the way the work-branch gate opens every one: a
+        // branch at the base's tip with nothing committed on it yet.
+        git(&main, &["branch", "dev_justcut"]);
+
+        let v = report_at(&main);
+        let repo = &v["repos"][0];
+        assert_eq!(repo["ok"], json!(true), "the refs WERE read — an empty list would mean empty");
+        assert_eq!(repo["awaitingPrune"], json!(["dev_landed"]), "{v}");
+
+        let row = |branch: &str| -> Value {
+            repo["units"]
+                .as_array()
+                .expect("units")
+                .iter()
+                .find(|u| u["branch"] == json!(branch))
+                .cloned()
+                .expect("the report must carry a row per swept unit")
+        };
+        let cut = row("dev_justcut");
+        assert_eq!(cut["ancestry"], json!(true), "a fresh cut IS reachable from its base");
+        assert_eq!(cut["ahead"], json!(false), "…and carries no commit of its own");
+        assert_ne!(cut["state"], json!("awaiting-prune-local"), "cutting is not delivering: {cut}");
+        assert_eq!(row("dev_landed")["state"], json!("awaiting-prune"));
+    }
+
+    /// AC-9 — the module's prose may not assert a merge method nobody measured.
+    ///
+    /// Both halves, so the assertion can fail: the doc no longer claims THIS
+    /// repository squash-merges (measured false — the merges carry two parents
+    /// each and `--merged` recognises every branch), while the provider fallback
+    /// it justified is still in the code. Removing an unmeasured sentence must
+    /// not quietly remove the mechanism: a portal that squashes is real, and the
+    /// fallback is what covers it.
+    #[test]
+    fn settle_doc_states_no_unmeasured_merge_method() {
+        let src = include_str!("git_settle.rs");
+        // ALL the ritual's prose, not just its header: the header was cleaned
+        // while the merge gate's own docstring — the prose that answers "why ask
+        // the provider at all" and therefore the one this criterion is about —
+        // went on naming a method nobody measured, out of the assertion's reach.
+        // The production region only; this test's own doc necessarily quotes the
+        // claim it forbids.
+        let production = src.split("#[cfg(test)]").next().unwrap_or_default();
+        let doc: String = production
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("//!") || l.starts_with("///"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+        assert!(doc.contains("exit ritual"), "the module header must be in range");
+        assert!(
+            doc.contains("100% gate"),
+            "…and so must the merge gate's own docstring — asserting over the header alone is \
+             how the claim survived the first time",
+        );
+
+        // Needles assembled at runtime so writing the test does not plant the
+        // forbidden spelling in the file under assertion.
+        for claim in [
+            ["squash", "-merges"].concat(),
+            ["this repo squash", ""].concat(),
+            ["squash", "-merge fallback"].concat(),
+        ] {
+            assert!(
+                !doc.contains(&claim),
+                "the doc asserts an unmeasured merge method of this repository: {claim}",
+            );
+        }
+
+        // The mechanism survives the sentence: the merge gate still asks the
+        // provider when ancestry says no.
+        let query = ["\"pr\", ", "\"list\""].concat();
+        assert!(
+            src.contains(&query),
+            "the provider fallback must still exist — a portal that squashes is real",
+        );
     }
 
     #[test]

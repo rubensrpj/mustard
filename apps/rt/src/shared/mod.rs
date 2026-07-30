@@ -6,6 +6,10 @@
 //! never depends back on either. A hook reaching into a command module would
 //! invert that layering — this module exists to make that impossible.
 //!
+//! - [`branch_state`] — the ONE sweep of work-unit branches (local AND remote)
+//!   and the classifier that says what state each is in, behind a PR-lookup
+//!   port. Both faces ask it: the exit ritual (`commands::git_settle`), the spec
+//!   inventory and the statusline.
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
 //! - [`gate_mode`] — the three-state gate mode (`off`/`warn`/`strict`) and its
@@ -24,6 +28,7 @@
 //!   sidecar (local MT), shared by the `feature` auto-gloss and the
 //!   `scan-equivalences` artifact generation.
 
+pub mod branch_state;
 pub mod context;
 pub mod events;
 pub mod gate_mode;
