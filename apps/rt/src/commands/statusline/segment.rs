@@ -8,10 +8,14 @@
 
 use super::theme::Color;
 use crate::commands::economy::rtk_gain::get_rtk_gain;
+use crate::shared::branch_state::{awaiting_prune, LocalOnlyPr};
+use mustard_core::io::fs;
+use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 /// All segment kinds the statusline knows how to render. New kinds must be
 /// appended (themes index a `[Style; SEGMENT_KIND_COUNT]` by `kind as usize`).
@@ -28,10 +32,11 @@ pub enum SegmentKind {
     Model = 7,
     Version = 8,
     Mustard = 9,
+    Prune = 10,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 10;
+pub const SEGMENT_KIND_COUNT: usize = 11;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -286,6 +291,100 @@ pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
 }
 
 // ---------------------------------------------------------------------------
+// Pending-prune segment
+// ---------------------------------------------------------------------------
+
+/// Where the measured count is memoised, under the project's harness dir.
+const PRUNE_CACHE_FILE: &str = ".prune-count";
+
+/// How long a measured count stays fresh.
+///
+/// The bar is redrawn on every turn and the measurement costs a handful of git
+/// invocations (one ref sweep plus one ancestry read per base), so the answer
+/// is memoised for a short window: long enough that a burst of turns measures
+/// once, short enough that a unit the user just pruned leaves the bar within a
+/// turn or two. Mirrors the on-disk, mtime-driven window the Stop observer's
+/// anti-spam marker already uses — an in-process memo would be worthless here,
+/// since each render is its own process.
+const PRUNE_CACHE_SECS: u64 = 30;
+
+/// `✂ N a podar` — how many delivered work units still have a live branch.
+///
+/// `None` when the project is not a Mustard install (the bar stays quiet, like
+/// [`mustard_segment`]) or when nothing is owed. The count comes from the ONE
+/// classifier ([`awaiting_prune`]) with the lookup that asks no provider
+/// ([`LocalOnlyPr`]): a status bar must not open a network connection per
+/// branch, so it counts only merges LOCAL ancestry proves. It can therefore
+/// under-report and never over-report — `mustard-rt run git-settle --report` is
+/// the face that also asks the provider.
+#[must_use]
+pub fn prune_segment(cwd: &Path) -> Option<Segment> {
+    if !mustard_core::ProjectConfig::exists(cwd) {
+        return None;
+    }
+    let count = pending_prune_count(cwd);
+    if count == 0 {
+        return None;
+    }
+    let lang = mustard_core::ProjectConfig::load(cwd).i18n().lang;
+    let label = mustard_core::translate("statusline.prune.label", lang);
+    let mut seg = Segment::new(SegmentKind::Prune, format!("\u{2702} {count} {label}"));
+    // Yellow: something is owed, nothing is wrong.
+    seg.override_fg = Some(Color::Ansi(3));
+    Some(seg)
+}
+
+/// The count, served from the short-lived cache when it is still fresh and
+/// re-measured otherwise. Fail-open at every step: an unreadable cache
+/// re-measures, an unwritable one simply measures again next render.
+fn pending_prune_count(cwd: &Path) -> usize {
+    let cache = ClaudePaths::for_project(cwd)
+        .ok()
+        .map(|paths| paths.harness_dir().join(PRUNE_CACHE_FILE));
+    if let Some(path) = cache.as_deref() {
+        if let Some(fresh) = cached_count(path) {
+            return fresh;
+        }
+    }
+    let measured = measure_pending_prune(cwd);
+    if let Some(path) = cache.as_deref() {
+        store_count(path, measured);
+    }
+    measured
+}
+
+/// The cached count when the file was written inside [`PRUNE_CACHE_SECS`];
+/// `None` when it is absent, stale, unreadable, or written in the future
+/// (clock skew re-measures rather than trusting an impossible mtime).
+fn cached_count(path: &Path) -> Option<usize> {
+    let written = fs::modified(path).ok()?;
+    let age = SystemTime::now().duration_since(written).ok()?;
+    if age > Duration::from_secs(PRUNE_CACHE_SECS) {
+        return None;
+    }
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Persist the count for the next renders (best-effort).
+fn store_count(path: &Path, count: usize) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write_atomic(path, count.to_string().as_bytes());
+}
+
+/// Measure the count from git — the uncached path.
+fn measure_pending_prune(cwd: &Path) -> usize {
+    let bases: Vec<String> = mustard_core::ProjectConfig::load(cwd)
+        .git
+        .integration_bases()
+        .into_iter()
+        .collect();
+    let git_read = |args: &[&str]| git(cwd, args);
+    awaiting_prune(&git_read, &LocalOnlyPr, &bases).len()
+}
+
+// ---------------------------------------------------------------------------
 // git helper — local to this module
 // ---------------------------------------------------------------------------
 
@@ -402,6 +501,112 @@ mod tests {
         // Fallback when both are absent
         let s = model_segment(&json!({}));
         assert_eq!(s.text, "Claude");
+    }
+
+    /// A project that never installed Mustard is not nagged — the bar stays
+    /// exactly as long as it was, and no git sweep is even attempted.
+    #[test]
+    fn prune_segment_silent_without_a_mustard_project() {
+        let td = tempfile::tempdir().expect("tempdir");
+        assert!(prune_segment(td.path()).is_none());
+    }
+
+    /// The short window: a just-written count is served, a backdated one is
+    /// refused so the next render measures again. Without the refusal the bar
+    /// would keep advertising units the user already pruned.
+    #[test]
+    fn prune_count_cache_serves_fresh_and_refuses_stale() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join(".prune-count");
+        store_count(&path, 3);
+        assert_eq!(cached_count(&path), Some(3), "a just-written count is fresh");
+
+        let stale = SystemTime::now() - Duration::from_secs(PRUNE_CACHE_SECS + 5);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_modified(stale)
+            .expect("backdate");
+        assert_eq!(cached_count(&path), None, "past the window the cache stops answering");
+        assert_eq!(cached_count(&td.path().join("never-written")), None, "a miss is a miss");
+    }
+
+    /// **AC-8.** With units owed, the bar SAYS SO: the count, in the language
+    /// the project configured, derived from the project's OWN bases.
+    ///
+    /// The agnosticism half is two-sided against the production region only
+    /// (this test's own fixture necessarily spells a base): the code names
+    /// `integration_bases`, and carries no base spelling of its own. The first
+    /// assertion alone would pass in a file that also hardcoded one.
+    #[test]
+    fn statusline_names_units_awaiting_prune() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let root = td.path();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("git");
+        };
+        run(&["init", "."]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        run(&["checkout", "-b", "dev"]);
+        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("config");
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "seed"]);
+
+        // Nothing delivered yet — the bar stays exactly as long as it was.
+        assert!(prune_segment(root).is_none(), "nothing owed, nothing said");
+        // That render MEASURED zero and cached it. Inside the window the next
+        // render is served from the cache by design, so the count below has to
+        // be a fresh measurement to mean anything — drop the memo, exactly as
+        // the window expiring would.
+        if let Ok(paths) = ClaudePaths::for_project(root) {
+            let _ = std::fs::remove_file(paths.harness_dir().join(PRUNE_CACHE_FILE));
+        }
+
+        // A delivered unit: merged into its base, branch alive on both sides.
+        run(&["checkout", "-b", "dev_delivered"]);
+        std::fs::write(root.join("work.txt"), "w").expect("file");
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "work"]);
+        run(&["checkout", "dev"]);
+        run(&["merge", "--no-ff", "dev_delivered", "-m", "merge dev_delivered"]);
+        run(&["update-ref", "refs/remotes/origin/dev_delivered", "refs/heads/dev_delivered"]);
+
+        let seg =
+            prune_segment(root).expect("a delivered unit whose branch survives must be announced");
+        let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+        let label = mustard_core::translate("statusline.prune.label", lang);
+        assert_eq!(seg.kind, SegmentKind::Prune);
+        assert!(seg.text.contains('1'), "the bar states the count: {}", seg.text);
+        assert!(
+            seg.text.contains(label),
+            "…worded from the catalogue in the configured language: {}",
+            seg.text
+        );
+
+        // Agnosticism, over the production region only.
+        let src = include_str!("segment.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or_default();
+        assert!(!production.is_empty(), "the production region must still be readable here");
+        assert!(
+            production.contains("integration_bases"),
+            "the bases must come from the project's own config",
+        );
+        for spelling in
+            [["\"de", "v\""].concat(), ["\"mai", "n\""].concat(), ["\"mast", "er\""].concat()]
+        {
+            assert!(!production.contains(&spelling), "a base name is spelled in the code: {spelling}");
+        }
     }
 
     #[test]

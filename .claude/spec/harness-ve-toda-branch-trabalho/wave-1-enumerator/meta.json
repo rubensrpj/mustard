@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-30T13:37:44.704Z",
+  "parent": "harness-ve-toda-branch-trabalho",
+  "checklist": [
+    {
+      "label": "apps/rt/src/shared/branch_state.rs",
+      "path": "apps/rt/src/shared/branch_state.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/git_settle.rs",
+      "path": "apps/rt/src/commands/git_settle.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/git_cli.rs",
+      "path": "apps/rt/src/commands/git_cli.rs",
+      "done": true
+    }
+  ]
+}

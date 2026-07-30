@@ -37,12 +37,30 @@
 //!   column would then record a pass nobody took, which is precisely the habit
 //!   this composite is closing. The confirmation runs the criteria itself,
 //!   through the same engine `--confirm` runs.
-//! - **It is ADVISORY, and says so.** It does not gate `completed`: QA already
-//!   blocks the close on the same commands, and a ledger predating the second
-//!   column carries no red proof to confirm — reported as `unproven` with the
-//!   reason naming the missing RED proof, never silently as a pass. `ok` is
-//!   `null`, not `false`, when the pass was not taken at all: NOT TAKEN and
-//!   TAKEN-AND-FAILED ask for opposite actions.
+//! - **It REPORTS, and does not gate `completed`.** QA blocked this close on
+//!   the same commands moments earlier, so a confirmation red here requires the
+//!   tree to change between the two runs — and the one case only this pass
+//!   could see, a criterion that was never red, lands in `NotTaken`, which no
+//!   honest refusal could include (it is "nobody looked", not "the work is
+//!   missing"). So the report spells every column apart and the reader decides;
+//!   `ok` is `null`, not `false`, when the pass was not taken at all, because
+//!   NOT TAKEN and TAKEN-AND-FAILED ask for opposite actions. This was refusal
+//!   for one working day and was reverted by explicit decision — the refusal
+//!   could only re-catch what QA had just caught.
+//!
+//! ## The removal
+//!
+//! Red before and green after still leave a gap: a criterion can clear both
+//! while asserting nothing the work actually DOES. The REMOVAL pass runs each
+//! confirmed criterion against a scratch checkout with the work stripped, and
+//! one still GREEN there verifies nothing. Until this composite called it,
+//! nothing in the pipeline ever did — the engine's only caller outside its own
+//! module was the CLI flag.
+//!
+//! It refuses on exactly one finding — a criterion that SURVIVED — and on
+//! nothing else. A scratch tree that could not be cut is an engine error, not a
+//! verdict about any criterion, and a criterion whose own evidence the strip
+//! took away is one the pass declined to judge; neither withholds the close.
 //!
 //! QA `fail` **or** `skip` → `completed: false`, `summary: null`, and the
 //! failed/skipped ACs stay visible in `qa.criteria` — the spec is NOT closed.
@@ -56,6 +74,8 @@
 //!   "completed": true,
 //!   "confirmation": { "taken": true, "ok": true, "confirmed": 8,
 //!                     "unconfirmed": 0, "unproven": [], "reason": null },
+//!   "removal": { "taken": true, "ok": true, "red": 8, "survived": [],
+//!                "evidence_removed": 0, "taken_away": [...], "reason": null },
 //!   "qa": { "overall": "pass", "criteria": [...] },
 //!   "reviews": [ { "critical": 0, "subproject": null, "verdict": "approved" } ],
 //!   "summary": { "done": [...], "left": [...], "nextSteps": [...], "followUps": [...] }
@@ -100,30 +120,54 @@ pub(crate) fn close(cwd: &Path, spec: &str) -> Value {
 
     // 3. Only a hard pass closes. `skip` (no AC / nothing ran) is NOT a pass
     //    here — an unverified spec must not be finalized by the composite.
-    let (completed, summary, confirmation) = if qa.overall == "pass" {
-        // The confirmation is TAKEN before the terminal event: the ledger's
-        // second column is part of what this close records, not a note appended
-        // to a spec that is already closed.
-        let confirmation = take_confirmation(cwd, spec);
-        let complete_value = complete_spec::finalize(cwd, spec);
-        let ok = complete_value
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let spec_dir = dispatch_plan::resolve_spec_dir(cwd, spec);
-        // Advisory: an unreadable spec.md degrades the summary to null without
-        // un-completing the close.
-        let summary = pipeline_summary::build_for_dir(&spec_dir)
-            .map(|(model, _header)| pipeline_summary::model_json(&model))
-            .unwrap_or(Value::Null);
-        (ok, summary, confirmation)
-    } else {
-        (false, Value::Null, confirmation_not_taken(CONFIRMATION_NOT_DUE))
-    };
+    if qa.overall != "pass" {
+        return json!({
+            "completed": false,
+            "confirmation": confirmation_not_taken(CONFIRMATION_NOT_DUE),
+            "removal": removal_not_taken(REMOVAL_NOT_DUE),
+            "qa": qa_json,
+            "reviews": reviews,
+            "summary": Value::Null,
+        });
+    }
+
+    // The confirmation is TAKEN before the terminal event: the ledger's second
+    // column is part of what this close records, not a note appended to a spec
+    // that is already closed. Advisory — QA gated the same commands moments
+    // earlier, so the report spells the verdicts apart and gates nothing.
+    let confirmation = take_confirmation(cwd, spec);
+
+    // The THIRD transition, taken here because nothing else ever took it: red
+    // before and green after both clear a criterion that asserts nothing the
+    // work actually did, and only removing the work again catches it.
+    let (removal, removal_blockers) = take_removal(cwd, spec);
+    if !removal_blockers.is_empty() {
+        return json!({
+            "completed": false,
+            "confirmation": confirmation,
+            "removal": removal,
+            "qa": qa_json,
+            "reviews": reviews,
+            "summary": Value::Null,
+        });
+    }
+
+    let complete_value = complete_spec::finalize(cwd, spec);
+    let completed = complete_value
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let spec_dir = dispatch_plan::resolve_spec_dir(cwd, spec);
+    // Advisory: an unreadable spec.md degrades the summary to null without
+    // un-completing the close.
+    let summary = pipeline_summary::build_for_dir(&spec_dir)
+        .map(|(model, _header)| pipeline_summary::model_json(&model))
+        .unwrap_or(Value::Null);
 
     json!({
         "completed": completed,
         "confirmation": confirmation,
+        "removal": removal,
         "qa": qa_json,
         "reviews": reviews,
         "summary": summary,
@@ -147,8 +191,10 @@ const CONFIRMATION_NOT_DUE: &str = "the confirmation was NOT TAKEN: QA did not p
 /// shapes what the close reports.
 ///
 /// `unproven` names every criterion the pass did NOT clear, which is the only
-/// part a reader can act on. It stays advisory (see the module doc), so the
-/// caller sees the list and the composite does not block on it.
+/// part a reader can act on — the report is advisory, and the module doc says
+/// why: QA gated the same commands moments earlier, and the one case only this
+/// pass could see lands in [`Confirmation::NotTaken`], which no honest refusal
+/// could include.
 fn take_confirmation(cwd: &Path, spec: &str) -> Value {
     let report = ac_negative_check::confirm_in_process(cwd, spec);
     let unproven: Vec<Value> = report
@@ -164,6 +210,73 @@ fn take_confirmation(cwd: &Path, spec: &str) -> Value {
         "unconfirmed": report.unconfirmed,
         "unproven": unproven,
         "reason": report.error,
+    })
+}
+
+/// Why a close reports NO removal: QA did not pass, so nothing closed and the
+/// scratch tree was never due to be cut.
+const REMOVAL_NOT_DUE: &str = "the REMOVAL was NOT TAKEN: QA did not pass, so this spec is not \
+     closed and no scratch tree was due to be cut — clear the failing criteria, then close again";
+
+/// TAKE the third transition over `spec` and report its verdict.
+///
+/// Runs [`ac_negative_check::take_removal`], the same engine
+/// `ac-negative-check --removal` runs: each CONFIRMED criterion is run again
+/// against a scratch checkout with the work taken away, and must come back red.
+/// Until this call existed the only reference to that engine outside its own
+/// module was the CLI flag, so [`ac_negative_check::Removal::Survived`] — the
+/// finding the pass exists to produce — was a value no pipeline could reach.
+///
+/// The second return value is what the close is REFUSED on: the criteria that
+/// SURVIVED the removal. One of those is satisfied by something the work did
+/// not do, which is a criterion verifying nothing.
+///
+/// Everything else is advisory, and the direction is deliberate. A scratch tree
+/// that could not be cut is an ENGINE error, never a verdict about a criterion
+/// — the report carries the reason and the close proceeds, because refusing a
+/// close over a `git worktree` failure would name an action about the criterion
+/// that has nothing to do with it. `EvidenceRemoved` is likewise not a finding:
+/// the pass declined to judge, and turning silence into a refusal is the same
+/// error as turning it into a proof.
+fn take_removal(cwd: &Path, spec: &str) -> (Value, Vec<String>) {
+    let from = ac_negative_check::default_removal_from(cwd);
+    let report = ac_negative_check::take_removal(cwd, spec, &from);
+    if let Some(error) = report.error {
+        return (removal_not_taken(&error), Vec::new());
+    }
+    let survived: Vec<String> = report
+        .criteria
+        .iter()
+        .filter(|c| c.removal == ac_negative_check::Removal::Survived)
+        .map(|c| c.id.clone())
+        .collect();
+    let value = json!({
+        "taken": true,
+        "ok": survived.is_empty(),
+        "red": report.removed_red,
+        "survived": survived.clone(),
+        "evidence_removed": report.evidence_removed,
+        "taken_away": report.taken_away,
+        "reason": Value::Null,
+    });
+    (value, survived)
+}
+
+/// The report for a removal that was NEVER TAKEN — because it was not due, or
+/// because the scratch tree could not be cut.
+///
+/// `ok` is `null`, never `false`, for the reason [`confirmation_not_taken`]
+/// gives: a pass nobody took and a pass that came back wrong ask for opposite
+/// actions.
+fn removal_not_taken(reason: &str) -> Value {
+    json!({
+        "taken": false,
+        "ok": Value::Null,
+        "red": 0,
+        "survived": [],
+        "evidence_removed": 0,
+        "taken_away": [],
+        "reason": reason,
     })
 }
 
@@ -549,6 +662,166 @@ mod tests {
         );
     }
 
+    /// A still-red confirmation is REPORTED, verbatim and by name — and the
+    /// close is not withheld on it.
+    ///
+    /// The advisory direction is a decision, not an omission (2026-07-29,
+    /// reverting a refusal that shipped for one working day): QA gates the same
+    /// commands moments earlier in this composite, so a red here requires the
+    /// tree to change between the two runs, and the one case only this pass
+    /// could see — a criterion that was never red — lands in `NotTaken`, which
+    /// the refusal excluded anyway. The removal pass keeps the composite's only
+    /// refusal (see `close_takes_the_removal_pass`).
+    ///
+    /// `mkdir` is the criterion, chosen for one property: it exits 0 the first
+    /// time and non-zero the second, on `cmd.exe` and `sh` alike. So QA (which
+    /// runs first) sees a green criterion and reports `pass`, and the
+    /// confirmation — running the same command moments later — sees it red:
+    /// exactly the state whose reporting this asserts.
+    #[test]
+    fn close_reports_a_still_red_criterion_without_withholding() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "confirm-reports";
+        let spec_dir = seed_spec_two_acs(dir.path(), spec, "mkdir confirm-probe");
+        seed_red_ledger(&spec_dir, spec, "mkdir confirm-probe");
+
+        let report = close(dir.path(), spec);
+
+        assert_eq!(report["qa"]["overall"], json!("pass"), "QA itself passed: {report}");
+        // The still-red criterion is named, with what its column says.
+        assert_eq!(report["confirmation"]["taken"], json!(true), "{report}");
+        assert_eq!(report["confirmation"]["ok"], json!(false), "{report}");
+        assert_eq!(report["confirmation"]["unproven"][0]["id"], json!("AC-1"), "{report}");
+        assert!(
+            report["confirmation"]["unproven"][0]["says"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("came back RED"),
+            "the wording names the red, not a generic unproven: {report}",
+        );
+        // And the close is NOT withheld on it: QA passed, so the spec closes.
+        assert_eq!(
+            report["completed"],
+            json!(true),
+            "the confirmation reports; only the removal refuses: {report}",
+        );
+        // The close really landed.
+        let meta: Value = serde_json::from_str(
+            &std::fs::read_to_string(spec_dir.join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["stage"], json!("Close"), "{meta}");
+        assert_eq!(meta["outcome"], json!("Completed"), "{meta}");
+    }
+
+    /// Run `git` in `cwd`, discarding output — the fixture side of the removal
+    /// test, mirroring `work_removed`'s own.
+    fn git(cwd: &Path, args: &[&str]) {
+        let _ = std::process::Command::new("git").args(args).current_dir(cwd).output();
+    }
+
+    /// AC-2 — the CLOSE composite TAKES the removal pass, and a criterion that
+    /// SURVIVES the removal of its own work refuses the close.
+    ///
+    /// Before this caller existed the engine's only reference outside its own
+    /// module was the CLI flag, so `Removal::Survived` — the finding the pass
+    /// exists to produce — was a value no pipeline could reach.
+    ///
+    /// Two-sided:
+    ///
+    /// 1. **Survived refuses.** A real repo, a real scratch tree: the work
+    ///    edits `probe.txt`, the criterion is `echo ok` — green with the work
+    ///    and green without it, which is a criterion verifying nothing. The
+    ///    close reports it under `removal.survived` and does NOT complete, and
+    ///    the ledger's third column records `survived` on disk.
+    /// 2. **An engine error never refuses.** The same close where no wave ever
+    ///    cached a diff reports the removal NOT TAKEN with the reason, and the
+    ///    close still lands — a scratch tree that could not be cut is a fact
+    ///    about the engine, not about any criterion.
+    #[test]
+    fn close_takes_the_removal_pass() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return; // no git on PATH — the engine's own guard, mirrored.
+        }
+
+        // --- 1. A survivor refuses the close -------------------------------
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let root = dir.path();
+        git(root, &["init", "-b", "main"]);
+        git(root, &["config", "user.email", "t@e.x"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        git(root, &["config", "core.autocrlf", "false"]);
+        std::fs::write(root.join("probe.txt"), "before\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "base"]);
+        // THE WORK, on its own branch so the merge-base against the primary
+        // base (`main` — empty `mustard.json#git.flow`) is the base commit.
+        git(root, &["checkout", "-b", "work"]);
+        std::fs::write(root.join("probe.txt"), "after survived_marker\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "work"]);
+
+        let spec = "removal-survivor";
+        let spec_dir = seed_spec_two_acs(root, spec, "echo ok");
+        seed_red_ledger(&spec_dir, spec, "echo ok");
+        // The record the pipeline already keeps: the wave's cached diff.
+        std::fs::create_dir_all(spec_dir.join("wave-1-rt")).unwrap();
+        std::fs::write(
+            spec_dir
+                .join("wave-1-rt")
+                .join(crate::commands::review::work_removed::WAVE_DIFF),
+            "- `probe.txt` (modified)\n",
+        )
+        .unwrap();
+
+        let report = close(root, spec);
+
+        assert_eq!(report["qa"]["overall"], json!("pass"), "{report}");
+        assert_eq!(report["confirmation"]["ok"], json!(true), "{report}");
+        assert_eq!(report["removal"]["taken"], json!(true), "the pass has a caller: {report}");
+        assert_eq!(
+            report["removal"]["survived"][0],
+            json!("AC-1"),
+            "green without its work is a criterion verifying nothing: {report}",
+        );
+        assert_eq!(report["completed"], json!(false), "a survivor refuses the close: {report}");
+        assert_eq!(report["summary"], Value::Null, "{report}");
+        // Recorded, not just reported: the ledger's third column moved.
+        assert_eq!(ledger_entry(&spec_dir, "AC-1")["removal"], json!("survived"), "{report}");
+        // The spec really is NOT closed.
+        let meta: Value = serde_json::from_str(
+            &std::fs::read_to_string(spec_dir.join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["outcome"], json!("Active"), "{meta}");
+
+        // --- 2. An engine error reports and never refuses ------------------
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "removal-engine-error";
+        let spec_dir = seed_spec_two_acs(dir.path(), spec, "echo ok");
+        seed_red_ledger(&spec_dir, spec, "echo ok");
+
+        let report = close(dir.path(), spec);
+
+        assert_eq!(report["removal"]["taken"], json!(false), "{report}");
+        assert!(
+            report["removal"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no-cached-diff"),
+            "the reason names which half failed: {report}",
+        );
+        assert_eq!(
+            report["completed"],
+            json!(true),
+            "an engine error is a fact about the engine, not the criteria: {report}",
+        );
+    }
+
     /// Degraded: an unknown spec degrades to QA `skip` — which is NOT a pass:
     /// `completed: false`, empty reviews, null summary.
     #[test]
@@ -568,8 +841,11 @@ mod tests {
             id: id.to_string(),
             command: "cargo test -p mustard-rt something".to_string(),
             expect: None,
+            control_command: None,
             verdict: Verdict::Unproven,
             proof: ac_negative_check::Proof::Red,
+            control: ac_negative_check::Control::NotDeclared,
+            control_exit: None,
             confirmation,
             exit: Some(1),
             confirmation_exit: None,

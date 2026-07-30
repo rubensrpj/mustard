@@ -15,7 +15,7 @@ source: manual
 
 ## 1. Resolve + prefetch
 
-Numeric arg = number, URL = used directly. No arg: `gh pr view --json number,url,title,headRefName`. No PR → *"No open PR found for current branch. Run `/git merge` first."*
+Numeric arg = number, URL = used directly. No arg: `gh pr view --json number,url,title,headRefName`. No PR → *"No open PR found for current branch. Open one with `/mustard:git pr`, then re-run."* (`/git` has no `merge` action — a work branch reaches its base only through a PR.)
 
 ```bash
 rtk mustard-rt run review-prefetch <pr-ref> --format json

@@ -251,7 +251,9 @@ fn to_relative(abs: &Path, project_root: &Path) -> String {
 /// Compute the wave-DAG result JSON for a list of files.
 ///
 /// Shared with `exec-rewave-check`, which used to shell to `wave-dependency.js`
-/// — it now calls this directly. The shape matches the JS stdout exactly.
+/// — it now calls this directly. The shape follows the JS stdout, plus the
+/// per-wave `dependsOnOrigin` marker (`imports` here, `layer-order` on the
+/// role fallback) so a consumer can tell a derived edge from a declared one.
 pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
     if files.is_empty() {
         return json!({ "error": "empty-input" });
@@ -279,6 +281,16 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
                     return fallback;
                 }
             }
+            // REAL topological edges: wave number (1-based) per file, so each
+            // wave's `dependsOn` names the earlier waves that actually hold a
+            // file this wave's files import — the DAG's own topology, never a
+            // fabricated `wave N depends on N-1` index chain.
+            let mut wave_of: BTreeMap<&PathBuf, usize> = BTreeMap::new();
+            for (idx, files) in wave_files.iter().enumerate() {
+                for f in files {
+                    wave_of.insert(f, idx + 1);
+                }
+            }
             let mut widest = 0usize;
             let waves: Vec<Value> = wave_files
                 .iter()
@@ -293,11 +305,23 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
                             roles.push(r);
                         }
                     }
+                    // The distinct earlier waves some file of THIS wave imports
+                    // from (in-graph deps only) — sorted asc, deduped.
+                    let depends: BTreeSet<usize> = files
+                        .iter()
+                        .filter_map(|f| graph.get(f))
+                        .flatten()
+                        .filter_map(|dep| wave_of.get(dep).copied())
+                        .filter(|&w| w != idx + 1)
+                        .collect();
                     json!({
                         "wave": idx + 1,
                         "files": rel,
                         "roles": roles,
-                        "dependsOn": if idx == 0 { json!([]) } else { json!([idx]) },
+                        "dependsOn": depends.into_iter().collect::<Vec<_>>(),
+                        // Origin of every edge above: derived from the import
+                        // graph (a file here imports a file there).
+                        "dependsOnOrigin": "imports",
                     })
                 })
                 .collect();
@@ -319,9 +343,11 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
 /// — applying the same lib-folding rule the scope decider uses (a lone `lib`
 /// bucket is one layer, never split). Otherwise `None` and the caller keeps the
 /// single import-DAG wave. Roles are scheduled in `layer_order` (case-insensitive
-/// match), each wave depending on the previous; roles absent from the order fall
-/// to the tail in lexical order. The emitted shape is byte-identical to the
-/// import-DAG path (`{wave, files, roles, dependsOn}` + `metadata`).
+/// match), each wave depending on the previous — HERE the linear chain is the
+/// derivation itself (each layer builds on the one before, per the configured
+/// order), so the edges carry origin `layer-order`. Roles absent from the order
+/// fall to the tail in lexical order. The emitted shape matches the import-DAG
+/// path (`{wave, files, roles, dependsOn, dependsOnOrigin}` + `metadata`).
 fn role_layered_fallback(
     files: &[PathBuf],
     project_root: &Path,
@@ -383,6 +409,10 @@ fn role_layered_fallback(
                 "files": wave_files,
                 "roles": [role],
                 "dependsOn": if idx == 0 { json!([]) } else { json!([idx]) },
+                // Origin: the configured layer schedule — each layer builds on
+                // the previous. The chain IS this path's derivation, not an
+                // index fabrication.
+                "dependsOnOrigin": "layer-order",
             })
         })
         .collect();
@@ -439,25 +469,54 @@ fn files_from_value(parsed: &Value) -> Vec<String> {
     out
 }
 
+/// Input position (1-based) a DECLARED dependency reference names: a number
+/// (`2`), a numeric string (`"2"`), or a wave name (`"wave-2-backend"` — the
+/// spelling `wave-plan.md` / `WavePlanEntry::depends_on` carries). `None` when
+/// the reference carries no readable position.
+fn declared_ref_position(v: &Value) -> Option<usize> {
+    if let Some(n) = v.as_u64() {
+        return usize::try_from(n).ok().filter(|n| *n >= 1);
+    }
+    let s = v.as_str()?.trim();
+    let digits: String = s
+        .strip_prefix("wave-")
+        .unwrap_or(s)
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<usize>().ok().filter(|n| *n >= 1)
+}
+
 /// Trust an explicit plan's wave boundaries (Option D). When the input is the
 /// rich PLAN shape (`waves: [{files:[...]}]`), emit the canonical
-/// `{waves, metadata}` from the planner's own boundaries — renumbered, with a
-/// linear `dependsOn` chain and per-wave roles — instead of flattening to a file
-/// union and re-deriving (which lets the flat-DAG role fallback fan a 2-wave plan
-/// out to one wave per role). Files are deduped across waves (first occurrence
-/// wins, matching the DAG's no-phantom-node rule); a wave whose files all
-/// appeared earlier is dropped. Returns `None` for the bare `{files}` derivation
-/// shape (no `waves` key) or an all-empty plan, so the import-DAG path runs.
+/// `{waves, metadata}` from the planner's own boundaries — renumbered, with the
+/// `dependsOn` edges the author DECLARED (`dependsOn`/`depends_on`, numbers or
+/// wave names) and per-wave roles — instead of flattening to a file union and
+/// re-deriving (which lets the flat-DAG role fallback fan a 2-wave plan out to
+/// one wave per role). A wave that declares nothing emits NO edges (origin
+/// `undeclared`) — the old `wave N depends on N-1` chain here was a fabrication
+/// that contradicted plans whose waves are independent. Files are deduped
+/// across waves (first occurrence wins, matching the DAG's no-phantom-node
+/// rule); a wave whose files all appeared earlier is dropped, and declared
+/// references are remapped onto the surviving output numbers (a reference to a
+/// dropped or unknown wave is itself dropped). Returns `None` for the bare
+/// `{files}` derivation shape (no `waves` key) or an all-empty plan, so the
+/// import-DAG path runs.
 fn passthrough_plan_waves(parsed: &Value, role_patterns: &[RolePattern]) -> Option<Value> {
     let waves_in = parsed.get("waves").and_then(Value::as_array)?;
     if waves_in.is_empty() {
         return None;
     }
+    // Pass 1 — dedup files, keep non-empty waves, remember each survivor's
+    // INPUT position and its declared references (verbatim).
+    struct Kept<'a> {
+        input_pos: usize,
+        files: Vec<String>,
+        declared: Option<&'a Vec<Value>>,
+    }
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut out_waves: Vec<Value> = Vec::new();
-    let mut widest = 0usize;
-    let mut total_files = 0usize;
-    for wave in waves_in {
+    let mut kept: Vec<Kept<'_>> = Vec::new();
+    for (pos, wave) in waves_in.iter().enumerate() {
         let mut rel: Vec<String> = Vec::new();
         for f in wave
             .get("files")
@@ -474,24 +533,50 @@ fn passthrough_plan_waves(parsed: &Value, role_patterns: &[RolePattern]) -> Opti
         if rel.is_empty() {
             continue;
         }
+        let declared = wave
+            .get("dependsOn")
+            .or_else(|| wave.get("depends_on"))
+            .and_then(Value::as_array);
+        kept.push(Kept { input_pos: pos + 1, files: rel, declared });
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    // Input position → surviving output wave number, so a declared reference
+    // stays correct after empty/duplicate waves are dropped.
+    let out_number_of: BTreeMap<usize, usize> =
+        kept.iter().enumerate().map(|(i, k)| (k.input_pos, i + 1)).collect();
+    let mut out_waves: Vec<Value> = Vec::new();
+    let mut widest = 0usize;
+    let mut total_files = 0usize;
+    for (idx, k) in kept.iter().enumerate() {
         let mut roles: Vec<String> = Vec::new();
-        for r in rel.iter().map(|f| detect_role_with(f, role_patterns)) {
+        for r in k.files.iter().map(|f| detect_role_with(f, role_patterns)) {
             if !roles.contains(&r) {
                 roles.push(r);
             }
         }
-        widest = widest.max(rel.len());
-        total_files += rel.len();
-        let idx = out_waves.len();
+        widest = widest.max(k.files.len());
+        total_files += k.files.len();
+        // The edges the author declared, remapped and deduped (sorted asc); a
+        // self-reference never survives.
+        let depends: BTreeSet<usize> = k
+            .declared
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(declared_ref_position)
+            .filter_map(|pos| out_number_of.get(&pos).copied())
+            .filter(|&n| n != idx + 1)
+            .collect();
+        let origin = if k.declared.is_some() { "declared" } else { "undeclared" };
         out_waves.push(json!({
             "wave": idx + 1,
-            "files": rel,
+            "files": k.files,
             "roles": roles,
-            "dependsOn": if idx == 0 { json!([]) } else { json!([idx]) },
+            "dependsOn": depends.into_iter().collect::<Vec<_>>(),
+            "dependsOnOrigin": origin,
         }));
-    }
-    if out_waves.is_empty() {
-        return None;
     }
     let total_waves = out_waves.len();
     Some(json!({
@@ -644,6 +729,11 @@ mod tests {
         assert_eq!(waves[0]["dependsOn"].as_array().map(Vec::len), Some(0));
         assert_eq!(waves[1]["dependsOn"][0].as_u64(), Some(1));
         assert_eq!(waves[2]["dependsOn"][0].as_u64(), Some(2));
+        // The fallback's chain IS its derivation (each layer builds on the
+        // previous) — the edges say where they came from.
+        for w in waves {
+            assert_eq!(w["dependsOnOrigin"].as_str(), Some("layer-order"), "origin: {out}");
+        }
     }
 
     #[test]
@@ -679,9 +769,75 @@ mod tests {
         );
         assert_eq!(out["metadata"]["source"].as_str(), Some("input-plan"));
         assert_eq!(out["metadata"]["totalWaves"].as_u64(), Some(2));
-        // Linear dependency chain across the trusted boundaries.
+        // A plan that declares NO dependencies gets NO edges — the linear
+        // `wave N depends on N-1` chain this test once pinned was a
+        // fabrication (neither declared by the author nor derived from the
+        // import graph), and it contradicted plans whose waves are
+        // independent. The origin says so honestly.
         assert_eq!(out["waves"][0]["dependsOn"].as_array().map(Vec::len), Some(0));
-        assert_eq!(out["waves"][1]["dependsOn"][0].as_u64(), Some(1));
+        assert_eq!(
+            out["waves"][1]["dependsOn"].as_array().map(Vec::len),
+            Some(0),
+            "no declared edge ⇒ no fabricated chain: {out}"
+        );
+        assert_eq!(out["waves"][1]["dependsOnOrigin"].as_str(), Some("undeclared"));
+    }
+
+    /// AC-9: the dependency command emits the edges the plan DECLARED — by
+    /// number or by wave name, skipping waves the author skipped — and the
+    /// import-DAG path emits the REAL derived topology; every edge carries the
+    /// origin it came from.
+    #[test]
+    fn wave_dependency_honours_the_declared_edges() {
+        // Declared path: wave 3 depends on wave 1 ONLY (named), wave 2 on 1
+        // (numeric). No chain is invented on top of the declaration.
+        let parsed = json!({
+            "waves": [
+                { "files": ["src/schema/m.sql"], "dependsOn": [] },
+                { "files": ["src/api/h.ts"], "dependsOn": [1] },
+                { "files": ["src/ui/p.tsx"], "depends_on": ["wave-1-schema"] },
+            ]
+        });
+        let out = passthrough_plan_waves(&parsed, &[]).expect("rich plan → Some");
+        assert_eq!(out["waves"][0]["dependsOn"], json!([]));
+        assert_eq!(out["waves"][1]["dependsOn"], json!([1]));
+        assert_eq!(
+            out["waves"][2]["dependsOn"],
+            json!([1]),
+            "the declared edge (wave 1, by name) is honoured — not a 3←2 chain: {out}"
+        );
+        for w in out["waves"].as_array().expect("waves") {
+            assert_eq!(
+                w["dependsOnOrigin"].as_str(),
+                Some("declared"),
+                "every declared edge carries its origin: {out}"
+            );
+        }
+
+        // Import-DAG path: c imports BOTH a and b, so its wave depends on
+        // waves 1 AND 2 — the real topology, which the fabricated index chain
+        // ([2] alone) could never express.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.ts"), "export const a = 1;").unwrap();
+        std::fs::write(root.join("b.ts"), "import './a';\nexport const b = 2;").unwrap();
+        std::fs::write(root.join("c.ts"), "import './a';\nimport './b';\nexport const c = 3;")
+            .unwrap();
+        let derived = compute_waves(
+            &["a.ts".to_string(), "b.ts".to_string(), "c.ts".to_string()],
+            root,
+        );
+        let waves = derived["waves"].as_array().expect("derived waves");
+        assert_eq!(waves.len(), 3, "a ← b ← c is three levels: {derived}");
+        assert_eq!(waves[1]["dependsOn"], json!([1]), "b imports a: {derived}");
+        assert_eq!(
+            waves[2]["dependsOn"],
+            json!([1, 2]),
+            "c imports a AND b — the real edges, not an index chain: {derived}"
+        );
+        for w in waves {
+            assert_eq!(w["dependsOnOrigin"].as_str(), Some("imports"), "origin: {derived}");
+        }
     }
 
     #[test]

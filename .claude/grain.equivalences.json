@@ -21,12 +21,6 @@
     "auto": [
       "car"
     ],
-    "census": [
-      "the",
-      "whole",
-      "thing",
-      "little"
-    ],
     "clone": [
       "not",
       "gonna",
@@ -35,8 +29,8 @@
     "concern": [
       "care"
     ],
-    "declaration": [
-      "conference"
+    "decl": [
+      "dec"
     ],
     "declares": [
       "the",
@@ -44,21 +38,12 @@
       "shall",
       "adopt"
     ],
-    "degrades": [
-      "degradation"
-    ],
-    "dep": [
-      "top"
-    ],
-    "deterministic": [
-      "determine"
-    ],
     "domain": [
       "not",
       "sure"
     ],
-    "enforcement": [
-      "copy"
+    "exemplars": [
+      "copies"
     ],
     "explicit": [
       "clear"
@@ -93,13 +78,13 @@
     "invocation": [
       "the"
     ],
+    "iter": [
+      "ker"
+    ],
     "literal": [
       "ignoring",
       "the",
       "situation"
-    ],
-    "manifests": [
-      "posters"
     ],
     "miss": [
       "missing"
@@ -108,20 +93,11 @@
       "single",
       "handed"
     ],
-    "opens": [
-      "addition",
-      "the",
-      "commission",
-      "has"
-    ],
     "otel": [
       "steel"
     ],
     "partialeq": [
       "partialq"
-    ],
-    "passes": [
-      "change"
     ],
     "plus": [
       "more"
@@ -137,8 +113,15 @@
     "prior": [
       "higher"
     ],
+    "proven": [
+      "source"
+    ],
     "readable": [
       "disposable"
+    ],
+    "refuses": [
+      "not",
+      "sure"
     ],
     "regression": [
       "the",
@@ -150,16 +133,14 @@
     "renderer": [
       "render"
     ],
+    "resolver": [
+      "resolve"
+    ],
     "route": [
       "road"
     ],
     "sessionstart": [
       "session"
-    ],
-    "silent": [
-      "the",
-      "commission",
-      "proposal"
     ],
     "sqlite": [
       "public",
@@ -167,9 +148,6 @@
     ],
     "stdout": [
       "stout"
-    ],
-    "stem": [
-      "new"
     ],
     "subprocess": [
       "sub"
@@ -180,9 +158,6 @@
     ],
     "tauri": [
       "bulls"
-    ],
-    "trim": [
-      "but"
     ],
     "true": [
       "other"

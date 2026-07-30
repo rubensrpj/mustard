@@ -294,7 +294,8 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 // ---------------------------------------------------------------------------
 
 // Each themes block packs styles in the same order as `SegmentKind`:
-// Module, Git, Context, Duration, Savings, Diff, Cost, Model, Version, Mustard.
+// Module, Git, Context, Duration, Savings, Diff, Cost, Model, Version, Mustard,
+// Prune.
 
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
@@ -325,6 +326,8 @@ pub const DEFAULT: Theme = Theme {
         Style::fg(Color::Ansi(8)),
         // Mustard — dim white (drift turns it yellow via the builder override)
         Style::fg(Color::Ansi(8)),
+        // Prune — yellow: a delivered unit still owes its exit ritual
+        Style::fg(Color::Ansi(3)),
     ],
 };
 
@@ -368,6 +371,8 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
         Style::pl(Color::Rgb(0xf5, 0xc2, 0xe7), Color::Rgb(0x11, 0x11, 0x1b)),
         // Mustard — yellow on crust (the harness's own tail mark)
         Style::pl(Color::Rgb(0xf9, 0xe2, 0xaf), Color::Rgb(0x11, 0x11, 0x1b)),
+        // Prune — peach on crust: owed, not broken
+        Style::pl(Color::Rgb(0xfa, 0xb3, 0x87), Color::Rgb(0x11, 0x11, 0x1b)),
     ],
 };
 
@@ -401,6 +406,8 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
         Style::pl(Color::Rgb(0x56, 0x5f, 0x89), Color::Rgb(0x1a, 0x1b, 0x26)),
         // Mustard — yellow on bg (the harness's own tail mark)
         Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x1a, 0x1b, 0x26)),
+        // Prune — yellow on bg-storm: owed, not broken
+        Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x24, 0x28, 0x3b)),
     ],
 };
 
@@ -433,6 +440,8 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xea, 0x9a, 0x97)),
         // Mustard — crust on pastel yellow (the harness's own tail mark)
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf9, 0xe2, 0xaf)),
+        // Prune — crust on pastel peach: owed, not broken
+        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xfa, 0xb3, 0x87)),
     ],
 };
 
@@ -466,6 +475,8 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
         Style::pl(Color::Rgb(0xa8, 0x99, 0x84), Color::Rgb(0x1d, 0x20, 0x21)),
         // Mustard — bg on yellow (echoes the module head, closes the ribbon)
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd7, 0x99, 0x21)),
+        // Prune — bg on orange: owed, not broken
+        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd6, 0x5d, 0x0e)),
     ],
 };
 

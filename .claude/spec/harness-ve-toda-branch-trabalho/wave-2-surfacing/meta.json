@@ -1,0 +1,41 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-07-30T14:28:30.559Z",
+  "parent": "harness-ve-toda-branch-trabalho",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/active_specs.rs",
+      "path": "apps/rt/src/commands/spec/active_specs.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/statusline/segment.rs",
+      "path": "apps/rt/src/commands/statusline/segment.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/statusline/mod.rs",
+      "path": "apps/rt/src/commands/statusline/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/session/session_start_inject.rs",
+      "path": "apps/rt/src/hooks/session/session_start_inject.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/platform/i18n.rs",
+      "path": "packages/core/src/platform/i18n.rs",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/review.md",
+      "path": "plugin/commands/review.md",
+      "done": true
+    }
+  ]
+}

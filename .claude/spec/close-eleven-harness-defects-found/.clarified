@@ -1,0 +1,6 @@
+spec=close-eleven-harness-defects-found
+via=grill-finalize
+session=af35f454-ebba-4df6-831f-dc5a201883cd
+at=2026-07-29T16:52:48.157Z
+terms=vacuous proof, sufficiency (as opposed to coverage), fabricated chain, the exemplar leak, unreachable binding, shared-status coupling
+reason=No interrogation grill ran: the project glossary is absent, so there was nothing to reconcile a question against. The six terms were settled from measured evidence while cross-checking a field report against the code, and carried into the spec's Definitions through the --material channel rather than retyped. Two of them name defects this investigation reproduced live.

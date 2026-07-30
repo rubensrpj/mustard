@@ -103,6 +103,13 @@ const ERR_UNCOVERED_ACS: &str = "uncovered acceptance criteria";
 /// whether the declared files would have been enough.
 const ERR_UNSUPPORTABLE_CLAIMS: &str = "unsupportable acceptance-criteria claims";
 
+/// Stdout `scaffold.error` marker for a criterion whose command inspects a path
+/// no wave claiming it declares — the SUFFICIENCY gate. Apart from the coverage
+/// marker on purpose: coverage asks whether SOME wave claimed the id, this asks
+/// whether the claiming wave can actually satisfy it, and the two ask the
+/// reader to edit different lines. Mapped to exit 2 like its two siblings.
+const ERR_CRITERIA_OUTSIDE_CLAIMANTS: &str = "acceptance criteria outside their claimants";
+
 /// Stdout `proof.error` marker for a spec carrying an acceptance criterion that
 /// was never proven ABLE to fail. [`run`] maps it to exit 2 and [`materialize`]
 /// withholds the PLAN transition — the negative-test gate, enforced
@@ -134,6 +141,7 @@ pub fn run(opts: PlanMaterializeOpts) {
     if scaffold_err == Some(ERR_PLAN_UNREADABLE)
         || scaffold_err == Some(ERR_UNCOVERED_ACS)
         || scaffold_err == Some(ERR_UNSUPPORTABLE_CLAIMS)
+        || scaffold_err == Some(ERR_CRITERIA_OUTSIDE_CLAIMANTS)
         || !proven
     {
         std::process::exit(2);
@@ -175,7 +183,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             removed,
             uncovered_acs,
             unsupportable_claims,
-        } if uncovered_acs.is_empty() && unsupportable_claims.is_empty() => {
+            criteria_outside_claimants,
+        } if uncovered_acs.is_empty()
+            && unsupportable_claims.is_empty()
+            && criteria_outside_claimants.is_empty() =>
+        {
             (
                 json!({
                     "created_files": created,
@@ -186,10 +198,12 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                 true,
             )
         }
-        // Both lists are settled facts about the plan's own contents, so they
-        // share one refusal — but they are REPORTED apart, because a criterion
-        // that is claimed-but-unsupportable is not the same thing as one nobody
-        // claimed, and a reader acting on the wrong one fixes the wrong plan.
+        // All three lists are settled facts about the plan's own contents, so
+        // they share one refusal — but they are REPORTED apart, because a
+        // criterion that is claimed-but-unsupportable is not the same thing as
+        // one nobody claimed, nor as one whose claimant cannot reach a path its
+        // command inspects, and a reader acting on the wrong one fixes the
+        // wrong plan.
         ScaffoldOutcome::Created {
             created,
             skipped,
@@ -197,19 +211,27 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             removed,
             uncovered_acs,
             unsupportable_claims,
+            criteria_outside_claimants,
         } => (
             json!({
                 "created_files": created,
                 "skipped": skipped,
                 "refreshed": refreshed,
                 "removed": removed,
-                "error": if uncovered_acs.is_empty() {
+                // Coverage first, then the contradiction, then sufficiency: a
+                // criterion nobody claimed cannot also be judged on whether its
+                // claimant reaches its paths, so the earlier question owns the
+                // headline while every list travels in full.
+                "error": if !uncovered_acs.is_empty() {
+                    ERR_UNCOVERED_ACS
+                } else if !unsupportable_claims.is_empty() {
                     ERR_UNSUPPORTABLE_CLAIMS
                 } else {
-                    ERR_UNCOVERED_ACS
+                    ERR_CRITERIA_OUTSIDE_CLAIMANTS
                 },
                 "uncovered_acs": uncovered_acs,
                 "unsupportable_claims": unsupportable_claims,
+                "criteria_outside_claimants": criteria_outside_claimants,
             }),
             false,
         ),

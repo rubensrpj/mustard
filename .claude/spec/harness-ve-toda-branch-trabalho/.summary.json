@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "harness-ve-toda-branch-trabalho",
+  "title": "o harness ve toda branch de trabalho: um enumerador sobre refs locais e remotas, um classificador que as cruza com a consulta de PR do provedor, e consumidores somente-leitura que nao podem apagar",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "enumerator",
+      "summary": "Uma única fonte de verdade sobre branches: o enumerador varre refs locais e remotas por prefixo de base, o classificador cruza ancestralidade local com a consulta de PR atrás de uma porta, e o relatór",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "surfacing",
+      "summary": "O harness passa a FALAR: o inventário de specs enxerga a branch que existe só no remoto, a statusline informa quantas unidades devem poda, o início de sessão avisa quando há pendência, e as duas varre",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

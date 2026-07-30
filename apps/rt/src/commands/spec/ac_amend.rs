@@ -606,11 +606,17 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // exempt from the negative test itself — it is the build-green safety net,
     // green before the work by design.
     let exempt = ac_negative_check::is_exempt(index, items.len());
+    // No `Control:` is declared through this door: the amendment replaces the
+    // command and (optionally) the expect regex, so the record says the control
+    // was not declared. When the markdown still carries one, the next
+    // `ac-negative-check` pass sees it differ from the record and takes it — the
+    // safe direction, since it can only cause a run, never a stale reuse.
     let mut proof = ac_negative_check::prove_one(
         root,
         &id,
         &opts.command,
         expect.as_deref(),
+        None,
         exempt,
     );
 
