@@ -152,7 +152,20 @@ if (-not $SkipBuild) {
     $buildNumber       = Step-BuildNumber $BuildNumFile
     $prevBuildNumber   = $env:MUSTARD_BUILD_NUMBER
     $env:MUSTARD_BUILD_NUMBER = $buildNumber
+    # Share ONE build cache across the five `cargo install` invocations — and
+    # across re-runs. Without CARGO_TARGET_DIR, `cargo install` builds each
+    # crate in an isolated temporary directory: five cold release builds of the
+    # whole dependency graph, every single run. With it, the first run pays the
+    # cold build once and every later run only recompiles what changed — plus
+    # apps/rt and apps/cli, whose build.rs re-stamps the bumped build number
+    # (`rerun-if-env-changed=MUSTARD_BUILD_NUMBER`); that residual is the price
+    # of a truthful `--version` and is seconds, not minutes. `target\install`
+    # keeps the release-install cache apart from the workspace's own dev
+    # `target\`, and lives under the already-gitignored target/ tree.
+    $prevTargetDir     = $env:CARGO_TARGET_DIR
+    $env:CARGO_TARGET_DIR = Join-Path $Root 'target\install'
     Write-Host "==> Installing scan + mustard-translate + mustard-rt + mustard-mcp + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
+    Write-Host "    CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR (shared cache — later runs are incremental)"
     try {
         # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
         # (Scan::locate), and the feature/spec/digest/facts flow depends on it.
@@ -165,6 +178,7 @@ if (-not $SkipBuild) {
         Install-Bin $MustardExe   (Join-Path $Root 'apps\cli')       'mustard'
     } finally {
         $env:MUSTARD_BUILD_NUMBER = $prevBuildNumber
+        $env:CARGO_TARGET_DIR     = $prevTargetDir
     }
     # Keep the Claude Code plugin's own bin/ in lockstep — hooks, MCP, and the
     # statusline of a plugin-based session resolve there, not on PATH.
