@@ -13,7 +13,8 @@
 //!     --scope  light|full \
 //!     --lang   pt-BR|en-US \
 //!     [--signals layers,files,...] \
-//!     [--output PATH]
+//!     [--output PATH] \
+//!     [--plan PATH]
 //! ```
 //!
 //! ## Output
@@ -30,15 +31,31 @@
 //!   memory/_index.md     # T1.9 — stub memory index
 //! ```
 //!
-//! Full-scope wave decomposition (`wave-plan.md` + `wave-N-{role}/spec.md` +
-//! review/qa scaffolds) is materialised separately by `wave-scaffold` from a
-//! plan JSON — `spec-draft` only writes the top-level spec.md + meta.json.
+//! ## `--plan` — the fused first materialisation
+//!
+//! Without `--plan` the command writes only the top-level `spec.md` +
+//! `meta.json`; the Full-scope wave decomposition (`wave-plan.md` +
+//! `wave-N-{role}/spec.md` + sidecars) is materialised later, by
+//! `plan-materialize`.
+//!
+//! With `--plan <FILE>` the two steps become one call. The command already
+//! RECORDS the wave decision (`meta.json#totalWaves`), and requiring a second
+//! invocation to act on what it just recorded is the ceremony this flag removes:
+//! the plan's `acceptance` lines become the spec's acceptance criteria (see
+//! [`adopt_plan_acceptance_criteria`]) and the SAME in-process composite
+//! `plan-materialize` runs — wave-scaffold renderer, analyze-validation, the
+//! dependency DAG, the negative proof, the `pipeline.scope` + PLAN emits — via
+//! [`plan_materialize::materialize_fresh`]. A gate refusal exits 2 and takes the
+//! layout back down with it, so a retry never meets a directory this run
+//! half-built. `plan-materialize` is unchanged and remains the
+//! RE-materialisation door for a layout reconciled onto an edited plan.
 //!
 //! Idempotent: if `output` already exists, the writer refuses to overwrite
 //! unless `--force` is passed. Fail-open per file write (a single failure is
 //! reported but does not abort the rest of the layout).
 
 use crate::shared::context::project_dir;
+use crate::commands::pipeline::plan_materialize;
 use crate::commands::spec::spec_scaffold;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
@@ -100,6 +117,14 @@ pub struct SpecDraftOpts {
     /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
     /// The wave dirs themselves are materialised by `wave-scaffold`.
     pub waves: u32,
+    /// Optional path to the plan JSON the Plan agent authored. Present ⇒ the
+    /// draft is FUSED with the PLAN-phase materialisation: after `spec.md` +
+    /// `meta.json` land, this same invocation runs the composite
+    /// [`crate::commands::pipeline::plan_materialize::materialize_fresh`], so
+    /// one call produces `wave-plan.md` and every wave directory with the
+    /// negative proof taken in the same pass. Absent ⇒ the command behaves
+    /// exactly as it always has.
+    pub plan: Option<PathBuf>,
     /// Overwrite existing output directory.
     pub force: bool,
     /// Optional comma-separated repo-vocabulary terms for the internal digest
@@ -365,20 +390,39 @@ fn append_material_sections(output: &Path, material: &ConversationMaterial) -> R
     mfs::write_atomic(&path, body.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Entry point.
+/// Entry point — resolves the project root from the process context and maps
+/// the run's outcome to the process exit code.
+///
+/// Exit 2 belongs to ONE outcome: the fused `--plan` materialisation refused
+/// (see [`run_at`]). Every other failure keeps printing `{"ok": false, …}` and
+/// exiting 0, exactly as it always has.
 pub fn run(opts: SpecDraftOpts) {
+    let project = PathBuf::from(project_dir());
+    let code = run_at(&project, opts);
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// The command's whole body, against an EXPLICIT project root — so a test can
+/// drive the fused `--plan` path end to end without the composite reaching out
+/// of its tempdir into the real checkout the process happens to sit in.
+///
+/// Returns the exit code [`run`] applies: `2` when the fused materialisation
+/// refused, `0` otherwise.
+pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     let Some(scope) = Scope::parse(&opts.scope) else {
         emit_error("invalid --scope (expected `light` or `full`)", &opts.scope);
-        return;
+        return 0;
     };
     let Ok(lang_locale) = Locale::from_str(&opts.lang) else {
         emit_error("invalid --lang (expected BCP-47 `pt-BR` or `en-US`)", &opts.lang);
-        return;
+        return 0;
     };
     let slug = slug_from_intent(&opts.intent, lang_locale);
     if slug.is_empty() {
         emit_error("intent did not yield a slug", &opts.intent);
-        return;
+        return 0;
     }
     // The channel is read and checked BEFORE anything is written: a malformed
     // material file must not leave a half-drafted spec behind.
@@ -387,7 +431,7 @@ pub fn run(opts: SpecDraftOpts) {
             Ok(m) => m,
             Err(detail) => {
                 emit_error("invalid --material", &detail);
-                return;
+                return 0;
             }
         },
         None => ConversationMaterial::default(),
@@ -395,12 +439,11 @@ pub fn run(opts: SpecDraftOpts) {
 
     let auto_output = opts.output.is_none();
     let output = opts.output.unwrap_or_else(|| {
-        let project = PathBuf::from(project_dir());
-        ClaudePaths::for_project(&project)
+        ClaudePaths::for_project(project_root)
             .and_then(|p| p.for_spec(&slug))
             .map(|sp| sp.dir().to_path_buf())
             .unwrap_or_else(|_| {
-                ClaudePaths::compose_unchecked(&project)
+                ClaudePaths::compose_unchecked(project_root)
                     .spec_dir()
                     .join(&slug)
             })
@@ -410,7 +453,7 @@ pub fn run(opts: SpecDraftOpts) {
     // spec — see [`holds_only_harness_state`]. Everything else still refuses.
     if output.exists() && !opts.force && !holds_only_harness_state(&output) {
         emit_error("output exists; pass --force to overwrite", &output.display().to_string());
-        return;
+        return 0;
     }
     // Near-duplicate guard (auto-slug only): a re-draft of the same intent can
     // slug slightly differently and silently create a SECOND spec directory
@@ -424,21 +467,20 @@ pub fn run(opts: SpecDraftOpts) {
                     "a near-duplicate spec already exists; pass --force or --output to override",
                     &dup,
                 );
-                return;
+                return 0;
             }
         }
     }
     if let Err(e) = mfs::create_dir_all(&output) {
         emit_error("could not create output directory", &e.to_string());
-        return;
+        return 0;
     }
 
     // ---- Resolve the project build command (AC default) from mustard.json. ----
     // No hardcoded `rtk cargo build`: the AC runs the project's own build, or a
     // neutral placeholder the user fills in when no `buildCommand` is set.
-    let project_root = PathBuf::from(project_dir());
     let build_command =
-        mustard_core::ProjectConfig::load(&project_root).build_command_or_fallback();
+        mustard_core::ProjectConfig::load(project_root).build_command_or_fallback();
 
     // ---- Query the scan digest (the same insumos `feature::run` emits).
     // Deterministic, token-free, fail-open: a missing model or empty match
@@ -451,7 +493,7 @@ pub fn run(opts: SpecDraftOpts) {
     // [`render_scan_anchors`]). The digest does NOT seed the `## Checklist`
     // either — an anchor is evidence, never an implementation target; the real
     // file census is authored in ANALYZE/PLAN (`## Files`). ----
-    let digest = scan_digest(&opts.intent, opts.query_terms.as_deref());
+    let digest = scan_digest(project_root, &opts.intent, opts.query_terms.as_deref());
     let scan_anchors = digest
         .as_ref()
         .and_then(|q| render_scan_anchors(q, lang_locale));
@@ -473,31 +515,40 @@ pub fn run(opts: SpecDraftOpts) {
             .collect::<Vec<_>>()
             .join("; ");
         emit_error("draft failed contract validation", &detail);
-        return;
+        return 0;
     }
 
     // ---- Resolve tone from mustard.json (wired into the drafter prompt). ----
-    let tone = mustard_core::ProjectConfig::load(&project_root).i18n().tone;
+    let tone = mustard_core::ProjectConfig::load(project_root).i18n().tone;
 
     // ---- Materialise files. ----
     let mut written: Vec<String> = Vec::new();
     if let Err(e) = spec_scaffold::write_spec_md(&output, &input, &opts.signals, lang_locale, tone) {
         emit_error("write spec.md", &e);
-        return;
+        return 0;
     }
     written.push(output.join("spec.md").display().to_string());
+
+    // The plan's own acceptance criteria supersede the skeleton the draft seeds
+    // — see [`adopt_plan_acceptance_criteria`]. A no-op without `--plan`.
+    if let Some(plan) = opts.plan.as_deref() {
+        if let Err(e) = adopt_plan_acceptance_criteria(&output, plan) {
+            emit_error("adopt plan acceptance criteria", &e);
+            return 0;
+        }
+    }
 
     // The conversation channel — each kind in a section of its own. A no-op
     // when nothing was carried.
     if let Err(e) = append_material_sections(&output, &material) {
         emit_error("write conversation material", &e);
-        return;
+        return 0;
     }
 
     let meta = build_meta_from_input(&input);
     if let Err(e) = spec_scaffold::write_meta_json(&output, &meta) {
         emit_error("write meta.json", &e);
-        return;
+        return 0;
     }
     written.push(output.join("meta.json").display().to_string());
 
@@ -511,22 +562,49 @@ pub fn run(opts: SpecDraftOpts) {
     // records the override. Fail-open: an unreadable spec leaves `full`
     // untouched. ----
     let scope_downgraded =
-        apply_scope_gate(&project_root, &output, &slug, scope, opts.force_scope, &meta, digest.as_ref());
+        apply_scope_gate(project_root, &output, &slug, scope, opts.force_scope, &meta, digest.as_ref());
 
     // Record the `ANALYZE` phase now that the slug exists (see
     // [`backfill_analyze_phase`]).
-    backfill_analyze_phase(&project_root, &slug);
+    backfill_analyze_phase(project_root, &slug);
 
     // D6: the `memory/_index.md` is NOT born at draft time. A fresh spec used to
     // ship an empty stub (and, before the i18n keys existed, a `<missing-key>`
     // line). The index is now born on the FIRST knowledge capture, so an unused
     // spec carries no orphan index file.
 
-    // Full-scope wave decomposition is owned by `wave-scaffold` (plan-driven:
-    // per-wave roles/summaries/deps + review/qa scaffolds). `spec-draft` only
-    // materialises the top-level spec.md + meta.json — `meta.json` already
-    // records `scope=full` + `totalWaves` + `isWavePlan`, so consumers know a
-    // wave plan is expected before `wave-scaffold` fills it in.
+    // ---- The FUSED materialisation (`--plan`). ----
+    // Without `--plan` the command stops here: `meta.json` records
+    // `scope=full` + `totalWaves` + `isWavePlan`, and the layout is the
+    // re-materialisation door's job. WITH `--plan` the command acts on the wave
+    // count it just recorded instead of asking for a second invocation to do
+    // it: the same in-process composite `plan-materialize` performs (the
+    // wave-scaffold renderer, analyze-validation, the dependency DAG, the
+    // negative proof, the `pipeline.scope` + PLAN emits) runs here, and a
+    // refusal takes the layout back down with it.
+    let materialize = opts.plan.as_deref().map(|plan| {
+        let plan_path = if plan.is_absolute() {
+            plan.to_path_buf()
+        } else {
+            project_root.join(plan)
+        };
+        let report = plan_materialize::materialize_fresh(project_root, &output, &plan_path);
+        let refused = plan_materialize::refused(&report);
+        // Everything the composite left standing is part of what THIS call
+        // produced, so it joins the same `files` list as spec.md / meta.json.
+        // Nothing is listed after a refusal — the rollback removed it.
+        if !refused {
+            for rel in report["scaffold"]["created_files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+            {
+                written.push(output.join(rel).display().to_string());
+            }
+        }
+        (report, refused)
+    });
 
     // The effective scope is the downgraded one when the gate acted, so the
     // report's `scope` matches the meta.json the gate rewrote (no contradiction
@@ -535,8 +613,9 @@ pub fn run(opts: SpecDraftOpts) {
         .as_ref()
         .and_then(|d| d.get("to").and_then(serde_json::Value::as_str))
         .unwrap_or_else(|| scope_str(scope));
+    let refused = materialize.as_ref().is_some_and(|(_, refused)| *refused);
     let mut report = json!({
-        "ok": true,
+        "ok": !refused,
         "spec": slug,
         "scope": effective_scope,
         "lang": opts.lang,
@@ -565,7 +644,118 @@ pub fn run(opts: SpecDraftOpts) {
     if let (Some(obj), Some(anchors)) = (report.as_object_mut(), scan_anchors) {
         obj.insert("scanAnchors".to_string(), json!(anchors));
     }
+    // The composite's own report travels whole, under its own key — the reader
+    // that has to fix an unproven criterion needs the `proof` slot verbatim, and
+    // summarising it here would be a second spelling of the same verdict.
+    if let (Some(obj), Some((composite, _))) = (report.as_object_mut(), materialize) {
+        obj.insert("materialize".to_string(), composite);
+    }
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
+    i32::from(refused) * 2
+}
+
+// ---------------------------------------------------------------------------
+// The fused plan channel
+// ---------------------------------------------------------------------------
+
+/// Replace the drafted skeleton `## Acceptance Criteria` block with the criteria
+/// the PLAN declares, when `--plan` names a plan that carries any.
+///
+/// A fresh draft seeds three EARS skeletons whose command is the literal
+/// `<runnable command that verifies this criterion>` placeholder — the negative
+/// proof recognises that marker and records the criterion as UNPROVEN without
+/// running anything, by design. So on the fused path the plan's own `acceptance`
+/// lines are the criteria: the skeleton exists precisely as the placeholder the
+/// Plan agent fills, and the plan file is where it filled them. Without this the
+/// fused call could only ever refuse itself.
+///
+/// The lines are carried VERBATIM, in wave order, de-duplicated, and bullet-
+/// normalised — the same reduction [`crate::commands::wave::wave_scaffold`]
+/// applies when it synthesizes the global block into `wave-plan.md`, so the
+/// parent `spec.md` and `wave-plan.md` state the same criteria in the same
+/// words. Any `Command:` / `Expect:` / `Control:` continuation the plan wrote
+/// into the line survives untouched; nothing is re-derived.
+///
+/// Returns `Ok(true)` when the block was replaced. A plan that declares no
+/// acceptance line, a plan that cannot be read, or a `spec.md` with no AC
+/// heading all leave the draft exactly as it was (`Ok(false)`) — the composite
+/// that runs next is the one that judges the plan, and pre-empting its refusal
+/// with a different one here would move the verdict away from the gate.
+///
+/// # Errors
+///
+/// The freshly-written `spec.md` could not be read back or rewritten.
+fn adopt_plan_acceptance_criteria(output: &Path, plan: &Path) -> Result<bool, String> {
+    let Some(bullets) = plan_acceptance_bullets(plan) else {
+        return Ok(false);
+    };
+    let path = output.join("spec.md");
+    let body = mfs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(replaced) = replace_acceptance_block(&body, &bullets) else {
+        return Ok(false);
+    };
+    mfs::write_atomic(&path, replaced.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
+}
+
+/// The union of every wave's `acceptance` lines from the plan JSON, in wave
+/// order, de-duplicated and bullet-normalised. `None` when the file cannot be
+/// read/parsed or declares no acceptance line at all.
+fn plan_acceptance_bullets(plan: &Path) -> Option<Vec<String>> {
+    let raw = mfs::read_to_string(plan).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let mut bullets: Vec<String> = Vec::new();
+    for wave in doc.get("waves")?.as_array()? {
+        for ac in wave
+            .get("acceptance")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+        {
+            let trimmed = ac.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let bullet = if trimmed.starts_with('-') {
+                trimmed.to_string()
+            } else {
+                format!("- {trimmed}")
+            };
+            if !bullets.contains(&bullet) {
+                bullets.push(bullet);
+            }
+        }
+    }
+    (!bullets.is_empty()).then_some(bullets)
+}
+
+/// Swap the body of `body`'s `## Acceptance Criteria` section for `bullets`,
+/// keeping the heading line the renderer wrote (it is localised) and everything
+/// before and after the section byte-identical. `None` when the document
+/// carries no such heading.
+fn replace_acceptance_block(body: &str, bullets: &[String]) -> Option<String> {
+    use crate::commands::spec::spec_sections::is_heading;
+    let lines: Vec<&str> = body.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| is_heading(l, "acceptance-criteria"))?;
+    // The section runs to the next `## ` heading of any kind, or to the end.
+    let end = lines
+        .iter()
+        .skip(start + 1)
+        .position(|l| l.starts_with("## "))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    let mut out: Vec<String> = lines[..=start].iter().map(|l| (*l).to_string()).collect();
+    out.push(String::new());
+    out.extend(bullets.iter().cloned());
+    out.push(String::new());
+    out.extend(lines[end..].iter().map(|l| (*l).to_string()));
+    let mut joined = out.join("\n");
+    if body.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
 }
 
 // ---------------------------------------------------------------------------
@@ -910,10 +1100,8 @@ const ANCHOR_TERM_CAP: usize = 4;
 /// anchor briefing ([`render_scan_anchors`]). Returns `None` when the model
 /// is absent or the query failed (fail-open: the report simply omits the
 /// briefing).
-fn scan_digest(intent: &str, query_terms: Option<&str>) -> Option<DigestQuery> {
-    let model = PathBuf::from(project_dir())
-        .join(".claude")
-        .join("grain.model.json");
+fn scan_digest(project_root: &Path, intent: &str, query_terms: Option<&str>) -> Option<DigestQuery> {
+    let model = project_root.join(".claude").join("grain.model.json");
     // `--query-terms` (comma-separated) takes precedence over re-tokenising
     // the raw intent: the orchestrator passes the repo-vocabulary terms that
     // already produced a strong report, instead of this command silently
@@ -1424,6 +1612,7 @@ mod tests {
             output: Some(out.clone()),
             material: None,
             waves: 0,
+            plan: None,
             force: false,
             query_terms: None,
             force_scope: false,
@@ -1464,6 +1653,7 @@ mod tests {
             output: Some(out.clone()),
             material: None,
             waves: 3,
+            plan: None,
             force: false,
             query_terms: None,
             force_scope: false,
@@ -1520,6 +1710,7 @@ mod tests {
                 output: Some(out.clone()),
                 material: None,
                 waves,
+                plan: None,
                 force: false,
                 query_terms: None,
                 force_scope: false,
@@ -1556,6 +1747,7 @@ mod tests {
             output: Some(dir.path().join("specs").join("demo")),
             material: None,
             waves: 2,
+            plan: None,
             force: false,
             query_terms: None,
             force_scope: false,
@@ -1582,6 +1774,7 @@ mod tests {
             output: Some(dir.path().join("out")),
             material: None,
             waves: 0,
+            plan: None,
             force: false,
             query_terms: None,
             force_scope: false,
@@ -1613,6 +1806,7 @@ mod tests {
             output: Some(out.to_path_buf()),
             material,
             waves: 0,
+            plan: None,
             force: false,
             query_terms: None,
             force_scope: false,
@@ -1787,6 +1981,7 @@ mod tests {
                 output: Some(out.clone()),
                 material: Some(path),
                 waves: 0,
+                plan: None,
                 force: false,
                 query_terms: None,
                 force_scope: false,
@@ -1796,6 +1991,174 @@ mod tests {
                 "{name}: no half-drafted spec is left behind"
             );
         }
+    }
+
+    // --- The fused materialisation (`--plan`) -----------------------------
+
+    /// A command that comes back RED on both shells (`cmd.exe` and `sh`): the
+    /// directory does not exist, so `cd` exits non-zero — a criterion that CAN
+    /// fail, which is what the negative proof demands.
+    const RED_COMMAND: &str = "cd no-such-directory-abc";
+    /// A command that comes back GREEN on both shells — `cd .` is a builtin
+    /// everywhere and always succeeds, so the criterion was never proven able
+    /// to fail.
+    const GREEN_COMMAND: &str = "cd .";
+
+    /// Write a one-wave plan whose single criterion carries `command`, plus the
+    /// trailing build-green safety criterion. `files` is load-bearing: a wave
+    /// that claims a criterion while declaring nowhere to do the work is refused
+    /// by the scaffold's claim-support gate, and these fixtures exist to isolate
+    /// the PROOF.
+    fn write_fused_plan(project: &std::path::Path, name: &str, command: &str) -> std::path::PathBuf {
+        let plan_path = project.join(name);
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [{
+                    "n": 1, "role": "rt", "summary": "wire it",
+                    "tasks": ["wire the fused path"],
+                    "files": ["apps/rt/src/commands/spec/spec_draft.rs"],
+                    "acceptance": [
+                        format!("**AC-1** — when the plan is handed to the draft, then the layout lands in one call.\n  Command: `{command}`"),
+                        format!("**AC-2** — build green.\n  Command: `{GREEN_COMMAND}`"),
+                    ],
+                    "satisfies": ["AC-1", "AC-2"],
+                }],
+                "total_waves": 1,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        plan_path
+    }
+
+    /// Draft options for the fused path — auto `--output` (so the spec lands in
+    /// the tempdir project's own `.claude/spec/`), Full scope, one wave.
+    fn fused_opts(intent: &str, plan: &std::path::Path) -> SpecDraftOpts {
+        SpecDraftOpts {
+            intent: intent.to_string(),
+            scope: "full".into(),
+            lang: "en-US".into(),
+            signals: None,
+            output: None,
+            material: None,
+            waves: 1,
+            plan: Some(plan.to_path_buf()),
+            force: false,
+            query_terms: None,
+            force_scope: false,
+        }
+    }
+
+    /// The whole point of the fusion: ONE invocation produces `spec.md`,
+    /// `meta.json`, `wave-plan.md` AND every wave directory, with the negative
+    /// proof taken in the same pass. Before this, `--waves 1` recorded the wave
+    /// decision in `meta.json` and materialised none of it — the layout only
+    /// appeared after a second, separate command.
+    #[test]
+    fn spec_draft_materialises_the_whole_layout_in_one_call() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+        let plan = write_fused_plan(project, "plan.json", RED_COMMAND);
+
+        let intent = "Fuse the draft with the plan";
+        let code = run_at(project, fused_opts(intent, &plan));
+        assert_eq!(code, 0, "a proven plan materialises and exits clean");
+
+        let spec_dir = project
+            .join(".claude")
+            .join("spec")
+            .join(slug_from_intent(intent, Locale::EnUs));
+        // The draft's own two artefacts...
+        assert!(spec_dir.join("spec.md").exists(), "spec.md");
+        assert!(spec_dir.join("meta.json").exists(), "meta.json");
+        // ...and the whole layout, from the SAME call.
+        assert!(spec_dir.join("wave-plan.md").exists(), "wave-plan.md in one call");
+        assert!(
+            spec_dir.join("wave-1-rt").join("spec.md").exists(),
+            "the wave directory in one call",
+        );
+        // The PLAN transition was recorded — the composite ran to its end.
+        let events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
+            &spec_dir.join(".events"),
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.event == "pipeline.phase"
+                    && e.payload.get("to").and_then(serde_json::Value::as_str) == Some("PLAN")
+            }),
+            "the fused call emits the PLAN transition: {events:?}",
+        );
+        // The plan's own criteria are the spec's criteria — the drafted
+        // skeleton placeholder is gone, so the proof judged something real.
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        assert!(body.contains(RED_COMMAND), "the plan's criterion reached spec.md:\n{body}");
+        assert!(
+            !body.contains("<runnable command that verifies this criterion>"),
+            "the skeleton placeholder must be superseded:\n{body}",
+        );
+    }
+
+    /// The other half, and the obligation that comes with fusing: a criterion
+    /// that was never proven ABLE to fail refuses the call (exit 2) and leaves
+    /// NO layout behind — so the operator's retry meets a directory it did not
+    /// create instead of one this run half-built.
+    ///
+    /// The draft's own `spec.md` / `meta.json` deliberately survive: the
+    /// criterion to fix lives in the first of them.
+    #[test]
+    fn spec_draft_plan_refuses_an_unproven_criterion() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+        let plan = write_fused_plan(project, "vacuous.json", GREEN_COMMAND);
+
+        let intent = "Refuse the vacuous criterion";
+        let code = run_at(project, fused_opts(intent, &plan));
+        assert_eq!(code, 2, "an unproven criterion refuses the fused call");
+
+        let spec_dir = project
+            .join(".claude")
+            .join("spec")
+            .join(slug_from_intent(intent, Locale::EnUs));
+        assert!(
+            !spec_dir.join("wave-plan.md").exists(),
+            "a refusal must leave no wave-plan.md behind",
+        );
+        assert!(
+            !spec_dir.join("wave-1-rt").exists(),
+            "a refusal must leave no wave directory behind",
+        );
+        // The draft itself stands — that is where the criterion is fixed.
+        assert!(spec_dir.join("spec.md").exists(), "the draft survives the refusal");
+        // And no PLAN transition was recorded for a plan that did not land.
+        let events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
+            &spec_dir.join(".events"),
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.event == "pipeline.phase"
+                    && e.payload.get("to").and_then(serde_json::Value::as_str) == Some("PLAN")
+            }),
+            "a refused plan never reaches PLAN: {events:?}",
+        );
+    }
+
+    /// The section swap is surgical: only the AC block changes, and the plan's
+    /// line survives verbatim (its `Command:` continuation included).
+    #[test]
+    fn replace_acceptance_block_swaps_only_that_section() {
+        let body = "# S\n\n## Context\nprose.\n\n## Acceptance Criteria\n\n- **AC-1** — old.\n  Command: `x`\n\n## Files\n- a.rs\n";
+        let bullets = vec!["- **AC-9** — new.\n  Command: `true`".to_string()];
+        let out = replace_acceptance_block(body, &bullets).expect("the heading is there");
+        assert!(out.contains("## Context\nprose."), "prose untouched:\n{out}");
+        assert!(out.contains("- **AC-9** — new.\n  Command: `true`"), "verbatim:\n{out}");
+        assert!(!out.contains("**AC-1**"), "the old block is gone:\n{out}");
+        assert!(out.contains("## Files\n- a.rs"), "the next section survives:\n{out}");
+        // No heading at all ⇒ nothing is invented.
+        assert!(replace_acceptance_block("# S\n\n## Files\n- a.rs\n", &bullets).is_none());
     }
 
     // --- Deterministic routing gate (apply_scope_gate) --------------------

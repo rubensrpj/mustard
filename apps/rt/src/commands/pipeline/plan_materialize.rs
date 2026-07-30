@@ -27,10 +27,24 @@
 //! 6. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
 //!    (idempotent on the spec's last phase).
 //!
-//! Pressupposes `spec.md` + `meta.json` already materialised by `spec-draft`
-//! (which stays a separate command: the Plan agent folds the narrative body
-//! BETWEEN draft and scaffold). A missing `spec.md` degrades the validation to
-//! an ERROR issue; it never blocks the scaffold.
+//! Pressupposes `spec.md` + `meta.json` already materialised by `spec-draft`.
+//! A missing `spec.md` degrades the validation to an ERROR issue; it never
+//! blocks the scaffold.
+//!
+//! ## Two doors, one composite
+//!
+//! The steps above are the whole of the PLAN-phase materialisation, so both
+//! doors that materialise a plan call THIS module rather than growing a second
+//! copy of the sequence:
+//!
+//! - `spec-draft --plan` is the FIRST materialisation — it drafts `spec.md` +
+//!   `meta.json` and runs the composite in the same invocation
+//!   ([`materialize_fresh`], which additionally undoes the layout when the
+//!   composite refuses).
+//! - `mustard-rt run plan-materialize` (this command) is the RE-materialisation
+//!   door: it reconciles an existing layout onto an edited plan before approval,
+//!   which is why a refusal here deliberately leaves the layout in place for the
+//!   next pass to repair.
 //!
 //! ## Output (single JSON document, byte-stable, ordered)
 //!
@@ -136,15 +150,101 @@ pub fn run(opts: PlanMaterializeOpts) {
         "{}",
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
     );
+    if refused(&report) {
+        std::process::exit(2);
+    }
+}
+
+/// `true` when the composite REFUSED — the single reading of the report that
+/// maps to exit 2, shared by both doors so the CLI's exit code and the fused
+/// caller's rollback can never disagree about what a refusal is.
+///
+/// A refusal is a blocking gate: the plan could not be read, one of the three
+/// scaffold gates (coverage / unsupportable claims / sufficiency) fired, or the
+/// negative proof did. The two WARN-level steps (`validation`, `dependencies`)
+/// are NOT refusals — they are expressed in the JSON and the plan still
+/// materialises.
+pub(crate) fn refused(report: &Value) -> bool {
     let scaffold_err = report["scaffold"]["error"].as_str();
     let proven = report["proof"]["ok"].as_bool().unwrap_or(false);
-    if scaffold_err == Some(ERR_PLAN_UNREADABLE)
+    scaffold_err == Some(ERR_PLAN_UNREADABLE)
         || scaffold_err == Some(ERR_UNCOVERED_ACS)
         || scaffold_err == Some(ERR_UNSUPPORTABLE_CLAIMS)
         || scaffold_err == Some(ERR_CRITERIA_OUTSIDE_CLAIMANTS)
         || !proven
+}
+
+/// The FIRST-materialisation entry point — the same composite [`run`] performs,
+/// with one added obligation: a refusal leaves NO layout behind.
+///
+/// The difference is not a mode, it is the caller's situation. `plan-materialize`
+/// is the RE-materialisation door: it reconciles a layout onto an edited plan,
+/// so the artefacts it meets are its own from a previous pass and leaving them
+/// in place after a refusal is what makes the re-run repair them. `spec-draft
+/// --plan` is the first pass over a directory that had no layout at all; if it
+/// half-materialised and then exited 2, the operator's retry would meet wave
+/// directories THIS run created and report them as `skipped`, so the report
+/// would stop describing what the call produced.
+///
+/// Only what the scaffold CREATED in this pass is removed (`created_files`),
+/// deepest path first, then the directories that were left empty. Nothing that
+/// pre-existed is touched: the root `spec.md` / `meta.json` are the draft's own
+/// artefacts (and the criterion the operator must fix lives in the first of
+/// them), and the proof LEDGER is the record of the refusal — deleting either
+/// would take away what the retry is supposed to act on.
+pub(crate) fn materialize_fresh(project: &Path, spec_dir: &Path, plan_path: &Path) -> Value {
+    let before = immediate_entries(spec_dir);
+    let report = materialize(project, spec_dir, plan_path);
+    if refused(&report) {
+        rollback_layout(spec_dir, &report, &before);
+    }
+    report
+}
+
+/// The names directly under `spec_dir`, read BEFORE the composite runs — the
+/// baseline that tells what the materialisation brought into being from what was
+/// already there. An unreadable directory yields an empty set, which makes the
+/// rollback narrower (it removes only what the scaffold itself reported), never
+/// wider.
+fn immediate_entries(spec_dir: &Path) -> std::collections::BTreeSet<String> {
+    fs::read_dir(spec_dir)
+        .map(|entries| entries.into_iter().map(|e| e.file_name).collect())
+        .unwrap_or_default()
+}
+
+/// Undo the layout this pass materialised: every file the scaffold reported as
+/// CREATED, plus every directory that did not exist before the pass.
+///
+/// Two rules rather than one because the two artefacts are known differently. A
+/// file is governed by the scaffold's own ledger, so `wave-plan.md` goes and a
+/// file that was merely `skipped` or `refreshed` stays. A DIRECTORY that was not
+/// there beforehand exists only because this pass ran, so it goes whole —
+/// including the sidecars written inside it that never pass through the file
+/// ledger, which is exactly what a per-file undo would leave stranded.
+///
+/// Everything else is untouched on purpose: `spec.md` and `meta.json` are the
+/// draft's own artefacts (and the criterion to fix lives in the first), and the
+/// proof LEDGER is the record of why this refusal happened.
+fn rollback_layout(
+    spec_dir: &Path,
+    report: &Value,
+    before: &std::collections::BTreeSet<String>,
+) {
+    for rel in report["scaffold"]["created_files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
     {
-        std::process::exit(2);
+        let _ = fs::remove_file(spec_dir.join(rel));
+    }
+    let Ok(entries) = fs::read_dir(spec_dir) else {
+        return;
+    };
+    for entry in entries.into_iter().filter(|e| e.is_dir) {
+        if !before.contains(&entry.file_name) {
+            let _ = fs::remove_dir_all(spec_dir.join(&entry.file_name));
+        }
     }
 }
 
