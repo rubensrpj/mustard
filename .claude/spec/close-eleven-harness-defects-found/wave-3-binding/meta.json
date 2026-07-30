@@ -10,12 +10,12 @@
     {
       "label": "apps/rt/src/commands/event/emit_pipeline.rs",
       "path": "apps/rt/src/commands/event/emit_pipeline.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/shared/context.rs",
       "path": "apps/rt/src/shared/context.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/hooks/write/boundary_gate.rs",
@@ -25,7 +25,7 @@
     {
       "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
       "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
-      "done": false
+      "done": true
     }
   ]
 }

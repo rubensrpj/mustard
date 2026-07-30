@@ -1,10 +1,10 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": "2026-07-29T18:13:08.025Z",
+  "checkpoint": "2026-07-30T07:59:04.491Z",
   "parent": "close-eleven-harness-defects-found",
   "checklist": [
     {
@@ -25,7 +25,7 @@
     {
       "label": "apps/rt/src/commands/spec/spec_draft.rs",
       "path": "apps/rt/src/commands/spec/spec_draft.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/spec/approve_spec.rs",

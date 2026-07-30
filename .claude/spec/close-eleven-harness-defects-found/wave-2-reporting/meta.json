@@ -10,37 +10,37 @@
     {
       "label": "apps/rt/src/commands/wave/wave_lib.rs",
       "path": "apps/rt/src/commands/wave/wave_lib.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/spec/scope_decompose.rs",
       "path": "apps/rt/src/commands/spec/scope_decompose.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "packages/core/src/platform/i18n.rs",
       "path": "packages/core/src/platform/i18n.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/scan/src/digest.rs",
       "path": "apps/scan/src/digest.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/feature.rs",
       "path": "apps/rt/src/commands/feature.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/wave/wave_dependency.rs",
       "path": "apps/rt/src/commands/wave/wave_dependency.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/event/emit_phase.rs",
       "path": "apps/rt/src/commands/event/emit_phase.rs",
-      "done": false
+      "done": true
     }
   ]
 }

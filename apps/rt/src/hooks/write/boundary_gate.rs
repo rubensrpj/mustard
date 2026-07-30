@@ -191,9 +191,24 @@ fn resolve_spec_file(
     if root.exists() { Some(root) } else { None }
 }
 
-/// Extract the backtick-wrapped path patterns from a spec's `## Files` and
+/// Extract the allowed path patterns from a spec's `## Files` and
 /// `## Boundaries` (and their PT equivalents). Port of `extractAllowedPatterns`.
+///
+/// Two harvests per section line, deduplicated into one set:
+///
+/// 1. **Backtick spans** — the original rule. Accepts globs (`src/**`) and
+///    directory prefixes (`src/lib/`) besides concrete files.
+/// 2. **Bare tokens** — a path declared WITHOUT backticks. A MIXED spec is the
+///    dangerous shape: the backticked entries make the set non-empty, so every
+///    bare-declared file used to warn. Bare tokens pass through the crate's
+///    single strict path recogniser (see [`bare_path_pattern`]), so prose never
+///    becomes a pattern — a bare glob or directory still needs backticks.
 fn extract_allowed_patterns(spec_text: &str) -> Vec<String> {
+    fn push_unique(patterns: &mut Vec<String>, candidate: &str) {
+        if !patterns.iter().any(|p| p == candidate) {
+            patterns.push(candidate.to_string());
+        }
+    }
     let mut patterns: Vec<String> = Vec::new();
     let mut in_section = false;
     for line in spec_text.split('\n') {
@@ -224,12 +239,38 @@ fn extract_allowed_patterns(spec_text: &str) -> Vec<String> {
             if !candidate.contains('/') && !candidate.contains('.') {
                 continue;
             }
-            if !patterns.iter().any(|p| p == candidate) {
-                patterns.push(candidate.to_string());
+            push_unique(&mut patterns, candidate);
+        }
+        // Bare tokens: whitespace-split so bullets (`- src/a.ts — why`) and
+        // table rows (`| src/a.ts | why |`) both contribute their path.
+        for token in line.split_whitespace() {
+            if let Some(candidate) = bare_path_pattern(token) {
+                if candidate.len() <= 200 {
+                    push_unique(&mut patterns, &candidate);
+                }
             }
         }
     }
     patterns
+}
+
+/// A bare (un-backticked) token that reads as ONE concrete file path, trimmed
+/// of surrounding punctuation (list dashes, table pipes, commas, stray
+/// backticks) and forward-slash normalised — `None` for prose.
+///
+/// The JUDGEMENT is delegated to the crate's single strict path recogniser,
+/// [`crate::commands::review::analyze_validation::looks_like_file_path`] — one
+/// definition of "reads as a path", tuned in one place. Only the edge trim
+/// that recogniser applies internally is mirrored here, so the stored pattern
+/// equals the token the recogniser judged.
+fn bare_path_pattern(token: &str) -> Option<String> {
+    if !crate::commands::review::analyze_validation::looks_like_file_path(token) {
+        return None;
+    }
+    let trimmed = token.trim_matches(|c: char| {
+        !c.is_ascii_alphanumeric() && c != '.' && c != '/' && c != '\\' && c != '-' && c != '_'
+    });
+    Some(trimmed.replace('\\', "/"))
 }
 
 /// `true` if `line` is a `## Files`/`## Boundaries` (or PT) H2 heading.
@@ -568,20 +609,30 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if patterns.iter().any(|p| pattern_matches(&rel, p)) {
         return None;
     }
+    // The boundary actually checked: when `resolve_spec_file` landed on a
+    // WAVE's spec (`wave-N-*/spec.md`), the verdict must name THAT wave — the
+    // parent's own `## Files` may well list the edited path, so naming the
+    // parent slug sends the author to a section that already contains it.
+    let boundary_name = spec_file
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .filter(|n| n.starts_with("wave-"))
+        .map_or_else(|| spec_name.to_string(), |wave| format!("{spec_name}/{wave}"));
     // Mismatch — decide the verdict.
     match mode {
         BoundaryMode::Strict => Some(Verdict::Deny {
             reason: format!(
-                "[boundary-gate] {rel} not in spec '{spec_name}' ## Files / \
-                 ## Boundaries. Update the spec's Files table to include this \
+                "[boundary-gate] {rel} not in '{boundary_name}' ## Files / \
+                 ## Boundaries. Update that spec's Files to include this \
                  path, or set MUSTARD_BOUNDARY_MODE=warn."
             ),
         }),
         BoundaryMode::Warn => Some(Verdict::Warn {
             message: format!(
-                "[boundary-gate] WARN: editing {rel} outside spec '{spec_name}' \
-                 boundary. If intentional cascade, add it to the spec ## Files. \
-                 Set MUSTARD_BOUNDARY_MODE=strict to block."
+                "[boundary-gate] WARN: editing {rel} outside '{boundary_name}' \
+                 boundary. If intentional cascade, add it to that spec's \
+                 ## Files. Set MUSTARD_BOUNDARY_MODE=strict to block."
             ),
         }),
         BoundaryMode::Off => None,
@@ -866,6 +917,110 @@ mod tests {
             boundary_gate(&input, &cwd_str).is_none(),
             "completed spec header must skip the boundary gate"
         );
+    }
+
+    /// AC-12 — when the gate checks an edit against a WAVE's file list, the
+    /// warning names that wave as the boundary it checked, not the parent slug
+    /// alone. The parent's own `## Files` deliberately LISTS the edited path
+    /// here: pointing the author at the parent would send them to a section
+    /// that already contains the file, while the boundary that actually
+    /// refused it was the current wave's.
+    #[test]
+    fn boundary_warning_names_the_boundary_it_checked() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let paths = ClaudePaths::for_project(cwd).unwrap();
+        let sp = paths.for_spec("demo").unwrap();
+        let spec_dir = sp.dir().to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // Parent lists BOTH files; the wave declares only one of them.
+        std::fs::write(
+            sp.spec_md_path(),
+            "# Spec\n\n## Files\n\n- `src/edited.ts`\n- `src/wave.ts`\n",
+        )
+        .unwrap();
+        // `wave-plan.md` flips the projection's is_wave_plan FS fallback.
+        std::fs::write(spec_dir.join("wave-plan.md"), "# Wave Plan\n").unwrap();
+        let wave_dir = spec_dir.join("wave-1-proof");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(
+            wave_dir.join("spec.md"),
+            "# W1\n\n## Files\n\n- `src/wave.ts`\n",
+        )
+        .unwrap();
+
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        // One non-terminal event so the projection exists (current_wave
+        // defaults to 1 → the gate resolves wave-1-proof/spec.md). Written via
+        // the writer directly, with wave_role=None, so an ambient
+        // MUSTARD_ACTIVE_WAVE cannot re-route it into a wave subdir.
+        crate::shared::events::writer_ndjson::write_event_with_ts(
+            cwd,
+            Some("demo"),
+            None,
+            "sess-wave",
+            "pipeline.status",
+            "pipeline",
+            None,
+            Some("sess-wave"),
+            Some("boundary-test"),
+            None,
+            &json!({ "to": "active" }),
+            Some("2026-07-30T00:00:00.000Z"),
+        )
+        .expect("seed event written");
+        crate::shared::context::bind_session_spec(&cwd_str, "sess-wave", "demo");
+
+        let input = HookInput {
+            tool_name: Some("Edit".to_string()),
+            tool_input: json!({ "file_path": "src/edited.ts" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd_str.clone()),
+            session_id: Some("sess-wave".to_string()),
+            ..HookInput::default()
+        };
+        match boundary_gate(&input, &cwd_str) {
+            Some(Verdict::Warn { message }) => {
+                assert!(
+                    message.contains("wave-1-proof"),
+                    "the warning must name the WAVE boundary it checked: {message}"
+                );
+            }
+            other => panic!("expected Warn naming the wave boundary, got {other:?}"),
+        }
+        // The file the wave itself declares passes against the same boundary.
+        let allowed = HookInput {
+            tool_input: json!({ "file_path": "src/wave.ts" }),
+            ..input
+        };
+        assert!(boundary_gate(&allowed, &cwd_str).is_none());
+    }
+
+    /// A MIXED spec — some Files entries backticked, some bare — is the
+    /// dangerous shape: the backticked entries make the set non-empty, so a
+    /// bare-declared file used to warn on every edit. Bare bullet and table
+    /// declarations must contribute; prose around them must not.
+    #[test]
+    fn extract_allowed_patterns_accepts_bare_declared_paths() {
+        let spec = "# Spec\n\n## Files\n\n\
+            - `src/ticked.ts` — with backticks\n\
+            - src/bare.ts — declared without backticks\n\
+            | src/table.ts | a table row without backticks |\n\n\
+            ## Summary\n\nsrc/outside.ts is not in the section\n";
+        let patterns = extract_allowed_patterns(spec);
+        assert!(patterns.contains(&"src/ticked.ts".to_string()));
+        assert!(
+            patterns.contains(&"src/bare.ts".to_string()),
+            "a bare-declared path must contribute to the allowed set: {patterns:?}"
+        );
+        assert!(
+            patterns.contains(&"src/table.ts".to_string()),
+            "a bare table-row path must contribute to the allowed set: {patterns:?}"
+        );
+        // Outside the section nothing is harvested; prose words never become
+        // patterns.
+        assert!(!patterns.contains(&"src/outside.ts".to_string()));
+        assert!(!patterns.iter().any(|p| p == "with" || p == "declared"));
     }
 
     // --- gate routing -------------------------------------------------------

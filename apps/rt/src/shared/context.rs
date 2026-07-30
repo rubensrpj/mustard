@@ -155,6 +155,25 @@ pub fn project_dir() -> String {
         .unwrap_or_else(|| ".".to_string())
 }
 
+/// Session-directory names that are SINKS, not sessions: buckets a writer
+/// invented because it had no harness session id — `"unknown"` (this module's
+/// own last resort) and `"otel-unattached"` (the OTEL collector's unresolvable
+/// bucket, its `UNATTACHED_SLUG`). The hooks only ever read the id the harness
+/// hands them, so a marker keyed on one of these is unreachable: no hook is
+/// ever handed a placeholder id.
+const PLACEHOLDER_SESSION_IDS: &[&str] = &["unknown", "otel-unattached"];
+
+/// `true` when `id` cannot name a session the hooks read — empty, or one of
+/// the [`PLACEHOLDER_SESSION_IDS`]. The single predicate every session-keyed
+/// marker writer and reader in this module consults, so a binding can never
+/// again land under a placeholder directory (the field defect: `emit-pipeline`
+/// run from the CLI resolved `otel-unattached` by mtime, wrote the
+/// session→spec marker there, and every gate keyed on the real session id
+/// silently fell back to whichever spec was newest).
+fn is_placeholder_session(id: &str) -> bool {
+    id.is_empty() || PLACEHOLDER_SESSION_IDS.contains(&id)
+}
+
 /// Resolve the current session id, defaulting to `"unknown"`.
 ///
 /// Resolution order:
@@ -166,6 +185,8 @@ pub fn project_dir() -> String {
 ///    env var is set they used to land on `"unknown"`; the `SessionStart` hook
 ///    has already created `.claude/.session/<id>/`, so mirror
 ///    [`current_spec`]'s newest-by-mtime fallback to recover the real id.
+///    Placeholder buckets ([`PLACEHOLDER_SESSION_IDS`]) never win this scan —
+///    they are sinks other writers invented, not sessions any hook reads.
 /// 4. `"unknown"` as a last resort.
 #[must_use]
 pub fn session_id() -> String {
@@ -189,13 +210,17 @@ pub fn session_id() -> String {
     "unknown".to_string()
 }
 
-/// Newest directory name under `session_dir`, skipping the `"unknown"` bucket.
+/// Newest directory name under `session_dir`, skipping placeholder buckets.
 ///
 /// Reads the entries of `<.claude>/.session/`, keeps directories whose name is
-/// not `"unknown"`, and returns the name of the one with the newest mtime.
-/// Returns `None` on any IO error or when no eligible directory exists — never
-/// panics. Co-located with [`current_spec`], which uses the same
-/// newest-by-mtime strategy over a sibling directory.
+/// not a placeholder ([`is_placeholder_session`] — `"unknown"`, the OTEL
+/// collector's `"otel-unattached"` sink), and returns the name of the one with
+/// the newest mtime. The skip is what makes a CLI-side marker write reach the
+/// session the hooks read: the collector touches its bucket constantly, so by
+/// mtime alone the bucket used to win and the binding landed where no hook
+/// ever looks. Returns `None` on any IO error or when no eligible directory
+/// exists — never panics. Co-located with [`current_spec`], which uses the
+/// same newest-by-mtime strategy over a sibling directory.
 #[must_use]
 fn newest_session_dir(session_dir: &Path) -> Option<String> {
     let entries = fs::read_dir(session_dir).ok()?;
@@ -205,7 +230,7 @@ fn newest_session_dir(session_dir: &Path) -> Option<String> {
             continue;
         }
         let name = &entry.file_name;
-        if name == "unknown" {
+        if is_placeholder_session(name) {
             continue;
         }
         let Ok(mtime) = fs::modified(&entry.path) else {
@@ -317,7 +342,7 @@ pub fn spec_for_session(project_dir_path: &str, session_id: &str) -> Option<Stri
 
 /// Uncached body behind [`spec_for_session`]'s per-process memo.
 fn spec_for_session_uncached(project_dir_path: &str, session_id: &str) -> Option<String> {
-    if session_id.is_empty() || session_id == "unknown" {
+    if is_placeholder_session(session_id) {
         return None;
     }
     let marker = session_spec_marker(project_dir_path, session_id)?;
@@ -354,7 +379,7 @@ pub fn session_for_spec(project_dir_path: &str, spec: &str) -> Option<String> {
     let entries = fs::read_dir(&base).ok()?;
     let mut best: Option<(std::time::SystemTime, String)> = None;
     for entry in entries {
-        if !entry.path.is_dir() || entry.file_name == "unknown" {
+        if !entry.path.is_dir() || is_placeholder_session(&entry.file_name) {
             continue;
         }
         let marker = entry.path.join("active-spec");
@@ -382,8 +407,12 @@ pub fn session_for_spec(project_dir_path: &str, spec: &str) -> Option<String> {
 /// spec-less hook events for the same session then inherit the spec via
 /// [`spec_for_session`]. Fail-open: any IO error is swallowed — telemetry must
 /// never block tool execution.
+///
+/// A placeholder session id ([`is_placeholder_session`]) is REFUSED: a binding
+/// written under a bucket no hook is ever handed is unreachable, and the gates
+/// keyed on it would silently fall back to whichever spec is newest.
 pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
-    if session_id.is_empty() || session_id == "unknown" || spec.is_empty() {
+    if is_placeholder_session(session_id) || spec.is_empty() {
         return;
     }
     let Some(marker) = session_spec_marker(project_dir_path, session_id) else {
@@ -412,7 +441,7 @@ pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
 /// A missing marker is a no-op, and any IO error is swallowed — telemetry
 /// teardown must never block the close.
 pub fn unbind_session_spec(project_dir: &str, session_id: &str) {
-    if session_id.is_empty() || session_id == "unknown" {
+    if is_placeholder_session(session_id) {
         return;
     }
     let Some(marker) = session_spec_marker(project_dir, session_id) else {
@@ -455,7 +484,7 @@ fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathB
 /// any IO error) — never panics.
 #[must_use]
 pub fn pending_branch_for(project_dir_path: &str, session_id: &str) -> Option<String> {
-    if session_id.is_empty() || session_id == "unknown" {
+    if is_placeholder_session(session_id) {
         return None;
     }
     let marker = pending_branch_marker(project_dir_path, session_id)?;
@@ -477,7 +506,7 @@ pub fn pending_branch_for(project_dir_path: &str, session_id: &str) -> Option<St
 /// error is swallowed — telemetry must never block. Skips a redundant rewrite
 /// when the marker already names this branch (mirrors [`bind_session_spec`]).
 pub fn set_pending_branch(project_dir_path: &str, session_id: &str, branch: &str) {
-    if session_id.is_empty() || session_id == "unknown" || branch.is_empty() {
+    if is_placeholder_session(session_id) || branch.is_empty() {
         return;
     }
     let Some(marker) = pending_branch_marker(project_dir_path, session_id) else {
@@ -495,12 +524,14 @@ pub fn set_pending_branch(project_dir_path: &str, session_id: &str, branch: &str
 
 /// Remove the pending auto-branch marker, best-effort.
 ///
-/// Called by `work_branch_gate` once it has checked the branch out (or decided
-/// not to, on a git failure) so the gate does not re-fire on every subsequent
-/// edit of the same session. A missing marker is a no-op and any IO error is
-/// swallowed — this teardown must never block a write.
+/// Called by `work_branch_gate` once it has checked the branch out so the gate
+/// does not re-fire on every subsequent edit of the same session. (A FAILED
+/// checkout no longer clears: the gate reconciles the marker to the branch
+/// actually active via [`set_pending_branch`], so the record matches reality
+/// instead of being destroyed.) A missing marker is a no-op and any IO error
+/// is swallowed — this teardown must never block a write.
 pub fn clear_pending_branch(project_dir: &str, session_id: &str) {
-    if session_id.is_empty() || session_id == "unknown" {
+    if is_placeholder_session(session_id) {
         return;
     }
     let Some(marker) = pending_branch_marker(project_dir, session_id) else {
@@ -1094,6 +1125,55 @@ mod tests {
     fn newest_session_dir_returns_none_on_missing_dir() {
         // Fail-open: a nonexistent `.session/` base degrades to None.
         assert!(newest_session_dir(Path::new("/nonexistent-mustard-session-xyzzy")).is_none());
+    }
+
+    /// AC-11 — the session→spec binding reaches the session the hooks read.
+    ///
+    /// The field defect: `emit-pipeline` run from the CLI carries no harness
+    /// session id, the mtime fallback resolved the OTEL collector's
+    /// `otel-unattached` bucket (touched constantly, so newest), and the
+    /// binding landed under a directory no hook ever consults — every gate
+    /// keyed on the REAL session id then fell back to whichever spec was
+    /// newest. Two guarantees close it: the resolver never picks a placeholder
+    /// bucket, and the marker writers refuse one outright.
+    #[test]
+    fn session_binding_reaches_the_reading_session() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let base = dir.path().join(".claude").join(".session");
+        // The session the hooks are actually handed — created FIRST (older).
+        std::fs::create_dir_all(base.join("sess-hook")).unwrap();
+        // The collector's bucket — created LAST, and touched again so its
+        // mtime is strictly newest (the shape observed live).
+        std::fs::create_dir_all(base.join("otel-unattached")).unwrap();
+        std::fs::create_dir_all(base.join("otel-unattached").join(".events")).unwrap();
+
+        // The env-less resolver skips the placeholder even when it is newest.
+        assert_eq!(
+            newest_session_dir(&base).as_deref(),
+            Some("sess-hook"),
+            "a placeholder bucket must never win the newest-by-mtime scan",
+        );
+
+        // A binding aimed at the placeholder is refused — unreachable by
+        // construction, better absent than misleading...
+        bind_session_spec(project, "otel-unattached", "my-spec");
+        assert!(
+            spec_for_session(project, "otel-unattached").is_none(),
+            "no binding may live under a placeholder session id",
+        );
+        // ...and the sibling pending-branch marker refuses the same way.
+        set_pending_branch(project, "otel-unattached", "dev_x");
+        assert!(pending_branch_for(project, "otel-unattached").is_none());
+
+        // Written under the session the hooks read, the binding round-trips —
+        // the reader keyed on the harness-provided id finds the spec.
+        bind_session_spec(project, "sess-hook", "my-spec");
+        assert_eq!(
+            spec_for_session(project, "sess-hook").as_deref(),
+            Some("my-spec"),
+            "the binding must be readable under the id the hooks carry",
+        );
     }
 
     // -----------------------------------------------------------------------

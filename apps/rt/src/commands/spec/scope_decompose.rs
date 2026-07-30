@@ -44,11 +44,14 @@
 
 use crate::commands::spec::spec_sections::is_heading;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
-use mustard_core::platform::i18n::{line_has_file_marker, FileMarker};
+use mustard_core::platform::i18n::{
+    line_has_file_marker, translate, FileMarker, LocaleError, SupportedLocale,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 /// Roadmap-signal detection across spec text.
 struct RoadmapSignal {
@@ -690,32 +693,99 @@ pub fn classify(signals: &Value, slice_match_count: i64) -> &'static str {
 /// came back 0.
 ///
 /// `fileCount` is derived **exclusively** from the spec's `## Files` /
-/// `## Arquivos` section ([`parse_files_section`]). That section is a
-/// placeholder when the spec scaffold is freshly drafted — the `/feature` SKILL
-/// runs `scope-classify` immediately after `spec-draft`, *before* the file
-/// census is filled in. With zero parsed paths the verdict is **arithmetically
-/// correct** (0 files ⇒ `light`) but **not a decision**: the same spec can flip
-/// to `full` once its census lands. So the classifier downgrades the verdict to
-/// `scope: "abstain"` (never a non-zero exit), telling the orchestrator to keep
-/// the scope `spec-draft` requested instead of executing inline off a premature
-/// read.
+/// `## Arquivos` section ([`parse_files_section`]). With zero parsed paths the
+/// verdict is **arithmetically correct** (0 files ⇒ `light`) but **not a
+/// decision**: the same spec can flip to `full` once its census lands. So the
+/// classifier downgrades the verdict to `scope: "abstain"` (never a non-zero
+/// exit), telling the orchestrator to keep the scope `spec-draft` requested
+/// instead of executing inline off a premature read.
 ///
-/// Distinguishes "section absent / placeholder" (`None` or `Some(empty)` ⇒ 0
-/// paths) from "section present with ≥1 real path" (`Some(non-empty)`): the
-/// warning fires **only** when nothing was parsed. A spec that legitimately
-/// touches a single real file is silent (no false alarm).
-const FILES_SECTION_EMPTY_WARNING: &str = "## Arquivos vazio/placeholder — \
-fileCount=0; scope=abstain ate autorar o censo (preencha ## Arquivos e re-rode)";
+/// The diagnostic distinguishes THREE zero-path shapes — it must never assert
+/// "empty" about a section that has content (a table census used to trip
+/// exactly that false fact before the parser learned tables):
+///
+/// - **`absent`** — no `## Files`/`## Arquivos` heading at all;
+/// - **`empty`** — heading present with no body content, or only the drafter's
+///   own placeholder seed (a freshly-drafted spec, census not yet authored);
+/// - **`unrecognised`** — the section HAS content, but no recogniser read a
+///   path from it (prose rows, a form neither the bullet nor the table parser
+///   understands).
+///
+/// Returns the machine `state` plus the catalogue key of the human warning
+/// (rendered via [`translate`] in the SPEC's own language — see
+/// [`spec_locale`]). A spec with ≥1 real path never reaches this.
+fn files_zero_state(spec_text: &str) -> (&'static str, &'static str) {
+    if parse_files_section(spec_text).is_none() {
+        return ("absent", "scope.files.absent");
+    }
+    let body_has_content = crate::commands::spec::spec_sections::section_block(spec_text, "files")
+        .is_some_and(|block| {
+            block
+                .lines()
+                .skip(1) // the heading line
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .any(|l| !is_files_placeholder(l))
+        });
+    if body_has_content {
+        ("unrecognised", "scope.files.unrecognised")
+    } else {
+        ("empty", "scope.files.empty")
+    }
+}
+
+/// `true` when a `## Files` body line is the drafter's own placeholder seed
+/// (`placeholder.fill_files`, any catalogue locale) — placeholder content
+/// means "census not yet authored" (the `empty` state), never "unreadable".
+fn is_files_placeholder(line: &str) -> bool {
+    [SupportedLocale::EnUs, SupportedLocale::PtBr]
+        .iter()
+        .any(|lang| line == translate("placeholder.fill_files", *lang))
+}
+
+/// The spec's own narrative locale, for rendering the zero-path warning:
+/// `meta.json#lang` → legacy `### Lang:` header → `en-US` default (the
+/// resolution [`crate::commands::agent::render::sections::read_spec_lang`]
+/// owns). Lenient on the legacy short forms (`pt` ⇒ pt-BR, `en` ⇒ en-US);
+/// anything else unparsable falls to the catalogue default — fail-open, the
+/// warning always renders in SOME language.
+fn spec_locale(spec_file: &Path) -> SupportedLocale {
+    let raw = crate::commands::agent::render::sections::read_spec_lang(spec_file);
+    match SupportedLocale::from_str(&raw) {
+        Ok(loc) => loc,
+        Err(LocaleError::ShortForm(s)) if s.eq_ignore_ascii_case("pt") => SupportedLocale::PtBr,
+        Err(LocaleError::ShortForm(_)) => SupportedLocale::EnUs,
+        Err(_) => SupportedLocale::default(),
+    }
+}
+
+/// Stamp the zero-path downgrade onto an emitted verdict object: `scope` →
+/// `abstain`, the legacy machine flag `filesSectionEmpty` (kept for existing
+/// consumers — it means "zero parsed paths", the condition they key on), the
+/// honest `filesSectionState` (`absent` | `empty` | `unrecognised`) and the
+/// human `warning` in the spec's own language. Shared by `scope-classify` and
+/// the fused `plan-prepare` so the two doors can never diverge.
+fn stamp_files_zero(out: &mut Value, spec_file: &Path, spec_text: &str) {
+    let (state, warning_key) = files_zero_state(spec_text);
+    let lang = spec_locale(spec_file);
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("scope".to_string(), json!("abstain"));
+        obj.insert("filesSectionEmpty".to_string(), json!(true));
+        obj.insert("filesSectionState".to_string(), json!(state));
+        obj.insert("warning".to_string(), json!(translate(warning_key, lang)));
+    }
+}
 
 /// Classify a spec file's scope deterministically: compute the structural
 /// signals via [`compute_signals_from_spec`] (no duplicate computation), then
 /// [`classify`]. Returns `{ "scope": ..., "signals": { ... } }`.
 ///
-/// When the `## Files` section parses to **zero** paths (absent or placeholder),
-/// the verdict is downgraded to `"scope": "abstain"` and carries
-/// `"filesSectionEmpty": true` plus a human `"warning"`, so a premature read is
-/// never mistaken for a settled `light`/`full` — see
-/// [`FILES_SECTION_EMPTY_WARNING`]. The exit code is unchanged (non-blocking).
+/// When the `## Files` section parses to **zero** paths, the verdict is
+/// downgraded to `"scope": "abstain"` and carries `"filesSectionEmpty": true`,
+/// the honest `"filesSectionState"` (absent / empty / unrecognised) and a human
+/// `"warning"` in the spec's own language, so a premature read is never
+/// mistaken for a settled `light`/`full` — see [`files_zero_state`]. The exit
+/// code is unchanged (non-blocking).
 ///
 /// Unreadable spec: routing stays conservative (`scope: "full"` gets the most
 /// pipeline rigor — PLAN + /spec approval + per-wave gates), but the verdict is
@@ -757,19 +827,15 @@ pub fn classify_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
             "newEntityCount": signals.get("newEntityCount").cloned().unwrap_or(json!(0)),
         },
     });
-    // Honest signal: a zero `fileCount` means the `## Files`/`## Arquivos`
-    // section was absent or a placeholder (nothing parsed) — distinct from a
-    // section holding ≥1 real path. Flag it so the consumer treats this `light`
-    // as non-confident: downgrade the arithmetic `light` to `abstain` so the
-    // consumer keeps the requested scope instead of reading a premature census
-    // as a settled verdict (non-blocking; legitimate light exists once the
-    // census lands).
+    // Honest signal: a zero `fileCount` means NOTHING parsed from the
+    // `## Files`/`## Arquivos` section — distinct from a section holding ≥1
+    // real path. Downgrade the arithmetic `light` to `abstain` so the consumer
+    // keeps the requested scope instead of reading a premature census as a
+    // settled verdict (non-blocking; legitimate light exists once the census
+    // lands). The stamped diagnostic names WHICH zero-path shape occurred
+    // (absent / empty / unrecognised) in the spec's own language.
     if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
-        if let Some(obj) = out.as_object_mut() {
-            obj.insert("scope".to_string(), json!("abstain"));
-            obj.insert("filesSectionEmpty".to_string(), json!(true));
-            obj.insert("warning".to_string(), json!(FILES_SECTION_EMPTY_WARNING));
-        }
+        stamp_files_zero(&mut out, spec_file, &spec_text);
     }
     out
 }
@@ -869,15 +935,12 @@ pub(crate) fn prepare_from_spec(spec_file: &Path, slice_match_count: i64) -> Val
             "newEntityCount": signals.get("newEntityCount").cloned().unwrap_or(json!(0)),
         },
     });
-    // Same empty-census downgrade `scope-classify` emits: relabel the premature
+    // Same zero-census downgrade `scope-classify` emits: relabel the premature
     // `light` as `abstain` (decompose/waves stay as computed - the roadmap
-    // signal is independent of the file census).
+    // signal is independent of the file census). One shared stamp — the two
+    // doors can never diverge on the diagnostic.
     if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
-        if let Some(obj) = out.as_object_mut() {
-            obj.insert("scope".to_string(), json!("abstain"));
-            obj.insert("filesSectionEmpty".to_string(), json!(true));
-            obj.insert("warning".to_string(), json!(FILES_SECTION_EMPTY_WARNING));
-        }
+        stamp_files_zero(&mut out, spec_file, &spec_text);
     }
     out
 }
@@ -1432,13 +1495,15 @@ mod tests {
             "non-confident verdict carries a warning"
         );
 
-        // An entirely absent `## Files` section is also 0 paths ⇒ flagged.
+        // An entirely absent `## Files` section is also 0 paths ⇒ flagged, and
+        // the state names the absence distinctly.
         let absent = "# Spec\n\n## Contexto\n\nAlgo sem censo.\n";
         let absent_path = dir.path().join("absent.md");
         std::fs::write(&absent_path, absent).unwrap();
         let da = classify_from_spec(&absent_path, 0);
         assert_eq!(da["filesSectionEmpty"], json!(true), "absent section ⇒ flagged");
         assert_eq!(da["scope"], json!("abstain"), "absent section ⇒ abstain");
+        assert_eq!(da["filesSectionState"], json!("absent"), "absence named as absence");
 
         // (ii) Section present with ≥1 real path ⇒ NOT flagged (no false alarm).
         let filled = "# Spec\n\n## Files\n- src/util/a.ts\n";
@@ -1448,6 +1513,66 @@ mod tests {
         assert_eq!(df["signals"]["fileCount"], json!(1));
         assert!(df.get("filesSectionEmpty").is_none(), "≥1 real path ⇒ no flag");
         assert!(df.get("warning").is_none(), "≥1 real path ⇒ no warning");
+    }
+
+    /// AC-7 (diagnostic half): a table census is READ (no abstain), and when a
+    /// full section carries no recognisable path the message says exactly
+    /// that — never "empty" — in the spec's own language. The table-parsing
+    /// half lives beside the parser in `wave_lib`.
+    #[test]
+    fn files_section_reads_a_table_and_names_an_unreadable_one() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_project(dir.path());
+
+        // (i) A census authored as a markdown table parses: fileCount > 0, no
+        // downgrade — the reader that called this section empty was the false
+        // fact this fix closes.
+        let table = "# Spec\n\n## Files\n\n\
+            | File | Purpose |\n\
+            |------|---------|\n\
+            | `src/schema/user.ts` | schema |\n\
+            | `src/api/users.ts` | api |\n\
+            | `src/api/accounts.ts` | api |\n";
+        let table_path = dir.path().join("table.md");
+        std::fs::write(&table_path, table).unwrap();
+        let dt = classify_from_spec(&table_path, 0);
+        assert_eq!(dt["signals"]["fileCount"], json!(3), "table census read: {dt}");
+        assert!(dt.get("filesSectionEmpty").is_none(), "a read census is never flagged: {dt}");
+
+        // (ii) A section FULL of content that no recogniser reads: the state
+        // and the message say "content but no recognised path" — not "empty".
+        let prose = "# Spec\n\n## Files\n\nthe handler module\nthe validator module\n";
+        let prose_path = dir.path().join("prose.md");
+        std::fs::write(&prose_path, prose).unwrap();
+        let dp = classify_from_spec(&prose_path, 0);
+        assert_eq!(dp["scope"], json!("abstain"));
+        assert_eq!(dp["filesSectionState"], json!("unrecognised"), "full ≠ empty: {dp}");
+        let warning = dp["warning"].as_str().unwrap_or_default();
+        assert!(
+            warning.contains("no path was recognised"),
+            "the message names the real cause (en-US default): {warning}"
+        );
+        assert!(!warning.contains("empty"), "never asserts empty about a full section: {warning}");
+
+        // (iii) The diagnostic follows the SPEC's own language (`### Lang:`),
+        // not a hardcoded one.
+        let pt = "# Spec\n\n### Lang: pt-BR\n\n## Arquivos\n\nmódulo de tratadores\n";
+        let pt_path = dir.path().join("pt.md");
+        std::fs::write(&pt_path, pt).unwrap();
+        let dpt = classify_from_spec(&pt_path, 0);
+        assert_eq!(dpt["filesSectionState"], json!("unrecognised"));
+        let pt_warning = dpt["warning"].as_str().unwrap_or_default();
+        assert!(
+            pt_warning.contains("nenhum caminho foi reconhecido"),
+            "pt-BR spec ⇒ pt-BR diagnostic: {pt_warning}"
+        );
+
+        // (iv) A genuinely empty section still reads as empty/placeholder.
+        let empty = "# Spec\n\n## Files\n\n## Tasks\n- [ ] x\n";
+        let empty_path = dir.path().join("empty.md");
+        std::fs::write(&empty_path, empty).unwrap();
+        let de = classify_from_spec(&empty_path, 0);
+        assert_eq!(de["filesSectionState"], json!("empty"));
     }
 
     /// AC8 (T7): an unreadable spec (wrong path / wrong cwd in a worktree) must

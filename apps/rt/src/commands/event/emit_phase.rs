@@ -57,32 +57,77 @@ pub fn last_phase_for_spec(cwd: impl AsRef<Path>, spec: &str) -> Option<String> 
         })
 }
 
+/// What a phase emit did — the material of the ONE deterministic success line
+/// [`run`] prints. `Recorded` carries the previous phase (`None` on a spec's
+/// first transition); `AlreadyThere` is the idempotent short-circuit, which
+/// must SAY so: printing nothing made "already in that phase" and "transition
+/// recorded" indistinguishable from stdout.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PhaseOutcome {
+    /// The transition was written; `from` is the phase it left.
+    Recorded { from: Option<String> },
+    /// The spec's latest phase already equals the requested one — no write.
+    AlreadyThere,
+}
+
+/// The one deterministic success line for a phase emit — the same
+/// `{ok, kind, spec}` shape [`super::emit_pipeline`] echoes (added there
+/// because that emitter used to succeed in TOTAL silence), extended with the
+/// transition itself: `from` (null on a first transition), `to`, and
+/// `idempotent: true` on the short-circuit. No timestamp/session — run
+/// outputs are byte-compared in gates; the NDJSON row carries those.
+fn success_line(outcome: &PhaseOutcome, spec: &str, to: &str) -> serde_json::Value {
+    match outcome {
+        PhaseOutcome::Recorded { from } => json!({
+            "ok": true, "kind": "pipeline.phase", "spec": spec, "from": from, "to": to,
+        }),
+        PhaseOutcome::AlreadyThere => json!({
+            "ok": true, "kind": "pipeline.phase", "spec": spec, "from": to, "to": to,
+            "idempotent": true,
+        }),
+    }
+}
+
 /// Run `mustard-rt run emit-phase --spec <name> --to <PHASE> [--from <PHASE>]`.
 ///
 /// Fail-open for telemetry: any internal failure (NDJSON write) degrades to a
-/// silent no-op. The **exception** is `--to CLOSE`, which runs the close-gate
-/// sub-gates (debt/checklist/qa/build) inline before writing the event. A
-/// strict gate failure prints the gate reason on stderr, leaves the event
-/// un-written, and exits the process with status `1` — same user-visible
-/// behavior as the legacy `close_gate` hook that fired on a pipeline-state
-/// Write/Edit (the trigger that no longer exists post-Wave 2).
+/// no-op. On success it prints the deterministic confirmation line
+/// ([`success_line`]) — previous phase and new, and the idempotent
+/// short-circuit says so instead of staying silent. The **exception** is
+/// `--to CLOSE`, which runs the close-gate sub-gates (debt/checklist/qa/build)
+/// inline before writing the event. A strict gate failure prints the gate
+/// reason on stderr, leaves the event un-written, and exits the process with
+/// status `1` — same user-visible behavior as the legacy `close_gate` hook
+/// that fired on a pipeline-state Write/Edit (the trigger that no longer
+/// exists post-Wave 2).
 pub fn run(spec: &str, to: &str, from: Option<&str>) {
-    if let Err(reason) = run_at(Path::new(&project_dir()), spec, to, from) {
-        eprintln!("{reason}");
-        std::process::exit(1);
+    match run_at(Path::new(&project_dir()), spec, to, from) {
+        Ok(outcome) => println!("{}", success_line(&outcome, spec, to)),
+        Err(reason) => {
+            eprintln!("{reason}");
+            std::process::exit(1);
+        }
     }
 }
 
 /// Cwd-aware miolo of [`run`]: record the `pipeline.phase` transition against
 /// an explicit `cwd` instead of the process-global project dir. Reused by
-/// `plan-materialize` (composing PLAN entry in-process). `Err` carries the
-/// close-gate reason for a blocked `--to CLOSE`; the CLI entry turns that into
-/// the legacy stderr + exit 1, composite callers fold it into their report.
-pub(crate) fn run_at(cwd: &Path, spec: &str, to: &str, from: Option<&str>) -> Result<(), String> {
+/// `plan-materialize` (composing PLAN entry in-process) — which is why the
+/// confirmation PRINT lives in the CLI entry [`run`], never here: a composite
+/// caller's own stdout contract must not grow an interleaved line. `Ok`
+/// carries the [`PhaseOutcome`] the caller may render; `Err` carries the
+/// close-gate reason for a blocked `--to CLOSE` (the CLI entry turns that into
+/// the legacy stderr + exit 1, composite callers fold it into their report).
+pub(crate) fn run_at(
+    cwd: &Path,
+    spec: &str,
+    to: &str,
+    from: Option<&str>,
+) -> Result<PhaseOutcome, String> {
     // Idempotency: skip when the spec's latest phase already lands on `to`.
     let last = last_phase_for_spec(cwd, spec);
     if last.as_deref() == Some(to) {
-        return Ok(());
+        return Ok(PhaseOutcome::AlreadyThere);
     }
 
     // CLOSE transition: run the close-gate sub-gates inline. A strict failure
@@ -113,7 +158,7 @@ pub(crate) fn run_at(cwd: &Path, spec: &str, to: &str, from: Option<&str>) -> Re
             actor_type: None,
         },
         event: "pipeline.phase".to_string(),
-        payload: json!({ "from": from_phase, "to": to }),
+        payload: json!({ "from": from_phase.clone(), "to": to }),
         spec: Some(spec.to_string()),
     };
 
@@ -135,7 +180,7 @@ pub(crate) fn run_at(cwd: &Path, spec: &str, to: &str, from: Option<&str>) -> Re
         &event.payload,
         Some(&ts),
     );
-    Ok(())
+    Ok(PhaseOutcome::Recorded { from: from_phase })
 }
 
 
@@ -176,5 +221,40 @@ mod tests {
     fn last_phase_empty_log_is_none() {
         let dir = tempdir().unwrap();
         assert_eq!(last_phase_for_spec(dir.path(), "demo"), None);
+    }
+
+    /// AC-10: a recorded transition confirms itself — the success line names
+    /// the previous phase and the new one — and the idempotent short-circuit
+    /// SAYS so instead of staying silent (stdout used to be empty either way,
+    /// making "already there" and "recorded" indistinguishable).
+    #[test]
+    fn emit_phase_confirms_the_transition() {
+        let dir = tempdir().unwrap();
+
+        // First transition: no previous phase — `from` is honest null.
+        let first = run_at(dir.path(), "demo", "ANALYZE", None).expect("first emit");
+        assert_eq!(first, PhaseOutcome::Recorded { from: None });
+        let line = success_line(&first, "demo", "ANALYZE");
+        assert_eq!(line["ok"], json!(true));
+        assert_eq!(line["kind"], json!("pipeline.phase"));
+        assert_eq!(line["spec"], json!("demo"));
+        assert_eq!(line["from"], json!(null), "first transition has no previous phase: {line}");
+        assert_eq!(line["to"], json!("ANALYZE"));
+        assert!(line.get("idempotent").is_none(), "a real transition is not idempotent: {line}");
+
+        // Second transition: the previous phase is read back and named.
+        let second = run_at(dir.path(), "demo", "PLAN", None).expect("second emit");
+        assert_eq!(second, PhaseOutcome::Recorded { from: Some("ANALYZE".to_string()) });
+        let line = success_line(&second, "demo", "PLAN");
+        assert_eq!(line["from"], json!("ANALYZE"), "previous phase named: {line}");
+        assert_eq!(line["to"], json!("PLAN"));
+
+        // Idempotent short-circuit: already-in-that-phase says so.
+        let third = run_at(dir.path(), "demo", "PLAN", None).expect("idempotent emit");
+        assert_eq!(third, PhaseOutcome::AlreadyThere);
+        let line = success_line(&third, "demo", "PLAN");
+        assert_eq!(line["idempotent"], json!(true), "the short-circuit is named: {line}");
+        assert_eq!(line["from"], json!("PLAN"));
+        assert_eq!(line["to"], json!("PLAN"));
     }
 }
