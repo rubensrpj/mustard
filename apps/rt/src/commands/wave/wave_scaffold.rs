@@ -605,7 +605,7 @@ fn same_or_contains_path(declared: &str, named: &str) -> bool {
     if !d.contains('*') {
         return false;
     }
-    use crate::hooks::write::boundary_gate::glob_match;
+    use crate::util::glob::glob_match;
     glob_match(&n, &d) || glob_match(&n, &format!("**/{d}"))
 }
 

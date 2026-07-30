@@ -36,6 +36,7 @@ use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
+use crate::util::glob::glob_match;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -390,59 +391,6 @@ fn pattern_matches(rel: &str, pattern: &str) -> bool {
     }
     if p.contains('*') {
         return glob_match(&r, &p);
-    }
-    false
-}
-
-/// Match `r` against a glob `p` (`*` = one path segment, `**` = anything).
-///
-/// `pub(crate)` so the wave traceability pass decides whether a DECLARED glob
-/// covers a path a criterion names with THIS matcher — the one in the crate
-/// that already knows `*` does not cross a `/` and `**` does. A second matcher
-/// is how two readers would disagree about what a wave declared.
-pub(crate) fn glob_match(r: &str, p: &str) -> bool {
-    // Build a regex-free matcher: split the glob into literal/`*`/`**` tokens
-    // and walk. For the patterns specs use this is simplest as a recursive
-    // segment matcher.
-    glob_match_at(r.as_bytes(), p.as_bytes())
-}
-
-/// Recursive byte-wise glob matcher. `**` matches any run (incl. `/`); `*`
-/// matches any run *not* containing `/`.
-fn glob_match_at(text: &[u8], pat: &[u8]) -> bool {
-    if pat.is_empty() {
-        return text.is_empty();
-    }
-    if pat.starts_with(b"**") {
-        let rest = &pat[2..];
-        // `**` consumes zero-or-more of anything.
-        let mut i = 0;
-        loop {
-            if glob_match_at(&text[i..], rest) {
-                return true;
-            }
-            if i >= text.len() {
-                return false;
-            }
-            i += 1;
-        }
-    }
-    if pat[0] == b'*' {
-        let rest = &pat[1..];
-        // `*` consumes zero-or-more non-`/`.
-        let mut i = 0;
-        loop {
-            if glob_match_at(&text[i..], rest) {
-                return true;
-            }
-            if i >= text.len() || text[i] == b'/' {
-                return false;
-            }
-            i += 1;
-        }
-    }
-    if !text.is_empty() && text[0] == pat[0] {
-        return glob_match_at(&text[1..], &pat[1..]);
     }
     false
 }

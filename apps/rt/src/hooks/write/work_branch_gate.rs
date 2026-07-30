@@ -60,6 +60,7 @@
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::io::workspace::is_git_repo_root;
+use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,14 +77,17 @@ const MAX_DIRTY_NAMED: usize = 5;
 /// SAME probe the worktree door uses ([`dirty_paths`]) — measured BEFORE the
 /// attempt, so the verdict can name the usual reason git refused instead of
 /// leaving only the raw git error. Empty when the tree was clean.
-fn dirty_note(dirty: &[String]) -> String {
+/// Catalogue-rendered in the project's configured language.
+fn dirty_note(dirty: &[String], lang: Locale) -> String {
     if dirty.is_empty() {
         return String::new();
     }
     let shown: Vec<&str> = dirty.iter().take(MAX_DIRTY_NAMED).map(String::as_str).collect();
     let more = dirty.len().saturating_sub(shown.len());
     let tail = if more == 0 { String::new() } else { format!(" (+{more})") };
-    format!(" Árvore suja: {}{tail}.", shown.join(", "))
+    translate("workbranch.dirty.note", lang)
+        .replace("{paths}", &shown.join(", "))
+        .replace("{more}", &tail)
 }
 
 /// The auto-branch gate. Stateless — every invocation rebuilds from the hook
@@ -510,7 +514,8 @@ impl Check for WorkBranchGate {
                 Ok(Verdict::Allow)
             }
             Err(e) => {
-                let note = dirty_note(&dirty);
+                let lang = config.i18n().lang;
+                let note = dirty_note(&dirty, lang);
                 if on_protected {
                     // We could not leave the protected branch — refuse rather
                     // than let the edit land directly on it. The marker is
@@ -542,11 +547,11 @@ impl Check for WorkBranchGate {
                     }
                     let actual = current.as_deref().unwrap_or("?");
                     Ok(Verdict::Warn {
-                        message: format!(
-                            "não consegui criar a branch '{target}': {e} — seguindo na branch \
-                             atual '{actual}'; registro do work branch reconciliado de \
-                             '{target}' para '{actual}'.{note}"
-                        ),
+                        message: translate("workbranch.reconcile.warn", lang)
+                            .replace("{target}", &target)
+                            .replace("{error}", &e)
+                            .replace("{actual}", actual)
+                            .replace("{note}", &note),
                     })
                 }
             }
