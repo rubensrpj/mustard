@@ -103,6 +103,31 @@ pub(crate) struct BranchRefs {
     pub(crate) remotes: Vec<String>,
 }
 
+impl BranchRefs {
+    /// The ref a READER should read this unit's tree from: the local head when
+    /// there is one, else the first remote-tracking ref (`<remote>/<branch>`).
+    ///
+    /// The ONE place `<remote>/<branch>` is spelled. A consumer assembling it
+    /// itself would have to name a remote, and no remote name is written in
+    /// this crate — the name comes out of the ref that was swept.
+    pub(crate) fn read_ref(&self) -> String {
+        if self.local {
+            return self.branch.clone();
+        }
+        match self.remotes.first() {
+            Some(remote) => format!("{remote}/{branch}", branch = self.branch),
+            None => self.branch.clone(),
+        }
+    }
+
+    /// `true` when NO local ref carries this unit — only a remote does. Such a
+    /// unit is invisible to any sweep of `refs/heads/` alone, which is the
+    /// blind spot this module was built to close.
+    pub(crate) fn is_remote_only(&self) -> bool {
+        !self.local && !self.remotes.is_empty()
+    }
+}
+
 /// Every work-unit branch of one repository, local and remote, sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BranchEnumerator {
@@ -116,9 +141,19 @@ impl BranchEnumerator {
     /// consistent snapshot rather than two reads that can disagree. Fail-open:
     /// a git that cannot answer yields an empty sweep, never a panic.
     pub(crate) fn sweep(git: GitOut<'_>, bases: &[String]) -> Self {
-        let listing =
-            git(&["for-each-ref", "--format=%(refname)", HEADS, REMOTES]).unwrap_or_default();
-        Self::from_refs(&listing, bases)
+        Self::try_sweep(git, bases).unwrap_or_else(|| Self::from_refs("", bases))
+    }
+
+    /// [`sweep`](Self::sweep), keeping apart "git could not answer" (`None`)
+    /// and "this repository has no work branch" (an empty sweep).
+    ///
+    /// A consumer that REPORTS an absence needs that difference: an unanswered
+    /// read printed as a verified "nothing in flight" is the same lie as an
+    /// unmeasured PR printed as "no PR". A consumer that merely counts degrades
+    /// through [`sweep`] and shows one fewer nudge.
+    pub(crate) fn try_sweep(git: GitOut<'_>, bases: &[String]) -> Option<Self> {
+        let listing = git(&["for-each-ref", "--format=%(refname)", HEADS, REMOTES])?;
+        Some(Self::from_refs(&listing, bases))
     }
 
     /// The pure half of [`sweep`](Self::sweep): parse a `for-each-ref` listing.
@@ -231,6 +266,9 @@ pub(crate) const PR_CLI_FAILED: &str = "provider-cli-failed";
 /// Reason: the CLI answered something this adapter could not read.
 pub(crate) const PR_UNREADABLE: &str = "provider-answer-unreadable";
 
+/// Reason: the consumer deliberately did not ask (see [`LocalOnlyPr`]).
+pub(crate) const PR_NOT_QUERIED: &str = "pr-not-queried";
+
 /// The PR query as a PORT.
 ///
 /// The classifier depends on this trait and never on a provider's CLI, so a new
@@ -238,6 +276,25 @@ pub(crate) const PR_UNREADABLE: &str = "provider-answer-unreadable";
 pub(crate) trait PrLookup {
     /// The strongest known status of any pull request whose HEAD is `branch`.
     fn status_of(&self, branch: &str) -> PrStatus;
+}
+
+/// The port for a consumer that asks NOTHING — every branch answers
+/// [`PrStatus::Unknown`]`(`[`PR_NOT_QUERIED`]`)`.
+///
+/// A surface redrawn on every keystroke (the status bar) or blocking the start
+/// of a session cannot afford a network round-trip per branch, so it measures
+/// LOCAL ancestry only. The classifier then reaches a pruning verdict only
+/// where ancestry already proved the merge; everything else stays
+/// [`UnitState::Unmeasured`]. Such a count can only UNDER-report — a merge the
+/// provider squashed leaves no ancestry — and never invent a prunable branch.
+/// A missed nudge is a nuisance; an invented one offers to delete work nobody
+/// verified.
+pub(crate) struct LocalOnlyPr;
+
+impl PrLookup for LocalOnlyPr {
+    fn status_of(&self, _branch: &str) -> PrStatus {
+        PrStatus::Unknown(PR_NOT_QUERIED)
+    }
 }
 
 /// The adapter for the provider declared in `mustard.json#git.provider`.
@@ -485,6 +542,28 @@ fn verdict(unit: &BranchRefs, ancestry: bool, pr: PrStatus) -> UnitState {
     }
 }
 
+/// The units whose merge is VERIFIED and whose branch is still around — the
+/// ONE definition of "the exit ritual is still owed here", shared by every
+/// surface that shows it.
+///
+/// A second count somewhere else is exactly how the two sweeps this module
+/// replaced drifted apart, so the status bar, the session-start advisory and
+/// any later consumer all fold through this function: same enumeration, same
+/// ancestry measurement, same verdict table.
+pub(crate) fn awaiting_prune(
+    git: GitOut<'_>,
+    pr: &dyn PrLookup,
+    bases: &[String],
+) -> Vec<BranchState> {
+    let units = BranchEnumerator::sweep(git, bases);
+    let merged = merged_refs(git, bases);
+    StateClassifier::new(pr)
+        .classify(units.units(), &merged)
+        .into_iter()
+        .filter(|state| state.state.is_awaiting_prune())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // The report — read-only by construction
 // ---------------------------------------------------------------------------
@@ -604,6 +683,72 @@ refs/tags/v1.0_dev
             !found.units().iter().any(|u| u.branch == "dev"),
             "an integration base is never a work unit",
         );
+    }
+
+    /// A ref that only a remote carries is READ from `<remote>/<branch>`, and
+    /// a read that git could not answer stays telling apart from a repository
+    /// with no work branch — the two properties the spec inventory needs to
+    /// stop enumerating on its own.
+    #[test]
+    fn remote_only_units_carry_their_read_ref_and_a_failed_sweep_is_not_an_empty_one() {
+        let found = BranchEnumerator::from_refs(
+            "refs/heads/dev_local\nrefs/remotes/origin/dev_remote\n",
+            &bases(),
+        );
+        let local = &found.units()[0];
+        assert!(!local.is_remote_only());
+        assert_eq!(local.read_ref(), "dev_local", "a local head is read by its own name");
+
+        let remote = &found.units()[1];
+        assert!(remote.is_remote_only(), "no local ref carries it");
+        assert_eq!(
+            remote.read_ref(),
+            "origin/dev_remote",
+            "the remote name comes out of the swept ref, never from a literal",
+        );
+
+        // Fail to answer vs. answer nothing: the reporting consumer needs both.
+        let silent = |_: &[&str]| None;
+        assert!(BranchEnumerator::try_sweep(&silent, &bases()).is_none(), "git said nothing");
+        let empty = |_: &[&str]| Some(String::new());
+        let swept = BranchEnumerator::try_sweep(&empty, &bases()).expect("git answered");
+        assert!(swept.units().is_empty(), "an answer of no branches is a measurement");
+        // The degrading face keeps the old contract for consumers that count.
+        assert!(BranchEnumerator::sweep(&silent, &bases()).units().is_empty());
+    }
+
+    /// The read-only consumers' composition: a lookup that asks NOTHING still
+    /// counts what LOCAL ancestry proved, and can never invent a prunable
+    /// branch out of a merge nobody measured.
+    #[test]
+    fn local_only_lookup_counts_verified_merges_and_invents_none() {
+        const SWEPT: &str = "refs/heads/dev_landed\nrefs/remotes/origin/dev_landed\n\
+                             refs/heads/dev_live\nrefs/remotes/origin/dev_live\n\
+                             refs/heads/dev_gone\n";
+        let git = |args: &[&str]| -> Option<String> {
+            // Only `dev_landed` is reachable from its base.
+            if args.contains(&"--merged") {
+                return Some("refs/heads/dev_landed\n".to_string());
+            }
+            Some(SWEPT.to_string())
+        };
+        let pending = awaiting_prune(&git, &LocalOnlyPr, &bases());
+        let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
+        assert_eq!(names, vec!["dev_landed"], "only the verified merge is owed a prune");
+        assert_eq!(pending[0].state, UnitState::AwaitingPrune);
+        assert_eq!(
+            pending[0].pr,
+            PrStatus::Unknown(PR_NOT_QUERIED),
+            "the count says out loud that it never asked the provider",
+        );
+        assert_ne!(
+            pending[0].pr,
+            PrStatus::Absent,
+            "not asking is never the same as measuring that there is no PR",
+        );
+        // `dev_gone` has no remote and an unmeasured PR: dangerous, never
+        // offered for pruning — the whole reason this lookup under-reports.
+        assert!(!names.contains(&"dev_gone"));
     }
 
     /// AC-4 — `gone` (no remote) alone NEVER authorises deletion. A branch

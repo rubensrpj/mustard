@@ -60,6 +60,9 @@ fn synthetic_segments() -> Vec<Segment> {
     }
     // Forge the Mustard tail mark (the live builder reads project state).
     segs.push(Segment::new(SegmentKind::Mustard, "m0.1.0"));
+    // Forge the pending-prune mark too — the live builder sweeps git refs, and
+    // the preview must stay independent of whatever branches exist here.
+    segs.push(Segment::new(SegmentKind::Prune, "\u{2702} 2"));
     segs
 }
 

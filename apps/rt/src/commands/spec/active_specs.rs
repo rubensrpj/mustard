@@ -8,16 +8,23 @@
 //! multi-dev gap: after a `git pull`, a teammate's spec is on disk but has no
 //! local events).
 //!
-//! ## Two places a spec can live
+//! ## Three places a spec can live
 //!
 //! The working tree is not the whole project. A spec directory belongs with the
 //! work it describes, so while that work is in flight the directory exists ONLY
 //! on its work branch — and a listing that globs the checkout answers "nothing
 //! in progress" when it means "I only looked at one branch". Discovery
-//! therefore ALSO reads the spec area of every work branch, through
+//! therefore ALSO reads the spec area of every work unit, through
 //! `git ls-tree` + `git show`, without checking anything out; each row then
 //! carries where it lives ([`ActiveSpec::location`] / [`ActiveSpec::branch`]),
 //! so an in-flight spec is never mistaken for one present in the checkout.
+//!
+//! The third place is the one this listing used to miss entirely: a unit a
+//! colleague pushed, alive on a remote with no local head here. Discovery does
+//! not enumerate refs itself any more — it asks
+//! [`crate::shared::branch_state::BranchEnumerator`], which sweeps `refs/heads/`
+//! AND `refs/remotes/`, so that unit arrives with the rest and is reported
+//! `location:"remote"`.
 //!
 //! ## Fail-open contract
 //!
@@ -32,12 +39,14 @@
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use mustard_core::domain::meta;
+use mustard_core::{translate, SupportedLocale};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::commands::git_settle::git_out;
+use crate::shared::branch_state::{BranchEnumerator, BranchRefs};
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -58,8 +67,14 @@ struct SpecHeader {
 enum SpecLocation {
     /// Present in the CURRENT working tree, under `.claude/spec/`.
     Tree,
-    /// Absent from the working tree; carried only by this work branch.
+    /// Absent from the working tree; carried only by this LOCAL work branch.
     Branch(String),
+    /// No local ref carries it at all — only the remote-tracking ref named here
+    /// (`<remote>/<branch>`) does. A colleague pushed the unit and this
+    /// checkout never fetched a local head for it, so acting on the spec means
+    /// getting the branch first. Reported apart from [`Self::Branch`] because
+    /// "switch to it" and "fetch it" are different next steps.
+    Remote(String),
 }
 
 /// The facts a branch-carried spec cannot get from the filesystem, because its
@@ -127,15 +142,18 @@ pub(crate) struct ActiveSpec {
     #[serde(rename = "clarifyRecordsNothing")]
     pub clarify_records_nothing: bool,
     /// `"tree"` when the spec directory exists in the current working tree;
-    /// `"branch"` when it exists ONLY on the work branch named by
-    /// [`Self::branch`] — an **in-flight** spec, whose work has not merged yet.
+    /// `"branch"` when it exists ONLY on the local work branch named by
+    /// [`Self::branch`] — an **in-flight** spec, whose work has not merged yet;
+    /// `"remote"` when NO local ref carries it and only the remote-tracking ref
+    /// in [`Self::branch`] does.
     ///
-    /// The distinction is the point: acting on a `branch` row means switching
-    /// to that branch first, and a caller that cannot tell the two apart will
-    /// look for a directory that is not there.
+    /// The distinction is the point: a `tree` row is here, a `branch` row means
+    /// switching first, a `remote` row means fetching first — and a caller that
+    /// cannot tell them apart looks for a directory that is not there.
     pub location: String,
-    /// The work branch carrying this spec — `Some` exactly when `location` is
-    /// `"branch"`.
+    /// The ref carrying this spec — the branch name when `location` is
+    /// `"branch"`, the `<remote>/<branch>` ref when it is `"remote"`, absent
+    /// when it is `"tree"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 }
@@ -152,8 +170,10 @@ pub(crate) struct BranchScan {
     /// Why the scan could not run — present ONLY when `ok` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The work branches inspected, sorted. Empty with `ok:true` simply means
-    /// the project has no work branch other than the one checked out.
+    /// The work-unit refs inspected, in the enumerator's name order — a branch
+    /// name when a local head carries the unit, `<remote>/<branch>` when only a
+    /// remote does. Empty with `ok:true` simply means the project has no work
+    /// unit other than the one checked out.
     pub branches: Vec<String>,
 }
 
@@ -393,6 +413,13 @@ fn show_blob(root: &Path, branch: &str, path: &str) -> Option<String> {
 /// Enumerate the project's WORK branches and the active specs they carry but
 /// the current working tree does not.
 ///
+/// The enumeration is NOT done here: it is [`BranchEnumerator`], the crate's
+/// single answer to "which work-unit refs exist". This listing used to sweep
+/// `refs/heads/` on its own, and that private half-sweep is precisely why a
+/// spec pushed by a colleague — alive on a remote, with no local head in this
+/// checkout — was invisible to it. Two sweeps answering one question drift; one
+/// sweep with two consumers cannot.
+///
 /// A work branch is one whose name starts with `{base}_` for a base the project
 /// itself declares (`mustard.json#git.flow` via
 /// [`mustard_core::domain::config::GitConfig::integration_bases`]) — the same
@@ -402,12 +429,13 @@ fn show_blob(root: &Path, branch: &str, path: &str) -> Option<String> {
 ///
 /// `seen` carries every spec name already accounted for and is extended as
 /// branches are read, so the checkout always wins over a branch and the first
-/// branch (alphabetically) wins over the rest — one row per spec, never a
-/// duplicate wearing two locations.
+/// ref (in the enumerator's name order) wins over the rest — one row per spec,
+/// never a duplicate wearing two locations.
 ///
 /// **Fail-open.** Any git step that cannot answer returns the working-tree
 /// answer with `ok:false` and a stated reason. It never panics and never
-/// reports an empty branch set as a verified "nothing else in flight".
+/// reports an empty branch set as a verified "nothing else in flight" — which
+/// is why the enumerator is asked through its fallible face.
 fn scan_work_branches(
     root: &Path,
     seen: &mut BTreeSet<String>,
@@ -426,47 +454,47 @@ fn scan_work_branches(
 
     let current = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
-    let Some(listing) = git_out(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
-    else {
-        scan.reason = Some("git for-each-ref falhou — branches de trabalho não enumerados".to_string());
-        return (Vec::new(), scan);
-    };
-
     let bases: Vec<String> =
         mustard_core::ProjectConfig::load(root).git.integration_bases().into_iter().collect();
 
-    let mut branches: Vec<String> = listing
-        .lines()
-        .map(str::trim)
-        .filter(|b| !b.is_empty() && *b != current)
-        .filter(|b| bases.iter().any(|base| b.starts_with(&format!("{base}_"))))
-        .map(str::to_string)
-        .collect();
-    branches.sort();
-    branches.dedup();
+    let git_read = |args: &[&str]| git_out(root, args);
+    let Some(enumerated) = BranchEnumerator::try_sweep(&git_read, &bases) else {
+        scan.reason =
+            Some("git não enumerou as refs — branches de trabalho não inspecionados".to_string());
+        return (Vec::new(), scan);
+    };
+
+    // The checked-out branch is skipped: its specs are the working tree, and
+    // the tree already won every slug it carries.
+    let units: Vec<&BranchRefs> =
+        enumerated.units().iter().filter(|u| u.branch != current).collect();
 
     scan.ok = true;
-    scan.branches = branches.clone();
+    scan.branches = units.iter().map(|u| u.read_ref()).collect();
 
     let mut candidates: Vec<SpecCandidate> = Vec::new();
-    for branch in &branches {
-        candidates.extend(specs_on_branch(root, branch, &spec_root, seen));
+    for unit in units {
+        candidates.extend(specs_on_branch(root, unit, &spec_root, seen));
     }
     (candidates, scan)
 }
 
-/// The active-spec candidates `branch` carries whose name is not already in
+/// The active-spec candidates `unit` carries whose name is not already in
 /// `seen`; kept names are added to `seen`.
 ///
-/// ONE `git ls-tree -r` describes the branch's whole spec area; every further
-/// read is a `git show` of a single blob, so the cost tracks what is actually
-/// in flight rather than the size of the repository.
+/// The ref actually read is [`BranchRefs::read_ref`] — the local head when
+/// there is one, otherwise the remote-tracking ref, which is what makes a
+/// remote-only unit readable at all. ONE `git ls-tree -r` describes its whole
+/// spec area; every further read is a `git show` of a single blob, so the cost
+/// tracks what is actually in flight rather than the size of the repository.
 fn specs_on_branch(
     root: &Path,
-    branch: &str,
+    unit: &BranchRefs,
     spec_root: &str,
     seen: &mut BTreeSet<String>,
 ) -> Vec<SpecCandidate> {
+    let branch = unit.read_ref();
+    let branch = branch.as_str();
     let dir = format!("{spec_root}/");
     let Some(listing) = git_out(root, &["ls-tree", "-r", "--name-only", branch, "--", &dir]) else {
         return Vec::new();
@@ -521,13 +549,18 @@ fn specs_on_branch(
         };
 
         let spec_dir = ClaudePaths::spec_dir_or_unchecked(root, &name);
+        let location = if unit.is_remote_only() {
+            SpecLocation::Remote(branch.to_string())
+        } else {
+            SpecLocation::Branch(branch.to_string())
+        };
         out.push(SpecCandidate {
             name,
             spec_md: spec_dir.join("spec.md"),
             spec_dir,
             is_wave_plan,
             header,
-            location: SpecLocation::Branch(branch.to_string()),
+            location,
             branch_facts: Some(facts),
         });
     }
@@ -729,34 +762,31 @@ fn count_wave_progress(spec_dir: &Path) -> Option<WaveProgress> {
 /// Strip markdown bold/italic markers (`**`, `*`, `__`, `_`) and wikilinks
 /// (`[[X]]` → `X`) from a string.
 fn strip_markdown(s: &str) -> String {
+    // Walks CHARACTERS, not bytes. Pushing a byte as a `char` re-encodes every
+    // non-ASCII scalar as the two Latin-1 characters its UTF-8 bytes look like,
+    // which turned every accented resumo in the listing into mojibake — the
+    // column is pt-BR prose, so that was most of them.
     let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
+    let mut rest = s;
+    while let Some(ch) = rest.chars().next() {
         // Strip [[wikilink]]
-        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(end) = s[i + 2..].find("]]") {
-                let inner = &s[i + 2..i + 2 + end];
-                out.push_str(inner.trim());
-                i += 2 + end + 2;
+        if let Some(after) = rest.strip_prefix("[[") {
+            if let Some(end) = after.find("]]") {
+                out.push_str(after[..end].trim());
+                rest = &after[end + "]]".len()..];
                 continue;
             }
         }
         // Strip ** or __
-        if i + 1 < bytes.len()
-            && ((bytes[i] == b'*' && bytes[i + 1] == b'*')
-                || (bytes[i] == b'_' && bytes[i + 1] == b'_'))
-        {
-            i += 2;
+        if let Some(after) = rest.strip_prefix("**").or_else(|| rest.strip_prefix("__")) {
+            rest = after;
             continue;
         }
         // Strip * or _
-        if bytes[i] == b'*' || bytes[i] == b'_' {
-            i += 1;
-            continue;
+        rest = &rest[ch.len_utf8()..];
+        if ch != '*' && ch != '_' {
+            out.push(ch);
         }
-        out.push(bytes[i] as char);
-        i += 1;
     }
     out
 }
@@ -1092,7 +1122,10 @@ const ONDE_WIDTH: usize = 20;
 /// Generate a markdown table from the list of active specs.
 ///
 /// Columns: `#`, `Spec`, `Esc`, `Estágio`, `Prog`, `Status`, `Onde`, `Resumo`
-fn render_table(specs: &[ActiveSpec], scan: &BranchScan) -> String {
+///
+/// `lang` drives the legend line for the third `Onde` value — new user-facing
+/// copy comes from the catalogue, never from a literal in this file.
+fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) -> String {
     // Column headers
     let header = "| #  | Spec                                          | Esc | Estágio | Prog | Status     | Onde                 | Resumo";
     let separator = "|----|-----------------------------------------------|-----|---------|------|------------|----------------------|-----------------------------------------------------|";
@@ -1147,6 +1180,9 @@ fn render_table(specs: &[ActiveSpec], scan: &BranchScan) -> String {
     lines.push(
         "Onde: -=na árvore atual  {branch}=spec em voo, o diretório só existe nesse branch (troque de branch antes de agir)".to_string(),
     );
+    // The third `Onde` value: a unit alive only on a remote. Catalogue copy —
+    // the row exists because the enumerator sweeps `refs/remotes/` too.
+    lines.push(translate("specs.onde.remote_only", lang).to_string());
 
     // Fail-open, said out loud: without the branch scan this listing covers the
     // checkout ONLY, which is a different claim from "estas são todas".
@@ -1254,7 +1290,8 @@ pub fn run(opts: ActiveSpecsOpts) {
         }
         _ => {
             // table (default)
-            println!("{}", render_table(&output.specs, &output.branch_scan));
+            let lang = mustard_core::ProjectConfig::load(&opts.root).i18n().lang;
+            println!("{}", render_table(&output.specs, &output.branch_scan, lang));
             if extra > 0 {
                 println!("\n({extra} specs adicionais)");
             }
@@ -1381,6 +1418,7 @@ fn build_output(root: &Path) -> (ActiveSpecsOutput, usize) {
         let (location, branch) = match &candidate.location {
             SpecLocation::Tree => ("tree".to_string(), None),
             SpecLocation::Branch(b) => ("branch".to_string(), Some(b.clone())),
+            SpecLocation::Remote(r) => ("remote".to_string(), Some(r.clone())),
         };
 
         // Advisory: reuse the approval gate's own classifier so the listing and
@@ -1608,6 +1646,15 @@ mod tests {
         .unwrap();
         let r = extract_resumo(&path);
         assert!(r.contains("Contexto"), "got: {r:?}");
+    }
+
+    /// The resumo column is prose in the project's language: an extractor that
+    /// walked bytes turned every accent into mojibake on the way out, while
+    /// still stripping the markers around it.
+    #[test]
+    fn extract_resumo_keeps_accents_and_still_strips_markers() {
+        assert_eq!(strip_markdown("**Só** no _remoto_"), "Só no remoto");
+        assert_eq!(strip_markdown("ação e [[link-ção]] após"), "ação e link-ção após");
     }
 
     #[test]
@@ -1913,7 +1960,7 @@ mod tests {
             clarify_records_nothing: false,
             ..hollow.clone()
         };
-        let table = render_table(&[hollow, recorded], &ok_scan());
+        let table = render_table(&[hollow, recorded], &ok_scan(), SupportedLocale::default());
         assert!(
             table.contains("2026-01-01-hollow: `.clarified` existe mas não registra"),
             "the advisory must name the hollow spec: {table}"
@@ -2056,7 +2103,7 @@ mod tests {
         assert_eq!(on_dev.branch, None);
 
         // And the operator SEES the difference in the rendered table.
-        let table = render_table(&out.specs, &out.branch_scan);
+        let table = render_table(&out.specs, &out.branch_scan, SupportedLocale::default());
         assert!(
             table.contains("dev_in-flight"),
             "the table must show where the in-flight spec lives: {table}"
@@ -2086,11 +2133,122 @@ mod tests {
             out.specs.iter().map(|s| &s.name).collect::<Vec<_>>()
         );
         // And the table admits the gap instead of implying completeness.
-        let table = render_table(&out.specs, &out.branch_scan);
+        let table = render_table(&out.specs, &out.branch_scan, SupportedLocale::default());
         assert!(
             table.contains("Varredura de branches indisponível"),
             "the table must state the gap: {table}"
         );
+    }
+
+    /// A spec whose unit lives ONLY on a remote — a colleague pushed it and
+    /// this checkout has no local head for it. The old private sweep of
+    /// `refs/heads/` could not see it at all; through the enumerator it arrives
+    /// with the rest, wearing the third location value.
+    #[test]
+    fn active_specs_sees_a_spec_on_a_remote_only_branch() {
+        let td = tempdir().expect("tempdir");
+        let root = td.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        git(root, &["checkout", "-b", "dev"]);
+        seed(root, "mustard.json", r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        git(root, &["add", "-A", "-f", "."]);
+        git(root, &["commit", "-m", "seed"]);
+
+        git(root, &["checkout", "-b", "dev_pushed"]);
+        let spec = ".claude/spec/2026-01-10-pushed-elsewhere";
+        seed(root, &format!("{spec}/spec.md"), "# pushed\n\n## Resumo\n\nSó no remoto.\n");
+        seed(root, &format!("{spec}/meta.json"), r#"{"stage":"Execute","outcome":"Active"}"#);
+        git(root, &["add", "-A", "-f", "."]);
+        git(root, &["commit", "-m", "spec pushed by a colleague"]);
+
+        // Turn the unit into the shape this checkout would really be in: a
+        // remote-tracking ref and NO local head.
+        git(root, &["checkout", "dev"]);
+        git(root, &["update-ref", "refs/remotes/origin/dev_pushed", "refs/heads/dev_pushed"]);
+        git(root, &["branch", "-D", "dev_pushed"]);
+
+        let (out, _) = build_output(root);
+        assert!(out.branch_scan.ok, "the sweep ran: {:?}", out.branch_scan);
+        assert!(
+            out.branch_scan.branches.iter().any(|b| b == "origin/dev_pushed"),
+            "the remote-only unit must be inspected: {:?}",
+            out.branch_scan.branches
+        );
+
+        let row = out
+            .specs
+            .iter()
+            .find(|s| s.name == "2026-01-10-pushed-elsewhere")
+            .expect("a spec alive only on a remote must be listed, not reported absent");
+        assert_eq!(row.location, "remote", "the third location value");
+        assert_eq!(
+            row.branch.as_deref(),
+            Some("origin/dev_pushed"),
+            "the row names the ref to fetch, remote included"
+        );
+        assert_eq!(row.resumo, "Só no remoto.", "read from the remote ref's blob");
+
+        // And the legend explains the value the operator is now seeing.
+        let table = render_table(&out.specs, &out.branch_scan, SupportedLocale::default());
+        assert!(table.contains("origin/dev_pushed"), "the table shows where it lives: {table}");
+        assert!(
+            table.contains(translate("specs.onde.remote_only", SupportedLocale::default())),
+            "the legend must explain the remote-only value: {table}"
+        );
+    }
+
+    /// **AC-2.** BOTH consumers ask the same enumerator, and neither of the two
+    /// earlier sweeps survives: the sweep MOVED, it did not get copied.
+    ///
+    /// Every half is asserted, like the deletion-reach test in `branch_state`:
+    /// the argv is absent in each consumer and present in the enumerator, and
+    /// each consumer is seen calling it. Without the presence halves the
+    /// absences could pass against a needle that never existed anywhere.
+    /// The needles are assembled at runtime so writing the test does not put
+    /// the spelling into a file under assertion.
+    #[test]
+    fn settle_and_active_specs_share_one_enumerator() {
+        let listing = include_str!("active_specs.rs");
+        let ritual = include_str!("../git_settle.rs");
+        let enumerator = include_str!("../../shared/branch_state.rs");
+
+        let sweep = ["for-each", "-ref"].concat();
+        assert!(
+            enumerator.contains(sweep.as_str()),
+            "the enumerator must own the sweep, otherwise this test asserts nothing",
+        );
+
+        // The spec listing enumerated `refs/heads/` itself and was blind to a
+        // unit that only a remote carries.
+        assert!(
+            !listing.contains(sweep.as_str()),
+            "the spec listing must not enumerate refs itself — it asks the enumerator",
+        );
+        // The exit ritual derived the pending units from the WORKTREE table,
+        // which an in-place cut never appears in — the omission the field
+        // report measured as six invisible units.
+        let worktree_scan = ["\"worktree\", \"", "list\""].concat();
+        let pending = ritual
+            .split_once("let also_mergeable")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(expr, _)| expr)
+            .unwrap_or_default();
+        assert!(!pending.is_empty(), "the pending-units field must still be readable here");
+        assert!(
+            !pending.contains(&worktree_scan),
+            "the pending-units field must not be derived from the worktree table: {pending}",
+        );
+
+        // And both are seen asking the ONE enumerator.
+        for (name, consumer) in [("the spec listing", listing), ("the exit ritual", ritual)] {
+            assert!(
+                consumer.contains("BranchEnumerator"),
+                "{name} must consult the enumerator",
+            );
+        }
     }
 
     #[test]

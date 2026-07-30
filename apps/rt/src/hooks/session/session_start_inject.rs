@@ -68,9 +68,12 @@ use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
+use mustard_core::SupportedLocale;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+
+use crate::shared::branch_state::{awaiting_prune, LocalOnlyPr};
 
 use mustard_core::time::now_iso8601;
 
@@ -375,10 +378,15 @@ impl Check for SessionStartInject {
         // stamp differs from the running harness gets a one-paragraph nudge
         // toward `/mustard:upsert`. Advisory only — the user decides.
         let drift = version_drift_notice(Path::new(&cwd));
+        // Pending-prune advisory: delivered work units whose branch is still
+        // alive. The prune command already existed and worked; what was missing
+        // was anyone SAYING it was owed, so six units piled up unnoticed.
+        let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
         // ONE composed Inject (the dispatcher fold is last-writer-wins):
-        // terrain first, injectables after, drift advisory last —
+        // terrain first, injectables after, the two advisories last —
         // blank-line separated.
-        let parts: Vec<String> = [terrain, injected, drift].into_iter().flatten().collect();
+        let parts: Vec<String> =
+            [terrain, injected, drift, prune].into_iter().flatten().collect();
         Ok(if parts.is_empty() {
             Verdict::Allow
         } else {
@@ -411,6 +419,58 @@ fn version_drift_notice(root: &Path) -> Option<String> {
          suggest running /mustard:upsert to realign (a notice that persists after an \
          upsert means the plugin itself needs updating)."
     ))
+}
+
+/// How many unit names the advisory spells out before it just counts the rest.
+/// Six units piled up in the field report; a list that long stops being read.
+const PRUNE_NOTICE_NAMES: usize = 4;
+
+/// One line when delivered work units still carry a live branch — the missing
+/// half of the exit ritual.
+///
+/// The command that prunes them already existed and worked; across six
+/// consecutive units nobody ran it, because nothing ever said it was owed.
+/// This is that saying, and nothing more: advisory, never blocking.
+///
+/// The count comes from the ONE classifier
+/// ([`crate::shared::branch_state::awaiting_prune`]) with the lookup that asks
+/// no provider — a session must not open a network connection per branch
+/// before it starts, so only merges LOCAL ancestry proves are counted. Under-
+/// reporting costs a nudge; over-reporting would point at branches nobody
+/// verified. `shared` may not import the git primitive (it lives in the
+/// `commands` face), so the read is injected here, exactly as `branch_state`
+/// documents.
+///
+/// `None` for a project with no `mustard.json` (never installed — the harness
+/// does not nag it) and whenever nothing is owed. Fail-open throughout: a git
+/// that cannot answer yields no advisory.
+fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
+    if !mustard_core::ProjectConfig::exists(root) {
+        return None;
+    }
+    let bases: Vec<String> = crate::shared::context::project_config_cached(root)
+        .git
+        .integration_bases()
+        .into_iter()
+        .collect();
+    let git_read = |args: &[&str]| crate::commands::git_settle::git_out(root, args);
+    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &bases);
+    if pending.is_empty() {
+        return None;
+    }
+    let named: Vec<&str> =
+        pending.iter().take(PRUNE_NOTICE_NAMES).map(|state| state.branch.as_str()).collect();
+    let rest = pending.len() - named.len();
+    let branches = if rest > 0 {
+        format!("{listed} (+{rest})", listed = named.join(", "))
+    } else {
+        named.join(", ")
+    };
+    Some(
+        mustard_core::translate("prune.pending.notice", lang)
+            .replace("{count}", &pending.len().to_string())
+            .replace("{branches}", &branches),
+    )
 }
 
 #[cfg(test)]
@@ -487,6 +547,75 @@ mod tests {
         std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"make"}"#).unwrap();
         let notice = version_drift_notice(dir.path()).expect("unstamped must fire");
         assert!(notice.contains("unstamped"), "labels the pre-version era: {notice}");
+    }
+
+    // --- pending-prune advisory ---------------------------------------------
+
+    /// Run git in `dir`, failing the test loudly — a half-built fixture would
+    /// make the assertions below prove nothing.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn prune_advisory_absent_without_mustard_json() {
+        let dir = tempdir().unwrap();
+        assert_eq!(prune_pending_notice(dir.path(), SupportedLocale::default()), None);
+    }
+
+    /// The field cause, closed: a unit whose work landed but whose branch is
+    /// still around gets SAID OUT LOUD at session start. The unmerged unit in
+    /// the same repo is the control — the advisory names what is owed, never
+    /// everything that exists.
+    #[test]
+    fn prune_advisory_names_units_whose_branch_outlived_the_merge() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        git(root, &["add", "-A", "-f", "."]);
+        git(root, &["commit", "-m", "seed"]);
+
+        // One unit delivered: merged into its base, branch still alive.
+        git(root, &["checkout", "-b", "dev_landed"]);
+        git(root, &["commit", "--allow-empty", "-m", "work"]);
+        git(root, &["checkout", "dev"]);
+        git(root, &["merge", "--no-ff", "-m", "merge", "dev_landed"]);
+        // One unit still in flight: nothing is owed for it.
+        git(root, &["branch", "dev_live"]);
+        git(root, &["checkout", "dev_live"]);
+        git(root, &["commit", "--allow-empty", "-m", "in flight"]);
+        git(root, &["checkout", "dev"]);
+
+        let notice = prune_pending_notice(root, SupportedLocale::default())
+            .expect("a delivered unit with a live branch must be surfaced");
+        assert!(notice.contains("dev_landed"), "names the unit owed a prune: {notice}");
+        assert!(
+            !notice.contains("dev_live"),
+            "an unmerged unit is not owed anything: {notice}"
+        );
+        assert!(notice.contains('1'), "carries the count: {notice}");
+        assert!(
+            notice.contains("git-settle"),
+            "points at the command that was never called: {notice}"
+        );
     }
 
     // --- harness-init parity -----------------------------------------------

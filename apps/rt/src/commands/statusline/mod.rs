@@ -25,8 +25,8 @@ pub(crate) mod theme;
 
 use segment::{
     context_segment, cost_segment, diff_segment, duration_segment, git_segment,
-    model_segment, module_segment, mustard_segment, savings_segment, version_segment,
-    Segment,
+    model_segment, module_segment, mustard_segment, prune_segment, savings_segment,
+    version_segment, Segment,
 };
 use serde_json::Value;
 use std::io::Read;
@@ -74,6 +74,13 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     // Mustard's own tail mark: harness version, or the yellow drift hint
     // (`m{stamped}↑{current}`) when the project needs `/mustard:upsert`.
     if let Some(s) = mustard_segment(&cwd) {
+        segs.push(s);
+    }
+    // Last, in the order the theme palettes already declare (styles are packed
+    // by `SegmentKind`, and a new kind is appended): how many delivered work
+    // units still have a live branch. Silent when nothing is owed — the bar
+    // only grows when there is something to say.
+    if let Some(s) = prune_segment(&cwd) {
         segs.push(s);
     }
     segs

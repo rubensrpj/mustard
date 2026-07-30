@@ -573,6 +573,39 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              '{actual}'; the work branch record was reconciled from '{target}' to '{actual}'.{note}"
         }
 
+        // Work-unit SURFACING — the three places the harness says out loud that
+        // a work unit is somewhere other than the checkout, or that the exit
+        // ritual is still owed. All three are user-facing (a listing legend, a
+        // status-bar label, a session-start advisory), so they are
+        // config-language and live here rather than inline at the surface.
+        //
+        // `specs.onde.remote_only` explains the third value of the listing's
+        // location column: a unit alive only on a remote, which the ref sweep
+        // now reaches. `{count}` / `{branches}` in the advisory are
+        // interpolated by the caller.
+        ("specs.onde.remote_only", Locale::PtBr) => {
+            "Onde: {remoto}/{branch}=spec só no remoto, nenhuma branch local carrega o \
+             diretório (busque a branch antes de agir)"
+        }
+        ("specs.onde.remote_only", Locale::EnUs) => {
+            "Where: {remote}/{branch}=spec only on the remote, no local branch carries the \
+             directory (fetch the branch before acting)"
+        }
+        ("statusline.prune.label", Locale::PtBr) => "a podar",
+        ("statusline.prune.label", Locale::EnUs) => "to prune",
+        ("prune.pending.notice", Locale::PtBr) => {
+            "[Mustard] {count} unidade(s) de trabalho já mergeada(s) ainda têm branch viva: \
+             {branches}. Diga ao usuário que o ritual de saída ficou pendente e ofereça \
+             `mustard-rt run git-settle --report` para conferir o estado de cada uma e \
+             `mustard-rt run git-settle --unit <branch>` para podar. Aviso, nunca bloqueio."
+        }
+        ("prune.pending.notice", Locale::EnUs) => {
+            "[Mustard] {count} merged work unit(s) still have a live branch: {branches}. \
+             Tell the user the exit ritual is outstanding and offer \
+             `mustard-rt run git-settle --report` to check each one's state and \
+             `mustard-rt run git-settle --unit <branch>` to prune. Advisory, never blocking."
+        }
+
         // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
         // each named for what was actually measured (a diagnostic must never
         // assert "empty" about a section that has content). Config-language:
@@ -984,6 +1017,29 @@ mod tests {
         );
         assert_ne!(translate("stopgate.block.guidance", Locale::PtBr), "<missing-key>");
         assert_ne!(translate("stopgate.block.guidance", Locale::EnUs), "<missing-key>");
+    }
+
+    /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the
+    /// listing legend, the status-bar label and the session-start advisory
+    /// carry no language literal at their surface.
+    #[test]
+    fn i18n_translates_work_unit_surfacing_keys() {
+        for key in ["specs.onde.remote_only", "statusline.prune.label", "prune.pending.notice"] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
+            }
+            assert_ne!(
+                translate(key, Locale::PtBr),
+                translate(key, Locale::EnUs),
+                "{key} must differ per locale (proof it is catalogue-driven)"
+            );
+        }
+        // The advisory's slots are the caller's contract.
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let notice = translate("prune.pending.notice", lang);
+            assert!(notice.contains("{count}"), "the advisory interpolates the count: {notice}");
+            assert!(notice.contains("{branches}"), "and names the units: {notice}");
+        }
     }
 
     #[test]
