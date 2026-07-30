@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "harness-ve-toda-branch-trabalho",
+  "checklist": [
+    {
+      "label": "apps/rt/src/shared/branch_state.rs",
+      "path": "apps/rt/src/shared/branch_state.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/git_settle.rs",
+      "path": "apps/rt/src/commands/git_settle.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/git_cli.rs",
+      "path": "apps/rt/src/commands/git_cli.rs",
+      "done": false
+    }
+  ]
+}

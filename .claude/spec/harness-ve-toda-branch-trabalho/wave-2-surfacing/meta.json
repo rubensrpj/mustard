@@ -1,0 +1,41 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "harness-ve-toda-branch-trabalho",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/active_specs.rs",
+      "path": "apps/rt/src/commands/spec/active_specs.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/statusline/segment.rs",
+      "path": "apps/rt/src/commands/statusline/segment.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/statusline/mod.rs",
+      "path": "apps/rt/src/commands/statusline/mod.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/hooks/session/session_start_inject.rs",
+      "path": "apps/rt/src/hooks/session/session_start_inject.rs",
+      "done": false
+    },
+    {
+      "label": "packages/core/src/platform/i18n.rs",
+      "path": "packages/core/src/platform/i18n.rs",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/review.md",
+      "path": "plugin/commands/review.md",
+      "done": false
+    }
+  ]
+}
