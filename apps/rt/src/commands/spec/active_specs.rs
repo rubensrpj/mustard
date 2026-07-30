@@ -1182,7 +1182,7 @@ fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) 
     );
     // The third `Onde` value: a unit alive only on a remote. Catalogue copy —
     // the row exists because the enumerator sweeps `refs/remotes/` too.
-    lines.push(translate("specs.onde.remote_only", lang).to_string());
+    lines.push(translate("specs.location.remote_only", lang).to_string());
 
     // Fail-open, said out loud: without the branch scan this listing covers the
     // checkout ONLY, which is a different claim from "estas são todas".
@@ -2195,7 +2195,7 @@ mod tests {
         let table = render_table(&out.specs, &out.branch_scan, SupportedLocale::default());
         assert!(table.contains("origin/dev_pushed"), "the table shows where it lives: {table}");
         assert!(
-            table.contains(translate("specs.onde.remote_only", SupportedLocale::default())),
+            table.contains(translate("specs.location.remote_only", SupportedLocale::default())),
             "the legend must explain the remote-only value: {table}"
         );
     }

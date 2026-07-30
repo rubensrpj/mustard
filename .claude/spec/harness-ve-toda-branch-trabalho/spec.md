@@ -86,6 +86,12 @@ passa hoje: ele prova que a expressão consegue casar algo.
 - **AC-9** — when o ritual de saída documenta por que consulta o provedor, then a prosa não afirma um método de merge que ninguém mediu
   Command: `cargo test -p mustard-rt settle_doc_states_no_unmeasured_merge_method` Expect: `[1-9][0-9]* passed`
   Control: `cargo test -p mustard-rt base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix` Expect: `[1-9][0-9]* passed`
+- **AC-11** — when uma branch de trabalho nao tem nenhum commit a frente da sua base, then ela nunca e classificada como pendente de poda — cortar a branch nao e entregar trabalho, e o portao de branch corta toda unidade nova exatamente nessa forma
+  Command: `cargo test -p mustard-rt a_branch_with_no_commits_ahead_is_never_awaiting_prune`
+  Expect: `[1-9][0-9]* passed`
+- **AC-12** — when uma unidade cujo merge foi verificado perdeu a ref local mas a remota segue viva, then ela entra na lista de pendentes de poda em vez de sair apenas como so-no-remoto
+  Command: `cargo test -p mustard-rt merged_unit_alive_only_on_the_remote_is_awaiting_prune`
+  Expect: `[1-9][0-9]* passed`
 - **AC-10** — o build e os testes do projeto passam verdes
   Command: `cargo build --workspace`
 

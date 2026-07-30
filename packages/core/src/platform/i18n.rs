@@ -579,15 +579,15 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // status-bar label, a session-start advisory), so they are
         // config-language and live here rather than inline at the surface.
         //
-        // `specs.onde.remote_only` explains the third value of the listing's
+        // `specs.location.remote_only` explains the third value of the listing's
         // location column: a unit alive only on a remote, which the ref sweep
         // now reaches. `{count}` / `{branches}` in the advisory are
         // interpolated by the caller.
-        ("specs.onde.remote_only", Locale::PtBr) => {
+        ("specs.location.remote_only", Locale::PtBr) => {
             "Onde: {remoto}/{branch}=spec só no remoto, nenhuma branch local carrega o \
              diretório (busque a branch antes de agir)"
         }
-        ("specs.onde.remote_only", Locale::EnUs) => {
+        ("specs.location.remote_only", Locale::EnUs) => {
             "Where: {remote}/{branch}=spec only on the remote, no local branch carries the \
              directory (fetch the branch before acting)"
         }
@@ -1024,7 +1024,7 @@ mod tests {
     /// carry no language literal at their surface.
     #[test]
     fn i18n_translates_work_unit_surfacing_keys() {
-        for key in ["specs.onde.remote_only", "statusline.prune.label", "prune.pending.notice"] {
+        for key in ["specs.location.remote_only", "statusline.prune.label", "prune.pending.notice"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
             }

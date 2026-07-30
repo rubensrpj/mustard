@@ -319,9 +319,16 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
     }))
 }
 
-/// Whether `branch` already landed on `origin/<base>`: true ancestry first;
-/// squash-merge fallback via `gh pr list --state merged`. This is the 100%
-/// gate — no evidence means NOT merged (conservative, never fail-open).
+/// Whether `branch` already landed on `origin/<base>`: true ancestry first, the
+/// provider's merged-PR query as the fallback.
+///
+/// The fallback covers a portal that REWRITES the commits when it merges — the
+/// unit's tip then stops being an ancestor of the base although the work landed.
+/// Which of the two answers first is a property of the PROJECT's merge settings,
+/// measured per repository; this doc asserts nothing about it.
+///
+/// This is the 100% gate — no evidence means NOT merged (conservative, never
+/// fail-open).
 fn is_merged(main: &Path, branch: &str, base: &str) -> bool {
     if git_ok(main, &["merge-base", "--is-ancestor", branch, &format!("origin/{base}")]) {
         return true;
@@ -553,10 +560,17 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // alike, so an in-place unit and one that lives only on the server are both
     // reported.
     let git_read = |args: &[&str]| git_out(&main, args);
-    let also_mergeable: Vec<String> = BranchEnumerator::sweep(&git_read, &bases)
+    let enumerated = BranchEnumerator::sweep(&git_read, &bases);
+    let ahead = branch_state::refs_ahead_of_base(&git_read, enumerated.units(), &bases);
+    let also_mergeable: Vec<String> = enumerated
         .units()
         .iter()
         .filter(|u| u.branch != unit_branch)
+        // A branch carrying no commit of its own delivered nothing: it is
+        // reachable from its base because it was CUT from it, and `is_merged`
+        // cannot see that difference. Listing it here would tell the user their
+        // live work is ready to be pruned.
+        .filter(|u| ahead.contains(&u.branch))
         .filter(|u| is_merged(&main, &u.branch, &u.base))
         .map(|u| u.branch.clone())
         .collect();
@@ -619,12 +633,26 @@ pub(crate) fn report_at(start: &Path) -> Value {
 /// One repository's inventory: sweep its refs, measure ancestry locally, then
 /// let the PR port confirm. The provider is whatever `mustard.json` declares —
 /// this command names no CLI of its own.
+///
+/// Asked through the enumerator's FALLIBLE face, because this is a REPORTING
+/// consumer: a sweep git never answered, printed as an empty inventory, is the
+/// same lie as an unmeasured PR printed as "no PR" — and refusing that lie is
+/// why this module exists. A repository whose refs would not read says so.
 fn repo_inventory(repo: &Path, label: &str, bases: &[String], provider: &str) -> Value {
     let git_read = |args: &[&str]| git_out(repo, args);
-    let units = BranchEnumerator::sweep(&git_read, bases);
+    let Some(units) = BranchEnumerator::try_sweep(&git_read, bases) else {
+        return json!({
+            "repo": label,
+            "ok": false,
+            "reason": "refs-unreadable",
+            "units": [],
+            "awaitingPrune": [],
+        });
+    };
     let merged = branch_state::merged_refs(&git_read, bases);
+    let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), bases);
     let lookup = ProviderPrCli::new(repo, provider);
-    let states = StateClassifier::new(&lookup).classify(units.units(), &merged);
+    let states = StateClassifier::new(&lookup).classify(units.units(), &merged, &ahead);
     branch_state::report_value(label, &states)
 }
 
@@ -978,6 +1006,51 @@ mod tests {
         );
     }
 
+    /// The READING face at the COMMAND level: what `--report` actually prints.
+    ///
+    /// The other tests of this ritual classify through the shared module; this
+    /// one goes through `report_at`, because that is the face the field
+    /// measurement read — and what it read of a branch cut seconds earlier was
+    /// `awaiting-prune-local`, the unit the user was editing announced as
+    /// delivered. Both halves, so the assertions can fail: a unit that really
+    /// landed is in the same report, listed.
+    #[test]
+    fn report_lists_delivered_units_and_never_a_freshly_cut_one() {
+        let (_dir, main) = fixture();
+        // A unit that really landed: commits of its own, merged into the base,
+        // branch alive on both sides.
+        git(&main, &["checkout", "-b", "dev_landed"]);
+        std::fs::write(main.join("landed.txt"), "l").expect("file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "landed work"]);
+        git(&main, &["push", "origin", "dev_landed"]);
+        git(&main, &["checkout", "dev"]);
+        git(&main, &["merge", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
+        // And a unit shaped the way the work-branch gate opens every one: a
+        // branch at the base's tip with nothing committed on it yet.
+        git(&main, &["branch", "dev_justcut"]);
+
+        let v = report_at(&main);
+        let repo = &v["repos"][0];
+        assert_eq!(repo["ok"], json!(true), "the refs WERE read — an empty list would mean empty");
+        assert_eq!(repo["awaitingPrune"], json!(["dev_landed"]), "{v}");
+
+        let row = |branch: &str| -> Value {
+            repo["units"]
+                .as_array()
+                .expect("units")
+                .iter()
+                .find(|u| u["branch"] == json!(branch))
+                .cloned()
+                .expect("the report must carry a row per swept unit")
+        };
+        let cut = row("dev_justcut");
+        assert_eq!(cut["ancestry"], json!(true), "a fresh cut IS reachable from its base");
+        assert_eq!(cut["ahead"], json!(false), "…and carries no commit of its own");
+        assert_ne!(cut["state"], json!("awaiting-prune-local"), "cutting is not delivering: {cut}");
+        assert_eq!(row("dev_landed")["state"], json!("awaiting-prune"));
+    }
+
     /// AC-9 — the module's prose may not assert a merge method nobody measured.
     ///
     /// Both halves, so the assertion can fail: the doc no longer claims THIS
@@ -989,17 +1062,34 @@ mod tests {
     #[test]
     fn settle_doc_states_no_unmeasured_merge_method() {
         let src = include_str!("git_settle.rs");
-        let doc: String = src
+        // ALL the ritual's prose, not just its header: the header was cleaned
+        // while the merge gate's own docstring — the prose that answers "why ask
+        // the provider at all" and therefore the one this criterion is about —
+        // went on naming a method nobody measured, out of the assertion's reach.
+        // The production region only; this test's own doc necessarily quotes the
+        // claim it forbids.
+        let production = src.split("#[cfg(test)]").next().unwrap_or_default();
+        let doc: String = production
             .lines()
-            .take_while(|l| l.starts_with("//!"))
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("//!") || l.starts_with("///"))
             .collect::<Vec<_>>()
             .join("\n")
             .to_ascii_lowercase();
-        assert!(!doc.is_empty(), "the module doc must still be readable by this test");
+        assert!(doc.contains("exit ritual"), "the module header must be in range");
+        assert!(
+            doc.contains("100% gate"),
+            "…and so must the merge gate's own docstring — asserting over the header alone is \
+             how the claim survived the first time",
+        );
 
         // Needles assembled at runtime so writing the test does not plant the
         // forbidden spelling in the file under assertion.
-        for claim in [["squash", "-merges"].concat(), ["this repo squash", ""].concat()] {
+        for claim in [
+            ["squash", "-merges"].concat(),
+            ["this repo squash", ""].concat(),
+            ["squash", "-merge fallback"].concat(),
+        ] {
             assert!(
                 !doc.contains(&claim),
                 "the doc asserts an unmeasured merge method of this repository: {claim}",

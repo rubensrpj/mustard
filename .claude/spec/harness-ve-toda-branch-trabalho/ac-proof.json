@@ -36,6 +36,40 @@
       "stderr_excerpt": ""
     },
     {
+      "id": "AC-11",
+      "command": "cargo test -p mustard-rt a_branch_with_no_commits_ahead_is_never_awaiting_prune",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Compiling mustard-rt v0.1.0 (C:\\Atiz\\mustard\\apps\\rt)\n    Finished `test` profile [unoptimized + deb"
+    },
+    {
+      "id": "AC-12",
+      "command": "cargo test -p mustard-rt merged_unit_alive_only_on_the_remote_is_awaiting_prune",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s\n     Running unittests src\\lib."
+    },
+    {
       "id": "AC-2",
       "command": "cargo test -p mustard-rt settle_and_active_specs_share_one_enumerator",
       "expect": "[1-9][0-9]* passed",
@@ -173,5 +207,28 @@
     }
   ],
   "amendments": [],
-  "additions": []
+  "additions": [
+    {
+      "id": "AC-11",
+      "at": "2026-07-30T14:52:20.710Z",
+      "reason": "Review adversarial da raiz, achado CRITICO, remedido por mim em repo descartavel: uma branch cortada ha segundos, com zero commits, com HEAD de pe nela, sai awaiting-prune-local e entra no awaitingPrune. A causa e que --merged base e verdadeiro para toda branch que nao esta a frente da base. A statusline anuncia e o aviso de inicio de sessao oferece um comando que apagaria a branch de trabalho viva. Nenhum criterio existente nomeia essa forma.",
+      "statement": "when uma branch de trabalho nao tem nenhum commit a frente da sua base, then ela nunca e classificada como pendente de poda — cortar a branch nao e entregar trabalho, e o portao de branch corta toda unidade nova exatamente nessa forma",
+      "command": "cargo test -p mustard-rt a_branch_with_no_commits_ahead_is_never_awaiting_prune",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/harness-ve-toda-branch-trabalho/spec.md"
+      ]
+    },
+    {
+      "id": "AC-12",
+      "at": "2026-07-30T14:52:33.169Z",
+      "reason": "Os DOIS reviews acharam o mesmo defeito de forma independente e eu remedi no proprio repositorio: dev_ac-executor-uses-a-real-shell tem ancestry true e pr merged com a remota viva, e sai remote-only, fora do awaitingPrune. O verdict devolve RemoteOnly antes de testar merged_verified. O relatorio de campo contou seis REMOTAS pendentes e o agregado so cobre unidades com ref local — e exatamente a familia que a spec existe para enxergar.",
+      "statement": "when uma unidade cujo merge foi verificado perdeu a ref local mas a remota segue viva, then ela entra na lista de pendentes de poda em vez de sair apenas como so-no-remoto",
+      "command": "cargo test -p mustard-rt merged_unit_alive_only_on_the_remote_is_awaiting_prune",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/harness-ve-toda-branch-trabalho/spec.md"
+      ]
+    }
+  ]
 }
