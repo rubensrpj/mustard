@@ -6,19 +6,28 @@
 //!    settle is how a unit leaves the stage, not a base-side sweeper. From a
 //!    base it only runs with an explicit `--unit <branch>` (the finish step
 //!    of the dance below).
-//! 2. **100% merged or nothing**: the unit's branch must verifiably be on its
-//!    base — true ancestry first, the provider's merged-PR query as the
-//!    fallback. The fallback is not decoration: a portal that squashes on merge
-//!    rewrites the commits, so the unit's tip is no longer an ancestor of the
-//!    base even though the work landed. Which of the two answers first is a
-//!    property of the PROJECT's merge settings, measured per repository — this
-//!    doc asserts nothing about it. Not merged by EITHER →
-//!    `{ok:false, reason:"not-merged"}` and NOTHING is touched.
+//! 2. **100% merged or nothing**, measured per REF: EVERY ref that still carries
+//!    the unit — the local head and each `<remote>/<branch>` — must be contained
+//!    in `origin/<base>` now, or covered by the frozen head of a merged pull
+//!    request. The provider half is not decoration: a portal that rewrites the
+//!    commits when it merges leaves the unit's tip off the base although the work
+//!    landed. Which of the two answers first is a property of the PROJECT's merge
+//!    settings, measured per repository — this doc asserts nothing about it. What
+//!    neither half may do any more is vouch for a ref it did not measure: a
+//!    merged pull request whose branch was pushed to afterwards stops reading as
+//!    prunable. Not accounted for → `{ok:false, reason:"not-merged"}` and NOTHING
+//!    is touched.
 //! 3. **Back to an up-to-date base**: every local base advances — the one the
 //!    MAIN checkout sits on via `merge --ff-only` (clean tree only; the
-//!    harness-owned `.claude/worktrees/` dir is exempt from the dirty check),
+//!    harness-owned `.claude/worktrees/` dir and a moved GITLINK are exempt from
+//!    the dirty check, the latter because the advance itself manufactures it),
 //!    every other via `git fetch origin <base>:<base>`, which fast-forwards a
-//!    non-checked-out ref and refuses anything unsafe.
+//!    non-checked-out ref and refuses anything unsafe. Afterwards the submodules
+//!    that advance left behind are re-seated on the new pointer — but only those
+//!    standing DETACHED; one sitting on a branch is somebody's live work and is
+//!    reported untouched (`submodulePointers`). A FINISHING pass
+//!    (`settled`/`partial`) that leaves the unit's own base behind anyway answers
+//!    `{ok:false, reason:"base-behind"}` instead of burying the fact mid-JSON.
 //! 4. **Only then prune**: the unit's worktree is removed and its local
 //!    branch deleted (`-D` — merge is already proven), remote delete
 //!    attempted fail-open (GitHub auto-delete usually got there first). When
@@ -52,7 +61,8 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 use crate::shared::branch_state::{
-    self, base_of_branch, BranchEnumerator, ProviderPrCli, StateClassifier,
+    self, base_of_branch, BranchEnumerator, GitReachability, PrEvidence, PrLookup, ProviderPrCli,
+    StateClassifier,
 };
 
 /// Run `git` in `dir`, returning stdout on success.
@@ -319,44 +329,88 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
     }))
 }
 
-/// Whether `branch` already landed on `origin/<base>`: true ancestry first, the
-/// provider's merged-PR query as the fallback.
+/// Whether `branch` may leave the stage: EVERY ref that still carries it is
+/// contained in `origin/<base>` now, or covered by the frozen head of a merged
+/// pull request.
 ///
-/// The fallback covers a portal that REWRITES the commits when it merges — the
-/// unit's tip then stops being an ancestor of the base although the work landed.
-/// Which of the two answers first is a property of the PROJECT's merge settings,
-/// measured per repository; this doc asserts nothing about it.
+/// Delegates to the ONE per-ref predicate
+/// ([`branch_state::all_refs_accounted`]). The hand-written second copy this
+/// function used to be is exactly how the two sweeps diverged before: it asked
+/// the provider whether a pull request had EVER merged, compared no sha, and so
+/// answered "merged" forever after — including for a branch that had been pushed
+/// to since. The provider fallback survives the rewrite, because a portal that
+/// rewrites the commits when it merges is real; what it no longer does is
+/// authorise a prune on its own.
 ///
 /// This is the 100% gate — no evidence means NOT merged (conservative, never
 /// fail-open).
-fn is_merged(main: &Path, branch: &str, base: &str) -> bool {
-    if git_ok(main, &["merge-base", "--is-ancestor", branch, &format!("origin/{base}")]) {
-        return true;
+fn is_merged(main: &Path, branch: &str, base: &str, provider: &str) -> bool {
+    let git_read = |args: &[&str]| git_out(main, args);
+    let bases = [base.to_string()];
+    let swept = BranchEnumerator::sweep(&git_read, &bases);
+    let Some(unit) = swept.units().iter().find(|u| u.branch == branch) else {
+        // No ref carries it: nothing to prove and nothing to prune.
+        return false;
+    };
+    // Against the SERVER's base — settle has just fetched it, and a local base
+    // that lags would call an unintegrated ref settled.
+    let contained = branch_state::refs_merged_into(&git_read, &format!("origin/{base}"));
+    // The provider is asked ONLY when git did not already answer: a repository
+    // whose refs all sit on the base must not pay a network round-trip per unit
+    // to be told what `for-each-ref` just proved. (`also_mergeable` asks this
+    // once per work branch.)
+    let evidence = if unit.refnames().iter().all(|r| contained.contains(r)) {
+        PrEvidence::unqueried()
+    } else {
+        ProviderPrCli::new(main, provider).evidence_of(branch)
+    };
+    let reach = GitReachability::new(&git_read);
+    let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, &reach);
+    branch_state::all_refs_accounted(&verdicts)
+}
+
+/// The PATH of one `git status --porcelain` line, tolerating the caller's trim.
+///
+/// The format is `XY <path>`, but [`git_out`] trims the WHOLE stdout, so the
+/// first line arrives with its leading status char already gone whenever that
+/// char is a space — the same trap [`parse_submodule_paths`] documents. Splitting
+/// on the first space instead of slicing at a fixed offset survives it; slicing
+/// at `[3..]` turned ` M sub` into `ub` and matched nothing.
+fn status_path(line: &str) -> String {
+    line.trim_start()
+        .split_once(' ')
+        .map(|(_, rest)| rest.trim_start().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+/// Whether one `status --porcelain` line is dirt that must stop the ff-only
+/// advance. Two exemptions, both measured rather than assumed:
+///
+/// - the harness-owned `.claude/worktrees/` tree, which the ritual itself
+///   creates;
+/// - a moved GITLINK. The base advance MANUFACTURES that line — a submodule
+///   directory does not travel with the parent's branch — so counting it as dirt
+///   left the parent's base permanently behind, which is the field incident this
+///   exemption answers. Measured on real git 2.53: `merge --ff-only` accepts a
+///   gitlink-only working tree, staged or not, and fast-forwards even when the
+///   range moves the pointer itself.
+fn blocks_fast_forward(line: &str, submodules: &[String]) -> bool {
+    let path = status_path(line);
+    if path.is_empty() || path.starts_with(".claude/worktrees/") {
+        return false;
     }
-    Command::new("gh")
-        .args(["pr", "list", "--head", branch, "--state", "merged", "--limit", "1", "--json", "number", "--jq", ".[0].number"])
-        .current_dir(main)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false)
+    !submodules.iter().any(|sub| sub == &path)
 }
 
 /// Advance every local base: the MAIN checkout's own branch via ff-only merge
-/// (clean tree only, `.claude/worktrees/` exempt), every other base via the
-/// ff-safe `fetch origin <base>:<base>`. Returns (report-of-current,
-/// reports-of-others) — pure bookkeeping, all reversible.
-fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
+/// (clean tree only — see [`blocks_fast_forward`] for the two exemptions), every
+/// other base via the ff-safe `fetch origin <base>:<base>`. Returns
+/// (report-of-current, reports-of-others) — pure bookkeeping, all reversible.
+fn update_bases(main: &Path, bases: &[String], submodules: &[String]) -> (Value, Vec<Value>) {
     let current = git_out(main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let current_report = if bases.iter().any(|b| b == &current) {
         let clean = git_out(main, &["status", "--porcelain"])
-            .map(|s| {
-                !s.lines().any(|l| {
-                    l.len() > 3
-                        && !l[3..].trim_start().replace('\\', "/").starts_with(".claude/worktrees/")
-                })
-            })
+            .map(|s| !s.lines().any(|l| blocks_fast_forward(l, submodules)))
             .unwrap_or(false);
         if !clean {
             json!({ "branch": current, "updated": false, "reason": "dirty-tree" })
@@ -379,6 +433,50 @@ fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
     (current_report, others)
 }
 
+/// After the base advanced, bring each submodule's checkout back onto the
+/// gitlink the base now names — but ONLY where the submodule stands DETACHED.
+///
+/// Measured on real git 2.53: an unconditional `git submodule update` yanks a
+/// submodule sitting on a live work branch into detached HEAD (the branch
+/// survives; the checkout does not), which is the very symptom the exit ritual
+/// is supposed to stop producing. A submodule on ANY branch is therefore
+/// reported and left exactly where it is — its own `pr close` moves it.
+///
+/// One entry per submodule, in the sorted order [`parse_submodule_paths`]
+/// returns, so the report stays byte-stable.
+fn sync_submodule_pointers(main: &Path, submodules: &[String]) -> Vec<Value> {
+    submodules
+        .iter()
+        .map(|rel| {
+            let Some(head) = git_out(&main.join(rel), &["rev-parse", "--abbrev-ref", "HEAD"])
+            else {
+                // Unreadable is not detached: leave it alone and say so.
+                return json!({ "path": rel, "action": "unreadable" });
+            };
+            if head != "HEAD" {
+                return json!({ "path": rel, "action": "left-on-branch", "branch": head });
+            }
+            let updated = git_ok(main, &["submodule", "update", "--", rel]);
+            json!({ "path": rel, "action": if updated { "updated" } else { "update-failed" } })
+        })
+        .collect()
+}
+
+/// Whether a settle pass may answer `ok`.
+///
+/// A FINISHING shape (`settled`/`partial`) that left the unit's own base behind
+/// is NOT a success: the branch is gone and the tree still holds pre-merge file
+/// versions. `updated:false` buried mid-JSON is what let the field incident read
+/// as done — the caller reads `ok` first, so `ok` has to know.
+///
+/// `exit-and-rerun` is the deliberate exception: it is an INSTRUCTION, not a
+/// failure. Its own `action` field says what to do next, and the base advances
+/// on the rerun that follows — downgrading it would teach the caller to stop
+/// exactly where it must continue.
+fn pass_is_ok(action: &str, base_advanced: bool) -> bool {
+    !matches!(action, "settled" | "partial") || base_advanced
+}
+
 /// The settle pass — the testable core of [`run`]. `unit` = the work branch to
 /// settle; `None` reads it from the invocation directory's HEAD (and REFUSES
 /// when that is an integration base). Never panics.
@@ -396,8 +494,11 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         });
     };
     let (cfg_root, superproject) = config_root(&main);
-    let bases: Vec<String> =
-        mustard_core::ProjectConfig::load(&cfg_root).git.integration_bases().into_iter().collect();
+    let cfg = mustard_core::ProjectConfig::load(&cfg_root);
+    let bases: Vec<String> = cfg.git.integration_bases().into_iter().collect();
+    // The merge gate asks the provider the project DECLARES — this command names
+    // no CLI of its own, exactly like the reading face below.
+    let provider = cfg.git.provider.clone();
 
     // The user's contract: bare settle NEVER runs from a base — it is the
     // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
@@ -452,7 +553,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let fetched = git_ok(&main, &fetch_args);
 
     // THE gate: 100% merged or nothing happens.
-    if !is_merged(&main, &unit_branch, &base) {
+    if !is_merged(&main, &unit_branch, &base, &provider) {
         return json!({
             "ok": false,
             "reason": "not-merged",
@@ -478,8 +579,17 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let in_place = unit_entry.is_none() && main_head == unit_branch;
     let in_place_exited = in_place && git_ok(&main, &["checkout", &base]);
 
-    // Merged confirmed → bring every local base up to date.
-    let (base_report, other_bases) = update_bases(&main, &bases);
+    // The submodule table, read ONCE and used twice below: the base advance
+    // treats a moved gitlink as non-blocking dirt, and the pointer sync only
+    // touches the DETACHED ones.
+    let submodules = git_out(&main, &["submodule", "status"])
+        .map(|s| parse_submodule_paths(&s))
+        .unwrap_or_default();
+
+    // Merged confirmed → bring every local base up to date, then re-seat the
+    // submodules the advance just left behind (detached ones only).
+    let (base_report, other_bases) = update_bases(&main, &bases, &submodules);
+    let submodule_sync = sync_submodule_pointers(&main, &submodules);
 
     // Prune the unit. Inside its own worktree the process cannot remove its
     // floor — verify+update happened; hand back the finish step.
@@ -529,11 +639,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         json!({ "repo": ".", "branch": unit_branch, "settled": false, "reason": action })
     };
     let mut repos = vec![repo_report];
-    let submodules = git_out(&main, &["submodule", "status"])
-        .map(|s| parse_submodule_paths(&s))
-        .unwrap_or_default();
-    for rel in submodules {
-        if let Some(entry) = repo_settlement(&main.join(&rel), &rel, &unit_branch) {
+    for rel in &submodules {
+        if let Some(entry) = repo_settlement(&main.join(rel), rel, &unit_branch) {
             repos.push(entry);
         }
     }
@@ -571,12 +678,23 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         // cannot see that difference. Listing it here would tell the user their
         // live work is ready to be pruned.
         .filter(|u| ahead.contains(&u.branch))
-        .filter(|u| is_merged(&main, &u.branch, &u.base))
+        .filter(|u| is_merged(&main, &u.branch, &u.base, &provider))
         .map(|u| u.branch.clone())
         .collect();
 
-    json!({
-        "ok": true,
+    // Did the UNIT'S OWN base advance? `baseCheckout` describes whatever branch
+    // the main checkout happens to sit on, which is not always it — when settle
+    // finishes from another branch, the unit's base is one of `otherBases`.
+    let advanced = |report: &Value| report["updated"] == json!(true);
+    let base_advanced = if base_report["branch"] == json!(base) {
+        advanced(&base_report)
+    } else {
+        other_bases.iter().any(|b| b["branch"] == json!(base) && advanced(b))
+    };
+    let ok = pass_is_ok(action, base_advanced);
+
+    let mut report = json!({
+        "ok": ok,
         "unit": {
             "branch": unit_branch,
             "base": base,
@@ -591,9 +709,14 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         "complete": complete,
         "baseCheckout": base_report,
         "otherBases": other_bases,
+        "submodulePointers": submodule_sync,
         "alsoMergeable": also_mergeable,
         "fetched": fetched,
-    })
+    });
+    if !ok {
+        report["reason"] = json!("base-behind");
+    }
+    report
 }
 
 /// The READING pass — every work branch of every repo of the project, each with
@@ -652,7 +775,8 @@ fn repo_inventory(repo: &Path, label: &str, bases: &[String], provider: &str) ->
     let merged = branch_state::merged_refs(&git_read, bases);
     let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), bases);
     let lookup = ProviderPrCli::new(repo, provider);
-    let states = StateClassifier::new(&lookup).classify(units.units(), &merged, &ahead);
+    let reach = GitReachability::new(&git_read);
+    let states = StateClassifier::new(&lookup, &reach).classify(units.units(), &merged, &ahead);
     branch_state::report_value(label, &states)
 }
 
@@ -1097,11 +1221,26 @@ mod tests {
         }
 
         // The mechanism survives the sentence: the merge gate still asks the
-        // provider when ancestry says no.
-        let query = ["\"pr\", ", "\"list\""].concat();
+        // provider when containment says no. It asks through the ONE adapter,
+        // which is why the argv itself is no longer spelled here — both halves,
+        // so the assertion can fail if the mechanism is dropped rather than
+        // moved.
         assert!(
-            src.contains(&query),
-            "the provider fallback must still exist — a portal that squashes is real",
+            src.contains("ProviderPrCli::new(main, provider).evidence_of(branch)"),
+            "the merge gate must still consult the provider — a portal that rewrites the commits \
+             when it merges is real",
+        );
+        // Needle assembled at runtime so writing the test does not plant the
+        // spelling in the file under assertion.
+        let spawn_cli = ["Command::new(\"", "gh\")"].concat();
+        assert!(
+            !src.contains(&spawn_cli),
+            "the ritual must not launch the provider CLI a SECOND time — the hand-written copy \
+             is exactly how the two sweeps diverged",
+        );
+        assert!(
+            include_str!("../shared/branch_state.rs").contains("Command::new(GITHUB_CLI)"),
+            "…and the ONE home of that query must still hold it, or this test asserts nothing",
         );
     }
 
@@ -1269,6 +1408,160 @@ mod tests {
             json!(false),
             "`complete` must not claim the unit is gone while the parent holds it: {v}",
         );
+    }
+
+    /// The pruning evidence is per REF: a unit whose LOCAL head landed while its
+    /// remote ref moved on afterwards is NOT settled, and settle must touch
+    /// nothing.
+    ///
+    /// This is the shape the old gate could not see. It asked whether the branch
+    /// tip was an ancestor of the base, then whether a pull request had ever
+    /// merged — neither question looks at the other refs, and the name-keyed
+    /// merged set behind the report had the same hole. Both halves, so the
+    /// assertions can fail: the local head really IS contained (the evidence the
+    /// old measurement stopped at), and the moment the remote ref is back on
+    /// what the merge accounts for, the very same command settles the unit.
+    #[test]
+    fn settle_refuses_when_a_ref_moved_after_merge() {
+        let (_dir, main) = fixture();
+        git(&main, &["push", "origin", "dev_done"]);
+        let merged_tip = git_out(&main, &["rev-parse", "dev_done"]).expect("the merged tip");
+
+        // A commit made where it cannot move the LOCAL head — a detached
+        // sidecar — then pushed onto the unit's remote branch. That is the state
+        // a second machine (or a reviewer's fixup) leaves behind.
+        git(&main, &["worktree", "add", "--detach", ".claude/worktrees/sidecar", "dev_done"]);
+        let side = main.join(".claude").join("worktrees").join("sidecar");
+        std::fs::write(side.join("after.txt"), "after").expect("post-merge file");
+        git(&side, &["add", "-A"]);
+        git(&side, &["commit", "-m", "pushed after the merge"]);
+        git(&side, &["push", "origin", "HEAD:dev_done"]);
+        git(&main, &["fetch", "origin"]);
+        git(&main, &["worktree", "remove", side.to_string_lossy().as_ref()]);
+
+        let git_read = |args: &[&str]| git_out(&main, args);
+        let contained = branch_state::refs_merged_into(&git_read, "origin/dev");
+        assert!(
+            contained.contains("refs/heads/dev_done"),
+            "the local head really landed — a name-keyed set would have stopped here: {contained:?}",
+        );
+        assert!(
+            !contained.contains("refs/remotes/origin/dev_done"),
+            "…and the remote ref really carries commits the merge never saw: {contained:?}",
+        );
+
+        let wt = main.join(".claude").join("worktrees").join("dev_done");
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["reason"], json!("not-merged"), "a ref beyond the merge is not settled: {v}");
+        assert!(wt.exists(), "nothing touched: the worktree survives");
+        assert!(
+            !git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
+            "nothing touched: the local branch survives",
+        );
+        assert!(
+            !git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"])
+                .unwrap_or_default()
+                .is_empty(),
+            "nothing touched: the remote branch — the one carrying the extra commits — survives",
+        );
+
+        // The other half: put the remote ref back on what the merge accounts
+        // for, and the same command settles. Only the refs changed.
+        git(&main, &["update-ref", "refs/remotes/origin/dev_done", &merged_tip]);
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+    }
+
+    /// A moved GITLINK is not dirt that may stop the base advance — the advance
+    /// itself manufactures it, because a submodule directory does not travel
+    /// with the parent's branch.
+    ///
+    /// Both halves, so the exemption cannot become a blanket "never dirty": the
+    /// line-level rule keeps refusing a real file change, and a repository whose
+    /// only dirt is a real file still reports `dirty-tree`.
+    #[test]
+    fn gitlink_only_dirt() {
+        // The line-level rule, on the shape `git_out`'s trim really delivers:
+        // the leading SPACE status char is gone from the first line.
+        let subs = vec!["sub".to_string()];
+        assert!(!blocks_fast_forward("M sub", &subs), "trimmed gitlink line: {:?}", status_path("M sub"));
+        assert!(!blocks_fast_forward(" M sub", &subs), "untrimmed gitlink line");
+        assert!(!blocks_fast_forward("M  sub", &subs), "STAGED gitlink line");
+        assert!(!blocks_fast_forward("?? .claude/worktrees/dev_x/f", &subs), "harness-owned tree");
+        assert!(blocks_fast_forward("M a.txt", &subs), "a real file change is still dirt");
+        assert!(blocks_fast_forward(" M other", &subs), "a path no submodule claims is still dirt");
+
+        // And end to end: the submodule sits on its own work branch, so the
+        // parent reports a moved gitlink — and the base still advances.
+        let (_dir, main) = fixture_with_submodule();
+        let status = git_out(&main, &["submodule", "status"]).expect("submodule status");
+        assert!(!status.is_empty(), "the fixture must carry a submodule: {status:?}");
+        let dirt = git_out(&main, &["status", "--porcelain"]).expect("status");
+        assert!(dirt.contains("sub"), "the fixture must reproduce the gitlink dirt: {dirt:?}");
+
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(
+            v["baseCheckout"]["updated"],
+            json!(true),
+            "gitlink-only dirt must not block the ff-only advance: {v}",
+        );
+        let local = git_out(&main, &["rev-parse", "dev"]).expect("local base");
+        let remote = git_out(&main, &["rev-parse", "origin/dev"]).expect("remote base");
+        assert_eq!(local, remote, "the base really advanced");
+        // The submodule is on a BRANCH, so the pointer sync reports it and
+        // leaves it exactly where it is.
+        assert_eq!(
+            v["submodulePointers"],
+            json!([{ "path": "sub", "action": "left-on-branch", "branch": "dev_done" }]),
+            "{v}",
+        );
+        assert_eq!(
+            git_out(&main.join("sub"), &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("dev_done"),
+            "a submodule on a branch is never yanked into detached HEAD",
+        );
+
+        // The other half: a real file change still stops the advance.
+        let (_dir2, main2) = fixture_with_submodule();
+        std::fs::write(main2.join("a.txt"), "edited").expect("dirty file");
+        let v = settle_at(&main2, Some("dev_done"));
+        assert_eq!(v["baseCheckout"]["reason"], json!("dirty-tree"), "{v}");
+        assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
+    }
+
+    /// A FINISHING pass that left the unit's own base behind must not answer
+    /// `ok:true`. The field incident read as a success while `updated:false` sat
+    /// buried mid-JSON and the tree still held pre-merge file versions.
+    ///
+    /// Both halves: the same fixture with a clean tree answers `ok:true`, so the
+    /// downgrade is caused by the base and not by settling; and the rule itself
+    /// exempts `exit-and-rerun`, which is an instruction rather than a failure.
+    #[test]
+    fn base_behind_downgrades_ok() {
+        let (_dir, main) = fixture();
+        // Dirt the exemptions do not cover, so the ff-only advance cannot run.
+        std::fs::write(main.join("a.txt"), "edited").expect("dirty file");
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("settled"), "the prune itself finished: {v}");
+        assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
+        assert_eq!(v["ok"], json!(false), "a finishing pass over a base left behind: {v}");
+        assert_eq!(v["reason"], json!("base-behind"), "{v}");
+
+        // Clean tree, same shape: the base advances and the pass IS ok.
+        let (_dir2, main2) = fixture();
+        let v = settle_at(&main2, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["reason"], json!(null), "a successful pass carries no reason: {v}");
+
+        // The rule, on the arm no fixture can reach: whether the process sits
+        // inside the unit's own worktree is a property of the running process's
+        // cwd, so the exemption is asserted where it is decided.
+        assert!(pass_is_ok("exit-and-rerun", false), "an instruction is not a failure");
+        assert!(!pass_is_ok("settled", false));
+        assert!(!pass_is_ok("partial", false));
+        assert!(pass_is_ok("settled", true));
     }
 
     /// The single-repo project keeps exactly one entry and a `complete` that

@@ -135,7 +135,22 @@ pub fn run(parent: Option<&str>, subproject: Option<&str>, phase: Option<&str>) 
         let merge_base = git(&cwd, &["merge-base", parent, "HEAD"]);
         if !merge_base.is_empty() {
             let range = format!("{merge_base}..HEAD");
-            let log = git_scoped(&cwd, &["log", "--oneline", &range], subproject);
+            // Read the range with `rev-list`, not `log`.
+            //
+            // Measured on this repository (`b33d4264~3..b33d4264`): the Golden
+            // Rule's `rtk` prefix FILTERS `git log` and drops merge commits —
+            // 549 bytes against git's own 726 — so a range made of merges
+            // renders EMPTY here, indistinguishable from "nothing happened".
+            // `rev-list` passes through the SAME wrapper byte-identical, which
+            // is why the swap is the fix and dropping the prefix is not.
+            // `--pretty=oneline --abbrev-commit` is what `--oneline` expands to,
+            // and `--no-commit-header` suppresses the `commit <sha>` line
+            // `--pretty` would otherwise add, so the rendered shape is unchanged.
+            let log = git_scoped(
+                &cwd,
+                &["rev-list", "--pretty=oneline", "--abbrev-commit", "--no-commit-header", &range],
+                subproject,
+            );
             if !log.is_empty() {
                 parts.push(format!("## Commits since {parent}"));
                 let commits: Vec<&str> = log.lines().filter(|l| !l.is_empty()).collect();
@@ -175,6 +190,37 @@ pub fn run(parent: Option<&str>, subproject: Option<&str>, phase: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commit range is read with `rev-list`, never with `log`.
+    ///
+    /// Measured on the real repository: the Golden Rule's `rtk` prefix FILTERS
+    /// `git log` and drops merge commits — 549 bytes against git's own 726 on
+    /// `b33d4264~3..b33d4264` — so a range made of merges renders EMPTY here,
+    /// indistinguishable from "nothing happened in this range". `rev-list`
+    /// passes through the same wrapper byte-identical, which is why the swap is
+    /// the fix and dropping the Golden Rule is not.
+    ///
+    /// Pinned at the SOURCE on purpose: the defect lives in the wrapper, and CI
+    /// has no `rtk` on `PATH` — a runtime assertion would pass everywhere the
+    /// bug cannot be reproduced, which is the same as asserting nothing. Both
+    /// halves, so it can fail: the range argv must carry the rev-list spelling,
+    /// and the filtered one must be gone from the production region.
+    #[test]
+    fn diff_context_reads_ranges_via_rev_list() {
+        let src = include_str!("diff_context.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or_default();
+        assert!(production.contains("merge-base"), "the range read must still be in scope");
+        for flag in ["\"rev-list\"", "\"--pretty=oneline\"", "\"--no-commit-header\""] {
+            assert!(production.contains(flag), "the range read must carry {flag}");
+        }
+        // Needle assembled at runtime so writing this test does not plant the
+        // forbidden spelling in the region it asserts over.
+        let filtered = ["\"log\", ", "\"--oneline\""].concat();
+        assert!(
+            !production.contains(&filtered),
+            "that argv is the one rtk filters — merge commits vanish from the range",
+        );
+    }
 
     #[test]
     fn analyze_phase_is_a_silent_no_op() {
@@ -239,8 +285,12 @@ mod tests {
         run(&["add", "sub2/changed.txt"]);
         run(&["commit", "-m", "sub2-only commit"]);
         // Sanity: `git_scoped` with `Some("sub1")` against `main..HEAD` must
-        // only mention sub1 paths in both `log` and `diff --stat`.
-        let log = git_scoped(cwd, &["log", "--oneline", "main..HEAD"], Some("sub1"));
+        // only mention sub1 paths in both the range read and `diff --stat`.
+        let log = git_scoped(
+            cwd,
+            &["rev-list", "--pretty=oneline", "--abbrev-commit", "--no-commit-header", "main..HEAD"],
+            Some("sub1"),
+        );
         // Either git accepted the scope, or it failed and returned "" (fail-open).
         if !log.is_empty() {
             assert!(

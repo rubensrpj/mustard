@@ -8,8 +8,8 @@
 - Ephemeral paths (single home)
 - Auto-stash protocol
 - sync / push per-repo procedures
-- Commit: submodule steps
-- PR per repo
+- Commit: submodule steps (gitlink conditioned on reachability + the bump step)
+- PR per repo (parent as draft while a submodule PR is open)
 - Close per repo
 - Final status report
 - Forbidden operations
@@ -127,30 +127,79 @@ rtk git -C "<SUB_ABS>" add $SCOPE_EXPR && rtk git -C "<SUB_ABS>" commit -m "<mes
 
 `staged` scope → skip the `add`. The commit lands on the work branch, never the base.
 
-### Then return to the parent — the gitlink step (MANDATORY)
+### Then return to the parent — the gitlink step (CONDITIONED on reachability)
 
 Once every submodule agent has committed, the parent's pointer to each submodule is **stale**: the
 parent still references the OLD commit, and that shows up as a lone ` M <sub>` line — the "only
-dirt left". Re-sample and stage it **explicitly**; never rely on `add -A` catching it as a side
-effect (a `staged`/pattern scope misses it entirely, and the pre-commit analysis at the top of this
-section ran BEFORE the submodule commits, so it never saw the moved pointer):
+dirt left". The reflex is to stage it and be done. That reflex records a pointer to a
+**work-branch** SHA that exists nowhere on the submodule's base — by construction one merge behind
+the real target — which is precisely why the PR section below orders the submodule to merge FIRST.
+The two instructions cannot both be obeyed, so the stage is **conditioned**, not mandatory.
+
+Ask git the reachability question — the same question finding 1 asks about a branch, asked here
+about a commit. Never rely on `add -A` catching the pointer as a side effect (a `staged`/pattern
+scope misses it entirely, and the pre-commit analysis at the top of this section ran BEFORE the
+submodule commits, so it never saw the moved pointer):
 
 ```bash
-rtk git submodule status; \
-rtk git add -- "<SUB_PATH>" ["<SUB_PATH>"…]
+rtk git submodule status
+SUB_SHA=$(rtk git -C "<SUB_ABS>" rev-parse HEAD)
+if rtk git -C "<SUB_ABS>" merge-base --is-ancestor "$SUB_SHA" "origin/$SUB_BASE"; then
+  rtk git add -- "<SUB_PATH>"          # already on the submodule's base — safe to record
+else
+  echo "  [pending-bump] <SUB_PATH> — $SUB_SHA is not yet on origin/$SUB_BASE"
+fi
 ```
 
-Then include it in the parent's commit. **The parent may have nothing of its own to change and
-STILL owe this commit — the moved gitlink IS the change**; in that case commit it alone
-(`chore(submodule): sincroniza ponteiro do submodulo`). Skipping it leaves the super-repo pointing
-at a commit that no longer reflects the submodule's published work.
+**Reachable** → include it in the parent's commit. **The parent may have nothing of its own to
+change and STILL owe this commit — the moved gitlink IS the change**; in that case commit it alone
+(`chore(submodule): sincroniza ponteiro do submodulo`).
+
+**Not reachable** → do NOT stage it. The parent commits what is its own, and the lone ` M <sub>`
+that remains is a NAMED pending state, `[pending-bump]`, not leftover dirt and not a missed step.
+It is cleared by the bump step below, after the submodule PR merges.
+
+### The bump step — after the submodule PR merges
+
+The bump is the parent commit that moves the pointer to a commit **already present on the
+submodule's base**. It runs in `pr close`, between the submodule's settle and the parent's, and
+BEFORE the parent PR merges — the parent PR sits as a draft until it lands (see the PR section).
+
+```bash
+rtk git -C "<SUB_ABS>" fetch origin "$SUB_BASE"
+rtk git submodule status
+rtk git add -- "<SUB_PATH>" && rtk git commit -m "chore(submodule): bump pointer" && rtk git push
+```
+
+Re-sample first: after the submodule PR merged, its base carries the commit (or the squash of it),
+and that is the SHA the parent must record. Then `rtk gh pr ready` on the parent PR — see the close
+section.
 
 ## PR per repo — submodules before parent
 
-`/git pr` opens ONE PR per repo, **submodules FIRST**: the parent commit bumps each submodule's gitlink to a submodule-work-branch commit, so merging the submodule PR first lands that commit on its base and the parent pointer never dangles.
+`/git pr` opens ONE PR per repo, **submodules FIRST**: the submodule's PR is what lands its commit on its own base, and only then can the parent record a pointer that does not dangle. Until it merges the parent carries a `[pending-bump]`, not a gitlink — and its own PR stays a draft so nothing can merge past that gap.
 
 1. Each submodule ahead of its base (`rtk git -C <SUB_ABS> rev-parse "$SUB_BASE..$SUB_WORK"` non-empty): `( cd "<SUB_ABS>" && rtk gh pr create --base "$SUB_BASE" --head "$SUB_WORK" --fill )`. The `( … )` subshell isolates the `cd`; the "no `cd`" rule targets `git`, not `gh` (which reads the repo from cwd). Existing PR → print its URL.
-2. Then the parent — `rtk gh pr create --base "$BASE" --head <parent-work-branch> --fill`.
+2. Then the parent — **as a DRAFT while ANY submodule PR from step 1 is still open**:
+
+   ```bash
+   rtk gh pr create --base "$BASE" --head <parent-work-branch> --fill \
+     --draft --body "Blocked by <sub PR url>"
+   ```
+
+   Ordering alone never blocked anything: "submodules before parent" governs PR OPENING, and on
+   GitHub the two PRs are siblings that anyone can merge in either order — the bump window is the
+   delta between the two merges. GitHub's own rule closes it: **a draft pull request cannot be
+   merged** until it is marked ready. That is the mechanical half the sentence lacked.
+
+   Two consequences to expect, both documented by GitHub: a draft PR does **not** automatically
+   request review from code owners (CODEOWNERS) — those requests fire when the draft is marked
+   ready, so silence from reviewers before that is the design, not a misconfiguration; and marking
+   it ready is `rtk gh pr ready [<number>|<url>|<branch>]`, which runs in the close ritual after
+   the bump lands (`--undo` puts it back to draft).
+
+   Every submodule PR already merged (or no submodule carries the unit) → open the parent normally,
+   `--fill`, no draft.
 3. No return to base — every repo stays live on its work branch; a later `push`/`pr` re-targets the SAME PR until `pr close`.
 
 A base→base `pr` opens its single PR only — no push, no submodule branches, no return.
@@ -160,8 +209,16 @@ A base→base `pr` opens its single PR only — no push, no submodule branches, 
 `pr close` is the exit ritual of ONE unit, and the unit lives in every repo it touched. It closes the same way it opened: **submodules FIRST**, then the parent — merging the submodule PR first is what keeps the parent's gitlink pointing at a commit that exists on the submodule's base.
 
 1. **Each submodule whose own PR already merged** — from `<SUB_ABS>`: `mustard-rt run git-settle --unit "$SUB_WORK"` (confirm merged, advance `$SUB_BASE`, delete the local + remote branch). Not merged → it refuses and touches NOTHING; merge that PR first. A submodule carries no `mustard.json`, so settle reads the bases from the superproject's `git.flow` — a `$SUB_BASE` that flow never names is refused with `no-base-prefix`, and the refusal prints the root, the config root and the bases it knows.
-2. **Then the parent** — the `pr close` procedure in `${CLAUDE_PLUGIN_ROOT}/commands/git.md`.
-3. **Read the report, not the action.** `git-settle` acts ONLY on the repo it was pointed at, but `repos` carries one entry per repo of the unit (`settled` + `reason`) and `complete` stays false while any repo still holds it. `complete:false` with a submodule entry means step 1 was skipped for that repo — go do it; a bare `"action":"settled"` no longer means the unit is gone.
+2. **Then the bump + ready, in the parent — before the parent settles.** The submodule commit now
+   lives on its base, so the pointer the commit step left as `[pending-bump]` finally has a
+   reachable target. Run the bump step above (re-sample, commit the pointer ALONE, push), then
+   `rtk gh pr ready` on the parent PR — it opened as a draft precisely so it could not merge ahead
+   of the submodule, and `ready` is also what requests the code owners. Skipping this leaves the
+   super-repo pointing at a work-branch commit that the submodule's branch deletion is about to
+   make unreachable.
+3. **Then the parent** — the `pr close` procedure in `${CLAUDE_PLUGIN_ROOT}/commands/git.md`, run
+   after the parent PR merges.
+4. **Read the report, not the action.** `git-settle` acts ONLY on the repo it was pointed at, but `repos` carries one entry per repo of the unit (`settled` + `reason`) and `complete` stays false while any repo still holds it. `complete:false` with a submodule entry means step 1 was skipped for that repo — go do it; a bare `"action":"settled"` no longer means the unit is gone.
 
 ## Final status report
 
@@ -179,11 +236,25 @@ rtk git status --short | while IFS= read -r line; do
 done
 ```
 
-Legend: `[ephemeral]` runtime state, safe to ignore; `[pending]` real change still in the worktree; `[untracked]` new file not yet added. Omit empty categories; all repos clean → `All repos clean.`
+Legend: `[ephemeral]` runtime state, safe to ignore; `[pending]` real change still in the worktree; `[untracked]` new file not yet added; `[pending-bump]` a submodule pointer deliberately NOT staged because its SHA is not yet on the submodule's base. Omit empty categories; all repos clean → `All repos clean.`
 
-**Read a lone ` M <submodule-path>` in the PARENT as a MISSED gitlink step**, not as ordinary
-pending work: it means the submodule committed but the parent was never re-pointed. Go back and run
-the gitlink step above before declaring the action done.
+**A lone ` M <submodule-path>` in the PARENT has TWO readings, and the submodule's PR decides
+which.** Do not classify it as ordinary pending work:
+
+- The submodule PR is still OPEN (or was never opened) → `[pending-bump]`. This is the expected
+  state after a conditioned gitlink step: recording the pointer now would name a work-branch SHA
+  that exists nowhere on the submodule's base. Leave it. The bump step clears it in `pr close`.
+- The submodule PR already MERGED → a MISSED step. Its commit is on the base now, so the pointer
+  has a reachable target and nothing justifies the parent still aiming at the old one. Run the
+  gitlink step (or the bump step, if the close is already under way) before declaring the action
+  done.
+
+One command separates them — the same reachability question, never a guess:
+
+```bash
+rtk git -C "<SUB_ABS>" merge-base --is-ancestor "$(rtk git -C "<SUB_ABS>" rev-parse HEAD)" "origin/$SUB_BASE" \
+  && echo "reachable → stage it" || echo "[pending-bump]"
+```
 
 ## Forbidden operations
 
