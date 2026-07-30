@@ -27,7 +27,12 @@ Uma única fonte de verdade sobre branches: o enumerador varre refs locais e rem
 - `apps/rt/src/shared/branch_state.rs`
 - `apps/rt/src/commands/git_settle.rs`
 - `apps/rt/src/commands/git_cli.rs`
+- `apps/rt/src/shared/mod.rs`
 
 ## Reality Obligations
 
 - **RO-1.1** — Consultar a documentação oficial do CLI do provedor configurado para a forma EXATA da consulta de PRs mergeados por branch de origem e do JSON que ela devolve — o adaptador da porta não deve adivinhar nomes de campo nem o comportamento quando não há resultado.
+
+<!-- wikilinks-footer-start -->
+- [spec.harness-ve-toda-branch-trabalho](spec.md)
+<!-- wikilinks-footer-end -->
