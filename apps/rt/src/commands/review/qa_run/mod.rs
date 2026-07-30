@@ -61,6 +61,21 @@ pub(crate) struct AcItem {
     /// line, mirroring the `Command:` lookahead. Exposed so `analyze_validation`
     /// can warn about a test-runner AC that declares no evidence regex.
     pub(crate) expect: Option<String>,
+    /// The optional `Control:` command — a command that must come back GREEN
+    /// against the tree AS IT IS, proving the criterion's expression can match
+    /// something at all. `None` ⇒ the criterion declares no control, which
+    /// `ac-negative-check` reports as a WARN naming the id.
+    ///
+    /// It answers the question the red pass cannot: a broken regex, a shell
+    /// incompatibility, a missing binary and a quoting error all come back red,
+    /// and so does an honest criterion whose behaviour is merely absent. A
+    /// control that must be green TODAY separates them at PLAN time, where the
+    /// remedy costs one edit.
+    ///
+    /// Parsed off the `Command:` line or a following line, by the SAME
+    /// last-occurrence + backtick rules `Command:` and `Expect:` use — one
+    /// marker reader, three markers, no second parser.
+    pub(crate) control: Option<String>,
 }
 
 /// One AC execution outcome.
@@ -195,17 +210,20 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
         // optional `Expect:` may ride the same line after the command.
         if let Some(command) = extract_command(after_sep) {
             let expect = extract_expect(after_sep);
-            items.push(AcItem { id, statement: statement_of(after_sep), command, expect });
+            let control = extract_control(after_sep);
+            items.push(AcItem { id, statement: statement_of(after_sep), command, expect, control });
             i += 1;
             continue;
         }
         // Lookahead: scan following lines for the first `Command:` marker and
-        // the optional `Expect:` marker, stopping at the next AC header, a
-        // blank-line gap, or a `## ` heading. `Expect:` may ride the command's
-        // line or sit on a following line before the block ends.
+        // the optional `Expect:` / `Control:` markers, stopping at the next AC
+        // header, a blank-line gap, or a `## ` heading. Either optional marker
+        // may ride the command's line or sit on a following line before the
+        // block ends.
         let mut j = i + 1;
         let mut command = None;
         let mut expect = None;
+        let mut control = None;
         while j < lines.len() {
             let line = lines[j];
             if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
@@ -215,18 +233,25 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
             if command.is_none() {
                 if let Some(cmd) = extract_command(line) {
                     command = Some(cmd);
-                    expect = extract_expect(line); // same-line `Expect:`, if any
+                    // Same-line optional markers, if any.
+                    expect = extract_expect(line);
+                    control = extract_control(line);
                 }
-            } else if expect.is_none() {
-                expect = extract_expect(line); // standalone `Expect:` line
+            } else {
+                if expect.is_none() {
+                    expect = extract_expect(line); // standalone `Expect:` line
+                }
+                if control.is_none() {
+                    control = extract_control(line); // standalone `Control:` line
+                }
             }
-            if command.is_some() && expect.is_some() {
-                break; // both captured — nothing more to scan in this block
+            if command.is_some() && expect.is_some() && control.is_some() {
+                break; // all three captured — nothing more to scan in this block
             }
             j += 1;
         }
         if let Some(command) = command {
-            items.push(AcItem { id, statement: statement_of(after_sep), command, expect });
+            items.push(AcItem { id, statement: statement_of(after_sep), command, expect, control });
         }
         // Resume after the header line; the next header (if any) is re-parsed
         // on its own iteration regardless of where the lookahead landed.
@@ -247,7 +272,8 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     let (id, after_sep) = parse_ac_header(line)?;
     let command = extract_command(after_sep)?;
     let expect = extract_expect(after_sep);
-    Some(AcItem { id, statement: statement_of(after_sep), command, expect })
+    let control = extract_control(after_sep);
+    Some(AcItem { id, statement: statement_of(after_sep), command, expect, control })
 }
 
 /// Parse the AC **header** part of a line: the bullet, an OPTIONAL `[ ]`/`[x]`
@@ -404,6 +430,83 @@ fn extract_command(fragment: &str) -> Option<String> {
 /// [`extract_command`]; `None` when no `Expect:` marker is present.
 fn extract_expect(fragment: &str) -> Option<String> {
     extract_marker(fragment, "expect:")
+}
+
+/// Extract the optional `Control:` command from a fragment. Same
+/// last-occurrence + backtick-quoting rules as [`extract_command`]; `None` when
+/// no `Control:` marker is present.
+fn extract_control(fragment: &str) -> Option<String> {
+    extract_marker(fragment, "control:")
+}
+
+/// `true` when `text` still carries an UNFILLED skeleton marker — the
+/// `<…>` token the spec drafter emits for a criterion nobody has authored yet.
+///
+/// The ONE spelling of that question in the crate. It replaces a bare
+/// `text.contains('<')`, which was spelled independently in four places and
+/// refused a criterion for carrying a JSX tag, a generic, or a shell
+/// redirection — none of which is an unfilled placeholder, and each of which
+/// left a real criterion permanently unrun.
+///
+/// The rule, stated in full. A span is a skeleton marker when:
+///
+/// 1. its `<` sits at the start of `text` or directly after whitespace — this
+///    is what a placeholder looks like and what `Vec<String>` /
+///    `HashMap<K, V>` never do, since their `<` follows an identifier;
+/// 2. a `>` closes it before any further `<`;
+/// 3. the enclosed text is non-empty and neither starts nor ends with
+///    whitespace — `cmd < in > out` encloses `" in "` and is redirection, not a
+///    placeholder;
+/// 4. the `<` is OUTSIDE any quoted run — `rg -q '<div>' src/` names an HTML
+///    tag it is searching FOR, and refusing it would refuse the criterion for
+///    doing its job.
+///
+/// Pure, total, never panics. Reads a STATEMENT as readily as a command: the
+/// drafter seeds both (`when <the new behaviour is invoked>, …`), and the
+/// close-time capability synthesis has to drop both.
+pub(crate) fn is_skeleton(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    let mut prev_is_boundary = true; // start of string counts as a boundary
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+                prev_is_boundary = false;
+                i += 1;
+            }
+            None => {
+                if b == b'\'' || b == b'"' || b == b'`' {
+                    quote = Some(b);
+                    prev_is_boundary = false;
+                    i += 1;
+                    continue;
+                }
+                if b == b'<' && prev_is_boundary {
+                    // Rule 2: the closing `>` must arrive before another `<`.
+                    let rest = &text[i + 1..];
+                    let close = rest.find('>');
+                    let next_open = rest.find('<');
+                    if let Some(close) = close {
+                        if next_open.is_none_or(|open| close < open) {
+                            let inner = &rest[..close];
+                            // Rule 3: a non-empty, non-padded span.
+                            if !inner.is_empty() && inner.trim() == inner {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                prev_is_boundary = b.is_ascii_whitespace();
+                i += 1;
+            }
+        }
+    }
+    false
 }
 
 /// Extract the AC **statement** (the description) from the text after the id
@@ -959,6 +1062,59 @@ mod tests {
         let section = extract_ac_section(md).unwrap();
         assert!(section.contains("AC-1"));
         assert!(!section.contains("Files"));
+    }
+
+    /// The `Control:` marker parses beside `Command:` and `Expect:`, in BOTH AC
+    /// shapes and in both marker positions — through the one parser, since a
+    /// second reader for the third marker is exactly the drift the other two
+    /// were consolidated to avoid.
+    #[test]
+    fn parses_the_control_marker_beside_command_and_expect() {
+        // Multi-line drafter form, each marker on its own line.
+        let items = parse_ac_items(
+            "- **AC-1** — when x, then y.\n  Command: `cargo test foo`\n  \
+             Expect: `1 passed`\n  Control: `cargo test bar`\n",
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].command, "cargo test foo");
+        assert_eq!(items[0].expect.as_deref(), Some("1 passed"));
+        assert_eq!(items[0].control.as_deref(), Some("cargo test bar"));
+
+        // Historical one-line form, all three markers on the AC line.
+        let one = parse_ac_line(
+            "- [ ] AC-2: x — Command: `a` Expect: `b` Control: `c`",
+        )
+        .unwrap();
+        assert_eq!((one.command.as_str(), one.expect.as_deref(), one.control.as_deref()),
+                   ("a", Some("b"), Some("c")));
+
+        // Two-sided: a criterion that declares no control reads as declaring
+        // none — never as declaring an empty one.
+        let none = parse_ac_items("- **AC-3** — z.\n  Command: `cd .`\n");
+        assert_eq!(none[0].control, None, "an absent marker is absent, not empty");
+    }
+
+    /// `is_skeleton` separates an UNFILLED marker from the three shapes a bare
+    /// `contains('<')` refused: a generic, an HTML/JSX tag inside a search
+    /// pattern, and a shell redirection.
+    ///
+    /// Two-sided by construction — the accepting half cannot pass by the
+    /// predicate answering `false` for everything, and the rejecting half
+    /// cannot pass by it answering `true` for everything.
+    #[test]
+    fn placeholder_matches_the_skeleton_token_not_any_angle_bracket() {
+        // Placeholders — the drafter's own seeds, and a hand-written one.
+        assert!(is_skeleton("<runnable command that verifies this criterion>"));
+        assert!(is_skeleton("<comando executável que verifica este critério>"));
+        assert!(is_skeleton("cargo test -p mustard-rt <test-name>"));
+        assert!(is_skeleton("when <the new behaviour is invoked>, then it holds"));
+
+        // NOT placeholders — every one of these was refused unrun before.
+        assert!(!is_skeleton("cargo test -p mustard-rt vec_of::<String>"), "a generic");
+        assert!(!is_skeleton("rg -q '<div>' src/app.tsx"), "an HTML tag being searched FOR");
+        assert!(!is_skeleton("sort < in.txt > out.txt"), "shell redirection");
+        assert!(!is_skeleton("cargo build"), "a command with no angle bracket at all");
+        assert!(!is_skeleton("cmd <<EOF"), "a heredoc opener closes nothing");
     }
 
     #[test]

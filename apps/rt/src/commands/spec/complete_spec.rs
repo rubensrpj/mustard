@@ -422,9 +422,16 @@ fn synthesize_capability_from_acs(cwd: &Path, spec: &str, ts: &str) {
     };
     let scenarios: Vec<Scenario> = crate::commands::review::qa_run::parse_ac_items(&section)
         .into_iter()
-        // Skip unfilled skeletons — an `<…>` command/statement is not a real
-        // behaviour, so it must never enter the durable record.
-        .filter(|it| !it.command.contains('<') && !it.statement.contains('<'))
+        // Skip unfilled skeletons — an `<…>` marker is not a real behaviour, so
+        // it must never enter the durable record. Through the SINGLE predicate
+        // (`qa_run::is_skeleton`): the bare `contains('<')` this replaces also
+        // dropped every criterion whose command carried a generic, a JSX tag or
+        // a shell redirection, silently thinning the capability doc that is
+        // supposed to be the durable record of what the spec verified.
+        .filter(|it| {
+            !crate::commands::review::qa_run::is_skeleton(&it.command)
+                && !crate::commands::review::qa_run::is_skeleton(&it.statement)
+        })
         .map(|it| {
             let (when, then) = split_when_then(&it.statement);
             Scenario { name: it.id.clone(), when, then, command: Some(it.command.clone()) }

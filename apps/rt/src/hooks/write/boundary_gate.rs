@@ -354,7 +354,12 @@ fn pattern_matches(rel: &str, pattern: &str) -> bool {
 }
 
 /// Match `r` against a glob `p` (`*` = one path segment, `**` = anything).
-fn glob_match(r: &str, p: &str) -> bool {
+///
+/// `pub(crate)` so the wave traceability pass decides whether a DECLARED glob
+/// covers a path a criterion names with THIS matcher — the one in the crate
+/// that already knows `*` does not cross a `/` and `**` does. A second matcher
+/// is how two readers would disagree about what a wave declared.
+pub(crate) fn glob_match(r: &str, p: &str) -> bool {
     // Build a regex-free matcher: split the glob into literal/`*`/`**` tokens
     // and walk. For the patterns specs use this is simplest as a recursive
     // segment matcher.

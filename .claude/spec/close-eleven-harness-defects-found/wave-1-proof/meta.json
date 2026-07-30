@@ -1,0 +1,51 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-29T18:13:08.025Z",
+  "parent": "close-eleven-harness-defects-found",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/pipeline/close_pipeline.rs",
+      "path": "apps/rt/src/commands/pipeline/close_pipeline.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/ac_negative_check.rs",
+      "path": "apps/rt/src/commands/review/ac_negative_check.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/qa_run/mod.rs",
+      "path": "apps/rt/src/commands/review/qa_run/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/spec/spec_draft.rs",
+      "path": "apps/rt/src/commands/spec/spec_draft.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/spec/approve_spec.rs",
+      "path": "apps/rt/src/commands/spec/approve_spec.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/wave/wave_scaffold.rs",
+      "path": "apps/rt/src/commands/wave/wave_scaffold.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/analyze_validation.rs",
+      "path": "apps/rt/src/commands/review/analyze_validation.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/spec/complete_spec.rs",
+      "path": "apps/rt/src/commands/spec/complete_spec.rs",
+      "done": true
+    }
+  ]
+}

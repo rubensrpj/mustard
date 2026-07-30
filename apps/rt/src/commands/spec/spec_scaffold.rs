@@ -23,6 +23,14 @@ use mustard_core::platform::i18n::{translate, Locale, Tone};
 use std::fmt::Write as _;
 use std::path::Path;
 
+/// The unfilled `Control:` marker a fresh draft carries — the `<…>` shape
+/// `qa_run::is_skeleton` recognises, so an unanswered control is never mistaken
+/// for a control that ran.
+///
+/// English regardless of the narrative locale: like every `Command:` value, the
+/// content is code the orchestrator replaces, not prose a reader consumes.
+const AC_CONTROL_SKELETON: &str = "<a command that must be GREEN against the tree as it is today>";
+
 // ---------------------------------------------------------------------------
 // spec.md writer
 // ---------------------------------------------------------------------------
@@ -88,7 +96,8 @@ pub fn write_spec_md(
         let _ = write!(body, "\n## {heading}\n\n{}\n", s.body);
     }
     let _ = write!(body, "\n## {}\n\n", section_heading_for("acceptance-criteria", lang));
-    for ac in &input.acceptance_criteria {
+    let ac_total = input.acceptance_criteria.len();
+    for (index, ac) in input.acceptance_criteria.iter().enumerate() {
         let _ = write!(
             body,
             "- **{id}** — {stmt}\n  Command: `{cmd}`\n",
@@ -96,6 +105,26 @@ pub fn write_spec_md(
             stmt = ac.statement,
             cmd = ac.command
         );
+        // The optional `Control:` key, offered on every criterion the negative
+        // test will actually judge. It names a command that must come back
+        // GREEN against the tree AS IT IS: a red `Command:` proves nothing on
+        // its own, because a broken regex, a shell it cannot run under, a
+        // missing binary and a quoting error all produce exactly the red an
+        // honest criterion produces. A control that must be green TODAY rejects
+        // all four with one run, here at PLAN time, where the fix costs one
+        // edit.
+        //
+        // The trailing criterion is skipped through the SAME positional rule
+        // the negative test applies (`ac_negative_check::is_exempt`) rather than
+        // a second spelling of "which criterion is exempt": it is the
+        // build-green safety net, green before the work by design, so it has
+        // nothing to control for.
+        //
+        // The placeholder is ENGLISH regardless of the narrative locale, like
+        // every other `Command:` value — the content is code, not prose.
+        if !crate::commands::review::ac_negative_check::is_exempt(index, ac_total) {
+            let _ = writeln!(body, "  Control: `{AC_CONTROL_SKELETON}`");
+        }
     }
     // A wave-plan *parent* (`total_waves` ≥ 1) is a coordination document: its
     // actionable `## Tarefas` (the agent roadmap) and `## Checklist` (the
@@ -420,6 +449,67 @@ mod tests {
         let fm_end = body.find("\n---\n").expect("frontmatter close");
         let fm = &body["---\n".len()..fm_end];
         assert_eq!(fm.trim(), "id: spec.my-feature-slug", "frontmatter must carry only id:");
+    }
+
+    /// A fresh draft OFFERS the `Control:` key on every criterion the negative
+    /// test will actually judge — and the SHARED parser reads it back.
+    ///
+    /// Both halves matter, and the second is why this is one test rather than a
+    /// string assertion: a key the drafter emits in a shape `qa_run` does not
+    /// parse is a key that ships inert, which is the exact failure mode this
+    /// spec exists to close.
+    ///
+    /// The trailing criterion is skipped through the negative test's own
+    /// positional rule: it is the build-green safety net, green before the work
+    /// by design, so it has nothing to control for.
+    #[test]
+    fn a_fresh_draft_offers_the_control_key_on_every_judged_criterion() {
+        use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
+        use mustard_core::domain::spec::contract::{AcceptanceCriterion, SpecInput};
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("control-seed");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let ac = |id: &str, cmd: &str| AcceptanceCriterion {
+            id: id.to_string(),
+            statement: "when x, then y.".to_string(),
+            command: cmd.to_string(),
+        };
+        let input = SpecInput {
+            title: "Seed".to_string(),
+            acceptance_criteria: vec![
+                ac("AC-1", "cargo test foo"),
+                ac("AC-2", "cargo test bar"),
+                ac("AC-3", "cargo build"),
+            ],
+            ..SpecInput::default()
+        };
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+            .expect("write spec.md");
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+
+        let section = extract_ac_section(&body).expect("the AC section parses");
+        let items = parse_ac_items(&section);
+        assert_eq!(items.len(), 3, "every criterion still parses: {body}");
+        assert_eq!(items[0].command, "cargo test foo", "the command is untouched");
+        assert!(
+            items[0].control.as_deref().is_some_and(|c| c.starts_with('<')),
+            "AC-1 is offered an unfilled control: {:?}",
+            items[0].control,
+        );
+        assert!(items[1].control.is_some(), "AC-2 too: {:?}", items[1].control);
+        assert_eq!(
+            items[2].control, None,
+            "the trailing safety criterion has nothing to control for",
+        );
+        // And the marker reads as UNFILLED, so nobody mistakes it for a control
+        // that ran.
+        assert!(
+            crate::commands::review::qa_run::is_skeleton(
+                items[0].control.as_deref().unwrap_or_default()
+            ),
+            "the seeded control is a skeleton: {:?}",
+            items[0].control,
+        );
     }
 
     /// The dual link: a `[[spec.{slug}]]` reference resolves to the generated
