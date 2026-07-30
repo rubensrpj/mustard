@@ -791,6 +791,13 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
         .map(|r| RoleD { affix: r.affix.clone(), kind: r.kind.clone(), count: r.count, common_dir: r.common_dir.clone(), implements: r.implements.clone() })
         .collect();
 
+    // Machine-written modules (generated/vendored/…) are never the file a
+    // caller should read or edit: drop them from slice exemplars, hubs and
+    // touchpoints — and therefore from the anchor candidates `query` derives
+    // from these. Policy is owned by `classify` (module-qualified call, no
+    // local wrapper).
+    let eligible = |path: &str| crate::classify::anchor_eligible(c.class_of.get(path).copied().unwrap_or(""));
+
     // Slices: the multi-role conventions, trimmed (drop the verbose steps/examples).
     let mut slices: Vec<SliceD> = model
         .conventions
@@ -806,8 +813,11 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
             // are stored simple→complex (mine.rs push order), so iterate in
             // REVERSE to put the most complete reference first; DROP test/fixture
             // files (you mirror the production file, not its test builder — the
-            // same `is_test_path` exclusion the anchors use); union across
-            // exemplars, DEDUP preserving order, cap at 4 paths.
+            // same `is_test_path` exclusion the anchors use) AND machine-written
+            // modules (`anchor_eligible`, the same class filter hubs/touchpoints
+            // apply below — a module the census classified generated is never
+            // the reference to mirror); union across exemplars, DEDUP preserving
+            // order, cap at 4 paths.
             exemplar_files: {
                 let mut seen = std::collections::HashSet::new();
                 c.exemplars
@@ -815,6 +825,7 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
                     .rev()
                     .flat_map(|e| e.files.iter())
                     .filter(|&f| !mustard_core::domain::ast::is_test_path(f))
+                    .filter(|&f| eligible(f))
                     .filter(|f| seen.insert((*f).clone()))
                     .take(4)
                     .cloned()
@@ -825,12 +836,6 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
     slices.sort_by(|a, b| b.recurrence.cmp(&a.recurrence).then(a.label.cmp(&b.label)));
 
     let shared_contracts = model.shared_contracts.iter().map(|s| ContractD { name: s.name.clone(), implementors: s.implementors }).collect();
-
-    // Machine-written modules (generated/vendored/…) are never the file a
-    // caller should read or edit: drop them from hubs and touchpoints — and
-    // therefore from the anchor candidates `query` derives from these. Policy
-    // is owned by `classify` (module-qualified call, no local wrapper).
-    let eligible = |path: &str| crate::classify::anchor_eligible(c.class_of.get(path).copied().unwrap_or(""));
 
     let mut top_fan_in: Vec<HubD> =
         model.graph.top_fan_in.iter().filter(|n| eligible(&n.module)).map(|n| HubD { module: n.module.clone(), degree: n.degree }).collect();
@@ -1140,6 +1145,47 @@ mod tests {
 
     fn model(modules: Vec<Module>) -> ProjectModel {
         ProjectModel { root: "/repo".to_string(), modules, ..Default::default() }
+    }
+
+    /// AC-8: a module the census classified MACHINE-WRITTEN never surfaces as
+    /// a slice exemplar — `exemplar_files` applies the same `anchor_eligible`
+    /// class filter hubs and touchpoints already do, beside the existing
+    /// test-path exclusion.
+    #[test]
+    fn exemplar_files_exclude_machine_written_modules() {
+        use crate::model::{Convention, Exemplar};
+        let mut generated = module("src/orders/generated_client.x", vec![decl("OrdersClient", &[])]);
+        generated.file_class = "generated".to_string();
+        let mut m = model(vec![
+            module("src/orders/handler.x", vec![decl("OrderHandler", &[])]),
+            module("src/orders/validator.x", vec![decl("OrderValidator", &[])]),
+            generated,
+        ]);
+        m.conventions = vec![Convention {
+            roles: vec!["Handler".to_string(), "Validator".to_string()],
+            recurrence: 3,
+            entities: vec!["Order".to_string()],
+            is_slice: true,
+            exemplars: vec![Exemplar {
+                files: vec![
+                    "src/orders/handler.x".to_string(),
+                    "src/orders/generated_client.x".to_string(),
+                    "src/orders/__tests__/handler.x".to_string(),
+                    "src/orders/validator.x".to_string(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let dig = build(&m);
+        let slice = dig.slices.first().expect("slice published");
+        assert_eq!(
+            slice.exemplar_files,
+            vec!["src/orders/handler.x", "src/orders/validator.x"],
+            "hand-written production files only — the generated module and the \
+             test path are both excluded: {:?}",
+            slice.exemplar_files
+        );
     }
 
     #[test]

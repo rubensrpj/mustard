@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use crate::commands::git_settle::{git_ok, git_out};
 
 /// The file name each wave caches its signature digest under.
-const WAVE_DIFF: &str = "diff.md";
+pub(crate) const WAVE_DIFF: &str = "diff.md";
 
 /// A linked worktree at `HEAD` with a declared file set restored to an earlier
 /// revision — the tree the removal pass runs its commands in.

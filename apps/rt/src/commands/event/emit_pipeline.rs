@@ -182,6 +182,11 @@ pub fn run(opts: EmitPipelineOpts) {
     let kind = opts.kind.clone();
     let spec = opts.spec.clone();
     let ts = now_iso8601();
+    // Env → newest REAL `.claude/.session/<id>/` dir. The resolver never picks
+    // a placeholder bucket (`unknown`, the OTEL collector's `otel-unattached`)
+    // and `bind_session_spec` refuses one, so the session→spec binding this
+    // emit leaves behind lands under a session id the hooks are actually
+    // handed — not under a directory no reader ever consults (AC-11).
     let sid = session_id();
     emit_primary_and_alias(&kind, &spec, &payload, &ts, &sid);
 

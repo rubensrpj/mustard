@@ -83,12 +83,16 @@ fn anchor_detail_row(d: &FileDetail, strong: bool) -> Value {
 }
 
 /// `true` when the report's reason forbids planning on top of this payload.
-/// The `weak`/`none` notes steer the orchestrator to a re-query, so rendering
-/// the planning fields (anchors, anchorsDetail, slices, contracts, hubs,
-/// matchedTerms) would charge the orchestrator's context for content the
-/// contract tells it to discard. They are withheld from stdout (empty arrays
-/// plus `planningWithheld: true`); the honest `sliceMatchCount` still reports
-/// what existed, and the successful re-query returns the withheld fields.
+/// The `weak`/`none` notes steer the orchestrator to a re-query, and the
+/// `generated_only` note forbids editing the matched files at all (they are
+/// machine-written — regenerate, never mirror), so rendering the planning
+/// fields (anchors, anchorsDetail, slices, contracts, hubs, matchedTerms)
+/// would charge the orchestrator's context for content the contract tells it
+/// to discard. They are withheld from stdout (empty arrays plus
+/// `planningWithheld: true`); the honest `sliceMatchCount` still reports what
+/// existed, and the successful re-query returns the withheld fields. Listing
+/// `generated_only` here mirrors the sibling [`non_strong`] predicate — its
+/// omission was an asymmetry, not a convention.
 ///
 /// Exception: a `bridged` weak answer is NOT withheld. There the weakness is
 /// only "no literal hit", and the trigram RESCUE already matched the user's
@@ -97,7 +101,7 @@ fn anchor_detail_row(d: &FileDetail, strong: bool) -> Value {
 /// fields ride along (the note flags the approximate hit and to confirm by
 /// reading).
 fn withhold_planning(reason: &str, bridged: bool) -> bool {
-    matches!(reason, "weak" | "none") && !bridged
+    matches!(reason, "weak" | "none" | "generated_only") && !bridged
 }
 
 /// Max `vocabulary` rows emitted on a NON-strong result — the menu the
@@ -960,6 +964,41 @@ mod tests {
         let v = payload("cancel title", &strong, &[]);
         assert_eq!(v["planningWithheld"], json!(false));
         assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "strong keeps anchors: {v}");
+    }
+
+    /// The rt half of AC-8 (named so the same `cargo test --workspace
+    /// exemplar_files_exclude_machine_written_modules` filter runs it beside
+    /// the scan-side exemplar test): a `generated_only` report withholds the
+    /// planning fields exactly as `weak`/`none` do — its note forbids editing
+    /// the matched machine-written files, and the sibling `non_strong`
+    /// predicate already listed the reason, so keeping the planning fields was
+    /// an asymmetry, not a convention.
+    #[test]
+    fn exemplar_files_exclude_machine_written_modules_so_generated_only_withholds_planning() {
+        assert!(withhold_planning("generated_only", false), "generated_only withholds");
+        assert!(withhold_planning("weak", false));
+        assert!(withhold_planning("none", false));
+        assert!(!withhold_planning("strong", false));
+
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["client"],
+                "matched_terms":[{"term":"client","count":3,"samples":[]}],
+                "files":["gen/client.x"],
+                "files_detail":[{"file":"gen/client.x","score_x1024":10,"terms":["client"]}],
+                "miss":false,
+                "report":{"matched":1,"total":1,"reason":"generated_only","terms":[]}}"#,
+        )
+        .expect("generated_only digest payload");
+        let v = payload("client", &q, &[]);
+        assert_eq!(v["planningWithheld"], json!(true), "generated_only withholds: {v}");
+        for field in ["slices", "contracts", "hubs", "anchors", "anchorsDetail"] {
+            assert_eq!(v[field], json!([]), "{field} must be withheld on generated_only: {v}");
+        }
+        // The note still explains the machine-written cause.
+        assert!(
+            v["note"].as_str().unwrap_or_default().contains("machine-written"),
+            "the generated_only note names the cause: {v}"
+        );
     }
 
     #[test]

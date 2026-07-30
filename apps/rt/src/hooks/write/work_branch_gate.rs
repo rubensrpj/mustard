@@ -7,6 +7,12 @@
 //! 1. **Pending work-unit marker** → cut `{base}_{slug}` off a freshly
 //!    fetched base and check it out (fail-open: any git failure warns, never
 //!    blocks — unless staying would leave the edit on a protected branch).
+//!    The dirty tree is pre-checked with the worktree door's probe so a
+//!    refused checkout names the paths that likely refused it; when the run
+//!    then continues on the previous branch, the marker is RECONCILED to the
+//!    branch actually active (both names in the warning), never silently
+//!    cleared — and a protected-branch deny keeps the marker so the next
+//!    attempt retries the cut.
 //!    A cut that lands IN-PLACE on the MAIN checkout answers `Warn` with the
 //!    isolation hint (`EnterWorktree name=…`) — informative only, the edit
 //!    proceeds; a cut inside a linked worktree (already isolated) or a
@@ -54,11 +60,35 @@
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::io::workspace::is_git_repo_root;
+use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
+
+/// How many dirty paths a checkout-failure verdict spells out before
+/// summarising — a hook message is one line in the transcript, so the cap is
+/// smaller than the worktree door's 20-path refusal.
+const MAX_DIRTY_NAMED: usize = 5;
+
+/// The dirty-path note appended to a checkout-failure verdict, built from the
+/// SAME probe the worktree door uses ([`dirty_paths`]) — measured BEFORE the
+/// attempt, so the verdict can name the usual reason git refused instead of
+/// leaving only the raw git error. Empty when the tree was clean.
+/// Catalogue-rendered in the project's configured language.
+fn dirty_note(dirty: &[String], lang: Locale) -> String {
+    if dirty.is_empty() {
+        return String::new();
+    }
+    let shown: Vec<&str> = dirty.iter().take(MAX_DIRTY_NAMED).map(String::as_str).collect();
+    let more = dirty.len().saturating_sub(shown.len());
+    let tail = if more == 0 { String::new() } else { format!(" (+{more})") };
+    translate("workbranch.dirty.note", lang)
+        .replace("{paths}", &shown.join(", "))
+        .replace("{more}", &tail)
+}
 
 /// The auto-branch gate. Stateless — every invocation rebuilds from the hook
 /// input and the on-disk marker.
@@ -452,6 +482,13 @@ impl Check for WorkBranchGate {
         //    non-ff never blocks the edit (see refresh_integration_bases).
         refresh_integration_bases(&vcs, &local, &config, current.as_deref());
 
+        // 3.5 Pre-check the dirty tree with the SAME probe the worktree door
+        //     uses, BEFORE the attempt. The cut itself still carries changes
+        //     along (a plain checkout, no stash) — the measurement exists so a
+        //     refused checkout can NAME the paths that likely refused it
+        //     instead of asserting nothing beyond the raw git error.
+        let dirty = dirty_paths(Path::new(&local));
+
         // 4. Check out the (possibly submodule-rebased) target IN THE LOCAL TREE
         //    (a per-session worktree is isolated; the shared main checkout keeps
         //    the historical single-session behavior).
@@ -477,25 +514,44 @@ impl Check for WorkBranchGate {
                 Ok(Verdict::Allow)
             }
             Err(e) => {
-                // Clear anyway so we do not re-fire on every edit.
-                context::clear_pending_branch(&project, &sid);
+                let lang = config.i18n().lang;
+                let note = dirty_note(&dirty, lang);
                 if on_protected {
                     // We could not leave the protected branch — refuse rather
-                    // than let the edit land directly on it.
+                    // than let the edit land directly on it. The marker is
+                    // KEPT: the deny blocks this edit anyway, and the next
+                    // attempt (after the user resolves git) retries the cut —
+                    // clearing it here destroyed the intent and left the
+                    // session stuck on the protected branch with no retry.
                     Ok(Verdict::Deny {
                         reason: format!(
-                            "Não consegui sair da branch protegida '{}' para '{target}': {e}. \
+                            "Não consegui sair da branch protegida '{}' para '{target}': {e}.{note} \
                              O Mustard não desenvolve direto na branch protegida — resolva o \
                              git e tente de novo.",
                             current.as_deref().unwrap_or("?")
                         ),
                     })
                 } else {
-                    // On a work branch already: warn and let the edit proceed.
+                    // On a work branch already: the run continues on the branch
+                    // actually active, so RECONCILE the record with reality —
+                    // rewrite the marker to that branch (the next edit's
+                    // `current == target` fast path then consumes it) and name
+                    // BOTH branches in the warning. Clearing the marker here
+                    // destroyed the intent: the recorded branch stayed a name
+                    // that never existed, and nothing retried or reconciled.
+                    match current.as_deref() {
+                        Some(actual) => context::set_pending_branch(&project, &sid, actual),
+                        // No branch to record (detached HEAD / probe failure)
+                        // — clearing is the honest residue.
+                        None => context::clear_pending_branch(&project, &sid),
+                    }
+                    let actual = current.as_deref().unwrap_or("?");
                     Ok(Verdict::Warn {
-                        message: format!(
-                            "não consegui criar a branch {target}: {e} — seguindo na branch atual"
-                        ),
+                        message: translate("workbranch.reconcile.warn", lang)
+                            .replace("{target}", &target)
+                            .replace("{error}", &e)
+                            .replace("{actual}", actual)
+                            .replace("{note}", &note),
                     })
                 }
             }
@@ -1147,6 +1203,60 @@ mod tests {
         assert!(
             context::pending_branch_for(main_s, sid).is_none(),
             "marker consumed after the submodule checkout",
+        );
+    }
+
+    /// AC-13 — when the work branch cannot be created and the run continues on
+    /// the previous branch, the RECORD is rewritten to the real branch and the
+    /// warning names BOTH. The marker used to be cleared on failure, so the
+    /// intent was destroyed: the only record of the computed branch was a name
+    /// that never came to exist. The failure here is deterministic — the
+    /// marker carries a ref name git refuses (`..`) — and the tree is dirty,
+    /// so the warning also names the paths the pre-check measured.
+    #[test]
+    fn work_branch_record_reconciles_with_the_real_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        // A WORK branch (not protected) so the failure path warns + proceeds.
+        init_repo_on(root, "dev_current");
+        // Dirty the tree so the pre-check has something to name.
+        std::fs::write(root.join("f.txt"), "dirty").unwrap();
+
+        let sid = "sess-reconcile";
+        context::set_pending_branch(root_s, sid, "dev_bad..name");
+
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        let Verdict::Warn { message } = verdict else {
+            panic!("a failed cut on a work branch must Warn, got {verdict:?}");
+        };
+        assert!(
+            message.contains("dev_bad..name") && message.contains("dev_current"),
+            "the warning must name BOTH the intended and the real branch: {message}"
+        );
+        assert!(
+            message.contains("f.txt"),
+            "the warning must name the dirty paths the pre-check measured: {message}"
+        );
+        // The record now matches reality: rewritten to the branch actually
+        // active, not cleared, not the branch that never existed.
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("dev_current"),
+            "the marker is reconciled to the real branch",
+        );
+        assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_current"));
+
+        // The next edit consumes the reconciled record via the
+        // already-on-target fast path: silent Allow, marker cleared.
+        let (input2, ctx2) = pre_edit_input(root_s, sid);
+        let verdict2 = WorkBranchGate.evaluate(&input2, &ctx2).expect("no error");
+        assert!(matches!(verdict2, Verdict::Allow), "got {verdict2:?}");
+        assert!(
+            context::pending_branch_for(root_s, sid).is_none(),
+            "the reconciled record is consumed on the next edit",
         );
     }
 

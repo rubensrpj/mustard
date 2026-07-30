@@ -536,9 +536,16 @@ struct TraceGaps {
     /// contradiction, not a judgement.
     unsupportable_claims: Vec<String>,
     /// Gap 4 — a criterion whose command names a repository path that none of
-    /// its claimants declares. WARN-level: a command may name a path it only
-    /// READS, and telling that apart from a missing file would require the work
-    /// to already be done.
+    /// its claimants declares. ESCALATABLE, alongside Gaps 2 and 3, and the one
+    /// of the four that answers SUFFICIENCY rather than coverage: Gap 2 asks
+    /// whether SOME wave claimed the id, this asks whether the claiming wave can
+    /// actually satisfy it. A wave that claims a criterion must contain every
+    /// path that criterion's command inspects — including one it only reads,
+    /// because a criterion reading a file nobody in the group will touch is a
+    /// criterion the group cannot move.
+    ///
+    /// It was a stderr WARN dropped before the outcome was built, so no machine
+    /// consumer of `plan-materialize` could see it at all.
     criteria_outside_claimants: Vec<String>,
 }
 
@@ -576,11 +583,30 @@ struct TraceGaps {
 /// Errs toward MATCHING (staying quiet) rather than flagging: the two spellings
 /// this accepts — repo-relative and subproject-relative — are both legitimate in
 /// a `## Files` list, and a false flag on a correct plan costs more trust than a
-/// missed advisory. Pure, total.
+/// missed advisory. That direction matters more now that the gap this feeds
+/// BLOCKS the PLAN transition.
+///
+/// A DECLARED entry may carry a WILDCARD: `apps/rt/src/commands/**/*.rs` is a
+/// legitimate way for a wave to say what it will touch, and comparing it BYTE
+/// FOR BYTE against the path a criterion names is a guaranteed refusal of a
+/// correct plan. Such an entry is matched as the glob it is, through the
+/// crate's existing path-glob matcher (`*` does not cross `/`, `**` does) — a
+/// pattern match rather than a directory walk, so the verdict is a function of
+/// the plan alone and the report stays byte-stable. The subproject-relative
+/// spelling gets the same tolerance the literal case gets, via a `**/` prefix.
+///
+/// Pure, total.
 fn same_or_contains_path(declared: &str, named: &str) -> bool {
     let norm = |s: &str| s.replace('\\', "/");
     let (d, n) = (norm(declared), norm(named));
-    d == n || d.ends_with(&format!("/{n}")) || n.ends_with(&format!("/{d}"))
+    if d == n || d.ends_with(&format!("/{n}")) || n.ends_with(&format!("/{d}")) {
+        return true;
+    }
+    if !d.contains('*') {
+        return false;
+    }
+    use crate::util::glob::glob_match;
+    glob_match(&n, &d) || glob_match(&n, &format!("**/{d}"))
 }
 
 fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
@@ -676,12 +702,17 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
 
     // Gap 4 — a criterion whose OWN command names a repository path that none of
     // its claimants declares: it points at something nobody in that group will
-    // touch. Advisory, not a refusal: a command may legitimately name a path it
-    // only READS (a fixture, a doc it greps), and telling those apart would need
-    // the work to already be done. A criterion whose command names no path at
-    // all is not judged — most criteria here run a NAMED TEST, so the path lives
-    // inside the test rather than in the command, and guessing there would be
-    // the heuristic-dressed-as-a-gate this check exists to avoid.
+    // touch. This is SUFFICIENCY, and it refuses. Coverage (Gap 2) only asks
+    // whether some wave claimed the id; a wave that claims a criterion must
+    // CONTAIN every path that criterion's command inspects, including one it
+    // only reads — a criterion reading a file nobody in the group will touch is
+    // a criterion the group cannot move, and the remedy is one line either way
+    // (give the claimant the file, or move the claim).
+    //
+    // A criterion whose command names no path at all is not judged — most
+    // criteria here run a NAMED TEST, so the path lives inside the test rather
+    // than in the command, and guessing there would be the
+    // heuristic-dressed-as-a-gate this check exists to avoid.
     let mut criteria_outside_claimants: Vec<String> = Vec::new();
     if let Some(section) = parent_ac_md.and_then(extract_ac_section) {
         for it in parse_ac_items(&section) {
@@ -705,8 +736,10 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
                     continue;
                 }
                 criteria_outside_claimants.push(format!(
-                    "{id} — its command names `{path}`, which no wave claiming it declares. \
-                     Either the claimant is missing that file, or the criterion only reads it"
+                    "{id} — its command inspects `{path}`, which no wave claiming it declares, so \
+                     the claiming wave cannot satisfy the criterion it claims. Add `{path}` to \
+                     that wave's files (a path it only READS still has to be in scope), or move \
+                     the claim to the wave that has it"
                 ));
             }
         }
@@ -1056,6 +1089,15 @@ pub(crate) enum ScaffoldOutcome {
         /// `uncovered_acs`, and kept SEPARATE from it: one list answering two
         /// questions would tell a consumer a claimed criterion is uncovered.
         unsupportable_claims: Vec<String>,
+        /// Criteria whose command inspects a path no claiming wave declares —
+        /// the SUFFICIENCY gap. Escalatable, and a THIRD separate list for the
+        /// reason the first two are separate: a consumer asking "is AC-1
+        /// uncovered" must not get `true` for a criterion that IS claimed by a
+        /// wave that simply cannot reach one of its paths.
+        ///
+        /// It reached no consumer at all before: the list was computed, printed
+        /// to stderr, and then dropped when this outcome was built.
+        criteria_outside_claimants: Vec<String>,
     },
     /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
     EmptyPlan,
@@ -1197,6 +1239,11 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // which is the blunt merge this codebase keeps paying for.
     let uncovered_acs = gaps.uncovered_acs;
     let unsupportable_claims = gaps.unsupportable_claims;
+    // The THIRD escalatable list, and the one that used to stop at the stderr
+    // loop above: it was computed and then dropped, so no machine consumer of
+    // `plan-materialize` could see it. It travels separately for the same
+    // reason the other two do — see `ScaffoldOutcome::Created`.
+    let criteria_outside_claimants = gaps.criteria_outside_claimants;
 
     // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
@@ -1276,6 +1323,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         removed,
         uncovered_acs,
         unsupportable_claims,
+        criteria_outside_claimants,
     }
 }
 
@@ -2098,13 +2146,13 @@ mod tests {
         );
     }
 
-    /// AC-2 — a criterion whose command names a path none of its claimants
-    /// declares is FLAGGED, never refused.
+    /// AC-2 — a criterion whose command inspects a path none of its claimants
+    /// declares is reported on its OWN channel, apart from the coverage and
+    /// contradiction lists.
     ///
-    /// Advisory on purpose: the command may name a path it only READS (a
-    /// fixture, a doc it greps), and telling that apart from a missing file
-    /// would need the work to already be done. So the signal earns attention,
-    /// not a refusal — and the test pins both halves of that.
+    /// The separation is the point: coverage asks whether SOME wave claimed the
+    /// id, this asks whether the claiming wave can actually satisfy it, and a
+    /// consumer reading one list for the other fixes the wrong plan.
     #[test]
     fn a_criterion_pointing_outside_its_claimants_is_flagged_not_refused() {
         let parent = "# S\n\n## Acceptance Criteria\n\n\
@@ -2181,6 +2229,46 @@ mod tests {
             relative.criteria_outside_claimants.is_empty(),
             "a subproject-relative declaration still matches: {:?}",
             relative.criteria_outside_claimants
+        );
+
+        // A DECLARED entry may be a GLOB. Compared byte for byte it matches
+        // nothing, so a correct plan that declares its files as a pattern was
+        // guaranteed a flag — and now that this list REFUSES, guaranteed a
+        // refusal. It is matched as the glob it is.
+        let globbed = traceability_gaps(
+            &claim_plan(vec![claim_wave(
+                1,
+                "rt",
+                vec!["a"],
+                vec!["apps/backend/src/*.rs"],
+                vec!["AC-1"],
+            )]),
+            Some(backend),
+        );
+        assert!(
+            globbed.criteria_outside_claimants.is_empty(),
+            "a declared glob covers the path it expands to: {:?}",
+            globbed.criteria_outside_claimants
+        );
+        // Two-sided: a glob that does NOT cover the path still flags, so the
+        // wildcard arm is not a blanket amnesty.
+        let elsewhere = traceability_gaps(
+            &claim_plan(vec![claim_wave(
+                1,
+                "rt",
+                vec!["a"],
+                vec!["apps/frontend/src/*.rs"],
+                vec!["AC-1"],
+            )]),
+            Some(backend),
+        );
+        assert!(
+            elsewhere
+                .criteria_outside_claimants
+                .iter()
+                .any(|g| g.contains("apps/backend/src/data.rs")),
+            "a glob over another tree covers nothing here: {:?}",
+            elsewhere.criteria_outside_claimants
         );
     }
 
@@ -2433,6 +2521,64 @@ mod tests {
             }
             _ => panic!("expected ScaffoldOutcome::Created"),
         }
+    }
+
+    /// End-to-end through `scaffold`: the SUFFICIENCY gap reaches the outcome.
+    ///
+    /// It used to be computed, printed to stderr, and then dropped when the
+    /// outcome was built — so `plan-materialize`, the only consumer, could not
+    /// see it at all and the PLAN transition went through on a plan whose
+    /// claiming wave could not reach a path its criterion inspects.
+    ///
+    /// Two-sided: the same plan with the path declared returns the list empty,
+    /// so this cannot pass by the gap firing on everything.
+    #[test]
+    fn wave_claiming_a_criterion_must_contain_its_paths() {
+        let build = |declared: Value| {
+            let dir = tempdir().unwrap();
+            let spec_dir = dir.path().join("epic-sufficiency");
+            std::fs::create_dir_all(&spec_dir).unwrap();
+            std::fs::write(
+                spec_dir.join("spec.md"),
+                "# Epic\n\n## Acceptance Criteria\n\
+                 - **AC-1** — a. Command: `rg -q x apps/backend/src/data.rs`\n\
+                 - **AC-2** — build green. Command: `true`\n",
+            )
+            .unwrap();
+            let plan_path = dir.path().join("plan.json");
+            std::fs::write(
+                &plan_path,
+                serde_json::to_string(&json!({
+                    "waves": [{
+                        "n": 1, "role": "backend", "summary": "s", "tasks": ["do it"],
+                        "files": declared, "satisfies": ["AC-1", "AC-2"],
+                    }],
+                    "total_waves": 1,
+                    "lang": "en-US",
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            match scaffold(&spec_dir, &plan_path) {
+                ScaffoldOutcome::Created { criteria_outside_claimants, .. } => {
+                    // `dir` must outlive the scaffold call, hence the clone-out.
+                    criteria_outside_claimants
+                }
+                _ => panic!("expected ScaffoldOutcome::Created"),
+            }
+        };
+
+        let flagged = build(json!(["apps/backend/src/other.rs"]));
+        assert!(
+            flagged.iter().any(|g| g.contains("AC-1") && g.contains("apps/backend/src/data.rs")),
+            "the gap must reach the outcome, naming the criterion and the path: {flagged:?}",
+        );
+
+        let clean = build(json!(["apps/backend/src/data.rs"]));
+        assert!(
+            clean.is_empty(),
+            "a claimant declaring the path leaves nothing to report: {clean:?}",
+        );
     }
 
 

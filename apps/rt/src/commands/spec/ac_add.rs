@@ -372,7 +372,12 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     // THE gate — the same engine, at the same strictness. The criterion is
     // inserted ABOVE the trailing one, so it is never the exempt position: it
     // owes a red proof like any criterion the plan declared.
-    let proof = ac_negative_check::prove_one(root, &id, &opts.command, expect.as_deref(), false);
+    // No `Control:` is declared here — this door mints a criterion carrying a
+    // command and an optional expect, and nothing else. The record therefore
+    // says the control was not declared, which is the truth; the next
+    // `ac-negative-check` pass sees the markdown's control (if the author adds
+    // one) differ from the record and takes it then.
+    let proof = ac_negative_check::prove_one(root, &id, &opts.command, expect.as_deref(), None, false);
     if proof.proof != ac_negative_check::Proof::Red {
         let why = proof.reason.clone().unwrap_or_default();
         let mut report = AcAddReport::refused(

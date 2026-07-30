@@ -3,6 +3,7 @@
 //! `detect_role` and `parse_files_section` are used by `wave-dependency`,
 //! `exec-rewave-check` and `wave-size-check`.
 
+use crate::commands::review::analyze_validation::looks_like_file_path;
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::{glob_matches, ProjectConfig, RolePattern};
 use std::path::Path;
@@ -179,10 +180,37 @@ fn bullet_token(s: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// Extract the path a markdown TABLE row of the `## Files` section carries.
+///
+/// A census is sometimes authored as a table (`| File | Purpose |` rows —
+/// taught nowhere, but what orchestrators naturally write); the bullet-only
+/// parser read ZERO paths from it, so a full section classified as empty. The
+/// row's cells are scanned left-to-right and the first cell whose token the
+/// SHARED path recogniser ([`looks_like_file_path`]) accepts is the path — the
+/// column that carries paths, found per row. Header rows (`| File | … |`) and
+/// separator rows (`| --- | --- |`) contain no such token, so they contribute
+/// nothing. CONVERGED, not a third reader: the recogniser is the one
+/// definition `analyze_validation` already shares with the wave traceability
+/// pass, never a private copy.
+fn table_row_path(trimmed: &str) -> Option<String> {
+    let rest = trimmed.strip_prefix('|')?;
+    let rest = rest.strip_suffix('|').unwrap_or(rest);
+    for cell in rest.split('|') {
+        let Some((token, _)) = bullet_token(cell.trim()) else {
+            continue;
+        };
+        if looks_like_file_path(token) {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
 /// Parse the `## Files` section of a spec and return the listed paths.
 ///
-/// Returns `None` when the section is absent; `Some(vec![])` when present but
-/// empty.
+/// Reads BOTH census forms in document order: `- path` bullets and markdown
+/// table rows (see [`table_row_path`]). Returns `None` when the section is
+/// absent; `Some(vec![])` when present but empty.
 #[must_use]
 pub fn parse_files_section(spec_text: &str) -> Option<Vec<String>> {
     let lines: Vec<&str> = spec_text.split('\n').collect();
@@ -198,6 +226,8 @@ pub fn parse_files_section(spec_text: &str) -> Option<Vec<String>> {
             if !token.starts_with('#') {
                 paths.push(token.to_string());
             }
+        } else if let Some(path) = table_row_path(trimmed) {
+            paths.push(path);
         }
     }
     Some(paths)
@@ -268,6 +298,40 @@ mod tests {
                 "src/plain.ts",
             ]
         );
+    }
+
+    /// AC-7 (table half): a census authored as a markdown table contributes
+    /// its path column; header and separator rows contribute nothing; bullets
+    /// and table rows mix in document order. (The "names an unreadable one"
+    /// half — the diagnostic — is asserted in `scope_decompose`.)
+    #[test]
+    fn files_section_reads_a_table_and_names_an_unreadable_one() {
+        let spec = "# S\n\n## Files\n\n\
+            | File | Purpose |\n\
+            |------|---------|\n\
+            | `apps/rt/src/a.rs` | the reader |\n\
+            | packages/core/src/b.rs | the writer (create) |\n\
+            | just prose here | nothing path-shaped |\n\n\
+            ## Tasks\n- [ ] x\n";
+        let files = parse_files_section(spec).unwrap();
+        assert_eq!(
+            files,
+            vec!["apps/rt/src/a.rs", "packages/core/src/b.rs"],
+            "the path column is read; header/separator/prose rows are not"
+        );
+
+        // Mixed census: bullets and table rows coexist, document order kept.
+        let mixed = "## Files\n- src/c.ts\n| `src/d.ts` | x |\n";
+        assert_eq!(
+            parse_files_section(mixed).unwrap(),
+            vec!["src/c.ts", "src/d.ts"],
+            "bullet + table forms converge into one census"
+        );
+
+        // A path in a non-first column is still found (the column that carries
+        // paths is located per row, not assumed to be column one).
+        let second_col = "## Files\n| the reader | `src/e.rs` |\n";
+        assert_eq!(parse_files_section(second_col).unwrap(), vec!["src/e.rs"]);
     }
 
     #[test]

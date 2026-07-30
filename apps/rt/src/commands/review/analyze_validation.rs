@@ -32,8 +32,10 @@
 //! rejects is simply not checked — the validator stays silent about it instead
 //! of warning about a file nobody wrote.
 
+use crate::commands::review::{ac_negative_check, qa_run};
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs;
+use std::collections::BTreeSet;
 use mustard_core::platform::i18n;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -267,18 +269,30 @@ fn ref_resolves(r: &str, spec_dir: &Path, root: &Path, project_roots: &[PathBuf]
         || project_roots.iter().any(|sub| fs::exists(sub.join(r)))
 }
 
-/// `true` when a bare (un-backticked) token reads as a file path: it either
-/// carries a path separator or ends in a recognised source extension. Requiring
-/// a KNOWN extension is what keeps prose out — "3.5", "e.g." and
+/// `true` when a bare (un-backticked) token names ONE concrete file: it survives
+/// THE REFERENCE RULE ([`is_file_reference`]) and ends in a recognised source
+/// extension.
+///
+/// Both halves are load-bearing and neither is redundant. The known-extension
+/// requirement is what keeps prose out — "3.5", "e.g." and
 /// "https://example.com" all fail, while `src/list.rs` and `Cargo.toml` pass.
+/// [`is_file_reference`] is what keeps SETS out: this recogniser used to accept
+/// `src/*.rs` and `wave-N-{role}/spec.md`, and its consumer then compared them
+/// BYTE-LITERALLY against declared paths — a guaranteed warning on a correct
+/// plan. The strict sibling already lived in this file; it simply was not the
+/// one wired in.
+///
+/// Backslashes are normalised first, so a Windows-spelled `src\list.rs` reads
+/// as the path it is rather than as prose.
 ///
 /// `pub(crate)` so the wave traceability pass decides "does this criterion's
 /// command name a repository path" with the SAME recogniser — one definition of
-/// what reads as a path, tuned in one place to keep prose out.
+/// what reads as a path, tuned in one place.
 pub(crate) fn looks_like_file_path(token: &str) -> bool {
     let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '/'
         && c != '\\' && c != '-' && c != '_');
-    if token.is_empty() || !token.contains('.') {
+    let token = token.replace('\\', "/");
+    if !is_file_reference(&token) {
         return false;
     }
     let ext = token.rsplit('.').next().unwrap_or("");
@@ -419,7 +433,13 @@ fn split_command_parts(cmd: &str) -> Vec<&str> {
 /// `--files-without-match` exits 0 precisely when the pattern matches nothing
 /// and `-v` exits 0 when any single line fails to match — whether such a search
 /// CAN fail is a fact about the repository, which only the negative test
-/// (`ac-negative-check`) can establish. Pure, total.
+/// (`ac-negative-check`) can establish.
+///
+/// This function is the SHAPE half of that judgement and stays deliberately
+/// blind to the repository. The MEASUREMENT half now sits beside it: [`validate`]
+/// reads the proof ledger the negative test writes into the same directory, and
+/// a criterion the measurement already settled is never reported weak on shape
+/// alone. Pure, total.
 fn is_weak_command_part(part: &str) -> bool {
     // `rtk` is a transparent RTK passthrough — the weakness (if any) lives in
     // the wrapped command.
@@ -522,6 +542,41 @@ fn is_test_shaped_command(command: &str) -> bool {
         },
         _ => false,
     }
+}
+
+/// The ids the negative test has already MEASURED as able to fail — the
+/// criteria this linter has nothing left to guess about.
+///
+/// Read through the producer's own door: [`ac_negative_check::load_ledger`] is
+/// the single parser of `ac-proof.json`, [`ac_negative_check::recorded_proof`]
+/// the single lookup rule (id AND command AND expect must all still match), and
+/// [`ac_negative_check::AcProof::evidenced`] the single reading of what counts
+/// as evidence. Restating any of them here is how the gate that produces the
+/// proof and the linter that would override it drift apart.
+///
+/// Fail-open in the direction that keeps the WARN: an absent, unreadable or
+/// stale ledger yields an empty set, so every criterion is judged on shape
+/// exactly as before. A hand-edited command no longer matches its record and is
+/// therefore judged on shape too — which is the correct answer, not a
+/// degradation.
+fn proven_criteria(spec_dir: &Path, items: &[qa_run::AcItem]) -> BTreeSet<String> {
+    let ledger_path = spec_dir.join(ac_negative_check::AC_PROOF_JSON);
+    let Some(ledger) = ac_negative_check::load_ledger(&ledger_path) else {
+        return BTreeSet::new();
+    };
+    items
+        .iter()
+        .filter(|item| {
+            ac_negative_check::recorded_proof(
+                &ledger,
+                &item.id,
+                &item.command,
+                item.expect.as_deref(),
+            )
+            .is_some_and(ac_negative_check::AcProof::evidenced)
+        })
+        .map(|item| item.id.clone())
+        .collect()
 }
 
 /// Run the validation against an explicit project `root`. Returns the issues
@@ -660,11 +715,22 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
     // command. Reuses the exposed `AcItem` `id` + `command`.
     if ac_items.len() > 1 {
         let last = ac_items.len() - 1;
+        // The MEASUREMENT, read before the shape is judged. `is_weak_ac_command`
+        // asks how a command is SPELLED; whether it can fail is a fact about
+        // this repository, and the negative test already established it for
+        // every criterion it proved red. Its ledger lives in this very
+        // directory, and until now the linter — whose own docstring says only
+        // that pass can settle the question — was not among its readers, so a
+        // MEASURED search kept being reported as a rubber stamp.
+        let proven = proven_criteria(spec_dir, &ac_items);
         let weak: Vec<String> = ac_items
             .iter()
             .enumerate()
             .filter(|(i, item)| {
-                *i != last && !item.command.contains('<') && is_weak_ac_command(&item.command)
+                *i != last
+                    && !qa_run::is_skeleton(&item.command)
+                    && !proven.contains(&item.id)
+                    && is_weak_ac_command(&item.command)
             })
             .map(|(_, item)| item.id.clone())
             .collect();
@@ -695,7 +761,7 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
             .filter(|(i, item)| {
                 *i != last
                     && item.expect.is_none()
-                    && !item.command.contains('<')
+                    && !qa_run::is_skeleton(&item.command)
                     && is_test_shaped_command(&item.command)
                     && !weak.contains(&item.id)
             })
@@ -810,6 +876,72 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let issues = validate(dir.path(), &path,&content);
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// V6: a criterion the NEGATIVE TEST already measured is not reported as a
+    /// tautology on shape alone.
+    ///
+    /// This linter's own docstring says whether a search can fail is a fact
+    /// about the repository which only `ac-negative-check` can establish — and
+    /// the linter was not among that pass's readers, though its ledger lives in
+    /// the very directory being validated. So a criterion MEASURED able to fail
+    /// kept being reported as a rubber stamp.
+    ///
+    /// Two-sided: the same command, in the same shape, IS flagged when no
+    /// measurement stands for it — so the fix cannot pass by silencing V6.
+    #[test]
+    fn weak_ac_defers_to_the_recorded_proof() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — the marker is present.\n  Command: `rg -q marker src/lib.rs`\n\
+                    - **AC-2** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+
+        // No ledger: judged on shape, and a standalone search is weak.
+        let issues = validate(dir.path(), &path, body);
+        assert!(
+            issues.iter().any(|i| i["type"] == "weak-ac"),
+            "unmeasured, a search is a rubber stamp: {issues:?}",
+        );
+
+        // The negative test then MEASURES AC-1 red — it can fail, which is the
+        // fact the shape could never settle.
+        std::fs::write(
+            dir.path().join(ac_negative_check::AC_PROOF_JSON),
+            r#"{"spec":"m","criteria":[{"id":"AC-1","command":"rg -q marker src/lib.rs",
+               "expect":null,"verdict":"proven","proof":"red","confirmation":"not-taken",
+               "exit":1,"reason":null,"stderr_excerpt":""}],"amendments":[]}"#,
+        )
+        .unwrap();
+        let issues = validate(dir.path(), &path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == "weak-ac"),
+            "a MEASURED criterion is not a rubber stamp: {issues:?}",
+        );
+    }
+
+    /// `looks_like_file_path` names ONE concrete file, so a glob — which names a
+    /// SET — is not one.
+    ///
+    /// Its consumer compares the answer byte-literally against declared paths,
+    /// so accepting `src/*.rs` was a guaranteed warning on a correct plan. The
+    /// strict recogniser that rejects it already lived in this file.
+    #[test]
+    fn looks_like_file_path_rejects_a_set_and_keeps_a_file() {
+        // Sets, shapes and omissions — none of them is a file anybody wrote.
+        assert!(!looks_like_file_path("src/*.rs"));
+        assert!(!looks_like_file_path("plugin/**/*.md"));
+        assert!(!looks_like_file_path("wave-N-{role}/spec.md"));
+        assert!(!looks_like_file_path(".../spec.md"));
+        // Still prose, as before.
+        assert!(!looks_like_file_path("3.5"));
+        assert!(!looks_like_file_path("e.g."));
+        // And still every real path, in both separator spellings.
+        assert!(looks_like_file_path("src/list.rs"));
+        assert!(looks_like_file_path("Cargo.toml"));
+        assert!(looks_like_file_path("src\\list.rs"), "a Windows spelling is a path");
+        assert!(looks_like_file_path("`apps/rt/src/main.rs`"), "backticks are trimmed");
     }
 
     /// V6: a bare `cargo build` AC (not the trailing safety net) is flagged

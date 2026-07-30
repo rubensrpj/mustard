@@ -556,6 +556,54 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Fix it and end the turn — I re-run the criteria and only release the stop once all pass."
         }
 
+        // Work-branch gate — the dirty-tree note appended to a checkout-failure
+        // verdict, and the reconciliation warning when the run continues on the
+        // branch actually active. Config-language: both are user-facing hook
+        // feedback (found in review, 2026-07-30: they shipped hardcoded in one
+        // locale). `{paths}`/`{more}`, `{target}`/`{error}`/`{actual}`/`{note}`
+        // are interpolated by the gate.
+        ("workbranch.dirty.note", Locale::PtBr) => " Árvore suja: {paths}{more}.",
+        ("workbranch.dirty.note", Locale::EnUs) => " Dirty tree: {paths}{more}.",
+        ("workbranch.reconcile.warn", Locale::PtBr) => {
+            "não consegui criar a branch '{target}': {error} — seguindo na branch atual \
+             '{actual}'; registro do work branch reconciliado de '{target}' para '{actual}'.{note}"
+        }
+        ("workbranch.reconcile.warn", Locale::EnUs) => {
+            "could not create branch '{target}': {error} — continuing on the current branch \
+             '{actual}'; the work branch record was reconciled from '{target}' to '{actual}'.{note}"
+        }
+
+        // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
+        // each named for what was actually measured (a diagnostic must never
+        // assert "empty" about a section that has content). Config-language:
+        // the warning is user-facing feedback in the spec's own language.
+        ("scope.files.absent", Locale::PtBr) => {
+            "## Arquivos ausente — fileCount=0; scope=abstain até autorar o censo \
+             (adicione ## Arquivos e re-rode)"
+        }
+        ("scope.files.absent", Locale::EnUs) => {
+            "## Files section absent — fileCount=0; scope=abstain until the census is \
+             authored (add ## Files and re-run)"
+        }
+        ("scope.files.empty", Locale::PtBr) => {
+            "## Arquivos vazio/placeholder — fileCount=0; scope=abstain até autorar o \
+             censo (preencha ## Arquivos e re-rode)"
+        }
+        ("scope.files.empty", Locale::EnUs) => {
+            "## Files section empty/placeholder — fileCount=0; scope=abstain until the \
+             census is authored (fill ## Files and re-run)"
+        }
+        ("scope.files.unrecognised", Locale::PtBr) => {
+            "## Arquivos tem conteúdo, mas nenhum caminho foi reconhecido — fileCount=0; \
+             scope=abstain; declare cada arquivo como bullet `- caminho` ou linha de \
+             tabela com coluna de caminho, e re-rode"
+        }
+        ("scope.files.unrecognised", Locale::EnUs) => {
+            "## Files has content, but no path was recognised — fileCount=0; \
+             scope=abstain; declare each file as a `- path` bullet or a table row with \
+             a path column, then re-run"
+        }
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.

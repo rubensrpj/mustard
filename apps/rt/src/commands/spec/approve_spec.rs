@@ -362,6 +362,21 @@ const WHY_INEXECUTABLE: &str = "the confirmation found the command INEXECUTABLE 
      landed, so the criterion itself is broken — repair it with `mustard-rt run ac-amend`, the \
      one door that accepts a passing replacement for this case";
 
+/// The CONTROL column came back red — read, never re-run. It names the ONE
+/// thing a red control settles: the command cannot match anything even where it
+/// should, so no colour it produces is about the behaviour.
+const WHY_CONTROL_RED: &str = "the CONTROL was TAKEN and came back red against the tree as it is, \
+     so this criterion cannot match anything even where it should — repair the command (a broken \
+     regex, a shell it cannot run under, a quoting error), then take the proof";
+
+/// The CONTROL column produced no verdict.
+const WHY_CONTROL_NO_VERDICT: &str = "the CONTROL was TAKEN but the command was killed by its \
+     deadline, so nobody knows whether this criterion can match anything";
+
+/// The CONTROL column could not be attempted at all.
+const WHY_CONTROL_NOT_ATTEMPTED: &str = "the CONTROL was NEVER TAKEN: its command could not be \
+     attempted at all, so nobody knows whether this criterion can match anything";
+
 /// Why a recorded criterion satisfies neither column — the one action that
 /// clears it, in the wording of whichever column last spoke.
 ///
@@ -370,7 +385,21 @@ const WHY_INEXECUTABLE: &str = "the confirmation found the command INEXECUTABLE 
 /// by anything the red column suggests. Pure, total — no re-run happens here,
 /// exactly as none happens for the red column.
 fn why_unsatisfied(p: &ac_negative_check::AcProof) -> &'static str {
-    use ac_negative_check::{Confirmation, Proof};
+    use ac_negative_check::{Confirmation, Control, Proof};
+    // The CONTROL is consulted BEFORE either other column, because it decides
+    // whether they can be read at all: a criterion whose control is not green
+    // cannot match anything even where it should, so its red proof and its
+    // confirmation are both answers about the command's spelling. Read off the
+    // ledger like everything else here — nothing is ever re-run at the approval
+    // gesture, where the user is waiting.
+    match p.control {
+        Control::Red => return WHY_CONTROL_RED,
+        Control::NoVerdict => return WHY_CONTROL_NO_VERDICT,
+        Control::NotAttempted => return WHY_CONTROL_NOT_ATTEMPTED,
+        // Declared-and-green, or not declared at all: the control has nothing
+        // to say, and the columns below answer.
+        Control::Green | Control::NotDeclared => {}
+    }
     match p.confirmation {
         Confirmation::Red => WHY_CONFIRMATION_RED,
         Confirmation::NoVerdict => WHY_CONFIRMATION_NO_VERDICT,
@@ -450,7 +479,13 @@ pub(crate) fn proof_state(root: &str, spec: &str) -> ProofState {
             &item.command,
             item.expect.as_deref(),
         ) {
-            Some(p) if p.evidenced() => continue,
+            // BOTH readings must hold: the record must carry evidence AND its
+            // control must not stand in the way of reading that evidence. They
+            // are separate questions — a record can carry a red proof taken
+            // when the control was still green (or absent) and a control that
+            // has since failed, and answering only the first would approve on
+            // evidence nobody can read any more.
+            Some(p) if p.evidenced() && p.control_satisfied() => continue,
             Some(p) => why_unsatisfied(p),
             None => WHY_NEVER_TAKEN,
         };
