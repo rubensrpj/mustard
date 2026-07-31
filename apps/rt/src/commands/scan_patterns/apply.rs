@@ -29,22 +29,37 @@ use mustard_core::io::fs as mfs;
 const SKILLS_SEGMENT: &str = "/.claude/skills/";
 const MOLD_SUFFIX: &str = "-pattern/SKILL.md";
 
-/// Run `scan-patterns-apply`.
+/// What happened to ONE mold — the verdict [`apply_one`] returns instead of
+/// printing and exiting.
 ///
-/// - `path`: the mold `SKILL.md` to write (`{subproject}/.claude/skills/{slug}-pattern/SKILL.md`).
-/// - `content`: the agent's authored SKILL.md body, or `-` to read it from stdin.
-///
-/// Create-only: an existing mold is left untouched (the sweep already removed
-/// the generated ones; a survivor is hand-authored). On a successful write
-/// prints a one-line confirmation and exits 0. A path that is not a mold
-/// SKILL.md exits 1; every other recoverable error is fail-open.
-pub fn run(path: &Path, content: &str, root: &Path) {
+/// The CLI face still prints and exits; this exists because a caller holding
+/// MANY molds (see [`super::relay`]) must not have the first bad block kill the
+/// eleven good ones behind it. Splitting the decision from its reporting is
+/// what lets both callers share exactly one copy of the rules.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Applied {
+    /// Written.
+    Created,
+    /// A `source: scan` mold was already there — written by THIS run, so two
+    /// candidates collided on one path and this block was discarded.
+    Collision,
+    /// A hand-authored/adopted mold holds the path; it is preserved.
+    Preserved,
+    /// The block carried no body.
+    Empty,
+    /// Not a `…/.claude/skills/<slug>-pattern/SKILL.md` path.
+    BadPath,
+    /// The mold claims something the machine checked and refuted.
+    Refused(Vec<String>),
+    /// The write itself failed.
+    IoError(String),
+}
+
+/// Decide and perform ONE mold write. Pure of stdout/stderr and of
+/// `process::exit`, so it composes; see [`Applied`].
+pub(crate) fn apply_one(path: &Path, body: &str, root: &Path) -> Applied {
     if !is_mold_path(path) {
-        eprintln!(
-            "scan-patterns-apply: refusing {} — not a `…/.claude/skills/<slug>-pattern/SKILL.md` path",
-            path.display()
-        );
-        std::process::exit(1);
+        return Applied::BadPath;
     }
 
     // Create-only: never overwrite. Two very different things reach this branch,
@@ -59,62 +74,88 @@ pub fn run(path: &Path, content: &str, root: &Path) {
     // owned the file.
     if path.exists() {
         let existing = std::fs::read_to_string(path).unwrap_or_default();
-        if super::origin::is_mustard_generated(&existing) {
-            eprintln!(
-                "scan-patterns-apply: COLLISION at {} — a `source: scan` mold was already written \
-                 there BY THIS RUN (the sweep removes them all before authoring), so this block is \
-                 DISCARDED. Two candidates share one mold path: the worklist should have folded \
-                 them. Nothing was hand-authored here.",
-                path.display()
-            );
+        return if super::origin::is_mustard_generated(&existing) {
+            Applied::Collision
         } else {
-            eprintln!(
-                "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
-                path.display()
-            );
-        }
-        return;
+            Applied::Preserved
+        };
     }
 
-    let Some(body) = resolve_content(content) else {
-        eprintln!("scan-patterns-apply: empty mold body — nothing to write");
-        return;
-    };
+    let body = body.trim();
+    if body.is_empty() {
+        return Applied::Empty;
+    }
 
     // Validate the frontmatter BEFORE writing. A mold that lands without
     // frontmatter-first or without `source: scan` is never swept again and
     // blocks its cluster forever — a permanent orphan. Better a loud refusal
-    // now than a silent orphan a scan or two later. Exit 1 so the orchestrator
-    // sees the failure and can re-dispatch, instead of reporting a phantom
-    // "created". (`stamp` re-injects the notice idempotently, but it cannot
-    // invent a `name:` or a `source:` the agent never wrote.)
+    // now than a silent orphan a scan or two later. (`stamp` re-injects the
+    // notice idempotently, but it cannot invent a `name:` or a `source:` the
+    // agent never wrote.)
     let mut defects: Vec<String> =
-        super::origin::frontmatter_defects(&body).into_iter().map(|d| d.to_string()).collect();
-    defects.extend(grounding_defects(&body, path, root));
+        super::origin::frontmatter_defects(body).into_iter().map(|d| d.to_string()).collect();
+    defects.extend(grounding_defects(body, path, root));
     if !defects.is_empty() {
-        eprintln!(
-            "scan-patterns-apply: refusing {} — malformed mold, NOT written:\n  - {}",
-            path.display(),
-            defects.join("\n  - ")
-        );
-        std::process::exit(1);
+        return Applied::Refused(defects);
     }
 
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("scan-patterns-apply: cannot create {}: {e}", parent.display());
-            return;
+            return Applied::IoError(format!("cannot create {}: {e}", parent.display()));
         }
     }
 
     // Normalised body + injected origin notice: byte-stable regardless of how
     // the agent's block was trimmed, and swept fresh on the next scan.
-    let out = super::origin::stamp(&body);
-    if let Err(e) = mfs::write_atomic(path, out.as_bytes()) {
-        eprintln!("scan-patterns-apply: cannot write {}: {e}", path.display());
-        return;
+    let out = super::origin::stamp(body);
+    match mfs::write_atomic(path, out.as_bytes()) {
+        Ok(()) => Applied::Created,
+        Err(e) => Applied::IoError(format!("cannot write {}: {e}", path.display())),
     }
-    println!("scan-patterns-apply: created {}", path.display());
+}
+
+/// Run `scan-patterns-apply`.
+///
+/// - `path`: the mold `SKILL.md` to write (`{subproject}/.claude/skills/{slug}-pattern/SKILL.md`).
+/// - `content`: the agent's authored SKILL.md body, or `-` to read it from stdin.
+///
+/// Create-only: an existing mold is left untouched (the sweep already removed
+/// the generated ones; a survivor is hand-authored). On a successful write
+/// prints a one-line confirmation and exits 0. A path that is not a mold
+/// SKILL.md exits 1; every other recoverable error is fail-open.
+pub fn run(path: &Path, content: &str, root: &Path) {
+    let body = resolve_content(content).unwrap_or_default();
+    match apply_one(path, &body, root) {
+        Applied::Created => println!("scan-patterns-apply: created {}", path.display()),
+        Applied::BadPath => {
+            eprintln!(
+                "scan-patterns-apply: refusing {} — not a `…/.claude/skills/<slug>-pattern/SKILL.md` path",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+        Applied::Collision => eprintln!(
+            "scan-patterns-apply: COLLISION at {} — a `source: scan` mold was already written \
+             there BY THIS RUN (the sweep removes them all before authoring), so this block is \
+             DISCARDED. Two candidates share one mold path: the worklist should have folded \
+             them. Nothing was hand-authored here.",
+            path.display()
+        ),
+        Applied::Preserved => eprintln!(
+            "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
+            path.display()
+        ),
+        Applied::Empty => eprintln!("scan-patterns-apply: empty mold body — nothing to write"),
+        Applied::Refused(defects) => {
+            eprintln!(
+                "scan-patterns-apply: refusing {} — malformed mold, NOT written:\n  - {}",
+                path.display(),
+                defects.join("\n  - ")
+            );
+            std::process::exit(1);
+        }
+        Applied::IoError(e) => eprintln!("scan-patterns-apply: {e}"),
+    }
 }
 
 /// Everything a mold CLAIMS that the machine can check, checked.

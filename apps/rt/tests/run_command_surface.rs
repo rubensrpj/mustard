@@ -87,6 +87,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "scan-patterns-apply",
     "scan-patterns-decline",
     "scan-patterns-list",
+    "scan-patterns-relay",
     "scan-patterns-sweep",
     "scan-spec",
     "scope-classify",

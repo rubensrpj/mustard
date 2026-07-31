@@ -406,6 +406,17 @@ fn promote_dominated_parents(
 /// and the numerator is those the globs match. A subproject the model has no
 /// modules for is never saturated — an empty denominator is missing evidence,
 /// not proof of coverage.
+///
+/// Both sides also exclude test terrain, and they must: a cluster is dropped
+/// outright when its home is under a test segment, so a glob can only ever
+/// cover production modules. Counting tests in the denominator alone measured
+/// the numerator against a universe the numerator could not reach, and the
+/// ratio fell by however many tests the subproject happened to carry. Measured
+/// here: a crate with 17 production modules and 57 test/fixture modules scored
+/// 23% for a glob covering every one of its production files, and shipped the
+/// whole-house mold this check exists to refuse. The bias is proportional to
+/// test volume, so the better-tested a subproject is the more reliably the
+/// check fails — which is exactly backwards.
 fn saturates_subproject(
     paths: &[String],
     subproject: &str,
@@ -421,6 +432,9 @@ fn saturates_subproject(
         // subproject's files never inflate the house that contains it.
         if owner_of(&path, projects).map(|p| p.dir.as_str()) != Some(subproject) {
             continue;
+        }
+        if under_test(&path) {
+            continue; // same universe on both sides — see the doc comment.
         }
         owned += 1;
         if dirs.iter().any(|d| path.starts_with(&format!("{d}/"))) {
@@ -2068,6 +2082,48 @@ mod tests {
         // `--rejected` face exists.
         let reasons: Vec<&str> = collect_rejected(root).iter().map(|r| r.reason).collect();
         assert!(reasons.contains(&"covers_whole_subproject"), "reason recorded: {reasons:?}");
+    }
+
+    /// …and a well-tested subproject must reach the same verdict. The check
+    /// counts modules, and a test module can never be covered by a mold's glob
+    /// (a cluster under a test segment is dropped before it gets one), so
+    /// counting tests in the denominator alone measures the numerator against a
+    /// universe it cannot reach. The bias grows with test volume: the better
+    /// tested a subproject is, the more reliably the check would fail. Here the
+    /// house is the SAME 10 production modules as the test above, plus 30
+    /// tests — a 100% glob scoring 25% on the old arithmetic.
+    #[test]
+    fn test_volume_never_buys_a_cluster_past_the_house_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let prod: String =
+            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+        let tests: String =
+            (0..30).map(|i| format!(r#"{{"path":"apps/api/tests/fixtures/case{i}.x"}},"#)).collect();
+        write_model(
+            root,
+            &format!(
+                r#"{{
+              "projects": [{{"name":"api","dir":"apps/api"}}],
+              "roles": [
+                {{"affix":"src","kind":"folder","count":12,"common_dir":"apps/api/src"}},
+                {{"affix":"Service","kind":"suffix","count":4,"common_dir":"apps/api/src/services"}}
+              ],
+              "modules": [
+                {prod}
+                {tests}
+                {{"path":"apps/api/src/services/UserService.x"}},
+                {{"path":"apps/api/src/services/OrderService.x"}}
+              ]
+            }}"#
+            ),
+        );
+        let slugs: Vec<String> = collect(root).into_iter().map(|c| c.slug).collect();
+        assert!(
+            !slugs.contains(&"api-src".to_string()),
+            "tests must not dilute the denominator into letting the house through: {slugs:?}"
+        );
+        assert!(slugs.contains(&"api-service".to_string()), "the real role still survives: {slugs:?}");
     }
 
     /// Two siblings are a coincidence, not a layout — the floor keeps a pair

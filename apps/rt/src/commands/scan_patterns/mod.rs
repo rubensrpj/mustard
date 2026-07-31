@@ -19,6 +19,8 @@
 //!   Write.
 //! - [`decline`] records the agent's justified refusals so a dead candidate
 //!   stops burning a dispatch on every scan.
+//! - [`relay`] applies an agent's WHOLE return in one call — the envelope
+//!   parser that keeps the per-block hand-off from scaling with cluster count.
 //! - [`origin`] is the mustard-vs-hand line: the frontmatter `source:` field.
 //!
 //! All fully fail-open per the `mustard-rt run` contract.
@@ -27,4 +29,5 @@ pub mod apply;
 pub mod decline;
 pub mod list;
 pub(crate) mod origin;
+pub mod relay;
 pub mod sweep;

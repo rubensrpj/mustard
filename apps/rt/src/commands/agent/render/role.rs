@@ -149,8 +149,9 @@ fn build_patterns_role_block(subproject: &str) -> String {
          (traits, exports, error style, test placement) and what a new member must/must-not \
          do. Read-only: deliver every mold in your final message, each inside \
          `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
-         worklist; do NOT write any file — the caller pipes each block to \
-         scan-patterns-apply. Canonical mold format (frontmatter first): name = the \
+         worklist; do NOT write any file — the caller pipes your WHOLE return to \
+         scan-patterns-relay, which splits it on those demarcators, so deliver every mold \
+         in one message and never worry about its size. Canonical mold format (frontmatter first): name = the \
          worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
          ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
          `paths` value (a YAML list — this is the one key the platform reads to decide when \
@@ -449,13 +450,14 @@ mod tests {
     fn patterns_role_block_carries_delivery_contract() {
         // The patterns block must scope to the subproject, demand the exemplar
         // reads, name the demarcated return format and forbid self-writing —
-        // the caller pipes each block to scan-patterns-apply.
+        // the caller pipes the WHOLE return to scan-patterns-relay, which is
+        // also why the agent is told its return size does not matter.
         let dir = tempdir().unwrap();
         let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
         assert!(block.starts_with("ROLE: patterns"), "cue missing: {block}");
         assert!(block.contains("apps/api"), "subproject scope missing: {block}");
         assert!(block.contains("=== FILE:"), "demarcated return format missing: {block}");
-        assert!(block.contains("scan-patterns-apply"), "delivery contract missing: {block}");
+        assert!(block.contains("scan-patterns-relay"), "delivery contract missing: {block}");
         assert!(block.contains("do NOT write any file"), "write-restriction missing: {block}");
         // Read-only role → no MEMORY contract (not a knowledge producer).
         assert!(!block.contains("<MEMORY>"), "patterns must not carry MEMORY: {block}");
