@@ -11,12 +11,20 @@ members = ["apps/cli", "apps/mcp", "apps/rt", "apps/scan", "packages/core"]
 exclude = ["apps/dashboard/src-tauri", "apps/translate"]
 
 [workspace.package]
-# The single source of the Mustard version. Every workspace crate inherits it
-# with `version.workspace = true`, so the CLI no longer drifts on its own line.
-# This value is the DEV/local fallback — the shipped binary carries the release
-# version instead, baked in at build time via `MUSTARD_RELEASE_VERSION` (the git
-# tag == plugin.json, the line `bump-on-main` advances). See `platform::harness`.
-version = "0.1.0"
+# The Mustard version, inherited by every workspace crate with
+# `version.workspace = true`. It must equal `plugin/.claude-plugin/plugin.json`
+# — the line `bump-on-main` advances on every merge to main and the release gate
+# checks against the git tag. `tests/version_line.rs` in mustard-core fails the
+# build if the two ever disagree.
+#
+# Why it must: a locally built binary has no `MUSTARD_RELEASE_VERSION`, so
+# `platform::harness::harness_version` falls back HERE. This value therefore
+# reaches `mustard-rt --version`, the statusline's `m{version}` mark and the
+# `mustard.json#version` stamp every install writes into a project. Left behind,
+# it does not read as "a dev build" — it reads as a real, old release, and the
+# harness's own drift warning starts arguing with itself. That is exactly what
+# happened while this sat at 0.1.0 through twenty-eight published releases.
+version = "0.1.28"
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
