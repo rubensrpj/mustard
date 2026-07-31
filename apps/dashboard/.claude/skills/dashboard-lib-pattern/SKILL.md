@@ -1,6 +1,6 @@
 ---
 name: dashboard-lib-pattern
-description: Use when adding or refactoring a module under src/lib — a Tauri invoke wrapper, a zustand store, or a pure helper.
+description: Use when adding or refactoring a non-React module under src/lib — a Tauri command wrapper, a zustand store, or a shared formatting/utility helper.
 paths:
   - apps/dashboard/src/lib/**
 tags: [add, refactor]
@@ -17,20 +17,27 @@ metadata:
 
 ## Purpose
 
-`src/lib/` is the boundary layer between React and everything outside it, and it comes in three families. **Invoke wrappers** (`dashboard.ts`, `doctor.ts`, `projects.ts`, `watcher.ts`) are the only place besides `src/api/` that imports `@tauri-apps/api`; each exports the DTO interfaces next to thin one-line functions, with **camelCase** argument keys that serde maps to snake_case on the Rust side. **Stores** (`store.ts`, `projects-store.ts`, `code-viewer-store.ts`) are zustand `create<Shape>()` calls whose state interface documents every field and action inline, with a comment saying whether the state is persisted or deliberately ephemeral. **Pure helpers** (`time.ts`, `format.ts`, `text.ts`, `utils.ts`, `wikilinks.ts`, `repo-path.ts`, `phase-palette.ts`) import no React and no Tauri. Modules that parse an external report keep the untrusted shape in a private `RawXxx` interface plus a `normaliseXxx` function, so a malformed payload degrades to a documented default instead of throwing — `doctor.ts` encodes the failure in an `error` field so the badge can render a tooltip rather than crash.
+`src/lib/` is the dashboard's non-React layer and the boundary the app's guards are written around: it is where `invoke()` may be called (together with `src/api/*`), where the query client and the filesystem watcher live, where zustand stores are created, and where shared formatting helpers sit. Components and `features/` import from here — they never talk to Tauri directly. The modules are small and single-purpose: `dashboard.ts` and `projects.ts` wrap the dashboard/project-registry commands, `doctor.ts` wraps the health command and normalizes its strings, `code-viewer-store.ts` and `store.ts` hold UI state, `watcher.ts` turns backend events into cache invalidations.
 
 ## Convention
 
-- Folder: `apps/dashboard/src/lib/` (plus the `types/` subfolder for pure serde mirrors), extension `.ts`, 18 modules.
-- File naming is kebab-case for multiword modules (`code-viewer-store.ts`, `query-client.ts`, `repo-path.ts`); single-word modules are bare (`doctor.ts`, `time.ts`).
-- A leading header comment states the surface, the Tauri command it wraps, and the failure mode; exported symbols are named, never default.
+Folder: apps/dashboard/src/lib/** · Extension: .ts · Files of this role in this subproject: 18
+
+- File names are mostly kebab-case (`code-viewer-store.ts`, `query-client.ts`, `repo-path.ts`, `quality-link.ts`); `phaseTheme.ts` is the camelCase outlier — follow the kebab-case majority for new files.
+- Wrapper modules import from `@tauri-apps/api/core` (and the event module when they subscribe) and expose one thin `export function fetchX(repoPath: string, …): Promise<T>` per command that returns the `invoke` call directly.
+- Command parameters are passed camelCase (`repoPath`, `projectPath`, `repoPaths`) — serde maps them to snake_case on the Rust side; the payload *fields* stay snake_case (`started_at`, `event_count`). Do not "fix" either spelling.
+- The DTO for a command is declared as an `export interface` in the same file, next to its wrapper, with per-field JSDoc explaining nullability and provenance. Large DTO families are moved out to `src/lib/types/*` instead.
+- Modules that cannot trust the payload normalize at the boundary: `doctor.ts` declares private raw shapes plus normalising functions that degrade an unknown string to a warning, and encodes the failure in an `error` field so the UI can render a tooltip instead of crashing.
+- Stores use zustand: an unexported store interface documenting each field and action, then the exported `create` call. `code-viewer-store.ts` states that it is ephemeral by design (no persistence) because open files are session state, not a preference, and that it mirrors the style of `lib/store.ts`.
+- `watcher.ts` is the live-refresh hub: it listens to the fs-change event and the specs snapshot, then sets or invalidates query data per change kind — new pages register their key prefix there rather than polling.
+- Files open with a `//` header comment naming the module's role, the Tauri command or Rust counterpart, and the spec/wave; exported members carry JSDoc.
 
 ## How to apply
 
-A new backend command gets its DTO interface and its `fetchXxx` wrapper in the matching lib module (or a new `<surface>.ts`) — `invoke()` stays inside `src/api/*` or here, and components/features/hooks consume the wrapper. New global UI state gets its own `*-store.ts` with a documented store interface. Pure formatting goes to `format.ts` / `time.ts` / `text.ts` rather than being redefined in a component. Keep the fail-open contract: return an empty or normalised value with the reason in a field, so the caller renders an empty state instead of relying on `onError`. When a wrapper feeds a live surface, make sure the query key prefix it backs is registered in `lib/watcher.ts` instead of adding polling.
+A new backend read is added to the closest existing module — `dashboard.ts` for the dashboard commands, `projects.ts` for the project registry, `doctor.ts` for health — as a wrapper plus its DTO interface; only a genuinely new concern earns a new kebab-case file. Never widen the surface by calling `invoke()` from a component or a `features/` module. If the data must refresh live, add the query-key prefix to the matching branch in `watcher.ts`. Keep these modules free of JSX: the 18 files of this role are `.ts`, and anything needing markup belongs in `components/` or `features/`.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/lib/dashboard.ts` — DTO interfaces + one-line `invoke` wrappers with camelCase argument keys.
-- Ref: `apps/dashboard/src/lib/doctor.ts` — `RawDoctorStatus` / `normaliseStatus` degrade path and the explicit `error` field.
-- Ref: `apps/dashboard/src/lib/code-viewer-store.ts` — zustand `create` with a fully documented store interface and deliberate non-persistence.
+- Ref: apps/dashboard/src/lib/dashboard.ts — thin `invoke` wrappers with camelCase params and snake_case DTO interfaces declared alongside.
+- Ref: apps/dashboard/src/lib/doctor.ts — raw-shape parsing plus normalising narrowing and an explicit fail-soft `error` field.
+- Ref: apps/dashboard/src/lib/code-viewer-store.ts — zustand store with a documented store interface and no persistence.

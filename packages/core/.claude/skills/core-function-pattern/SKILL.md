@@ -1,6 +1,6 @@
 ---
 name: core-function-pattern
-description: Use when adding or refactoring a Function-prefixed record that describes one source function across the ast and regression_check primitives.
+description: Use when adding or refactoring a Function-prefixed record that describes one declared function across packages/core/src/domain/ast/ and packages/core/src/domain/regression_check/.
 paths:
   - packages/core/src/domain/ast/**
   - packages/core/src/domain/regression_check/**
@@ -18,18 +18,28 @@ metadata:
 
 ## Purpose
 
-`Function*` structs are the record of ONE source function as it travels the extract, snapshot and diff pipeline, and they are pure data: `pub` fields, a `///` line each, no behaviour. `FunctionSig` is what the extractor produces — `name` is the final identifier and never a qualified path, so equality against the declared touched-functions list is a plain string compare; `params` and `return_type` are preserved verbatim so the gate can flag signature drift without re-parsing; `span` is a half-open `Range<usize>`. `FunctionCapture` is the persisted photograph: a `qualifier` used as the `BTreeMap` key (so two snapshots serialize byte-identically regardless of insertion order), the `CaptureMode`, an `Option<FunctionSig>` documented for exactly when it is `None`, the verbatim `body`, and a `TextSpan`. `FunctionDelta` is one row of a `Diff`: qualifier, `before`/`after` as `Option<FunctionCapture>`, a `ChangeKind`, and the combined most-restrictive mode. All three are declared in their module's types block in `mod.rs` — never inside the algorithm file that computes them.
+The regression gate photographs the functions a wave declared as touched, before and after, and these types are the links in that chain. `FunctionSig` in `ast/mod.rs` is what the extractor produces from source; `FunctionCapture` in `regression_check/mod.rs` is the persisted photograph of one function body; `FunctionDelta` is one row of the diff between two snapshots. Their field semantics are aligned on purpose: the name is the final identifier and never the qualified path, so comparing against the declared list is a plain string compare, and both span types are half-open byte ranges — `TextSpan` documents that it mirrors the extractor span so a caller holding one does not need a converter. The ast layer enumerates no language ids anywhere; when a grammar is missing the capture degrades to the textual path and the record itself carries which mode produced it.
 
 ## Convention
 
-`packages/core/src/domain/ast/` (`mod.rs` plus `conventions`, `entity`, `loader`, `parser`, `queries`, `signature`, `stub_detect` sub-modules and `queries_builtin/`) and `packages/core/src/domain/regression_check/` (`mod.rs`, `compare.rs`, `snapshot.rs`). `mod.rs` opens with a `//! ## Public surface` list and a `pub use` block re-exporting the entry points and types. Serde derives appear where the record crosses a persisted boundary, with `#[serde(rename_all = "camelCase")]` applied at that boundary only. Zero hardcoded language ids: language is an opaque string resolved through `GrammarLoader`, every entry point degrades to the textual fallback and tags the result with the mode actually used (`DetectionMode` / `CaptureMode`).
+Folder: packages/core/src/domain/ast/**, packages/core/src/domain/regression_check/** · Extension: .rs · Files of this role in this subproject: 4
+
+- A function record is a plain data record: public fields, no inherent constructor, built by struct literal at the producer.
+- Derives are `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. The ast module spells serde fully qualified and keeps field names verbatim; the regression module imports serde and adds a camelCase rename, applying the rename only at the persisted-artefact boundary. The doc comment on the extractor record states that split explicitly.
+- Byte offsets are half-open ranges — a standard range inside ast, the two-field span struct inside the regression module.
+- A field the degraded path cannot produce is an option, and its doc comment enumerates *every* case in which it is absent.
+- The capture method travels with the data as a small enum rather than being re-derived downstream, with a string accessor and a combine that picks the more restrictive of two.
+- Collections that must serialize byte-identically across machines are ordered maps keyed by the canonical qualifier, not hash maps; the module doc names diff reproducibility as the reason.
+- A list-of-names concept is a documented type alias, not a wrapper struct, with the doc saying which on-disk field it matches.
+- Module headers in both crates state the design rules (single responsibility, zero hardcoded languages, reuse over duplication) and then list the public surface item by item.
+- Tree-sitter queries are reached through named accessors that return an optional query, never a raw string key at the call site.
 
 ## How to apply
 
-A new per-function record goes in the owning module's `mod.rs` next to `FunctionSig` / `FunctionCapture`, named `Function<Role>`, keyed by the same identifier the rest of the pipeline uses (final identifier for signatures, qualifier for captures) and carrying a half-open byte span. Derive `Serialize`/`Deserialize` and add the camelCase rename only if it will be written into a snapshot artefact. Add it to the `//! ## Public surface` list and the `pub use` block. Keep the algorithm out of the struct: extraction lives in `signature.rs`/`stub_detect.rs`, comparison in `compare.rs`, and both stay fail-open — a missing grammar, a broken query or a parse failure degrades to "no hits for this file", never a panic and never an aborted run. Cover the new type with inline `#[cfg(test)] mod tests` in the same file.
+Put a new function-shaped record in the module that produces it — extraction results in the ast module, snapshot and diff rows in the regression module — and add it to that module's re-export block and to the public-surface list in the module header. Mirror the field names of the neighbouring type in the chain so a caller can move between them without a converter; always carry a span, always carry the capture mode, and use a documented option for anything the fallback path cannot fill. If the record needs new syntax knowledge, add a query file and a typed accessor — do not branch on a language id, and keep the textual fallback path returning a real value so a missing grammar degrades instead of aborting the gate.
 
 ## Examples
 
-- Ref: `packages/core/src/domain/ast/mod.rs` — `FunctionSig` beside `StubMatch`, `DetectionMode`, `AstError` in the module types block.
-- Ref: `packages/core/src/domain/regression_check/mod.rs` — `FunctionCapture`, `FunctionDelta`, `Snapshot`'s `BTreeMap` keying and `CaptureMode::combine`.
-- Ref: `packages/core/src/domain/ast/stub_detect.rs` — the AST-then-textual fallback that produces these records without naming a language.
+- Ref: packages/core/src/domain/ast/mod.rs — the extractor-side record, its span contract, and the doc comment explaining why the camelCase rename lives downstream.
+- Ref: packages/core/src/domain/regression_check/mod.rs — the persisted side, including the ordering rule on the snapshot map.
+- Ref: packages/core/src/domain/ast/stub_detect.rs — the alias-over-wrapper habit and the two-mode contract stated in the module header.

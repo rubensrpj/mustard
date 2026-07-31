@@ -1,44 +1,12 @@
 ---
 name: dashboard-props-pattern
-description: Use when adding or refactoring a React component under components/page or features — its folder, its *Props interface and its class composition.
+description: Use when adding or refactoring a React component under src/components/page or src/features whose public surface is a `XxxProps` interface in a folder index.tsx.
 paths:
-  - apps/dashboard/src/components/page/AcBreakdown/**
-  - apps/dashboard/src/components/page/BaseRow/**
-  - apps/dashboard/src/components/page/CodeBlock/**
-  - apps/dashboard/src/components/page/CollapsibleGroup/**
-  - apps/dashboard/src/components/page/CostBar/**
-  - apps/dashboard/src/components/page/DataCard/**
-  - apps/dashboard/src/components/page/DataRow/**
-  - apps/dashboard/src/components/page/DeltaText/**
-  - apps/dashboard/src/components/page/DiffViewer/**
-  - apps/dashboard/src/components/page/EditorialBand/**
-  - apps/dashboard/src/components/page/EmptyState/**
-  - apps/dashboard/src/components/page/EventChip/**
-  - apps/dashboard/src/components/page/KPICard/**
-  - apps/dashboard/src/components/page/KPIRow/**
-  - apps/dashboard/src/components/page/KpiValue/**
-  - apps/dashboard/src/components/page/LegendSwatch/**
-  - apps/dashboard/src/components/page/Markdown/**
-  - apps/dashboard/src/components/page/PageHeader/**
-  - apps/dashboard/src/components/page/PageSurface/**
-  - apps/dashboard/src/components/page/PhaseChip/**
-  - apps/dashboard/src/components/page/SectionHeader/**
-  - apps/dashboard/src/components/page/StatPill/**
-  - apps/dashboard/src/components/page/StatusDot/**
-  - apps/dashboard/src/components/page/TreeNode/**
-  - apps/dashboard/src/components/page/WaveRowLabel/**
-  - apps/dashboard/src/features/economy/PerAgentTable/**
-  - apps/dashboard/src/features/economy/SavingsBreakdownCard/**
-  - apps/dashboard/src/features/economy/ScopeBar/**
-  - apps/dashboard/src/features/economy/WindowBar/**
+  - apps/dashboard/src/components/page/**
+  - apps/dashboard/src/features/economy/**
   - apps/dashboard/src/features/telemetry/PhaseStation/**
   - apps/dashboard/src/features/telemetry/PipelineTimeline/**
-  - apps/dashboard/src/features/workspace/GitInfoCard/**
-  - apps/dashboard/src/features/workspace/LivePipelineCard/**
-  - apps/dashboard/src/features/workspace/ProjectInfoCard/**
-  - apps/dashboard/src/features/workspace/SpecAlertsBand/**
-  - apps/dashboard/src/features/workspace/SpecStatusCards/**
-  - apps/dashboard/src/features/workspace/WorkspaceFilesRanking/**
+  - apps/dashboard/src/features/workspace/**
 tags: [add, refactor]
 appliesTo: [props]
 scope: [code-editing]
@@ -53,21 +21,28 @@ metadata:
 
 ## Purpose
 
-Every component is a **folder** containing a single `index.tsx`, and the file reads top-down in a fixed order: header comment explaining what the component is for and which page introduced it, imports, any variant unions and class-map constants, then `export interface <Component>Props`, then `export function <Component>({ … })`. Props are destructured in the signature with defaults inline. Almost every component accepts an optional `className?: string` merged **last** through `cn()` from `@/lib/utils`, so a caller can adjust spacing without forking the component. Styling is Tailwind classes over the semantic tokens; there is no CSS-in-JS and no CSS module — inline `style` is reserved for computed values (a bar width, a colour-mix tint). Helper subcomponents that live in the same file and are not part of the public API take an **inline object type** rather than a named interface: the named `*Props` interface is the signal of an exported surface. Components under `components/page/` are generic primitives that receive data through props; components under `features/<area>/` are the domain compositions that may query and that consume the primitives.
+Every dashboard component declares its contract as a named `Props` interface sitting immediately above the component in that component's own `index.tsx`. `src/components/page/*` holds the reusable, data-free atoms (rows, pills, bars, code blocks, page chrome) re-exported through one barrel; `src/features/*` holds the composed, data-aware pieces. Reading the `Props` interface should tell you everything the component needs, which is why the shapes stay small and typed with `ReactNode` slots rather than pre-rendered strings.
 
 ## Convention
 
-- One folder per component, `index.tsx` inside, PascalCase folder name equal to the exported function name; ~37 `*Props` interfaces across `components/page/` and `features/`.
-- Generic primitives are re-exported from the barrel `apps/dashboard/src/components/page/index.ts` and imported as `@/components/page`; feature components are imported by their folder path.
-- Interactive non-button elements carry the full a11y quartet — `role="button"`, `tabIndex`, `onClick`, and an `onKeyDown` handling Enter/Space (see `BaseRow`).
-- Empty/degenerate input renders a visible fallback (`AcBreakdown` returns an em-dash when the three counts are zero) instead of an empty box.
+Folder: apps/dashboard/src/components/page/**, apps/dashboard/src/features/economy/**, apps/dashboard/src/features/telemetry/PhaseStation/**, apps/dashboard/src/features/telemetry/PipelineTimeline/**, apps/dashboard/src/features/workspace/** · Extension: .tsx · Files of this role in this subproject: 37
+
+- One folder per component, the file always named `index.tsx`, folder name equal to the component name. Under `components/page` each folder gets a line in the barrel `src/components/page/index.ts`, so consumers import from `@/components/page`.
+- The interface is `<Component>Props` and is declared right above the component. The `components/page` atoms I read export theirs; the two workspace feature bands keep theirs file-local since only the module itself uses them.
+- Components are plain named `export function` declarations with the props destructured in the signature and defaults given inline (`chevron = false`, `intent = "primary"`, `lang = "plain"`) — no default export and no `React.FC` in the files read here.
+- `className?: string` is the trailing prop on the atoms and is merged last through `cn()` from `@/lib/utils`, so callers can override; classes reference theme tokens rather than raw palette utilities.
+- Slot-shaped props are typed `ReactNode` (`label`, `summary`, `display`, `tooltip`, `icon`); interactions are `onClick?: () => void`, and a row that becomes clickable also adds `role="button"`, `tabIndex` and Enter/Space handling (`BaseRow`).
+- Several components and their `Props` can share one `index.tsx` when they compose as a family (`CostBar` plus `BarTrack` plus `BarFill`, each with its own exported `Props`).
+- Degenerate input is handled inside the component, not by the caller — `AcBreakdown` renders an em-dash when the three counts are zero, `CodeBlock` falls back to plain text for an unknown language instead of throwing.
+- Where the file mirrors a backend enum it exports the union next to the props and maps it through a module-level lookup record.
+- The `components/page` atoms take data as props and do no fetching; the `features/*` members own their own query (with an `enabled` gate and an explicit `staleTime`) and pass scalars down.
 
 ## How to apply
 
-Create `src/components/page/<Name>/index.tsx` for a primitive or `src/features/<area>/<Name>/index.tsx` for a domain composition; export the `*Props` interface and the function, add `className?: string`, and merge it last inside `cn()`. Add the barrel line in `components/page/index.ts` when — and only when — the component is a generic primitive. Keep data fetching out of `components/page/*`: primitives take numbers and nodes; if you need a query, the component belongs under `features/` and follows the hook conventions. Reuse the existing atoms (`StatPill`, `BaseRow`, `DataCard`, `SectionHeader`, `EmptyState`) before inventing new chrome, and use `ReactNode` for slot-like props so callers can pass markup.
+Add `src/components/page/<Name>/index.tsx` for a reusable atom (and register it in the barrel), or `src/features/<area>/<Name>/index.tsx` for a data-aware piece. Declare `<Name>Props` first, destructure with defaults, accept and merge `className` last, and keep the empty/zero case inside the component. Do not call `invoke()` from either location — read through `@/lib/dashboard` wrappers or a `useXxx` hook — and reuse the existing atoms (`BaseRow`, `StatPill`, `DataCard`, `SectionHeader`) instead of re-styling equivalent chrome.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/components/page/BaseRow/index.tsx` — `BaseRowProps`, status `Record` map, keyboard-accessible interactive row composing `StatPill`.
-- Ref: `apps/dashboard/src/components/page/AcBreakdown/index.tsx` — minimal primitive with the em-dash empty case and the `cn` merge.
-- Ref: `apps/dashboard/src/components/page/CodeBlock/index.tsx` — module-level registry constants above the `CodeBlockProps` interface, never-throws fallback path.
+- Ref: apps/dashboard/src/components/page/BaseRow/index.tsx — exported `BaseRowProps`, `RowStatus` union with a lookup dot map, keyboard-accessible interactive row.
+- Ref: apps/dashboard/src/components/page/AcBreakdown/index.tsx — minimal numeric props with the zero-total empty state handled internally.
+- Ref: apps/dashboard/src/components/page/CodeBlock/index.tsx — props with a permissive `lang` and a never-throwing fallback path.

@@ -1,6 +1,6 @@
 ---
 name: rt-outcome-pattern
-description: Use when adding or refactoring an *Outcome type — the terminal answer of one event or QA operation, kept apart from printing and exiting.
+description: Use when adding or refactoring the typed outcome an event emitter, verifier or QA entry point returns instead of printing or exiting itself.
 paths:
   - apps/rt/src/commands/event/**
   - apps/rt/src/commands/review/qa_run/**
@@ -18,18 +18,26 @@ metadata:
 
 ## Purpose
 
-An `*Outcome` names WHAT an operation concluded, so the operation itself never has to print or exit. `PhaseOutcome` distinguishes a written transition from the idempotent short-circuit; `VerifyOutcome` maps directly to a process exit code; `QaSpecOutcome` and `StopGateOutcome` are the count-only and gate-facing reductions of a QA run. The separation is what lets a composite caller reuse the core in-process: `plan-materialize` folds the `PhaseOutcome` into its own report while the CLI entry turns the same value into one deterministic stdout line, and neither caller inherits the other's output contract.
+An `*Outcome` names what a pass DID, so that the pass itself neither prints nor exits. `emit-phase` computes a `PhaseOutcome` and a separate `success_line` turns it into the one deterministic JSON line; `verify-emit` computes a `VerifyOutcome` that "maps directly to a process exit code"; `qa_run` hands back `QaSpecOutcome` / `StopGateOutcome` precisely so callers that must not lose control of the process (`complete_spec`, the Stop gate) can read the verdict without a `process::exit`. The type is the seam that keeps the core testable and the stdout byte-stable. It also forces the silent cases into the open: `PhaseOutcome::AlreadyThere` exists because printing nothing made "already in that phase" and "transition recorded" indistinguishable from stdout.
 
 ## Convention
 
-`apps/rt/src/commands/event/**` and `apps/rt/src/commands/review/qa_run/**`, declared in the module that owns the operation; four types today. Enums are `#[derive(Debug, PartialEq, Eq)]` (add `Clone, Copy` when the value is threaded around) so a unit test asserts the outcome without spawning anything; struct outcomes are `pub` with documented fields. Every variant's doc comment states the DISTINCTION it exists for — an idempotent short-circuit must SAY so, because printing nothing made "already in that phase" and "transition recorded" indistinguishable from stdout. Rendering lives in a separate function that takes the outcome and returns the JSON value, never inside the core.
+Folder: apps/rt/src/commands/event/**, apps/rt/src/commands/review/qa_run/** · Extension: .rs · Files of this role in this subproject: 4
+
+- Name is `<What>Outcome`; the doc line says what it is the outcome OF and where it goes ("What a phase emit did — the material of the ONE deterministic success line `run` prints", "The outcome of a verification scan — maps directly to a process exit code").
+- In `event/` the two members are closed enums with `#[derive(Debug, PartialEq, Eq)]`, one variant per distinguishable ending, carrying the evidence the printed line needs in the variant itself: `Recorded { from: Option<String> }`, `AlreadyThere`, `Found { age_secs: i64 }`, `Miss`. In `review/qa_run/mod.rs` the two members are plain `pub struct`s (`QaSpecOutcome { spec, overall, passed, total }`, `StopGateOutcome { overall, first_failing_ac }`) because the outcome is a tuple of measurements rather than a choice.
+- Visibility is the narrowest the consumer needs: `enum VerifyOutcome` private, `pub(crate) enum PhaseOutcome`, `pub struct QaSpecOutcome` where an out-of-family caller reads it — and the doc names that caller.
+- Every variant and every field is doc-commented with what it means for the reader, including the fail-open ones; an outcome that could not measure anything says so rather than reusing the success variant.
+- The outcome is produced by a pure, injectable scan/reduce (`fn scan(events, args, now_ms) -> VerifyOutcome` takes the clock as a parameter; `run_for_stop_gate` reduces the shared `run_qa_with_options` result) and consumed by a mapper (`success_line(outcome, spec, to) -> Value`, an exit-code match) — the producer never prints.
+- The mapped output carries no timestamp or session id: "run outputs are byte-compared in gates; the NDJSON row carries those".
+- Reduction reuses the single upstream core rather than a second parser: `StopGateOutcome` is built on the same `run_qa_with_options` `/qa` runs, so the Stop gate's verdict is qa-run's verdict by construction.
 
 ## How to apply
 
-Have the cwd-aware core return `Result<<X>Outcome, String>` (or the outcome directly for a telemetry path) and keep `println!` and `process::exit` in the thin `run()` entry only. Do not collapse two states that ask for opposite actions from the reader into one variant. Keep the printed line deterministic — the `{ok, kind, spec, …}` shape with no timestamp and no session id, since the NDJSON row already carries those and `run` output is byte-compared. Fail-open for telemetry: an NDJSON write failure degrades to a no-op, never a panic.
+Return the outcome from the testable core and keep `run` as a thin adapter: call the core, map the outcome to the deterministic line or exit code, emit. If the new ending is a choice between mutually exclusive endings, make it an enum variant and put its evidence inside the variant; if it is a set of measurements, a small `pub struct` with documented fields is the local precedent. Add a variant for "could not measure" instead of folding it into the success case, and say in its doc what the reader may conclude.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/event/emit_phase.rs` — `PhaseOutcome` plus `success_line`, with the print kept in `run` so composite callers keep their own stdout contract.
-- Ref: `apps/rt/src/commands/event/verify_emit.rs` — `VerifyOutcome` and a scan core with time injected for determinism.
-- Ref: `apps/rt/src/commands/review/qa_run/mod.rs` — `QaSpecOutcome` / `StopGateOutcome` built on the one executor so no second AC reader can drift.
+- Ref: apps/rt/src/commands/event/emit_phase.rs — `PhaseOutcome::{Recorded { from }, AlreadyThere}` mapped by `success_line` to the `{ok, kind, spec, from, to, idempotent}` line.
+- Ref: apps/rt/src/commands/event/verify_emit.rs — `VerifyOutcome::{Found { age_secs }, Miss}` produced by `scan(events, args, now_ms)` with the clock injected for determinism.
+- Ref: apps/rt/src/commands/review/qa_run/mod.rs — `QaSpecOutcome` and `StopGateOutcome` as the no-stdout, no-`process::exit` faces of the same runner.

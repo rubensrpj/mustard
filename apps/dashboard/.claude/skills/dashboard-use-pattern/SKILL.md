@@ -1,6 +1,6 @@
 ---
 name: dashboard-use-pattern
-description: Use when adding or refactoring a data hook under src/hooks that wraps a Tauri-backed wrapper in TanStack Query.
+description: Use when adding or refactoring a data hook under src/hooks that binds a Tauri-backed read to TanStack Query for the dashboard UI.
 paths:
   - apps/dashboard/src/hooks/**
 tags: [add, refactor]
@@ -17,20 +17,26 @@ metadata:
 
 ## Purpose
 
-Every hook in `src/hooks/` is a thin TanStack Query binding over a typed wrapper imported from `@/lib/*` or `@/api/*` — the hook never calls `invoke()` itself. The shape is always the same: an exported named `function useXxx(...)` in a file named after it, returning `useQuery` (or `useQueries` for a per-project fan-out). The `queryKey` is a stable array literal whose first element is the string prefix the FS watcher invalidates and whose identity leaves come last (`["read-file", repoPath, relPath]`); `enabled: !!repoPath` keeps the query from firing before a project is chosen, and only then does the `queryFn` assert the path. `staleTime` is always explicit and chosen from the real cadence of the data (5s for workspace summaries, 30s for a file read, 60s for artifact drift, 5min for an installation stat). A doc comment above the hook says what the backend command is and how it fails — the Tauri commands are fail-open, so the hook documents that a missing file resolves to a payload with a false readable flag rather than a rejected promise.
+`src/hooks/` is the single React-facing layer between components and the backend: one `useXxx.ts` per read, each wrapping a thin `invoke()` wrapper from `@/lib/dashboard` or `@/lib/projects` in a TanStack Query binding. Components never fetch through `invoke` themselves and never re-implement a query key. The hooks encode the three things that are easy to get wrong here: a stable `queryKey` whose leaves the filesystem watcher can invalidate by prefix, an `enabled` gate so nothing fires before a project is chosen, and an explicit `staleTime` that matches how fast that data actually moves.
 
 ## Convention
 
-- Folder: `apps/dashboard/src/hooks/`, extension `.ts` (no JSX in this folder), 20 files; file name equals the primary export.
-- One hook family per file — a companion single-project variant lives beside the fan-out (`useWorkspaceSummary` / `useWorkspaceSummarySingle`, `useArtifactDrift` / `useIsMustardRepo`).
-- Return type is left inferred or annotated as `UseQueryResult<T>`; the query type parameter names the DTO from `@/lib/types/*` or the wrapper's exported interface.
+Folder: apps/dashboard/src/hooks/** · Extension: .ts · Files of this role in this subproject: 20
+
+- File name equals the primary hook name (`useEconomySummary.ts`, `useFileContent.ts`), exported as a named `export function useXxx(...)` — no default export. Closely related variants may share the file when they share a data source (`useIsMustardRepo` inside `useArtifactDrift.ts`, `useWorkspaceSummarySingle` inside `useWorkspaceSummary.ts`).
+- Single-target reads use `useQuery`; per-project fan-outs use `useQueries` over the project list, so cache identity follows the project path rather than the array index.
+- `queryKey` is an array literal starting with a stable kebab-case string (`"artifact-drift"`, `"read-file"`, `"workspace-summary"`), with `repoPath` / `p.path` / `spec` as trailing leaves. `useEconomySummary` derives a deterministic key fragment (`stableScopeKey`) instead of embedding an object, and keys on the period rather than a window whose `from` moves every render.
+- `enabled: !!repoPath` (or `!!scope`, or both params) gates the query, and only then does `queryFn` cast.
+- `staleTime` is set explicitly in each of the five hooks read here, tuned to the data (5s for workspace summaries, 30s for file content, 60s for drift, 5min for a per-session-stable fact). `refetchInterval` appears only where a panel is meant to poll; fan-outs that tolerate a missing binary set `retry: false`.
+- Fan-out hooks re-zip results into an exported `XxxRow` interface — identity plus data plus `isLoading` plus `error` — declared in the same file above the hook. Failures collapse to undefined data so a row renders without its badge instead of breaking the list.
+- A `//` header comment states the purpose and the spec/wave that introduced the hook; a JSDoc on the hook explains the disable condition and the cadence. Return types are annotated as `UseQueryResult<T>` in some hooks and inferred in others.
 
 ## How to apply
 
-Name the file `use<Thing>.ts` and export a function of the same name. Import the wrapper and its DTO type from `@/lib/…` — if the wrapper does not exist yet, add it there first, never call `invoke` from the hook. Pick a `queryKey` prefix that `lib/watcher.ts` already invalidates, or register the new prefix there; do not reach for `refetchInterval` as a substitute for the watcher (the two Economia hooks that poll do so at 30s and say why in a comment). Gate with `enabled`, set `staleTime`, and set `retry: false` when the failure is expected (binary absent, non-Mustard repo). Treat an empty response as data and let the caller render an empty state.
+Put a new read's `invoke()` wrapper in `src/lib/dashboard.ts` (or the matching `src/lib/*` module) first, then add `src/hooks/useThing.ts` that calls it. Pick the key prefix before writing the hook and register that prefix in `src/lib/watcher.ts` so the query refreshes on the fs-change event instead of polling. Since the Tauri commands are fail-soft (empty payload rather than a rejection), design the consumer around an empty state rather than `onError`.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/hooks/useFileContent.ts` — minimal canonical form: key leaves, `enabled` on both params, `staleTime`.
-- Ref: `apps/dashboard/src/hooks/useEconomySummary.ts` — derived stable key fragment (`stableScopeKey`) so a reordered selection reuses the cache.
-- Ref: `apps/dashboard/src/hooks/useArtifactDrift.ts` — `useQueries` fan-out keyed by path with `retry: false` and a commented staleTime rationale.
+- Ref: apps/dashboard/src/hooks/useArtifactDrift.ts — `useQueries` fan-out, exported `ArtifactDriftRow`, `retry: false`, plus a single-project `useQuery` variant in the same file.
+- Ref: apps/dashboard/src/hooks/useEconomySummary.ts — stable derived key fragment, `enabled: !!scope`, explicit `UseQueryResult<T>` return type.
+- Ref: apps/dashboard/src/hooks/useFileContent.ts — minimal two-leaf key with a double `enabled` gate and the post-gate casts.

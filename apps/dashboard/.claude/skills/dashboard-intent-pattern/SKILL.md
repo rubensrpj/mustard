@@ -1,6 +1,6 @@
 ---
 name: dashboard-intent-pattern
-description: Use when adding or refactoring the colour/emphasis variants of a page primitive — an *Intent union and its class-map records.
+description: Use when adding or refactoring a presentational atom in src/components/page whose color/emphasis varies by a semantic `Intent` union backed by a class lookup table.
 paths:
   - apps/dashboard/src/components/page/CostBar/**
   - apps/dashboard/src/components/page/DeltaText/**
@@ -20,20 +20,27 @@ metadata:
 
 ## Purpose
 
-Page primitives never take a colour; they take an **intent**. Each one declares and exports a small string-literal union named `<Thing>Intent` (or plain `Intent` for `StatPill`) at the top of its `index.tsx`, immediately followed by one or more `const NAME: Record<Intent, string>` maps from variant to Tailwind classes. Those classes are always built on the semantic design tokens — never a raw palette colour — and the header comments say so. The prop is optional with a default (`intent = "primary"` in `CostBar`, `intent = "neutral"` in `StatPill`), so meaning is opt-in. When a variant needs to be inferred, the union gains an `auto` member and a local `resolveIntent` narrows it to the concrete set — `DeltaText` derives success/error/neutral from the sign of the value while still letting a caller force the tone when the semantics flip (a cost delta where +5% is bad).
+The dashboard's small visual atoms do not take colors as props — they take an *intent*: a semantic union naming what the value means (`success`, `error`, `warning`, `neutral`, `info`, `primary`, `accent`), which the component maps to theme-token classes through a module-level lookup table. All four members of this role do it that way: `BarIntent` in `CostBar`, `DeltaIntent` in `DeltaText`, `LegendIntent` in `LegendSwatch`, `Intent` in `StatPill`. Keeping the mapping in a record (rather than in conditionals at the call site) is what lets the whole app re-theme by editing tokens, and it makes an unhandled variant a compile error instead of an invisible missing color.
 
 ## Convention
 
-- Declared inline in `apps/dashboard/src/components/page/<Component>/index.tsx`, exported next to the `*Props` interface; 4 primitives use this today.
-- One `Record` per styled axis — `StatPill` keeps `BORDER` and `TEXT` separate so the border carries the intent while the fill stays neutral.
-- Numeric output pairs the intent with `font-mono tabular-nums`; decorative swatches carry `aria-hidden="true"`.
+Folder: apps/dashboard/src/components/page/CostBar/**, apps/dashboard/src/components/page/DeltaText/**, apps/dashboard/src/components/page/LegendSwatch/**, apps/dashboard/src/components/page/StatPill/** · Extension: .tsx · Files of this role in this subproject: 4
+
+- The union is exported from the component's `index.tsx` and reaches consumers through the `src/components/page/index.ts` barrel, which re-exports each folder.
+- Member names are semantic, never visual — the four files use primary, accent, success, error, warning, neutral and info, not color words.
+- Each union is paired with one or more module-level records mapping variant to class string (`BAR_INTENT`, `INTENT_TEXT`, `SWATCH`, `BORDER` plus `TEXT`), indexed at render time, so no conditional chain decides styling in the JSX.
+- The class strings reference theme tokens rather than raw palette utilities; `LegendSwatch`'s header comment states this rule outright.
+- The intent prop is optional with a default in the destructuring, so the common case needs no prop.
+- A derived member (`DeltaText`'s auto) is resolved by a local helper typed as the concrete subset before lookup, keeping the record total over the real variants.
+- Numeric inputs are normalized inside the component before they touch the DOM — `BarFill` clamps its value with a finite guard; `DeltaText` formats sign and magnitude in a local helper.
+- Every one of the four opens with a `//` header comment explaining what the atom is for and when a caller should override the automatic intent.
 
 ## How to apply
 
-Adding a variant means adding the member to the union **and** to every `Record` keyed by it — TypeScript makes the map exhaustive, which is the point; do not widen the map to `Record<string, string>`. A new primitive declares its union, its map(s), gives the prop a default, and resolves the class through `cn()` with `className` merged last. Reach for an intent instead of asking the caller for a `className` colour override, and if the variant must be computed, follow the `auto` + `resolveIntent` shape rather than branching inside JSX.
+A new atom that needs color variance declares its `<Name>Intent` union in its own `src/components/page/<Name>/index.tsx`, adds the lookup record next to it, defaults the prop, and gets a line in the barrel `index.ts`. Prefer extending an existing union with a new semantic member over adding a parallel boolean prop, and add the color as a theme token rather than a literal hue. When a variant must be inferred from data, follow `DeltaText`: add an auto member plus a resolver returning the concrete subset.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/components/page/DeltaText/index.tsx` — `DeltaIntent` with `auto`, `resolveIntent`, `INTENT_TEXT` record.
-- Ref: `apps/dashboard/src/components/page/StatPill/index.tsx` — `Intent` union with paired `BORDER` / `TEXT` maps.
-- Ref: `apps/dashboard/src/components/page/CostBar/index.tsx` — `BarIntent` threaded from the labelled row down into `BarFill`.
+- Ref: apps/dashboard/src/components/page/CostBar/index.tsx — `BarIntent` shared by three composable exports plus value clamping in `BarFill`.
+- Ref: apps/dashboard/src/components/page/DeltaText/index.tsx — the auto member with its resolver and a total `INTENT_TEXT` table.
+- Ref: apps/dashboard/src/components/page/StatPill/index.tsx — two parallel tables (`BORDER`, `TEXT`) over one `Intent` union.

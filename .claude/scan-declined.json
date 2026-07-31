@@ -1,9 +1,10 @@
 {
-  "core-kind": "Both members are the closed view-module enums core-status-pattern already teaches: same derives, same serde rename, same parse/classify contract.",
-  "core-state": "Only SpecState fits (SegmentState is an enum covered by core-status-pattern), so there is a single exemplar and no recurring shape in a folder already covered by core-view-pattern.",
-  "dashboard-source": "Same paths as dashboard-kind-pattern (src/lib/types/**); the only real *Source declaration is SavingsSource, and the serde-mirror union convention is taught there.",
-  "dashboard-summary": "Same folder and role as dashboard-use-pattern; useEconomySummary.ts is already an exemplar there and Summary is a domain noun with no shape left to teach.",
-  "dashboard-wave": "WaveCost/WaveChild/SpecWave share a domain noun, not a shape; structurally they are serde-mirror DTOs already covered by dashboard-kind-pattern.",
-  "rt-file": "No shared shape between the two members: only diff_digest.rs declares a *File type; wave_done.rs File hits are prose in a ## Files section.",
-  "rt-src": "Folder-name cluster, not a role: exemplars are crate-root wiring whose rules already live in apps/rt/CLAUDE.md Guards, and its apps/rt/src/** paths would load on top of every other rt mold."
+  "core-kind": "Both members are closed serde enums in the same folder with the same derive line and doc habit as the status cluster; core-status-pattern already teaches this role on the identical paths glob.",
+  "core-source": "The cluster declares only one type, SavingsSource in economy/model.rs; writer.rs merely consumes it, so there is no repeated shape to teach.",
+  "dashboard-row": "Covered by dashboard-use-pattern: the fan-out result interfaces live in src/hooks and are documented there as part of the useQueries convention.",
+  "dashboard-source": "Same role as dashboard-kind-pattern: the exemplars are the src/lib/types wire-mirror files that mold already teaches.",
+  "dashboard-summary": "No distinct shape: both exemplars are ordinary src/hooks/use*.ts query hooks already taught in full by dashboard-use-pattern.",
+  "dashboard-wave": "Same role as dashboard-kind-pattern: WaveCost/SpecWave/WaveChild are snake_case DTO mirrors in the same two files; a per-suffix mold would fragment one convention into three.",
+  "rt-file": "The two members share only the word file: ChangedFile is a parsed git diff row in diff_digest.rs, while wave_done.rs declares no *File type at all — its hits are prose in a Files section. No recurring shape to teach.",
+  "scan-cli": "Phantom affix: Cli is a single declaration (the clap root struct in main.rs); the other matches are token folds. Same paths and exemplars as scan-src, whose How to apply already covers adding a subcommand."
 }

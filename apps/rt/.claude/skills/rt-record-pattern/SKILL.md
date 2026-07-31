@@ -1,6 +1,6 @@
 ---
 name: rt-record-pattern
-description: Use when adding or refactoring a *Record row for a maint action that runs one canonical command per subproject discovered from the repo model.
+description: Use when adding or refactoring the per-subproject row a maint sweep records while running one command per project kind.
 paths:
   - apps/rt/src/commands/maint/**
 tags: [add, refactor]
@@ -17,17 +17,27 @@ metadata:
 
 ## Purpose
 
-`InstallRecord` (`maint-deps`) and `ValidateRecord` (`maint-validate`) are twins: one row per subproject describing a command that was actually run — `subproject`, `command`, `ok`, `duration_ms`. The pair encodes the whole shape of a maint action: enumerate subprojects from grain's repo model, map each project `kind` to ONE canonical command, run them sequentially, and record every attempt whether it succeeded or not. A `*Record` is therefore about an EXECUTION, which is what separates it from an `*Entry` (a row about a file or a state) — and it is what makes the overall verdict a conjunction over rows rather than an early abort.
+`InstallRecord` and `ValidateRecord` are the two rows of the maintenance sweeps: `maint-deps` installs dependencies in every subproject, `maint-validate` builds/type-checks them, and each records one row per subproject with the exact command it ran, whether it succeeded, and how long it took. The pair is deliberately identical in shape — same four fields, same construction in both the dry-run and the real branch — because the two commands are the same sweep with a different verb, and a reader who has understood one has understood the other. Subprojects are never discovered by walking the filesystem: both read grain's repo model through `mustard_core::read_projects`, and the per-kind command comes from a small pure lookup that returns `None` for an unknown stack, so an unrecognised project is skipped rather than guessed at.
 
 ## Convention
 
-`apps/rt/src/commands/maint/maint_<action>.rs`; two today. Each module declares, in order: the options struct, the record struct, the report struct, then a `#[must_use] pub(crate) fn <verb>_command(kind: &str)` matching on the lowercased kind with the same stack aliases the sibling uses, then the private runner. Subprojects come from `mustard_core::read_projects(&model)` over `.claude/grain.model.json` — the model is never parsed directly. Commands spawn through `mustard_core::platform::process::rtk_command`.
+Folder: apps/rt/src/commands/maint/** · Extension: .rs · Files of this role in this subproject: 2
+
+- `/// One subproject <verb> result.` then `#[derive(Debug, Serialize)] pub(crate) struct <Verb>Record { pub subproject: String, pub command: String, pub ok: bool, pub duration_ms: u64 }` — keep the field set and the order identical across the sweeps.
+- The record is declared between the `<Verb>Opts` struct and the `<Verb>Report` that carries `Vec<Record>`; the report adds only what the sweep needs (`dry_run`, and `overall` for validate).
+- The per-kind command is a `#[must_use] pub(crate) fn <verb>_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)>` matching `kind.to_ascii_lowercase().as_str()` over grain's manifest kinds plus the common stack aliases (`"npm" | "node" | "typescript" | …`), with `_ => None` meaning "skip this project".
+- The sweep loop resolves `display` (project dir, or name when the dir is empty) and `run_dir` the same way in both files, and `continue`s on `None` from the lookup.
+- `--dry-run` pushes the same record with `ok: true, duration_ms: 0` and skips the spawn, so the report shape is identical in both modes.
+- Execution goes through `mustard_core::platform::process::rtk_command(bin, &args).current_dir(&run_dir).output()`; success is `matches!(result, Ok(ref o) if o.status.success())` and the duration is `u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)` — never an `unwrap` (crate-wide `deny`).
+- Aggregation is explicit: `overall` is the conjunction (`validates.iter().all(|v| v.ok)` → `"pass"`/`"fail"`) with `"skip"` returned early when the model lists no projects.
+- `run(opts)` prints `serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())` and then emits one economy operation event via `economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "<command>", elapsed, None, json!({}))`.
+- Tests in the same file cover the lookup only: known stacks, unknown → `None`, case-insensitivity.
 
 ## How to apply
 
-Add the new action as a new `maint_<action>.rs` mirroring its sibling field-for-field; do not generalise the twins into one parametrised runner. An unknown project kind is skipped, not an error row. `--dry-run` pushes a record with `ok: true, duration_ms: 0` and skips the spawn, so the report shape is identical either way. An empty project list returns early with an overall skip rather than a false green. Register the subcommand through the four registrations in `maint/cli.rs` and friends, and keep the printed report deterministic — no absolute machine paths; the display name is the project dir, falling back to its name.
+A third sweep (a formatter, a cleaner) copies this file shape verbatim: `<Verb>Opts`, `<Verb>Record`, `<Verb>Report`, the `<verb>_command` lookup, the loop, `run`. Do not introduce a different field set or a different dry-run shape — the two existing sweeps are the reference, and their symmetry is the point. Enumerate projects through `read_projects` on `.claude/grain.model.json`; never parse that file by hand.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/maint/maint_deps.rs` — `InstallRecord` plus its command mapper and runner.
-- Ref: `apps/rt/src/commands/maint/maint_validate.rs` — `ValidateRecord` plus the overall conjunction and the empty-projects skip.
+- Ref: apps/rt/src/commands/maint/maint_deps.rs — `InstallRecord` + `install_command` (pnpm/cargo/dotnet/go/dart/mvn/pip), dry-run row with `duration_ms: 0`.
+- Ref: apps/rt/src/commands/maint/maint_validate.rs — `ValidateRecord` + `validate_command`, `overall` as the conjunction with the early `"skip"` when no projects are known.

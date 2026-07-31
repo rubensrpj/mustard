@@ -1,6 +1,6 @@
 ---
 name: core-view-pattern
-description: Use when adding or refactoring a typed ViewModel struct under domain/model/view that other crates (rt, dashboard) deserialize and render.
+description: Use when adding or refactoring a serde ViewModel struct under packages/core/src/domain/model/view/ that other crates render against.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,18 +17,28 @@ metadata:
 
 ## Purpose
 
-`domain/model/view/` is the typed ViewModel surface other crates render against, and each sub-module owns exactly one cohesive shape — a change to "how we surface acceptance criteria" touches `quality.rs` alone, never `wave.rs`. Every view type is a pure `serde` record: `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`, all fields `pub`, and each field carries a `///` line saying which event or payload key it is projected from. Absence is encoded as `Option<T>` or a zero counter, never a literal `"unknown"` string: `WorkspaceSummary::tokens_saved_today` is `Option<i64>` precisely so the UI can tell "no data" from "zero savings". Every view offers a neutral constructor — `SpecView::empty`, `QualityRollup::empty`, `WaveView::queued`, `WorkspaceSummary::empty` — so a fold over an empty event stream yields a coherent zeroed value instead of an error or a panic. `Eq` is dropped only when a field is `f64` (`WorkspaceSummary::events_per_minute`), and the reason is written in the doc comment. The module is pure: no `fs`, no logging, no IO of any kind.
+`view/mod.rs` opens with the rule the folder follows: these are the typed ViewModels other crates render against, and each sub-module owns one cohesive shape so "how we surface acceptance criteria" touches `quality.rs` alone. A `*View` struct — and its siblings `WorkspaceSummary`, `QualityRollup`, `TimelineNode` — is the payload a projection folds an event stream into, one field per thing the UI shows. Absence is encoded structurally (an option, a zero counter, an empty list), never as a literal unknown string; `SpecView`'s module doc calls this out explicitly. Each struct ships a zero-value constructor so an event-less stream produces a coherent empty payload instead of an error. The crate Guards make these types public contract: rt and the dashboard render on top of them, so a field's shape changes only with a migration.
 
 ## Convention
 
-Folder `packages/core/src/domain/model/view/`, extension `.rs`, 7 files today: `filter.rs`, `quality.rs`, `spec.rs`, `timeline.rs`, `wave.rs`, `workspace.rs`, plus `mod.rs`. `mod.rs` declares each sub-module privately (`mod spec;`) and re-exports every public type by name; cross-cutting enums (`Phase`, `Scope`) live in `mod.rs` itself because several views reference them. Tests are an inline `#[cfg(test)] mod tests` at the bottom of the same file, asserting the empty constructor's zeros and `None`s.
+Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 3
+
+- One file per cohesive shape, declared as a private `mod` in `view/mod.rs` with its public types re-exported by name in the alphabetised `pub use` block.
+- A module-level `//!` block opens the file with the bracketed type link and the UI surface it backs, plus any deliberate modelling decision worth defending.
+- Payload derive line: `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. `Eq` is dropped where a field is floating point — `WorkspaceSummary` documents why in its doc comment.
+- Every public field carries a `///` naming the event or payload key it comes from, its unit, and what an absent value means.
+- Fields added after the first revision, and every optional one, carry `#[serde(default)]`, frequently paired with a skip-if-none guard.
+- An inherent `impl` supplies one `#[must_use]` zero-value constructor — `WorkspaceSummary::empty()`, `QualityRollup::empty()`, `SpecView::empty(spec)`, `WaveView::queued(n)` — filling collections empty and counters zero.
+- Rich to lean projection is `impl From<&Rich> for Lean`, documenting which fields it cannot populate.
+- Tests live at the bottom of the same file in an inline test module; there is no separate tests file for this folder.
+- No IO: the folder sits inside `domain/model/`, which the crate Guards keep free of filesystem, logging and disk access.
 
 ## How to apply
 
-A new shape gets its own `view/<shape>.rs` opening with a `//!` doc that names the type in brackets and the UI surface it backs, then `mod <shape>;` plus a `pub use` line in `mod.rs`. Follow the derive set above and give the struct an `empty()`/neutral constructor marked `#[must_use]`. Adding a field to an EXISTING view is a contract change: make it additive with `#[serde(default)]` (and `skip_serializing_if = "Option::is_none"` for optional hints) exactly like `SpecSummary::children_count` and `TimelineNode::input`, so older payloads keep deserialising — never reshape or rename an existing field without a migration. When a lean sibling of a rich view is needed, add it in the same file plus an `impl From<&Rich> for Lean` that documents which fields it cannot carry. Close with tests that construct the empty value and assert the counters and options.
+A new shape gets its own file under `view/`, then a `mod` line and a `pub use` entry in `view/mod.rs` alongside the existing ones. Reuse the cross-cutting `Phase` and `Scope` enums from `mod.rs` instead of redeclaring lifecycle vocabulary locally. Give the struct a `#[must_use]` empty/seed constructor and at least one test asserting the zeroed shape. To extend an existing struct, append the field with `#[serde(default)]` so payloads written by an older binary keep deserializing, document it, and update the constructor in the same edit.
 
 ## Examples
 
-- Ref: `packages/core/src/domain/model/view/spec.rs` — rich `SpecView` + lean `SpecSummary` + the `From<&SpecView>` projection.
-- Ref: `packages/core/src/domain/model/view/wave.rs` — `WaveView` with the `queued(wave)` neutral constructor.
-- Ref: `packages/core/src/domain/model/view/quality.rs` — `QualityRollup::empty()` and its per-row `AcceptanceCriterion`.
+- Ref: packages/core/src/domain/model/view/spec.rs — `SpecView` (rich drill-down payload) plus the lean `SpecSummary` and the projection between them; shows the field-level docs and the seed constructor.
+- Ref: packages/core/src/domain/model/view/wave.rs — `WaveView` with the queued constructor and its in-file test asserting no timestamps and an empty collection.
+- Ref: packages/core/src/domain/model/view/timeline.rs — `TimelineNode`, where the later-added hint fields all carry the default plus skip-if-none pair.

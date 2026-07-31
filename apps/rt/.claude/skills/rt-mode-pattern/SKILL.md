@@ -1,6 +1,6 @@
 ---
 name: rt-mode-pattern
-description: Use when adding or refactoring a per-hook *Mode enum and its MUSTARD_*_MODE resolver under the task or write hook families.
+description: Use when adding or refactoring the enforcement-mode enum and its MUSTARD_*_MODE resolver for a task or write hook.
 paths:
   - apps/rt/src/hooks/task/**
   - apps/rt/src/hooks/write/**
@@ -18,18 +18,26 @@ metadata:
 
 ## Purpose
 
-Each hook owns its own enforcement mode, read from its own `MUSTARD_*_MODE` env var, and the dispatcher never downgrades it. `MoldMode`, `BoundaryMode`, `LimitMode`, `GuardGateMode`, `ContextBudgetMode`, `MainBudgetMode` and `delegation_advisory::Mode` are that per-hook knob. The variant set is the design statement: an advisory gate has `Off | Warn` and NO `Strict`, deliberately — an unread mold or an extra reminder must never block a write — while an enforcing gate adds `Strict` and documents which threshold it denies at. The mode lives beside the gate, not in shared state, because the judgement of ONE consumer belongs to that consumer.
+Every gate that can be turned down carries its own tiny mode enum plus the resolver that reads it: `LimitMode`, `BoundaryMode`, `MoldMode`, `MainBudgetMode`, `ContextBudgetMode`, and the local `Mode` in `delegation_advisory`. Keeping the enum next to the gate (instead of one shared global) is what lets each gate ship exactly the states it can honour and its own default — `warn` for the advisory family, `strict` where an absent variable must not weaken the gate. The resolver is a plain free function directly below the enum, so reading the gate's file tells you both which env var controls it and what an unset or misspelled value does. The variant set is a contract, not a menu: the crate rule against inventing knobs the user did not ask for means an advisory gate ships `{Off, Warn}` only, with the doc saying "there is no blocking mode by design".
 
 ## Convention
 
-`apps/rt/src/hooks/{task,write}/<gate>.rs`, private to the module; seven today. Shape: `#[derive(Debug, Clone, Copy, PartialEq, Eq)] enum <Name>Mode { Off, Warn[, Strict] }` with a doc comment per variant, plus a private `fn <name>_mode()` (optionally taking a config override) that reads the env var, lowercases it, and matches with a wildcard arm falling back to the documented default. The default is stated in the function doc and matches what `settings.json` ships. When the gate needs the full three-state env then `mustard.json` then default cascade, it uses the shared `crate::shared::gate_mode::{GateMode, resolve_mode}` and passes its own default rather than writing a fourth copy of the cascade — that module exists because the same resolution had been copy-pasted three times.
+Folder: apps/rt/src/hooks/task/**, apps/rt/src/hooks/write/** · Extension: .rs · Files of this role in this subproject: 7
+
+- `/// The `MUSTARD_X_MODE` mode (default `warn`).` (or "Output mode of the gate.") then `#[derive(Debug, Clone, Copy, PartialEq, Eq)] enum XMode { … }`, declared immediately after the gate's unit struct.
+- Variants are `Off` / `Warn` / `Strict` where the gate can block (`LimitMode`, `BoundaryMode`, `MainBudgetMode`), `Off` / `Warn` where it cannot (`MoldMode`, `delegation_advisory::Mode`), and the ported name set where the JS original used one (`ContextBudgetMode::{Observe, Warn, Strict}`). Each variant carries a `///` saying what it does ("Block the new pipeline (`Deny`) until one is closed or the cap raised.").
+- Visibility is private by default; `pub(crate)` only when a sibling reads it (`pub(crate) enum LimitMode`).
+- The resolver sits right below: `fn x_mode() -> XMode` for env-only gates, `fn x_mode(config_override: Option<&str>) -> XMode` where `mustard.json#gates.<field>` participates. The cascade is env var → config override → built-in default: `std::env::var("MUSTARD_X_MODE").ok().filter(|v| !v.trim().is_empty()).or_else(|| config_override.map(str::to_string))`, then `.unwrap_or_default().to_ascii_lowercase()` and a `match` whose `_ =>` arm is the family default — an unrecognised value falls back, it never errors.
+- The default is stated in the resolver's doc comment together with where it is configured (`settings.json`'s `MUSTARD_MAIN_BUDGET_MODE: "warn"`), and the `Off` arm makes the gate a pure no-op (`Ok(Verdict::Allow)` before any IO).
+- For the close family there is already a shared cascade — `crate::shared::gate_mode::{GateMode, resolve_mode}` with its own `off`/`warn`/`strict` parsing; reuse it (as `close_gates::qa_gate_active` does) rather than adding another private copy when the semantics match.
+- Mode resolution never reads the filesystem beyond the cached project config and never panics; `clippy::unwrap_used` is `deny` outside tests.
 
 ## How to apply
 
-Name the env var `MUSTARD_<CONCERN>_MODE` and read it in exactly one function. Do NOT introduce a second knob (a threshold override is acceptable only where one already exists, and it too falls back to a named `const` default). Give the enum only the states the gate genuinely honours — adding `Strict` to an advisory is a behaviour change, not a config change. Check the mode early in `evaluate`, before any filesystem work, so `off` is a true no-op. Threshold constants stay `const` at module top with a doc line justifying the number.
+Declare the enum and its resolver in the gate's own module, above the `Check`/`Observer` impl, with only the variants the gate actually acts on. Call the resolver once at the top of `evaluate`/`observe` and return `Allow` immediately on `Off`. Name the variable `MUSTARD_<THING>_MODE`, document the default in the resolver's doc, and if `mustard.json` should participate, take `config_override: Option<&str>` and follow the env → config → default order used by `boundary_gate` and `main_context_counter`.
 
 ## Examples
 
-- Ref: `apps/rt/src/hooks/write/mold_gate.rs` — `MoldMode { Off, Warn }` with "there is deliberately no strict" stated in the module doc.
-- Ref: `apps/rt/src/hooks/task/main_context_counter.rs` — `MainBudgetMode { Off, Warn, Strict }` with the env then config then warn cascade.
-- Ref: `apps/rt/src/shared/gate_mode.rs` — the shared `GateMode` and `resolve_mode` to reuse instead of copying.
+- Ref: apps/rt/src/hooks/task/main_context_counter.rs — `MainBudgetMode { Off, Warn, Strict }` with the env → `gates.main_budget` → `warn` cascade.
+- Ref: apps/rt/src/hooks/task/context_budget_gate.rs — `ContextBudgetMode { Observe, Warn, Strict }` with the ported default documented (unrecognised value maps to `Strict`).
+- Ref: apps/rt/src/hooks/write/active_spec_limit_gate.rs — `pub(crate) enum LimitMode` with per-variant docs and `limit_mode()` right below it.

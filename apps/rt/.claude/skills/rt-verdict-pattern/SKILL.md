@@ -1,6 +1,6 @@
 ---
 name: rt-verdict-pattern
-description: Use when adding or refactoring a *Verdict enum — the judgement one review/QA gate reaches about a criterion, a plan or a piece of output.
+description: Use when adding or refactoring the enum that names a review or QA gate's decision under apps/rt/src/commands/review.
 paths:
   - apps/rt/src/commands/review/**
 tags: [add, refactor]
@@ -17,18 +17,27 @@ metadata:
 
 ## Purpose
 
-A `*Verdict` names the judgement a review gate reached, with one variant per ACTION the reader must take next. `Verdict` in `ac_negative_check` is `Proven | Unproven | Exempt`; `RegressionVerdict` is `Green | Amber { signals } | Red { signals }`, where Amber and Red differ by what the orchestrator must do (confirm with the user vs block consolidation); `ExpectVerdict` separates `NoExpectation`, `Matched`, `Missed` and `InvalidPattern` because an unusable regex must fail open to skip rather than read as a miss. Two states that ask for opposite actions are never collapsed into one — that collapse is exactly how a caller learns to read a missing artefact as a failure.
+The review family judges things, and each judgement gets a closed enum: `Verdict` (did the criterion clear the negative test), `RegressionVerdict` (Green / Amber / Red on consolidation), `ExpectVerdict` (did the `Expect:` regex match), alongside the neighbouring `Proof` and `Control` columns that record what happened in each pass. The defining rule is that a condition nobody could MEASURE never shares a variant with a pass: `NoVerdict` (killed by its deadline), `NotAttempted` (the command could not be run at all), `InvalidPattern` (the regex did not compile), `EvidenceRemoved` (the strip took the criterion's own evidence), `NotDeclared` (no control was declared) all exist so the reader is told the difference. Each variant's doc says whether the pass was TAKEN and what may be concluded from it — that prose is the actual contract, because the enum lands in a persisted ledger and in a CLI exit code.
 
 ## Convention
 
-`apps/rt/src/commands/review/`, declared in the module that produces the judgement; four today. Shape: `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` (drop `Copy` when a variant carries a vector; add `Serialize, Deserialize` with `#[serde(rename_all = "kebab-case")]` when it lands in a ledger). Note the deliberate name discipline: `mustard_core::domain::model::contract::Verdict` is the HOOK verdict, so a review judgement that shares a module with the contract import is named `<Concern>Verdict`. Mapping is done by a pure, TOTAL classifier with a wildcard arm, so the judgement is unit-testable without spawning a command.
+Folder: apps/rt/src/commands/review/** · Extension: .rs · Files of this role in this subproject: 4
+
+- Name is `Verdict` when the module has exactly one judgement, `<What>Verdict` otherwise (`RegressionVerdict`, `ExpectVerdict`); the doc line states the question it answers ("Whether a criterion cleared the negative test.", "Top-level verdict returned by `run` / `check_after_child_return`.").
+- Ledger-bound enums derive `#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]` with `#[serde(rename_all = "kebab-case")]`; an in-memory verdict that carries evidence drops `Copy`/serde and derives `#[derive(Debug, Clone, PartialEq, Eq)]`.
+- Visibility follows the consumer: `pub(crate) enum Verdict` inside the family, `pub enum RegressionVerdict` where the CLI and the hook both read it, private `enum ExpectVerdict` for a matcher local to one runner.
+- Every variant carries a `///` explaining the state AND the reader's licence — the `Control` column in `ac_negative_check.rs` marks each variant TAKEN / NEVER TAKEN and says which one lets a red proof be read as a fact about the behaviour.
+- Evidence rides inside the variant rather than in a side channel: `Amber { signals: Vec<Signal> }`, `Red { signals: Vec<Signal> }`.
+- Backwards compatibility is expressed with `#[derive(Default)]` + `#[default]` on the "nothing was asked" variant, so ledgers written before the column existed still parse and read as the truth about it.
+- The matcher that produces the verdict is total and pure — `fn evaluate_expect(expect: Option<&str>, output: &str) -> ExpectVerdict` compiles the regex inside and maps `Err(_)` to `InvalidPattern`, never a panic.
+- The CLI surface keeps it stringly: `review/cli.rs` takes `--verdict` as `Option<String>` and documents the accepted words, and maps the blocking verdict to an exit code ("Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2") through a small `GateError` enum with a `Display` impl.
 
 ## How to apply
 
-Write the variant docs first: each one says what happened AND what clears it. Pair every non-clearing variant with a module-level `const REASON_*: &str` (or a function when the message must name a file or a word) that states the ONE action that resolves it — a gate that refuses for reasons the reader cannot act on teaches the caller to route around it. Keep the classifier pure and separate from the runner. When the verdict maps to a process exit code, do the mapping in the `cli.rs` dispatch arm, not inside the gate. Add a two-sided test: the case that must be judged, and the near-miss that must not.
+Declare the enum in the module that decides, above the record type that stores it. Enumerate the outcomes by asking what the reader may conclude, and add a distinct variant for every way the measurement can fail to happen; if you find yourself about to reuse a pass or a fail variant for "could not measure", that is the variant to add. Document each variant in that language. If it is persisted, add `Serialize, Deserialize` + `kebab-case` and a `#[default]` variant for the pre-existing rows. Wire it to the CLI as a string flag plus an exit-code mapping, not as a new output format.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/review/ac_negative_check.rs` — `Verdict` with its classify family and one `REASON_*` per outcome.
-- Ref: `apps/rt/src/commands/review/gate_regression_check.rs` — `RegressionVerdict` carrying the signals that produced it, and the blocked case mapped to exit 2 by the CLI.
-- Ref: `apps/rt/src/commands/review/cli.rs` — the dispatch arm that turns a verdict into the process exit code.
+- Ref: apps/rt/src/commands/review/ac_negative_check.rs — `Verdict { Proven, Unproven, Exempt }` beside the `Proof` / `Control` columns, kebab-case serde, `#[default] NotDeclared` for old ledgers.
+- Ref: apps/rt/src/commands/review/gate_regression_check.rs — `RegressionVerdict { Green, Amber { signals }, Red { signals } }` with `GateError::Blocked` mapping Red to exit 2.
+- Ref: apps/rt/src/commands/review/qa_run/runner.rs — private `ExpectVerdict { NoExpectation, Matched, Missed, InvalidPattern }` produced by a total, pure matcher.

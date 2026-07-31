@@ -1,6 +1,6 @@
 ---
 name: dashboard-kind-pattern
-description: Use when adding or refactoring a TypeScript mirror of a Rust/Tauri payload under src/lib/types — a discriminated union, a *Kind alias, or a DTO interface.
+description: Use when adding or refactoring a wire-mirror type module under src/lib/types that reflects a Rust serde DTO crossing the Tauri boundary.
 paths:
   - apps/dashboard/src/lib/types/**
 tags: [add, refactor]
@@ -17,20 +17,26 @@ metadata:
 
 ## Purpose
 
-`src/lib/types/` holds the hand-written TypeScript mirrors of the shapes that cross the Tauri boundary. Every module opens with a header comment naming the exact Rust file it mirrors and states that a rename on the Rust side must land here in the same commit. Payload fields stay **snake_case** because serde emits snake_case — this is the opposite of the `invoke()` argument keys, which are camelCase; do not "harmonise" them. Discriminated unions carry the serde tag as a `kind` member with the variant names spelled exactly as the Rust enum serialises them (`all_projects` snake_case for economy, `qa-review` kebab-case for lifecycle), and a companion `export type XxxKind = Xxx["kind"]` alias is exported so `switch` sites stay exhaustive. Fields added after a shape shipped land **optional** with a comment saying why, so payloads from an older backend still deserialize instead of breaking the tree.
+`src/lib/types/` holds the hand-written TypeScript mirrors of the Rust structs and enums that cross the Tauri boundary. The folder is split by backend surface: `economy.ts` mirrors `mustard_core::economy` + `telemetry.rs::EconomyScopeDto`, `specs.ts` mirrors `spec_views.rs` and `packages/core/src/model/view/spec.rs`, `trace.ts` mirrors `telemetry.rs::TraceNode`. These modules carry no I/O: they describe the wire shape so the `invoke()` wrappers in `src/lib/*` and the `useXxx` hooks can be typed without re-deriving field names. Because serde owns the serialization, the field spelling here is not a style choice — it is the contract, and a rename on the Rust side must land here in the same change.
 
 ## Convention
 
-- Folder: `apps/dashboard/src/lib/types/`, extension `.ts`, 3 modules today — one per backend surface (`economy.ts`, `specs.ts`, `trace.ts`).
-- No React, no `invoke`, no component import: these are pure types plus co-located pure helpers (`microsToUsd`, `formatUsd`, `formatTokens`, the scope constructors).
-- Doc comments carry the units and the provenance: micro-USD vs USD, permille (0..1000), epoch-ms, MEASURED vs ESTIMATED.
+Folder: apps/dashboard/src/lib/types/** · Extension: .ts · Files of this role in this subproject: 3
+
+- All three files in the folder open with a `//` header comment that names the Rust counterpart file and states the lockstep rule ("keep these aligned", "update this file in lockstep").
+- Enum-like values are string-literal unions — `export type TraceKind = "spec" | "wave" | …`, `export type SpecActionKind = "reopen" | "close" | "remove"` — never a TypeScript `enum`. The literal spelling copies serde's rename: snake_case in `economy.ts` / `trace.ts`, kebab-case for `Stage` / `Outcome` in `specs.ts` (`"qa-review"`), and the JSDoc says which.
+- Derived unions use indexed access instead of a second literal list: `export type EconomyScopeKind = EconomyScope["kind"]`.
+- Discriminated unions mirror serde's internal tagging on `kind`.
+- Struct mirrors are `export interface` with snake_case fields (`cost_usd_micros`, `last_event_at`). Absent-on-the-wire values are `T | null`; fields rolled out additively are optional with a JSDoc line explaining the backwards-compatibility reason.
+- Every exported declaration carries a JSDoc naming the Rust type it mirrors, and units are documented where they bite (micro-USD, permille, epoch-ms).
+- `economy.ts` also co-locates pure helpers next to the types — variant constructors (`projectScope`, `windowedScope`) and display formatters (`microsToUsd`, `formatUsd`, `formatTokens`). They stay pure functions with no `invoke`; the stated reason is that a single source of truth for the unit conversion keeps callers honest.
 
 ## How to apply
 
-A new backend surface gets its own `<surface>.ts` with the mirror header comment; a new field on an existing surface is added in place, optional, with a one-line reason. When a union is tagged, export both the union and the `["kind"]` alias, and add small constructor functions rather than letting call sites hand-build the literal — that is what keeps a later variant from slipping past the compiler. Never rename a field to camelCase, never invent a field the Rust side does not emit, and keep display/unit conversion co-located here so no page divides by the wrong constant.
+A new DTO for an existing surface goes into the matching file (`economy.ts` / `specs.ts` / `trace.ts`) beside its siblings, not into a new module. A genuinely new backend surface gets a new `<area>.ts` in this folder, starting with the header comment that names the Rust file it mirrors. Consumers import with `import type { … } from "@/lib/types/<area>"`. Do not add an `invoke()` call here — the call belongs in `src/lib/dashboard.ts` (or `src/api/*`) per the dashboard guard, and its parameters stay camelCase even though the payload fields are snake_case.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/lib/types/economy.ts` — `EconomyScope` union + `EconomyScopeKind` alias, scope constructors, micro-USD helpers.
-- Ref: `apps/dashboard/src/lib/types/specs.ts` — kebab-case `Stage` / `Outcome`, `Flags` defaulting to `false`, optional `children_count` for backwards compatibility.
-- Ref: `apps/dashboard/src/lib/types/trace.ts` — `TraceKind` union and the loose `payload` escape hatch for legacy events.
+- Ref: apps/dashboard/src/lib/types/economy.ts — discriminated union plus snake_case interfaces plus co-located constructors/formatters.
+- Ref: apps/dashboard/src/lib/types/specs.ts — kebab-case lifecycle unions (`Stage`, `Outcome`) and optional additively-rolled-out fields.
+- Ref: apps/dashboard/src/lib/types/trace.ts — nested node DTO with a loose payload escape hatch for legacy events.

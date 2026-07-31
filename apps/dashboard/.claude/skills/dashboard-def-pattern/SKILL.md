@@ -1,6 +1,6 @@
 ---
 name: dashboard-def-pattern
-description: Use when adding or refactoring a workspace overview card whose entries are described by a module-level *Def table (alerts, stage buckets).
+description: Use when adding or refactoring a table-driven workspace overview band whose entries are declared as static `XxxDef` records rendered by a local pill/card component.
 paths:
   - apps/dashboard/src/features/workspace/SpecAlertsBand/**
   - apps/dashboard/src/features/workspace/SpecStatusCards/**
@@ -18,20 +18,26 @@ metadata:
 
 ## Purpose
 
-These overview cards keep their content in a declarative table instead of JSX branches. A file-local `interface <Thing>Def` describes one entry and always carries the same four things: the `/specs?filter=` deep-link key, an i18n `labelKey` **plus** a hard-coded `labelFallback` (the card renders the translation with the fallback so it never shows a raw key), a `LucideIcon`, and a `TonalColor` picked from `TONE` in `@/features/workspace/_shared/tonal`. The colour is chosen for meaning, not decoration — the comments state the rule explicitly: error red for suspects, amber for stalled/executing, green for finished, structural grey when the signal is cold. The consts (`SUSPECTS`, `STALE`, `STAGES`) sit above the component; a small non-exported presentational subcomponent (`AlertPill`, `StageCard`) takes the fields as an inline object type and the exported card either maps over the table or passes entries in one by one. Counts are derived front-side with `useMemo` over an existing batch query — these cards deliberately add no new backend.
+The workspace overview bands are declarative: instead of hand-writing each pill or card inline, the module declares a file-local `interface XxxDef` describing one entry, lists the entries as module-level constants, and renders them through a small local presentational sub-component. Both members of this role follow it — `SpecAlertsBand` with `AlertDef` and `SpecStatusCards` with `StageDef`. The payoff is that adding a bucket is a one-line data edit, and the label, icon, semantic color and deep-link target for each bucket stay in one place instead of being scattered across JSX.
 
 ## Convention
 
-- Folder: `apps/dashboard/src/features/workspace/<Card>/index.tsx`; 2 cards today.
-- The `*Def` interface and the tables are module-private (not exported); only the card function is exported.
-- Card props are a single `{ repoPath: string }` interface named `<Card>Props`; queries use `enabled: !!repoPath` with `staleTime: 10_000`.
-- Chrome is always `<DataCard padded>` + `<SectionHeader>` from `@/components/page`, and each entry navigates to the specs list with its filter key.
+Folder: apps/dashboard/src/features/workspace/SpecAlertsBand/**, apps/dashboard/src/features/workspace/SpecStatusCards/** · Extension: .tsx · Files of this role in this subproject: 2
+
+- The `Def` interface is file-local (not exported) — the only exported symbol is the band component itself, a named `export function`. The same holds for the band's `Props` interface, which in both files is just the repo path.
+- A `Def` carries: the deep-link key feeding the specs-filter navigation, a label-key plus label-fallback pair, a Lucide icon, a tonal color, and optional behavior flags.
+- Labels are resolved through the translation helper with the fallback — never a bare string in the JSX.
+- Colors come from `TONE` in `@/features/workspace/_shared/tonal` and are rendered through `TonalIcon` or an inline color-mix style; the comments in both files state the rule explicitly — color carries meaning, grey is structure.
+- Entries are module-level constants: single ones as one const, sets as an array mapped in the JSX with a stable key.
+- Counts are derived front-side inside `useMemo` from an existing projection using the shared stage-from-status helper — neither file adds a backend command, and the JSDoc says so.
+- Data comes from inline queries with an `enabled` gate and a 10s `staleTime`; the outer chrome is `DataCard` plus `SectionHeader` from `@/components/page`.
+- The clickable element is a local sub-component with an inline prop type, an explicit button type, a title, and a focus-visible ring class.
 
 ## How to apply
 
-To add an alert or a stage bucket, append one entry to the const table and add its `labelKey` to both the pt-BR and en-US blocks of `src/i18n.ts` — no new query, no new component. To add a new card of this family, declare the `*Def` interface with the label-key/fallback/icon/tone quartet, derive the counts with `useMemo` from a query the page already issues, and reuse `TonalIcon` + `TONE` rather than hard-coding Tailwind colour classes. Keep the derivation pure and null-safe, and treat a missing timestamp as "no signal" rather than counting it.
+A new overview band gets its own folder under `src/features/workspace/`. Declare the `<Thing>Def` interface first, then the constants, then the local pill/card sub-component, then the exported band. Keep the counts derived from data the overview already fetches when possible, and reuse the existing specs-filter targets so the deep link lands on a filter the Specs page understands. Route every color through the tonal palette and every label through the label-key plus fallback pair.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/features/workspace/SpecAlertsBand/index.tsx` — `AlertDef`, `SUSPECTS` / `STALE`, hot-vs-cold tinting.
-- Ref: `apps/dashboard/src/features/workspace/SpecStatusCards/index.tsx` — `StageDef`, the `STAGES` array mapped to `StageCard`, `bucketForCard` reusing `stateFromStatus`.
+- Ref: apps/dashboard/src/features/workspace/SpecAlertsBand/index.tsx — `AlertDef` with severity hue, two singleton consts, hot/cold color-mix styling.
+- Ref: apps/dashboard/src/features/workspace/SpecStatusCards/index.tsx — the `StageDef` list, the bucket projection, and the count fold in `useMemo`.

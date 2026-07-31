@@ -1,6 +1,6 @@
 ---
 name: rt-item-pattern
-description: Use when adding or refactoring an *Item struct — one ready-to-dispatch agent row in a pipeline plan emitted as deterministic JSON.
+description: Use when adding or refactoring the dispatch item type the orchestrator receives from dispatch-plan / wave-advance.
 paths:
   - apps/rt/src/commands/pipeline/**
 tags: [add, refactor]
@@ -17,17 +17,27 @@ metadata:
 
 ## Purpose
 
-An `*Item` is ONE agent the orchestrator will dispatch: `DispatchItem` (the whole wave-routing plan) and `AdvanceItem` (the ready agents of the pending level) carry the same vocabulary — `wave`, `role`, `subproject`, `level`, a ready `prompt_cmd` and the `subagent_type` to pass to Task. The point of the type is that the orchestrator stops deciding by hand: it iterates the array, runs each `prompt_cmd`, and relays the stdout. So the item must be complete enough to dispatch from, and stable enough that a re-run produces the same bytes. Items are ordered by level then wave; items sharing a level are dispatch-parallel, which is a fact the consumer reads off `level` rather than recomputing.
+`DispatchItem` and `AdvanceItem` are the unit of fan-out: one agent the orchestrator will launch, fully resolved server-side so the LLM relays instead of deciding. They carry the agent's identity (`wave`, `role`, `subproject`, `subagent_type`), the payload to hand to `Task` (the `prompt_cmd` to run in `dispatch-plan`, the already-rendered prompt stub in `wave-advance`), and the facts a prompt or a gate needs downstream (`depends_on`, `level`, `precheck`, `own_git_root`). The two are twins on purpose — `wave-advance` composes `dispatch_plan::build_plan` in-process so there is a single DAG source and no reimplementation, and it threads the plan's fields straight through. Because these items are printed as the command's whole stdout, additive fields must not disturb the existing bytes, which is why new booleans are omitted when false.
 
 ## Convention
 
-`apps/rt/src/commands/pipeline/`, declared at the top of the module that builds the plan (`dispatch_plan.rs`, `wave_advance.rs`); two types today. Shape: `#[derive(Debug, Clone, Serialize, PartialEq, Eq)]`, `pub` fields, `#[serde(rename = "...")]` where the JSON key must stay snake_case regardless of the field name, and every field carrying a doc comment that says what the orchestrator is to DO with it (notably: `prompt_cmd` is a command to run, not a prompt to send). Additive fields are guarded with `#[serde(default, skip_serializing_if = "is_false")]` over a module-level predicate, so the emitted JSON stays byte-identical for the common case.
+Folder: apps/rt/src/commands/pipeline/** · Extension: .rs · Files of this role in this subproject: 3
+
+- Name is `<Verb>Item`; the doc line describes ONE agent ("One dispatch item — a single agent the orchestrator will fan out", "One ready-to-dispatch agent of the pending level").
+- Derives: `#[derive(Debug, Clone, Serialize, PartialEq, Eq)]` on the plan item (it is compared in tests and cloned into the advance item), `#[derive(Debug, Serialize)]` on the advance item. Fields are `pub`; the type is `pub` where another command builds it (`DispatchItem`) and `pub(crate)` where it stays inside the family (`AdvanceItem`).
+- Every field carries a `///` that states not only what it is but what the orchestrator must do with it — `prompt_cmd` explicitly says the orchestrator runs it and passes the **stdout** to `Task`, "it must NOT treat this string as the prompt itself"; `subagent_type` says it is picked by the tool, never by hand.
+- Wire names are pinned with `#[serde(rename = "depends_on" | "prompt_cmd" | "subagent_type")]` so the published JSON keys never follow a Rust rename.
+- An additive boolean uses `#[serde(default, skip_serializing_if = "is_false")]` with a local `fn is_false(b: &bool) -> bool { !*b }` next to the struct, and the doc says why: the output stays byte-identical to the pre-flag shape for the common case. Both files carry their own copy of `is_false` with that justification.
+- An optional per-item verdict is `Option<Value>` + `skip_serializing_if = "Option::is_none"` (`AdvanceItem::precheck`) and its doc spells out the trap — a `skipped` gate's `ok:true` means "did not look", not "passed".
+- Items are produced by a `pub(crate) fn build_plan(project, spec_dir, spec, wave_filter) -> Vec<DispatchItem>` / `pub(crate) fn advance(project, spec) -> Vec<AdvanceItem>` core that takes an explicit project root so tests drive it without mutating the process cwd; `pub fn run(spec)` only resolves the root, calls it, and prints `to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())`.
+- Facts are derived through the shared probes rather than re-asked (`mustard_core::io::workspace::is_git_repo_root` for the submodule boundary), so an item never needs a census round-trip.
+- The third file matched by this role, `pipeline_summary.rs`, only holds a `format_state_item` renderer — it is not an instance of this shape; for generic report rows use `rt-entry-pattern`.
 
 ## How to apply
 
-Build the item from facts, not guesses: the subproject comes from the wave's `## Files` through `wave_lib::parse_files_section` plus the shared `detect_subproject`, dependency cells through `mustard_core::io::atomic_md::find_outgoing_links`, the git-boundary flag through `mustard_core::io::workspace::is_git_repo_root` — never a second parser and never a census round-trip. Every degradation stays coherent and total: a missing or unparseable `wave-plan.md` emits an empty array, a non-wave spec with a `spec.md` emits a one-item plan, a dependency cycle degrades to source order with every item at level 0 rather than dropping waves. Sort before printing and add new fields only behind `skip_serializing_if`, because the plan JSON is byte-compared.
+Extend the existing item rather than inventing a parallel one: add the field to `DispatchItem` with its doc and, if it must reach the dispatch round, thread it through `AdvanceItem` in the `.map(|it| …)` that builds the round. Additive fields are omitted when false/None. Keep the derivation inside `build_plan`/`advance` (they are the tested seam) and leave `run` as resolve-call-print.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/pipeline/dispatch_plan.rs` — `DispatchItem`, the boolean guard, and the fail-open contract in the module doc.
-- Ref: `apps/rt/src/commands/pipeline/wave_advance.rs` — `AdvanceItem`, the same vocabulary narrowed to the pending level.
+- Ref: apps/rt/src/commands/pipeline/dispatch_plan.rs — `DispatchItem` with `rename` on three wire names, `is_false` for `own_git_root`, and `build_plan` degrading a wave-less spec to a one-item plan.
+- Ref: apps/rt/src/commands/pipeline/wave_advance.rs — `AdvanceItem` carrying the plan's fields through plus `precheck`, built by `advance(project, spec)` off `dispatch_plan::build_plan`.

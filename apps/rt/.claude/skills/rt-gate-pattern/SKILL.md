@@ -1,6 +1,6 @@
 ---
 name: rt-gate-pattern
-description: Use when adding or refactoring a hook gate — a *Gate struct implementing Check under hooks/write/, or a pub(super) fn stage of the Bash family.
+description: Use when adding or refactoring a PreToolUse gate — a `*Gate` struct implementing `Check` under hooks/write, or a Bash-chain stage function under hooks/bash.
 paths:
   - apps/rt/src/hooks/bash/**
   - apps/rt/src/hooks/write/**
@@ -18,18 +18,27 @@ metadata:
 
 ## Purpose
 
-A gate is the only place in the runtime allowed to decide. Two shapes carry it. Under `hooks/write/` each concern is a unit struct — `MoldGate`, `BoundaryGate`, `SizeGate`, `CloseGate`, `ScanGate`, `ScanCleanGate`, `ActiveSpecLimitGate`, `WorkBranchGate`, plus the same-shaped `ScopeGuard` / `SecretFiles` — with a single `impl Check`. Under `hooks/bash/` the family has ONE `Check` (`BashCommandGate`) that calls sibling stages in a fixed historical order, each stage a plain function returning `Option<Verdict>` where `None` means pass-through and the first decisive verdict wins. Blocking is expressed as `Verdict::Deny` in the JSON, never as a non-zero exit; a gate that errors is degraded to `Allow` by the dispatcher, so no gate re-implements fail-open for itself.
+A gate is the only place in this crate where a hook may block, and it blocks by RETURNING a verdict, never by exiting non-zero: the crate Guard puts degradation in the dispatcher (an `Err` becomes `Allow`) and in `main` (every path ends in `process::exit(0)`), so a gate that panics or exits would take the user's session down with it. The cluster holds two related shapes. Under `hooks/write/` each concern is a unit struct (`ScanGate`, `MoldGate`, `ActiveSpecLimitGate`, `BoundaryGate`, `CloseGate`, `SizeGate`, `WorkBranchGate`) implementing `Check`. Under `hooks/bash/` the concerns are stage FUNCTIONS (`safety`, `windows_redirect`, `native_redirect`, `rtk_rewrite`, `review_gate`, `pr_qa_gate`) and `BashCommandGate` owns the family's single `Check` impl, calling them in a fixed, documented order where the first decisive verdict wins. Both shapes keep the decision in a pure-ish function that a test can call directly with a `HookInput` and a `tempdir`.
 
 ## Convention
 
-`apps/rt/src/hooks/write/<name>.rs` (unit struct, `impl Check for X` with `evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error>`) and `apps/rt/src/hooks/bash/<name>.rs` (`pub(super) fn <name>(command: &str, cwd: &str) -> Option<Verdict>`); about thirteen gates today. `evaluate` opens with a defensive trigger/tool guard (wrong trigger or wrong `tool_name` yields `Ok(Verdict::Allow)`), then the mode check, then the real logic wrapped in `unwrap_or(Verdict::Allow)` where that logic is a private function returning `Option<Verdict>`. No `unwrap`/`expect` anywhere outside `#[cfg(test)]` — degrade with `let-else`, `ok()?`, `unwrap_or`. The module doc states, in order: Scope (ONE behavior), Why it exists, the mode env var and its default, and the Fail-open contract.
+Folder: apps/rt/src/hooks/bash/**, apps/rt/src/hooks/write/** · Extension: .rs · Files of this role in this subproject: 13
+
+- `hooks/write/` shape: `pub struct XGate;` (unit struct, one `///` line: "The pre-pipeline scan gate module.") + `impl Check for XGate { fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> }`.
+- `evaluate` self-allows first and cheaply: wrong `ctx.trigger` → `Ok(Verdict::Allow)`, wrong `input.tool_name` → `Ok(Verdict::Allow)`, mode `Off` → `Ok(Verdict::Allow)`. Then it delegates to a private function that holds the real logic (`fn scan_verdict(input, cwd) -> Verdict`, `fn advise(input, ctx) -> Option<Verdict>`) and folds `None` with `.unwrap_or(Verdict::Allow)`.
+- `hooks/bash/` shape: `pub(super) fn <name>_gate(command: &str, …) -> Option<Verdict>` where `None` means pass through; the module doc states the scope in one behaviour and whether the stage is advisory. `bash_command_gate::BashCommandGate` implements `Check` (PreToolUse) and `Observer` (PostToolUse) for the whole family and documents the stage order plus why a stage runs last.
+- Deny reasons are built with `crate::util::format_gate_message(title, what, why, how)`; advisory stages return `Verdict::Warn { message }` and say in the module header why a veto would be redundant with the hard gate downstream.
+- Fail-open is structural: `let Ok(x) = … else { return Allow/None }`, `.ok()?`, `unwrap_or_default()`; `clippy::unwrap_used`/`expect_used` are `deny` crate-wide outside `#[cfg(test)]`. A gate with no mode says so explicitly in the module docs ("The gate has **no `MUSTARD_*_MODE`** — it is always strict").
+- Modes come from the gate's own `MUSTARD_*_MODE` enum + resolver next to it (see `rt-mode-pattern`); the dispatcher repasses the verdict without downgrading it, so the gate computes its final answer itself.
+- Shared predicates are imported from the family's helper modules (`super::lex::{has_word_pair, mask_quoted_operators, strip_leading_rtk}`, `super::pr_detect::classify_pr`, `super::boundary_gate::relative_to_cwd`) so two gates cannot drift on what counts as a `git commit` or a PR command.
+- Tests live in the same file, build `(HookInput, Ctx)` fixtures with `..HookInput::default()` and `Ctx { project_dir, trigger, workspace_root: None }`, seed a `tempdir`, and assert on the verdict — including the pass-through cases.
 
 ## How to apply
 
-Put the decision where the family already puts it: a Bash-chain concern is a new sibling function called from `BashCommandGate::evaluate` in its documented slot, not a second `Check`; a Write/Edit concern is a new unit struct. Register it in `apps/rt/src/registry.rs` with a stable snake/kebab `id` and the exact trigger/tool pairs it applies to, so unrelated invocations skip it instead of running it to self-Allow. Give it one mode env var with a documented default (see the mode mold) and no extra knobs. State explicitly whether it can Deny — an advisory gate answers `Verdict::Warn` and says in its doc why a veto would be redundant with a downstream hard gate. Cover both directions in `#[cfg(test)] mod tests` with `tempfile::tempdir()`: the pass-through cases and the firing case.
+For a new Write/Skill/Edit concern, add `hooks/write/<name>_gate.rs` with the unit struct, the `Check` impl and the private verdict function, then register the module in `hooks/write/mod.rs` and wire it where the dispatcher composes that trigger. For a new Bash concern, add `hooks/bash/<name>.rs` with a `pub(super) fn` stage returning `Option<Verdict>` and call it from `BashCommandGate::evaluate` at the documented position — do NOT add a second `Check` impl to the Bash family. Say in the module header which shape you chose and why, as `pr_qa_gate.rs` does.
 
 ## Examples
 
-- Ref: `apps/rt/src/hooks/write/mold_gate.rs` — unit struct, defensive guard, mode check, advisory core, warn-only by design.
-- Ref: `apps/rt/src/hooks/bash/bash_command_gate.rs` — the family dispatcher and its fixed stage order.
-- Ref: `apps/rt/src/hooks/bash/pr_qa_gate.rs` — a stage function that reuses the same predicate the hard gate consults, so the two cannot disagree.
+- Ref: apps/rt/src/hooks/write/scan_gate.rs — the minimal `Check` shape: unit struct, trigger/tool self-allow, `scan_verdict` returning `Deny` built by `format_gate_message`, always strict.
+- Ref: apps/rt/src/hooks/bash/pr_qa_gate.rs — a `pub(super) fn … -> Option<Verdict>` advisory stage that reuses `classify_pr` and the same `qa_result_passed` predicate the hard gate consults.
+- Ref: apps/rt/src/hooks/bash/bash_command_gate.rs — the family dispatcher: one `Check`, the stage order documented, telemetry emitted best-effort without affecting the verdict.

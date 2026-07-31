@@ -1,6 +1,6 @@
 ---
 name: core-hit-pattern
-description: Use when adding or refactoring a *Hit match row under domain/, either an in-crate matcher result or a mirror of the external scan tool's JSON.
+description: Use when adding or refactoring a Hit-suffixed record that reports one match or one ranked row under packages/core/src/domain/.
 paths:
   - packages/core/src/domain/**
 tags: [add, refactor]
@@ -17,18 +17,26 @@ metadata:
 
 ## Purpose
 
-A `*Hit` is one match row — the smallest addressable unit of a scan result: what matched, where, and how strongly. Two families share the shape. In-crate matcher rows live next to their producer: `ScanHit` (layer, term, start, end) is what `VocabularyMatcher::scan` emits, and `KeyedHit<K>` in `aho.rs` is the generic pre-mapping row the shared automaton returns before the caller renames the key. Read-only mirrors of the external `scan` tool's JSON live in `domain/scan.rs`: `TermHit`, `SliceHit`, `ContractHit`, `ConcernHit` — Mustard owns its own view of that payload and deserializes only the fields it consumes. Hits carry data, never logic: ranking, severity and verdicts belong to the consumer, which is why `ScanHit` reports the term as it appears in the vocabulary rather than the substring of the haystack. Byte offsets are always half-open.
+A hit is one row of evidence a scan produced, and there are two families. The matcher family — the generic keyed hit in `vocabulary/aho.rs` and the `ScanHit` it maps to in `vocabulary/mod.rs` — reports one vocabulary term found in a haystack, with the layer that owns it and the byte span where it landed. The boundary family in `domain/scan.rs` — `ConcernHit`, `TermHit`, `SliceHit`, `ContractHit` — mirrors rows of the external grain tool's JSON digest, which Mustard consumes but never writes. Both are report types, not domain aggregates: the producer fills them in, and ranking, dedup and verdicts belong to the consumer. The aho module is the single owner of the Aho-Corasick API in this crate, which the crate Guards restate as reuse the shared automaton, do not instantiate another.
 
 ## Convention
 
-Under `packages/core/src/domain/`, declared in the same file as the type that produces or consumes them — matcher rows in `domain/vocabulary/`, external-payload rows in `domain/scan.rs`. External mirrors derive `#[derive(Debug, Clone, Deserialize)]` only (never `Serialize` — the crate reads this payload, it does not write it) and mark every non-key field `#[serde(default)]` with a doc comment saying what an older `scan` binary degrades to. In-crate rows derive `#[derive(Debug, Clone, PartialEq, Eq)]`; a generic row that is internal to the module stays `pub(super)`.
+Folder: packages/core/src/domain/** · Extension: .rs · Files of this role in this subproject: 3
+
+- Plain data record: public fields, no inherent methods, no constructor; built by struct literal inside the scan function that emits it.
+- Matcher hits derive `#[derive(Debug, Clone, PartialEq, Eq)]` and carry the owning key, the matched term **as it appears in the vocabulary** rather than the haystack slice — the doc comment flags why that matters for case variants — plus inclusive start and exclusive end byte offsets.
+- The generic engine hit is internal, with restricted visibility on the struct and its fields, so only the mapped public row leaves the module. A new match category keys the same automaton instead of building a second one.
+- Boundary hits derive deserialize only, since these payloads arrive from another process.
+- In the four boundary hits, every collection field carries a serde default so a payload from an older grain binary still parses; required scalars are left without a default. The enclosing payload field that holds them carries a default too, with a doc line saying what an empty value means.
+- Scores cross the boundary as fixed-point integers, documented as never a float so the value is byte-stable.
+- Doc comments explain what the row means to the consumer and what an empty value implies, rather than restating the field names.
 
 ## How to apply
 
-Name the type `<What>Hit` and put it beside its producer. If it mirrors an external JSON row, add it to `domain/scan.rs`, derive `Deserialize` only, default every field, and state in the doc comment which upstream field each one mirrors and that Mustard keeps its own view. If it is produced in-crate, keep it in the matcher's module and export it through that module's public surface. Do not attach an `impl` block that scores or ranks — the whole point is that severity lives in the caller. Do not reuse a `Hit` for an aggregate: roll-up rows are their own types (`DigestReport`, `FileDetail`, `TermReport`). New fields on an existing `Hit` must be additive with `#[serde(default)]` so payloads produced before the field still deserialise.
+A new match kind emitted by the vocabulary engine is added to the internal-to-public mapping in the aho module, keeping the key, term and span shape and the leftmost-first, case-sensitive semantics documented in that module header. A new row type arriving from the grain digest goes into `scan.rs` next to its siblings with deserialize alone, a serde default on every collection and every later-added field, and integer scoring. Do not give a hit behaviour or a constructor, and do not make it own a second scan engine — extend the existing automaton and let the consumer rank.
 
 ## Examples
 
-- Ref: `packages/core/src/domain/scan.rs` — `TermHit`, `SliceHit`, `ContractHit`, `ConcernHit` as defaulted, Deserialize-only mirrors.
-- Ref: `packages/core/src/domain/vocabulary/mod.rs` — `ScanHit`, the public match row of `VocabularyMatcher::scan`.
-- Ref: `packages/core/src/domain/vocabulary/aho.rs` — `KeyedHit<K>`, the internal generic row of the shared `KeyedAutomaton`.
+- Ref: packages/core/src/domain/vocabulary/mod.rs — the public matcher row, with the term-provenance rule and the half-open byte span.
+- Ref: packages/core/src/domain/vocabulary/aho.rs — the internal generic hit and the single-owner rule for the Aho-Corasick dependency.
+- Ref: packages/core/src/domain/scan.rs — the deserialize-only boundary family with defaults on collections and fixed-point scores.

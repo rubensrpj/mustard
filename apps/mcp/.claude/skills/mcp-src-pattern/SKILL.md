@@ -1,6 +1,6 @@
 ---
 name: mcp-src-pattern
-description: Use when adding or refactoring a module in the mustard-mcp crate — a read-only MCP tool, its serde argument/output shape, or one of the pure helpers behind it.
+description: Use when adding or refactoring Rust sources under apps/mcp/src — a new MCP tool, input/output shape, helper or test in the read-only `mustard-memory` server crate.
 paths:
   - apps/mcp/src/**
 tags: [add, refactor]
@@ -17,38 +17,34 @@ metadata:
 
 ## Purpose
 
-This crate is the MCP face of the harness: one library (`src/lib.rs`) carrying every tool, and one binary (`src/main.rs`) whose entire body delegates to `mustard_mcp::run()`. It is read-only by contract — the tools query the `.claude/` tree and never write it; writes belong to the hooks, where session/wave/spec attribution is authentic. It must never panic: `clippy::unwrap_used` and `expect_used` are `deny` workspace-wide, so a failed read degrades to an empty structured result rather than an error, and the carve-out for `.unwrap()` exists only under `#[cfg(test)]`. `stdout` is reserved for the JSON-RPC channel, so every diagnostic goes through `eprintln!` with the `[mustard-memory]` prefix. `tokio` is confined to a `current_thread` runtime built inside `run`; nothing else in the crate is async.
+`apps/mcp/src` is a two-file crate: `main.rs` is a 13-line binary entry point whose body is `mustard_mcp::run();`, and `lib.rs` holds the whole `mustard-memory` MCP server — schemas, tools, helpers and tests. The split is deliberate and recorded in `Cargo.toml` (`[[bin]] path = "src/main.rs"`, `[lib] path = "src/lib.rs"`): Claude Code keeps a long-lived `mustard-mcp.exe` open, so the binary must not be `mustard-rt.exe`. The server speaks JSON-RPC over stdio through `rmcp`, so `stdout` belongs to the protocol and every diagnostic goes to `eprintln!`. The crate is read-only by contract and degrades a failed read into an empty structured result instead of erroring, because `clippy::unwrap_used` / `expect_used` are `deny` workspace-wide and a panic would kill the server the editor is holding. Aggregation is never hand-rolled here: token and metric totals are delegated to the `mustard_core::domain::economy` readers and only mapped onto the wire shape.
 
 ## Convention
 
-- Folder `apps/mcp/src/`, extension `.rs`, 2 files — and it stays 2 files: new logic lands in `lib.rs`, never in a new module.
-- `main.rs`: a `//!` header explaining why the binary exists, then a `fn main()` that is a single delegating call. No logic, no `#[tokio::main]`.
-- `lib.rs` layout, top to bottom: crate attributes (`#![forbid(unsafe_code)]`, the `#![cfg_attr(test, allow(...))]` clippy carve-out with its rationale comment) → `//!` crate doc with `##` sections (tool inventory, Persistence, Runtime scoping, degradation) → imports → banner-separated sections → `#[cfg(test)] mod tests`.
-- Banners are a full-width `// ---…---` rule with a title line, in this order: Entry point / Tool input schemas / Output shapes / The MCP server / Free helpers / Tests.
-- Naming: input structs `<Tool>Args`, output structs `<Thing>Out`, degradation strings `const NOTE_<CASE>: &str`, tuning constants `const RANK_TOP_DEFAULT` style with a doc comment stating where the value comes from.
-- Every item — struct, field, method, free fn, const — carries a `///` doc comment. Field docs name the accepted range and the default.
+Folder: apps/mcp/src/** · Extension: .rs · Files of this role in this subproject: 2
+
+What only reading the two files reveals:
+
+- **Visibility.** `pub fn run()` in `lib.rs` is the only public item in the crate. The server struct (`MustardMemory`), every `*Args` / `*Out` struct, every free helper and every `NOTE_*` constant is private. `main.rs` exports nothing but `fn main`.
+- **Crate attributes.** `lib.rs` opens with `#![forbid(unsafe_code)]` and a commented `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]` carve-out, then the `//!` module narrative that lists every tool and the persistence source behind it. `main.rs` carries only a `//!` block explaining why the binary is separate.
+- **Section banners.** `lib.rs` is divided by `// ----` rules with a title: *Entry point*, *Tool input schemas*, *Output shapes*, *The MCP server*, *Free helpers*, the scan-census block, *Tests*. New code joins the matching section rather than appending at the end.
+- **Import order.** `rmcp`, then `serde` / `serde_json`, then `std`, blank line, then the `mustard_core` group.
+- **Input schemas.** One `struct <Tool>Args` per tool, `#[derive(Debug, Deserialize, schemars::JsonSchema)]`; optional fields are `#[serde(default)] Option<T>`; the seven arg structs document every field with the accepted range and default in a `///` comment.
+- **Output shapes.** `#[derive(Debug, Serialize)]` (`ModelBucket` adds `Default`); the wire name is camelCase via `#[serde(rename = "...")]` and optionals carry `skip_serializing_if = "Option::is_none"`. Field-level docs are used where the concept is non-obvious (`KnowledgeOut`), not mechanically (`EventOut` fields are bare).
+- **Tool methods.** They live in `#[tool_router] impl MustardMemory`, are **synchronous**, take `Parameters(args): Parameters<XArgs>` and return `CallToolResult`. The body clamps first (`args.limit.unwrap_or(10).clamp(1, 50)`), then early-returns an empty payload through a `let ... else`, and exits through the single `json_result(&value)` helper.
+- **Testable bodies.** The two heavier tools (`find_anchors`, `rank_files`) keep only `json_result(&self.<tool>_value(...))` in the `#[tool]` method and put the real body in a second, plain `impl MustardMemory` block returning `serde_json::Value`, so the shaping is unit-tested without the transport. Pure shaping helpers (`knowledge_rows`, `anchors_payload`, `rank_payload`, `run_summary_from_metrics`) are free functions.
+- **Degradation carries a reason.** Empty results are built by a dedicated `*_empty` helper and stamped with a `const NOTE_*: &str` that names *why* the answer is empty, keeping the key set identical to the success payload.
+- **Runtime.** The `tokio` runtime is built inside `run` with `Builder::new_current_thread().enable_all()`; a build or serve error is `eprintln!`-ed with the `[mustard-memory]` prefix and returns. There is no `#[tokio::main]` and no `async fn` outside `run`'s `block_on` closure.
+- **Tests.** Inline `#[cfg(test)] mod tests { use super::*; ... }` at the bottom of `lib.rs` — the crate has no `tests/` directory. Fixtures are planted in a `tempfile::tempdir()` by a local helper, assertions target the pure free functions, and tests needing the real repo model are `#[test] #[ignore = "live: ..."]` and self-skip when the fixture is absent.
 
 ## How to apply
 
-A new tool is five edits inside `lib.rs`, in the existing sections:
+A new MCP tool is five edits inside `lib.rs`, in this order: add `<Tool>Args` to the *Tool input schemas* section; add the `*Out` struct to *Output shapes* (or return a `json!` `Value` if the shape is dynamic, as the scan-census tools do); add the `#[tool(description = "...")]` method to the `#[tool_router] impl`, clamping the limit and returning through `json_result`; put the pure shaping in a free function under *Free helpers* plus a `NOTE_*` constant for each degraded branch; add tests to the inline `mod tests` that call the free function, not the tool. Then extend the crate-level `//!` tool list — it is the crate's index and currently names all seven tools.
 
-1. **Args** under "Tool input schemas": `#[derive(Debug, Deserialize, schemars::JsonSchema)]`, every optional field `#[serde(default)] Option<T>`, doc comment stating the clamp (`Maximum rows to return (1..=50, default 10)`).
-2. **Output** under "Output shapes": `#[derive(Debug, Serialize)]`, `#[serde(rename = "camelCase")]` on every multi-word field and `skip_serializing_if = "Option::is_none"` on optionals. The renames are contract — they hold byte parity with the TypeScript original the crate re-ports.
-3. **Method** in the `#[tool_router] impl MustardMemory` block: `#[tool(description = "…")]`, synchronous, `fn name(&self, Parameters(args): Parameters<XArgs>) -> CallToolResult`. Clamp on the first line (`args.limit.unwrap_or(10).clamp(1, 50) as usize`), then the let-else guard `let Some(paths) = self.claude_paths() else { return json_result(&Vec::<XOut>::new()); };`, and finish with `json_result(&rows)`. Never build a `CallToolResult` by hand.
-4. **Body split** when the tool does IO or spawns a subprocess: keep the `#[tool]` method a one-liner over `fn <tool>_value(&self, …) -> Value` in the second, plain `impl MustardMemory` block. That split is what makes the tool testable without the MCP transport.
-5. **Helpers + tests**: pure filtering, ranking and JSON shaping go in free `fn`s under "Free helpers"; tests go in the same file's `mod tests` with `use super::*;`, `tempfile::tempdir()` fixtures, and a `///` comment naming what the test proves. A test needing the real repo model is `#[ignore = "live: …"]` and self-skips when the artifact is absent.
-
-Must not:
-
-- No `unwrap`/`expect` outside `#[cfg(test)]`, and no `?` escaping a tool body — degrade with `.ok()`, `unwrap_or_default()`, or a let-else returning the empty payload.
-- No `println!` / `print!` anywhere: stdout is the protocol channel.
-- No writes — no `fs::write`, no store mutation, no cache file left behind.
-- No hand-rolled token or metric aggregation: delegate to the `mustard_core::domain::economy` readers (`metric_token_summary`, `per_phase_token_summary`) and map their result onto the output struct.
-- No `#[tokio::main]`, no `async fn` outside the block inside `run`.
-- An empty result caused by a missing artifact must carry a `note` naming the cause and the fix (build the scan, build the dictionary) — the caller must be able to tell "unavailable" from "nothing matched".
+Keep `main.rs` at one delegating call; new entry logic belongs in `run`. Prefer a new banner section in `lib.rs` over a third file; if a module is genuinely warranted, declare it from `lib.rs` and keep `run` the only `pub` item. Read totals from `mustard_core::domain::economy` rather than folding events by hand, and never `println!` — `stdout` is the JSON-RPC channel.
 
 ## Examples
 
-- `Ref: apps/mcp/src/lib.rs` — the whole convention: crate attributes and their rationale, the banner sections, `SearchKnowledgeArgs`/`KnowledgeOut` pairing, the `#[tool_router]` block with `json_result`, the `find_anchors` / `find_anchors_value` split, the `NOTE_*` consts, and the inline `mod tests`.
-- `Ref: apps/mcp/src/main.rs` — the binary shape: doc header explaining the separate exe, `fn main()` delegating in one line, nothing else.
-- `Ref: apps/mcp/Cargo.toml` — the `[[bin]]` + `[lib]` pair that pins `main.rs`/`lib.rs`, and `[lints] workspace = true`, the source of the `deny` that forces the no-panic style.
+- Ref: `apps/mcp/src/lib.rs` — the whole convention: crate attributes, banner sections, `SearchKnowledgeArgs` / `KnowledgeOut` pair, the clamp + `let ... else` + `json_result` tool body, `find_anchors_value` split out for testing, and the inline `mod tests`.
+- Ref: `apps/mcp/src/main.rs` — the thin binary: `//!` rationale plus `fn main() { mustard_mcp::run(); }`.
+- Ref: `apps/mcp/Cargo.toml` — the `[[bin]]` / `[lib]` declaration that pins the two paths, and `[lints] workspace = true` (the source of the `unwrap_used` deny the carve-out answers).

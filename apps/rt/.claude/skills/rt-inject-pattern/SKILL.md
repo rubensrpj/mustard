@@ -1,6 +1,6 @@
 ---
 name: rt-inject-pattern
-description: Use when adding or refactoring a *Inject session module — the lifecycle hook that composes additionalContext into a single Verdict::Inject.
+description: Use when adding or refactoring a session-lifecycle module that injects additionalContext on SessionStart or UserPromptSubmit.
 paths:
   - apps/rt/src/hooks/session/**
 tags: [add, refactor]
@@ -17,17 +17,26 @@ metadata:
 
 ## Purpose
 
-`SessionStartInject` and `PromptSubmitInject` are the consolidated lifecycle modules for `SessionStart` and `UserPromptSubmit`. Each groups several concerns that ride the same event — bootstrap side effects, spec hygiene, the amendment-window close, the installation gate — and turns whatever text must reach the window into ONE `Verdict::Inject`. One, not several: the dispatcher's fold is last-writer-wins, so two separate Injects would silently drop one. They are `Check`s rather than `Observer`s precisely because they produce a verdict — `PromptSubmitInject` also denies (a `/mustard:*` command in a project with no `mustard.json`), which `main.rs` maps to the event's own block shape.
+`SessionStartInject` and `PromptSubmitInject` are the two doors through which the harness puts text into the model's window. Both are consolidated lifecycle modules: several distinct concerns ride the same event, each kept as its own internal section with its own function, and the module header enumerates them in execution order. Both are `Check` implementations even though most of their work is side effects, because injection is expressed as a verdict — `Verdict::Inject` — and the dispatcher's single `emit_outcome` owns the only stdout write. That is also why the text is composed into ONE inject: the dispatcher fold is last-writer-wins, so two separate `Inject` verdicts would silently drop one. Every step is fail-open; the only blocking path in the pair is the installation gate on `UserPromptSubmit`, which denies a `/mustard:*` command in a project with no `mustard.json` and says why.
 
 ## Convention
 
-`apps/rt/src/hooks/session/<event>_inject.rs`, one module per lifecycle event; two today. A unit struct `<Event>Inject` plus `impl Check for <Event>Inject`. Consolidation REGROUPS, it does not merge: each concern stays its own clearly headed section of the module with its own private functions, and the module doc lists them in the order they run. Pure side-effect concerns are plain functions returning `()`; only the context assembly feeds the verdict. Every IO step is best-effort, no `unwrap`/`expect`, and nothing writes to stdout — the single write lives in `main.rs::emit_outcome`.
+Folder: apps/rt/src/hooks/session/** · Extension: .rs · Files of this role in this subproject: 2
+
+- Name is `<Event>Inject` as a unit struct with a one-line doc ("The UserPromptSubmit gate module.", "The consolidated `SessionStart` module."), plus `impl Check for XInject`.
+- The module header lists the concerns in order with a bullet each, names the JS ancestor where one exists, and carries a "## Contract shape" section explaining why the module is a `Check` rather than an `Observer`.
+- `evaluate` guards the trigger first (`if ctx.trigger != Some(Trigger::UserPromptSubmit) { return Ok(Verdict::Allow); }`), reads its input out of `input.raw` / `input.tool_input` with `.and_then(Value::as_str).unwrap_or_default()`, and resolves the root with `ctx.project_dir_or_cwd(input)`.
+- Composition order is explicit and commented (installation gate → amendment-window close → declared injectables → banner), and the final verdict is a single `Verdict::Inject` assembled from the parts; a `/mustard:*` prompt gets no injectables because the slash command is already inside the flow.
+- Declared injectables come from `mustard.json#inject` through `crate::hooks::session::injectables::collect`, with once-per-session markers under `.claude/.session`; a window-refreshing `SessionStart` (`source == "compact"` / `"clear"`) clears those markers first and re-injects immediately.
+- Pure side-effect concerns inside the module stay private functions returning `()` (`fn run_harness_init(input, cwd)`), fail-open at every IO step (`let _ = fs::create_dir_all(...)`), and never influence the verdict.
+- Prompt predicates are small pure helpers with word-boundary matching (`is_pipeline_prompt`, `is_mustard_command`, `is_upsert_prompt`) so `/mustard:upsertish` cannot sneak through; they are unit-tested in the same file.
+- Long-lived subprocesses are detached through `crate::shared::proc::spawn_detached` so the child does not inherit the hook's stdout pipe — a plain `Command::spawn` leaves the write end open and hangs the session on Windows.
 
 ## How to apply
 
-Add a new concern as a new section plus private function inside the existing module for that event, called in a documented order, rather than a second module competing for the same verdict. Text destined for the window is appended to the composed context (blank-line separated) in the documented precedence, then returned once. Respect the once-per-session marker rules and clear them on a window-refreshing `SessionStart` (source `compact` or `clear`), because the refreshed window lost what was already delivered. Register the module in `registry.rs` under its event, and keep the fail-open contract absolute: a missing config, an unreadable directory or a failed spawn degrades to "no injection", never to a block.
+Add the new concern as a section INSIDE the existing module for that event rather than a third injecting module: give it its own private function, list it in the header's ordered bullet list, and fold its text into the single `Inject` at the composition point. Keep the verdict path free of panics and non-zero exits; a refusal is `Verdict::Deny { reason }` with didactic English text, everything else degrades to `Allow`.
 
 ## Examples
 
-- Ref: `apps/rt/src/hooks/session/session_start_inject.rs` — the concern list, the terrain census plus declared injectables composed into one Inject, detached OTEL spawn with the stdout-pipe caveat.
-- Ref: `apps/rt/src/hooks/session/prompt_submit_inject.rs` — installation gate first, injectables and banner composed into a SINGLE Inject with the last-writer-wins reason stated.
+- Ref: apps/rt/src/hooks/session/prompt_submit_inject.rs — installation gate → amend-window close → injectables + banner composed into one `Inject`, with the word-boundary prompt predicates.
+- Ref: apps/rt/src/hooks/session/session_start_inject.rs — five ordered concerns, terrain census + declared injectables in a single `Inject`, detached OTEL spawn with the pipe-inheritance rationale.

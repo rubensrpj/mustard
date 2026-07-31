@@ -1,6 +1,6 @@
 ---
 name: dashboard-detail-pattern
-description: Use when adding or refactoring a route page under src/pages, in particular a *Detail drill-in for a single entity.
+description: Use when adding or refactoring a route-level page component under src/pages, especially a drill-in page that resolves an id from the URL.
 paths:
   - apps/dashboard/src/pages/**
 tags: [add, refactor]
@@ -17,19 +17,26 @@ metadata:
 
 ## Purpose
 
-Pages in `src/pages/` are route targets: one PascalCase file, one named export of the same name, wired by a single `<Route>` in `App.tsx`. The `*Detail` pages are drill-ins for one entity reached at `/<thing>/:id`. They read the id with `useParams`, decoding it when it can contain separators, resolve the active project from `useStore`, and guard the "no project selected" case by returning a `<PageSurface>` wrapping an `<EmptyState>` — the Tauri commands are fail-open, so the missing-context path is a rendered state, not an error boundary. Every hook is called **before** any early return (`SessionDetail` documents this Rules-of-Hooks constraint in a comment on `useActiveProjectName`). The page itself stays thin: a `<PageSurface>` shell, an `<EditorialBand>` with eyebrow/title/subtitle for the header, and then a `features/*` component that owns the real data (`<ExecutionTrace>`, `<SpecsList>`, `<LivePipelineCard>`). Deep-link state that must survive a reload lives in `useSearchParams`, not in component state.
+`src/pages/` holds one module per route, each exporting a named component that `src/App.tsx` imports and mounts. The two drill-in pages (`ProjectDetail`, `SessionDetail`) show the shape this role settled on: read the id from the route, resolve the active project from the global store, guard the "no project selected" case with an empty state, then compose page chrome from `@/components/page` and delegate the actual content to feature components. Pages orchestrate; they are not where dense rendering logic or `invoke()` calls live.
 
 ## Convention
 
-- Folder: `apps/dashboard/src/pages/`, extension `.tsx`, 10 pages of which 2 are `*Detail`.
-- Named export, no default; header comment describing where the page is reached from and how it stays live.
-- Layout primitives come from the `@/components/page` barrel; domain rendering comes from `@/features/*`.
+Folder: apps/dashboard/src/pages/** · Extension: .tsx · Files of this role in this subproject: 2
+
+- One PascalCase `.tsx` per route, file name equal to the exported component, declared as a named `export function` — no default export — and imported in `src/App.tsx` by name.
+- Routing comes from react-router: params for the id, search params for tab state, navigate/link for navigation. `SessionDetail` runs the raw param through URI decoding before use.
+- Project context comes from the zustand store or from already-cached query data, not from a fresh fetch.
+- Hooks are called unconditionally before any early return — `SessionDetail` carries an explicit comment that its active-project hook returns nothing when no project is selected precisely so the Rules of Hooks stay satisfied.
+- The "nothing selected" branch returns a `PageSurface` wrapping an `EmptyState`. This matches the dashboard guard: Tauri commands are fail-soft, so a page renders an empty state rather than relying on an error path.
+- Layout is composed from the `@/components/page` barrel plus the ui primitives; feature-specific rendering is delegated to the features modules.
+- Data is read through `useXxx` hooks or an inline query with an `enabled` gate and an explicit `staleTime`; both pages carry a comment on why the data stays fresh (watcher-driven invalidation, not polling).
+- Small layout helpers used only by that page are declared unexported above the page component.
 
 ## How to apply
 
-Create `<Entity>Detail.tsx`, export a named function, and add exactly one `<Route path="/<thing>/:id" element={<EntityDetail />} />` to `App.tsx`. Fetch through a `useXxx` hook or a `@/lib` wrapper — never `invoke()` from a page. Keep every derived list behind `useMemo` keyed on the query data, sync any page-owned selection into the store with a `useEffect` on the route param, and when a legacy URL shape is retired, leave a redirect shim in `App.tsx` rather than a second page. Live refresh comes from the watcher invalidating the query key prefix, so do not add polling here.
+Add the new page as `src/pages/<Name>.tsx` with a named export, then register it in `src/App.tsx`. Start with the guard branch (no project or no id yields surface plus empty state), keep every hook above it, and pull chrome from `@/components/page` rather than hand-rolling cards or headers. If the page needs new backend data, add the wrapper in `src/lib/dashboard.ts` and the hook in `src/hooks/`, then register the query key prefix in `src/lib/watcher.ts` so the page tails live instead of polling.
 
 ## Examples
 
-- Ref: `apps/dashboard/src/pages/SessionDetail.tsx` — id decoding, unconditional hook + `EmptyState` guard, delegation to `<ExecutionTrace>`.
-- Ref: `apps/dashboard/src/pages/ProjectDetail.tsx` — `useSearchParams` tab state, `useProject` composite hook, local `SectionHeading` / `EmptyBlock` helpers.
+- Ref: apps/dashboard/src/pages/ProjectDetail.tsx — params plus store plus cached project lookup, tab state in search params, local layout helpers.
+- Ref: apps/dashboard/src/pages/SessionDetail.tsx — decoded id, unconditional hook before the empty-state early return, delegation to the execution trace feature.

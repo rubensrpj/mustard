@@ -1,6 +1,6 @@
 ---
 name: rt-entry-pattern
-description: Use when adding or refactoring an *Entry row struct that one run command emits inside its JSON report array.
+description: Use when adding or refactoring a row type that appears inside a `run` command's JSON report array under apps/rt/src/commands/.
 paths:
   - apps/rt/src/commands/**
 tags: [add, refactor]
@@ -17,18 +17,29 @@ metadata:
 
 ## Purpose
 
-An `*Entry` is ONE ROW of a `run` command's JSON report — never the report itself (that is the `*Report` envelope) and never a decision. `WorktreeEntry` is one `git worktree list --porcelain` block, `RestoredEntry` one `.claude/` directory the rehook pass touched, `DisabledEntry`/`KeptEntry`/`ErrorEntry` one item of the corresponding sweep. The row exists so a per-item failure becomes DATA rather than an early return: the builder function returns an Entry on every branch — restored, already-active, missing, skipped, error — so the report still accounts for every item it looked at. That is what lets these commands be fail-open (always exit 0) without ever going silent about what they could not do.
+A `run` subcommand in this crate answers with ONE pretty-printed JSON document, and every list inside that document has a named row type: `WorktreeEntry`, `RestoredEntry`, `Entry`, `ErrorEntry`, `DisabledEntry`, `KeptEntry`. The row type is the contract with whoever reads the report — the orchestrator, a gate, or a test — so it is declared explicitly next to the `*Report` it belongs to instead of being assembled ad hoc as `json!({...})` at the call site. Each row is small, flat, and stringly-typed on purpose: it must survive `serde_json::to_string_pretty` unchanged on every platform. The crate Guard requires `run` output to be deterministic and byte-stable, which is why rows are sorted before they are emitted and why optional fields are omitted rather than serialized as `null`. Rows also carry the module's evidence: a field's doc comment names the closed set of values it can hold, so a reader never has to grep the builder to learn what `state` can be.
 
 ## Convention
 
-`apps/rt/src/commands/**`, one `.rs` module per command; the entry type is declared in the module that owns its report, directly above that report. Around a dozen `*Entry` types exist today. Shape: `#[derive(Serialize)]` (add `Debug` when the tests print it), `pub` or `pub(crate)` fields, a short discriminator field spelled as a string — `state: String` (restored, already-active, no-snapshot, missing, skipped, error), `classification`, or `kind: &'static str` — and optional detail guarded by `#[serde(skip_serializing_if = "Option::is_none")]`. Doc comments state the closed set of values the discriminator can take.
+Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 11
+
+- Name is `<What>Entry` (`WorktreeEntry`, `RestoredEntry`, `DisabledEntry`, `KeptEntry`, `SkeletonEntry`, `WavePlanEntry`, `ChildEntry`); the bare `Entry` in `maint/claude_dir_prune.rs` is the exception a module with a single row kind takes.
+- Declared immediately above the functions that build it and below (or beside) the `*Report` that owns it, under a `// ---` banner comment in the larger modules.
+- Derives follow the direction of travel: `#[derive(Serialize)]` for a row that is printed (`RestoredEntry`, `Entry`, `ErrorEntry`, `KeptEntry`), `Deserialize` for a row parsed out of a model file (`SkeletonEntry` in `orient.rs`, `WavePlanEntry` in `wave_scaffold.rs`), plus `Debug`/`PartialEq` when a test compares whole rows (`WorktreeEntry`).
+- Visibility is the narrowest the consumer needs: private (`Entry`, `ErrorEntry`, `KeptEntry`), `pub(crate)` when a sibling command or a test module builds it (`WorktreeEntry`, `RestoredEntry`, `DisabledEntry`), `pub` only when it leaves the family.
+- Fields are `String` / `bool` / `usize` / `&'static str` — never a `PathBuf` on the wire. Paths are normalised to forward slashes before they enter a row (`git_settle::show`, `parse_worktrees`), so one JSON shape reads the same on Windows and POSIX.
+- A string field whose values are a closed set documents that set on the field: `/// `restored` | `already-active` | `no-snapshot` | `missing` | `skipped` | `error`.` (`RestoredEntry::state`).
+- Optional evidence is `Option<String>` + `#[serde(skip_serializing_if = "Option::is_none")]` (`RestoredEntry::restored_from`, `RestoredEntry::error`), so the happy-path document stays byte-identical.
+- A failure gets its OWN row type — `ErrorEntry { path, error }` — instead of an error flag bolted onto the success row; the report then carries `entries` and `errors` as separate arrays.
+- Rows are ordered deterministically before emit: `claude_dir_prune` sorts the `.claude/` children by name, `parse_worktrees` sorts by branch with the path as tiebreaker precisely because several rows share an empty branch.
+- Tests live in the same file under `#[cfg(test)] mod tests` with `use super::*;` and `tempfile::tempdir()`; `unwrap()`/`expect()` are allowed there only (the crate denies `clippy::unwrap_used` outside `#[cfg(test)]`).
 
 ## How to apply
 
-Name the type `<Thing>Entry` and put it beside its report. Write a builder `fn <verb>_one(&Path, …) -> <Thing>Entry` that is TOTAL: every failure path constructs a row with its own `state` and, where useful, an `error` detail — never `?` out of the loop and never `unwrap`/`expect` (both are `deny` crate-wide outside `#[cfg(test)]`). The entry never prints, never exits, and never resolves the project root itself; the caller passes the directory. The enclosing report owns the vector and sorts it before serialising, because `run` output is byte-compared by snapshots and gates — no timestamps inside a row unless the report already declares one, and paths normalised to forward slashes rather than machine-absolute.
+Put the new row type in the module that owns the command (`commands/<family>/<command>.rs`, or `commands/<command>.rs` for the root-level ones), directly above the builder function. Give it one `///` line saying what ONE row is ("One `.claude/worktrees/` entry from `git worktree list --porcelain`", "One per `.claude/` directory the sweep touched"), then a doc comment per field. Build rows in a pure-ish function that takes a `&Path` and returns the report (no printing), keep `run(opts)` to resolving the root, calling that function and `println!`-ing `serde_json::to_string_pretty(&report)` with a `.unwrap_or_else(|_| "{}".into())` fallback. Sort before returning. If the command is new, remember the four registrations the crate Guard demands (see `rt-cmd-pattern`).
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/maint/rehook.rs` — `RestoredEntry` plus `restore_one` returning a row on all five outcomes.
-- Ref: `apps/rt/src/commands/maint/claude_dir_prune.rs` — `Entry` / `ErrorEntry` with the documented classification table.
-- Ref: `apps/rt/src/commands/git_settle.rs` — `WorktreeEntry`, whose empty branch deliberately keeps a DETACHED checkout in the report instead of dropping it.
+- Ref: apps/rt/src/commands/git_settle.rs — `WorktreeEntry` with a documented "EMPTY when DETACHED" field, sorted by `(branch, path)` for byte-stability.
+- Ref: apps/rt/src/commands/maint/claude_dir_prune.rs — `Entry` + `ErrorEntry` as two arrays of one `Report`, children sorted by name before classification.
+- Ref: apps/rt/src/commands/maint/rehook.rs — `RestoredEntry` with the `state` value set documented on the field and `skip_serializing_if` on both optionals.

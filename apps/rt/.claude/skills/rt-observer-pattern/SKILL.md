@@ -1,10 +1,8 @@
 ---
 name: rt-observer-pattern
-description: Use when adding or refactoring an *Observer hook module — a fire-and-forget side-effect/telemetry unit that never returns a verdict.
+description: Use when adding or refactoring a hook module whose job is side effects or telemetry only, implementing `Observer` under apps/rt/src/hooks.
 paths:
-  - apps/rt/src/hooks/observe/**
-  - apps/rt/src/hooks/session/**
-  - apps/rt/src/hooks/task/**
+  - apps/rt/src/hooks/**
 tags: [add, refactor]
 appliesTo: [observer]
 scope: [code-editing]
@@ -19,18 +17,28 @@ metadata:
 
 ## Purpose
 
-An observer is pure effect: telemetry, a marker file, a state update. `ApprovalMarkerObserver` and `PlanApprovalObserver` mint the unforgeable `<spec>/.approved-by-user` marker; `WaveStartObserver`, `WaveCompleteObserver`, `SessionStopObserver`, `PromptObserver`, `MetricsObserver`, `SkillUsageObserver` and their siblings record what happened. The trait returns `()` and the dispatcher runs each one unconditionally and fire-and-forget, so an observer CANNOT block and must never try to: a blocking decision belongs to a `Check`. That constraint is what lets the dispatcher run them before any gate without risking the session.
+Observers are the crate's fire-and-forget half: `observe()` returns `()`, runs after the fact, and the crate Guard forbids returning a verdict from one — a blocking decision belongs to a `Check`. That constraint is what makes them safe to add: a wrong observer costs a missing marker or a missing event, never a blocked session. The approval recorders in `hooks/observe/` show the demanding end of the shape: each one mints the same `<spec>/.approved-by-user` marker from a gesture the model cannot author, and each states in its module header the numbered FACTS that must ALL hold, why each fact is unforgeable, and what happens on doubt (nothing is written). They share predicates by importing them from one another rather than re-spelling them, so three doors cannot drift on what "an unapproved Full plan in PLAN" means.
 
 ## Convention
 
-`apps/rt/src/hooks/{observe,session,task}/<name>_observer.rs`, one behaviour per module; about seventeen today. Shape: a unit struct `pub struct <Thing>Observer;` and `impl Observer for <Thing>Observer` with `fn observe(&self, input: &HookInput, ctx: &Ctx)`. The body reads `let cwd = ctx.project_dir_or_cwd(input);`, then establishes its facts one at a time with `let … else { return; }` — each fact a named predicate with a doc comment saying why it is load-bearing. Every write is best-effort through `mustard_core::io::fs::write_atomic`; no `unwrap`/`expect` outside `#[cfg(test)]`; nothing is printed to stdout (stderr is allowed for a notice that explains a decline).
+Folder: apps/rt/src/hooks/** · Extension: .rs · Files of this role in this subproject: 17
+
+- Name is `<What>Observer` as a unit struct with a one-line doc naming the trigger it serves ("The PostToolUse(ExitPlanMode) approval recorder."), plus `impl Observer for XObserver { fn observe(&self, input: &HookInput, ctx: &Ctx) { … } }`.
+- Registration is a `pub mod <file>;` line in `hooks/observe/mod.rs` (the file is a flat list of `pub mod` declarations, no re-exports) and the dispatcher entry for that trigger.
+- The module header carries the reasoning: why the observer exists, what counts as the signal, and an explicit fail-closed / fail-open statement ("Fail-closed on any doubt, fail-open on IO. Pure `Observer` — never blocks, never returns a verdict.").
+- The body is a chain of early returns: `let Some(spec) = active_spec(&cwd, input) else { return; };`, `if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) { return; }`. Facts are checked cheapest-first when the observer runs on every event, with a comment saying that order decides cost, not verdict.
+- Writes are best-effort and unconditional-failure-tolerant: `let _ = mustard_core::io::fs::write_atomic(&marker, body.as_bytes());`. No `unwrap`/`expect` outside `#[cfg(test)]` (crate-wide `deny`).
+- Shared predicates are imported from the sibling observer that owns them — `use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};` — and marker paths/bodies come from `crate::shared::context::{approval_marker_path, marker_body}`.
+- The project root is resolved with `ctx.project_dir_or_cwd(input)`; the session id with `input.session_id.as_deref().unwrap_or("unknown")`.
+- When a declined path is likely to confuse an operator, the observer NAMES the failing condition on stderr instead of staying silent — without changing what it accepts (`approval_marker_observer::unrecognised_answer_notice`).
+- Tests live in the same file with builders for `Ctx { project_dir, trigger, workspace_root: None }` and `HookInput { …, ..HookInput::default() }`, seeding `meta.json` and `.session/<id>/active-spec` under a `tempdir`, asserting both that the marker appears and that it does NOT on each declined branch.
 
 ## How to apply
 
-Add the module, then register it in `apps/rt/src/registry.rs` with `check: None, observer: Some(...)` and the trigger/tool pairs it applies to. Reuse a sibling's predicates instead of restating them — `plan_approval_observer` imports `active_spec`, `is_full_plan` and `already_approved` from `approval_marker_observer` so the two recorders cannot disagree about what "pending Full plan" means. Choose the failure direction consciously and document it: fail-CLOSED on the judgement (record nothing on any doubt) and fail-OPEN on IO (an unreadable file is a no-op). When a fact fails in a way the author could not otherwise discover, say so on stderr rather than declining silently. Tests build a `Ctx` and `HookInput` over a tempdir and assert both that the marker/effect lands and that a near-miss produces nothing.
+Create `hooks/<family>/<name>_observer.rs`, declare the unit struct, implement `Observer`, and add the `pub mod` line to that family's `mod.rs`. Write the fact list in the header before writing the code, and make every fact a separate early return. If a predicate already exists in a sibling observer, import it; do not restate it. Never return or imply a verdict — if the new behaviour must block, it is a `Check` (see `rt-gate-pattern`).
 
 ## Examples
 
-- Ref: `apps/rt/src/hooks/observe/approval_marker_observer.rs` — the three-fact fail-closed recognition and the stderr notice when only fact 3 fails.
-- Ref: `apps/rt/src/hooks/observe/plan_approval_observer.rs` — the compact shape: unit struct, one private predicate, imported sibling facts, best-effort write.
-- Ref: `apps/rt/src/hooks/task/delegation_advisory.rs` — an advisory observer that reuses the sibling counter's state file instead of inventing a new store.
+- Ref: apps/rt/src/hooks/observe/plan_approval_observer.rs — the compact shape: two facts, imported predicates, best-effort `write_atomic`, in-file tests.
+- Ref: apps/rt/src/hooks/observe/approval_marker_observer.rs — the owner of the shared predicates (`active_spec`, `is_full_plan`, `already_approved`) with the fail-closed rationale in the header.
+- Ref: apps/rt/src/hooks/observe/picker_approval_observer.rs — a third door on the same marker, checked cheapest-first with the ordering rationale stated.

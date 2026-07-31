@@ -1,6 +1,6 @@
 ---
 name: core-id-pattern
-description: Use when adding or refactoring an identifier newtype for the economy domain instead of threading a bare String through the API.
+description: Use when adding or refactoring an identifier newtype under packages/core/src/domain/economy/.
 paths:
   - packages/core/src/domain/economy/**
 tags: [add, refactor]
@@ -17,18 +17,27 @@ metadata:
 
 ## Purpose
 
-Economy identifiers are newtypes, not `String`s: `SpecId`, `WaveId`, `AgentId` (and `ProjectPath` over `PathBuf`) are declared together in `economy/scope.rs` so a spec id can never be silently passed where a wave id was expected — the reason is written into each doc comment. Each is a one-line tuple struct with a public field, `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]` and `#[serde(transparent)]`, which keeps the wire format a bare string (pinned by the `newtypes_serialize_transparently` test) while `Hash + Eq` let them serve as map keys in the multi-project fan-out. Each carries exactly two methods and no more: `new(impl Into<String>)` and `#[must_use] as_str()` — `ProjectPath` mirrors that with `new(impl Into<PathBuf>)` and `as_path()`. The doc comment gives a real example value so the shape of the id is obvious at the call site.
+Economy queries are threaded with three identifiers and a project path, and `scope.rs` gives each one a newtype: `SpecId`, `WaveId`, `AgentId`, `ProjectPath`. The module header states the reason plainly — stronger types at the API boundary stop a spec id being passed where a wave id was expected, which three bare string parameters could not prevent. They are serde-transparent, so the wire format is still a bare string and nothing downstream had to change when the types were introduced. The model structs in `model.rs` type their attribution fields with them, and the readers in `reader.rs` import them and dispatch on the scope enum built out of them.
 
 ## Convention
 
-`packages/core/src/domain/economy/` — 10 `.rs` files (`mod.rs`, `model.rs`, `scope.rs`, `reader.rs`, `writer.rs`, `estimator.rs`, `multi_project.rs`, `sources/`). The ids live in `scope.rs` only, immediately above `EconomyScope`, which composes them into the query selector as variant fields. Model records hold them as typed fields (`SavingsRecord::spec_id: Option<SpecId>`, `AgentCost::agent_id: AgentId`); readers construct them from raw strings at the boundary; writers unwrap `.0` when flattening into the NDJSON payload.
+Folder: packages/core/src/domain/economy/** · Extension: .rs · Files of this role in this subproject: 3
+
+- All four newtypes are declared in `economy/scope.rs`, immediately above the scope enum — the identifiers and the selector that composes them live in the same file.
+- Shape is a tuple newtype with a public inner field.
+- Derive line is identical across the four: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]` followed by the transparent serde attribute. Hash and Eq are there because the multi-project fan-out uses them as map keys, and the doc comment says so.
+- Exactly two inherent methods: a `new` taking an into-string argument and a borrowing accessor. No display impl, no from-string parser, no parsing.
+- The doc comment gives a concrete example of the value and names the sibling id it must not be confused with.
+- Optional attribution on a model struct is an option with a serde default — a record that cannot be attributed carries no id rather than an empty string.
+- The scope enum that consumes them is non-exhaustive with an internally tagged snake-case representation, and multi-field variants use named fields with a doc line per field.
+- Consumers import from the scope module and never re-introduce a bare string parameter for the same concept.
 
 ## How to apply
 
-A new economy dimension gets its newtype in `scope.rs` with the same derive line, `#[serde(transparent)]`, `new`/`as_str`, and a doc comment naming a concrete example value and what it must not be confused with. Add it to model records as a typed field — `#[serde(default)]` plus `Option<_>` when the attribution can be absent — and thread it through `EconomyScope` as a named variant field rather than a loose `String` parameter on every reader signature; `EconomyScope` is `#[non_exhaustive]`, so adding a variant is safe for downstream matches that keep a wildcard. Convert at the edges only, never mid-pipeline. Add a serde round-trip test in `scope.rs` asserting the value serialises to a bare quoted string and parses back.
+A new identifier in the economy layer goes into `scope.rs` alongside the existing four, with the same derive line, the same constructor and accessor pair, and a doc comment naming the concrete shape of the value and the sibling it is distinct from. Wire it into the scope variant that needs it as a named field rather than appending a bare string to reader signatures. Model structs then type their field with the newtype, wrapped in an option with a serde default when attribution can be missing, so older NDJSON payloads keep parsing. Keep the transparent attribute — the on-disk shape must stay a plain string.
 
 ## Examples
 
-- Ref: `packages/core/src/domain/economy/scope.rs` — `ProjectPath`, `SpecId`, `WaveId`, `AgentId` and the transparent round-trip test.
-- Ref: `packages/core/src/domain/economy/model.rs` — the ids as typed fields on `SavingsRecord`, `ContextCostFrame`, `AgentCost`, `SpecCost`, `WaveCost`.
-- Ref: `packages/core/src/domain/economy/reader.rs` — construction at the boundary and scope-driven dispatch.
+- Ref: packages/core/src/domain/economy/scope.rs — the four declarations and the selector that composes them.
+- Ref: packages/core/src/domain/economy/model.rs — how required versus optional attribution is typed with the newtypes.
+- Ref: packages/core/src/domain/economy/reader.rs — the consumer side: imports from the scope module, scope-driven dispatch, no loose string ids in the signatures.
