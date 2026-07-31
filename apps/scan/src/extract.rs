@@ -12,8 +12,8 @@
 //!   `@name`              -> the name of the enclosing `@definition.*`
 //!   `@supertype`         -> a base type/interface/trait, attached to the decl
 //!                           that shares the same `@name`. Because the link is by
-//!                           name, a base captured in a *detached* node — a Rust
-//!                           `impl Trait for T` block — still lands on `T`.
+//!                           name, a base captured in a node DETACHED from the
+//!                           type's own declaration still lands on that type.
 //!
 //! The per-language seam the old design called for is preserved: there is one
 //! [`Analyzer`] instance per language, but all are the same generic type, each

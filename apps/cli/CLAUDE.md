@@ -4,8 +4,6 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)
 
-
-
 ## Guards
 
 - Write the single config to `<root>/mustard.json` (the workspace anchor) — never `.claude/mustard.json`. `mustard_core::ProjectConfig` owns the schema.

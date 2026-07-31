@@ -20,7 +20,7 @@ No stage emit here; the slug is born at §2 (`spec-draft` backfills the ANALYZE 
 
 1. Note the intent in your own words plus every concrete critique.
 2. `mustard-rt run scan` when `grain.model.json` is absent or materially stale.
-3. Lapidate the intent to code vocabulary YOURSELF, then call ONCE: `mustard-rt run feature --intent "<lapidated terms + the request content words>"` (deterministic, no model call). Lapidation + query-shaping rules: `${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md`.
+3. **Read the lapidation kit FIRST: `mustard-rt run scan-lapidation`.** It prints how THIS project names things — the mined roles (what a thing is called and where that kind lives), the shapes (roles that recur together, i.e. what a new entity here usually needs) and the units. Lapidating from memory is guessing at a vocabulary the asker had no way to know: measured on a real request, the raw prompt scored 14/32 terms and had its planning fields withheld, while the same request in the project's own words scored 5/5 and pointed straight at the implementing modules. Map the request onto that menu — never copy the menu into the query wholesale, and never invent a term that is not in it. THEN call ONCE: `mustard-rt run feature --intent "<lapidated terms + the request content words>"` (deterministic, no model call). Query-shaping rules: `${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md`.
 
 | Digest field | Rule |
 |---|---|

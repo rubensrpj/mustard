@@ -149,18 +149,27 @@ fn build_patterns_role_block(subproject: &str) -> String {
          (traits, exports, error style, test placement) and what a new member must/must-not \
          do. Read-only: deliver every mold in your final message, each inside \
          `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
-         worklist; do NOT write any file — the caller pipes each block to \
-         scan-patterns-apply. Canonical mold format (frontmatter first): name = the \
+         worklist; do NOT write any file — the caller pipes your WHOLE return to \
+         scan-patterns-relay, which splits it on those demarcators, so deliver every mold \
+         in one message and never worry about its size. Canonical mold format (frontmatter first): name = the \
          worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
          ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
          `paths` value (a YAML list — this is the one key the platform reads to decide when \
          the mold loads; never widen it, never invent a folder, and omit the key only when \
          the worklist gave no value); `tags: [add, refactor]`; `appliesTo: [<label>]`; \
          `scope: [code-editing]`; `source: scan`; `metadata.generated_by: scan` + \
-         `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` \
-         (folder / extension / file count), `## How to apply` (where a new member goes and \
-         what it follows), `## Examples` (2-3 real `Ref:` paths you read). Never cite a \
-         framework the exemplars don't use. A cluster you refuse (no teachable shape, \
+         `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` — \
+         whose FIRST line is the worklist's `convention` value COPIED VERBATIM (folder, \
+         extension and tally are census facts, not yours to estimate; the apply refuses a \
+         mold that reworded them), after which you add what only reading reveals \
+         (visibility habits, test placement, derive sets); `## How to apply` (where a new \
+         member goes and what it follows), `## Examples` (2-3 real `Ref:` paths you read — \
+         the apply refuses a path that does not exist, so cite only files you opened). \
+         Never cite a framework the exemplars don't use. NEVER write a universal claim \
+         (\"every\", \"always\", \"all of them\", \"never\") unless you checked EVERY member \
+         of the cluster; if you read three files, say \"the three exemplars\" or \"most\" — \
+         an overstated rule is worse than a hedged one, because a reader who finds the \
+         counter-example stops trusting the whole mold. A cluster you refuse (no teachable shape, \
          exemplars unreadable or generated-only, role already covered by another mold) → \
          deliver `=== DECLINE: <slug> ===` <one-line reason> `=== END ===` so the caller \
          records it and the NEXT scan round skips it (the decline ledger clears after one \
@@ -236,6 +245,14 @@ fn render_patterns_worklist(
         // it verbatim into `paths:`. Emitted even when empty, so a missing
         // value reads as "this cluster has none" rather than as a dropped line.
         let _ = writeln!(out, "  paths (copy verbatim into the frontmatter): {}", c.paths.join(", "));
+        // Folder / extension / tally come from the census, never from the
+        // agent's estimate — the one class of claim molds were measurably
+        // getting wrong. Copied verbatim and verified by scan-patterns-apply.
+        let _ = writeln!(
+            out,
+            "  convention (copy verbatim as the FIRST line under ## Convention): {}",
+            crate::commands::scan_patterns::list::convention_line(c)
+        );
         let _ = writeln!(out, "  exemplars (read these first):");
         for e in &c.exemplars {
             let _ = writeln!(out, "    - {e}");
@@ -433,13 +450,14 @@ mod tests {
     fn patterns_role_block_carries_delivery_contract() {
         // The patterns block must scope to the subproject, demand the exemplar
         // reads, name the demarcated return format and forbid self-writing —
-        // the caller pipes each block to scan-patterns-apply.
+        // the caller pipes the WHOLE return to scan-patterns-relay, which is
+        // also why the agent is told its return size does not matter.
         let dir = tempdir().unwrap();
         let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
         assert!(block.starts_with("ROLE: patterns"), "cue missing: {block}");
         assert!(block.contains("apps/api"), "subproject scope missing: {block}");
         assert!(block.contains("=== FILE:"), "demarcated return format missing: {block}");
-        assert!(block.contains("scan-patterns-apply"), "delivery contract missing: {block}");
+        assert!(block.contains("scan-patterns-relay"), "delivery contract missing: {block}");
         assert!(block.contains("do NOT write any file"), "write-restriction missing: {block}");
         // Read-only role → no MEMORY contract (not a knowledge producer).
         assert!(!block.contains("<MEMORY>"), "patterns must not carry MEMORY: {block}");

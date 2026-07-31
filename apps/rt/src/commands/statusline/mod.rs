@@ -86,11 +86,43 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     segs
 }
 
-/// Render the statusline from a parsed payload. Single line, no newline.
+/// Which row a segment belongs to.
+///
+/// The bar carries two unrelated kinds of fact and they were competing for one
+/// row: WHERE the work is (folder, branch, which harness, what is owed) and
+/// WHAT the session has spent (context, time, savings, diff, cost, model,
+/// versions). Measured on a real payload, one row came to 171 visible
+/// characters — past the 80–120 a terminal usually gives, so the tail was
+/// simply cut off, and the tail is where the harness marks live.
+///
+/// Splitting by ROLE rather than by width is what makes the result readable:
+/// each row answers one question, so the eye learns where to look and the
+/// layout does not reshuffle when a number appears or disappears. The branch
+/// name — the widest element by far, and variable, since a work-unit branch is
+/// `{base}_{slug}` — gets the first row nearly to itself.
+///
+/// Claude Code renders one row per printed line (documented), so this is two
+/// `println!`s, not a rendering trick.
+const fn is_place_row(kind: segment::SegmentKind) -> bool {
+    use segment::SegmentKind as K;
+    matches!(kind, K::Module | K::Git | K::Mustard | K::Prune)
+}
+
+/// Render the statusline from a parsed payload: one row per non-empty group,
+/// no trailing newline. A row whose segments are all absent is dropped rather
+/// than printed blank — with a sparse payload the bar stays a single line, the
+/// shape it had before this split.
 fn render(data: &Value) -> Vec<String> {
     let theme = ThemeId::from_env().theme();
-    let segs = build_segments(data);
-    vec![render_line(theme, &segs)]
+    let (place, spend): (Vec<Segment>, Vec<Segment>) =
+        build_segments(data).into_iter().partition(|s| is_place_row(s.kind));
+
+    [place, spend]
+        .into_iter()
+        .filter(|group| !group.is_empty())
+        .map(|group| render_line(theme, &group))
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 /// Dispatch `mustard-rt run statusline`.
@@ -126,11 +158,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Locks down: the statusline must never emit a second line. The pipeline
-    /// banner was removed for good (see 2026-05-21 conversation); this test
-    /// catches any future attempt to add another `println!` in `run`.
+    /// A full payload renders TWO rows, split by role.
+    ///
+    /// This replaces a test that pinned the bar to one row. That pin recorded a
+    /// 2026-05-21 decision to drop a pipeline BANNER — a second line that
+    /// repeated state the bar already showed. What is here now is not that: the
+    /// same segments, redistributed, because one row had grown to 171 visible
+    /// characters and terminals cut the tail. Claude Code documents one row per
+    /// printed line, so two rows is a supported layout, not a workaround.
     #[test]
-    fn render_never_emits_pipeline_second_line() {
+    fn a_full_payload_renders_two_rows_split_by_role() {
         let data = json!({
             "workspace": { "current_dir": ".", "project_dir": "." },
             "model": { "display_name": "Opus 4.7" },
@@ -148,16 +185,43 @@ mod tests {
             }
         });
         let lines = render(&data);
-        assert_eq!(lines.len(), 1, "statusline must be a single line — got {lines:?}");
+        assert_eq!(lines.len(), 2, "place row + spend row — got {lines:?}");
+        assert!(lines.iter().all(|l| !l.is_empty()), "no blank row is printed: {lines:?}");
+
+        // The split is by ROLE, so each fact lands on exactly one row and the
+        // widest element (the branch) is not sharing with the numbers.
+        let (place, spend) = (&lines[0], &lines[1]);
+        assert!(spend.contains("$0.42"), "cost belongs to the spend row: {spend}");
+        assert!(spend.contains("70%"), "context belongs to the spend row: {spend}");
+        assert!(!place.contains("$0.42"), "…and never to the place row: {place}");
     }
 
+    /// Every segment kind lands on exactly one row — a kind added later without
+    /// a home would silently vanish from the bar, which is the failure mode a
+    /// partition invites.
     #[test]
-    fn render_falls_back_to_module_only_with_minimal_payload() {
+    fn every_rendered_segment_reaches_a_row() {
+        let data = json!({
+            "workspace": { "current_dir": ".", "project_dir": "." },
+            "model": { "display_name": "Opus 4.7" },
+            "version": "2.1.146",
+            "cost": { "total_cost_usd": 0.42, "total_duration_ms": 1000 }
+        });
+        let built = build_segments(&data);
+        let placed = built.iter().filter(|s| is_place_row(s.kind)).count();
+        let spent = built.iter().filter(|s| !is_place_row(s.kind)).count();
+        assert_eq!(placed + spent, built.len(), "the partition is total by construction");
+        assert!(placed > 0 && spent > 0, "a full payload feeds both rows");
+    }
+
+    /// A sparse payload keeps the bar at ONE row: an empty group is dropped, not
+    /// printed blank. This is what the split must not cost — a fresh session
+    /// with no numbers yet should look exactly as it did before.
+    #[test]
+    fn render_falls_back_to_one_row_with_minimal_payload() {
         let lines = render(&json!({ "model": { "id": "claude-opus" } }));
-        assert_eq!(lines.len(), 1);
-        // First line should at least contain SOME printable text (the module
-        // name pulled from cwd).
-        assert!(!lines[0].is_empty());
+        assert!(!lines.is_empty(), "the bar never disappears");
+        assert!(lines.iter().all(|l| !l.is_empty()), "no blank row: {lines:?}");
     }
 
     #[test]

@@ -16,20 +16,16 @@
 //! and the dots of a dotted namespace all become `/`), then every import is
 //! tried against a union of resolution shapes and the ones that don't apply
 //! return nothing.
-//!   * namespace/package match — an import that names a declared namespace
-//!     (the shape used by C#, Java, Kotlin, ...), retried with the final
-//!     segment dropped when the import names a TYPE inside a namespace
-//!     (the fully-qualified-name shape used by PHP);
-//!   * module-prefixed path — strip a declared module prefix, match a directory
-//!     (the shape used by Go);
-//!   * file path — resolve a relative/path-ish import to a module file (the
-//!     shape used by TS/JS, Dart, Python, ...);
+//!   * namespace/package match — an import that names a declared namespace,
+//!     retried with the final segment dropped when the import names a TYPE
+//!     inside a namespace (the fully-qualified-name shape);
+//!   * module-prefixed path — strip a declared module prefix, match a directory;
+//!   * file path — resolve a relative/path-ish import to a module file;
 //!   * root-alias path — only for imports whose first segment is one of the
-//!     importer language's declared `root_aliases` (registry data, e.g. Rust's
-//!     `crate`/`self`/`super`): drop the alias segment and probe the tail
-//!     against the importer's ancestor dirs. Languages that declare no aliases
-//!     never take this branch, so an external package path (`std::...`) can
-//!     never be mistaken for an internal module.
+//!     importer language's declared `root_aliases` (registry data): drop the
+//!     alias segment and probe the tail against the importer's ancestor dirs.
+//!     Languages that declare no aliases never take this branch, so an external
+//!     package path can never be mistaken for an internal module.
 //! Nothing here switches on a language name, so a new language needs no change.
 //! Imports that resolve to nothing internal are treated as external deps.
 
@@ -317,8 +313,8 @@ fn resolve(
         }
     }
     // 4) Root-alias path: only for imports whose FIRST segment is one of the
-    //    importer language's declared root aliases (registry data — e.g. Rust's
-    //    `crate`/`self`/`super`); any other first segment names an external
+    //    importer language's declared root aliases (registry data — the engine
+    //    never spells one); any other first segment names an external
     //    package, never the project root. Drop the alias and probe the tail
     //    (and, because the final segment may name an ITEM inside the module,
     //    the tail minus its last segment) against the importer's ancestor
@@ -370,7 +366,7 @@ fn resolve_path_candidate(
             return v.clone();
         }
     }
-    // dart package suffix: match any module whose path ends with the candidate
+    // package-suffix shape: match any module whose path ends with the candidate
     let mut suffix_matches: Vec<String> = stem_index
         .iter()
         .filter(|(k, _)| k.ends_with(&stem))
@@ -421,7 +417,7 @@ fn canon_segments(s: &str) -> String {
     }
 }
 
-/// Final path segment without its extension: `app/Models/User.php` -> `User`.
+/// Final path segment without its extension: `app/models/User.xyz` -> `User`.
 fn file_stem(path: &str) -> String {
     let stem = strip_ext(path);
     match stem.rfind('/') {

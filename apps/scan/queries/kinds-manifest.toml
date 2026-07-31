@@ -60,6 +60,7 @@ kinds = [
 kinds = [
   "class",
   "function",
+  "method",
   "field",
 ]
 
@@ -69,6 +70,7 @@ kinds = [
   "enum",
   "trait",
   "function",
+  "method",
   "type",
   "field",
   "enum_member",
@@ -92,5 +94,6 @@ kinds = [
   "mixin",
   "enum",
   "extension",
+  "function",
   "method",
 ]

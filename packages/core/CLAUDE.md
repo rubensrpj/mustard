@@ -4,8 +4,6 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)
 
-
-
 ## Guards
 
 <!-- mustard:guards -->

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "exit-ritual-must-measure-reachability",
+  "title": "exit ritual must measure reachability now not history",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "reachability",
+      "summary": "The exit ritual's evidence stops being a name-level record and becomes a per-ref measurement taken now",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "rituals",
+      "summary": "The /git prose stops ordering a pointer it knows is premature, and the submodule-before-parent order gains a mechanical block",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -1268,6 +1268,28 @@ pub fn count_active(root: &Path) -> usize {
         .count()
 }
 
+/// The spec a picker ROW LETTER names, resolved through the SAME enumeration
+/// the table the user read was rendered from ([`build_output`], whose
+/// `'a'..='z'` is assigned by row index). `None` when no row carries that
+/// letter — the caller treats that as "decide nothing".
+///
+/// **Why this exists rather than "the active spec".** A consumer that reads the
+/// letter cannot fall back to the session's current spec: the picker's whole
+/// purpose is choosing a row that is NOT the current one, so a fallback
+/// attributes the user's choice to whatever the session happened to be bound
+/// to. The letter IS the user's naming of the row, and it is only meaningful
+/// against the ordering the table showed — which is why this resolves through
+/// the enumerator itself instead of a second copy of the sort.
+///
+/// Case-folded: the letters are rendered lowercase, and a user who types `AR`
+/// named the same row.
+#[must_use]
+pub(crate) fn spec_for_letter(root: &Path, letter: char) -> Option<String> {
+    let wanted = letter.to_ascii_lowercase().to_string();
+    let (output, _) = build_output(root);
+    output.specs.into_iter().find(|s| s.letter == wanted).map(|s| s.name)
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------

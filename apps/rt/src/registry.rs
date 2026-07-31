@@ -9,6 +9,7 @@
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
 use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
+use crate::hooks::observe::picker_approval_observer::PickerApprovalObserver;
 use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
@@ -531,6 +532,22 @@ impl Registry {
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(PromptObserver)),
+            },
+            // Picker approval recorder — the THIRD door onto the same
+            // `<spec>/.approved-by-user` marker. When the user's OWN submitted
+            // prompt is the picker's approve-and-implement form
+            // (`/mustard:spec ar`) and a Full spec is awaiting approval in
+            // PLAN, the marker is minted from that gesture instead of asking
+            // for it a second time through plan mode. `UserPromptSubmit` fires
+            // only on a person's submission; the one runtime-authored path onto
+            // this trigger (a subagent's report / a background-task notice) is
+            // refused by the observer's own first fact. Pure Observer,
+            // fail-closed, never blocks the prompt.
+            Module {
+                id: "picker_approval_observer",
+                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(PickerApprovalObserver)),
             },
             // ── W3E (no-sqlite git source of truth) — wikilink footer ────────
             Module {

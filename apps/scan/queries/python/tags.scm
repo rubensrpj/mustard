@@ -5,15 +5,23 @@
 (import_from_statement module_name: (relative_import) @import)
 
 (class_definition name: (identifier) @name) @definition.class
-(function_definition name: (identifier) @name) @definition.function
+
+; Functions — a module-level function is a UNIT, a method is a MEMBER. Python
+; spells both with `function_definition`, so the line is drawn by CONTEXT: a
+; module-level function is a DIRECT child of `module`, a method is a direct
+; child of a class body's `block`. A node has one parent, so the two patterns
+; are mutually exclusive and the recorded kind never depends on match order —
+; the hazard that once justified recording every def as @definition.function.
+; A function nested inside another function is neither: a local closure is not
+; an architectural unit.
+(module (function_definition name: (identifier) @name) @definition.function)
+(class_definition
+  body: (block (function_definition name: (identifier) @name) @definition.method))
 
 ; Members — class-level attributes (`name = ""` / `name: str = ""` in a class
-; body), the closest Python syntax has to a field declaration. Methods stay
-; @definition.function: a method is the same function_definition node (the
-; upstream tree-sitter-python tags.scm (MIT) draws no method/function line
-; either), and a second pattern on the same node would make the recorded kind
-; depend on match order. Member kinds feed the digest's domain-term index only:
-; the miner's significance gate (mine.rs) is kind-based and never sees them.
+; body), the closest Python syntax has to a field declaration. Member kinds feed
+; the digest's domain-term index only: the miner's significance gate (mine.rs)
+; never treats them as units.
 (class_definition
   body: (block
     (expression_statement

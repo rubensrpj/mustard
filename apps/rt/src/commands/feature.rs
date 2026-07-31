@@ -429,11 +429,24 @@ const PT_STOP: &[&str] = &[
     "mesma", "ainda", "então", "pois", "porque",
 ];
 
-/// `true` when the intent reads as NON-English: the PT function words outvote
-/// the English ones, or the vote ties WITH Latin-accent evidence present —
-/// the exact rule of the scan dictionary's `is_non_english`. Biased to send:
-/// a falsely-English verdict merely skips the gloss; a falsely-foreign one
-/// costs a single no-op MT call (the sidecar passes English through).
+/// `true` when the intent is NOT CONFIDENTLY ENGLISH — the question the gloss
+/// actually needs answered.
+///
+/// The vote is over function words, and a search request usually has none: a
+/// person types `autorizar processador pagamento`, not a sentence. With no
+/// function word on either side the old rule (`pt_hits > en_hits`) answered
+/// "English" from an empty tally and the gloss never ran, so an unaccented
+/// Portuguese request — the ordinary way people type in a search box — reached
+/// an English codebase untranslated and returned nothing. Measured: of four
+/// phrasings of the same request, only the one carrying an accent was found.
+///
+/// The doc of the previous rule already stated the correct bias ("a falsely
+/// foreign verdict costs a single no-op MT call, the sidecar passes English
+/// through") — the code just did not implement it. Absence of evidence is not
+/// evidence of English, so silence now SENDS. The cost is one sidecar call the
+/// sidecar itself answers with `detected: "en"`, after which [`auto_gloss`]
+/// returns `None` and nothing changes; the cost of the old default was a whole
+/// language of requests silently unserved.
 fn looks_non_english(intent: &str) -> bool {
     let mut en_hits = 0usize;
     let mut pt_hits = 0usize;
@@ -451,7 +464,87 @@ fn looks_non_english(intent: &str) -> bool {
     }
     let lower = intent.to_lowercase();
     let has_accent = super::scan_equivalences::fold_tok(&lower) != lower;
-    pt_hits > en_hits || (has_accent && pt_hits >= en_hits)
+    // Positive foreign evidence, or NO English evidence at all.
+    pt_hits > en_hits || (has_accent && pt_hits >= en_hits) || en_hits == 0
+}
+
+/// The query terms of `effective` with the GLOSS-ONLY ones filtered down to
+/// vocabulary the project actually declares — see the call site for why.
+///
+/// A token of the original `intent` ALWAYS survives: the asker's words are the
+/// request, and second-guessing them is not this function's business. A token
+/// that appears only in the translation survives only when some declaration in
+/// the model carries it.
+///
+/// The evidence is the MODEL's declaration names, not the scan dictionary. The
+/// dictionary is a ranked term index with frequency floors and it draws heavily
+/// on prose — on a small project it can carry nothing but comment words (a
+/// two-file fixture here yields exactly `english` and `language`), so using it
+/// as "does this project use this word" silently answers no for the entire
+/// codebase. Declaration names ARE the vocabulary, with no floor and no prose.
+///
+/// Fail-open throughout: an absent or unreadable model keeps every token. The
+/// filter removes noise; it must never become a gate on the request.
+fn keep_known_gloss_terms(intent: &str, effective: &str, model: &Path, glossed: bool) -> Vec<String> {
+    let all = domain_terms(effective);
+    if !glossed {
+        // No translation happened: the request is the request, filtered by
+        // nothing. A word the project does not declare is still the asker
+        // naming something, and the digest reports it as unmatched — which is
+        // information, not noise.
+        return all;
+    }
+    let Some(declared) = declared_vocabulary(model) else { return all };
+    if declared.is_empty() {
+        return all;
+    }
+    // A gloss fired, so every concept in the request now has a second
+    // spelling. A source-language word the project does not declare therefore
+    // adds nothing a candidate could match on — while STILL counting against
+    // the `matched k/n` ratio that decides whether the answer is trustworthy.
+    // Measured: a Portuguese request over English code scored 2/5 and was
+    // withheld as weak, when the two words that could possibly match had both
+    // matched. Keeping the untranslatable half only hid the answer.
+    //
+    // An original word the project DOES declare always survives — that is the
+    // case where the asker guessed the code's own vocabulary, and it must
+    // outlive any translation of it.
+    all.into_iter().filter(|t| declared.contains(t)).collect()
+}
+
+/// Every word the project DECLARES, lowercased: each declaration name split on
+/// case and separator boundaries. `None` when the model is absent or
+/// unparseable — the caller then filters nothing.
+fn declared_vocabulary(model: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let raw = std::fs::read_to_string(model).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let mut out = std::collections::BTreeSet::new();
+    for m in v.get("modules")?.as_array()? {
+        let Some(decls) = m.get("declarations").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for d in decls {
+            let Some(name) = d.get("name").and_then(serde_json::Value::as_str) else { continue };
+            // Split on case boundaries too, so `authorizePayment` contributes
+            // `authorize` and `payment` — the words a request would use.
+            let spaced: String = name
+                .chars()
+                .flat_map(|c| {
+                    if c.is_uppercase() {
+                        vec![' ', c]
+                    } else {
+                        vec![c]
+                    }
+                })
+                .collect();
+            for tok in spaced.split(|c: char| !c.is_alphanumeric()) {
+                if tok.len() >= 3 && tok.chars().any(char::is_alphabetic) {
+                    out.insert(tok.to_lowercase());
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Auto-gloss: translate a non-English-looking intent through the OPTIONAL
@@ -635,9 +728,20 @@ pub fn run(intent: &str, root: &Path) {
     let effective = gloss
         .as_ref()
         .map_or_else(|| intent.to_string(), |en| format!("{intent} -- {en}"));
-    let terms = domain_terms(&effective);
     let model = root.join(".claude").join("grain.model.json");
     let dict = root.join(".claude").join("grain.dictionary.json");
+    // The gloss is machine translation, and machine translation does not know
+    // which words are this project's NAMES. Measured on a real request, it
+    // rendered the product's own name as `landlord` and a domain verb as
+    // `grid`. Those tokens cannot match a declaration anywhere — but they are
+    // still counted in the `matched k/n` the digest reports, so a request whose
+    // ORIGINAL words landed fine was pushed under the "weak" line by its own
+    // translation and had its planning fields withheld.
+    //
+    // So a glossed token rides only when the project actually uses that word.
+    // The intent's OWN tokens are never filtered: the asker's vocabulary is the
+    // request, and second-guessing it is not this function's business.
+    let mut terms = keep_known_gloss_terms(intent, &effective, &model, gloss.is_some());
     // The equivalence map + expanded rank query are computed ONCE here (they were
     // reloaded inside each of the removed rank/rank_detail spawns) and fed to the
     // single bundle call; `uncovered_terms` reuses the same map. `expand_query`
@@ -645,6 +749,35 @@ pub fn run(intent: &str, root: &Path) {
     // old insumos_rows/rank_pool contract.
     let equiv = super::scan_equivalences::load_equivalences(root);
     let rank_query = expand_query(intent, &equiv);
+    // The equivalence bridge must reach the DIGEST too, not only the rank pool.
+    // It was feeding `rank_query` alone, so a project whose code is written in
+    // another language had its bridge built, written to disk, loaded here — and
+    // then never consulted by the retrieval that decides the answer. Measured on
+    // a Portuguese-identifier fixture: the table held `invoice -> fatura`, and
+    // the request `invoice ledger` still came back `none 0/2`, because the two
+    // English words were the only thing the digest was ever asked about.
+    let mut bridge_fired = gloss.is_some();
+    for bridged in domain_terms(&rank_query) {
+        if !terms.contains(&bridged) {
+            terms.push(bridged);
+            bridge_fired = true;
+        }
+    }
+    // Once ANY bridge has fired — a gloss or an equivalence alias — every
+    // concept in the request has a second spelling, and the source-language
+    // word the project never declares can no longer match anything. It still
+    // counts against the `matched k/n` ratio that decides whether the answer is
+    // trustworthy, so keeping it does nothing but hide the answer it was
+    // bridged to. Measured on a Portuguese-identifier fixture: `invoice ledger`
+    // scored `weak 1/3` and was withheld, when the one term that could match
+    // had matched.
+    if bridge_fired {
+        if let Some(declared) = declared_vocabulary(&model) {
+            if !declared.is_empty() {
+                terms.retain(|t| declared.contains(t));
+            }
+        }
+    }
 
     let payload = match Scan::locate().feature_bundle(&model, &dict, &terms, &rank_query, feature_retrieval::POOL_MAX, RANK_DIRECT_BASE) {
         Ok(bundle) => {

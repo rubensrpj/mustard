@@ -23,7 +23,14 @@
 (enum_declaration name: (identifier) @name) @definition.enum
 (extension_declaration name: (identifier) @name) @definition.extension
 
-; Members — methods/functions declared in a class or library body. Member kinds
-; feed the digest's domain-term index only: the miner's significance gate
-; (mine.rs) is kind-based and never sees them.
-(function_signature name: (identifier) @name) @definition.method
+; Functions — a library-level function is a UNIT, a member is a MEMBER. Dart
+; spells both with `function_signature`, so the line is drawn by CONTEXT: a
+; library function is a DIRECT child of `program`, while a member is always
+; wrapped — in `method_signature` (class and extension bodies) or in
+; `declaration` (a mixin's abstract member). A node has one parent, so the three
+; patterns are mutually exclusive and the recorded kind never depends on match
+; order. Before this, every library function was recorded as a member and the
+; miner never saw it.
+(program (function_signature name: (identifier) @name) @definition.function)
+(method_signature (function_signature name: (identifier) @name) @definition.method)
+(declaration (function_signature name: (identifier) @name) @definition.method)

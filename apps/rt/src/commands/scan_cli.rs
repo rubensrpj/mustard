@@ -104,6 +104,21 @@ pub enum ScanCmd {
     /// JSON array `[{subproject, label, slug, moldPath, affix, exemplars,
     /// ...}]`. The mold twin of `scan-guards-list`. Fail-open: a
     /// missing/unparseable model → `[]`.
+    /// Print the LAPIDATION KIT: how this project names things — the mined
+    /// roles (what a thing is called and where that kind lives), the shapes
+    /// (roles that recur together, i.e. what a new entity usually needs) and
+    /// the units. Read it BEFORE `run feature` and map the request onto these
+    /// words; a request in the code's own vocabulary is the difference between
+    /// a withheld answer and the implementing modules. It never reads the
+    /// prompt and never suggests — the menu is deterministic, the choice is
+    /// yours. Fail-open: a missing/unparseable model prints the empty kit.
+    #[command(name = "scan-lapidation")]
+    #[command(display_order = 84)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
+    ScanLapidation {
+        /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     #[command(name = "scan-patterns-list")]
     #[command(display_order = 61)]
     ScanPatternsList {
@@ -136,6 +151,12 @@ pub enum ScanCmd {
         /// so a body starting with `-`/`---` frontmatter is not mistaken for a flag.
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
+        /// Workspace root the mold's claims are checked against — every `Ref:`
+        /// path must exist under it, and the `paths:` frontmatter must equal
+        /// the globs `scan-patterns-list` computed for this cluster. Defaults
+        /// to `.`, which is where the orchestrator runs the enrich from.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
     /// Record the enrich agent's justified refusal of a mold candidate so the
     /// SAME scan run does not re-propose it. Store: `.claude/scan-declined.json`
@@ -154,6 +175,29 @@ pub enum ScanCmd {
         /// with `-` is not mistaken for a flag.
         #[arg(long, allow_hyphen_values = true)]
         reason: String,
+    },
+    /// Apply a patterns agent's WHOLE return in ONE call: split the envelope on
+    /// the `=== FILE: <moldPath> ===` / `=== DECLINE: <slug> ===` demarcators
+    /// the prompt asked for and route each block through the same rules
+    /// `scan-patterns-apply` and `scan-patterns-decline` enforce. Replaces the
+    /// per-block hand-off, which made the orchestrator the envelope parser and
+    /// therefore scaled with a subproject's cluster count — twelve molds in one
+    /// 55 KB return is where that broke. A bad block never stops a good one:
+    /// every block gets a verdict in the JSON report (`{ok, blocks, created,
+    /// declined, refused, collisions, preserved, skipped}`), and `ok:false`
+    /// names exactly which agent to re-dispatch. Fail-open: a blockless
+    /// envelope prints an empty report and exits 0.
+    #[command(name = "scan-patterns-relay")]
+    #[command(display_order = 85)] // tail slot — keep the display_order permutation gapless
+    ScanPatternsRelay {
+        /// Workspace root the molds are written under. Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// The agent's return, or `-` to read it from stdin (the default —
+        /// a whole return is too large for an argv). `allow_hyphen_values` so
+        /// an envelope opening with `-`/`---` is not mistaken for a flag.
+        #[arg(long, default_value = "-", allow_hyphen_values = true)]
+        content: String,
     },
     /// Delete every mustard-generated pattern skill (`source: scan`) under a
     /// workspace BEFORE the enrich re-authors them, so each mold is written
@@ -180,13 +224,15 @@ pub fn dispatch(cmd: ScanCmd) {
         ScanCmd::ScanGuardsApply { path, root, guards } => {
             scan_guards::apply::run(&path, &root, &guards)
         }
+        ScanCmd::ScanLapidation { root } => crate::commands::lapidation::run(&root),
         ScanCmd::ScanPatternsList { root, rejected } => scan_patterns::list::run(&root, rejected),
-        ScanCmd::ScanPatternsApply { path, content } => {
-            scan_patterns::apply::run(&path, &content)
+        ScanCmd::ScanPatternsApply { path, content, root } => {
+            scan_patterns::apply::run(&path, &content, &root)
         }
         ScanCmd::ScanPatternsDecline { root, slug, reason } => {
             scan_patterns::decline::run(&root, &slug, &reason)
         }
+        ScanCmd::ScanPatternsRelay { root, content } => scan_patterns::relay::run(&root, &content),
         ScanCmd::ScanPatternsSweep { root } => scan_patterns::sweep::run(&root),
     }
 }
