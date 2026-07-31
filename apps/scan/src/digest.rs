@@ -557,6 +557,25 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
                     best_tier = best_tier.min(qc.best_tier);
                     terms.push(qc.token.clone());
                 }
+                // COVERAGE (the coordination factor). Summing per-concept
+                // contributions alone lets one very strong term outweigh a file
+                // that answers the WHOLE request: measured here, a module
+                // declaring all four requested concepts lost every slot to one
+                // declaring a single concept, because the winner was short
+                // (BM25 length normalisation) or its one hit was a type (kind
+                // weight) — and a request that names four things is asking for
+                // the file that has four, not the file that has the loudest
+                // one. Applied as a ratio rather than a sort key, so a file
+                // with fewer but far stronger hits can still win: it scales the
+                // evidence, it does not replace it.
+                //
+                // Integer math on the fixed-point score — no float ever enters
+                // a comparison, so the ranking stays byte-stable.
+                let total = subset.len() as u64;
+                let covered = terms.len() as u64;
+                if total > 0 && covered < total {
+                    score = score.saturating_mul(covered) / total;
+                }
                 (m, score, best_tier, terms)
             })
             .collect();
