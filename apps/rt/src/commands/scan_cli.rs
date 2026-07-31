@@ -136,6 +136,12 @@ pub enum ScanCmd {
         /// so a body starting with `-`/`---` frontmatter is not mistaken for a flag.
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
+        /// Workspace root the mold's claims are checked against — every `Ref:`
+        /// path must exist under it, and the `paths:` frontmatter must equal
+        /// the globs `scan-patterns-list` computed for this cluster. Defaults
+        /// to `.`, which is where the orchestrator runs the enrich from.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
     /// Record the enrich agent's justified refusal of a mold candidate so the
     /// SAME scan run does not re-propose it. Store: `.claude/scan-declined.json`
@@ -181,8 +187,8 @@ pub fn dispatch(cmd: ScanCmd) {
             scan_guards::apply::run(&path, &root, &guards)
         }
         ScanCmd::ScanPatternsList { root, rejected } => scan_patterns::list::run(&root, rejected),
-        ScanCmd::ScanPatternsApply { path, content } => {
-            scan_patterns::apply::run(&path, &content)
+        ScanCmd::ScanPatternsApply { path, content, root } => {
+            scan_patterns::apply::run(&path, &content, &root)
         }
         ScanCmd::ScanPatternsDecline { root, slug, reason } => {
             scan_patterns::decline::run(&root, &slug, &reason)

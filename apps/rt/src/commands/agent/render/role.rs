@@ -157,10 +157,18 @@ fn build_patterns_role_block(subproject: &str) -> String {
          the mold loads; never widen it, never invent a folder, and omit the key only when \
          the worklist gave no value); `tags: [add, refactor]`; `appliesTo: [<label>]`; \
          `scope: [code-editing]`; `source: scan`; `metadata.generated_by: scan` + \
-         `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` \
-         (folder / extension / file count), `## How to apply` (where a new member goes and \
-         what it follows), `## Examples` (2-3 real `Ref:` paths you read). Never cite a \
-         framework the exemplars don't use. A cluster you refuse (no teachable shape, \
+         `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` — \
+         whose FIRST line is the worklist's `convention` value COPIED VERBATIM (folder, \
+         extension and tally are census facts, not yours to estimate; the apply refuses a \
+         mold that reworded them), after which you add what only reading reveals \
+         (visibility habits, test placement, derive sets); `## How to apply` (where a new \
+         member goes and what it follows), `## Examples` (2-3 real `Ref:` paths you read — \
+         the apply refuses a path that does not exist, so cite only files you opened). \
+         Never cite a framework the exemplars don't use. NEVER write a universal claim \
+         (\"every\", \"always\", \"all of them\", \"never\") unless you checked EVERY member \
+         of the cluster; if you read three files, say \"the three exemplars\" or \"most\" — \
+         an overstated rule is worse than a hedged one, because a reader who finds the \
+         counter-example stops trusting the whole mold. A cluster you refuse (no teachable shape, \
          exemplars unreadable or generated-only, role already covered by another mold) → \
          deliver `=== DECLINE: <slug> ===` <one-line reason> `=== END ===` so the caller \
          records it and the NEXT scan round skips it (the decline ledger clears after one \
@@ -236,6 +244,14 @@ fn render_patterns_worklist(
         // it verbatim into `paths:`. Emitted even when empty, so a missing
         // value reads as "this cluster has none" rather than as a dropped line.
         let _ = writeln!(out, "  paths (copy verbatim into the frontmatter): {}", c.paths.join(", "));
+        // Folder / extension / tally come from the census, never from the
+        // agent's estimate — the one class of claim molds were measurably
+        // getting wrong. Copied verbatim and verified by scan-patterns-apply.
+        let _ = writeln!(
+            out,
+            "  convention (copy verbatim as the FIRST line under ## Convention): {}",
+            crate::commands::scan_patterns::list::convention_line(c)
+        );
         let _ = writeln!(out, "  exemplars (read these first):");
         for e in &c.exemplars {
             let _ = writeln!(out, "    - {e}");

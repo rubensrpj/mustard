@@ -38,7 +38,7 @@ const MOLD_SUFFIX: &str = "-pattern/SKILL.md";
 /// the generated ones; a survivor is hand-authored). On a successful write
 /// prints a one-line confirmation and exits 0. A path that is not a mold
 /// SKILL.md exits 1; every other recoverable error is fail-open.
-pub fn run(path: &Path, content: &str) {
+pub fn run(path: &Path, content: &str, root: &Path) {
     if !is_mold_path(path) {
         eprintln!(
             "scan-patterns-apply: refusing {} — not a `…/.claude/skills/<slug>-pattern/SKILL.md` path",
@@ -88,7 +88,9 @@ pub fn run(path: &Path, content: &str) {
     // sees the failure and can re-dispatch, instead of reporting a phantom
     // "created". (`stamp` re-injects the notice idempotently, but it cannot
     // invent a `name:` or a `source:` the agent never wrote.)
-    let defects = super::origin::frontmatter_defects(&body);
+    let mut defects: Vec<String> =
+        super::origin::frontmatter_defects(&body).into_iter().map(|d| d.to_string()).collect();
+    defects.extend(grounding_defects(&body, path, root));
     if !defects.is_empty() {
         eprintln!(
             "scan-patterns-apply: refusing {} — malformed mold, NOT written:\n  - {}",
@@ -113,6 +115,136 @@ pub fn run(path: &Path, content: &str) {
         return;
     }
     println!("scan-patterns-apply: created {}", path.display());
+}
+
+/// Everything a mold CLAIMS that the machine can check, checked.
+///
+/// The authoring agent is good at the thing only reading finds — that a row
+/// component carries the full keyboard-accessibility quartet, that a directory
+/// entry exposes fields where a caller would reach for methods. It is
+/// measurably bad at the thing a program computes exactly: counts, orders and
+/// paths. Measured over one real enrich: every wrong claim was a tally or a
+/// path, every right one was a behaviour. So the tally and the path stop being
+/// the agent's job here.
+///
+/// Two checks, both fatal — a mold is written once and then auto-loads into
+/// every future edit of its folder, so a false claim is not a typo, it is a
+/// lesson taught forever:
+///
+/// 1. **Every `Ref:` resolves.** A mold saying "see how X does it" about a file
+///    that does not exist does not teach, it misdirects. Measured on the molds
+///    this repo carried before the check: 9 of 54 references pointed at files
+///    that had been deleted or never existed.
+/// 2. **`paths:` is the worklist's own value.** The frontmatter `paths:` is the
+///    ONE key the platform reads to decide when a mold loads, and the agent is
+///    told to copy it verbatim from the worklist — but nothing verified the
+///    copy. A widened glob silently scopes the mold to a whole subproject; a
+///    narrowed one silently kills it. The value is re-derived here from the
+///    same [`super::list::collect`] the prompt was rendered from, so agreement
+///    is proven rather than trusted.
+///
+/// A cluster the worklist no longer proposes yields no `paths:` expectation —
+/// the mold is still written (its `Ref:`s are still checked), because refusing
+/// there would block a legitimate re-author of an adopted mold.
+fn grounding_defects(body: &str, path: &Path, root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+
+    for cited in cited_refs(body) {
+        if !root.join(&cited).exists() {
+            out.push(format!(
+                "`Ref: {cited}` does not exist under {} — a mold may only cite files it read",
+                root.display()
+            ));
+        }
+    }
+
+    let mold_rel = normalise(&path.to_string_lossy());
+    if let Some(expected) =
+        super::list::collect(root).into_iter().find(|c| normalise(&c.mold_path) == mold_rel || mold_rel.ends_with(&normalise(&c.mold_path)))
+    {
+        let declared = declared_paths(body);
+        if declared != expected.paths {
+            out.push(format!(
+                "`paths:` must be the worklist's value copied verbatim — expected {:?}, got {:?}",
+                expected.paths, declared
+            ));
+        }
+        // 3. The census-owned lead of `## Convention`. Folder, extension and
+        //    tally are facts the model holds exactly; the agent is handed the
+        //    line and copies it, so a mold can no longer claim "9 files" over a
+        //    house of 10.
+        let line = super::list::convention_line(&expected);
+        if !body.contains(&line) {
+            out.push(format!(
+                "the `## Convention` lead must be the census line copied verbatim — expected `{line}`"
+            ));
+        }
+    }
+    out
+}
+
+/// Every path a `Ref:` line cites, forward-slashed. Tolerates the backtick and
+/// em-dash decoration the canonical mold format uses around the path.
+fn cited_refs(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let Some(rest) = line.split_once("Ref:").map(|(_, r)| r) else { continue };
+        let token = rest
+            .trim()
+            .trim_start_matches('`')
+            .split(['`', ' ', ',', ')'])
+            .next()
+            .unwrap_or("")
+            .trim_end_matches([':', '.', ','])
+            .trim();
+        // A citation is a path: it must carry a separator or an extension dot.
+        if !token.is_empty() && (token.contains('/') || token.contains('.')) {
+            out.push(normalise(token));
+        }
+    }
+    out
+}
+
+/// The `paths:` list declared in the mold's frontmatter, in document order.
+/// Reads only the frontmatter block, so a `paths:` word in the prose below
+/// cannot be mistaken for the key.
+fn declared_paths(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_frontmatter = false;
+    let mut in_paths = false;
+    for (i, line) in body.lines().enumerate() {
+        let trimmed = line.trim_end();
+        if trimmed.trim() == "---" {
+            if i == 0 {
+                in_frontmatter = true;
+                continue;
+            }
+            if in_frontmatter {
+                break;
+            }
+        }
+        if !in_frontmatter {
+            continue;
+        }
+        if trimmed.trim_start().starts_with("paths:") {
+            in_paths = true;
+            continue;
+        }
+        if in_paths {
+            let item = trimmed.trim_start();
+            if let Some(v) = item.strip_prefix("- ") {
+                out.push(normalise(v.trim()));
+            } else {
+                in_paths = false;
+            }
+        }
+    }
+    out
+}
+
+/// Forward-slash a path so a value authored on either platform compares equal.
+fn normalise(s: &str) -> String {
+    s.replace('\\', "/")
 }
 
 /// Resolve the mold body: `-` reads from stdin, anything else is the literal
@@ -181,7 +313,7 @@ mod tests {
     fn run_writes_and_marks_generated() {
         let dir = tempfile::tempdir().unwrap();
         let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
-        run(&path, &valid_mold("api-service-pattern"));
+        run(&path, &valid_mold("api-service-pattern"), dir.path());
         assert!(path.exists(), "mold written");
         let got = std::fs::read_to_string(&path).unwrap();
         assert!(got.contains("## Purpose"), "body preserved: {got}");
@@ -197,7 +329,7 @@ mod tests {
         std::fs::write(&path, "HAND AUTHORED — keep me").unwrap();
         // A write over an existing mold must NOT clobber it — survivors are
         // hand-authored (the sweep removed the generated ones already).
-        run(&path, "---\nname: x\nsource: scan\n---\nregenerated");
+        run(&path, "---\nname: x\nsource: scan\n---\nregenerated", dir.path());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "HAND AUTHORED — keep me");
     }
 
@@ -209,10 +341,10 @@ mod tests {
         // all first), so it is a discarded authoring pass, never a human's file.
         let dir = tempfile::tempdir().unwrap();
         let path = mold(dir.path(), "apps/api/.claude/skills/api-report-pattern/SKILL.md");
-        run(&path, &valid_mold("api-report-pattern"));
+        run(&path, &valid_mold("api-report-pattern"), dir.path());
         let first = std::fs::read_to_string(&path).unwrap();
         // Second block for the SAME mold path — the collision.
-        run(&path, &valid_mold("api-report-pattern"));
+        run(&path, &valid_mold("api-report-pattern"), dir.path());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), first, "create-only still holds");
         assert!(super::super::origin::is_mustard_generated(&first), "the survivor is this run's own");
     }
@@ -250,6 +382,7 @@ mod tests {
         run(
             &path,
             "---\nname: api-service-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - apps/api/services/**\nsource: scan\n---\n\n## Purpose\nbody",
+            dir.path(),
         );
         let written = std::fs::read_to_string(&path).expect("mold written");
         assert!(written.contains("paths:"), "the scoping key must survive: {written}");
@@ -257,5 +390,90 @@ mod tests {
             written.contains("apps/api/services/**"),
             "the glob itself must survive: {written}"
         );
+    }
+
+    #[test]
+    fn a_ref_to_a_file_that_does_not_exist_is_a_defect() {
+        // The agent's weak spot, made fatal: a mold that says "see how X does
+        // it" about a deleted file teaches the wrong thing forever, because the
+        // mold auto-loads into every later edit of its folder.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("apps/api/services")).unwrap();
+        std::fs::write(dir.path().join("apps/api/services/UserService.x"), "real").unwrap();
+
+        let body = format!(
+            "{}\n\n## Examples\n- Ref: `apps/api/services/UserService.x`\n- Ref: `apps/api/services/GhostService.x`",
+            valid_mold("api-service-pattern")
+        );
+        let defects = grounding_defects(&body, Path::new("apps/api/.claude/skills/api-service-pattern/SKILL.md"), dir.path());
+        assert_eq!(defects.len(), 1, "only the ghost is a defect: {defects:?}");
+        assert!(defects[0].contains("GhostService.x"), "the offender is named: {defects:?}");
+    }
+
+    #[test]
+    fn a_widened_or_narrowed_paths_value_is_a_defect() {
+        // `paths:` is the ONE key that decides when a mold loads. The agent is
+        // told to copy the worklist's value verbatim; this proves the copy
+        // instead of trusting it. A model with one real cluster gives the
+        // expectation something to disagree with.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/grain.model.json"),
+            r#"{"projects":[{"name":"api","dir":"apps/api"}],
+                "roles":[{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+                "modules":[{"path":"apps/api/services/UserService.x"},{"path":"apps/api/services/OrderService.x"}]}"#,
+        )
+        .unwrap();
+
+        let mold_rel = "apps/api/.claude/skills/api-service-pattern/SKILL.md";
+        let expected = super::super::list::collect(dir.path())
+            .into_iter()
+            .find(|c| c.mold_path == mold_rel)
+            .expect("the fixture proposes this cluster");
+        assert_eq!(expected.paths, vec!["apps/api/services/**"], "worklist value");
+
+        // The census line the agent is handed — asserted through the same
+        // function the renderer and the apply use, so the test cannot drift
+        // from the contract it is guarding.
+        let census = super::super::list::convention_line(&expected);
+        assert!(census.contains("Files of this role in this subproject: 2"), "tally is the census's: {census}");
+        let with_correct = format!(
+            "---\nname: api-service-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - apps/api/services/**\nsource: scan\n---\n\n## Purpose\nbody\n\n## Convention\n{census}\nVisibility is pub by habit."
+        );
+        assert!(
+            grounding_defects(&with_correct, Path::new(mold_rel), dir.path()).is_empty(),
+            "the verbatim copy passes: {:?}",
+            grounding_defects(&with_correct, Path::new(mold_rel), dir.path())
+        );
+
+        // The tally reworded — the exact class of error this check exists for.
+        let reworded = with_correct.replace("this subproject: 2", "this subproject: 9");
+        let defects = grounding_defects(&reworded, Path::new(mold_rel), dir.path());
+        assert_eq!(defects.len(), 1, "a wrong tally is refused: {defects:?}");
+        assert!(defects[0].contains("Convention"), "the reason names the section: {defects:?}");
+
+        // Widened to the whole subproject — the silent failure this catches.
+        // Only the frontmatter value is widened, so the census line stays
+        // correct and the `paths:` defect is the only one reported.
+        let widened = with_correct.replacen("  - apps/api/services/**", "  - apps/api/**", 1);
+        let defects = grounding_defects(&widened, Path::new(mold_rel), dir.path());
+        assert_eq!(defects.len(), 1, "the widened glob is refused: {defects:?}");
+        assert!(defects[0].contains("verbatim"), "the reason names the contract: {defects:?}");
+
+        // Dropped entirely — an unscoped mold loads on every edit of the house.
+        let dropped = with_correct.replace("paths:\n  - apps/api/services/**\n", "");
+        assert!(
+            grounding_defects(&dropped, Path::new(mold_rel), dir.path())
+                .iter()
+                .any(|d| d.contains("`paths:`")),
+            "a missing paths: is the same defect as a wrong one"
+        );
+    }
+
+    #[test]
+    fn cited_refs_reads_the_canonical_decoration() {
+        let body = "- Ref: `apps/api/x.rs` — the shape\n- Ref: apps/api/y.rs\n- not a ref line\n- Ref: `pkg/z.ts`, and prose";
+        assert_eq!(cited_refs(body), vec!["apps/api/x.rs", "apps/api/y.rs", "pkg/z.ts"]);
     }
 }

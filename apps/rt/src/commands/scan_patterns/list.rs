@@ -259,6 +259,42 @@ pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
     kept.into_iter().map(|d| format!("{d}/**")).collect()
 }
 
+/// The FACTUAL lead of a mold's `## Convention` section — where the cluster
+/// lives, what its members are named, and how many of them this house holds.
+///
+/// This exists because the authoring agent is measurably bad at exactly these
+/// three values and measurably good at everything else in a mold. Audited over
+/// one real enrich: every wrong claim a mold made was a TALLY, an ORDER or a
+/// PATH ("9 files" where there were 10; "all of them derive X" where two did
+/// not), while every claim that only reading could produce was right. Counting
+/// is not a judgement call — the census already holds the answer exactly, so
+/// asking a model to estimate it is spending inference to get a worse number.
+///
+/// So the line is rendered here, handed to the agent to copy verbatim (the same
+/// contract `paths:` already uses), and verified on the way in by
+/// `scan-patterns-apply`. The agent keeps the rest of `## Convention`: the
+/// visibility habits, the test placement, the derive sets — the things a
+/// program cannot see.
+///
+/// Deterministic: extensions are deduplicated and sorted, the globs come from
+/// [`globs_for`], and nothing here reads a clock or an absolute path.
+pub(crate) fn convention_line(c: &Candidate) -> String {
+    let mut exts: Vec<String> = c
+        .files
+        .iter()
+        .filter_map(|f| {
+            let name = f.rsplit(['/', '\\']).next()?;
+            let (_, ext) = name.rsplit_once('.')?;
+            (!ext.is_empty()).then(|| format!(".{}", ext.to_lowercase()))
+        })
+        .collect();
+    exts.sort();
+    exts.dedup();
+    let where_ = if c.paths.is_empty() { "(no recurring folder)".to_string() } else { c.paths.join(", ") };
+    let what = if exts.is_empty() { "(mixed)".to_string() } else { exts.join(", ") };
+    format!("Folder: {where_} · Extension: {what} · Files of this role in this subproject: {}", c.count)
+}
+
 /// Run `scan-patterns-list`. Prints a JSON array to stdout; exit 0 always.
 /// `rejected` swaps the payload for the drop diagnostic; the default output is
 /// byte-identical to before the flag existed (the `/scan` flow consumes it).
