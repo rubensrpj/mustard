@@ -162,9 +162,19 @@ pub enum SpecCmd {
         #[arg(long)]
         material: Option<PathBuf>,
         /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
-        /// The wave dirs themselves are materialised by `wave-scaffold`.
+        /// Without `--plan` the wave dirs themselves are materialised later, by
+        /// `plan-materialize`.
         #[arg(long, default_value_t = 1)]
         waves: u32,
+        /// Path to the plan JSON. FUSES the draft with the PLAN-phase
+        /// materialisation: this one call also runs the wave-scaffold renderer,
+        /// analyze-validation, the dependency DAG and the NEGATIVE PROOF, so
+        /// `wave-plan.md` and every wave dir land in the same pass. The plan's
+        /// `acceptance` lines become the spec's acceptance criteria. A refusal
+        /// exits 2 and leaves no layout behind. Omitted: unchanged behaviour —
+        /// `plan-materialize` remains the re-materialisation door.
+        #[arg(long)]
+        plan: Option<PathBuf>,
         /// Overwrite an existing output directory.
         #[arg(long)]
         force: bool,
@@ -383,6 +393,7 @@ pub fn dispatch(cmd: SpecCmd) {
             output,
             material,
             waves,
+            plan,
             force,
             query_terms,
             force_scope,
@@ -395,6 +406,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 output,
                 material,
                 waves,
+                plan,
                 force,
                 query_terms,
                 force_scope,

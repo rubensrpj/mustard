@@ -47,6 +47,7 @@ fn drafted_context_is_prose_only() {
             output: Some(out.clone()),
             material: None,
             waves,
+            plan: None,
             force: false,
             query_terms: None,
             force_scope: false,

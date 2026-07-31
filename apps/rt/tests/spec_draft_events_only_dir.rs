@@ -33,6 +33,7 @@ fn opts(output: &Path) -> SpecDraftOpts {
         output: Some(output.to_path_buf()),
         material: None,
         waves: 0,
+        plan: None,
         force: false,
         query_terms: None,
         force_scope: false,

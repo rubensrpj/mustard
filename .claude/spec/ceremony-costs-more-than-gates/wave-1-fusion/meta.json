@@ -1,0 +1,31 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-30T23:28:46.875Z",
+  "parent": "ceremony-costs-more-than-gates",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/spec_draft.rs",
+      "path": "apps/rt/src/commands/spec/spec_draft.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/plan_materialize.rs",
+      "path": "apps/rt/src/commands/pipeline/plan_materialize.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/observe/picker_approval_observer.rs",
+      "path": "apps/rt/src/hooks/observe/picker_approval_observer.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/observe/mod.rs",
+      "path": "apps/rt/src/hooks/observe/mod.rs",
+      "done": true
+    }
+  ]
+}
