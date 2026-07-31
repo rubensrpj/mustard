@@ -1,6 +1,6 @@
 ---
 name: core-hit-pattern
-description: Use when adding or refactoring a Hit-suffixed record that reports one match or one ranked row under packages/core/src/domain/.
+description: Use when adding or refactoring a `*Hit` row that reports one piece of matched evidence — what matched, where, and how strongly.
 paths:
   - packages/core/src/domain/**
 tags: [add, refactor]
@@ -17,26 +17,24 @@ metadata:
 
 ## Purpose
 
-A hit is one row of evidence a scan produced, and there are two families. The matcher family — the generic keyed hit in `vocabulary/aho.rs` and the `ScanHit` it maps to in `vocabulary/mod.rs` — reports one vocabulary term found in a haystack, with the layer that owns it and the byte span where it landed. The boundary family in `domain/scan.rs` — `ConcernHit`, `TermHit`, `SliceHit`, `ContractHit` — mirrors rows of the external grain tool's JSON digest, which Mustard consumes but never writes. Both are report types, not domain aggregates: the producer fills them in, and ranking, dedup and verdicts belong to the consumer. The aho module is the single owner of the Aho-Corasick API in this crate, which the crate Guards restate as reuse the shared automaton, do not instantiate another.
+A `*Hit` is one flat evidence row, never the matcher that produced it. `ScanHit` (`vocabulary/mod.rs`) reports the owning `Layer`, the term **as it appears in the vocabulary** (explicitly not the haystack substring, which matters when the haystack has case variants), and the byte span. `KeyedHit<K>` (`vocabulary/aho.rs`) is the generic `pub(super)` form emitted by the shared `KeyedAutomaton`, keyed on whatever the consumer tags terms with — the regression matcher keys on `Layer`, the stack detector on a category. The `scan.rs` family (`ConcernHit`, `TermHit`, `SliceHit`, `ContractHit`) mirrors rows of the external scan digest payload: Mustard owns its own view of that JSON rather than importing scan's types.
 
 ## Convention
 
 Folder: packages/core/src/domain/** · Extension: .rs · Files of this role in this subproject: 3
 
-- Plain data record: public fields, no inherent methods, no constructor; built by struct literal inside the scan function that emits it.
-- Matcher hits derive `#[derive(Debug, Clone, PartialEq, Eq)]` and carry the owning key, the matched term **as it appears in the vocabulary** rather than the haystack slice — the doc comment flags why that matters for case variants — plus inclusive start and exclusive end byte offsets.
-- The generic engine hit is internal, with restricted visibility on the struct and its fields, so only the mapped public row leaves the module. A new match category keys the same automaton instead of building a second one.
-- Boundary hits derive deserialize only, since these payloads arrive from another process.
-- In the four boundary hits, every collection field carries a serde default so a payload from an older grain binary still parses; required scalars are left without a default. The enclosing payload field that holds them carries a default too, with a doc line saying what an empty value means.
-- Scores cross the boundary as fixed-point integers, documented as never a float so the value is byte-stable.
-- Doc comments explain what the row means to the consumer and what an empty value implies, rather than restating the field names.
+- In-crate hits produced by this crate derive `#[derive(Debug, Clone, PartialEq, Eq)]` and expose public fields; the engine-internal `KeyedHit<K>` stays `pub(super)` with `pub(super)` fields so the public surface only ever sees the mapped form.
+- Payload hits read from an external tool derive `#[derive(Debug, Clone, Deserialize)]` only — they are read, never written — and every non-identifying field carries `#[serde(default)]` so a payload produced by an older scan binary still deserialises. The doc comment states what a defaulted/empty value means ("old binary, fall back to `miss`").
+- Offsets are byte offsets into the haystack, `start` inclusive and `end` exclusive; a unit test slices the haystack back with them to prove it.
+- Scores travel as fixed-point integers (`score_x1024`) rather than floats, so the value is byte-stable across machines.
+- There is exactly one Aho-Corasick automaton in the crate. Construction goes through `KeyedAutomaton::from_groups`, which deduplicates within a group and keeps the first occurrence across groups so group order is the caller's priority order; empty and whitespace-only terms are skipped.
 
 ## How to apply
 
-A new match kind emitted by the vocabulary engine is added to the internal-to-public mapping in the aho module, keeping the key, term and span shape and the leftmost-first, case-sensitive semantics documented in that module header. A new row type arriving from the grain digest goes into `scan.rs` next to its siblings with deserialize alone, a serde default on every collection and every later-added field, and integer scoring. Do not give a hit behaviour or a constructor, and do not make it own a second scan engine — extend the existing automaton and let the consumer rank.
+Put the new hit type next to its producer: `vocabulary/` for matcher output, `domain/scan.rs` for a digest payload row. If you need multi-pattern matching, tag your terms with a key and reuse `KeyedAutomaton::from_groups`, then map `KeyedHit<YourKey>` into your own public row — do not wire a second `AhoCorasick`. Give each field a doc comment covering the empty case, and add a test in the same file that proves the span slices back to the matched text (in-crate) or that a payload missing the new field still parses (external). New fields on an external payload row land defaulted, never required.
 
 ## Examples
 
-- Ref: packages/core/src/domain/vocabulary/mod.rs — the public matcher row, with the term-provenance rule and the half-open byte span.
-- Ref: packages/core/src/domain/vocabulary/aho.rs — the internal generic hit and the single-owner rule for the Aho-Corasick dependency.
-- Ref: packages/core/src/domain/scan.rs — the deserialize-only boundary family with defaults on collections and fixed-point scores.
+- Ref: packages/core/src/domain/vocabulary/mod.rs — `ScanHit` and the `VocabularyMatcher::scan` contract.
+- Ref: packages/core/src/domain/vocabulary/aho.rs — `KeyedHit<K>` / `KeyedAutomaton::from_groups` dedup and priority policy.
+- Ref: packages/core/src/domain/scan.rs — `ConcernHit`, `TermHit`, `SliceHit`, `ContractHit` as deserialise-only payload rows.

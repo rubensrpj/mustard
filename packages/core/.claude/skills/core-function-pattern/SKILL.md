@@ -1,6 +1,6 @@
 ---
 name: core-function-pattern
-description: Use when adding or refactoring a Function-prefixed record that describes one declared function across packages/core/src/domain/ast/ and packages/core/src/domain/regression_check/.
+description: Use when adding or refactoring a `Function*` record that describes a captured or extracted source function inside the AST layer or the regression-check snapshot/diff.
 paths:
   - packages/core/src/domain/ast/**
   - packages/core/src/domain/regression_check/**
@@ -18,28 +18,26 @@ metadata:
 
 ## Purpose
 
-The regression gate photographs the functions a wave declared as touched, before and after, and these types are the links in that chain. `FunctionSig` in `ast/mod.rs` is what the extractor produces from source; `FunctionCapture` in `regression_check/mod.rs` is the persisted photograph of one function body; `FunctionDelta` is one row of the diff between two snapshots. Their field semantics are aligned on purpose: the name is the final identifier and never the qualified path, so comparing against the declared list is a plain string compare, and both span types are half-open byte ranges — `TextSpan` documents that it mirrors the extractor span so a caller holding one does not need a converter. The ast layer enumerates no language ids anywhere; when a grammar is missing the capture degrades to the textual path and the record itself carries which mode produced it.
+The `Function*` types are the crate's pure record of "one function, as the regression gate sees it". `FunctionSig` (`ast/mod.rs`) carries the final identifier, the raw parameter list, the return annotation and a half-open byte `Range<usize>`; `FunctionCapture` and `FunctionDelta` (`regression_check/mod.rs`) carry the canonical qualifier, the capture mode, the verbatim body text and the before/after images. They hold data only — extraction lives in `ast::signature` / `ast::stub_detect`, comparison lives in the regression-check diff. Field semantics are chosen so a consumer can compare against the declared `## Funções tocadas` list with a plain string compare instead of re-parsing. Because the AST layer must stay language-agnostic, nothing in these records (or the code that fills them) enumerates a language id: grammars are resolved through `GrammarLoader`.
 
 ## Convention
 
 Folder: packages/core/src/domain/ast/**, packages/core/src/domain/regression_check/** · Extension: .rs · Files of this role in this subproject: 4
 
-- A function record is a plain data record: public fields, no inherent constructor, built by struct literal at the producer.
-- Derives are `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. The ast module spells serde fully qualified and keeps field names verbatim; the regression module imports serde and adds a camelCase rename, applying the rename only at the persisted-artefact boundary. The doc comment on the extractor record states that split explicitly.
-- Byte offsets are half-open ranges — a standard range inside ast, the two-field span struct inside the regression module.
-- A field the degraded path cannot produce is an option, and its doc comment enumerates *every* case in which it is absent.
-- The capture method travels with the data as a small enum rather than being re-derived downstream, with a string accessor and a combine that picks the more restrictive of two.
-- Collections that must serialize byte-identically across machines are ordered maps keyed by the canonical qualifier, not hash maps; the module doc names diff reproducibility as the reason.
-- A list-of-names concept is a documented type alias, not a wrapper struct, with the doc saying which on-disk field it matches.
-- Module headers in both crates state the design rules (single responsibility, zero hardcoded languages, reuse over duplication) and then list the public surface item by item.
-- Tree-sitter queries are reached through named accessors that return an optional query, never a raw string key at the call site.
+- Derives on the exemplars: `#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]`. `ast` keeps the Rust field names verbatim on the wire; `regression_check` applies `#[serde(rename_all = "camelCase")]` at its own on-disk boundary.
+- Every field carries a doc comment that says where the value comes from and what an empty string / absent value means (`FunctionSig::return_type` is documented as empty when the language has no syntactic return type).
+- Spans are byte offsets, start inclusive and end exclusive — `Range<usize>` in `ast`, `TextSpan` in `regression_check`.
+- Identity is the final identifier (`FunctionSig::name`) or the canonical qualifier (`FunctionCapture::qualifier`), never a file path; `regression_check` keys its map on the qualifier so two snapshots serialise byte-identically regardless of insertion order.
+- `ast/stub_detect.rs` declares `pub type FunctionName = String;` and `pub type Diff = [DiffFile];` — thin aliases that keep call sites expressive without a wrapper type.
+- Public functions are `#[must_use]` and return a real value; a missing grammar, an uncompilable `.scm` or a mid-flight parse failure degrades to "no hits for this file" and typed failures go through `AstError` (`#[non_exhaustive]`, `thiserror`).
+- Tests live in `#[cfg(test)] mod tests` at the bottom of the same file, using `tempfile::tempdir()` for anything that needs a project root.
 
 ## How to apply
 
-Put a new function-shaped record in the module that produces it — extraction results in the ast module, snapshot and diff rows in the regression module — and add it to that module's re-export block and to the public-surface list in the module header. Mirror the field names of the neighbouring type in the chain so a caller can move between them without a converter; always carry a span, always carry the capture mode, and use a documented option for anything the fallback path cannot fill. If the record needs new syntax knowledge, add a query file and a typed accessor — do not branch on a language id, and keep the textual fallback path returning a real value so a missing grammar degrades instead of aborting the gate.
+A new `Function*` record goes beside the layer that produces it: `ast/mod.rs` for AST-layer primitives, `regression_check/mod.rs` for snapshot and diff rows. If it is an `ast` type, add it to the `## Public surface` list in the `ast/mod.rs` module doc and to the `pub use` re-export block — that list is the module's contract. Derive `Serialize`/`Deserialize` only when the record is persisted alongside a snapshot. Document each field's absent case explicitly, and add a unit test in the same file that pins the shape (identifier carried verbatim, span slices back to the original text).
 
 ## Examples
 
-- Ref: packages/core/src/domain/ast/mod.rs — the extractor-side record, its span contract, and the doc comment explaining why the camelCase rename lives downstream.
-- Ref: packages/core/src/domain/regression_check/mod.rs — the persisted side, including the ordering rule on the snapshot map.
-- Ref: packages/core/src/domain/ast/stub_detect.rs — the alias-over-wrapper habit and the two-mode contract stated in the module header.
+- Ref: packages/core/src/domain/ast/mod.rs — `FunctionSig`, `StubMatch`, `AstError`, the public-surface list.
+- Ref: packages/core/src/domain/ast/stub_detect.rs — `FunctionName` alias, `detect_stub_patterns` and its degrade-to-textual path.
+- Ref: packages/core/src/domain/ast/queries.rs — `QuerySet` accessors (`function_signature`, `entity_definitions`) and the built-in/on-disk override order.

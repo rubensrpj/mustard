@@ -1,6 +1,6 @@
 ---
 name: rt-result-pattern
-description: Use when adding or refactoring the internal outcome struct a runner returns before it is folded into a pipeline or QA report.
+description: Use when adding or refactoring a `*Result` value type that carries what one command execution or one gate stage produced in-process.
 paths:
   - apps/rt/src/commands/pipeline/**
   - apps/rt/src/commands/review/qa_run/**
@@ -18,26 +18,27 @@ metadata:
 
 ## Purpose
 
-`*Result` is the INTERNAL half of a two-layer output: the runner produces a `CommandResult` / `SubprojectResult` / `VerifyResult` / `QaResult` / `BuildResult` in memory, and a separate step turns it into the JSON the command prints. Keeping the two apart is what lets the gates in `pipeline/` distinguish a real failure from an environment failure without leaking that distinction into the wire shape: `CommandResult::env_error` and `SubprojectResult::skipped` exist so a spawn failure or a missing command never denies, while a non-zero exit does. Because the result type is not the wire type, it is free to hold whatever the decision needs (raw output, durations, per-criterion detail) and the serializer decides what the reader actually sees. This is also why `*Result` types stay private to their module while the `*Report` next to them is `pub`/`pub(crate)`: nobody outside should key on the internal discriminators.
+A `*Result` in this crate is the in-process value of one execution — a stage command, a subproject verification, an acceptance criterion — and it is deliberately NOT the document that gets printed. That job belongs to the `*Report` family. Keeping the two apart is what allows the executor to record everything it observed (exit code, duration, output excerpt) while the report chooses a stable subset to serialize. Because these types cross module boundaries inside the crate rather than the process boundary, they carry no serde derives and their visibility is the narrowest that works. Where a second engine grades an execution it did not run, the fields go private behind read-only accessors so a consumer can judge a result without gaining the power to forge one.
 
 ## Convention
 
 Folder: apps/rt/src/commands/pipeline/**, apps/rt/src/commands/review/qa_run/** · Extension: .rs · Files of this role in this subproject: 5
 
-- Name is `<What>Result`; the doc line says what ONE run produced ("The outcome of a single stage command", "One subproject's verification outcome", "Aggregated verify result").
-- Default visibility is private to the module (`CommandResult`, `BuildResult`, `SubprojectResult`, `VerifyResult`); widen to `pub(crate)` only with a stated consumer, as `qa_run::QaResult` does ("`pub(crate)` so `close-pipeline` reads the per-criterion detail that the count-only `QaSpecOutcome` does not carry").
-- No `Serialize` derive on the internal type in the files read; `#[derive(Debug, Clone)]` where it is cloned or asserted on. The wire shape is produced explicitly — `VerifyResult::to_json(&self) -> Value`, `qa_run::criteria_json` — so a field can be added internally without changing stdout.
-- The shape is `ok: bool` plus the evidence plus the fail-open discriminator: `env_error` (spawn failure / timeout / empty command → never blocks), `skipped` (nothing was declared → "did not look", not "passed"). Give the discriminator its own field and document it; do not fold it into `ok`.
-- The producing function is a plain `fn run_command(cmd, cwd) -> CommandResult` style runner that returns the struct on every path, including the early refusals (empty command, spawn error), so the caller never has to interpret an `Err`.
-- Aggregates own their reduction: `VerifyResult::to_json` computes `overall` as "`ok` when every non-skipped subproject passed"; `qa_run` counts pass/fail/skip in one place. Do not recompute the verdict at a second call site.
-- Timeouts are polled with `try_wait` while the `Child` stays owned by the calling thread, so the timeout branch can actually kill the process; the three shell runners in the crate (`close_gates::run_command`, `bash_guard::run_build`, `qa_run::run_ac_command`) deliberately stay separate because their env-error taxonomies differ — read the header of `close_gates.rs` before proposing to merge them.
+Reading the members adds:
+
+- Default visibility is private to the module (`struct CommandResult` in `close_gates.rs`, `struct BuildResult` in `status.rs`). It becomes `pub(crate)` only when a named composite folds it — `QaResult` says so in its doc.
+- No `Serialize`. Several members carry no derive at all (`BuildResult { at, ok }`); the richer ones derive `Debug` (and `Clone` when a caller keeps a copy). Rendering to JSON happens in a separate `*_json` helper, not on the type.
+- Fields are the raw facts of the run, in a fixed order: identity, status word, exit code, duration, bounded output excerpt (`AcResult { id, status, exit, duration_ms, stderr_excerpt }`). Status is a plain `String` word (`pass` / `fail` / `timeout` / `skip`) rather than an enum, because the same word is what the ledger stores.
+- When another module grades the result, its fields stay private and it exposes `pub(crate) fn status(&self) -> &str`, `fn exit(&self) -> Option<i64>`, `fn stderr_excerpt(&self) -> &str`. `AcResult` documents the reason explicitly.
+- The doc comment names what produced the value ("The outcome of a single stage command", "One AC execution outcome") and, when relevant, which sibling type it must not be confused with.
+- The constructing function is a plain free function in the same module returning the type by value; a fallible read returns `Option<XResult>` (`fn last_build(root: &Path) -> Option<BuildResult>` using `?` on every step) rather than a `Result` with a bespoke error.
 
 ## How to apply
 
-Add the struct in the module that owns the runner, above it, private. Keep it free of `serde` attributes and add a `to_json`/`*_json` function (or extend the existing one) where the report is assembled. If the outcome must cross a module boundary, make it `pub(crate)` and write the reason in the doc comment, the way `QaResult` does. If the new result records something the gate must not block on, add an explicit boolean for it and say in the doc what the caller may conclude from it.
+Declare the result in the module that runs the thing, under `apps/rt/src/commands/pipeline/` or `apps/rt/src/commands/review/qa_run/`. Keep it private; promote to `pub(crate)` only when you can name the composite caller in the doc comment. Record the facts, not a rendering: exit code, elapsed millis, a bounded excerpt. Do not derive `Serialize` — add a `*_json(&self) -> Value` helper or let the report struct project it. If a different module will grade the result, make the fields private and add read-only accessors so it can read but not construct. Fallible producers return `Option`, and the caller treats `None` as "nothing to report", never as an error.
 
 ## Examples
 
-- Ref: apps/rt/src/commands/pipeline/close_gates.rs — `CommandResult { ok, env_error, output }`, returned on every path of `run_command`, with the env-error-never-denies rule stated in the module header.
-- Ref: apps/rt/src/commands/pipeline/status.rs — `BuildResult { at, ok }`, private, built by `last_build(root) -> Option<BuildResult>` out of a legacy cache file, fail-open via `?`.
-- Ref: apps/rt/src/commands/review/qa_run/mod.rs — `QaResult { overall, criteria }` as `pub(crate)` with the consumer named, reduced to the count-only outcome by `run_for_spec_with_options`.
+- Ref: `apps/rt/src/commands/pipeline/close_gates.rs` — `CommandResult` as the private per-stage execution value, with the env-error vs real-failure taxonomy kept local.
+- Ref: `apps/rt/src/commands/pipeline/status.rs` — `BuildResult { at, ok }` and its `Option`-returning reader.
+- Ref: `apps/rt/src/commands/review/qa_run/mod.rs` — `QaResult` / `AcResult`, the accessor-only shape and the documented reason for `pub(crate)`.

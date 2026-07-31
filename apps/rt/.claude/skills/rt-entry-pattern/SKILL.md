@@ -1,6 +1,6 @@
 ---
 name: rt-entry-pattern
-description: Use when adding or refactoring a row type that appears inside a `run` command's JSON report array under apps/rt/src/commands/.
+description: Use when adding or refactoring an `*Entry` row struct that represents one item of a command's JSON report or one parsed record of external tool output.
 paths:
   - apps/rt/src/commands/**
 tags: [add, refactor]
@@ -17,29 +17,28 @@ metadata:
 
 ## Purpose
 
-A `run` subcommand in this crate answers with ONE pretty-printed JSON document, and every list inside that document has a named row type: `WorktreeEntry`, `RestoredEntry`, `Entry`, `ErrorEntry`, `DisabledEntry`, `KeptEntry`. The row type is the contract with whoever reads the report — the orchestrator, a gate, or a test — so it is declared explicitly next to the `*Report` it belongs to instead of being assembled ad hoc as `json!({...})` at the call site. Each row is small, flat, and stringly-typed on purpose: it must survive `serde_json::to_string_pretty` unchanged on every platform. The crate Guard requires `run` output to be deterministic and byte-stable, which is why rows are sorted before they are emitted and why optional fields are omitted rather than serialized as `null`. Rows also carry the module's evidence: a field's doc comment names the closed set of values it can hold, so a reader never has to grep the builder to learn what `state` can be.
+When a `run` command answers with a list, each element of that list is a named struct, not an inline `json!` object. Naming it is what lets the row carry its own doc comment, its own optional-field policy and its own closed vocabulary, and it is what keeps the aggregate report readable. The row is built by a per-item function that returns an `*Entry` on EVERY branch — including the failure branches — so a single unreadable path never aborts the sweep and never disappears from the output. The same shape is reused for rows parsed out of external tool output (`git worktree list --porcelain`), where the struct is the parse target rather than a serialization target.
 
 ## Convention
 
 Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 11
 
-- Name is `<What>Entry` (`WorktreeEntry`, `RestoredEntry`, `DisabledEntry`, `KeptEntry`, `SkeletonEntry`, `WavePlanEntry`, `ChildEntry`); the bare `Entry` in `maint/claude_dir_prune.rs` is the exception a module with a single row kind takes.
-- Declared immediately above the functions that build it and below (or beside) the `*Report` that owns it, under a `// ---` banner comment in the larger modules.
-- Derives follow the direction of travel: `#[derive(Serialize)]` for a row that is printed (`RestoredEntry`, `Entry`, `ErrorEntry`, `KeptEntry`), `Deserialize` for a row parsed out of a model file (`SkeletonEntry` in `orient.rs`, `WavePlanEntry` in `wave_scaffold.rs`), plus `Debug`/`PartialEq` when a test compares whole rows (`WorktreeEntry`).
-- Visibility is the narrowest the consumer needs: private (`Entry`, `ErrorEntry`, `KeptEntry`), `pub(crate)` when a sibling command or a test module builds it (`WorktreeEntry`, `RestoredEntry`, `DisabledEntry`), `pub` only when it leaves the family.
-- Fields are `String` / `bool` / `usize` / `&'static str` — never a `PathBuf` on the wire. Paths are normalised to forward slashes before they enter a row (`git_settle::show`, `parse_worktrees`), so one JSON shape reads the same on Windows and POSIX.
-- A string field whose values are a closed set documents that set on the field: `/// `restored` | `already-active` | `no-snapshot` | `missing` | `skipped` | `error`.` (`RestoredEntry::state`).
-- Optional evidence is `Option<String>` + `#[serde(skip_serializing_if = "Option::is_none")]` (`RestoredEntry::restored_from`, `RestoredEntry::error`), so the happy-path document stays byte-identical.
-- A failure gets its OWN row type — `ErrorEntry { path, error }` — instead of an error flag bolted onto the success row; the report then carries `entries` and `errors` as separate arrays.
-- Rows are ordered deterministically before emit: `claude_dir_prune` sorts the `.claude/` children by name, `parse_worktrees` sorts by branch with the path as tiebreaker precisely because several rows share an empty branch.
-- Tests live in the same file under `#[cfg(test)] mod tests` with `use super::*;` and `tempfile::tempdir()`; `unwrap()`/`expect()` are allowed there only (the crate denies `clippy::unwrap_used` outside `#[cfg(test)]`).
+Reading the members adds:
+
+- Serialized rows derive `#[derive(Serialize)]` and nothing else when the module owns both row and report (`Entry`, `ErrorEntry` in `claude_dir_prune.rs`); a row a sibling module consumes is `pub(crate)` with `pub` fields (`RestoredEntry` in `rehook.rs`). A row that is only a parse target derives `#[derive(Debug, PartialEq)]` instead — no serde (`WorktreeEntry` in `git_settle.rs`).
+- Closed vocabularies are `&'static str` fields, and the accepted words are listed in the field's doc comment. A `state: String` field still documents its full word list.
+- Failure information rides a SEPARATE row type (`struct ErrorEntry { path, error }`) so the happy row never grows an error field; the report then carries both vectors.
+- Fields that do not always apply carry `#[serde(skip_serializing_if = "Option::is_none")]` (`restored_from`, `error`), keeping the JSON byte-identical when nothing happened.
+- The per-item builder is a private `fn restore_one(dir, kind) -> RestoredEntry` style function whose every early return constructs a full entry with an explicit `state`. It does not return `Result`; the outcome word IS the result.
+- Paths are rendered for the report with forward slashes (`git_settle::show` replaces backslashes with forward ones), so one JSON document reads the same on every platform.
+- Rows are gathered into a `Vec<XEntry>` on the report and sorted (or produced from a pre-sorted directory listing) before printing.
 
 ## How to apply
 
-Put the new row type in the module that owns the command (`commands/<family>/<command>.rs`, or `commands/<command>.rs` for the root-level ones), directly above the builder function. Give it one `///` line saying what ONE row is ("One `.claude/worktrees/` entry from `git worktree list --porcelain`", "One per `.claude/` directory the sweep touched"), then a doc comment per field. Build rows in a pure-ish function that takes a `&Path` and returns the report (no printing), keep `run(opts)` to resolving the root, calling that function and `println!`-ing `serde_json::to_string_pretty(&report)` with a `.unwrap_or_else(|_| "{}".into())` fallback. Sort before returning. If the command is new, remember the four registrations the crate Guard demands (see `rt-cmd-pattern`).
+Put the row next to the report it belongs to, in the command module under `apps/rt/src/commands/<family>/`. Give it `#[derive(Serialize)]`, one doc line per field, `&'static str` for any fixed word set, and `skip_serializing_if` for anything optional. Add a sibling `ErrorEntry` rather than making the happy row nullable. Write one `fn *_one(...) -> XEntry` that covers every branch — missing directory, skipped by policy, IO failure — and returns an entry with the matching `state` word instead of propagating an error. If the row is parsed from a subprocess, drop serde and derive `Debug, PartialEq` so the parser can be unit-tested against a literal fixture.
 
 ## Examples
 
-- Ref: apps/rt/src/commands/git_settle.rs — `WorktreeEntry` with a documented "EMPTY when DETACHED" field, sorted by `(branch, path)` for byte-stability.
-- Ref: apps/rt/src/commands/maint/claude_dir_prune.rs — `Entry` + `ErrorEntry` as two arrays of one `Report`, children sorted by name before classification.
-- Ref: apps/rt/src/commands/maint/rehook.rs — `RestoredEntry` with the `state` value set documented on the field and `skip_serializing_if` on both optionals.
+- Ref: `apps/rt/src/commands/maint/claude_dir_prune.rs` — `Entry` + `ErrorEntry` + `Report`, `&'static str` classification and recommendation.
+- Ref: `apps/rt/src/commands/maint/rehook.rs` — `RestoredEntry` with the documented `state` vocabulary and a total `restore_one`.
+- Ref: `apps/rt/src/commands/git_settle.rs` — `WorktreeEntry` as a porcelain parse target, plus the forward-slash path rendering the reports use.

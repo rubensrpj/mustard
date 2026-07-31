@@ -1,10 +1,6 @@
 {
-  "core-kind": "Both members are closed serde enums in the same folder with the same derive line and doc habit as the status cluster; core-status-pattern already teaches this role on the identical paths glob.",
-  "core-source": "The cluster declares only one type, SavingsSource in economy/model.rs; writer.rs merely consumes it, so there is no repeated shape to teach.",
-  "dashboard-row": "Covered by dashboard-use-pattern: the fan-out result interfaces live in src/hooks and are documented there as part of the useQueries convention.",
-  "dashboard-source": "Same role as dashboard-kind-pattern: the exemplars are the src/lib/types wire-mirror files that mold already teaches.",
-  "dashboard-summary": "No distinct shape: both exemplars are ordinary src/hooks/use*.ts query hooks already taught in full by dashboard-use-pattern.",
-  "dashboard-wave": "Same role as dashboard-kind-pattern: WaveCost/SpecWave/WaveChild are snake_case DTO mirrors in the same two files; a per-suffix mold would fragment one convention into three.",
-  "rt-file": "The two members share only the word file: ChangedFile is a parsed git diff row in diff_digest.rs, while wave_done.rs declares no *File type at all — its hits are prose in a Files section. No recurring shape to teach.",
-  "scan-cli": "Phantom affix: Cli is a single declaration (the clap root struct in main.rs); the other matches are token folds. Same paths and exemplars as scan-src, whose How to apply already covers adding a subcommand."
+  "core-kind": "Same role as core-status — TimelineKind / WorkspaceAlertKind are closed classification enums under domain/model/view/** and are already taught (derives, serde rename, classify/parse, no Unknown variant) by the core-status mold.",
+  "dashboard-source": "Both members (SavingsSource in types/economy.ts and the source field in types/specs.ts) are the same closed string-literal union mirroring a Rust serde enum that dashboard-kind-pattern already teaches under the identical paths — a second mold would load beside it and repeat it.",
+  "dashboard-summary": "Both exemplars (useEconomySummary.ts, useWorkspaceSummary.ts) declare no *Summary type of their own — they are TanStack query hooks importing EconomySummary/WorkspaceSummary from src/lib; their shape is exactly what dashboard-use-pattern teaches, under the identical paths.",
+  "rt-record": "Role already covered by rt-entry-pattern: InstallRecord and ValidateRecord are literal twins of each other, live inside apps/rt/src/commands/maint/ (already inside rt-entry's apps/rt/src/commands/** glob), and teach the same row-paired-with-a-Report shape — a second mold loading on the same edits would be padding, not a distinct lesson."
 }

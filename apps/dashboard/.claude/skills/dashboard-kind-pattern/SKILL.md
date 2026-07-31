@@ -1,6 +1,6 @@
 ---
 name: dashboard-kind-pattern
-description: Use when adding or refactoring a wire-mirror type module under src/lib/types that reflects a Rust serde DTO crossing the Tauri boundary.
+description: Use when adding or refactoring a `*Kind` discriminant union under apps/dashboard/src/lib/types that mirrors a Rust serde enum crossing the Tauri boundary.
 paths:
   - apps/dashboard/src/lib/types/**
 tags: [add, refactor]
@@ -17,26 +17,24 @@ metadata:
 
 ## Purpose
 
-`src/lib/types/` holds the hand-written TypeScript mirrors of the Rust structs and enums that cross the Tauri boundary. The folder is split by backend surface: `economy.ts` mirrors `mustard_core::economy` + `telemetry.rs::EconomyScopeDto`, `specs.ts` mirrors `spec_views.rs` and `packages/core/src/model/view/spec.rs`, `trace.ts` mirrors `telemetry.rs::TraceNode`. These modules carry no I/O: they describe the wire shape so the `invoke()` wrappers in `src/lib/*` and the `useXxx` hooks can be typed without re-deriving field names. Because serde owns the serialization, the field spelling here is not a style choice — it is the contract, and a rename on the Rust side must land here in the same change.
+`src/lib/types/` holds the TypeScript mirrors of the Rust DTOs that cross the Tauri boundary, and a `*Kind` type is always the discriminant of one of them. `TraceKind` classifies a `TraceNode`, `SpecActionKind` selects which action `dashboard_spec_action` performs, and `EconomyScopeKind` is the tag of the `EconomyScope` union. All three are plain string-literal unions whose members are spelled exactly like the serde output on the Rust side, so a value can travel in either direction without a mapping table. The file header of each of the three files names the Rust module it mirrors and the serde rename rule in force, which is what makes a later rename reviewable. Get the spelling wrong and nothing fails at compile time — it fails silently at deserialisation, which is why the spelling, not the shape, is the contract.
 
 ## Convention
 
 Folder: apps/dashboard/src/lib/types/** · Extension: .ts · Files of this role in this subproject: 3
 
-- All three files in the folder open with a `//` header comment that names the Rust counterpart file and states the lockstep rule ("keep these aligned", "update this file in lockstep").
-- Enum-like values are string-literal unions — `export type TraceKind = "spec" | "wave" | …`, `export type SpecActionKind = "reopen" | "close" | "remove"` — never a TypeScript `enum`. The literal spelling copies serde's rename: snake_case in `economy.ts` / `trace.ts`, kebab-case for `Stage` / `Outcome` in `specs.ts` (`"qa-review"`), and the JSDoc says which.
-- Derived unions use indexed access instead of a second literal list: `export type EconomyScopeKind = EconomyScope["kind"]`.
-- Discriminated unions mirror serde's internal tagging on `kind`.
-- Struct mirrors are `export interface` with snake_case fields (`cost_usd_micros`, `last_event_at`). Absent-on-the-wire values are `T | null`; fields rolled out additively are optional with a JSDoc line explaining the backwards-compatibility reason.
-- Every exported declaration carries a JSDoc naming the Rust type it mirrors, and units are documented where they bite (micro-USD, permille, epoch-ms).
-- `economy.ts` also co-locates pure helpers next to the types — variant constructors (`projectScope`, `windowedScope`) and display formatters (`microsToUsd`, `formatUsd`, `formatTokens`). They stay pure functions with no `invoke`; the stated reason is that a single source of truth for the unit conversion keeps callers honest.
+- Declared as `export type XKind = "a" | "b" | ...` — the three files use string-literal unions, never a TypeScript `enum` and never a `const` object.
+- Member spelling copies the wire verbatim: lowercase (`"spec" | "wave" | "agent" | "tool" | "session" | "prompt"` in `TraceKind`), snake_case (`"all_projects"` in `EconomyScope`), or kebab-case where the Rust side declares `rename_all = "kebab-case"` (`Stage`, `Outcome` in `specs.ts`).
+- When the union is already the tag of a discriminated union, the `*Kind` alias is *derived*, not retyped: `export type EconomyScopeKind = EconomyScope["kind"];`.
+- Each declaration carries a one-line `/** ... */` naming the Rust counterpart (`Matches SpecActionKind enum on Rust side (sent as string)`), and the file opens with a comment stating that a rename on the Rust side must land here in the same commit.
+- These files stay runtime-light: `economy.ts` is the only one exporting functions, and they are pure constructors/formatters — no `invoke()` here (the dashboard guard puts invoke in `src/api/*` or `src/lib/dashboard.ts`).
 
 ## How to apply
 
-A new DTO for an existing surface goes into the matching file (`economy.ts` / `specs.ts` / `trace.ts`) beside its siblings, not into a new module. A genuinely new backend surface gets a new `<area>.ts` in this folder, starting with the header comment that names the Rust file it mirrors. Consumers import with `import type { … } from "@/lib/types/<area>"`. Do not add an `invoke()` call here — the call belongs in `src/lib/dashboard.ts` (or `src/api/*`) per the dashboard guard, and its parameters stay camelCase even though the payload fields are snake_case.
+Put a new `*Kind` in the existing `src/lib/types/<domain>.ts` that already mirrors the Rust module (`economy.ts`, `specs.ts`, `trace.ts`); only create a new file when you are mirroring a new Rust module, and open it with the same "mirrors X, keep aligned" header. Declare the union next to the interfaces that consume it, export it, and document the serde rename. If the value discriminates an existing union, derive it with `Union["kind"]` instead of writing the members twice. Re-export it from `src/lib/dashboard.ts` (`export type { ... } from "@/lib/types/economy"`) when components should import it from the same place as the fetchers.
 
 ## Examples
 
-- Ref: apps/dashboard/src/lib/types/economy.ts — discriminated union plus snake_case interfaces plus co-located constructors/formatters.
-- Ref: apps/dashboard/src/lib/types/specs.ts — kebab-case lifecycle unions (`Stage`, `Outcome`) and optional additively-rolled-out fields.
-- Ref: apps/dashboard/src/lib/types/trace.ts — nested node DTO with a loose payload escape hatch for legacy events.
+- Ref: apps/dashboard/src/lib/types/trace.ts — `TraceKind` plus the header stating the Rust struct and its `rename_all = "snake_case"`.
+- Ref: apps/dashboard/src/lib/types/economy.ts — `EconomyScopeKind` derived from the tagged `EconomyScope` union, with scope constructors below.
+- Ref: apps/dashboard/src/lib/types/specs.ts — `SpecActionKind`, `Stage` and `Outcome` as kebab-case unions documented against `mustard-core`.

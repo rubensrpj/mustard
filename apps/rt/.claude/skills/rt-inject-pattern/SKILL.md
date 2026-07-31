@@ -1,6 +1,6 @@
 ---
 name: rt-inject-pattern
-description: Use when adding or refactoring a session-lifecycle module that injects additionalContext on SessionStart or UserPromptSubmit.
+description: Use when adding or refactoring a session-lifecycle module that composes additionalContext into a single Inject verdict.
 paths:
   - apps/rt/src/hooks/session/**
 tags: [add, refactor]
@@ -17,26 +17,28 @@ metadata:
 
 ## Purpose
 
-`SessionStartInject` and `PromptSubmitInject` are the two doors through which the harness puts text into the model's window. Both are consolidated lifecycle modules: several distinct concerns ride the same event, each kept as its own internal section with its own function, and the module header enumerates them in execution order. Both are `Check` implementations even though most of their work is side effects, because injection is expressed as a verdict — `Verdict::Inject` — and the dispatcher's single `emit_outcome` owns the only stdout write. That is also why the text is composed into ONE inject: the dispatcher fold is last-writer-wins, so two separate `Inject` verdicts would silently drop one. Every step is fail-open; the only blocking path in the pair is the installation gate on `UserPromptSubmit`, which denies a `/mustard:*` command in a project with no `mustard.json` and says why.
+Both session-lifecycle injectors are `Check`s, not `Observer`s, and that is the whole point of the role: injected context must ride the dispatcher's single `emit_outcome`, because a hook invocation may emit exactly one JSON object. A module of this kind consolidates several concerns that share one trigger — bootstrap side effects, a census, declared injectables, an advisory nudge — and folds every text-producing one into ONE `Verdict::Inject`. The dispatcher's fold is last-writer-wins, so returning two Injects would silently drop one; the composition order is therefore stated in the module doc and honoured in the code. Side-effect concerns stay plain functions called from the same `evaluate`, fail-open throughout.
 
 ## Convention
 
 Folder: apps/rt/src/hooks/session/** · Extension: .rs · Files of this role in this subproject: 2
 
-- Name is `<Event>Inject` as a unit struct with a one-line doc ("The UserPromptSubmit gate module.", "The consolidated `SessionStart` module."), plus `impl Check for XInject`.
-- The module header lists the concerns in order with a bullet each, names the JS ancestor where one exists, and carries a "## Contract shape" section explaining why the module is a `Check` rather than an `Observer`.
-- `evaluate` guards the trigger first (`if ctx.trigger != Some(Trigger::UserPromptSubmit) { return Ok(Verdict::Allow); }`), reads its input out of `input.raw` / `input.tool_input` with `.and_then(Value::as_str).unwrap_or_default()`, and resolves the root with `ctx.project_dir_or_cwd(input)`.
-- Composition order is explicit and commented (installation gate → amendment-window close → declared injectables → banner), and the final verdict is a single `Verdict::Inject` assembled from the parts; a `/mustard:*` prompt gets no injectables because the slash command is already inside the flow.
-- Declared injectables come from `mustard.json#inject` through `crate::hooks::session::injectables::collect`, with once-per-session markers under `.claude/.session`; a window-refreshing `SessionStart` (`source == "compact"` / `"clear"`) clears those markers first and re-injects immediately.
-- Pure side-effect concerns inside the module stay private functions returning `()` (`fn run_harness_init(input, cwd)`), fail-open at every IO step (`let _ = fs::create_dir_all(...)`), and never influence the verdict.
-- Prompt predicates are small pure helpers with word-boundary matching (`is_pipeline_prompt`, `is_mustard_command`, `is_upsert_prompt`) so `/mustard:upsertish` cannot sneak through; they are unit-tested in the same file.
-- Long-lived subprocesses are detached through `crate::shared::proc::spawn_detached` so the child does not inherit the hook's stdout pipe — a plain `Command::spawn` leaves the write end open and hangs the session on Windows.
+Reading both members adds:
+
+- The type is a unit struct `pub struct XInject;` (`PromptSubmitInject`, `SessionStartInject`) implementing `Check` with `fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error>`.
+- The module doc is a numbered inventory of the concerns riding the trigger, in execution order, each naming the JS hook or spec item it ports, plus an explicit "Contract shape" paragraph saying which concerns are pure side effects and which produce the `additionalContext` payload.
+- The first statement of `evaluate` is the trigger guard: `if ctx.trigger != Some(Trigger::UserPromptSubmit) { return Ok(Verdict::Allow); }`.
+- The project root comes from `ctx.project_dir_or_cwd(input)`; the prompt text from `input.raw.get("prompt").and_then(|v| v.as_str()).unwrap_or_default()`.
+- A gate may precede the injection and return `Verdict::Deny { reason }` — `PromptSubmitInject` denies a `/mustard:*` command on a project with no `mustard.json`, exempting the bootstrap door, and the doc explains the ordering.
+- Declared `mustard.json#inject` entries are spliced through `crate::hooks::session::injectables::collect`, never re-read locally; `once: true` entries are tracked with per-session `injected-*` markers, and a window-refreshing `SessionStart` clears them first.
+- Prompt classification is done by small private predicates with explicit word boundaries (`is_pipeline_prompt`, `is_mustard_command`, `is_upsert_prompt`) rather than inline `contains` checks, each documented with the JS regex it mirrors.
+- Long modules are divided by banner comments, one per concern, with a free function per concern (`run_harness_init`, `prune_old_sessions`, `spawn_otel_collector`) and every failure path degrading to `eprintln!` plus an unchanged payload.
 
 ## How to apply
 
-Add the new concern as a section INSIDE the existing module for that event rather than a third injecting module: give it its own private function, list it in the header's ordered bullet list, and fold its text into the single `Inject` at the composition point. Keep the verdict path free of panics and non-zero exits; a refusal is `Verdict::Deny { reason }` with didactic English text, everything else degrades to `Allow`.
+A new session-lifecycle concern usually belongs INSIDE one of the existing injectors as another banner-delimited section, not as a new hook — the trigger already has an owner and a second `Check` on the same event risks a second JSON object. Add the free function, call it from `evaluate` in the documented order, and if it produces text, append it to the single composed string instead of returning your own `Inject`. Keep the trigger guard first, resolve the root through `ctx.project_dir_or_cwd(input)`, and make every IO step fail-open. Update the module doc's numbered inventory in the same edit — it is the contract readers trust for ordering.
 
 ## Examples
 
-- Ref: apps/rt/src/hooks/session/prompt_submit_inject.rs — installation gate → amend-window close → injectables + banner composed into one `Inject`, with the word-boundary prompt predicates.
-- Ref: apps/rt/src/hooks/session/session_start_inject.rs — five ordered concerns, terrain census + declared injectables in a single `Inject`, detached OTEL spawn with the pipe-inheritance rationale.
+- Ref: `apps/rt/src/hooks/session/prompt_submit_inject.rs` — installation gate before the injectables, and the explicit "injectables first, banner after" single-Inject composition.
+- Ref: `apps/rt/src/hooks/session/session_start_inject.rs` — the banner-per-concern layout, marker clearing on compact/clear, and fail-open detached spawn.

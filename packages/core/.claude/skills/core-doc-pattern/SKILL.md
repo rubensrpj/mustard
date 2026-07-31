@@ -1,6 +1,6 @@
 ---
 name: core-doc-pattern
-description: Use when adding or refactoring a Doc-suffixed TOML document type under packages/core/src/domain/vocabulary/.
+description: Use when adding or refactoring a `*Doc` wrapper that deserialises one on-disk TOML registry in the vocabulary module.
 paths:
   - packages/core/src/domain/vocabulary/**
 tags: [add, refactor]
@@ -17,27 +17,25 @@ metadata:
 
 ## Purpose
 
-The vocabulary module loads its catalogues from TOML under `.claude/vocab/`, editable at runtime without recompiling. A `*Doc` type is the deserialization shape and nothing else: it mirrors the on-disk table array key for key. The object consumers actually use is a separate type built from the doc — `VocabularyDoc` feeds the matcher constructor, `StackRegistryDoc` feeds the registry constructor. That split is what keeps the parser pure on a string slice and unit-testable without touching the filesystem, and it gives construction a place to validate (an empty catalogue becomes a no-terms error) instead of quietly producing something inert. Both docs share one error type, which keeps "file absent" separate from "read failed" and "content unparseable".
+A `*Doc` is the top-level deserialisation wrapper for one hand-edited TOML file. `VocabularyDoc` wraps the `[[layer]]` table array of `.claude/vocab/regression.toml`; `StackRegistryDoc` wraps the `[[stack]]` array of the stack registry. Both are read-only shapes: the crate parses these files, it never writes them. Parsing is pure on `&str` (`parse_str`), and IO is a separate `load_from_file` that distinguishes a missing file from a real read failure so a caller can treat absence as an empty vocabulary without swallowing a permissions error. The `*Doc` carries no behaviour — it hands its `Vec` to a constructor (`VocabularyMatcher::from_layers`, `StackRegistry::from_doc`) that validates and reports an empty document as a typed error, matching the module rule of failing loudly at construction and degrading gracefully at match time.
 
 ## Convention
 
 Folder: packages/core/src/domain/vocabulary/** · Extension: .rs · Files of this role in this subproject: 2
 
-- One `*Doc` per registry file, declared in the module that owns that schema.
-- Both docs derive exactly `#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]` — deserialize only, never serialize: this crate reads these files, it does not write them.
-- The table-array field is a vector with a serde default plus a rename so the Rust field stays plural while the TOML key stays singular.
-- Optional entry fields all carry a serde default so a partially-filled file still parses; an optional tuning block is its own default-deriving struct whose fields are options.
-- The pure parser is a `parse_str` returning a result, implemented as the toml deserialization mapped into the module error.
-- The IO entry point is a separate function that matches on the file read, mapping not-found to its own variant and every other failure to the IO variant — absence and failure are different answers, and only absence is safe to treat as an empty catalogue.
-- A file that exists but fails to parse surfaces the parse error rather than silently substituting the built-in; the registry loader documents that decision.
-- Every fallible public function has an errors doc section naming the variants it can return.
-- Doc accessors return borrows, and the module header shows the on-disk schema inline in a fenced block.
+- Both exemplars derive `#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]` — `Deserialize` only, no `Serialize`.
+- The table-array field is `#[serde(default, rename = "layer")] pub layers: Vec<VocabLayer>` — the TOML key is singular, the Rust field plural, and `default` makes an empty document parse rather than error.
+- Optional sub-tables are their own `Default`-deriving struct whose fields are all `Option<_>`, so a partial override works without placeholders (`GateThresholds` tunes only `line_change_threshold`).
+- `parse_str(raw: &str) -> Result<Self, VocabError>` is the pure entry point; the `toml` error is stringified into `VocabError::InvalidToml`. `load_from_file(path: &Path)` maps `ErrorKind::NotFound` to `VocabError::FileNotFound` and everything else to `VocabError::Io`.
+- Built-in defaults are embedded with `include_str!` (`stacks.toml`) so the feature works with no project-local file; an on-disk file of the same name replaces the built-in, and a file that exists but fails to parse surfaces the parse error rather than silently reverting.
+- Convenience accessors on the doc borrow rather than clone (`VocabularyDoc::layer`, `layer_terms` returning `Vec<&str>`), and exist to stop consumers re-walking the layer list inline.
+- Tests in `#[cfg(test)] mod tests` cover: a full document parses, an empty document parses, an unknown enum value in `kind` is rejected as `InvalidToml`, and a missing path yields `FileNotFound`.
 
 ## How to apply
 
-Put the new doc and its entry struct next to the code that consumes them, reuse the module error rather than declaring a parallel enum, and write the pure parser before the loader so the schema is testable on a string literal. Keep the runtime type separate and construct it through a from-doc constructor that validates and returns a typed error instead of panicking — the unwrap deny rule holds even for content embedded at compile time, which is why the built-in constructor still returns a result. Ship the built-in catalogue as an embedded const and pin it with a unit test that parses it. Leave serialize off unless something genuinely writes the file back; if it ever does, the write goes through the atomic write helper, never the standard filesystem API.
+For a new registry file, declare the row struct and the `*Doc` wrapper in the vocabulary module, give the wrapper `parse_str` returning `Result<Self, VocabError>`, and add a `load_from_file` only if the file is read from disk directly. Embed a built-in base with `include_str!` when the feature must work with no project-local file, and document the override order. Hand the parsed `Vec` to a validating constructor instead of adding logic to the doc. Add the four tests above, including one that parses the embedded built-in so a malformed default fails the suite. Read the file through this loader — do not parse the TOML into a loose `Value` elsewhere.
 
 ## Examples
 
-- Ref: packages/core/src/domain/vocabulary/mod.rs — `VocabularyDoc`, the renamed table array, the pure parser, the loader with the absent-versus-failed split, and the shared error.
-- Ref: packages/core/src/domain/vocabulary/stacks.rs — `StackRegistryDoc` and `StackDef`, the same doc shape reused for a second catalogue, with the validated runtime side.
+- Ref: packages/core/src/domain/vocabulary/mod.rs — `VocabularyDoc`, `GateThresholds`, `parse_str` / `load_from_file`, `VocabError`.
+- Ref: packages/core/src/domain/vocabulary/stacks.rs — `StackRegistryDoc`, `StackDef`, `include_str!` built-in base and `StackRegistry::from_doc` validation.

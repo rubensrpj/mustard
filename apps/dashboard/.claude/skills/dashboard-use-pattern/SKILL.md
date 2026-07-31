@@ -1,6 +1,6 @@
 ---
 name: dashboard-use-pattern
-description: Use when adding or refactoring a data hook under src/hooks that binds a Tauri-backed read to TanStack Query for the dashboard UI.
+description: Use when adding or refactoring a `useXxx` hook under apps/dashboard/src/hooks that binds a Tauri-backed reader or mutation to TanStack Query.
 paths:
   - apps/dashboard/src/hooks/**
 tags: [add, refactor]
@@ -17,26 +17,27 @@ metadata:
 
 ## Purpose
 
-`src/hooks/` is the single React-facing layer between components and the backend: one `useXxx.ts` per read, each wrapping a thin `invoke()` wrapper from `@/lib/dashboard` or `@/lib/projects` in a TanStack Query binding. Components never fetch through `invoke` themselves and never re-implement a query key. The hooks encode the three things that are easy to get wrong here: a stable `queryKey` whose leaves the filesystem watcher can invalidate by prefix, an `enabled` gate so nothing fires before a project is chosen, and an explicit `staleTime` that matches how fast that data actually moves.
+`src/hooks/` is the single seam between the invoke wrappers in `src/lib` and the components: a hook picks the query key, decides when the query may run, and sets the caching cadence, so no component ever touches `invoke()` or invents a key. The six hooks read for this mold (`useFileContent`, `useEconomySummary`, `useWorkspaceSummary`, `useArtifactDrift`, `useProjectDetections`, `useSpecAction`) all import their fetcher from `@/lib/dashboard` or `@/lib/projects` and return the TanStack result object untouched, letting the caller read `data`/`isLoading` itself. Two flavours recur: the single-target read (`useQuery`) and the per-project fan-out (`useQueries` over the registry), with mutations forming a third, smaller group. The comments in these files are load-bearing — they record why a `staleTime` was chosen and why a key is shaped the way it is, because the live-refresh contract in `lib/watcher.ts` invalidates by key prefix.
 
 ## Convention
 
 Folder: apps/dashboard/src/hooks/** · Extension: .ts · Files of this role in this subproject: 20
 
-- File name equals the primary hook name (`useEconomySummary.ts`, `useFileContent.ts`), exported as a named `export function useXxx(...)` — no default export. Closely related variants may share the file when they share a data source (`useIsMustardRepo` inside `useArtifactDrift.ts`, `useWorkspaceSummarySingle` inside `useWorkspaceSummary.ts`).
-- Single-target reads use `useQuery`; per-project fan-outs use `useQueries` over the project list, so cache identity follows the project path rather than the array index.
-- `queryKey` is an array literal starting with a stable kebab-case string (`"artifact-drift"`, `"read-file"`, `"workspace-summary"`), with `repoPath` / `p.path` / `spec` as trailing leaves. `useEconomySummary` derives a deterministic key fragment (`stableScopeKey`) instead of embedding an object, and keys on the period rather than a window whose `from` moves every render.
-- `enabled: !!repoPath` (or `!!scope`, or both params) gates the query, and only then does `queryFn` cast.
-- `staleTime` is set explicitly in each of the five hooks read here, tuned to the data (5s for workspace summaries, 30s for file content, 60s for drift, 5min for a per-session-stable fact). `refetchInterval` appears only where a panel is meant to poll; fan-outs that tolerate a missing binary set `retry: false`.
-- Fan-out hooks re-zip results into an exported `XxxRow` interface — identity plus data plus `isLoading` plus `error` — declared in the same file above the hook. Failures collapse to undefined data so a row renders without its badge instead of breaking the list.
-- A `//` header comment states the purpose and the spec/wave that introduced the hook; a JSDoc on the hook explains the disable condition and the cadence. Return types are annotated as `UseQueryResult<T>` in some hooks and inferred in others.
+- One hook family per file, filename identical to the primary hook (`useFileContent.ts` → `useFileContent`); named `export function`, no default export, and no barrel file in `src/hooks`.
+- Read hooks `return useQuery<Dto>({ ... })` directly, typed with the DTO imported from `src/lib`; the raw Tauri call never appears here (dashboard guard).
+- `queryKey` is an array literal: a kebab-case string tag first, then `repoPath`/`spec`/`relPath` as leaves — `["read-file", repoPath, relPath]`, `["spec-card", repoPath, spec]`. Register the new prefix in `src/lib/watcher.ts` so writes invalidate it, instead of adding a poll.
+- Nullable inputs are gated by `enabled: !!repoPath` (`!!repoPath && !!relPath` when both matter) and the `queryFn` then casts `repoPath as string` — that pairing is what keeps the hook mountable before a project is selected.
+- `staleTime` is always set and chosen from the data's cadence in the files read: 5s for the workspace summary, 30s for detections and file content, 60s for artifact drift and the economy summary; `refetchInterval` appears only where a panel must tail (30s in `useEconomySummary`), and fan-outs over subprocess-backed commands set `retry: false`.
+- Fan-out hooks read the registry with `useProjectsStore((s) => s.projects)`, build `useQueries` keyed by `p.path`, and re-shape the results into an exported `*Row` type — an aligned array (`useProjectDetections`) or a `Record<path, Row>` (`useArtifactDrift`).
+- Mutations use `useMutation` + `useQueryClient`, report through `toast` from `sonner`, and invalidate pointwise (the explicit list of affected keys), never a global sweep.
+- Each file opens with a comment naming the spec/wave that introduced it and the failure mode, and the exported function carries a doc block stating the fail-open behaviour (a fail-open command resolves to empty data, so the caller renders an empty state rather than relying on `onError`).
 
 ## How to apply
 
-Put a new read's `invoke()` wrapper in `src/lib/dashboard.ts` (or the matching `src/lib/*` module) first, then add `src/hooks/useThing.ts` that calls it. Pick the key prefix before writing the hook and register that prefix in `src/lib/watcher.ts` so the query refreshes on the fs-change event instead of polling. Since the Tauri commands are fail-soft (empty payload rather than a rejection), design the consumer around an empty state rather than `onError`.
+Add a new file `src/hooks/useThing.ts`, import the fetcher from `src/lib` (add the thin `invoke` wrapper there first if it does not exist), and copy the closest of the two read shapes: `useFileContent` for a single target, `useProjectDetections`/`useArtifactDrift` for a per-project fan-out. Choose a fresh key tag, wire it into `subscribeFsChange` in `src/lib/watcher.ts` under the `kind` that changes the underlying data, and pick `staleTime` from the cadence of that data rather than copying a number blindly. For a write, follow `useSpecAction`: reject early when `repoPath` is null, toast success/failure, and enumerate the keys the action can move.
 
 ## Examples
 
-- Ref: apps/dashboard/src/hooks/useArtifactDrift.ts — `useQueries` fan-out, exported `ArtifactDriftRow`, `retry: false`, plus a single-project `useQuery` variant in the same file.
-- Ref: apps/dashboard/src/hooks/useEconomySummary.ts — stable derived key fragment, `enabled: !!scope`, explicit `UseQueryResult<T>` return type.
-- Ref: apps/dashboard/src/hooks/useFileContent.ts — minimal two-leaf key with a double `enabled` gate and the post-gate casts.
+- Ref: apps/dashboard/src/hooks/useFileContent.ts — minimal `useQuery` read with the two-leaf key and the `enabled` + cast pairing.
+- Ref: apps/dashboard/src/hooks/useArtifactDrift.ts — `useQueries` fan-out returning `Record<string, ArtifactDriftRow>`, plus a small cached single-project lookup.
+- Ref: apps/dashboard/src/hooks/useSpecAction.ts — `useMutation` with sonner toasts and pointwise invalidation.

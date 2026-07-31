@@ -1,6 +1,6 @@
 ---
 name: dashboard-detail-pattern
-description: Use when adding or refactoring a route-level page component under src/pages, especially a drill-in page that resolves an id from the URL.
+description: Use when adding or refactoring a `*Detail` drill-in route page under apps/dashboard/src/pages.
 paths:
   - apps/dashboard/src/pages/**
 tags: [add, refactor]
@@ -17,26 +17,26 @@ metadata:
 
 ## Purpose
 
-`src/pages/` holds one module per route, each exporting a named component that `src/App.tsx` imports and mounts. The two drill-in pages (`ProjectDetail`, `SessionDetail`) show the shape this role settled on: read the id from the route, resolve the active project from the global store, guard the "no project selected" case with an empty state, then compose page chrome from `@/components/page` and delegate the actual content to feature components. Pages orchestrate; they are not where dense rendering logic or `invoke()` calls live.
+A `*Detail` page is the drill-in reached from a list route: it resolves one entity from the URL, decides whether it can render at all, and then delegates the actual content to feature components. `ProjectDetail` resolves `:id` against the discovery cache and renders tabs of specs/about; `SessionDetail` resolves `:id` into a session and hands everything to `<ExecutionTrace source={{ kind: "session", sessionId }}>`. Both keep their own chrome minimal — `PageSurface`, `EditorialBand`, `EmptyState` from `@/components/page` — so pages stay layout, not logic. Both also guard the "no project selected / entity not found" branch with an early return before any content renders, which is what makes them safe to link into directly.
 
 ## Convention
 
 Folder: apps/dashboard/src/pages/** · Extension: .tsx · Files of this role in this subproject: 2
 
-- One PascalCase `.tsx` per route, file name equal to the exported component, declared as a named `export function` — no default export — and imported in `src/App.tsx` by name.
-- Routing comes from react-router: params for the id, search params for tab state, navigate/link for navigation. `SessionDetail` runs the raw param through URI decoding before use.
-- Project context comes from the zustand store or from already-cached query data, not from a fresh fetch.
-- Hooks are called unconditionally before any early return — `SessionDetail` carries an explicit comment that its active-project hook returns nothing when no project is selected precisely so the Rules of Hooks stay satisfied.
-- The "nothing selected" branch returns a `PageSurface` wrapping an `EmptyState`. This matches the dashboard guard: Tauri commands are fail-soft, so a page renders an empty state rather than relying on an error path.
-- Layout is composed from the `@/components/page` barrel plus the ui primitives; feature-specific rendering is delegated to the features modules.
-- Data is read through `useXxx` hooks or an inline query with an `enabled` gate and an explicit `staleTime`; both pages carry a comment on why the data stays fresh (watcher-driven invalidation, not polling).
-- Small layout helpers used only by that page are declared unexported above the page component.
+- One page per file, PascalCase name ending in `Detail`, exported as a named `export function` — neither exemplar uses a default export.
+- The entity id comes from `useParams<{ id: string }>()` from `react-router`; `SessionDetail` runs it through `decodeURIComponent` because session ids contain path-unsafe characters.
+- The active workspace comes from `useStore((s) => s.projectsRoot)` (slice selection, never a full-store destructure); `ProjectDetail` also pushes the selection back with `setSelectedProjectId` inside a `useEffect`.
+- Every return path is wrapped in `<PageSurface>`, and unmet prerequisites return early with `<EmptyState title=... description=... />` inside it; hooks are still called unconditionally before that branch (Rules of Hooks — `SessionDetail` documents this explicitly).
+- The header is `<EditorialBand eyebrow title subtitle>` with a `<Link>` breadcrumb in the eyebrow; the subtitle is a derived one-liner (`"3 pipelines em execução"`).
+- Heavy content is delegated to `features/*` components (`<SpecsList>`, `<ExecutionTrace>`, `<LivePipelineCard>`); data arrives via hooks or a local `useQuery` against a `src/lib` fetcher — never `invoke()` in a page.
+- Small view helpers (`truncate`, `eventVariant`, `SectionHeading`, `EmptyBlock`) sit above the page function and stay un-exported.
+- Tab/selection state lives in the URL via `useSearchParams` with `{ replace: true }` (`ProjectDetail`), not in component state.
 
 ## How to apply
 
-Add the new page as `src/pages/<Name>.tsx` with a named export, then register it in `src/App.tsx`. Start with the guard branch (no project or no id yields surface plus empty state), keep every hook above it, and pull chrome from `@/components/page` rather than hand-rolling cards or headers. If the page needs new backend data, add the wrapper in `src/lib/dashboard.ts` and the hook in `src/hooks/`, then register the query key prefix in `src/lib/watcher.ts` so the page tails live instead of polling.
+Create `src/pages/<Entity>Detail.tsx`, read the id from `useParams`, resolve the entity from the query cache or a hook, and write the not-found / no-project branches first. Then compose the page from `@/components/page` primitives and delegate the body to an existing feature component; add a new hook in `src/hooks` (and its key to `lib/watcher.ts`) rather than fetching ad hoc if the data must tail live. Both exemplars carry literal pt-BR user copy, while newer feature components such as `features/economy/ScopeBar` resolve labels through `useTranslation()` — follow whichever the surrounding page already uses.
 
 ## Examples
 
-- Ref: apps/dashboard/src/pages/ProjectDetail.tsx — params plus store plus cached project lookup, tab state in search params, local layout helpers.
-- Ref: apps/dashboard/src/pages/SessionDetail.tsx — decoded id, unconditional hook before the empty-state early return, delegation to the execution trace feature.
+- Ref: apps/dashboard/src/pages/SessionDetail.tsx — minimal shape: param decode, early `EmptyState`, `EditorialBand`, delegation to `<ExecutionTrace>`.
+- Ref: apps/dashboard/src/pages/ProjectDetail.tsx — cache-resolved entity, URL-driven tabs, local un-exported helpers, delegation to `<SpecsList>` and `<LivePipelineCard>`.

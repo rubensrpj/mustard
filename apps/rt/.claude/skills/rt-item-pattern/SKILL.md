@@ -1,6 +1,6 @@
 ---
 name: rt-item-pattern
-description: Use when adding or refactoring the dispatch item type the orchestrator receives from dispatch-plan / wave-advance.
+description: Use when adding or refactoring an `*Item` struct that is one element of the JSON array a pipeline command emits for the orchestrator to iterate.
 paths:
   - apps/rt/src/commands/pipeline/**
 tags: [add, refactor]
@@ -17,27 +17,27 @@ metadata:
 
 ## Purpose
 
-`DispatchItem` and `AdvanceItem` are the unit of fan-out: one agent the orchestrator will launch, fully resolved server-side so the LLM relays instead of deciding. They carry the agent's identity (`wave`, `role`, `subproject`, `subagent_type`), the payload to hand to `Task` (the `prompt_cmd` to run in `dispatch-plan`, the already-rendered prompt stub in `wave-advance`), and the facts a prompt or a gate needs downstream (`depends_on`, `level`, `precheck`, `own_git_root`). The two are twins on purpose — `wave-advance` composes `dispatch_plan::build_plan` in-process so there is a single DAG source and no reimplementation, and it threads the plan's fields straight through. Because these items are printed as the command's whole stdout, additive fields must not disturb the existing bytes, which is why new booleans are omitted when false.
+Some pipeline commands answer with an ARRAY rather than a document: a list the orchestrator walks, one element per agent it will dispatch. Each element is an `*Item` struct whose fields are instructions to a consumer, so every field carries a doc comment telling that consumer what to do with it — including what NOT to do. The wire names are pinned with explicit `serde(rename)` even where the Rust name already matches, because the array is a published contract that gates and snapshots compare byte for byte. Fields added later are made invisible when they carry no information, so an existing consumer sees the exact bytes it saw before.
 
 ## Convention
 
 Folder: apps/rt/src/commands/pipeline/** · Extension: .rs · Files of this role in this subproject: 3
 
-- Name is `<Verb>Item`; the doc line describes ONE agent ("One dispatch item — a single agent the orchestrator will fan out", "One ready-to-dispatch agent of the pending level").
-- Derives: `#[derive(Debug, Clone, Serialize, PartialEq, Eq)]` on the plan item (it is compared in tests and cloned into the advance item), `#[derive(Debug, Serialize)]` on the advance item. Fields are `pub`; the type is `pub` where another command builds it (`DispatchItem`) and `pub(crate)` where it stays inside the family (`AdvanceItem`).
-- Every field carries a `///` that states not only what it is but what the orchestrator must do with it — `prompt_cmd` explicitly says the orchestrator runs it and passes the **stdout** to `Task`, "it must NOT treat this string as the prompt itself"; `subagent_type` says it is picked by the tool, never by hand.
-- Wire names are pinned with `#[serde(rename = "depends_on" | "prompt_cmd" | "subagent_type")]` so the published JSON keys never follow a Rust rename.
-- An additive boolean uses `#[serde(default, skip_serializing_if = "is_false")]` with a local `fn is_false(b: &bool) -> bool { !*b }` next to the struct, and the doc says why: the output stays byte-identical to the pre-flag shape for the common case. Both files carry their own copy of `is_false` with that justification.
-- An optional per-item verdict is `Option<Value>` + `skip_serializing_if = "Option::is_none"` (`AdvanceItem::precheck`) and its doc spells out the trap — a `skipped` gate's `ok:true` means "did not look", not "passed".
-- Items are produced by a `pub(crate) fn build_plan(project, spec_dir, spec, wave_filter) -> Vec<DispatchItem>` / `pub(crate) fn advance(project, spec) -> Vec<AdvanceItem>` core that takes an explicit project root so tests drive it without mutating the process cwd; `pub fn run(spec)` only resolves the root, calls it, and prints `to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())`.
-- Facts are derived through the shared probes rather than re-asked (`mustard_core::io::workspace::is_git_repo_root` for the submodule boundary), so an item never needs a census round-trip.
-- The third file matched by this role, `pipeline_summary.rs`, only holds a `format_state_item` renderer — it is not an instance of this shape; for generic report rows use `rt-entry-pattern`.
+Reading the two exemplars adds:
+
+- `#[derive(Debug, Clone, Serialize, PartialEq, Eq)]` when the item is compared in tests and reused by a sibling command (`DispatchItem`, `pub`); `#[derive(Debug, Serialize)]` for the narrower one (`AdvanceItem`, `pub(crate)`). Fields are `pub`.
+- Wire names are declared explicitly: `#[serde(rename = "depends_on")]`, `#[serde(rename = "prompt_cmd")]`, `#[serde(rename = "subagent_type")]`. The rename is kept even when redundant so the JSON key is visible in the file.
+- Additive booleans use `#[serde(default, skip_serializing_if = "is_false")]` with a small local `fn is_false(b: &bool) -> bool { !*b }`, and the field doc states the reason: the output stays byte-identical to the pre-flag shape for the common case. Both exemplars carry their own copy of `is_false` rather than sharing one.
+- Optional payloads use `#[serde(skip_serializing_if = "Option::is_none")]` and document what an absent value means versus a present-but-negative one (`AdvanceItem::precheck` spells out that `skipped` means "did not look", not "passed").
+- Every field's doc is consumer-facing. `DispatchItem::prompt_cmd` says the orchestrator runs the string and passes the STDOUT to `Task` — it must NOT treat that string as the prompt itself.
+- The builder is a `pub(crate) fn <verb>(project: &Path, spec: &str) -> Vec<XItem>` taking an explicit root so it is testable without mutating the process cwd; the thin `pub fn run(spec: &str)` resolves the root and prints `serde_json::to_string_pretty(&items)` with an `"[]"` fallback.
+- Ordering is derived, never incidental: items are sorted by `(level, wave)` and the module doc explains what a shared level means for the caller.
 
 ## How to apply
 
-Extend the existing item rather than inventing a parallel one: add the field to `DispatchItem` with its doc and, if it must reach the dispatch round, thread it through `AdvanceItem` in the `.map(|it| …)` that builds the round. Additive fields are omitted when false/None. Keep the derivation inside `build_plan`/`advance` (they are the tested seam) and leave `run` as resolve-call-print.
+Declare the item at the top of the pipeline command that emits it, above the parsing helpers. Derive `Serialize` plus `Debug` (add `Clone, PartialEq, Eq` if a sibling or a test compares it), pin every wire name with `serde(rename)`, and write a consumer-facing doc line for each field. Any field added to an existing item must be additive-invisible: `#[serde(default, skip_serializing_if = ...)]` with a local predicate, so the emitted bytes are unchanged when the field is inert. Keep the computation in a root-taking `pub(crate)` function and the printing in `run`. Degrade coherently — an unparseable plan emits `[]`, never a panic and never a non-zero exit.
 
 ## Examples
 
-- Ref: apps/rt/src/commands/pipeline/dispatch_plan.rs — `DispatchItem` with `rename` on three wire names, `is_false` for `own_git_root`, and `build_plan` degrading a wave-less spec to a one-item plan.
-- Ref: apps/rt/src/commands/pipeline/wave_advance.rs — `AdvanceItem` carrying the plan's fields through plus `precheck`, built by `advance(project, spec)` off `dispatch_plan::build_plan`.
+- Ref: `apps/rt/src/commands/pipeline/dispatch_plan.rs` — `DispatchItem`, the `is_false` additive-field idiom and the `(level, wave)` ordering contract.
+- Ref: `apps/rt/src/commands/pipeline/wave_advance.rs` — `AdvanceItem`, the `Option<Value>` precheck payload and the root-taking `advance()` core.

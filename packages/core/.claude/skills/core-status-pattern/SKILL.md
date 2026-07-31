@@ -1,6 +1,6 @@
 ---
 name: core-status-pattern
-description: Use when adding or refactoring a closed status or classification enum under packages/core/src/domain/model/view/ that a ViewModel carries.
+description: Use when adding or refactoring a closed classification enum (status, kind, filter) in the view model layer so consumers never re-parse a raw string.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,26 +17,25 @@ metadata:
 
 ## Purpose
 
-The status enums are the closed vocabularies the ViewModels carry — `WaveStatus` (five states), `AcStatus` (four), `SegmentState` (three), `Stage` and `Outcome` in `spec.rs`, `TimelineKind` and `WorkspaceAlertKind`. Across the seven files of this folder none of them has an unknown variant: an absent wave is simply absent from the returned list, and the "no evidence yet" case gets its own named variant (`Pending`, `Queued`, `Future`) so the UI renders a state deliberately instead of painting a grey badge by accident. They serialize as renamed strings because that word is a wire contract — the on-disk spec header, the NDJSON payloads and the dashboard all read it. `wave.rs` shows how a new variant is added: additive word, four existing words byte-identical, pinned by a round-trip test.
+These enums exist so a renderer picks an icon, colour or filter without re-parsing the raw event name or status string. `AcStatus` classifies an acceptance criterion, `WaveStatus` the lifecycle of one wave, `TimelineKind` a raw event name, and `filter.rs` carries the argument-side enums (`TimeWindow`, `SpecStatusFilter`). None of them has an `"unknown"` string escape hatch: the "nothing yet" and "not classified" cases are explicit variants (`AcStatus::Pending`, `WaveStatus::Queued`, `TimelineKind::Other`), and the raw event still survives verbatim in `TimelineNode::payload_summary`. Conversions are associated functions — `parse(raw)` is tolerant and returns `Option<Self>`, `classify(event)` is total and falls back to `Other`. `WaveStatus::Dropped` documents why a variant gets added at all: four states could not distinguish a deliberate decision from an omission.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 4
 
-- Derive line: `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]`, followed by a lowercase or kebab-case rename attribute.
-- Ordering traits are added only when a map key needs them, and the doc comment says so. A default variant appears only on the argument enums in `filter.rs`, not on the lifecycle ones.
-- Variants are doc-commented one by one, and the doc names the concrete event or payload string that produces the variant.
-- Two distinct parser habits, chosen by role: a *lifecycle* enum gets a `parse` that trims, lowercases, accepts documented legacy synonyms, and yields nothing for anything unrecognised so the caller decides; a *classification* enum gets a `classify` with a catch-all `Other` variant, because the raw string survives elsewhere in the payload.
-- Predicates are `#[must_use] pub const fn` implemented over `matches!`.
-- `#[non_exhaustive]` is used on the two enums also parsed from on-disk headers; the UI-only enums are left closed on purpose.
-- Tests sit in the same file: parse of the legacy synonyms, the unrecognised-input fallback, and — when the variant set is a wire contract — a serde round-trip that lists every word explicitly.
+- Derive set on the exemplars: `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]` plus a `#[serde(rename_all = "…")]` — `lowercase` in `quality.rs` and `timeline.rs`, `kebab-case` in `wave.rs`. Match the file you are editing rather than picking a style.
+- `filter.rs` enums additionally derive `Default` and mark the neutral variant with `#[default]` (`TimeWindow::Today`, `SpecStatusFilter::Any`).
+- Every variant carries a doc comment naming the exact producing event or accepted string (`/// Matching pipeline.wave.failed event or fix-loop cap hit.`).
+- `parse` trims, lowercases, and accepts documented synonyms (`"ok"`/`"success"` → `Pass`, `"error"` → `Fail`); unknown input yields `None` so the caller decides, never a silent default.
+- Predicates are `#[must_use] pub const fn` built on `matches!` — `WaveStatus::is_running`, `is_terminal`.
+- Tests are in `#[cfg(test)] mod tests` at the file bottom; `wave.rs` additionally pins the exact JSON words for all five variants, proving a new variant is additive and the existing wire words are byte-identical.
 
 ## How to apply
 
-Declare the enum in the same file as the ViewModel that carries it, above the struct, and re-export it from `view/mod.rs` next to that struct. Give every variant its doc line naming the producing event, pick the rename that matches the on-disk spelling, and add the parse or classify helper that belongs to its role rather than deriving a string conversion ad hoc. Adding a variant to an existing enum is a wire change: keep the existing words byte-identical, append the new one, and extend the round-trip test that pins all of them. Do not introduce an unknown catch-all on a lifecycle enum; give the state a real name or let the parser return nothing.
+Add the variant with a doc line naming what produces it, then extend `parse`/`classify` and every `is_*` predicate in the same edit. Add two tests: one that round-trips the new word through serde and `parse`, and one that asserts the pre-existing words did not change — that second test is what makes the change safe for the crates already rendering this enum. Keep the serde rename style of the file. Re-export the name from `view/mod.rs`. Do not introduce an `Unknown` variant; model the missing case explicitly and let the raw string survive elsewhere on the row.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/wave.rs — `WaveStatus`, five documented variants, const predicates, and the round-trip test that pins every serialized word.
-- Ref: packages/core/src/domain/model/view/quality.rs — `AcStatus`, the parse shape with synonym acceptance and an explicit no-evidence variant.
-- Ref: packages/core/src/domain/model/view/timeline.rs — the classification variant of the pattern, with a documented catch-all.
+- Ref: packages/core/src/domain/model/view/quality.rs — `AcStatus::parse` with its synonym table.
+- Ref: packages/core/src/domain/model/view/wave.rs — `WaveStatus`, the `const fn` predicates, and the kebab-case wire-word test.
+- Ref: packages/core/src/domain/model/view/filter.rs — `TimeWindow` / `SpecStatusFilter` with `Default` + `#[default]`.

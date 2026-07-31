@@ -1,6 +1,6 @@
 ---
 name: rt-verdict-pattern
-description: Use when adding or refactoring the enum that names a review or QA gate's decision under apps/rt/src/commands/review.
+description: Use when adding or refactoring a verdict enum that names the closed set of answers a review or QA gate can return.
 paths:
   - apps/rt/src/commands/review/**
 tags: [add, refactor]
@@ -17,27 +17,28 @@ metadata:
 
 ## Purpose
 
-The review family judges things, and each judgement gets a closed enum: `Verdict` (did the criterion clear the negative test), `RegressionVerdict` (Green / Amber / Red on consolidation), `ExpectVerdict` (did the `Expect:` regex match), alongside the neighbouring `Proof` and `Control` columns that record what happened in each pass. The defining rule is that a condition nobody could MEASURE never shares a variant with a pass: `NoVerdict` (killed by its deadline), `NotAttempted` (the command could not be run at all), `InvalidPattern` (the regex did not compile), `EvidenceRemoved` (the strip took the criterion's own evidence), `NotDeclared` (no control was declared) all exist so the reader is told the difference. Each variant's doc says whether the pass was TAKEN and what may be concluded from it — that prose is the actual contract, because the enum lands in a persisted ledger and in a CLI exit code.
+Review and QA gates answer with a value from a closed set, and that set is spelled out as an enum whose variants are the only answers the gate can give. The variants exist to keep apart states that a boolean would fuse — a proof that was TAKEN and came back the wrong colour versus a proof that was NEVER TAKEN, since those ask for opposite actions. When the verdict is persisted, it derives serde with a stable kebab-case rename and a `#[default]` variant chosen so a ledger written before the column existed still reads as the truth about it. When the verdict carries evidence, it holds it in payload variants and stays out of serde entirely, so the ledger line never grows the signal bodies.
 
 ## Convention
 
 Folder: apps/rt/src/commands/review/** · Extension: .rs · Files of this role in this subproject: 4
 
-- Name is `Verdict` when the module has exactly one judgement, `<What>Verdict` otherwise (`RegressionVerdict`, `ExpectVerdict`); the doc line states the question it answers ("Whether a criterion cleared the negative test.", "Top-level verdict returned by `run` / `check_after_child_return`.").
-- Ledger-bound enums derive `#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]` with `#[serde(rename_all = "kebab-case")]`; an in-memory verdict that carries evidence drops `Copy`/serde and derives `#[derive(Debug, Clone, PartialEq, Eq)]`.
-- Visibility follows the consumer: `pub(crate) enum Verdict` inside the family, `pub enum RegressionVerdict` where the CLI and the hook both read it, private `enum ExpectVerdict` for a matcher local to one runner.
-- Every variant carries a `///` explaining the state AND the reader's licence — the `Control` column in `ac_negative_check.rs` marks each variant TAKEN / NEVER TAKEN and says which one lets a red proof be read as a fact about the behaviour.
-- Evidence rides inside the variant rather than in a side channel: `Amber { signals: Vec<Signal> }`, `Red { signals: Vec<Signal> }`.
-- Backwards compatibility is expressed with `#[derive(Default)]` + `#[default]` on the "nothing was asked" variant, so ledgers written before the column existed still parse and read as the truth about it.
-- The matcher that produces the verdict is total and pure — `fn evaluate_expect(expect: Option<&str>, output: &str) -> ExpectVerdict` compiles the regex inside and maps `Err(_)` to `InvalidPattern`, never a panic.
-- The CLI surface keeps it stringly: `review/cli.rs` takes `--verdict` as `Option<String>` and documents the accepted words, and maps the blocking verdict to an exit code ("Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2") through a small `GateError` enum with a `Display` impl.
+Reading the members adds:
+
+- Two flavours. **Persisted**: `pub(crate) enum Verdict { Proven, Unproven, Exempt }` and its sibling column enums (`Proof`, `Confirmation`, `Removal`, `Control`), each `#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]` with `#[serde(rename_all = "kebab-case")]`. **Payload-carrying**: `pub enum RegressionVerdict { Green, Amber { signals: Vec<Signal> }, Red { signals: Vec<Signal> } }`, `#[derive(Debug, Clone, PartialEq, Eq)]`, no serde.
+- A `#[default]` variant is added deliberately and its doc explains the migration property: `Confirmation::NotTaken` / `Removal::NotTaken` / `Control::NotDeclared` are the default, so every ledger written before this column existed reads as the truth about it: nobody asked.
+- Every variant carries a doc comment that opens with whether the pass was taken — "TAKEN" or "NEVER TAKEN" — because that distinction is the reason the enum exists rather than a boolean.
+- Raw status strings are mapped onto the enum by dedicated classifier free functions returning a tuple of the verdict plus its column and reason: `fn classify(status: &str) -> (Verdict, Proof, Option<String>)`, with `classify_confirmation` and `classify_removal` as siblings — one function per pass, never one branching helper.
+- Labels used across a module boundary are `&'static str` consts rather than a dependency on the enum: `review_spans.rs` declares `VERDICT_GREEN` / `VERDICT_AMBER` / `VERDICT_RED` and states the reason — the writer and reader agree without a circular dependency on the payload-carrying enum.
+- The record the verdict lives in is a `pub(crate) struct` with `#[serde(default)]` on every column added after the first release, so an older ledger deserializes; the command string and the declared expressions are recorded verbatim beside the verdict.
+- The CLI exit code mirrors the verdict and the family `cli.rs` documents the mapping (Green/Amber gives 0, Red gives 2); the mapping lives at the dispatcher, not on the enum.
 
 ## How to apply
 
-Declare the enum in the module that decides, above the record type that stores it. Enumerate the outcomes by asking what the reader may conclude, and add a distinct variant for every way the measurement can fail to happen; if you find yourself about to reuse a pass or a fail variant for "could not measure", that is the variant to add. Document each variant in that language. If it is persisted, add `Serialize, Deserialize` + `kebab-case` and a `#[default]` variant for the pre-existing rows. Wire it to the CLI as a string flag plus an exit-code mapping, not as a new output format.
+Declare the verdict in the review module that produces it, above the classifier that builds it. Choose the persisted flavour when the answer is stored — derive `Copy`, `Default`, `Serialize`, `Deserialize`, add `#[serde(rename_all = "kebab-case")]`, and pick the `#[default]` so old records read honestly. Choose the payload flavour when the verdict must carry evidence, and keep serde off it. Write one variant per genuinely different action a reader would take, and document each with whether the pass was taken. Map raw status words in a dedicated `classify_*` function rather than inline `match`es at the call sites. If another module needs the label but not the payload, export `&'static str` consts instead of the enum, and say why in the doc.
 
 ## Examples
 
-- Ref: apps/rt/src/commands/review/ac_negative_check.rs — `Verdict { Proven, Unproven, Exempt }` beside the `Proof` / `Control` columns, kebab-case serde, `#[default] NotDeclared` for old ledgers.
-- Ref: apps/rt/src/commands/review/gate_regression_check.rs — `RegressionVerdict { Green, Amber { signals }, Red { signals } }` with `GateError::Blocked` mapping Red to exit 2.
-- Ref: apps/rt/src/commands/review/qa_run/runner.rs — private `ExpectVerdict { NoExpectation, Matched, Missed, InvalidPattern }` produced by a total, pure matcher.
+- Ref: `apps/rt/src/commands/review/ac_negative_check.rs` — `Verdict` plus the `Proof` / `Confirmation` / `Removal` / `Control` column enums and their `classify_*` mappers.
+- Ref: `apps/rt/src/commands/review/gate_regression_check.rs` — `RegressionVerdict` with payload variants, `Moment`, and the `GateError` exit-code contract.
+- Ref: `apps/rt/src/commands/review/review_spans.rs` — the `&'static str` verdict labels kept deliberately free of the enum, and the record they are written into.

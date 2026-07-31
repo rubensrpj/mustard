@@ -1,6 +1,6 @@
 ---
 name: rt-observer-pattern
-description: Use when adding or refactoring a hook module whose job is side effects or telemetry only, implementing `Observer` under apps/rt/src/hooks.
+description: Use when adding or refactoring an `*Observer` hook module that records telemetry or state as a pure side effect, never a verdict.
 paths:
   - apps/rt/src/hooks/**
 tags: [add, refactor]
@@ -17,28 +17,29 @@ metadata:
 
 ## Purpose
 
-Observers are the crate's fire-and-forget half: `observe()` returns `()`, runs after the fact, and the crate Guard forbids returning a verdict from one — a blocking decision belongs to a `Check`. That constraint is what makes them safe to add: a wrong observer costs a missing marker or a missing event, never a blocked session. The approval recorders in `hooks/observe/` show the demanding end of the shape: each one mints the same `<spec>/.approved-by-user` marker from a gesture the model cannot author, and each states in its module header the numbered FACTS that must ALL hold, why each fact is unforgeable, and what happens on doubt (nothing is written). They share predicates by importing them from one another rather than re-spelling them, so three doors cannot drift on what "an unapproved Full plan in PLAN" means.
+An observer exists to record, never to decide. The crate guard is explicit: observers under `hooks/observe`, `hooks/session` and `hooks/task` are side-effect-only, `observe()` returns `()` and runs fire-and-forget, and a blocking decision must live in a `Check`. That constraint shapes everything else — an observer cannot report a failure, so every IO step is best-effort, and it cannot ask a caller to retry, so the facts it needs must be checked before it writes. The approval-marker family shows the mature form: a numbered list of facts in the module doc, one early return per fact, and a single best-effort write when all of them hold.
 
 ## Convention
 
 Folder: apps/rt/src/hooks/** · Extension: .rs · Files of this role in this subproject: 17
 
-- Name is `<What>Observer` as a unit struct with a one-line doc naming the trigger it serves ("The PostToolUse(ExitPlanMode) approval recorder."), plus `impl Observer for XObserver { fn observe(&self, input: &HookInput, ctx: &Ctx) { … } }`.
-- Registration is a `pub mod <file>;` line in `hooks/observe/mod.rs` (the file is a flat list of `pub mod` declarations, no re-exports) and the dispatcher entry for that trigger.
-- The module header carries the reasoning: why the observer exists, what counts as the signal, and an explicit fail-closed / fail-open statement ("Fail-closed on any doubt, fail-open on IO. Pure `Observer` — never blocks, never returns a verdict.").
-- The body is a chain of early returns: `let Some(spec) = active_spec(&cwd, input) else { return; };`, `if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) { return; }`. Facts are checked cheapest-first when the observer runs on every event, with a comment saying that order decides cost, not verdict.
-- Writes are best-effort and unconditional-failure-tolerant: `let _ = mustard_core::io::fs::write_atomic(&marker, body.as_bytes());`. No `unwrap`/`expect` outside `#[cfg(test)]` (crate-wide `deny`).
-- Shared predicates are imported from the sibling observer that owns them — `use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};` — and marker paths/bodies come from `crate::shared::context::{approval_marker_path, marker_body}`.
-- The project root is resolved with `ctx.project_dir_or_cwd(input)`; the session id with `input.session_id.as_deref().unwrap_or("unknown")`.
-- When a declined path is likely to confuse an operator, the observer NAMES the failing condition on stderr instead of staying silent — without changing what it accepts (`approval_marker_observer::unrecognised_answer_notice`).
-- Tests live in the same file with builders for `Ctx { project_dir, trigger, workspace_root: None }` and `HookInput { …, ..HookInput::default() }`, seeding `meta.json` and `.session/<id>/active-spec` under a `tempdir`, asserting both that the marker appears and that it does NOT on each declined branch.
+Reading the three approval doors adds:
+
+- The file is `<thing>_observer.rs` and the type a unit struct `pub struct <Thing>Observer;` implementing `Observer` from `mustard_core::domain::model::contract` with `fn observe(&self, input: &HookInput, ctx: &Ctx)`. No return value, no `Result`.
+- The module doc states the trigger it rides, then enumerates the facts that must ALL hold before anything is recorded, numbered and titled. The body mirrors that list one-to-one with `let Some(x) = ... else { return; }` / `if !pred { return; }`.
+- Predicate ORDER is a documented decision when the observer runs on every event: `picker_approval_observer` checks facts 2, 1 then 3 and explains that the two pure string tests settle the majority without touching the filesystem — order decides cost, not verdict.
+- Shared predicates are imported from a sibling observer rather than re-spelled: `use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};`. Where the sibling's rule must NOT apply, the doc says why.
+- The project root comes from `ctx.project_dir_or_cwd(input)`; harness payload fields are read defensively through `input.raw.get(...).and_then(Value::as_str)` with `.filter(|s| !s.trim().is_empty())`.
+- Writes are best-effort and atomic: `let _ = mustard_core::io::fs::write_atomic(&path, body.as_bytes());`. Shared state files are read-modify-written so a sibling's keys survive, and the composed body goes through the single shared composer (`marker_body`) so provenance reads back identically from every door.
+- Pure decision logic is factored into an associated function taking plain values (`DelegationAdvisory::decide(files, edited, pipeline_active, is_subagent, depth, mode, threshold)`) so it can be unit-tested without disk or env.
+- Tests live at the bottom of the same file: unit tests for the pure predicate, then integration tests over a `tempfile::tempdir()` project seeding `.claude/spec/<slug>/meta.json`, plus a "no project root must not panic" case whose comment says survival is the contract.
 
 ## How to apply
 
-Create `hooks/<family>/<name>_observer.rs`, declare the unit struct, implement `Observer`, and add the `pub mod` line to that family's `mod.rs`. Write the fact list in the header before writing the code, and make every fact a separate early return. If a predicate already exists in a sibling observer, import it; do not restate it. Never return or imply a verdict — if the new behaviour must block, it is a `Check` (see `rt-gate-pattern`).
+Put a new observer in the `hooks/` subfolder that matches its trigger — `observe/` for tool-result and approval events, `session/` for lifecycle, `task/` for subagent dispatch — named `<thing>_observer.rs` with a matching unit struct. Write the numbered fact list in the module doc first, then implement it as early returns in the same order (cheapest first if the trigger is hot, and say so). Import shared predicates from the sibling that owns them. Make every write best-effort and atomic, and preserve keys you do not own. If a decision is worth testing, extract it as a pure function over plain values. Never return a verdict, never `unwrap`, never let a missing project root produce a panic.
 
 ## Examples
 
-- Ref: apps/rt/src/hooks/observe/plan_approval_observer.rs — the compact shape: two facts, imported predicates, best-effort `write_atomic`, in-file tests.
-- Ref: apps/rt/src/hooks/observe/approval_marker_observer.rs — the owner of the shared predicates (`active_spec`, `is_full_plan`, `already_approved`) with the fail-closed rationale in the header.
-- Ref: apps/rt/src/hooks/observe/picker_approval_observer.rs — a third door on the same marker, checked cheapest-first with the ordering rationale stated.
+- Ref: `apps/rt/src/hooks/observe/approval_marker_observer.rs` — the shared predicates (`active_spec`, `is_full_plan`, `already_approved`) the sibling doors import.
+- Ref: `apps/rt/src/hooks/observe/plan_approval_observer.rs` — the minimal two-fact door with a conservative payload recognizer.
+- Ref: `apps/rt/src/hooks/observe/picker_approval_observer.rs` — documented cheapest-first ordering and the deliberate divergence from the sibling's spec resolution.

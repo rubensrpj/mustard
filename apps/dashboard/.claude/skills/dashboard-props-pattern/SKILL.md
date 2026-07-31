@@ -1,6 +1,6 @@
 ---
 name: dashboard-props-pattern
-description: Use when adding or refactoring a React component under src/components/page or src/features whose public surface is a `XxxProps` interface in a folder index.tsx.
+description: Use when adding or refactoring a React component under apps/dashboard/src/components/page or src/features and declaring its `*Props` interface.
 paths:
   - apps/dashboard/src/components/page/**
   - apps/dashboard/src/features/economy/**
@@ -21,28 +21,28 @@ metadata:
 
 ## Purpose
 
-Every dashboard component declares its contract as a named `Props` interface sitting immediately above the component in that component's own `index.tsx`. `src/components/page/*` holds the reusable, data-free atoms (rows, pills, bars, code blocks, page chrome) re-exported through one barrel; `src/features/*` holds the composed, data-aware pieces. Reading the `Props` interface should tell you everything the component needs, which is why the shapes stay small and typed with `ReactNode` slots rather than pre-rendered strings.
+Every component in `components/page` (shared primitives) and in the `features/*` folders (page-specific composites) declares its own `<Component>Props` interface immediately above the component function, so the contract is readable without jumping files. The five components read for this mold — `AcBreakdown`, `BaseRow`, `CodeBlock`, `ScopeBar`, `LivePipelineCard` — share the same skeleton: a documented props interface, a named function component destructuring those props with inline defaults, and Tailwind classes merged through `cn()`. Backend DTOs are passed whole (`pipeline: ActivePipeline`) rather than splatted into a dozen scalars, which keeps the serde field names visible at the render site. Props stay presentational: these components receive data and callbacks and do not call `invoke()`, though a feature composite may run its own `useQuery` against a `src/lib` fetcher (`ScopeBar` does).
 
 ## Convention
 
 Folder: apps/dashboard/src/components/page/**, apps/dashboard/src/features/economy/**, apps/dashboard/src/features/telemetry/PhaseStation/**, apps/dashboard/src/features/telemetry/PipelineTimeline/**, apps/dashboard/src/features/workspace/** · Extension: .tsx · Files of this role in this subproject: 37
 
-- One folder per component, the file always named `index.tsx`, folder name equal to the component name. Under `components/page` each folder gets a line in the barrel `src/components/page/index.ts`, so consumers import from `@/components/page`.
-- The interface is `<Component>Props` and is declared right above the component. The `components/page` atoms I read export theirs; the two workspace feature bands keep theirs file-local since only the module itself uses them.
-- Components are plain named `export function` declarations with the props destructured in the signature and defaults given inline (`chevron = false`, `intent = "primary"`, `lang = "plain"`) — no default export and no `React.FC` in the files read here.
-- `className?: string` is the trailing prop on the atoms and is merged last through `cn()` from `@/lib/utils`, so callers can override; classes reference theme tokens rather than raw palette utilities.
-- Slot-shaped props are typed `ReactNode` (`label`, `summary`, `display`, `tooltip`, `icon`); interactions are `onClick?: () => void`, and a row that becomes clickable also adds `role="button"`, `tabIndex` and Enter/Space handling (`BaseRow`).
-- Several components and their `Props` can share one `index.tsx` when they compose as a family (`CostBar` plus `BarTrack` plus `BarFill`, each with its own exported `Props`).
-- Degenerate input is handled inside the component, not by the caller — `AcBreakdown` renders an em-dash when the three counts are zero, `CodeBlock` falls back to plain text for an unknown language instead of throwing.
-- Where the file mirrors a backend enum it exports the union next to the props and maps it through a module-level lookup record.
-- The `components/page` atoms take data as props and do no fetching; the `features/*` members own their own query (with an `enabled` gate and an explicit `staleTime`) and pass scalars down.
+- One component per folder as `index.tsx` (`components/page/BaseRow/index.tsx`, `features/workspace/LivePipelineCard/index.tsx`); the folder name is the component name.
+- `interface <Component>Props` is declared directly above the component. Four of the five files read export it; `LivePipelineCardProps` is left un-exported — export it when another module needs to annotate against it.
+- The component is a named `export function <Component>({ a, b, className }: <Component>Props)` with defaults given in the destructuring (`chevron = false`, `lang = "plain"`); no default export.
+- `className?: string` is the last optional prop and is merged with `cn()` from `@/lib/utils`; callbacks are optional and named `onX` (`onClick`, `onScopeChange`); slots are typed `ReactNode`.
+- Wire DTOs are accepted whole and destructured inside the body, keeping the snake_case field names (`spec_name`, `has_dispatch_failure`) intact at the point of use.
+- Unions that props reference are exported from the same file (`RowStatus` in `BaseRow`, `CodeLang` in `CodeBlock`), while lookup maps and pure helpers (`DOT`, `TAB_META`, `phaseToVariant`, `resolveLanguage`) sit above the component un-exported.
+- Empty/zero input is handled inside the component (`AcBreakdown` renders an em-dash when the total is 0) instead of pushing the branch onto every caller.
+- New `components/page` primitives are re-exported from `src/components/page/index.ts` (`export * from "./X";`) so pages import them from the barrel.
+- The exemplars document intent above the interface or in a file header — `BaseRow` explains which pages share it, `CodeBlock` explains why the highlighter is lazy-registered.
 
 ## How to apply
 
-Add `src/components/page/<Name>/index.tsx` for a reusable atom (and register it in the barrel), or `src/features/<area>/<Name>/index.tsx` for a data-aware piece. Declare `<Name>Props` first, destructure with defaults, accept and merge `className` last, and keep the empty/zero case inside the component. Do not call `invoke()` from either location — read through `@/lib/dashboard` wrappers or a `useXxx` hook — and reuse the existing atoms (`BaseRow`, `StatPill`, `DataCard`, `SectionHeader`) instead of re-styling equivalent chrome.
+Create `<Folder>/index.tsx` under the right home — `components/page` when two or more pages will share the atom, `features/<area>/<Component>` when it belongs to one page — and add the barrel line when it is a `components/page` primitive. Declare the props interface first with a doc comment describing the visual contract, then the named component; keep data fetching in hooks and pass results down, or run a local `useQuery` against a `src/lib` fetcher when the composite owns its own lookup. Reuse the existing atoms (`StatPill`, `StatusDot`, `BaseRow`) instead of redefining card chrome, and reuse the formatters (`formatTokens`, `formatUsd` from `@/lib/types/economy`, `relativeTime` from `@/lib/time`).
 
 ## Examples
 
-- Ref: apps/dashboard/src/components/page/BaseRow/index.tsx — exported `BaseRowProps`, `RowStatus` union with a lookup dot map, keyboard-accessible interactive row.
-- Ref: apps/dashboard/src/components/page/AcBreakdown/index.tsx — minimal numeric props with the zero-total empty state handled internally.
-- Ref: apps/dashboard/src/components/page/CodeBlock/index.tsx — props with a permissive `lang` and a never-throwing fallback path.
+- Ref: apps/dashboard/src/components/page/BaseRow/index.tsx — exported `BaseRowProps`, exported `RowStatus`, un-exported `DOT` map, `cn()` merge and interactive/`onClick` handling.
+- Ref: apps/dashboard/src/components/page/AcBreakdown/index.tsx — minimal documented props with the zero-total empty branch.
+- Ref: apps/dashboard/src/features/workspace/LivePipelineCard/index.tsx — feature composite taking the `ActivePipeline` DTO whole, with an un-exported props interface.

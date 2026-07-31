@@ -1,6 +1,6 @@
 ---
 name: core-state-pattern
-description: Use when adding or refactoring a composite lifecycle state type under packages/core/src/domain/model/view/ that must reject illegal field combinations.
+description: Use when adding or refactoring a `*State` type in the view model layer that must express where something is without letting a consumer guess.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,25 +17,25 @@ metadata:
 
 ## Purpose
 
-`SpecState` in `spec.rs` is the canonical lifecycle state of a spec and the fullest example of this role: it replaced a flat status enum that conflated *where* a spec is with *how* it ended and *what qualifier* applies, factoring those into `Stage`, `Outcome` and a `Flags` sub-struct. The point of the type is that it is never assembled field-by-field by outside callers — its constructor rejects the three combinations the type system alone cannot express and returns a local `StateError`. The lighter end of the same role is `SegmentState` in `workspace.rs`, three explicit render states carried by `PhaseSegment` so the UI never has to guess whether a phase is past the current one. Both live under `domain/model/`, which the crate Guards keep free of IO, so all this validation is pure.
+A `*State` type answers "where is this, exactly" with no room for inference. `SpecState` (`view/spec.rs`) is the canonical one: it factors what a flat status enum used to conflate into three orthogonal axes — `Stage` (pipeline position), `Outcome` (terminal disposition) and `Flags` (qualifiers that can apply at any stage) — so a spec can be `Execute` *and* `blocked` without losing either fact. It is built through `SpecState::new`, which rejects the three combinations the type system alone cannot forbid and returns a module-local `StateError`; the crate-wide `Error` is not used here because `domain/model/` is pure and side-effect-free. `SegmentState` (`view/workspace.rs`) is the small sibling — three explicit values (`Completed` / `Active` / `Future`) with no `Default`, so the UI never has to compute "is this past the current phase?".
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 2
 
-- A composite state is a struct of already-closed enums plus, when qualifiers are orthogonal to position, a `Flags` sub-struct of booleans each marked with a serde default, with `Default` derived.
-- Derive line on the composite: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]`; the sub-struct adds `Default`. The composite is deliberately not `Copy` when it can still grow fields — `Flags` documents that reasoning.
-- Construction goes through a `new` returning a result whose doc comment carries an errors section with one bullet per rejected combination.
-- The rejection error is a *local* enum deriving `thiserror::Error` with a message per variant. `StateError`'s doc says why it is not the crate-wide error type — that type is reserved for side-effecting operations, and this layer is pure.
-- Free-form on-disk fragments are absorbed by `parse` associated functions on each component, which tolerate legacy spellings and ignore unrecognised tokens instead of erroring.
-- Read-side helpers are `#[must_use]` predicates plus one const projection to the string the dashboard reads, where qualifier flags win over the stage.
-- Tests in the same file: one per rejected combination asserting the exact error, each immediately followed by the legal counterpart asserting success.
+- `SpecState` derives `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize`; `SegmentState` is a `Copy` enum with `#[serde(rename_all = "lowercase")]`. Both exemplars serialise, because these types are the contract other crates render against.
+- `Flags` is a struct of `#[serde(default)] bool` fields with `Default` derived, so an on-disk header carrying only `### Stage:` / `### Outcome:` deserialises cleanly.
+- Neither exemplar has an `Unknown` variant. Absence resolves to the earliest meaningful position instead — `SpecView::empty` starts at `Stage::Plan` + `Outcome::Active`.
+- Free-form input is parsed by an associated `parse(raw: &str)` that trims, lowercases, accepts the documented legacy synonyms (`approved` → `Plan`, `orphan` → `Abandoned`), and yields `Option<Self>` (or an all-false `Flags`) for unrecognised text.
+- Validation errors are a local `thiserror` enum (`StateError`) with one `#[error("…")]` per rejected combination, and `new` documents each under `# Errors`.
+- `status_kebab()` is the single mapping from state to the dashboard's status column; flags win over stage there.
+- Tests live in `#[cfg(test)] mod tests` at the bottom of the file and assert both directions: the legal triple constructs, and each illegal one returns its specific `StateError`.
 
 ## How to apply
 
-Declare the state next to the view that carries it: component enums first, then the struct, then the constructor, then the local error, then the predicates. Do not add an unknown or invalid variant to absorb a bad combination — return an error from the constructor and let the caller decide what to render. Re-export the struct, its component enums and its error together from `view/mod.rs`. When a new qualifier flag is added, give it a serde default so headers written before it existed still deserialize, extend the constructor with the context rule that makes it legal, extend the parser with its on-disk token, and add the paired reject/accept test.
+A new state axis belongs inside the existing composite — a new `Flags` bool, or a new `Stage`/`Outcome` variant — never as a parallel status string threaded through call sites. Add the variant or field, extend `SpecState::new` with the invariant it implies, add the matching `StateError` variant, extend `status_kebab()`, and add a test that proves the illegal combination is rejected while the legal one still constructs. Re-export the new name from `view/mod.rs`. Since these types are the public serde shape rendered by rt and the dashboard, renaming a field or a serde word is a migration, not a refactor.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/spec.rs — `SpecState` plus `StateError`: the smart constructor, the three rejected combinations, the `Flags` sub-struct and the kebab-case projection.
-- Ref: packages/core/src/domain/model/view/workspace.rs — `SegmentState` and `PhaseSegment`, the minimal end of the role, with the in-file test asserting explicit construction instead of a default.
+- Ref: packages/core/src/domain/model/view/spec.rs — `Stage` / `Outcome` / `Flags` / `SpecState::new` / `StateError`.
+- Ref: packages/core/src/domain/model/view/workspace.rs — `SegmentState` and its "three explicit variants, no Default" test.

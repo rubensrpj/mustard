@@ -1,6 +1,6 @@
 ---
 name: rt-cmd-pattern
-description: Use when adding or refactoring a `run` subcommand family enum and its dispatch arm in a commands/<family>/cli.rs file.
+description: Use when adding or refactoring a clap subcommand enum and its dispatch arm in a commands family cli.rs.
 paths:
   - apps/rt/src/commands/**
 tags: [add, refactor]
@@ -17,27 +17,27 @@ metadata:
 
 ## Purpose
 
-The `run` face of `mustard-rt` is one clap enum per family, never a god-enum: `AgentCmd`, `CapabilityCmd`, `ChecklistCmd`, `DoctorCmd`, `MaintCmd`, `PipelineCmd`, `ReviewCmd`, `SpecCmd`, `WaveCmd` and their siblings each live in `commands/<family>/cli.rs` alongside the `dispatch()` that runs them. `RunCmd` in `commands/mod.rs` only routes: every variant is `#[command(flatten)]`, which hoists the family's subcommands to the `run` level so the published names stay flat (`mustard-rt run wave-advance`, never `run wave advance`) and unchanged for the hooks, `settings.json` and the SKILL templates that call them. `display_order` pins each command to its historical slot in the flat `run --help` listing, so splitting or moving a family cannot reshuffle the CLI. The enum is a parser, nothing else — the variant carries the parsed arguments and the dispatch arm immediately delegates to the module that does the work.
+The `mustard-rt run` surface is split into family enums, one per `commands/<family>/`, each declared in that family's own `cli.rs`. `RunCmd` in `commands/mod.rs` hoists them with `#[command(flatten)]`, so the published CLI stays FLAT — `mustard-rt run wave-advance`, never `run wave advance`. Two registrations live in the same file on purpose: the variant in the enum AND its arm in `dispatch`, because forgetting the arm still compiles and the command simply vanishes. The `cli.rs` is a parser and a router only; it holds no business logic, delegating each arm to a function in the family module.
 
 ## Convention
 
 Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 19
 
-- One file per family: `commands/<family>/cli.rs`, whose module doc repeats the local invariant ("TWO registrations per command, both in this file: the variant in `[XCmd]` AND its arm in `[dispatch]` below. Forgetting the second still compiles, but the command vanishes from the CLI.") and the `flatten`/`display_order` note.
-- Imports are just `use clap::Subcommand;`, the family module (`use crate::commands::{agent};`) and whatever argument types the variants need (`std::path::PathBuf`).
-- The enum is `#[derive(Debug, Subcommand)]` + `#[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive`, named `{Family}Cmd`, `pub`.
-- Each variant carries a `///` doc that IS the `run --help` text (often several paragraphs describing verbs, output shape and fail-open behaviour), a `#[command(display_order = N)]`, and a `#[command(name = "kebab-case")]` whenever the derived name would not match the published one.
-- Arguments are named flags: `#[arg(long)]`, `#[arg(long = "retry-context-file")]` for multi-word names, `Option<T>` for optional inputs, `#[arg(long, default_value = "…")]` / `default_value_t` for defaults; each field carries its own `///` explaining what an omitted value means.
-- `pub fn dispatch(cmd: {Family}Cmd)` follows the enum with one arm per variant, destructuring the fields and calling `family::module::run(...)`, converting with `as_deref()` / `&x` at the call site and parsing string modes through the target module's own parser (`RenderMode::parse(&mode)`).
-- The crate Guard requires FOUR registrations for a new subcommand: the variant, the dispatch arm, the locked list in `tests/run_command_surface.rs`, and a real caller — `tests/template_parity.rs` runs a REVERSE ratchet that fails any registered command nothing invokes; resolve it with the actual caller or a justified `RUNTIME_WHITELIST` line (the sibling test fails once that justification becomes redundant).
-- A brand-new FAMILY additionally needs its `#[command(flatten)]` variant in `RunCmd` and its arm in `commands::dispatch` in `commands/mod.rs`.
+Reading the members adds:
+
+- Every family `cli.rs` opens with the same module doc block: "TWO registrations per command, both in this file", the note that `RunCmd` flattens the enum so names stay flat, and the reason `display_order` exists.
+- The enum is `pub enum {Family}Cmd` with `#[derive(Debug, Subcommand)]` and, directly above it, `#[allow(clippy::large_enum_variant)]` with the comment explaining that boxing breaks the derive.
+- Each variant carries `#[command(display_order = N)]` pinning its historical slot, and `#[command(name = "kebab-case")]` whenever the derived name would differ from the published one.
+- Variant fields are named struct fields, each with an `#[arg(long)]` (plus `alias`, `default_value` where the CLI has one) and a doc comment that becomes the `--help` text. Optional inputs are `Option<String>` / `Option<PathBuf>`; the doc explains what an omitted value degrades to.
+- `pub fn dispatch(cmd: {Family}Cmd)` sits immediately below with one `match` arm per variant, destructuring the fields and calling the module function — passing `Option<String>` through `.as_deref()` and mapping free-form mode strings through the module's own `parse` helper (`RenderMode::parse`, `EmitMode::parse`) rather than re-parsing inline.
+- Imports are minimal and family-scoped: `use clap::Subcommand;`, `std::path::PathBuf` when needed, and the family module use line.
 
 ## How to apply
 
-Add the variant to the existing family's `cli.rs` (a new command almost never justifies a new family), directly in `display_order` position, with full help prose. Add the matching arm in the same file's `dispatch`. Then add the name to `tests/run_command_surface.rs` and make sure something actually calls it — a hook, a template, another command — or add the whitelist line with a reason. Keep business logic out of `cli.rs`: the arm's body should be one call.
+A new subcommand goes into the `cli.rs` of the family folder that owns the verb. Add the variant with its `display_order` and full help text, then add the matching `dispatch` arm in the same edit — the crate guard counts FOUR registrations, and these are the first two. The third is the locked list in `tests/run_command_surface.rs`; the fourth is a real caller, because `tests/template_parity.rs` runs a reverse ratchet that fails any registered command no prose or argv invokes (resolve it with the caller, or with a justified line in `RUNTIME_WHITELIST`). Keep the name flat and kebab-cased. Do not add a knob nobody asked for, and remember the output contract: whatever the arm calls must print deterministic, byte-stable JSON.
 
 ## Examples
 
-- Ref: apps/rt/src/commands/agent/cli.rs — three variants including the multi-flag `AgentPromptRender`, with `#[command(name = "digest-adherence-finalize")]` and mode strings parsed by the target module.
-- Ref: apps/rt/src/commands/capability/cli.rs — a single variant whose doc documents all three verbs and whose arm builds the target's `Opts` struct inline.
-- Ref: apps/rt/src/commands/checklist/cli.rs — the minimal shape: one variant, `#[arg(long = "drop")] drop_item: bool`, one delegating arm.
+- Ref: `apps/rt/src/commands/agent/cli.rs` — multi-variant family, `#[command(name = ...)]`, `.as_deref()` threading and `parse` helpers in the dispatch arm.
+- Ref: `apps/rt/src/commands/capability/cli.rs` — single variant with a verb positional and an options struct built in the arm.
+- Ref: `apps/rt/src/commands/checklist/cli.rs` — the minimal shape: one variant, one arm, all inputs `#[arg(long)]`.

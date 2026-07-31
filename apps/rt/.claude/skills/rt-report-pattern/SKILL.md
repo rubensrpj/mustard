@@ -1,6 +1,6 @@
 ---
 name: rt-report-pattern
-description: Use when adding or refactoring the serialized report struct a doctor check, maint action, pipeline command or review gate prints to stdout.
+description: Use when adding or refactoring the serializable report struct a `mustard-rt run` command prints as its JSON document.
 paths:
   - apps/rt/src/commands/doctor/**
   - apps/rt/src/commands/maint/**
@@ -20,28 +20,29 @@ metadata:
 
 ## Purpose
 
-`*Report` is the document a command prints — the public face of `mustard-rt run <cmd>`, consumed by gates, by the orchestrator's prose, and by snapshot tests. The crate Guard requires that face to be deterministic and byte-stable, so a report is a `Serialize` struct with sorted vectors and no timestamps or machine paths on the success path, never an ad-hoc `json!` built inline. Report construction is deliberately split from printing: `build_report(root, known) -> XReport` (or `audit(repo) -> Report`, `run(root) -> ClaudePathsReport`) is pure-ish and takes its inputs as parameters so tests drive it against a `tempdir` without spawning a binary, while `run(opts)` only resolves the root, calls it and prints. Fail-open is expressed in the report itself: an unreadable input yields an empty-but-`ok` report or a `scanned_errors` line, never a panic and never a non-zero exit.
+Every `run` command in this crate answers with exactly one JSON document, and that document has a name: a `*Report` struct declared near the top of the command module. The struct is the contract — downstream readers, snapshot tests and gates compare its bytes — so it is defined before the logic that fills it, not assembled ad hoc out of `json!` literals at the end. Building the report is separated from printing it: a pure `fn build_report(...) -> XReport` / `fn run(root: &Path) -> XReport` computes, and the CLI face pretty-prints. That split is what lets a composite command (`close-orchestrate`, `close-pipeline`) fold another command's report into its own without spawning a subprocess. Fail-open lives in the builder: an unreadable directory yields an empty, `ok: true` report rather than an error.
 
 ## Convention
 
 Folder: apps/rt/src/commands/doctor/**, apps/rt/src/commands/maint/**, apps/rt/src/commands/pipeline/**, apps/rt/src/commands/review/** · Extension: .rs · Files of this role in this subproject: 19
 
-- Name is `<Command>Report` (`CapabilityDriftReport`, `ClaudePathsReport`, `MaintValidateReport`, `RehookReport`, `UnhookReport`, `GcReport`, `CloseReport`, `NegativeCheckReport`, `SupersededReport`); the doc line says what the whole document is ("Aggregate audit result", "The capability-drift advisory report. All vectors are sorted for stability.").
-- Derives: `#[derive(Debug, Serialize)]` is the baseline; add `Clone, PartialEq, Eq` when tests assert on whole reports (`CapabilityDriftReport`, `GuardsScaffoldReport`, `SupersededReport`); `#[derive(Serialize)]` alone appears in the maint sweeps.
-- A report that carries a verdict puts `ok: bool` first and derives it at the end of construction (`ok: drifted.is_empty()`, `ok = !divergences.iter().any(|d| d.severity == "error")`).
-- Row vectors use the `*Entry` / `*Item` / `*Record` types from the same module (see `rt-entry-pattern`, `rt-record-pattern`) and are sorted before the struct is built; error/skip evidence lives in its own vector (`scanned_errors`, `errors`) that is sorted too.
-- Visibility follows the consumer: `pub` when the family CLI or another command prints it (`ClaudePathsReport`, `CapabilityDriftReport`), `pub(crate)` when it stays inside the family (`MaintValidateReport`, `RehookReport`, `CloseReport`, `NegativeCheckReport`).
-- Fail-open constructors are explicit and named: `ok_empty()`, or an early `let Ok(paths) = ClaudePaths::for_project(root) else { return <empty report> };`. A missing directory is an empty healthy report, not an error.
-- `run` prints with `println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()))` — the fallback matters because the crate denies `unwrap_used` outside tests.
-- Advisory reports say so in the module header ("It is ADVISORY ONLY … the check never blocks and never errors the doctor run") and still emit their event; blocking verdicts belong to a gate, not to a report.
-- Tests sit in the same file, seed a `tempdir`, call the builder directly, and assert both on the typed fields and (where the shape is a contract) on `serde_json::to_value(&report)` key-by-key.
+What only reading reveals:
+
+- The derive is `#[derive(Debug, Serialize)]`, extended to `#[derive(Debug, Clone, Serialize, PartialEq, Eq)]` when the report is compared in unit tests (`CapabilityDriftReport`). `serde::Serialize` is imported directly; the struct is never a `serde_json::Value`.
+- Visibility is `pub` when a hook or sibling command reads the type, `pub(crate)` when only the crate composes it (`CloseReport`, `MaintDepsReport`). Fields are `pub` in the exemplars read — the report is data, not a guarded value.
+- The first field is the verdict when there is one: `pub ok: bool`, documented as what makes it false. `doctor_claude_paths` spells out the rule in a comment rather than leaving it to the reader.
+- A report owns row types beside it, one per row shape — `CapabilityDriftItem`, `Divergence`, `GateReport` — instead of a `Vec<Value>`. Closed vocabularies are `&'static str` fields (`kind`, `severity`, `overall`), not `String`.
+- Optional fields carry `#[serde(skip_serializing_if = "Option::is_none")]` so the emitted JSON stays byte-identical when the field does not apply (`CloseReport::verified`, `GateReport::summary`).
+- Every `Vec` is sorted before the report is returned, and the doc comment says so ("All vectors are sorted for stability"). Filenames are collected and `sort()`ed before iteration so even the ERROR order is deterministic.
+- The builder is `#[must_use]` and takes an explicit `root: &Path` (plus any injected fact, e.g. the grain declaration-name set) so it is testable without a live repository; the CLI `run` resolves the root and prints `serde_json::to_string_pretty(&report)` with a `.unwrap_or_else(|_| "{}".to_string())` fallback.
+- Tests sit in the same file under `#[cfg(test)] mod tests`, driven by `tempfile::tempdir()`, and assert both the happy tree and the degraded tree.
 
 ## How to apply
 
-Create the struct in the command's own module under the matching family folder, above the builder. Split the work into `build/audit(root, injected_inputs) -> XReport` and `run(...)` so the detection core is testable without the grain binary or `gh`; inject anything external (the grain declaration-name set, a clock) as a parameter the way `capability_drift_check::build_report(root, known)` does. Sort every vector before returning. Keep absolute machine paths out of a success report; if a refusal must name where it looked, do it only on the `ok: false` branch and say why in a comment, as `git_settle::settle_at` does.
+A new report goes in the command module that produces it, under the family folder that owns the verb (`doctor/`, `maint/`, `pipeline/`, `review/`). Declare the row struct(s) first, then the aggregate `*Report`, both `Serialize`, with doc comments stating what each field means and what makes `ok` false. Write the pure builder against `&Path`, sort every collection before returning, and keep `println!` in the thin `run` entry. Never let an IO error escape: degrade to an empty ok-report and record the skipped item in a `scanned_errors` / `errors` vector so the fail-open is visible in the output. Remember the crate guard: a new `run` subcommand also needs its variant + dispatch arm in the family `cli.rs`, its entry in `tests/run_command_surface.rs`, and a real caller.
 
 ## Examples
 
-- Ref: apps/rt/src/commands/doctor/capability_drift_check.rs — `CapabilityDriftReport { ok, total_capabilities, drifted, scanned_errors }`, injected `known` set, `ok_empty()` fail-open, sorted output.
-- Ref: apps/rt/src/commands/doctor/doctor_claude_paths.rs — `ClaudePathsReport { ok, divergences }` built by `#[must_use] pub fn run(root: &Path)`, `ok` derived from severity rather than from emptiness.
-- Ref: apps/rt/src/commands/maint/maint_validate.rs — `MaintValidateReport { dry_run, overall, validates }` with `overall` as the conjunction and `"skip"` when nothing was enumerated.
+- Ref: `apps/rt/src/commands/doctor/capability_drift_check.rs` — row + aggregate, sorted, advisory-only, injected known-set for testability.
+- Ref: `apps/rt/src/commands/doctor/doctor_claude_paths.rs` — the smallest complete shape: `Divergence` + `ClaudePathsReport` + `#[must_use] pub fn run(root: &Path)`.
+- Ref: `apps/rt/src/commands/pipeline/close_orchestrate.rs` — `GateReport` / `CloseReport` with `skip_serializing_if` and a composite that folds sub-gate results.
