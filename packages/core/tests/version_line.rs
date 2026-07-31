@@ -17,9 +17,25 @@
 //! build" — it reads as a real, old release, and the harness's own drift
 //! warning starts firing against itself.
 //!
-//! This test is the missing edge of the triangle. The release workflow already
-//! proves `tag == plugin.json`; this proves `Cargo.toml == plugin.json`, so the
-//! three can never disagree in silence again.
+//! ## Why `Cargo.lock` is NOT checked here
+//!
+//! There is a third file carrying this version — `Cargo.lock` pins one per
+//! workspace member — and leaving it behind is what broke the v0.1.29 release
+//! on all three operating systems ("cannot update the lock file because
+//! `--locked` was passed", before a line compiled).
+//!
+//! A test for it was written, and then measured: it CANNOT fail. Plain
+//! `cargo test` repairs a stale lock before running anything, so the assertion
+//! never sees the divergence; `cargo test --locked` fails in cargo itself,
+//! before any test binary starts. Either way the assertion is decoration, and
+//! decoration that looks like a guard is worse than no guard.
+//!
+//! The real guard is `--locked`, which CI and the release already pass. The gap
+//! was never detection — it was that the ONE commit which moved the version
+//! without the lock is the `bump-on-main` commit, and a push made with
+//! `GITHUB_TOKEN` does not trigger workflows (anti-recursion), so it is the one
+//! commit CI never sees. Fixed where it belongs: that workflow now runs
+//! `cargo update --workspace` and commits the lock with the manifest.
 
 use std::path::{Path, PathBuf};
 
@@ -70,17 +86,22 @@ fn the_running_harness_reports_that_same_line() {
     }
 }
 
-/// Walk up from this crate to the directory holding the plugin manifest.
-/// `None` when there is none — see the caller for why that is not a failure.
-fn find_manifest() -> Option<PathBuf> {
+/// Walk up from this crate to the workspace root — the directory holding the
+/// plugin manifest. `None` when there is none.
+fn workspace_root() -> Option<PathBuf> {
     let mut dir: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     loop {
-        let candidate = dir.join(MANIFEST_REL);
-        if candidate.is_file() {
-            return Some(candidate);
+        if dir.join(MANIFEST_REL).is_file() {
+            return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
     }
+}
+
+/// The plugin manifest itself. `None` when there is none — see the caller for
+/// why that is not a failure.
+fn find_manifest() -> Option<PathBuf> {
+    workspace_root().map(|root| root.join(MANIFEST_REL))
 }
 
 /// Read one top-level `"key": "value"` string out of a JSON document without
