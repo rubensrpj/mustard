@@ -3,8 +3,8 @@
   "languages": [
     {
       "language": "rust",
-      "files": 442,
-      "loc": 177990
+      "files": 443,
+      "loc": 178197
     },
     {
       "language": "tsx",
@@ -398,7 +398,7 @@
     {
       "dir": "apps/scan",
       "role": "L0",
-      "files": 79
+      "files": 80
     },
     {
       "dir": "apps/cli",
@@ -40608,7 +40608,7 @@
     {
       "path": "apps/rt/src/commands/scan_equivalences.rs",
       "language": "rust",
-      "loc": 404,
+      "loc": 433,
       "imports": [
         "crate::shared::translate::{Translate, Translation}",
         "serde_json::{json, Value}",
@@ -40639,97 +40639,109 @@
         {
           "kind": "function",
           "name": "load_equivalences",
-          "line": 109,
+          "line": 104,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "generate_at",
-          "line": 131,
+          "line": 126,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "is_translatable",
-          "line": 211,
+          "name": "write_table",
+          "line": 182,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "detect_code_language",
+          "line": 225,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "is_code_vocabulary",
+          "line": 248,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "load_learned",
-          "line": 228,
+          "line": 266,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "learn_at",
-          "line": 244,
+          "line": 282,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_learn",
-          "line": 283,
+          "line": 321,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tr",
-          "line": 292,
+          "line": 330,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fold_tok_lowercases_and_strips_diacritics",
-          "line": 297,
+          "line": 335,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "translation_tokens_ports_the_ps1_rules",
-          "line": 304,
+          "line": 342,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "build_equivalences_skips_english_and_sorts_keys_byte_stably",
-          "line": 318,
+          "name": "the_map_is_keyed_by_the_word_the_asker_types_not_the_one_the_code_uses",
+          "line": 356,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "an_alias_token_the_repo_never_uses_is_dropped",
-          "line": 344,
+          "name": "two_code_terms_sharing_an_english_word_both_ride_that_key",
+          "line": 383,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "only_a_prose_only_term_is_a_translation_candidate",
-          "line": 362,
+          "name": "only_code_vocabulary_answers_what_language_the_project_is_in",
+          "line": 396,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "generate_at_fails_open_without_a_dictionary",
-          "line": 377,
+          "line": 410,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "load_equivalences_fails_open_to_an_empty_map",
-          "line": 385,
+          "line": 418,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "learn_persists_merges_and_load_overlays",
-          "line": 394,
+          "line": 427,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "learn_rejects_empty_or_glueless_input",
-          "line": 423,
+          "line": 456,
           "supertypes": []
         }
       ]
@@ -70319,6 +70331,37 @@
       ]
     },
     {
+      "path": "apps/scan/tests/retrieval_self_recall.rs",
+      "language": "rust",
+      "loc": 178,
+      "imports": [
+        "std::collections::{BTreeMap, BTreeSet}",
+        "std::path::PathBuf",
+        "std::process::Command"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "function",
+          "name": "crate_dir",
+          "line": 58,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "tokens",
+          "line": 63,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_module_is_found_by_the_words_it_declares",
+          "line": 87,
+          "supertypes": []
+        }
+      ]
+    },
+    {
       "path": "apps/scan/tests/skip_dirs_excludes_claude.rs",
       "language": "rust",
       "loc": 79,
@@ -87183,7 +87226,7 @@
     }
   ],
   "graph": {
-    "nodes": 627,
+    "nodes": 628,
     "edges": 464,
     "cyclic": true,
     "top_fan_in": [
@@ -87705,7 +87748,7 @@
     "layers": [
       {
         "name": "L0",
-        "modules": 398
+        "modules": 399
       },
       {
         "name": "L1",
@@ -90883,7 +90926,7 @@
     "top_dirs": [
       {
         "dir": "apps",
-        "code_files": 537,
+        "code_files": 538,
         "other_files": 240
       },
       {
@@ -91025,7 +91068,7 @@
         "count": 1
       }
     ],
-    "code_files_read": 627,
+    "code_files_read": 628,
     "non_utf8_skipped": 0
   },
   "projects": [
@@ -91192,7 +91235,7 @@
       "name": "scan",
       "dir": "apps/scan",
       "kind": "cargo",
-      "code_files": 68,
+      "code_files": 69,
       "frameworks": [
         "toml",
         "clap",
