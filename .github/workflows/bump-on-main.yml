@@ -69,9 +69,21 @@ jobs:
           sed -i "0,/^version = \"$pv\"$/s//version = \"$nv\"/" "$cargo_toml"
           grep -q "^version = \"$nv\"$" "$cargo_toml"   # o sed realmente aplicou
 
+          # TERCEIRA perna: o Cargo.lock grava a versao de cada membro do
+          # workspace, e o Release compila com `--locked`. Mover o Cargo.toml sem
+          # o lock deixa os dois divergentes e TODO job de build morre com
+          # "cannot update the lock file because --locked was passed" — foi
+          # exatamente o que derrubou o release da v0.1.29 nos tres SOs.
+          # `--workspace` limita a atualizacao aos membros locais, entao nenhuma
+          # dependencia externa se move junto. Preferido a um `sed` no lock, que
+          # nao distingue a nossa versao da de uma dependencia que por acaso
+          # tenha o mesmo numero.
+          cargo update --workspace --offline
+          grep -q "^version = \"$nv\"$" Cargo.lock   # o lock realmente andou
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$manifest" "$cargo_toml"
+          git add "$manifest" "$cargo_toml" Cargo.lock
           git commit -m "chore(release): v$nv — bump automático pós-merge na main"
           # Rebase ANTES da tag: se outro merge entrou no meio-tempo, o commit
           # de bump é reescrito e a tag precisa apontar para o sha final.
@@ -100,7 +112,11 @@ jobs:
             # carimbados com uma versão que não existe mais.
             sed -i "0,/^version = \"$cv\"$/s//version = \"$nv\"/" "$cargo_toml"
             grep -q "^version = \"$nv\"$" "$cargo_toml"  # o sed realmente aplicou
-            git add "$manifest" "$cargo_toml"
+            # …e o lock junto, senão o `--locked` do Release reprova o dev pelo
+            # mesmo motivo que reprovou a main.
+            cargo update --workspace --offline
+            grep -q "^version = \"$nv\"$" Cargo.lock
+            git add "$manifest" "$cargo_toml" Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then
               echo "dev sincronizado: $dv -> $nv"
