@@ -8,9 +8,9 @@
 //! ## Why a third door — the second gesture
 //!
 //! `/mustard:spec ar` is the picker's approve-and-implement form: a letter
-//! naming the row plus the `r` suffix that means *implement now*. Today the `r`
-//! pre-answers only the implement-now CONTINUATION — the approval itself still
-//! has to be performed again, so a user who already typed their approval is
+//! naming the row plus the `r` suffix that means *implement now*. The `r` used
+//! to pre-answer only the implement-now CONTINUATION — the approval itself had
+//! to be performed again, so a user who had already typed their approval was
 //! taken through a plan-mode round trip to say it a second time. That second
 //! gesture is the ceremony this door removes.
 //!
@@ -46,16 +46,32 @@
 //!    to a selected label, and for the same reason: a substring rule lets a
 //!    sentence quoting the form pass, which is the shape of the forgery that
 //!    already happened once on the AskUserQuestion door.
-//! 3. **State (load-bearing, language-free).** The active spec is `scope=full`,
-//!    `stage=Plan` and carries no `pipeline.status{to:approved}` yet — the exact
-//!    pre-approval window, derived from `meta.json` + the event log through the
-//!    SAME predicates the AskUserQuestion door trusts, imported rather than
-//!    re-spelled.
+//! 3. **The ROW the letter names, in the pre-approval window.** The letter is
+//!    resolved through
+//!    [`crate::commands::spec::active_specs::spec_for_letter`] — the SAME
+//!    enumerator that rendered the table the user read — and that spec must be
+//!    `scope=full`, `stage=Plan` and carry no `pipeline.status{to:approved}`
+//!    yet, through the SAME predicates the AskUserQuestion door trusts,
+//!    imported rather than re-spelled.
+//!
+//! ## The letter decides WHICH spec — never the session
+//!
+//! Fact 3 deliberately does NOT ask `active_spec()` (session binding →
+//! current-spec → unique-pending), the way the two sibling doors do. Those two
+//! read a gesture that carries no spec of its own, so the session is the only
+//! thing that can name one. This door's gesture DOES name one, and the picker
+//! exists precisely to choose a row that is not the current spec: honouring the
+//! session there would mint a real, unforgeable gesture against the WRONG spec —
+//! which for that spec is indistinguishable from a forged one. A letter no row
+//! carries resolves to nothing and mints nothing; the user then approves the
+//! ordinary way, and `approve-spec` still refuses without the marker.
 //!
 //! The facts are checked cheapest-first (2, 1, then 3) because unlike its two
 //! siblings this observer runs on EVERY prompt: the two pure string tests settle
-//! the overwhelming majority without touching the filesystem. The conjunction is
-//! unchanged — order decides cost, not verdict.
+//! the overwhelming majority without touching the filesystem — the enumeration
+//! in fact 3 (which reads the spec area and the work branches) is reached only
+//! by a prompt that already IS the form. The conjunction is unchanged — order
+//! decides cost, not verdict.
 //!
 //! Fail-closed on any doubt, fail-open on IO. Pure [`Observer`] — never blocks,
 //! never returns a verdict.
@@ -63,7 +79,8 @@
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use serde_json::Value;
 
-use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};
+use super::approval_marker_observer::{already_approved, is_full_plan};
+use crate::commands::spec::active_specs::spec_for_letter;
 use crate::shared::context::{approval_marker_path, marker_body};
 
 /// The UserPromptSubmit approval recorder.
@@ -94,23 +111,29 @@ fn picker_argument(prompt: &str) -> Option<&str> {
     Some(rest.trim())
 }
 
-/// `true` when the WHOLE prompt is the picker's approve-and-implement form —
-/// one row letter followed by the `r` suffix (`/mustard:spec ar`).
+/// The ROW LETTER, lower-cased, when the WHOLE prompt is the picker's
+/// approve-and-implement form — one row letter followed by the `r` suffix
+/// (`/mustard:spec ar`). `None` for anything else.
+///
+/// Returns the letter rather than a `bool` because the letter is the only thing
+/// in the gesture that says WHICH spec is being approved; discarding it and
+/// asking the session instead lands the marker on whatever spec the session was
+/// bound to, which is the row the user did NOT pick.
 ///
 /// A BARE letter (`/mustard:spec a`) is deliberately not an approval: it only
 /// acts on the row, and on a PLAN-stage spec the approval is still the pending
 /// action. Only the `r` suffix carries "approve and implement now", which is the
 /// gesture this door records.
-fn is_approve_and_implement(prompt: &str) -> bool {
-    let Some(arg) = picker_argument(prompt) else {
-        return false;
-    };
+fn approve_and_implement_letter(prompt: &str) -> Option<char> {
+    let arg = picker_argument(prompt)?;
     let mut chars = arg.chars();
     match (chars.next(), chars.next(), chars.next()) {
-        (Some(letter), Some(suffix), None) => {
-            letter.is_ascii_alphabetic() && suffix.eq_ignore_ascii_case(&'r')
+        (Some(letter), Some(suffix), None)
+            if letter.is_ascii_alphabetic() && suffix.eq_ignore_ascii_case(&'r') =>
+        {
+            Some(letter.to_ascii_lowercase())
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -135,13 +158,15 @@ impl Observer for PickerApprovalObserver {
         let Some(prompt) = user_typed_text(input) else {
             return;
         };
-        if !is_approve_and_implement(prompt) {
+        let Some(letter) = approve_and_implement_letter(prompt) else {
             return;
-        }
+        };
 
-        // Fact 3 — an unapproved Full spec in PLAN, else nothing is pending.
+        // Fact 3 — the row THAT LETTER names, and it must be an unapproved Full
+        // spec in PLAN. The letter is resolved through the picker's own
+        // enumerator, never through the session: see the module docs.
         let cwd = ctx.project_dir_or_cwd(input);
-        let Some(spec) = active_spec(&cwd, input) else {
+        let Some(spec) = spec_for_letter(std::path::Path::new(&cwd), letter) else {
             return;
         };
         if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) {
@@ -191,10 +216,16 @@ mod tests {
         }
     }
 
-    /// Seed `.claude/spec/<spec>/meta.json` with the given scope + stage.
+    /// Seed a spec the PICKER can enumerate: `spec.md` (what discovery globs)
+    /// plus the `meta.json` sidecar carrying scope + stage.
+    ///
+    /// Both files are required — a directory with only `meta.json` is invisible
+    /// to `active-specs`, so it would carry no row letter and this door would
+    /// (correctly) decide nothing about it.
     fn seed_spec(root: &Path, spec: &str, scope: &str, stage: &str) {
         let dir = root.join(".claude").join("spec").join(spec);
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), format!("# {spec}\n\n## Resumo\n\nlinha.\n")).unwrap();
         std::fs::write(
             dir.join("meta.json"),
             format!(r#"{{"scope":"{scope}","stage":"{stage}","outcome":"Active"}}"#),
@@ -234,8 +265,18 @@ mod tests {
 
     #[test]
     fn recognises_only_the_approve_and_implement_form() {
-        for yes in ["/mustard:spec ar", "  /mustard:spec zr  ", "/MUSTARD:SPEC ar"] {
-            assert!(is_approve_and_implement(yes), "should be the form: {yes:?}");
+        // The letter comes back, lower-cased — it is what names the row.
+        for (yes, letter) in [
+            ("/mustard:spec ar", 'a'),
+            ("  /mustard:spec zr  ", 'z'),
+            ("/MUSTARD:SPEC ar", 'a'),
+            ("/mustard:spec BR", 'b'),
+        ] {
+            assert_eq!(
+                approve_and_implement_letter(yes),
+                Some(letter),
+                "should be the form, naming row {letter:?}: {yes:?}"
+            );
         }
         for no in [
             // A bare letter acts on the row; the approval is still pending.
@@ -253,7 +294,10 @@ mod tests {
             "aprova o plano",
             "",
         ] {
-            assert!(!is_approve_and_implement(no), "should NOT be the form: {no:?}");
+            assert!(
+                approve_and_implement_letter(no).is_none(),
+                "should NOT be the form: {no:?}"
+            );
         }
     }
 
@@ -261,8 +305,8 @@ mod tests {
     /// not panic — a hook that panics takes the session's prompt with it.
     #[test]
     fn a_multibyte_prompt_declines_without_panicking() {
-        assert!(!is_approve_and_implement("/mustard:spéc ar"));
-        assert!(!is_approve_and_implement("çã"));
+        assert!(approve_and_implement_letter("/mustard:spéc ar").is_none());
+        assert!(approve_and_implement_letter("çã").is_none());
     }
 
     // ── The observer (integration over a tempdir) ────────────────────────────
@@ -287,6 +331,63 @@ mod tests {
         assert_eq!(p.spec, "epic");
         assert_eq!(p.session, "s-1");
         assert!(!p.at.is_empty(), "the door must record an instant");
+    }
+
+    /// **The letter decides WHICH spec; the session does not.**
+    ///
+    /// The picker exists to act on a row that is NOT the spec the session is
+    /// working on, so a door that validated only the SHAPE of the letter and
+    /// then asked the session for the spec would mint a real, unforgeable
+    /// gesture against the wrong plan — and for that plan a marker it never
+    /// earned is indistinguishable from a forged one.
+    ///
+    /// Two pending Full plans, the session bound to the FIRST, and the user
+    /// types the SECOND's letter. Both halves are asserted: the row named is
+    /// approved, and the bound spec is left untouched.
+    #[test]
+    fn the_letter_names_the_row_even_when_the_session_is_bound_elsewhere() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // No date prefix ⇒ rows sort by name, so `a` = aardvark, `b` = beluga.
+        seed_spec(root, "aardvark-plan", "full", "Plan");
+        seed_spec(root, "beluga-plan", "full", "Plan");
+        bind_session(root, "s-1", "aardvark-plan");
+
+        PickerApprovalObserver
+            .observe(&prompt_input("s-1", "/mustard:spec br"), &ctx(root.to_str().unwrap()));
+
+        assert!(
+            marker_exists(root, "beluga-plan"),
+            "the row the user's letter named must be the one approved"
+        );
+        assert!(
+            !marker_exists(root, "aardvark-plan"),
+            "the session's spec must NOT collect an approval the user gave to another row"
+        );
+        let marker = approval_marker_path(root.to_str().unwrap(), "beluga-plan").unwrap();
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the minted body must read back as provenance");
+        assert_eq!(p.spec, "beluga-plan", "the body must name the row, not the session's spec");
+        assert_eq!(p.via, PICKER_VIA);
+    }
+
+    /// A letter no row carries names nothing, so nothing is minted — the
+    /// fail-closed half of resolving through the enumerator. The user simply
+    /// approves the ordinary way and `approve-spec` still refuses without a
+    /// marker; the unsafe direction would be minting on the wrong row.
+    #[test]
+    fn a_letter_no_row_carries_mints_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full", "Plan");
+
+        PickerApprovalObserver
+            .observe(&prompt_input("s-1", "/mustard:spec zr"), &ctx(root.to_str().unwrap()));
+
+        assert!(
+            !marker_exists(root, "epic"),
+            "row `z` does not exist — an unresolvable letter must decide nothing"
+        );
     }
 
     /// The property the marker exists for, in BOTH directions: the very SAME

@@ -2146,6 +2146,67 @@ mod tests {
         );
     }
 
+    /// The refusal's documented WAY OUT actually leads somewhere.
+    ///
+    /// A refusal is only a gate if the operator can get past it by fixing the
+    /// defect. Re-running `spec-draft --plan` is NOT that way out: the rollback
+    /// keeps `spec.md` + `meta.json` on purpose, so the second draft answers
+    /// `output exists`. The way out is the RE-materialisation door — the
+    /// criterion is fixed in the `spec.md` the rollback preserved (which is what
+    /// the proof reads) and `plan-materialize` takes the repaired spec through
+    /// the same composite.
+    ///
+    /// Both halves are asserted: the second DRAFT is refused, and the
+    /// re-materialisation succeeds — so the test fails if either the dead end or
+    /// the exit stops being true.
+    #[test]
+    fn a_refused_plan_is_repaired_through_the_rematerialisation_door() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+        let vacuous = write_fused_plan(project, "vacuous.json", GREEN_COMMAND);
+
+        let intent = "Repair the vacuous criterion";
+        assert_eq!(run_at(project, fused_opts(intent, &vacuous)), 2, "the proof refuses");
+
+        let spec_dir = project
+            .join(".claude")
+            .join("spec")
+            .join(slug_from_intent(intent, Locale::EnUs));
+
+        // The dead end the prose must not send anyone down: the draft's own
+        // artefacts survived, so drafting again refuses instead of repairing.
+        assert_eq!(
+            run_at(project, fused_opts(intent, &vacuous)),
+            0,
+            "a second draft does not repair — it reports `output exists` and stops",
+        );
+        assert!(
+            !spec_dir.join("wave-plan.md").exists(),
+            "the second draft materialised nothing, so the layout is still absent",
+        );
+
+        // The documented repair: fix the criterion where the proof reads it, and
+        // keep the plan's copy in step so the two do not drift.
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        // Only AC-1: the trailing build-green criterion is exempt by design and
+        // stays as the plan writes it.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            body.replacen(GREEN_COMMAND, RED_COMMAND, 1),
+        )
+        .unwrap();
+        let fixed = write_fused_plan(project, "fixed.json", RED_COMMAND);
+
+        let report = plan_materialize::materialize(project, &spec_dir, &fixed);
+        assert!(
+            !plan_materialize::refused(&report),
+            "the repaired criterion must clear the composite: {report}",
+        );
+        assert!(spec_dir.join("wave-plan.md").exists(), "the layout lands on the repair pass");
+        assert!(spec_dir.join("wave-1-rt").exists(), "and so does the wave directory");
+    }
+
     /// The section swap is surgical: only the AC block changes, and the plan's
     /// line survives verbatim (its `Command:` continuation included).
     #[test]

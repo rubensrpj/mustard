@@ -62,6 +62,7 @@ Wave 1 — rt (Rust):
 - `apps/rt/src/commands/pipeline/plan_materialize.rs` — the composite is extracted to a shared entry both commands call; its own published behaviour (re-materialisation, reconciling onto an edited plan) is unchanged.
 - `apps/rt/src/hooks/observe/picker_approval_observer.rs` (create) — UserPromptSubmit observer minting `<spec>/.approved-by-user` with `via` naming the picker, when the user's own prompt is the approve-and-implement form and the active spec is a Full plan still awaiting approval. Mirrors `approval_marker_observer` and reuses `marker_body` / `approval_marker_path`.
 - `apps/rt/src/hooks/observe/mod.rs` — register the observer.
+- `apps/rt/src/commands/spec/active_specs.rs` — gains `spec_for_letter`, resolving a picker ROW LETTER through the SAME enumeration that rendered the table. Cascade, not scope creep: the letter is the only part of the gesture that says WHICH spec, so an observer that read only its shape would mint a genuine approval against whatever spec the session was bound to.
 
 Wave 2 — plugin (prose) + its test:
 

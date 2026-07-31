@@ -28,7 +28,12 @@ spec-draft materialises the whole layout in one call, and the text the user type
 - `apps/rt/src/commands/pipeline/plan_materialize.rs`
 - `apps/rt/src/hooks/observe/picker_approval_observer.rs`
 - `apps/rt/src/hooks/observe/mod.rs`
+- `apps/rt/src/commands/spec/active_specs.rs` — cascade: the picker's row letter is only meaningful against the enumeration that rendered the table, so `spec_for_letter` resolves it through `build_output` instead of the observer guessing a spec from the session
 
 ## Reality Obligations
 
 - **RO-1.1** — Confirm from the harness's own hook contract which field of the UserPromptSubmit payload carries the user's literal typed text, and that an observer on that event cannot be reached by anything the model writes — the marker's entire value is that the model cannot author the gesture, so an observer keyed on a forgeable field would silently destroy the gate rather than shorten it
+
+<!-- wikilinks-footer-start -->
+- [spec.ceremony-costs-more-than-gates](spec.md)
+<!-- wikilinks-footer-end -->
