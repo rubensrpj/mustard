@@ -235,7 +235,7 @@ pub(crate) struct Rejection {
 /// every descendant it already matches, so `a/**` and `a/b/**` never both ship)
 /// and sorted — the worklist stays byte-stable, as the `run` output contract
 /// requires.
-pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
+pub(crate) fn globs_for(files: &[String], code_dirs: &std::collections::BTreeSet<String>) -> Vec<String> {
     let mut dirs: Vec<String> = files
         .iter()
         .filter_map(|f| {
@@ -247,6 +247,7 @@ pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
         .collect();
     dirs.sort();
     dirs.dedup();
+    dirs = promote_dominated_parents(dirs, code_dirs);
     // Ancestor-collapse: keep a dir only when no ALREADY-KEPT dir is a parent
     // of it. Sorted order guarantees a parent is visited before its children.
     let mut kept: Vec<String> = Vec::new();
@@ -293,6 +294,102 @@ pub(crate) fn convention_line(c: &Candidate) -> String {
     let where_ = if c.paths.is_empty() { "(no recurring folder)".to_string() } else { c.paths.join(", ") };
     let what = if exts.is_empty() { "(mixed)".to_string() } else { exts.join(", ") };
     format!("Folder: {where_} · Extension: {what} · Files of this role in this subproject: {}", c.count)
+}
+
+/// A cluster must claim at least this many sibling folders before their shared
+/// parent is even considered — two siblings are a coincidence, not a layout.
+const MIN_DOMINATING_SIBLINGS: usize = 3;
+
+/// …and must account for at least this share of the parent's code-bearing
+/// children. Below it the parent holds work the cluster has nothing to say
+/// about, and scoping the mold there would load it over unrelated edits.
+const DOMINANCE: f32 = 0.6;
+
+/// Replace a run of sibling directories with their shared parent when the
+/// cluster DOMINATES that parent.
+///
+/// Why this exists: [`globs_for`] derives one glob per directory that holds a
+/// member, and ancestor-collapse only removes a directory when another KEPT
+/// directory is its parent. That works for a flat layout — twenty modules
+/// directly inside one folder yield one glob — and fails completely for the
+/// layout where every member gets its own folder, because the shared parent
+/// holds no member FILE and so never enters the list to collapse against. The
+/// siblings are then all kept: one cluster in this workspace produced 37 globs
+/// while two neighbours in the SAME subproject and the SAME language produced
+/// one each. The difference was never the language; it was whether members sit
+/// in a folder together or in a folder each — and folder-per-member is the
+/// ordinary shape of component trees, feature modules, command directories and
+/// package-per-module layouts alike.
+///
+/// Dominance, not mere sharing, is the bar: the parent's OTHER code-bearing
+/// children are counted from the model's own module paths, so a cluster that
+/// occupies three folders out of thirty stays at three globs and never widens
+/// itself over twenty-seven folders of unrelated work. `code_dirs` is that
+/// evidence — every directory the model saw a module in.
+///
+/// Runs to a fixpoint (bounded), so a promoted parent can itself join its own
+/// siblings and promote again; deterministic, since every step sorts and
+/// deduplicates and the inputs are byte-stable.
+fn promote_dominated_parents(
+    dirs: Vec<String>,
+    code_dirs: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut current = dirs;
+    // A path has finitely many ancestors; the bound only guards against a
+    // future edit turning this into a cycle.
+    for _ in 0..16 {
+        let mut by_parent: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for d in &current {
+            if let Some(cut) = d.rfind('/') {
+                by_parent.entry(d[..cut].to_string()).or_default().push(d.clone());
+            }
+        }
+        let mut promoted: Vec<String> = Vec::new();
+        let mut consumed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (parent, siblings) in &by_parent {
+            if siblings.len() < MIN_DOMINATING_SIBLINGS {
+                continue;
+            }
+            let total = code_bearing_children(parent, code_dirs);
+            if total == 0 {
+                continue;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let share = siblings.len() as f32 / total as f32;
+            if share >= DOMINANCE {
+                promoted.push(parent.clone());
+                consumed.extend(siblings.iter().cloned());
+            }
+        }
+        if promoted.is_empty() {
+            return current;
+        }
+        let mut next: Vec<String> =
+            current.into_iter().filter(|d| !consumed.contains(d)).chain(promoted).collect();
+        next.sort();
+        next.dedup();
+        current = next;
+    }
+    current
+}
+
+/// How many DIRECT children of `parent` hold code anywhere beneath them,
+/// counted from the model's module directories. This is the denominator of the
+/// dominance test: it answers "how much of this folder would the mold be
+/// claiming?" without touching the filesystem.
+fn code_bearing_children(parent: &str, code_dirs: &std::collections::BTreeSet<String>) -> usize {
+    let prefix = format!("{parent}/");
+    let mut children: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for d in code_dirs {
+        if let Some(rest) = d.strip_prefix(&prefix) {
+            let head = rest.split('/').next().unwrap_or(rest);
+            if !head.is_empty() {
+                children.insert(head);
+            }
+        }
+    }
+    children.len()
 }
 
 /// Run `scan-patterns-list`. Prints a JSON array to stdout; exit 0 always.
@@ -354,6 +451,19 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
     // Module paths sorted once — every exemplar scan reads this in a stable order.
     let mut modules: Vec<&Mod> = model.modules.iter().collect();
     modules.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // Every directory the model saw a module in — the denominator of the
+    // dominance test in [`promote_dominated_parents`]. Built once here, from
+    // the model and never the filesystem, so the worklist stays a projection.
+    let code_dirs: std::collections::BTreeSet<String> = model
+        .modules
+        .iter()
+        .filter_map(|m| {
+            let norm = m.path.replace('\\', "/");
+            let cut = norm.rfind('/')?;
+            (cut > 0).then(|| norm[..cut].to_string())
+        })
+        .collect();
 
     // Slugs the enrich agent already refused with a recorded reason — a dead
     // candidate must not burn a dispatch on every scan.
@@ -445,7 +555,7 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 implements: role.implements.clone(),
                 count: house.count(),
                 exemplars: house.exemplars(),
-                paths: globs_for(&house.files),
+                paths: globs_for(&house.files, &code_dirs),
                 files: house.files.clone(),
                 rank: rank_of.get(&role.affix.to_lowercase()).copied().unwrap_or(0),
             });
@@ -1790,18 +1900,73 @@ mod tests {
             "apps/gateway/services/edge.rs".to_string(),
             "README.md".to_string(),
         ];
+        let none = std::collections::BTreeSet::new();
         assert_eq!(
-            globs_for(&files),
+            globs_for(&files, &none),
             vec![
                 "apps/api/services/**".to_string(),
                 "apps/gateway/services/**".to_string()
             ]
         );
         assert_eq!(
-            globs_for(&[r"apps\api\services\user.rs".to_string()]),
+            globs_for(&[r"apps\api\services\user.rs".to_string()], &none),
             vec!["apps/api/services/**".to_string()]
         );
-        assert!(globs_for(&[]).is_empty(), "no files must mean no glob, never a root-wide one");
+        assert!(globs_for(&[], &none).is_empty(), "no files must mean no glob, never a root-wide one");
+    }
+
+    /// Folder-per-member: each member owns a directory, so the shared parent
+    /// holds no member FILE and ancestor-collapse — which only fires when a KEPT
+    /// directory is another's parent — has nothing to work with. Without
+    /// promotion every sibling ships its own glob.
+    #[test]
+    fn a_cluster_that_dominates_its_parent_collapses_to_it() {
+        let files: Vec<String> = ["Alpha", "Beta", "Gamma", "Delta"]
+            .iter()
+            .map(|n| format!("src/components/{n}/index.x"))
+            .collect();
+        // The parent holds one more code-bearing child the cluster does not
+        // claim: 4 of 5 is 80%, over the bar.
+        let code_dirs: std::collections::BTreeSet<String> =
+            ["Alpha", "Beta", "Gamma", "Delta", "Unrelated"]
+                .iter()
+                .map(|n| format!("src/components/{n}"))
+                .collect();
+        assert_eq!(
+            globs_for(&files, &code_dirs),
+            vec!["src/components/**".to_string()],
+            "four of five children is dominance — one glob, not four"
+        );
+    }
+
+    /// The other direction, and the reason dominance is the bar rather than
+    /// mere sharing: a cluster occupying a corner of a large folder must stay in
+    /// its corner. Widening here would load the mold over every unrelated edit
+    /// in the parent — the failure the promotion exists to avoid, inverted.
+    #[test]
+    fn a_cluster_that_does_not_dominate_keeps_its_own_globs() {
+        let files: Vec<String> =
+            ["Alpha", "Beta", "Gamma"].iter().map(|n| format!("src/components/{n}/index.x")).collect();
+        let mut code_dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for i in 0..20 {
+            code_dirs.insert(format!("src/components/Other{i}"));
+        }
+        for n in ["Alpha", "Beta", "Gamma"] {
+            code_dirs.insert(format!("src/components/{n}"));
+        }
+        let got = globs_for(&files, &code_dirs);
+        assert_eq!(got.len(), 3, "3 of 23 children is not dominance: {got:?}");
+        assert!(got.iter().all(|g| g.starts_with("src/components/") && g != "src/components/**"));
+    }
+
+    /// Two siblings are a coincidence, not a layout — the floor keeps a pair
+    /// from claiming a parent even when the parent holds nothing else.
+    #[test]
+    fn two_siblings_alone_never_claim_their_parent() {
+        let files = vec!["src/x/A/index.x".to_string(), "src/x/B/index.x".to_string()];
+        let code_dirs: std::collections::BTreeSet<String> =
+            ["src/x/A", "src/x/B"].iter().map(ToString::to_string).collect();
+        assert_eq!(globs_for(&files, &code_dirs).len(), 2, "a pair stays a pair");
     }
 
     /// The worklist entry carries the glob, so the dispatched agent copies a
