@@ -83,6 +83,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "scan",
     "scan-guards-apply",
     "scan-guards-list",
+    "scan-lapidation",
     "scan-patterns-apply",
     "scan-patterns-decline",
     "scan-patterns-list",

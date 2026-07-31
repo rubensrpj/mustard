@@ -104,6 +104,21 @@ pub enum ScanCmd {
     /// JSON array `[{subproject, label, slug, moldPath, affix, exemplars,
     /// ...}]`. The mold twin of `scan-guards-list`. Fail-open: a
     /// missing/unparseable model → `[]`.
+    /// Print the LAPIDATION KIT: how this project names things — the mined
+    /// roles (what a thing is called and where that kind lives), the shapes
+    /// (roles that recur together, i.e. what a new entity usually needs) and
+    /// the units. Read it BEFORE `run feature` and map the request onto these
+    /// words; a request in the code's own vocabulary is the difference between
+    /// a withheld answer and the implementing modules. It never reads the
+    /// prompt and never suggests — the menu is deterministic, the choice is
+    /// yours. Fail-open: a missing/unparseable model prints the empty kit.
+    #[command(name = "scan-lapidation")]
+    #[command(display_order = 84)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
+    ScanLapidation {
+        /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     #[command(name = "scan-patterns-list")]
     #[command(display_order = 61)]
     ScanPatternsList {
@@ -186,6 +201,7 @@ pub fn dispatch(cmd: ScanCmd) {
         ScanCmd::ScanGuardsApply { path, root, guards } => {
             scan_guards::apply::run(&path, &root, &guards)
         }
+        ScanCmd::ScanLapidation { root } => crate::commands::lapidation::run(&root),
         ScanCmd::ScanPatternsList { root, rejected } => scan_patterns::list::run(&root, rejected),
         ScanCmd::ScanPatternsApply { path, content, root } => {
             scan_patterns::apply::run(&path, &content, &root)
