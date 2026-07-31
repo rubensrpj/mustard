@@ -112,8 +112,19 @@ fn load(root: &Path) -> Model {
 /// Render the kit. Pure over the model so the shape is unit-testable without a
 /// repository.
 fn render(model: &Model) -> String {
-    let mut roles: Vec<&Role> =
-        model.roles.iter().filter(|r| r.count >= MIN_ROLE_COUNT && !r.affix.is_empty()).collect();
+    let mut roles: Vec<&Role> = model
+        .roles
+        .iter()
+        .filter(|r| r.count >= MIN_ROLE_COUNT && !r.affix.is_empty())
+        // A role mined out of test terrain is not how the project names things
+        // — it is how a fixture names things, and a fixture exists to be
+        // unlike the project. The mold worklist already drops these; the kit
+        // read `roles[]` raw and so carried a fixture's `Service` next to real
+        // convention, which is worse than a missing entry: a menu the reader
+        // catches lying once stops being read at all. Same predicate the rest
+        // of the toolchain uses, never a second copy.
+        .filter(|r| !mustard_core::domain::ast::conventions::is_test_path(&r.common_dir))
+        .collect();
     // Strongest convention first, affix breaking ties — byte-stable.
     roles.sort_by(|a, b| b.count.cmp(&a.count).then(a.affix.cmp(&b.affix)));
     roles.truncate(MAX_ROLES);
@@ -218,6 +229,23 @@ mod tests {
         assert!(out.contains("Cli + Cmd"), "(core) is dropped from the shape label: {out}");
         assert!(out.contains("optional: Summary"), "optional roles are marked: {out}");
         assert!(out.contains("apps/rt"), "units ride along: {out}");
+    }
+
+    /// A fixture is written to be UNLIKE the project — it is the control case.
+    /// Letting its vocabulary into the menu teaches the reader a convention
+    /// that exists nowhere in the product.
+    #[test]
+    fn a_fixtures_vocabulary_never_reaches_the_menu() {
+        let m = Model {
+            roles: vec![
+                role("Observer", 17, "src/hooks/observe"),
+                role("Service", 9, "apps/scan/tests/fixtures/graph_php_cascade/app/Services"),
+            ],
+            ..Model::default()
+        };
+        let out = render(&m);
+        assert!(out.contains("Observer"), "real convention still ships: {out}");
+        assert!(!out.contains("Service"), "the fixture's role is not this project's: {out}");
     }
 
     #[test]

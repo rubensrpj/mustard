@@ -3,8 +3,8 @@
   "languages": [
     {
       "language": "rust",
-      "files": 449,
-      "loc": 178899
+      "files": 450,
+      "loc": 179464
     },
     {
       "language": "tsx",
@@ -383,7 +383,7 @@
     {
       "dir": "apps/rt",
       "role": "L1",
-      "files": 278
+      "files": 279
     },
     {
       "dir": "apps/dashboard",
@@ -22669,7 +22669,7 @@
     {
       "path": "apps/rt/src/commands/agent/render/role.rs",
       "language": "rust",
-      "loc": 608,
+      "loc": 610,
       "imports": [
         "mustard_core::io::fs as mfs",
         "std::fmt::Write as _",
@@ -22700,115 +22700,115 @@
         {
           "kind": "function",
           "name": "patterns_task_block",
-          "line": 193,
+          "line": 194,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "render_patterns_worklist",
-          "line": 223,
+          "line": 224,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "normalize_subproject",
-          "line": 267,
+          "line": 268,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_guards_facts",
-          "line": 277,
+          "line": 278,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qualify_plugin_agent",
-          "line": 300,
+          "line": 301,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recommended_subagent_type",
-          "line": 318,
+          "line": 319,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "anchor",
-          "line": 335,
+          "line": 336,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "build_role_block_emits_role_cue_and_contract",
-          "line": 341,
+          "line": 342,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "producing_roles_carry_memory_contract_readonly_do_not",
-          "line": 361,
+          "line": 362,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "explore_role_block_carries_epistemic_contract",
-          "line": 385,
+          "line": 386,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "review_role_block_carries_verdict_contract",
-          "line": 405,
+          "line": 406,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "guards_role_block_carries_delivery_contract",
-          "line": 424,
+          "line": 425,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recommended_subagent_type_locks_read_only_roles",
-          "line": 435,
+          "line": 436,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patterns_role_block_carries_delivery_contract",
-          "line": 449,
+          "line": 450,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "guards_prompt_lang_carries_locale_tone_and_facts",
-          "line": 465,
+          "line": 467,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "guards_prompt_lang_specless_derives_locale_from_mustard_json",
-          "line": 505,
+          "line": 507,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recommended_subagent_type_namespaces_plugin_agents_only",
-          "line": 564,
+          "line": 566,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "plugin_namespace_matches_manifest_name",
-          "line": 588,
+          "line": 590,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patterns_contract_requires_paths_and_keeps_the_ranking_keys",
-          "line": 626,
+          "line": 628,
           "supertypes": []
         }
       ]
@@ -30180,7 +30180,7 @@
     {
       "path": "apps/rt/src/commands/lapidation.rs",
       "language": "rust",
-      "loc": 232,
+      "loc": 259,
       "imports": [
         "serde::Deserialize",
         "std::collections::BTreeMap",
@@ -30331,37 +30331,43 @@
         {
           "kind": "function",
           "name": "role",
-          "line": 192,
+          "line": 203,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_kit_names_the_role_and_where_its_kind_lives",
-          "line": 204,
+          "line": 215,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_fixtures_vocabulary_never_reaches_the_menu",
+          "line": 238,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_coincidence_is_not_a_convention",
-          "line": 224,
+          "line": 252,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_empty_model_says_so_instead_of_pretending",
-          "line": 233,
+          "line": 261,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "output_is_byte_stable_across_runs",
-          "line": 240,
+          "line": 268,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_model_degrades_to_the_empty_kit",
-          "line": 253,
+          "line": 281,
           "supertypes": []
         }
       ]
@@ -40622,7 +40628,7 @@
     {
       "path": "apps/rt/src/commands/scan_cli.rs",
       "language": "rust",
-      "loc": 209,
+      "loc": 233,
       "imports": [
         "clap::Subcommand",
         "crate::commands::{scan, scan_equivalences, scan_guards, scan_patterns}",
@@ -40800,20 +40806,38 @@
         },
         {
           "kind": "enum_member",
-          "name": "ScanPatternsSweep",
-          "line": 188,
+          "name": "ScanPatternsRelay",
+          "line": 192,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "root",
-          "line": 191,
+          "line": 195,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "content",
+          "line": 200,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "ScanPatternsSweep",
+          "line": 211,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "root",
+          "line": 214,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dispatch",
-          "line": 196,
+          "line": 219,
           "supertypes": []
         }
       ]
@@ -41341,7 +41365,7 @@
     {
       "path": "apps/rt/src/commands/scan_patterns/apply.rs",
       "language": "rust",
-      "loc": 443,
+      "loc": 482,
       "imports": [
         "mustard_core::io::fs as mfs",
         "std::io::Read as _",
@@ -41351,125 +41375,180 @@
       "namespaces": [],
       "declarations": [
         {
+          "kind": "enum",
+          "name": "Applied",
+          "line": 40,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Created",
+          "line": 42,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Collision",
+          "line": 45,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Preserved",
+          "line": 47,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Empty",
+          "line": 49,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "BadPath",
+          "line": 51,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Refused",
+          "line": 53,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "IoError",
+          "line": 55,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "apply_one",
+          "line": 60,
+          "supertypes": []
+        },
+        {
           "kind": "function",
           "name": "run",
-          "line": 41,
+          "line": 126,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "grounding_defects",
-          "line": 149,
+          "line": 190,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cited_refs",
-          "line": 188,
+          "line": 229,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "declared_paths",
-          "line": 211,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "normalise",
-          "line": 246,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "resolve_content",
           "line": 252,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "is_mold_path",
-          "line": 273,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "mold",
-          "line": 282,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "is_mold_path_accepts_the_shape_and_rejects_others",
+          "name": "normalise",
           "line": 287,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "resolve_content",
+          "line": 293,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "is_mold_path",
+          "line": 314,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mold",
+          "line": 323,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "is_mold_path_accepts_the_shape_and_rejects_others",
+          "line": 328,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "resolve_content_blanks_are_none",
-          "line": 299,
+          "line": 340,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "valid_mold",
-          "line": 306,
+          "line": 347,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_writes_and_marks_generated",
-          "line": 313,
+          "line": 354,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_is_create_only",
-          "line": 325,
+          "line": 366,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_collision_is_not_reported_as_a_preserve",
-          "line": 337,
+          "line": 378,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_malformed_mold_is_refused_never_written",
-          "line": 353,
+          "line": 394,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_preserves_the_paths_key",
-          "line": 379,
+          "line": 420,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_ref_to_a_file_that_does_not_exist_is_a_defect",
-          "line": 396,
+          "line": 437,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_widened_or_narrowed_paths_value_is_a_defect",
-          "line": 414,
+          "line": 455,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cited_refs_reads_the_canonical_decoration",
-          "line": 475,
+          "line": 516,
           "supertypes": []
         }
-      ]
+      ],
+      "fan_in": 1
     },
     {
       "path": "apps/rt/src/commands/scan_patterns/decline.rs",
       "language": "rust",
-      "loc": 91,
+      "loc": 93,
       "imports": [
         "mustard_core::io::fs as mfs",
         "std::collections::BTreeMap",
@@ -41492,26 +41571,32 @@
         },
         {
           "kind": "function",
+          "name": "record",
+          "line": 41,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "run",
-          "line": 39,
+          "line": 62,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_store_reads_empty",
-          "line": 75,
+          "line": 78,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_records_and_accumulates",
-          "line": 81,
+          "line": 84,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unparseable_store_degrades_to_empty",
-          "line": 95,
+          "line": 98,
           "supertypes": []
         }
       ]
@@ -41519,7 +41604,7 @@
     {
       "path": "apps/rt/src/commands/scan_patterns/list.rs",
       "language": "rust",
-      "loc": 2011,
+      "loc": 2066,
       "imports": [
         "serde::{Deserialize, Serialize}",
         "std::collections::HashMap",
@@ -41837,391 +41922,397 @@
         {
           "kind": "function",
           "name": "saturates_subproject",
-          "line": 409,
+          "line": 420,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "code_bearing_children",
-          "line": 442,
+          "line": 456,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run",
-          "line": 459,
+          "line": 473,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_rejected",
-          "line": 478,
+          "line": 492,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect",
-          "line": 488,
+          "line": 502,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_inner",
-          "line": 496,
+          "line": 510,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fold_collisions",
-          "line": 683,
+          "line": 697,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fold_variants",
-          "line": 695,
+          "line": 709,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "join_distinct",
-          "line": 723,
+          "line": 737,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "confirm_implements",
-          "line": 757,
+          "line": 771,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recurrence_by_role",
-          "line": 796,
+          "line": 810,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "under_test",
-          "line": 809,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "owner_of",
           "line": 823,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "basename",
-          "line": 831,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "slugify",
+          "name": "owner_of",
           "line": 837,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "basename",
+          "line": 845,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "slugify",
+          "line": 851,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "mold_present",
-          "line": 858,
+          "line": 872,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "group_by_project",
-          "line": 895,
+          "line": 909,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "House",
-          "line": 922,
+          "line": 936,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "files",
-          "line": 923,
+          "line": 937,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "count",
-          "line": 928,
+          "line": 942,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "exemplars",
-          "line": 933,
+          "line": 947,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "exemplars_for",
-          "line": 965,
+          "line": 979,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dir_matches",
-          "line": 1015,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "parent_dir",
           "line": 1029,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "parent_dir",
+          "line": 1043,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "stem",
-          "line": 1037,
+          "line": 1051,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "matches_affix",
-          "line": 1060,
+          "line": 1074,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_model",
-          "line": 1077,
+          "line": 1091,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "slugify_normalises",
-          "line": 1083,
+          "line": 1097,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "under_test_flags_test_terrain",
-          "line": 1092,
+          "line": 1106,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "owner_picks_longest_prefix",
-          "line": 1100,
+          "line": 1114,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_proposes_mold_for_a_real_cluster",
-          "line": 1113,
+          "line": 1127,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_skips_below_threshold_and_test_and_generated",
-          "line": 1141,
+          "line": 1155,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_skips_existing_mold",
-          "line": 1166,
+          "line": 1180,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "case_variants_of_one_role_fold_into_a_single_mold",
-          "line": 1190,
+          "line": 1204,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "implements_hint_must_be_re_earned_by_each_house",
-          "line": 1229,
+          "line": 1243,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "implements_hint_survives_a_model_without_declarations",
-          "line": 1263,
+          "line": 1277,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "implements_hint_survives_a_house_without_structural_evidence",
-          "line": 1285,
+          "line": 1299,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_folded_hint_is_validated_against_the_union_of_files",
-          "line": 1309,
+          "line": 1323,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "folding_never_drops_a_distinct_cluster",
-          "line": 1339,
+          "line": 1353,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_emits_every_cluster_uncapped",
-          "line": 1359,
+          "line": 1373,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_preserves_any_surviving_mold",
-          "line": 1388,
+          "line": 1402,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dir_matches_expands_generalized_segments",
-          "line": 1412,
+          "line": 1426,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_resolves_exemplars_across_all_role_homes",
-          "line": 1425,
+          "line": 1439,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_resolves_exemplars_by_declaration_affix",
-          "line": 1457,
+          "line": 1471,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "filename_signature_wins_over_declaration_fallback",
-          "line": 1485,
+          "line": 1499,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_resolves_exemplars_under_generalized_common_dir",
-          "line": 1513,
+          "line": 1527,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_excludes_declined_slugs",
-          "line": 1540,
+          "line": 1554,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_fail_open_on_missing_model",
-          "line": 1564,
+          "line": 1578,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_resolves_folder_role_exemplars_by_location",
-          "line": 1570,
+          "line": 1584,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "folder_role_exemplars_never_leave_the_role_home",
-          "line": 1607,
+          "line": 1621,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "folder_role_never_teaches_from_generated_code_nor_a_test_home",
-          "line": 1640,
+          "line": 1654,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_entity_named_like_test_terrain_still_teaches",
-          "line": 1679,
+          "line": 1693,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "matches_affix_honours_every_mined_kind",
-          "line": 1713,
+          "line": 1727,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rank_orders_the_worklist_but_never_filters_it",
-          "line": 1730,
+          "line": 1744,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_role_spread_across_subprojects_teaches_each_of_them",
-          "line": 1776,
+          "line": 1790,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "each_house_reports_its_own_count_not_the_repo_wide_one",
-          "line": 1820,
+          "line": 1834,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ownership_survives_the_wildcard_over_the_subproject_segment",
-          "line": 1857,
+          "line": 1871,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rejected_reports_every_silent_drop_with_its_reason",
-          "line": 1885,
+          "line": 1899,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "output_is_byte_stable",
-          "line": 1925,
+          "line": 1939,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "globs_for_derives_from_real_files_and_collapses",
-          "line": 1964,
+          "line": 1978,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_cluster_that_dominates_its_parent_collapses_to_it",
-          "line": 1992,
+          "line": 2006,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_cluster_that_does_not_dominate_keeps_its_own_globs",
-          "line": 2016,
+          "line": 2030,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_cluster_that_covers_the_whole_subproject_is_dropped",
-          "line": 2037,
+          "line": 2051,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "test_volume_never_buys_a_cluster_past_the_house_check",
+          "line": 2096,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "two_siblings_alone_never_claim_their_parent",
-          "line": 2076,
+          "line": 2132,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "globs_for_reaches_the_candidate_worklist",
-          "line": 2088,
+          "line": 2144,
           "supertypes": []
         }
       ]
@@ -42229,7 +42320,7 @@
     {
       "path": "apps/rt/src/commands/scan_patterns/mod.rs",
       "language": "rust",
-      "loc": 29,
+      "loc": 32,
       "imports": [],
       "namespaces": [],
       "declarations": []
@@ -42326,6 +42417,213 @@
           "kind": "function",
           "name": "adoption_flips_the_signal",
           "line": 196,
+          "supertypes": []
+        }
+      ]
+    },
+    {
+      "path": "apps/rt/src/commands/scan_patterns/relay.rs",
+      "language": "rust",
+      "loc": 284,
+      "imports": [
+        "serde::Serialize",
+        "std::io::Read as _",
+        "std::path::Path",
+        "super::*",
+        "super::apply::{apply_one, Applied}"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "enum",
+          "name": "Block",
+          "line": 50,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "File",
+          "line": 52,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "path",
+          "line": 52,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "body",
+          "line": 52,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Decline",
+          "line": 54,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "slug",
+          "line": 54,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 54,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Rejected",
+          "line": 59,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "path",
+          "line": 60,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "defects",
+          "line": 61,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Report",
+          "line": 67,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ok",
+          "line": 69,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "blocks",
+          "line": 71,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "created",
+          "line": 72,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "declined",
+          "line": 73,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "refused",
+          "line": 75,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "collisions",
+          "line": 77,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "preserved",
+          "line": 79,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "skipped",
+          "line": 81,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run",
+          "line": 85,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "parse",
+          "line": 141,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "demarcator",
+          "line": 184,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "normalise",
+          "line": 191,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "resolve_content",
+          "line": 196,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mold",
+          "line": 209,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_envelope_of_many_blocks_is_split_by_its_demarcators",
+          "line": 216,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_refused_block_never_takes_the_good_ones_with_it",
+          "line": 240,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "declines_reach_the_ledger_through_the_same_store",
+          "line": 258,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_missing_end_marker_costs_nothing_but_whitespace",
+          "line": 269,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_blockless_envelope_reports_empty_and_never_errors",
+          "line": 280,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_backticked_path_is_read_the_same_as_a_bare_one",
+          "line": 287,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_report_is_byte_stable",
+          "line": 299,
           "supertypes": []
         }
       ]
@@ -63220,7 +63518,7 @@
     {
       "path": "apps/rt/tests/run_command_surface.rs",
       "language": "rust",
-      "loc": 484,
+      "loc": 485,
       "imports": [
         "clap::{Command, Subcommand}",
         "mustard_rt::commands::RunCmd",
@@ -63232,73 +63530,73 @@
         {
           "kind": "function",
           "name": "repo_root",
-          "line": 128,
+          "line": 129,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_files",
-          "line": 134,
+          "line": 135,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_run_tokens",
-          "line": 169,
+          "line": 170,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_command_tree",
-          "line": 214,
+          "line": 215,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_subcommand_names_are_locked",
-          "line": 223,
+          "line": 224,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_declared_command_keeps_its_help_slot",
-          "line": 237,
+          "line": 238,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_documented_run_command_exists",
-          "line": 266,
+          "line": 267,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_run_tokens_catches_every_spelling_and_skips_placeholders",
-          "line": 309,
+          "line": 310,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "amendment_path_is_published_and_instructed",
-          "line": 349,
+          "line": 350,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_close_ritual_names_submodules",
-          "line": 445,
+          "line": 446,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_path_flag_aliases_are_interchangeable",
-          "line": 478,
+          "line": 479,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_dir_flag_aliases_are_interchangeable",
-          "line": 501,
+          "line": 502,
           "supertypes": []
         }
       ]
@@ -66525,7 +66823,7 @@
     {
       "path": "apps/scan/src/mine.rs",
       "language": "rust",
-      "loc": 864,
+      "loc": 992,
       "imports": [
         "crate::model::{CodeExample, Convention, Decl, Exemplar, Module, RoleStat}",
         "rayon::prelude::*",
@@ -66537,289 +66835,325 @@
         {
           "kind": "struct",
           "name": "Symbol",
-          "line": 36,
+          "line": 52,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "kind",
-          "line": 37,
+          "line": 53,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "path",
-          "line": 38,
+          "line": 54,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "line",
-          "line": 39,
+          "line": 55,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "loc",
-          "line": 40,
+          "line": 56,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "tokens",
-          "line": 41,
+          "line": 57,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "supertypes",
-          "line": 42,
+          "line": 58,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Mined",
-          "line": 45,
+          "line": 61,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "roles",
-          "line": 46,
+          "line": 62,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "conventions",
-          "line": 47,
+          "line": 63,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "shared_contracts",
-          "line": 48,
+          "line": 64,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mine",
-          "line": 51,
+          "line": 67,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "build_convention",
-          "line": 352,
+          "line": 374,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "order_roles_by_dependency",
-          "line": 511,
+          "line": 533,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "step_line",
-          "line": 525,
+          "line": 547,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_symbols",
-          "line": 548,
+          "line": 570,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_significant",
-          "line": 593,
+          "line": 615,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "names_its_file",
-          "line": 609,
+          "line": 631,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "squash",
-          "line": 617,
+          "line": 639,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "UnionFind",
-          "line": 623,
+          "line": 645,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "parent",
-          "line": 624,
+          "line": 646,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "new",
-          "line": 627,
+          "line": 649,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "find",
-          "line": 630,
+          "line": 652,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "union",
-          "line": 643,
+          "line": 665,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "jaccard",
-          "line": 651,
+          "line": 673,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "split_tokens",
-          "line": 659,
+          "line": 681,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "strip_interface_i",
-          "line": 684,
+          "line": 706,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "entity_tokens",
-          "line": 699,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "canonical_key",
-          "line": 712,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "role_display",
           "line": 721,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "canonical_key",
+          "line": 734,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "role_display",
+          "line": 743,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "abstract_entity",
-          "line": 725,
+          "line": 747,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "snippet",
-          "line": 753,
+          "line": 775,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "path_segs",
-          "line": 764,
+          "line": 786,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "directory_children",
+          "line": 795,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "is_solo_child",
+          "line": 812,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "shorten_ns",
-          "line": 771,
+          "line": 835,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "role_from_folder",
-          "line": 788,
+          "line": 852,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parent_dir",
-          "line": 804,
+          "line": 868,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "basename",
-          "line": 811,
+          "line": 875,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "top_key",
-          "line": 818,
+          "line": 882,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recurring_dirs",
-          "line": 837,
+          "line": 901,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dedup",
-          "line": 847,
+          "line": 911,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "truncate_list",
-          "line": 853,
+          "line": 917,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "slice_conf",
-          "line": 861,
+          "line": 925,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "majority_supertype",
-          "line": 878,
+          "line": 942,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ents",
-          "line": 895,
+          "line": 959,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_folder_that_is_its_parents_only_child_is_not_a_role",
+          "line": 971,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "roles_that_recur_under_every_entity_keep_their_siblings",
+          "line": 996,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_folder_that_appears_nowhere_is_never_solo",
+          "line": 1015,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "exactly_half_solo_is_not_enough_to_drop_a_folder",
+          "line": 1023,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "minority_supertype_does_not_speak_for_the_family",
-          "line": 900,
+          "line": 1034,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "exactly_half_is_not_a_majority",
-          "line": 909,
+          "line": 1043,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "strict_majority_is_the_family_contract",
-          "line": 916,
+          "line": 1050,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stronger_supertype_wins_by_distinct_entities",
-          "line": 926,
+          "line": 1060,
           "supertypes": []
         }
       ]
@@ -87715,8 +88049,8 @@
     }
   ],
   "graph": {
-    "nodes": 634,
-    "edges": 464,
+    "nodes": 635,
+    "edges": 465,
     "cyclic": true,
     "top_fan_in": [
       {
@@ -88241,7 +88575,7 @@
       },
       {
         "name": "L1",
-        "modules": 127
+        "modules": 128
       },
       {
         "name": "L2",
@@ -88895,14 +89229,16 @@
     {
       "affix": "Report",
       "kind": "suffix",
-      "count": 28,
+      "count": 31,
       "common_dir": "apps/rt/src/commands/doctor",
       "dirs": [
         "apps/rt/src/commands/doctor",
         "apps/rt/src/commands/maint",
         "apps/rt/src/commands/spec",
+        "apps/dashboard/src/lib",
         "apps/rt/src/commands/pipeline",
         "apps/rt/src/commands/review",
+        "apps/scan/src",
         "packages/core/src/domain"
       ],
       "decl_kind": "struct",
@@ -88911,8 +89247,8 @@
         "serde::Serialize",
         "tempfile::tempdir",
         "std::path::{Path, PathBuf}",
-        "serde_json::json",
-        "std::path::Path"
+        "std::path::Path",
+        "serde_json::json"
       ]
     },
     {
@@ -88937,30 +89273,16 @@
       ]
     },
     {
-      "affix": "Payload",
-      "kind": "suffix",
-      "count": 18,
-      "common_dir": "packages/core/src/domain/model",
-      "dirs": [
-        "packages/core/src/domain/model",
-        "apps/dashboard/src/lib/types"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "serde::{Deserialize, Serialize}",
-        "serde_json::Value"
-      ]
-    },
-    {
       "affix": "Entry",
       "kind": "suffix",
-      "count": 17,
+      "count": 21,
       "common_dir": "apps/rt/src/commands/maint",
       "dirs": [
         "apps/rt/src/commands/maint",
         "apps/rt/src/commands",
+        "apps/dashboard/src/lib",
         "apps/rt/src/commands/wave",
+        "apps/scan/src",
         "packages/core/src/view/summary"
       ],
       "decl_kind": "struct",
@@ -88968,6 +89290,23 @@
       "collaborators": [
         "std::path::{Path, PathBuf}",
         "tempfile::tempdir"
+      ]
+    },
+    {
+      "affix": "Payload",
+      "kind": "suffix",
+      "count": 20,
+      "common_dir": "packages/core/src/domain/model",
+      "dirs": [
+        "packages/core/src/domain/model",
+        "apps/dashboard/src-tauri/src",
+        "apps/dashboard/src/lib/types"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}",
+        "serde_json::Value"
       ]
     },
     {
@@ -89008,6 +89347,40 @@
       ]
     },
     {
+      "affix": "State",
+      "kind": "suffix",
+      "count": 16,
+      "common_dir": "apps/rt/src/shared",
+      "dirs": [
+        "apps/rt/src/shared",
+        "apps/rt/src/commands/spec",
+        "packages/core/src/domain/model/view"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde_json::{json, Value}",
+        "std::path::Path",
+        "serde::{Deserialize, Serialize}",
+        "tempfile::tempdir"
+      ]
+    },
+    {
+      "affix": "Kind",
+      "kind": "suffix",
+      "count": 15,
+      "common_dir": "apps/dashboard/src/lib/types",
+      "dirs": [
+        "apps/dashboard/src/lib/types",
+        "packages/core/src/domain/model/view"
+      ],
+      "decl_kind": "enum",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
       "affix": "Mode",
       "kind": "suffix",
       "count": 15,
@@ -89028,35 +89401,48 @@
       ]
     },
     {
-      "affix": "Kind",
+      "affix": "Result",
       "kind": "suffix",
-      "count": 14,
-      "common_dir": "apps/dashboard/src/lib/types",
+      "count": 15,
+      "common_dir": "apps/rt/src/commands/pipeline",
       "dirs": [
-        "apps/dashboard/src/lib/types",
-        "packages/core/src/domain/model/view"
+        "apps/rt/src/commands/pipeline",
+        "apps/rt/src/commands/review/qa_run",
+        "apps/scan/src"
       ],
-      "decl_kind": "enum",
+      "decl_kind": "struct",
       "implements": null,
-      "collaborators": []
+      "collaborators": [
+        "mustard_core::io::fs",
+        "std::path::{Path, PathBuf}",
+        "tempfile::tempdir",
+        "serde_json::{json, Value}",
+        "mustard_core::ClaudePaths",
+        "mustard_core::time::now_iso8601"
+      ]
     },
     {
-      "affix": "State",
+      "affix": "Summary",
       "kind": "suffix",
-      "count": 14,
-      "common_dir": "apps/rt/src/shared",
+      "count": 13,
+      "common_dir": "apps/dashboard/src-tauri/src",
       "dirs": [
-        "apps/rt/src/shared",
-        "apps/rt/src/commands/spec",
+        "apps/dashboard/src-tauri/src",
+        "apps/dashboard/src/lib",
+        "apps/dashboard/src/lib/types",
+        "apps/dashboard/src/hooks",
+        "packages/core/src/domain/economy",
         "packages/core/src/domain/model/view"
       ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "serde_json::{json, Value}",
-        "std::path::Path",
         "serde::{Deserialize, Serialize}",
-        "tempfile::tempdir"
+        "react-query",
+        "economy",
+        "std::path::{Path, PathBuf}",
+        "core",
+        "discovery"
       ]
     },
     {
@@ -89095,118 +89481,104 @@
       ]
     },
     {
-      "affix": "Result",
-      "kind": "suffix",
-      "count": 12,
-      "common_dir": "apps/rt/src/commands/pipeline",
-      "dirs": [
-        "apps/rt/src/commands/pipeline",
-        "apps/rt/src/commands/review/qa_run"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "mustard_core::io::fs",
-        "tempfile::tempdir",
-        "serde_json::{json, Value}",
-        "std::path::{Path, PathBuf}",
-        "mustard_core::time::now_iso8601",
-        "mustard_core::ClaudePaths"
-      ]
-    },
-    {
-      "affix": "src",
-      "kind": "folder",
-      "count": 12,
-      "common_dir": "apps/<Name>/src",
-      "dirs": [
-        "apps/<Name>/src",
-        "apps/dashboard/<Name>/src",
-        "apps/scan/tests/fixtures/<Name>/src",
-        "apps/rt/src"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "clap::{Parser, Subcommand}",
-        "std::path::{Path, PathBuf}"
-      ]
-    },
-    {
       "affix": "Outcome",
       "kind": "suffix",
-      "count": 10,
-      "common_dir": "apps/rt/src/commands/event",
+      "count": 12,
+      "common_dir": "apps/dashboard/src/lib",
       "dirs": [
+        "apps/dashboard/src/lib",
         "apps/rt/src/commands/event",
         "apps/rt/src/commands/review/qa_run",
         "packages/core/src/platform"
       ],
-      "decl_kind": "enum",
+      "decl_kind": "struct",
       "implements": null,
       "collaborators": [
         "tempfile::tempdir",
         "serde_json::json",
         "std::path::Path",
-        "mustard_core::io::fs",
-        "crate::shared::context::project_dir",
-        "mustard_core::domain::capability::{Capability, Requirement, Scenario}"
+        "mustard_core::io::fs"
       ]
     },
     {
-      "affix": "main",
-      "kind": "nested",
-      "count": 9,
-      "common_dir": "apps/<Name>/src",
-      "dirs": [
-        "apps/<Name>/src",
-        "apps/scan/tests/fixtures/<Name>/src"
-      ],
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": [
-        "clap::{Parser, Subcommand}"
-      ]
-    },
-    {
-      "affix": "Item",
+      "affix": "D",
       "kind": "suffix",
-      "count": 8,
-      "common_dir": "apps/rt/src/commands/pipeline",
+      "count": 11,
+      "common_dir": "apps/scan/src",
       "dirs": [
-        "apps/rt/src/commands/pipeline"
+        "apps/scan/src"
       ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "tempfile::tempdir",
+        "crate::model::ProjectModel",
+        "crate::model::{Convention, Exemplar}",
+        "crate::model::{Decl, Module, ProjectModel}",
+        "mustard_core::domain::vocabulary::stacks::StackDetection",
         "serde::Serialize",
-        "std::path::{Path, PathBuf}"
+        "std::collections::{BTreeMap, BTreeSet}"
       ]
     },
     {
-      "affix": "Summary",
+      "affix": "Row",
       "kind": "suffix",
-      "count": 8,
-      "common_dir": "apps/dashboard/src/lib/types",
+      "count": 10,
+      "common_dir": "apps/dashboard/src/lib",
       "dirs": [
-        "apps/dashboard/src/lib/types",
+        "apps/dashboard/src/lib",
+        "apps/dashboard/src-tauri/src",
         "apps/dashboard/src/hooks",
-        "packages/core/src/domain/economy",
+        "apps/rt/src/commands/economy/otel"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "react-query",
+        "std::path::PathBuf",
+        "store",
+        "core",
+        "discovery",
+        "economy"
+      ]
+    },
+    {
+      "affix": "Status",
+      "kind": "suffix",
+      "count": 9,
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib",
         "packages/core/src/domain/model/view"
       ],
+      "decl_kind": "enum",
+      "implements": null,
+      "collaborators": [
+        "core"
+      ]
+    },
+    {
+      "affix": "Args",
+      "kind": "suffix",
+      "count": 8,
+      "common_dir": "apps/mcp/src",
+      "dirs": [
+        "apps/mcp/src"
+      ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "serde::{Deserialize, Serialize}",
-        "serde_json::{Map, Value}",
-        "super::scope::{AgentId, ProjectPath, SpecId, WaveId}"
+        "std::fs",
+        "std::path::{Path, PathBuf}",
+        "mustard_core::ClaudePaths",
+        "mustard_core::domain::economy::scope::{EconomyScope, ProjectPath, SpecId}",
+        "mustard_core::domain::economy::{metric_token_summary, EconomyScope, ProjectPath}",
+        "mustard_core::domain::scan::{DigestQuery, RankFile, Scan}"
       ]
     },
     {
       "affix": "Hit",
       "kind": "suffix",
-      "count": 7,
+      "count": 8,
       "common_dir": "packages/core/src/domain",
       "dirs": [
         "packages/core/src/domain",
@@ -89224,6 +89596,57 @@
       ]
     },
     {
+      "affix": "Item",
+      "kind": "suffix",
+      "count": 8,
+      "common_dir": "apps/rt/src/commands/pipeline",
+      "dirs": [
+        "apps/rt/src/commands/pipeline"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "tempfile::tempdir",
+        "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}",
+        "mustard_core::io::fs",
+        "serde::Serialize",
+        "std::path::{Path, PathBuf}"
+      ]
+    },
+    {
+      "affix": "Bucket",
+      "kind": "suffix",
+      "count": 7,
+      "common_dir": "packages/core/src/domain/economy",
+      "dirs": [
+        "packages/core/src/domain/economy"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
+      "affix": "Out",
+      "kind": "suffix",
+      "count": 7,
+      "common_dir": "apps/mcp/src",
+      "dirs": [
+        "apps/mcp/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::{Path, PathBuf}",
+        "mustard_core::ClaudePaths",
+        "mustard_core::domain::economy::scope::{EconomyScope, ProjectPath, SpecId}",
+        "mustard_core::domain::economy::{metric_token_summary, EconomyScope, ProjectPath}",
+        "mustard_core::domain::scan::{DigestQuery, RankFile, Scan}",
+        "mustard_core::io::fs"
+      ]
+    },
+    {
       "affix": "View",
       "kind": "suffix",
       "count": 7,
@@ -89236,6 +89659,43 @@
       "implements": null,
       "collaborators": [
         "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
+      "affix": "Def",
+      "kind": "suffix",
+      "count": 6,
+      "common_dir": "apps/scan/src",
+      "dirs": [
+        "apps/scan/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::Path",
+        "std::sync::OnceLock",
+        "dashboard",
+        "globset::{GlobBuilder, GlobMatcher}",
+        "i18n",
+        "lucide-react"
+      ]
+    },
+    {
+      "affix": "File",
+      "kind": "suffix",
+      "count": 6,
+      "common_dir": "apps/scan/src",
+      "dirs": [
+        "apps/scan/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::Path",
+        "serde::Serialize",
+        "std::collections::{BTreeMap, BTreeSet}",
+        "std::path::PathBuf",
+        "std::process::Command"
       ]
     },
     {
@@ -89259,26 +89719,6 @@
       ]
     },
     {
-      "affix": "Row",
-      "kind": "suffix",
-      "count": 6,
-      "common_dir": "apps/dashboard/src/hooks",
-      "dirs": [
-        "apps/dashboard/src/hooks",
-        "apps/rt/src/commands/economy/otel"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "std::path::PathBuf",
-        "mustard_core::ClaudePaths",
-        "projects",
-        "projects-store",
-        "react-query",
-        "tempfile::tempdir"
-      ]
-    },
-    {
       "affix": "Source",
       "kind": "suffix",
       "count": 6,
@@ -89296,22 +89736,23 @@
       ]
     },
     {
-      "affix": "Status",
-      "kind": "suffix",
+      "affix": "Spec",
+      "kind": "prefix",
       "count": 6,
-      "common_dir": "packages/core/src/domain/model/view",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "dirs": [
-        "packages/core/src/domain/model/view"
+        "apps/dashboard/src-tauri/src",
+        "apps/rt/src/commands/spec"
       ],
-      "decl_kind": "enum",
+      "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "mustard_core::ClaudePaths",
         "mustard_core::io::fs",
-        "serde::{Deserialize, Serialize}",
-        "serde_json::{json, Value}",
-        "std::path::{Path, PathBuf}",
-        "std::process::Command"
+        "tempfile::tempdir",
+        "crate::commands::git_settle::git_out",
+        "crate::commands::spec::approve_spec::{clarify_state, ClarifyState}",
+        "crate::shared::branch_state::{BranchEnumerator, BranchRefs}",
+        "mustard_core::AcStatus"
       ]
     },
     {
@@ -89327,6 +89768,34 @@
       "collaborators": [
         "react-query",
         "dashboard"
+      ]
+    },
+    {
+      "affix": "Id",
+      "kind": "suffix",
+      "count": 5,
+      "common_dir": "packages/core/src/domain/economy",
+      "dirs": [
+        "packages/core/src/domain/economy"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}",
+        "std::path::PathBuf"
+      ]
+    },
+    {
+      "affix": "Key",
+      "kind": "suffix",
+      "count": 5,
+      "common_dir": "apps/dashboard/src/data",
+      "decl_kind": "type",
+      "implements": null,
+      "collaborators": [
+        "lucide-react",
+        "react",
+        "store"
       ]
     },
     {
@@ -89349,33 +89818,15 @@
       ]
     },
     {
-      "affix": "Spec",
-      "kind": "prefix",
-      "count": 5,
-      "common_dir": "apps/rt/src/commands/spec",
-      "dirs": [
-        "apps/rt/src/commands/spec"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "tempfile::tempdir",
-        "crate::commands::git_settle::git_out",
-        "crate::commands::spec::approve_spec::{clarify_state, ClarifyState}",
-        "crate::shared::branch_state::{BranchEnumerator, BranchRefs}",
-        "mustard_core::domain::meta",
-        "mustard_core::io::claude_paths::ClaudePaths"
-      ]
-    },
-    {
       "affix": "Tree",
       "kind": "suffix",
       "count": 5,
-      "common_dir": "apps/dashboard/src/components/page/TreeNode",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
         "std::path::{Path, PathBuf}",
+        "mustard_core::io::fs",
         "serde::Serialize",
         "std::process::Command"
       ]
@@ -89397,55 +89848,93 @@
       ]
     },
     {
-      "affix": "Bucket",
+      "affix": "Wave",
+      "kind": "suffix",
+      "count": 5,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "dirs": [
+        "apps/dashboard/src-tauri/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::io::fs",
+        "mustard_core::domain::economy::EconomyScope as CoreScope",
+        "serde::{Deserialize, Serialize}",
+        "std::path::{Path, PathBuf}",
+        "tempfile::TempDir"
+      ]
+    },
+    {
+      "affix": "Block",
       "kind": "suffix",
       "count": 4,
-      "common_dir": "packages/core/src/domain/economy",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "dirs": [
-        "packages/core/src/domain/economy"
+        "apps/dashboard/src-tauri/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::ClaudePaths",
+        "mustard_core::domain::economy::EconomyScope as CoreScope",
+        "mustard_core::domain::economy::TimeWindow",
+        "mustard_core::domain::economy::scope::{\r\n            ProjectPath as CoreProjectPath, SpecId as CoreSpecId, WaveId as CoreWaveId,\r\n        }",
+        "mustard_core::domain::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId}",
+        "mustard_core::domain::economy::{EconomyScope, ProjectPath, TimeWindow}"
+      ]
+    },
+    {
+      "affix": "Capability",
+      "kind": "prefix",
+      "count": 4,
+      "common_dir": "packages/core/src/domain/capability",
+      "dirs": [
+        "packages/core/src/domain/capability"
       ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
         "serde::{Deserialize, Serialize}",
-        "serde_json::{Map, Value}",
-        "super::scope::{AgentId, ProjectPath, SpecId, WaveId}"
+        "serde_json::json",
+        "crate::domain::spec::contract::AcceptanceCriterion"
+      ]
+    },
+    {
+      "affix": "Check",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib"
+      ],
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": [
+        "core",
+        "std::path::{Path, PathBuf}",
+        "tempfile::tempdir"
       ]
     },
     {
       "affix": "Child",
       "kind": "suffix",
       "count": 4,
-      "common_dir": "apps/dashboard/src/lib/types",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "dirs": [
+        "apps/dashboard/src-tauri/src",
         "apps/dashboard/src/lib/types",
         "apps/rt/src/commands/spec"
-      ],
-      "decl_kind": "interface",
-      "implements": null,
-      "collaborators": [
-        "crate::commands::spec::spec_children::{list_children, ChildEntry}",
-        "crate::shared::context::project_dir",
-        "mustard_core::view::projection::{project_quality, project_waves, read_workspace_events}",
-        "mustard_core::{AcStatus, Outcome, SpecState, Stage, WaveStatus, WaveView}",
-        "serde::Serialize",
-        "std::path::{Path, PathBuf}"
-      ]
-    },
-    {
-      "affix": "Cli",
-      "kind": "nested",
-      "count": 4,
-      "common_dir": "apps/<Name>/src",
-      "dirs": [
-        "apps/<Name>/src"
       ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "clap::{Parser, Subcommand}",
-        "anyhow::Result",
-        "std::path::{Path, PathBuf}"
+        "mustard_core::AcStatus",
+        "mustard_core::Phase",
+        "mustard_core::Scope",
+        "mustard_core::SegmentState",
+        "mustard_core::WaveStatus",
+        "mustard_core::WorkspaceAlertKind"
       ]
     },
     {
@@ -89463,6 +89952,25 @@
         "serde::{Deserialize, Serialize}",
         "serde_json::{Map, Value}",
         "super::scope::{AgentId, ProjectPath, SpecId, WaveId}"
+      ]
+    },
+    {
+      "affix": "Count",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "dirs": [
+        "apps/dashboard/src-tauri/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}",
+        "mustard_core::ClaudePaths",
+        "mustard_core::domain::economy::EconomyScope as CoreScope",
+        "mustard_core::domain::economy::TimeWindow",
+        "mustard_core::domain::economy::scope::{\r\n            ProjectPath as CoreProjectPath, SpecId as CoreSpecId, WaveId as CoreWaveId,\r\n        }",
+        "mustard_core::domain::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId}"
       ]
     },
     {
@@ -89518,18 +90026,34 @@
       ]
     },
     {
-      "affix": "Id",
+      "affix": "Group",
       "kind": "suffix",
       "count": 4,
-      "common_dir": "packages/core/src/domain/economy",
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": [
+        "std::path::PathBuf"
+      ]
+    },
+    {
+      "affix": "Info",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "apps/dashboard/src-tauri/src",
       "dirs": [
-        "packages/core/src/domain/economy"
+        "apps/dashboard/src-tauri/src",
+        "apps/dashboard/src/lib"
       ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "serde::{Deserialize, Serialize}",
-        "std::path::PathBuf"
+        "core",
+        "discovery",
+        "economy",
+        "event",
+        "mustard_core::io::fs",
+        "react-query"
       ]
     },
     {
@@ -89564,15 +90088,37 @@
       ]
     },
     {
-      "affix": "Key",
+      "affix": "Intent",
       "kind": "suffix",
       "count": 4,
-      "common_dir": "apps/dashboard/src/data",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "type",
       "implements": null,
       "collaborators": [
-        "lucide-react",
+        "utils",
         "react"
+      ]
+    },
+    {
+      "affix": "Match",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "apps/mcp/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::io::fs"
+      ]
+    },
+    {
+      "affix": "Meta",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::io::fs"
       ]
     },
     {
@@ -89628,6 +90174,41 @@
       ]
     },
     {
+      "affix": "Active",
+      "kind": "prefix",
+      "count": 3,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::io::fs",
+        "serde::Serialize",
+        "crate::commands::git_settle::git_out",
+        "crate::commands::spec::approve_spec::{clarify_state, ClarifyState}",
+        "crate::shared::branch_state::{BranchEnumerator, BranchRefs}",
+        "mustard_core::domain::meta"
+      ]
+    },
+    {
+      "affix": "Agg",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/rt/src/commands/economy",
+      "dirs": [
+        "apps/rt/src/commands/economy"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "crate::commands::event::event_projections::pipeline::build_pipeline_state",
+        "crate::commands::event::event_projections::read_workspace_events",
+        "crate::report::{table, Report}",
+        "mustard_core::ClaudePaths",
+        "mustard_core::io::fs",
+        "serde_json::{json, Map, Value}"
+      ]
+    },
+    {
       "affix": "Branch",
       "kind": "prefix",
       "count": 3,
@@ -89645,35 +90226,22 @@
       ]
     },
     {
-      "affix": "Capability",
-      "kind": "prefix",
-      "count": 3,
-      "common_dir": "packages/core/src/domain/capability",
-      "dirs": [
-        "packages/core/src/domain/capability"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "serde::{Deserialize, Serialize}",
-        "serde_json::json",
-        "crate::domain::spec::contract::AcceptanceCriterion"
-      ]
-    },
-    {
-      "affix": "Def",
+      "affix": "Config",
       "kind": "suffix",
       "count": 3,
-      "common_dir": "apps/dashboard/src/features/workspace/Spec<Name>sBand",
-      "decl_kind": "interface",
-      "implements": null,
+      "common_dir": "packages/core/src/domain",
+      "dirs": [
+        "packages/core/src/domain"
+      ],
+      "decl_kind": "struct",
+      "implements": "Default",
       "collaborators": [
-        "dashboard",
-        "i18n",
-        "lucide-react",
-        "page",
-        "react",
-        "react-query"
+        "std::collections::{BTreeMap, BTreeSet}",
+        "crate::ClaudePaths",
+        "crate::io::fs",
+        "crate::platform::error::Result",
+        "crate::platform::i18n::{I18n, SupportedLocale, Tone}",
+        "serde::{Deserialize, Serialize}"
       ]
     },
     {
@@ -89694,6 +90262,29 @@
       ]
     },
     {
+      "affix": "Drift",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib"
+      ],
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": [
+        "core"
+      ]
+    },
+    {
+      "affix": "Economy",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "type",
+      "implements": null,
+      "collaborators": []
+    },
+    {
       "affix": "Facts",
       "kind": "suffix",
       "count": 3,
@@ -89702,31 +90293,38 @@
       "implements": null,
       "collaborators": [
         "tempfile::tempdir",
+        "serde::Serialize",
         "std::path::Path",
         "std::process::Command"
       ]
     },
     {
-      "affix": "File",
+      "affix": "Files",
       "kind": "suffix",
       "count": 3,
-      "common_dir": "apps/rt/src/commands/pipeline",
+      "common_dir": "apps/dashboard/src/hooks",
       "decl_kind": "struct",
       "implements": null,
-      "collaborators": [
-        "std::path::Path",
-        "std::path::PathBuf",
-        "std::process::Command"
-      ]
+      "collaborators": []
     },
     {
-      "affix": "Group",
-      "kind": "suffix",
+      "affix": "Git",
+      "kind": "prefix",
       "count": 3,
-      "common_dir": "apps/dashboard/src/data",
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib"
+      ],
       "decl_kind": "interface",
       "implements": null,
-      "collaborators": []
+      "collaborators": [
+        "core",
+        "discovery",
+        "economy",
+        "event",
+        "react-query",
+        "std::path::Path"
+      ]
     },
     {
       "affix": "Guard",
@@ -89747,22 +90345,19 @@
       ]
     },
     {
-      "affix": "Intent",
+      "affix": "Line",
       "kind": "suffix",
       "count": 3,
-      "common_dir": "apps/dashboard/src/components/page/<Name>Swatch",
-      "decl_kind": "type",
+      "common_dir": "apps/dashboard/src/components/page/<Name>Viewer",
+      "decl_kind": "struct",
       "implements": null,
-      "collaborators": [
-        "utils",
-        "react"
-      ]
+      "collaborators": []
     },
     {
-      "affix": "Meta",
+      "affix": "Model",
       "kind": "suffix",
       "count": 3,
-      "common_dir": "apps/dashboard/src/features/trace/ToolEventRow",
+      "common_dir": "apps/rt/src/commands",
       "decl_kind": "struct",
       "implements": null,
       "collaborators": []
@@ -89790,6 +90385,38 @@
         "std::path::{Path, PathBuf}",
         "tempfile::tempdir"
       ]
+    },
+    {
+      "affix": "Progress",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::io::fs",
+        "react-query"
+      ]
+    },
+    {
+      "affix": "Project",
+      "kind": "prefix",
+      "count": 3,
+      "common_dir": "apps/dashboard/src-tauri/src/commands",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
+      "affix": "Rule",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/rt/src/hooks/bash",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": []
     },
     {
       "affix": "Service",
@@ -89832,39 +90459,52 @@
       ]
     },
     {
-      "affix": "Wave",
+      "affix": "Theme",
       "kind": "suffix",
       "count": 3,
-      "common_dir": "apps/dashboard/src/lib/types",
-      "decl_kind": "struct",
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib"
+      ],
+      "decl_kind": "function",
       "implements": null,
       "collaborators": [
-        "mustard_core::io::fs"
+        "i18n"
+      ]
+    },
+    {
+      "affix": "Usage",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "dirs": [
+        "apps/dashboard/src-tauri/src",
+        "apps/dashboard/src/lib"
+      ],
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": [
+        "core",
+        "discovery",
+        "economy",
+        "event",
+        "mustard_core::domain::economy::EconomyScope as CoreScope",
+        "mustard_core::domain::economy::scope::ProjectPath as CoreProjectPath"
       ]
     },
     {
       "affix": "Workspace",
       "kind": "prefix",
       "count": 3,
-      "common_dir": "apps/dashboard/src/lib/types",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
+        "mustard_core::io::fs",
+        "serde_json::json",
+        "std::collections::HashSet",
         "std::path::{Path, PathBuf}"
       ]
-    },
-    {
-      "affix": "lib",
-      "kind": "folder",
-      "count": 3,
-      "common_dir": "apps/dashboard/<Name>/lib",
-      "dirs": [
-        "apps/dashboard/<Name>/lib",
-        "apps/scan/tests/fixtures/<Name>/lib"
-      ],
-      "decl_kind": "interface",
-      "implements": null,
-      "collaborators": []
     },
     {
       "affix": "rtk",
@@ -89893,41 +90533,27 @@
       "common_dir": "apps/cli/src/commands",
       "decl_kind": "enum",
       "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Active",
-      "kind": "prefix",
-      "count": 2,
-      "common_dir": "apps/rt/src/commands/<name>",
-      "decl_kind": "struct",
-      "implements": null,
       "collaborators": [
-        "crate::commands::git_settle::git_out",
-        "crate::commands::spec::approve_spec::{clarify_state, ClarifyState}",
-        "crate::shared::branch_state::{BranchEnumerator, BranchRefs}",
-        "mustard_core::domain::meta",
-        "mustard_core::io::claude_paths::ClaudePaths",
-        "mustard_core::io::fs"
+        "serde_json::json"
       ]
     },
     {
-      "affix": "Agg",
-      "kind": "suffix",
+      "affix": "Agent",
+      "kind": "prefix",
       "count": 2,
-      "common_dir": "apps/rt/src/commands/economy",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "dirs": [
-        "apps/rt/src/commands/economy"
+        "apps/dashboard/src-tauri/src"
       ],
       "decl_kind": "struct",
       "implements": null,
       "collaborators": [
-        "crate::commands::event::event_projections::pipeline::build_pipeline_state",
-        "crate::commands::event::event_projections::read_workspace_events",
-        "crate::report::{table, Report}",
         "mustard_core::ClaudePaths",
-        "mustard_core::io::fs",
-        "serde_json::{json, Map, Value}"
+        "mustard_core::domain::economy::EconomyScope as CoreScope",
+        "mustard_core::domain::economy::TimeWindow",
+        "mustard_core::domain::economy::scope::{\r\n            ProjectPath as CoreProjectPath, SpecId as CoreSpecId, WaveId as CoreWaveId,\r\n        }",
+        "mustard_core::domain::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId}",
+        "mustard_core::domain::economy::{EconomyScope, ProjectPath, TimeWindow}"
       ]
     },
     {
@@ -89968,22 +90594,19 @@
       "affix": "Card",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/dashboard/src/lib/types",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "class",
       "implements": null,
       "collaborators": []
     },
     {
-      "affix": "Check",
+      "affix": "Client",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/rt/src/commands/doctor",
-      "decl_kind": "enum",
+      "common_dir": "apps/dashboard/src/lib",
+      "decl_kind": "class",
       "implements": null,
-      "collaborators": [
-        "std::path::{Path, PathBuf}",
-        "tempfile::tempdir"
-      ]
+      "collaborators": []
     },
     {
       "affix": "Command",
@@ -90002,25 +90625,6 @@
         "crate::platform::time::now_iso8601",
         "serde_json::Value",
         "std::process::Command"
-      ]
-    },
-    {
-      "affix": "Config",
-      "kind": "suffix",
-      "count": 2,
-      "common_dir": "packages/core/src/domain",
-      "dirs": [
-        "packages/core/src/domain"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "crate::ClaudePaths",
-        "crate::io::fs",
-        "crate::platform::error::Result",
-        "crate::platform::i18n::{I18n, SupportedLocale, Tone}",
-        "serde::{Deserialize, Serialize}",
-        "serde_json::{Map, Value}"
       ]
     },
     {
@@ -90055,6 +90659,36 @@
       ]
     },
     {
+      "affix": "Dep",
+      "kind": "prefix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib"
+      ],
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": [
+        "core",
+        "discovery",
+        "economy",
+        "event",
+        "react-query",
+        "store"
+      ]
+    },
+    {
+      "affix": "Detection",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::Path"
+      ]
+    },
+    {
       "affix": "Digest",
       "kind": "prefix",
       "count": 2,
@@ -90086,20 +90720,11 @@
       ]
     },
     {
-      "affix": "Drift",
+      "affix": "Event",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/dashboard/src/hooks",
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Economy",
-      "kind": "suffix",
-      "count": 2,
-      "common_dir": "apps/dashboard/src/api",
-      "decl_kind": "type",
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
       "implements": null,
       "collaborators": []
     },
@@ -90115,22 +90740,29 @@
       ]
     },
     {
-      "affix": "Files",
+      "affix": "Flags",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/dashboard/src/hooks",
-      "decl_kind": "function",
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
       "implements": null,
-      "collaborators": []
+      "collaborators": [
+        "serde::{Deserialize, Serialize}"
+      ]
     },
     {
       "affix": "Health",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/dashboard/src/api",
-      "decl_kind": "interface",
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "dirs": [
+        "apps/dashboard/src-tauri/src"
+      ],
+      "decl_kind": "struct",
       "implements": null,
-      "collaborators": []
+      "collaborators": [
+        "serde::{Deserialize, Serialize}"
+      ]
     },
     {
       "affix": "Invoice",
@@ -90145,11 +90777,20 @@
       "collaborators": []
     },
     {
-      "affix": "Line",
+      "affix": "Lang",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/dashboard/src/components/page/<Name>Viewer",
-      "decl_kind": "interface",
+      "common_dir": "apps/dashboard/src/components/page/<Name>Block",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Ledger",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/rt/src/commands/review",
+      "decl_kind": "struct",
       "implements": null,
       "collaborators": []
     },
@@ -90187,19 +90828,19 @@
       "collaborators": []
     },
     {
-      "affix": "Match",
+      "affix": "Matcher",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/rt/src/commands/agent",
+      "common_dir": "packages/core/src/domain/<name>",
       "decl_kind": "struct",
       "implements": null,
       "collaborators": []
     },
     {
-      "affix": "Matcher",
+      "affix": "Metrics",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "packages/core/src/domain/<name>",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "struct",
       "implements": null,
       "collaborators": []
@@ -90216,15 +90857,29 @@
       ]
     },
     {
-      "affix": "Out",
+      "affix": "Pagamento",
       "kind": "suffix",
       "count": 2,
-      "common_dir": "apps/rt/src/shared",
+      "common_dir": "apps/scan/tests/fixtures/i18n_code_pt/src",
+      "dirs": [
+        "apps/scan/tests/fixtures/i18n_code_pt/src"
+      ],
       "decl_kind": "struct",
       "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Palette",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src/lib",
+      "dirs": [
+        "apps/dashboard/src/lib"
+      ],
+      "decl_kind": "type",
+      "implements": null,
       "collaborators": [
-        "std::path::Path",
-        "std::process::Command"
+        "i18n"
       ]
     },
     {
@@ -90237,20 +90892,32 @@
       "collaborators": []
     },
     {
-      "affix": "Progress",
-      "kind": "suffix",
+      "affix": "Payment",
+      "kind": "prefix",
       "count": 2,
-      "common_dir": "apps/dashboard/src/hooks",
-      "decl_kind": "function",
+      "common_dir": "apps/scan/tests/fixtures/i18n_code_en/src",
+      "dirs": [
+        "apps/scan/tests/fixtures/i18n_code_en/src"
+      ],
+      "decl_kind": "struct",
       "implements": null,
       "collaborators": []
     },
     {
-      "affix": "Project",
+      "affix": "Phase",
       "kind": "prefix",
       "count": 2,
-      "common_dir": "apps/dashboard/src-tauri/src/commands",
-      "decl_kind": "struct",
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Quality",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "function",
       "implements": null,
       "collaborators": []
     },
@@ -90274,6 +90941,17 @@
       "implements": null,
       "collaborators": [
         "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
+      "affix": "Rtk",
+      "kind": "prefix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde_json::Value"
       ]
     },
     {
@@ -90310,6 +90988,77 @@
       ]
     },
     {
+      "affix": "Segment",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Stat",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/scan/src",
+      "dirs": [
+        "apps/scan/src"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::domain::vocabulary::stacks::StackDetection",
+        "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
+      "affix": "Step",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/rt/src/commands/review",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Store",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src/lib",
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Tab",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src/features/<name>s/<Name>TabBar",
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Term",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/scan/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "Timeline",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src-tauri/src",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
       "affix": "Trace",
       "kind": "prefix",
       "count": 2,
@@ -90339,119 +91088,11 @@
       "collaborators": []
     },
     {
-      "affix": "Args",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/cli/src/commands",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Block",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands/economy",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
       "affix": "Content",
       "kind": "suffix",
       "count": 1,
-      "common_dir": "apps/dashboard/src/hooks",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Count",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/lib/types",
-      "decl_kind": "interface",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Detection",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "packages/core/src/domain/vocabulary",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Event",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "packages/core/src/domain/model",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Flags",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "packages/core/src/domain",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Git",
-      "kind": "prefix",
-      "count": 1,
-      "common_dir": "apps/rt/src/shared",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Info",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/hooks",
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Lang",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/components/page/<Name>Block",
-      "decl_kind": "type",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Ledger",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands/review",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Metrics",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/lib/types",
-      "decl_kind": "interface",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Model",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands",
-      "decl_kind": "struct",
       "implements": null,
       "collaborators": []
     },
@@ -90459,17 +91100,8 @@
       "affix": "Overview",
       "kind": "suffix",
       "count": 1,
-      "common_dir": "apps/dashboard/src/hooks",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Phase",
-      "kind": "prefix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/features/telemetry/PhaseStation",
-      "decl_kind": "interface",
       "implements": null,
       "collaborators": []
     },
@@ -90477,98 +91109,8 @@
       "affix": "Planned",
       "kind": "suffix",
       "count": 1,
-      "common_dir": "apps/dashboard/src/hooks",
+      "common_dir": "apps/dashboard/src-tauri/src",
       "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Quality",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/hooks",
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Rtk",
-      "kind": "prefix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands/economy",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Rule",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/hooks/bash",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Segment",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/lib/types",
-      "decl_kind": "interface",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Step",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands/review",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Store",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "packages/core/src/io/atomic_md",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Tab",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/features/<name>s/<Name>TabBar",
-      "decl_kind": "type",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Term",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "packages/core/src/domain",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Theme",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/dashboard/src/hooks",
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": []
-    },
-    {
-      "affix": "Timeline",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "packages/core/src/view/<name>",
-      "decl_kind": "struct",
       "implements": null,
       "collaborators": []
     },
@@ -90594,194 +91136,113 @@
       ],
       "optional_roles": [
         "Ac",
+        "Function",
+        "Mode",
+        "Report",
         "State",
+        "Term",
         "View"
       ],
-      "recurrence": 9,
+      "recurrence": 16,
       "entities": [
         "Actor",
         "Audit",
+        "Capture",
+        "CounterPage",
         "Dep",
-        "Knowledge",
+        "Digest",
+        "main",
         "Match",
+        "Matched",
         "Proof",
+        "Render",
         "Scope",
         "Segment",
-        "Status"
+        "Sig",
+        "Status",
+        "Sweep"
       ],
       "confidence": 0.94,
       "is_slice": true,
       "steps": [
-        "Adicione o **tipo base** para `<Name>` em `apps/rt/src/commands/review/` (ex.: `ac_negative_check.rs`, modelado em `apps/rt/src/commands/review/ac_negative_check.rs`).",
+        "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
         "Adicione o **Kind** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **State** para `<Name>` em `apps/rt/src/commands/spec/` (ex.: `approve_spec.rs`, modelado em `apps/rt/src/commands/spec/approve_spec.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
       "exemplars": [
         {
           "level": "simples",
-          "entity": "Match",
+          "entity": "CounterPage",
           "roles_present": [
             "tipo base",
-            "View"
+            "State"
           ],
           "files": [
-            "packages/core/src/domain/ast/signature.rs"
+            "apps/scan/tests/fixtures/flutter_app/lib/main.dart"
           ]
         },
         {
           "level": "média",
-          "entity": "Segment",
+          "entity": "Render",
           "roles_present": [
             "tipo base",
-            "Kind",
-            "State"
+            "Mode"
           ],
           "files": [
-            "apps/rt/src/commands/statusline/segment.rs",
-            "packages/core/src/domain/model/view/workspace.rs"
+            "apps/rt/src/commands/agent/render/mod.rs",
+            "apps/scan/tests/fixtures/graph_rust/src/util.rs"
           ]
         },
         {
           "level": "complexa",
-          "entity": "Proof",
+          "entity": "Capture",
           "roles_present": [
             "tipo base",
-            "Ac",
-            "State"
+            "Function",
+            "Mode",
+            "Report"
           ],
           "files": [
-            "apps/rt/src/commands/review/ac_negative_check.rs",
-            "apps/rt/src/commands/spec/approve_spec.rs"
+            "packages/core/src/domain/ast/signature.rs",
+            "packages/core/src/domain/regression_check/mod.rs",
+            "packages/core/src/domain/regression_check/snapshot.rs"
           ]
         }
       ],
       "examples": [
         {
-          "path": "apps/rt/src/commands/review/ac_negative_check.rs",
-          "start_line": 175,
-          "snippet": "pub(crate) enum <Name> {\n    /// TAKEN — the command ran and came back RED. This is the only outcome that\n    /// proves the criterion knows how to fail.\n    Red,\n    /// TAKEN — the command ran and came back GREEN against the tree as it is.\n    Green,\n    /// TAKEN — the command ran but was killed by its deadline, so no verdict\n    /// ever arrived.\n    NoVerdict,",
+          "path": "packages/core/src/domain/ast/signature.rs",
+          "start_line": 254,
+          "snippet": "struct <Name>s<'b> {\n    match_: Match,\n    source: &'b str,\n}\n\nimpl<'b> <Name>s<'b> {\n    fn get(&self, idx: usize) -> Option<MatchView<'b>> {\n        if idx == 1 {\n            Some(MatchView {",
           "role": "tipo base"
         },
         {
-          "path": "apps/rt/src/commands/review/ac_negative_check.rs",
-          "start_line": 304,
-          "snippet": "pub(crate) struct Ac<Name> {\n    /// The criterion id (`AC-1`, `AC-W4-2`, …).\n    pub(crate) id: String,\n    /// The EXACT command string that was run (or would be run).\n    pub(crate) command: String,\n    /// The criterion's declared `Expect:` evidence regex, when it has one.\n    #[serde(default)]\n    pub(crate) expect: Option<String>,\n    /// The criterion's declared `Control:` command, when it has one. Recorded",
-          "role": "Ac"
+          "path": "packages/core/src/domain/regression_check/mod.rs",
+          "start_line": 138,
+          "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
+          "role": "Function"
         },
         {
-          "path": "apps/rt/src/commands/spec/approve_spec.rs",
-          "start_line": 307,
-          "snippet": "pub(crate) enum <Name>State {\n    /// The spec declares no `## Acceptance Criteria` at all (or its markdown is\n    /// not there to read). Nothing to prove, so nothing to refuse — this gate\n    /// must not invent a refusal for a spec that made no claims.\n    NotGated,\n    /// Every non-exempt criterion carries evidence for the exact command it\n    /// carries today — a RED <name>, or a GREEN confirmation.\n    Proven,\n    /// No readable `<spec>/ac-<name>.json` — the fail-closed case.",
-          "role": "State"
+          "path": "packages/core/src/domain/regression_check/mod.rs",
+          "start_line": 94,
+          "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
+          "role": "Mode"
+        },
+        {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
         }
       ],
-      "exemplar": "Proof",
-      "summary": "Vertical slice recurring across 9 entities (Actor, Audit, Dep, Knowledge, Match, Proof, +3 more). Core roles: tipo base, Kind. Optional roles: Ac, State, View."
-    },
-    {
-      "name": "Cli+main+src slice",
-      "roles": [
-        "Cli",
-        "main",
-        "src"
-      ],
-      "optional_roles": [
-        "(core)"
-      ],
-      "recurrence": 7,
-      "entities": [
-        "cli",
-        "graph_rust",
-        "mcp",
-        "rt",
-        "Scan",
-        "src-tauri",
-        "Translate"
-      ],
-      "confidence": 0.96,
-      "is_slice": true,
-      "steps": [
-        "Adicione o **Cli** para `<Name>` em `apps/<name>/src/` (ex.: `main.rs`, modelado em `apps/scan/src/main.rs`).",
-        "Adicione o **main** para `<Name>` em `apps/<name>/src/` (ex.: `main.rs`, modelado em `apps/scan/src/main.rs`).",
-        "Adicione o **src** para `<Name>` em `apps/<name>/src/` (ex.: `classify.rs`, modelado em `apps/scan/src/classify.rs`).",
-        "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/` (ex.: `<name>.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*."
-      ],
-      "exemplars": [
-        {
-          "level": "simples",
-          "entity": "rt",
-          "roles_present": [
-            "Cli",
-            "main",
-            "src"
-          ],
-          "files": [
-            "apps/rt/src/main.rs"
-          ]
-        },
-        {
-          "level": "média",
-          "entity": "cli",
-          "roles_present": [
-            "Cli",
-            "main",
-            "src"
-          ],
-          "files": [
-            "apps/cli/src/cli.rs",
-            "apps/cli/src/main.rs"
-          ]
-        },
-        {
-          "level": "complexa",
-          "entity": "Scan",
-          "roles_present": [
-            "tipo base",
-            "Cli",
-            "main",
-            "src"
-          ],
-          "files": [
-            "apps/rt/src/commands/scan_cli.rs",
-            "apps/rt/src/commands/spec/active_specs.rs",
-            "apps/rt/src/hooks/write/scan_gate.rs",
-            "apps/scan/src/classify.rs",
-            "apps/scan/src/main.rs",
-            "packages/core/src/domain/scan.rs",
-            "packages/core/src/domain/vocabulary/mod.rs"
-          ]
-        }
-      ],
-      "examples": [
-        {
-          "path": "apps/scan/src/main.rs",
-          "start_line": 33,
-          "snippet": "struct Cli {\n    #[command(subcommand)]\n    command: Command,\n}\n\n#[derive(Subcommand)]\nenum Command {\n    /// Analyze a project and write the intermediate model as JSON (the product).\n    <Name> {",
-          "role": "Cli"
-        },
-        {
-          "path": "apps/scan/src/main.rs",
-          "start_line": 202,
-          "snippet": "fn main() -> Result<()> {\n    let cli = Cli::parse();\n    match cli.command {\n        Command::<Name> { path, out } => {\n            let (model, dictionary) = analyze(&path)?;\n            print_summary(&model);\n            std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;\n            println!(\"\\nModel written to {}\", out.display());\n            // The distinctive-vocabulary sidecar lands NEXT TO the model",
-          "role": "main"
-        },
-        {
-          "path": "apps/scan/src/classify.rs",
-          "start_line": 43,
-          "snippet": "pub struct Classification {\n    pub class: String,\n    pub marker: String,\n}\n\n/// Classify one source file. `rel_path` is the /-normalized path relative to\n/// the <name>ned root; `None` means hand-written. Probe order (first hit wins,\n/// deterministic): overrides (always win, both directions), lockfile\n/// basename, path globs, head content markers, minified statistic — explicit",
-          "role": "src"
-        },
-        {
-          "path": "packages/core/src/domain/scan.rs",
-          "start_line": 37,
-          "snippet": "pub struct <Name> {\n    binary: String,\n}\n\nimpl Default for <Name> {\n    fn default() -> Self {\n        Self { binary: DEFAULT_BINARY.to_string() }\n    }\n}",
-          "role": "tipo base"
-        }
-      ],
-      "exemplar": "Scan",
-      "summary": "Vertical slice recurring across 7 entities (cli, graph_rust, mcp, rt, Scan, src-tauri, +1 more). Core roles: Cli, main, src. Optional roles: tipo base."
+      "exemplar": "Capture",
+      "summary": "Vertical slice recurring across 16 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +10 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
@@ -90790,15 +91251,22 @@
         "Entry"
       ],
       "optional_roles": [
+        "D",
+        "Info",
         "Result",
         "rtk"
       ],
-      "recurrence": 7,
+      "recurrence": 12,
       "entities": [
         "Check",
         "Command",
         "Error",
+        "Hub",
         "Kept",
+        "Lang",
+        "Layer",
+        "Ledger",
+        "Proj",
         "Rewrite",
         "Subproject",
         "Verdict"
@@ -90806,8 +91274,10 @@
       "confidence": 0.94,
       "is_slice": true,
       "steps": [
-        "Adicione o **tipo base** para `<Name>` em `apps/dashboard/src/pages/` (ex.: `<Name>s.tsx`, modelado em `apps/dashboard/src/pages/Commands.tsx`).",
+        "Adicione o **tipo base** para `<Name>` em `apps/cli/src/` (ex.: `cli.rs`, modelado em `apps/cli/src/cli.rs`).",
         "Adicione o **Entry** para `<Name>` em `apps/dashboard/src/data/` (ex.: `<name>s-catalog.ts`, modelado em `apps/dashboard/src/data/commands-catalog.ts`).",
+        "Adicione o **D** para `<Name>` em `apps/scan/src/` (ex.: `digest.rs`, modelado em `apps/scan/src/digest.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Info** para `<Name>` em `apps/scan/src/` (ex.: `model.rs`, modelado em `apps/scan/src/model.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Result** para `<Name>` em `apps/rt/src/commands/doctor/` (ex.: `doctor.rs`, modelado em `apps/rt/src/commands/doctor/doctor.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **rtk** para `<Name>` em `packages/core/src/platform/process/` (ex.: `rtk_<name>.rs`, modelado em `packages/core/src/platform/process/rtk_command.rs`) *(opcional — adicione quando necessário)*."
       ],
@@ -90826,14 +91296,14 @@
         },
         {
           "level": "média",
-          "entity": "Rewrite",
+          "entity": "Check",
           "roles_present": [
             "tipo base",
-            "rtk"
+            "Result"
           ],
           "files": [
-            "apps/rt/src/commands/spec/ac_amend.rs",
-            "apps/rt/src/hooks/bash/rtk_rewrite.rs"
+            "apps/rt/src/commands/doctor/doctor.rs",
+            "packages/core/src/domain/model/contract.rs"
           ]
         },
         {
@@ -90846,8 +91316,8 @@
             "rtk"
           ],
           "files": [
+            "apps/cli/src/cli.rs",
             "apps/dashboard/src/data/commands-catalog.ts",
-            "apps/dashboard/src/pages/Commands.tsx",
             "apps/rt/src/commands/pipeline/close_gates.rs",
             "packages/core/src/platform/process/rtk_command.rs"
           ]
@@ -90855,9 +91325,9 @@
       ],
       "examples": [
         {
-          "path": "apps/dashboard/src/pages/Commands.tsx",
-          "start_line": 17,
-          "snippet": "export function <Name>s() {\n  const t = useT();\n  const [query, setQuery] = useState(\"\");\n  const [debouncedQuery, setDebouncedQuery] = useState(\"\");\n  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);\n  const [expanded, setExpanded] = useState<Set<string>>(new Set());\n\n  useEffect(() => {\n    const t = setTimeout(() => setDebouncedQuery(query), 300);",
+          "path": "apps/cli/src/cli.rs",
+          "start_line": 31,
+          "snippet": "enum <Name>s {\n    /// Seed the thin `.claude/` bootstrap and enable the `mustard` plugin.\n    Init {\n        /// Overwrite an existing `.claude/` directory without a backup.\n        #[arg(short, long)]\n        force: bool,\n        /// Skip confirmation prompts (accept sensible defaults).\n        #[arg(short = 'y', long)]\n        yes: bool,",
           "role": "tipo base"
         },
         {
@@ -90880,7 +91350,7 @@
         }
       ],
       "exemplar": "Command",
-      "summary": "Vertical slice recurring across 7 entities (Check, Command, Error, Kept, Rewrite, Subproject, +1 more). Core roles: tipo base, Entry. Optional roles: Result, rtk."
+      "summary": "Vertical slice recurring across 12 entities (Check, Command, Error, Hub, Kept, Lang, +6 more). Core roles: tipo base, Entry. Optional roles: D, Info, Result, rtk."
     },
     {
       "name": "Kind+Node+use slice",
@@ -91033,95 +91503,23 @@
       "summary": "Vertical slice recurring across 2 entities (Post, User). Core roles: tipo base, Controller, Service."
     },
     {
-      "name": "tipo base+Report slice",
-      "roles": [
-        "(core)",
-        "Report"
-      ],
-      "optional_roles": [],
-      "recurrence": 3,
-      "entities": [
-        "Capture",
-        "Digest",
-        "Sweep"
-      ],
-      "confidence": 0.84000003,
-      "is_slice": true,
-      "steps": [
-        "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`)."
-      ],
-      "exemplars": [
-        {
-          "level": "simples",
-          "entity": "Sweep",
-          "roles_present": [
-            "tipo base",
-            "Report"
-          ],
-          "files": [
-            "apps/rt/src/commands/scan_patterns/sweep.rs"
-          ]
-        },
-        {
-          "level": "média",
-          "entity": "Digest",
-          "roles_present": [
-            "tipo base",
-            "Report"
-          ],
-          "files": [
-            "packages/core/src/domain/scan.rs"
-          ]
-        },
-        {
-          "level": "complexa",
-          "entity": "Capture",
-          "roles_present": [
-            "tipo base",
-            "Report"
-          ],
-          "files": [
-            "packages/core/src/domain/ast/signature.rs",
-            "packages/core/src/domain/regression_check/mod.rs",
-            "packages/core/src/domain/regression_check/snapshot.rs"
-          ]
-        }
-      ],
-      "examples": [
-        {
-          "path": "packages/core/src/domain/ast/signature.rs",
-          "start_line": 254,
-          "snippet": "struct <Name>s<'b> {\n    match_: Match,\n    source: &'b str,\n}\n\nimpl<'b> <Name>s<'b> {\n    fn get(&self, idx: usize) -> Option<MatchView<'b>> {\n        if idx == 1 {\n            Some(MatchView {",
-          "role": "tipo base"
-        },
-        {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
-        }
-      ],
-      "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 3 entities (Capture, Digest, Sweep). Core roles: tipo base, Report."
-    },
-    {
       "name": "Cmd+Summary slice",
       "roles": [
         "Cmd",
         "Summary"
       ],
       "optional_roles": [],
-      "recurrence": 2,
+      "recurrence": 3,
       "entities": [
         "Economy",
-        "Pipeline"
+        "Pipeline",
+        "Run"
       ],
-      "confidence": 0.72,
+      "confidence": 0.84000003,
       "is_slice": true,
       "steps": [
-        "Adicione o **Cmd** para `<Name>` em `apps/rt/src/commands/<name>/` (ex.: `cli.rs`, modelado em `apps/rt/src/commands/pipeline/cli.rs`).",
-        "Adicione o **Summary** para `<Name>` em `apps/rt/src/commands/<name>/` (ex.: `status.rs`, modelado em `apps/rt/src/commands/pipeline/status.rs`)."
+        "Adicione o **Cmd** para `<Name>` em `apps/rt/src/commands/` (ex.: `mod.rs`, modelado em `apps/rt/src/commands/mod.rs`).",
+        "Adicione o **Summary** para `<Name>` em `apps/mcp/src/` (ex.: `lib.rs`, modelado em `apps/mcp/src/lib.rs`)."
       ],
       "exemplars": [
         {
@@ -91137,34 +91535,198 @@
           ]
         },
         {
-          "level": "complexa",
+          "level": "média",
           "entity": "Pipeline",
           "roles_present": [
             "Cmd",
             "Summary"
           ],
           "files": [
+            "apps/dashboard/src/lib/dashboard.ts",
             "apps/rt/src/commands/pipeline/cli.rs",
             "apps/rt/src/commands/pipeline/status.rs"
+          ]
+        },
+        {
+          "level": "complexa",
+          "entity": "Run",
+          "roles_present": [
+            "Cmd",
+            "Summary"
+          ],
+          "files": [
+            "apps/mcp/src/lib.rs",
+            "apps/rt/src/commands/agent/amend_finalize.rs",
+            "apps/rt/src/commands/mod.rs"
           ]
         }
       ],
       "examples": [
         {
-          "path": "apps/rt/src/commands/pipeline/cli.rs",
-          "start_line": 21,
-          "snippet": "pub enum <Name>Cmd {\n    /// Emit a compact git diff summary for agent context.\n    #[command(display_order = 7)]\n    DiffContext {\n        /// Branch to compare against (auto-detects `main`/`master`).\n        #[arg(long)]\n        parent: Option<String>,\n        /// Scope the diff to a path.\n        #[arg(long)]",
+          "path": "apps/rt/src/commands/mod.rs",
+          "start_line": 75,
+          "snippet": "pub enum <Name>Cmd {\n    /// Agent dispatch: prompt render, amendment + digest finalisers.\n    #[command(flatten)]\n    Agent(agent::cli::AgentCmd),\n    /// Durable capability docs under `.claude/capabilities/`.\n    #[command(flatten)]\n    Capability(capability::cli::CapabilityCmd),\n    /// Audit checklists (spec items + canonical domain checklists).\n    #[command(flatten)]",
           "role": "Cmd"
         },
         {
-          "path": "apps/rt/src/commands/pipeline/status.rs",
-          "start_line": 313,
-          "snippet": "struct <Name>Summary {\n    active: Vec<ActiveSpec>,\n    orphaned: Vec<String>,\n}\n\n/// The approval provenance for one active spec, read through the single reader\n/// in `context`. `None` for an un-approved spec or an unreadable marker body —\n/// on the status line the provenance only decorates; its absence is silence,\n/// never an error.",
+          "path": "apps/mcp/src/lib.rs",
+          "start_line": 327,
+          "snippet": "struct <Name>Summary {\n    count: usize,\n    #[serde(rename = \"totalInputTokens\")]\n    total_input_tokens: i64,\n    #[serde(rename = \"totalOutputTokens\")]\n    total_output_tokens: i64,\n    #[serde(rename = \"totalDurationMs\")]\n    total_duration_ms: i64,\n    #[serde(rename = \"byModel\")]",
           "role": "Summary"
         }
       ],
-      "exemplar": "Pipeline",
-      "summary": "Vertical slice recurring across 2 entities (Economy, Pipeline). Core roles: Cmd, Summary."
+      "exemplar": "Run",
+      "summary": "Vertical slice recurring across 3 entities (Economy, Pipeline, Run). Core roles: Cmd, Summary."
+    },
+    {
+      "name": "Hit+D slice",
+      "roles": [
+        "Hit",
+        "D"
+      ],
+      "optional_roles": [],
+      "recurrence": 3,
+      "entities": [
+        "Concern",
+        "Contract",
+        "Slice"
+      ],
+      "confidence": 0.84000003,
+      "is_slice": true,
+      "steps": [
+        "Adicione o **Hit** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`).",
+        "Adicione o **D** para `<Name>` em `apps/scan/src/` (ex.: `digest.rs`, modelado em `apps/scan/src/digest.rs`)."
+      ],
+      "exemplars": [
+        {
+          "level": "simples",
+          "entity": "Concern",
+          "roles_present": [
+            "D",
+            "Hit"
+          ],
+          "files": [
+            "apps/scan/src/digest.rs",
+            "packages/core/src/domain/scan.rs"
+          ]
+        },
+        {
+          "level": "média",
+          "entity": "Contract",
+          "roles_present": [
+            "D",
+            "Hit"
+          ],
+          "files": [
+            "apps/scan/src/digest.rs",
+            "packages/core/src/domain/scan.rs"
+          ]
+        },
+        {
+          "level": "complexa",
+          "entity": "Slice",
+          "roles_present": [
+            "D",
+            "Hit"
+          ],
+          "files": [
+            "apps/rt/src/commands/economy/context_slice.rs",
+            "apps/scan/src/digest.rs",
+            "packages/core/src/domain/scan.rs"
+          ]
+        }
+      ],
+      "examples": [
+        {
+          "path": "packages/core/src/domain/scan.rs",
+          "start_line": 274,
+          "snippet": "pub struct <Name>Hit {\n    pub label: String,\n    pub recurrence: usize,\n    #[serde(default)]\n    pub entities: Vec<String>,\n    /// Real file paths that exemplify this <name> (the reference-implementation\n    /// files to mirror), passed through verbatim from the scan digest's\n    /// per-<name> `exemplar_files`. `default` so an older scan payload without\n    /// the field still deserializes (empty).",
+          "role": "Hit"
+        },
+        {
+          "path": "apps/scan/src/digest.rs",
+          "start_line": 87,
+          "snippet": "pub(crate) struct <Name>D {\n    /// Core role affixes joined with '+', e.g. \"Handler+Validator\".\n    pub label: String,\n    pub recurrence: usize,\n    pub confidence: f32,\n    pub entities: Vec<String>,\n    pub optional_roles: Vec<String>,\n    /// Real file paths that EXEMPLIFY this <name> — the \"street\": the actual\n    /// reference-implementation files to mirror, drawn from the convention's",
+          "role": "D"
+        }
+      ],
+      "exemplar": "Slice",
+      "summary": "Vertical slice recurring across 3 entities (Concern, Contract, Slice). Core roles: Hit, D."
+    },
+    {
+      "name": "tipo base+Def slice",
+      "roles": [
+        "(core)",
+        "Def"
+      ],
+      "optional_roles": [],
+      "recurrence": 3,
+      "entities": [
+        "Manifest",
+        "Marker",
+        "Stage"
+      ],
+      "confidence": 0.84000003,
+      "is_slice": true,
+      "steps": [
+        "Adicione o **tipo base** para `<Name>` em `apps/dashboard/src-tauri/src/` (ex.: `telemetry.rs`, modelado em `apps/dashboard/src-tauri/src/telemetry.rs`).",
+        "Adicione o **Def** para `<Name>` em `apps/scan/src/` (ex.: `classify.rs`, modelado em `apps/scan/src/classify.rs`)."
+      ],
+      "exemplars": [
+        {
+          "level": "simples",
+          "entity": "Manifest",
+          "roles_present": [
+            "tipo base",
+            "Def"
+          ],
+          "files": [
+            "apps/scan/src/manifests.rs",
+            "apps/scan/src/model.rs"
+          ]
+        },
+        {
+          "level": "média",
+          "entity": "Stage",
+          "roles_present": [
+            "tipo base",
+            "Def"
+          ],
+          "files": [
+            "apps/dashboard/src/features/workspace/SpecStatusCards/index.tsx",
+            "apps/dashboard/src/lib/types/specs.ts",
+            "apps/dashboard/src/pages/Specs.tsx"
+          ]
+        },
+        {
+          "level": "complexa",
+          "entity": "Marker",
+          "roles_present": [
+            "tipo base",
+            "Def"
+          ],
+          "files": [
+            "apps/dashboard/src-tauri/src/telemetry.rs",
+            "apps/scan/src/classify.rs"
+          ]
+        }
+      ],
+      "examples": [
+        {
+          "path": "apps/dashboard/src-tauri/src/telemetry.rs",
+          "start_line": 2732,
+          "snippet": "    struct <Name> {\n        ts_ms: u64,\n        is_start: bool,\n        session: String,\n        name: String,\n        subagent_type: String,\n        agent_id: String,\n        wave: Option<u32>,\n        spawn_tool_use_id: Option<String>,",
+          "role": "tipo base"
+        },
+        {
+          "path": "apps/scan/src/classify.rs",
+          "start_line": 232,
+          "snippet": "struct <Name>Def {\n    class: String,\n    /// Lowercased literal sought in the lowercased head window.\n    literal: Option<String>,\n    /// Case-insensitive compiled regex, run over the verbatim head window.\n    regex: Option<Regex>,\n    /// Verbatim catalog text — the <name> provenance stored on the module.\n    label: String,\n}",
+          "role": "Def"
+        }
+      ],
+      "exemplar": "Marker",
+      "summary": "Vertical slice recurring across 3 entities (Manifest, Marker, Stage). Core roles: tipo base, Def."
     },
     {
       "name": "Error+Report slice",
@@ -91225,6 +91787,67 @@
       ],
       "exemplar": "ClaudePaths",
       "summary": "Vertical slice recurring across 2 entities (Approve, ClaudePaths). Core roles: Error, Report."
+    },
+    {
+      "name": "Id+tipo base slice",
+      "roles": [
+        "Id",
+        "(core)"
+      ],
+      "optional_roles": [],
+      "recurrence": 2,
+      "entities": [
+        "Shape",
+        "Theme"
+      ],
+      "confidence": 0.72,
+      "is_slice": true,
+      "steps": [
+        "Adicione o **Id** para `<Name>` em `apps/rt/src/commands/statusline/` (ex.: `<name>.rs`, modelado em `apps/rt/src/commands/statusline/theme.rs`).",
+        "Adicione o **tipo base** para `<Name>` em `apps/dashboard/src/hooks/` (ex.: `use<Name>.ts`, modelado em `apps/dashboard/src/hooks/useTheme.ts`)."
+      ],
+      "exemplars": [
+        {
+          "level": "simples",
+          "entity": "Shape",
+          "roles_present": [
+            "tipo base",
+            "Id"
+          ],
+          "files": [
+            "apps/scan/tests/fixtures/graph_csharp/src/Catalog/Shapes.cs",
+            "apps/scan/tests/fixtures/graph_typescript/src/catalog.ts"
+          ]
+        },
+        {
+          "level": "complexa",
+          "entity": "Theme",
+          "roles_present": [
+            "tipo base",
+            "Id"
+          ],
+          "files": [
+            "apps/dashboard/src/hooks/useTheme.ts",
+            "apps/rt/src/commands/statusline/theme.rs"
+          ]
+        }
+      ],
+      "examples": [
+        {
+          "path": "apps/rt/src/commands/statusline/theme.rs",
+          "start_line": 139,
+          "snippet": "pub enum <Name>Id {\n    Default,\n    Minimal,\n    TokyoNight,\n    Catppuccin,\n    PastelPowerline,\n    GruvboxRainbow,\n}\n",
+          "role": "Id"
+        },
+        {
+          "path": "apps/dashboard/src/hooks/useTheme.ts",
+          "start_line": 3,
+          "snippet": "type <Name> = \"dark\" | \"light\";\n\nexport function use<Name>() {\n  const [<name>, set<Name>State] = useState<<Name>>(() => {\n    if (typeof document === \"undefined\") return \"dark\";\n    return document.documentElement.classList.contains(\"dark\") ? \"dark\" : \"light\";\n  });\n\n  const set<Name> = useCallback((t: <Name>) => {",
+          "role": "tipo base"
+        }
+      ],
+      "exemplar": "Theme",
+      "summary": "Vertical slice recurring across 2 entities (Shape, Theme). Core roles: Id, tipo base."
     },
     {
       "name": "Item+Report slice",
@@ -91348,6 +91971,69 @@
       "summary": "Vertical slice recurring across 2 entities (Build, Verify). Core roles: Outcome, Result."
     },
     {
+      "name": "Row+tipo base slice",
+      "roles": [
+        "Row",
+        "(core)"
+      ],
+      "optional_roles": [],
+      "recurrence": 2,
+      "entities": [
+        "Knowledge",
+        "Translation"
+      ],
+      "confidence": 0.72,
+      "is_slice": true,
+      "steps": [
+        "Adicione o **Row** para `<Name>` em `apps/dashboard/src/lib/` (ex.: `dashboard.ts`, modelado em `apps/dashboard/src/lib/dashboard.ts`).",
+        "Adicione o **tipo base** para `<Name>` em `apps/dashboard/src/pages/` (ex.: `<Name>.tsx`, modelado em `apps/dashboard/src/pages/Knowledge.tsx`)."
+      ],
+      "exemplars": [
+        {
+          "level": "simples",
+          "entity": "Translation",
+          "roles_present": [
+            "tipo base",
+            "Row"
+          ],
+          "files": [
+            "apps/dashboard/src/lib/i18n.ts",
+            "apps/rt/src/shared/translate.rs"
+          ]
+        },
+        {
+          "level": "complexa",
+          "entity": "Knowledge",
+          "roles_present": [
+            "tipo base",
+            "Row"
+          ],
+          "files": [
+            "apps/dashboard/src/features/knowledge/KnowledgeBadge/index.tsx",
+            "apps/dashboard/src/lib/dashboard.ts",
+            "apps/dashboard/src/pages/Knowledge.tsx",
+            "apps/mcp/src/lib.rs"
+          ]
+        }
+      ],
+      "examples": [
+        {
+          "path": "apps/dashboard/src/lib/dashboard.ts",
+          "start_line": 24,
+          "snippet": "export interface <Name>Row {\n  kind: \"decision\" | \"lesson\";\n  title: string;\n  body: string | null;\n  spec: string | null;\n  ts: string;\n}\n\nexport interface SubprojectInfo {",
+          "role": "Row"
+        },
+        {
+          "path": "apps/dashboard/src/pages/Knowledge.tsx",
+          "start_line": 48,
+          "snippet": "export function <Name>() {\n  const t = useT();\n  const labelKind = (kind: string): string => {\n    const key = KIND_LABEL_KEYS[kind];\n    return key ? t(key) : kind;\n  };\n  const projectsRoot = useStore((s) => s.projectsRoot);\n  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);\n  const persistedQuery = useStore((s) => s.<name>Query);",
+          "role": "tipo base"
+        }
+      ],
+      "exemplar": "Knowledge",
+      "summary": "Vertical slice recurring across 2 entities (Knowledge, Translation). Core roles: Row, tipo base."
+    },
+    {
       "name": "tipo base+Error slice",
       "roles": [
         "(core)",
@@ -91407,13 +92093,73 @@
       ],
       "exemplar": "Workspace",
       "summary": "Vertical slice recurring across 2 entities (Locale, Workspace). Core roles: tipo base, Error."
+    },
+    {
+      "name": "tipo base+Git slice",
+      "roles": [
+        "(core)",
+        "Git"
+      ],
+      "optional_roles": [],
+      "recurrence": 2,
+      "entities": [
+        "Pending",
+        "Reachability"
+      ],
+      "confidence": 0.72,
+      "is_slice": true,
+      "steps": [
+        "Adicione o **tipo base** para `<Name>` em `apps/rt/src/commands/scan_guards/` (ex.: `list.rs`, modelado em `apps/rt/src/commands/scan_guards/list.rs`).",
+        "Adicione o **Git** para `<Name>` em `apps/dashboard/src/lib/` (ex.: `dashboard.ts`, modelado em `apps/dashboard/src/lib/dashboard.ts`)."
+      ],
+      "exemplars": [
+        {
+          "level": "simples",
+          "entity": "Reachability",
+          "roles_present": [
+            "tipo base",
+            "Git"
+          ],
+          "files": [
+            "apps/rt/src/shared/branch_state.rs"
+          ]
+        },
+        {
+          "level": "complexa",
+          "entity": "Pending",
+          "roles_present": [
+            "tipo base",
+            "Git"
+          ],
+          "files": [
+            "apps/dashboard/src/lib/dashboard.ts",
+            "apps/rt/src/commands/scan_guards/list.rs"
+          ]
+        }
+      ],
+      "examples": [
+        {
+          "path": "apps/rt/src/commands/scan_guards/list.rs",
+          "start_line": 39,
+          "snippet": "pub(crate) struct <Name> {\n    /// Path to the `CLAUDE.md`, as a string (lossy on non-UTF-8).\n    pub(crate) path: String,\n    /// Subproject directory relative to `root` (forward-slashed). Empty for the\n    /// root unit — but the root is excluded, so this is always non-empty here.\n    pub(crate) subproject: String,\n    /// Project kind mined by Wave 1 (e.g. `rust`).\n    pub(crate) kind: String,\n    /// Frameworks mined by Wave 1, in caller order. Empty when none.",
+          "role": "tipo base"
+        },
+        {
+          "path": "apps/dashboard/src/lib/dashboard.ts",
+          "start_line": 658,
+          "snippet": "export interface Git<Name> {\n  staged: number;\n  unstaged: number;\n  untracked: number;\n}\n\n/**\n * One changed file from `git status --porcelain` — mirrors the Rust\n * `GitChangedFile` (`serde(rename_all = \"snake_case\")`). A single file can be",
+          "role": "Git"
+        }
+      ],
+      "exemplar": "Pending",
+      "summary": "Vertical slice recurring across 2 entities (Pending, Reachability). Core roles: tipo base, Git."
     }
   ],
   "coverage": {
     "top_dirs": [
       {
         "dir": "apps",
-        "code_files": 544,
+        "code_files": 545,
         "other_files": 240
       },
       {
@@ -91555,7 +92301,7 @@
         "count": 1
       }
     ],
-    "code_files_read": 634,
+    "code_files_read": 635,
     "non_utf8_skipped": 0
   },
   "projects": [
@@ -91563,7 +92309,7 @@
       "name": "rt",
       "dir": "apps/rt",
       "kind": "cargo",
-      "code_files": 278,
+      "code_files": 279,
       "frameworks": [
         "mustard-core",
         "serde",
@@ -92038,12 +92784,12 @@
   ],
   "shared_contracts": [
     {
-      "name": "Display",
+      "name": "Default",
       "implementors": 9
     },
     {
-      "name": "Default",
-      "implementors": 6
+      "name": "Display",
+      "implementors": 9
     },
     {
       "name": "Debug",
