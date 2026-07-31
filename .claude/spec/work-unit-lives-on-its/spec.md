@@ -73,10 +73,22 @@ ceremony, code, notebook) lives on one branch, so deleting the branch deletes th
   is cut, writing inside it.
 - `apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs` — the no-ceremony resume
   when the current branch already belongs to the spec.
-- `apps/rt/src/commands/git_settle.rs` — reused by both `pr merge` (pruning after merge) and
-  the new `git delete`.
-- `apps/rt/src/commands/event/work_branch.rs` — the per-branch notebook records live beside
-  the work-unit state.
+- `apps/rt/src/commands/event/base_gate.rs` (create) — the base gate itself, called from the
+  pipeline-opening emit.
+- `apps/rt/src/commands/review/pr_door.rs` (create) — the engine behind `pr list`, `pr review`
+  and `pr merge`; one module because the three share the PR↔unit seam.
+- `apps/rt/src/commands/git_delete.rs` (create) — the cancel path. It does NOT live in
+  `git_settle.rs`: that file's central invariant is a hard merge gate, and a cancel path
+  inside it would sit one edit away from becoming the way around that gate. It imports the
+  pruning vocabulary from there instead of rewriting it.
+- `apps/rt/src/commands/git_settle.rs` — reused by `pr merge` for the pruning after a merge.
+- `apps/rt/src/commands/event/work_branch.rs` — now owns both the branch's name and its cut;
+  the git primitives moved here from the hook gate so the gate, the draft and the emitter
+  share one spelling.
+- `apps/rt/src/commands/event/notebook.rs` (create) — the per-branch notebook. It resolves the
+  CURRENT checkout, never the main one: a unit running in a worktree keeps its `.claude/spec/`
+  inside that worktree, so the main-checkout habit would write one unit's notes into another
+  unit's tree.
 - `apps/rt/src/commands/review/cli.rs`, `apps/rt/src/commands/review/mod.rs` — the pr list /
   review / merge commands.
 - `packages/core/src/domain/config.rs` — reading the `git.flow` bases the gate accepts.

@@ -54,6 +54,8 @@ A spec has two layers — `## PRD` (what & why) + `## Plan` (how). Approving app
 
 Routing, order and prompts are **decided by Rust** — never read `wave-plan.md` or assemble the loop by hand.
 
+**Arriving from inside the unit's own branch — no ceremony.** `resume-bootstrap` reports `insideWorkBranch: true` when the checkout already IS this spec's `{base}_{slug}` branch. The work unit is the branch plus everything the work produced — the spec, its waves, its ceremony and the code — so a caller standing there is inside the work, not deciding whether to enter it. Print no header and raise no *implement now* confirm: run the relay below immediately. `false` keeps whatever the route that brought you here prescribes (`${CLAUDE_PLUGIN_ROOT}/commands/spec.md` §3).
+
 ```bash
 mustard-rt run wave-advance --spec {spec}
 ```

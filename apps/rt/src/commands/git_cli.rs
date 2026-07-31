@@ -13,7 +13,7 @@
 use clap::Subcommand;
 use std::path::PathBuf;
 
-use crate::commands::{git_settle, work_unit_open};
+use crate::commands::{git_delete, git_settle, work_unit_open};
 
 /// The `run` subcommands owned by the git work-unit ritual (`git_settle`).
 #[derive(Debug, Subcommand)]
@@ -77,6 +77,25 @@ pub enum GitCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// The CANCEL path of an ABANDONED work unit — the counterpart of
+    /// `git-settle`, which retires a unit that was DELIVERED. Runs ONLY from a
+    /// `git.flow` integration base (from a work branch it refuses and names the
+    /// base to switch to, touching nothing) and removes the named unit whole:
+    /// its open pull request is closed, its worktree removed (`--force` — an
+    /// abandoned unit is abandoned precisely because it still holds uncommitted
+    /// work), its local branch deleted and its remote branch deleted
+    /// best-effort. A unit that names an integration base, or that no local or
+    /// remote ref carries, is REFUSED rather than reported as deleted.
+    #[command(name = "git-delete")]
+    #[command(display_order = 89)]
+    GitDelete {
+        /// The work branch to delete, e.g. `dev_my-unit`.
+        #[arg(long)]
+        unit: String,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `git`-family `run` subcommand.
@@ -88,5 +107,6 @@ pub fn dispatch(cmd: GitCmd) {
         GitCmd::WorkUnitOpen { branch, spec, intent, base, root } => {
             work_unit_open::run(work_unit_open::WorkUnitOpenOpts { root, branch, spec, intent, base });
         }
+        GitCmd::GitDelete { unit, root } => git_delete::run(&root, &unit),
     }
 }

@@ -253,6 +253,9 @@ const SUPERSEDED: &[(&str, &str)] = &[
     ("plugin/commands/spec.md", "pre-answers the §3 EXECUTE continuation"),
     ("plugin/commands/spec.md", "`r` never bypasses it"),
     ("plugin/commands/spec.md", "pre-answers only the *implement now* continuation"),
+    // The focused resume that asked for a confirmation it already had: the
+    // caller was standing inside the unit's own branch.
+    ("plugin/commands/spec.md", "In focused mode, first print a one-line header"),
     // §A: the second gesture, asked for twice.
     (
         "plugin/refs/spec/resume-loop.md",

@@ -70,7 +70,7 @@ use crate::shared::branch_state::base_of_branch;
 /// cwd, and every command in this module asks about THIS project's pull
 /// requests — inheriting the process cwd would ask about whichever repository
 /// the session happens to sit in.
-fn gh_out(root: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn gh_out(root: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
         c.args(["/C", "gh"]);
@@ -93,7 +93,7 @@ fn gh_out(root: &Path, args: &[&str]) -> Result<String, String> {
 
 /// [`gh_out`] plus a JSON parse — an unparseable body is `parse-error`, never a
 /// panic.
-fn gh_json(root: &Path, args: &[&str]) -> Result<Value, String> {
+pub(crate) fn gh_json(root: &Path, args: &[&str]) -> Result<Value, String> {
     let text = gh_out(root, args)?;
     serde_json::from_str(&text).map_err(|_| "parse-error".to_string())
 }

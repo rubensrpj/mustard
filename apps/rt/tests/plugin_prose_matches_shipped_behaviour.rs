@@ -205,6 +205,73 @@ fn dispatch_prose_teaches_the_precheck_skip() {
     );
 }
 
+/// AC-3 — the resume prose reads `insideWorkBranch`, and the engine emits it.
+///
+/// The work unit is the branch plus everything the work produced, so a caller
+/// standing on `{base}_{slug}` is inside the work already. The picker still
+/// printed a header and asked *"Implementar agora?"* there — a question about
+/// entering a place the caller cannot leave without checking out. Both surfaces
+/// a reader arrives at must name the field, and `resume-bootstrap` must really
+/// report it: a prose rule pointing at a field nobody emits is a rule that
+/// silently never fires.
+#[test]
+fn resume_inside_own_branch_prose_and_engine_agree() {
+    // --- 1. The picker reads it where it routes an EXEC-stage spec --------
+    let picker = read("plugin/commands/spec.md");
+    let exec_route = line_with(&picker, "resume-loop **§B Loop**")
+        .expect("the picker no longer routes an EXEC-stage spec to §B");
+    assert!(
+        exec_route.contains("insideWorkBranch"),
+        "the §B route never reads the field that says the caller is already \
+         inside the unit: {exec_route}",
+    );
+    // Naming the field is not the contract — what it BUYS is.
+    for dropped in ["no table", "no header", "Implementar agora?"] {
+        assert!(
+            exec_route.contains(dropped),
+            "the §B route names the field without saying `{dropped}` is dropped: {exec_route}",
+        );
+    }
+
+    // --- 2. The loop ref teaches the same entry, inside §B ----------------
+    let loop_ref = read("plugin/refs/spec/resume-loop.md");
+    let no_ceremony = line_with(&loop_ref, "no ceremony")
+        .expect("§B never tells the orchestrator what a no-ceremony entry looks like");
+    assert!(
+        no_ceremony.contains("insideWorkBranch"),
+        "the §B entry describes the shortcut without naming its signal: {no_ceremony}",
+    );
+    let section_at = loop_ref
+        .find("## §B — The loop")
+        .expect("the loop ref no longer has a §B");
+    let entry_at = loop_ref.find("no ceremony").expect("checked above");
+    assert!(
+        entry_at > section_at && entry_at - section_at < 900,
+        "the no-ceremony entry must sit at the TOP of §B, where a resumed \
+         session arrives (§B at {section_at}, entry at {entry_at})",
+    );
+
+    // --- 3. resume-bootstrap really reports it ----------------------------
+    let bootstrap = read("apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs");
+    assert!(
+        bootstrap.contains("\"insideWorkBranch\""),
+        "the prose sends the reader to a field resume-bootstrap does not emit",
+    );
+    let classifier = read("apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs");
+    assert!(
+        classifier.contains("fn inside_own_work_branch"),
+        "the field has no classifier behind it — it would report `false` forever",
+    );
+    // The branch NAME is not re-derived here: the same function that minted the
+    // pending marker computes it, or the two spellings drift and the shortcut
+    // stops firing on exactly the branch it was built for.
+    assert!(
+        classifier.contains("compute_work_branch"),
+        "the classifier re-derives the `{{base}}_{{slug}}` name instead of reusing \
+         the one the work-branch marker was minted with",
+    );
+}
+
 /// AC-6 — the orchestrator's Verdict rule names a MEASUREMENT an agent claims
 /// as the second thing never relayed on a briefing alone.
 ///
