@@ -183,7 +183,7 @@ flowchart TD
 
     grill --> route2{"2. rota + escopo<br/>(determinístico)"}
     route2 -->|"1 camada, sem entidade nova"| totask(["vira /mustard:task — para aqui"])
-    route2 -->|senão| draft["spec-draft — ÚNICO escrevedor do scaffold<br/>(spec.md + meta.json)"]
+    route2 -->|senão| draft["spec-draft — ÚNICO escrevedor do scaffold<br/>(spec.md + meta.json; com --plan, todo o layout)"]
     draft --> prep["plan-prepare (autoridade do scope)<br/>+ analyze-validation (WARN → ## Concerns)"]
     prep --> scope{"scope?"}
     scope -->|full| fullp(["abre refs/feature/full-plan.md:<br/>PLAN por ondas + clarify<br/>→ /mustard:spec aprova"])

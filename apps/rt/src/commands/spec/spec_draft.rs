@@ -730,6 +730,18 @@ fn plan_acceptance_bullets(plan: &Path) -> Option<Vec<String>> {
     (!bullets.is_empty()).then_some(bullets)
 }
 
+/// Whether a line is a STRUCTURAL marker of the document rather than content of
+/// whichever section it happens to sit in.
+///
+/// The two dividers belong to `spec.md` as a whole — consumers slice the file at
+/// them — so a section rewrite must carry them across instead of treating them
+/// as body it may drop. Compared trimmed, because the renderer is free to indent.
+fn is_structural_marker(line: &str) -> bool {
+    let t = line.trim();
+    t == mustard_core::domain::spec::contract::PLAN_DIVIDER
+        || t == mustard_core::domain::spec::contract::PRD_DIVIDER
+}
+
 /// Swap the body of `body`'s `## Acceptance Criteria` section for `bullets`,
 /// keeping the heading line the renderer wrote (it is localised) and everything
 /// before and after the section byte-identical. `None` when the document
@@ -746,10 +758,26 @@ fn replace_acceptance_block(body: &str, bullets: &[String]) -> Option<String> {
         .skip(start + 1)
         .position(|l| l.starts_with("## "))
         .map_or(lines.len(), |offset| start + 1 + offset);
+    // Everything between the two headings is the section BODY and is replaced —
+    // except the structural markers, which belong to the document rather than to
+    // any section. The PRD/PLAN divider sits exactly there on a Full draft, and
+    // dropping it is not cosmetic: the dashboard slices the PRD at that comment
+    // and renders an empty tab without it, permanently, because `spec.md` is
+    // written by this command alone and no later pass restores it (found in
+    // review, 2026-07-30 — the fused path made this the DEFAULT door).
+    let carried: Vec<String> = lines[start + 1..end]
+        .iter()
+        .filter(|l| is_structural_marker(l))
+        .map(|l| (*l).to_string())
+        .collect();
     let mut out: Vec<String> = lines[..=start].iter().map(|l| (*l).to_string()).collect();
     out.push(String::new());
     out.extend(bullets.iter().cloned());
     out.push(String::new());
+    for marker in carried {
+        out.push(marker);
+        out.push(String::new());
+    }
     out.extend(lines[end..].iter().map(|l| (*l).to_string()));
     let mut joined = out.join("\n");
     if body.ends_with('\n') {
@@ -2220,6 +2248,24 @@ mod tests {
         assert!(out.contains("## Files\n- a.rs"), "the next section survives:\n{out}");
         // No heading at all ⇒ nothing is invented.
         assert!(replace_acceptance_block("# S\n\n## Files\n- a.rs\n", &bullets).is_none());
+
+        // The PLAN divider sits between the AC section and the next heading on
+        // every Full draft, and it belongs to the DOCUMENT, not to the section
+        // being replaced. Dropped, the dashboard slices the PRD at a marker that
+        // is no longer there and renders an empty tab — for every spec born
+        // through the fused door, permanently, since `spec.md` is written here
+        // and nowhere else. Both halves, so the assertion can fail: the divider
+        // survives, and the old criterion still does not.
+        let full = "# S\n\n<!-- PRD -->\n\n## Acceptance Criteria\n\n- **AC-1** — old.\n  Command: `x`\n\n<!-- PLAN -->\n\n## Files\n- a.rs\n";
+        let out = replace_acceptance_block(full, &bullets).expect("the heading is there");
+        assert!(out.contains("<!-- PLAN -->"), "the divider must survive the swap:\n{out}");
+        assert!(out.contains("<!-- PRD -->"), "…and so must the one before the section:\n{out}");
+        assert!(
+            out.find("<!-- PLAN -->") < out.find("## Files"),
+            "the divider must still open the plan half:\n{out}",
+        );
+        assert!(!out.contains("**AC-1**"), "the old block is still gone:\n{out}");
+        assert!(out.contains("- **AC-9** — new."), "the new block landed:\n{out}");
     }
 
     // --- Deterministic routing gate (apply_scope_gate) --------------------

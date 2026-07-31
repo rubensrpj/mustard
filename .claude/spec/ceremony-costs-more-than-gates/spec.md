@@ -70,6 +70,7 @@ Wave 2 — plugin (prose) + its test:
 - `plugin/refs/spec/resume-loop.md` — §A stops asking for a second gesture when the marker is already minted by the typed form.
 - `plugin/refs/feature/full-plan.md` — step 2/3 become one call (`spec-draft --plan`), with `plan-materialize` named as the re-materialisation door.
 - `apps/rt/tests/spec_flow_prose.rs` (create) — the structural test AC-4 names, both-halves style like `git_prose_rules.rs`.
+- `MUSTARD-COMMANDS.md` — cascade: the flow diagram labels `spec-draft` as writing only `spec.md` + `meta.json`, which stops being true the moment `--plan` exists. One node, corrected where it is drawn.
 
 ## Boundaries
 
