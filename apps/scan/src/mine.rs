@@ -577,19 +577,19 @@ const UNIT_TYPE_KINDS: &[&str] =
 ///
 /// A callable is not architecture by itself — a private helper buried among
 /// forty others says nothing about how the project is built, and treating it as
-/// a unit is what mints English particles (`for`, `of`, `at`) as roles. But a
-/// callable that names its file IS the file's subject, exactly as `UserService`
-/// is the subject of `UserService.cs`: `close_gate.rs` declaring `close_gate`,
-/// `useProject.ts` declaring `useProject`. That is the same fact a
-/// class-oriented language states with a type, said with another keyword — so
-/// the rule is one rule, not a carve-out for function-oriented languages.
+/// a unit is what mints bare grammatical particles as roles. But a callable
+/// that names its file IS the file's subject, the same fact a named type states
+/// when it carries the name of the file that declares it. One rule, no
+/// exception list: whether a project spells its units as types or as callables
+/// is a property of the project, never a branch in this code.
 const UNIT_CALLABLE_KINDS: &[&str] = &["function", "const"];
 
 /// Whether a declaration is an architectural UNIT — the thing roles are mined
 /// from. Everything else is a MEMBER (`method`, `field`, `property`,
 /// `enum_member`): it lives inside a unit and feeds the digest's term index
-/// only. C# and Dart already got this for free, because their dialects never
-/// emit a free `function`; this states the same line for every language.
+/// only. The distinction is drawn upstream, by each query set's generic
+/// `@definition.<kind>` vocabulary, and applied here identically for every one
+/// of them — this function knows no dialect and must never learn one.
 fn is_significant(d: &Decl, module_path: &str) -> bool {
     if d.name.len() < 3 {
         return false;
@@ -601,10 +601,11 @@ fn is_significant(d: &Decl, module_path: &str) -> bool {
 }
 
 /// Whether `name` is the file's namesake — identifier and file stem equal once
-/// case and separators are dropped, so `close_gate.rs`/`close_gate`,
-/// `useProject.ts`/`useProject` and `user_service.py`/`UserService` all match.
-/// Separator-blind on purpose: the convention is the WORD sequence, and each
-/// language spells the joint differently.
+/// case and separators are dropped, so `close_gate`/`close_gate.x`,
+/// `useProject`/`useProject.x` and `UserService`/`user_service.x` all match.
+/// Separator- and case-blind on purpose: the convention is the WORD SEQUENCE,
+/// and the joint between words is spelled differently from project to project.
+/// No extension is inspected and no naming style is privileged.
 fn names_its_file(name: &str, module_path: &str) -> bool {
     let file = module_path.rsplit(['/', '\\']).next().unwrap_or(module_path);
     let stem = file.split('.').next().unwrap_or(file);
