@@ -296,6 +296,28 @@ pub(crate) fn convention_line(c: &Candidate) -> String {
     format!("Folder: {where_} · Extension: {what} · Files of this role in this subproject: {}", c.count)
 }
 
+/// Share of a subproject's own modules a cluster may cover before it stops
+/// being a ROLE and becomes the subproject itself.
+///
+/// A mold auto-loads whenever an edit matches its `paths:`. One that matches
+/// four edits in five is not teaching "how we write an X here" — it is teaching
+/// "how we write here", which is what the subproject's `CLAUDE.md` Guards
+/// already do, and it stacks on top of every genuine mold in the same house.
+/// The enrich agent kept reaching this conclusion by hand and stating it in its
+/// own words ("a folder-name cluster whose paths would load on top of every
+/// other mold"), inconsistently — refusing it in one subproject and keeping it
+/// in four others. Whether a glob covers the house is arithmetic over the
+/// model, so it stops being the agent's call.
+const SUBPROJECT_SATURATION: f32 = 0.8;
+
+/// …and the ratio above is only asked of a subproject with at least this many
+/// modules. Below it the measure carries no information: a house of three files
+/// has no corner for a role to occupy, so EVERY cluster in it covers most of
+/// the house and the test would drop them all — including the small, genuinely
+/// useful mold a two-file crate deserves. The floor is a property of the
+/// measure, not an exemption granted to any particular subproject.
+const MIN_MODULES_FOR_SATURATION: usize = 10;
+
 /// A cluster must claim at least this many sibling folders before their shared
 /// parent is even considered — two siblings are a coincidence, not a layout.
 const MIN_DOMINATING_SIBLINGS: usize = 3;
@@ -372,6 +394,45 @@ fn promote_dominated_parents(
         current = next;
     }
     current
+}
+
+/// Whether `paths` covers so much of `subproject` that the mold would load on
+/// nearly every edit in it — see [`SUBPROJECT_SATURATION`] for why that stops
+/// being a role.
+///
+/// Both sides are counted from the model's modules, never the filesystem: the
+/// denominator is the modules the subproject owns (a nested subproject's files
+/// belong to the nested one, so a parent house is not inflated by its child),
+/// and the numerator is those the globs match. A subproject the model has no
+/// modules for is never saturated — an empty denominator is missing evidence,
+/// not proof of coverage.
+fn saturates_subproject(
+    paths: &[String],
+    subproject: &str,
+    modules: &[&Mod],
+    projects: &[&Proj],
+) -> bool {
+    let dirs: Vec<&str> = paths.iter().map(|p| p.trim_end_matches("/**")).collect();
+    let mut owned = 0usize;
+    let mut covered = 0usize;
+    for m in modules {
+        let path = m.path.replace('\\', "/");
+        // Ownership goes to the LONGEST matching project dir, so a nested
+        // subproject's files never inflate the house that contains it.
+        if owner_of(&path, projects).map(|p| p.dir.as_str()) != Some(subproject) {
+            continue;
+        }
+        owned += 1;
+        if dirs.iter().any(|d| path.starts_with(&format!("{d}/"))) {
+            covered += 1;
+        }
+    }
+    if owned < MIN_MODULES_FOR_SATURATION {
+        return false;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let share = covered as f32 / owned as f32;
+    share >= SUBPROJECT_SATURATION
 }
 
 /// How many DIRECT children of `parent` hold code anywhere beneath them,
@@ -543,6 +604,14 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 drop(role, project_dir, "mold_exists");
                 continue;
             }
+            let paths = globs_for(&house.files, &code_dirs);
+            // A glob set that covers the house is not a role's scope — see
+            // [`SUBPROJECT_SATURATION`]. Judged AFTER the globs are final, so
+            // the promotion above cannot smuggle a cluster past it.
+            if saturates_subproject(&paths, project_dir, &modules, &projects) {
+                drop(role, project_dir, "covers_whole_subproject");
+                continue;
+            }
             earned = true;
             candidates.push(Candidate {
                 subproject: project_dir.clone(),
@@ -555,7 +624,7 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 implements: role.implements.clone(),
                 count: house.count(),
                 exemplars: house.exemplars(),
-                paths: globs_for(&house.files, &code_dirs),
+                paths,
                 files: house.files.clone(),
                 rank: rank_of.get(&role.affix.to_lowercase()).copied().unwrap_or(0),
             });
@@ -1957,6 +2026,48 @@ mod tests {
         let got = globs_for(&files, &code_dirs);
         assert_eq!(got.len(), 3, "3 of 23 children is not dominance: {got:?}");
         assert!(got.iter().all(|g| g.starts_with("src/components/") && g != "src/components/**"));
+    }
+
+    /// A cluster whose glob covers the whole house is the house, not a role.
+    /// Such a mold auto-loads on nearly every edit and stacks on top of every
+    /// genuine mold beside it — which is what the subproject's own Guards are
+    /// for. The enrich agent kept reaching this verdict by hand and applying it
+    /// inconsistently; the arithmetic settles it.
+    #[test]
+    fn a_cluster_that_covers_the_whole_subproject_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Every module of `apps/api` sits under `src/`, so a role mined on the
+        // `src` folder covers 100% of the house. The house is deliberately over
+        // MIN_MODULES_FOR_SATURATION — below that floor the ratio says nothing
+        // and the check correctly abstains.
+        // Directly in `src/`, so the folder role resolves its exemplars there.
+        let modules: String =
+            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+        write_model(
+            root,
+            &format!(
+                r#"{{
+              "projects": [{{"name":"api","dir":"apps/api"}}],
+              "roles": [
+                {{"affix":"src","kind":"folder","count":12,"common_dir":"apps/api/src"}},
+                {{"affix":"Service","kind":"suffix","count":4,"common_dir":"apps/api/src/services"}}
+              ],
+              "modules": [
+                {modules}
+                {{"path":"apps/api/src/services/UserService.x"}},
+                {{"path":"apps/api/src/services/OrderService.x"}}
+              ]
+            }}"#
+            ),
+        );
+        let slugs: Vec<String> = collect(root).into_iter().map(|c| c.slug).collect();
+        assert!(!slugs.contains(&"api-src".to_string()), "the house-wide cluster is dropped: {slugs:?}");
+        assert!(slugs.contains(&"api-service".to_string()), "the real role survives: {slugs:?}");
+        // The drop is REPORTED, never silent — that diagnostic is why the
+        // `--rejected` face exists.
+        let reasons: Vec<&str> = collect_rejected(root).iter().map(|r| r.reason).collect();
+        assert!(reasons.contains(&"covers_whole_subproject"), "reason recorded: {reasons:?}");
     }
 
     /// Two siblings are a coincidence, not a layout — the floor keeps a pair
