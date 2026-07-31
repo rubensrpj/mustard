@@ -74,14 +74,27 @@ fn translation_tokens(en: &str, term_folded: &str) -> Vec<String> {
 /// sidecar detected as English gets no alias (it already IS code vocabulary);
 /// an empty token list drops the entry. `BTreeMap` keeps the keys sorted —
 /// the byte-stable artifact order.
-fn build_equivalences(rows: &[(String, Translation)]) -> BTreeMap<String, Vec<String>> {
+fn build_equivalences(
+    rows: &[(String, Translation)],
+    known: &std::collections::BTreeSet<String>,
+) -> BTreeMap<String, Vec<String>> {
     let mut map = BTreeMap::new();
     for (term, tr) in rows {
         if tr.detected == "en" {
             continue;
         }
         let key = fold_tok(term);
-        let toks = translation_tokens(&tr.en, &key);
+        let toks: Vec<String> = translation_tokens(&tr.en, &key)
+            .into_iter()
+            // An alias exists to bridge a foreign word to the vocabulary the
+            // CODE uses. A token absent from that vocabulary cannot match a
+            // single declaration, so it is not a bridge — it is noise the query
+            // carries for free. Measured: the translator returned `not`,
+            // `gonna`, `that` and `sure` as aliases, none of which names
+            // anything in any repository. Filtering against the dictionary
+            // needs no stopword list and stays derived from the corpus.
+            .filter(|t| known.contains(t))
+            .collect();
         if !toks.is_empty() {
             map.insert(key, toks);
         }
@@ -122,17 +135,22 @@ pub(crate) fn generate_at(dict_path: &Path) -> Value {
     let Ok(dict) = serde_json::from_str::<Value>(&raw) else {
         return json!({ "ok": false, "reason": "bad-dictionary" });
     };
-    let terms: Vec<String> = dict
-        .get("terms")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| e.get("term").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    if terms.is_empty() {
+    let all: Vec<&Value> =
+        dict.get("terms").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+    if all.is_empty() {
         return json!({ "ok": false, "reason": "no-terms" });
+    }
+    // Only a term the dictionary saw ONLY in prose is a translation candidate
+    // — see [`is_translatable`]. Filtering here rather than after the call also
+    // shrinks the batch to the terms that can possibly need it.
+    let terms: Vec<String> = all
+        .iter()
+        .filter(|e| is_translatable(e))
+        .filter_map(|e| e.get("term").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let skipped_as_code = all.len() - terms.len();
+    if terms.is_empty() {
+        return json!({ "ok": true, "terms": 0, "aliased": 0, "skippedAsCode": skipped_as_code, "out": Value::Null });
     }
     let Some(translator) = Translate::locate() else {
         return json!({ "ok": false, "reason": "translator-unavailable" });
@@ -141,7 +159,15 @@ pub(crate) fn generate_at(dict_path: &Path) -> Value {
         return json!({ "ok": false, "reason": "batch-failed" });
     };
     let rows: Vec<(String, Translation)> = terms.into_iter().zip(translations).collect();
-    let map = build_equivalences(&rows);
+    // The code's own vocabulary — every term the dictionary carries, folded the
+    // same way alias tokens are. An alias token outside this set matches
+    // nothing, so it never ships.
+    let known: std::collections::BTreeSet<String> = all
+        .iter()
+        .filter_map(|e| e.get("term").and_then(Value::as_str))
+        .map(fold_tok)
+        .collect();
+    let map = build_equivalences(&rows, &known);
     let body = json!({ "version": 1, "equivalences": map });
     let Ok(pretty) = serde_json::to_string_pretty(&body) else {
         return json!({ "ok": false, "reason": "serialize-failed" });
@@ -155,8 +181,35 @@ pub(crate) fn generate_at(dict_path: &Path) -> Value {
         "ok": true,
         "terms": rows.len(),
         "aliased": map.len(),
+        "skippedAsCode": skipped_as_code,
         "out": out_path.to_string_lossy(),
     })
+}
+
+/// Whether a dictionary term may be translated at all.
+///
+/// The generator's original guard was the translator's own language detection:
+/// a term "detected as English" got no alias. Sound in intent, undecidable in
+/// practice — the input is ONE bare token, and a great many code words are
+/// perfectly ordinary words in other languages. Measured on this repo, 60 of
+/// the 62 aliases it produced were English code vocabulary mistranslated as
+/// Portuguese: `cargo` aliased to `position` (which is what the Portuguese word
+/// means), `api` to `bees`, `grep` to `strike`, `grammar` to `lightness`. Those
+/// tokens then ride into query expansion as if they were evidence.
+///
+/// The dictionary already records the answer structurally, so nothing has to be
+/// guessed: `source` says whether a term was seen in DECLARATION names, in
+/// prose, or in both. A term that appears in a declaration name IS the code's
+/// vocabulary — by construction, whatever language it looks like — and
+/// translating it can only invent a token the code does not use. Only a term
+/// the dictionary saw exclusively in prose can be a foreign word needing a
+/// bridge to the code's terms.
+///
+/// Unknown or absent `source` is treated as code (refuse to translate): the
+/// failure mode of a wrong alias is silent retrieval noise, while the failure
+/// mode of a missing alias is a query the caller can still sharpen by hand.
+fn is_translatable(entry: &Value) -> bool {
+    entry.get("source").and_then(Value::as_str) == Some("comment")
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +322,11 @@ mod tests {
             ("conciliação".to_string(), tr("Reconciliation", "pt")),
             ("vazio".to_string(), tr("", "pt")), // empty translation → no entry
         ];
-        let map = build_equivalences(&rows);
+        // The code's vocabulary: an alias token only ships when the repo
+        // actually uses that word.
+        let known: std::collections::BTreeSet<String> =
+            ["title", "the", "bill", "reconciliation"].iter().map(ToString::to_string).collect();
+        let map = build_equivalences(&rows, &known);
         assert_eq!(
             map.keys().collect::<Vec<_>>(),
             vec!["conciliacao", "titulo"],
@@ -278,9 +335,42 @@ mod tests {
         assert_eq!(map["titulo"], vec!["title", "the", "bill"]);
         assert_eq!(map["conciliacao"], vec!["reconciliation"]);
         // Byte-stable: same rows → same serialized artifact body.
-        let a = serde_json::to_string(&json!({"version": 1, "equivalences": build_equivalences(&rows)})).expect("ser");
-        let b = serde_json::to_string(&json!({"version": 1, "equivalences": build_equivalences(&rows)})).expect("ser");
+        let a = serde_json::to_string(&json!({"version": 1, "equivalences": build_equivalences(&rows, &known)})).expect("ser");
+        let b = serde_json::to_string(&json!({"version": 1, "equivalences": build_equivalences(&rows, &known)})).expect("ser");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn an_alias_token_the_repo_never_uses_is_dropped() {
+        // The failure this guard was written for: the translator answered a
+        // code word with conversational filler, and those tokens rode into
+        // query expansion as if they were evidence. A token absent from the
+        // dictionary cannot match a declaration anywhere, so it is not a bridge.
+        let rows = vec![("clone".to_string(), tr("not gonna do that", "pt"))];
+        let known: std::collections::BTreeSet<String> =
+            ["clone", "copy"].iter().map(ToString::to_string).collect();
+        assert!(
+            build_equivalences(&rows, &known).is_empty(),
+            "filler tokens name nothing in the repo — no alias at all"
+        );
+        // …and a real bridge still ships.
+        let rows = vec![("copia".to_string(), tr("copy", "pt"))];
+        assert_eq!(build_equivalences(&rows, &known)["copia"], vec!["copy"]);
+    }
+
+    #[test]
+    fn only_a_prose_only_term_is_a_translation_candidate() {
+        // `source` is the dictionary's structural answer to "is this the code's
+        // own word?" — a term seen in a declaration name is code vocabulary
+        // whatever language it resembles, and translating it can only invent a
+        // token the code does not use.
+        assert!(is_translatable(&json!({"term": "conciliacao", "source": "comment"})));
+        assert!(!is_translatable(&json!({"term": "cargo", "source": "both"})));
+        assert!(!is_translatable(&json!({"term": "api", "source": "code"})));
+        // Unknown or absent provenance refuses to translate: a wrong alias is
+        // silent retrieval noise, a missing one is a query the caller sharpens.
+        assert!(!is_translatable(&json!({"term": "x"})));
+        assert!(!is_translatable(&json!({"term": "x", "source": "whatever"})));
     }
 
     #[test]
