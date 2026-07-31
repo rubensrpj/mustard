@@ -233,17 +233,31 @@ fn cited_refs(body: &str) -> Vec<String> {
         let token = rest
             .trim()
             .trim_start_matches('`')
-            .split(['`', ' ', ',', ')'])
+            .split(['`', ' ', ','])
             .next()
             .unwrap_or("")
             .trim_end_matches([':', '.', ','])
             .trim();
+        // A trailing `)` closes the citation only when nothing opened it: Next.js
+        // route groups carry parentheses INSIDE the path itself, so splitting on
+        // `)` truncated `app/(dashboard)/x.tsx` to `app/(dashboard` and refused
+        // every mold that cited a real route.
+        let token = trim_unbalanced_close(token);
         // A citation is a path: it must carry a separator or an extension dot.
         if !token.is_empty() && (token.contains('/') || token.contains('.')) {
             out.push(normalise(token));
         }
     }
     out
+}
+
+/// Drops trailing `)` characters that no `(` in the token opened — the prose
+/// decoration `(see …)` around a citation, never the parentheses of a path.
+fn trim_unbalanced_close(mut token: &str) -> &str {
+    while token.ends_with(')') && token.matches(')').count() > token.matches('(').count() {
+        token = &token[..token.len() - 1];
+    }
+    token
 }
 
 /// The `paths:` list declared in the mold's frontmatter, in document order.
@@ -516,5 +530,21 @@ mod tests {
     fn cited_refs_reads_the_canonical_decoration() {
         let body = "- Ref: `apps/api/x.rs` — the shape\n- Ref: apps/api/y.rs\n- not a ref line\n- Ref: `pkg/z.ts`, and prose";
         assert_eq!(cited_refs(body), vec!["apps/api/x.rs", "apps/api/y.rs", "pkg/z.ts"]);
+    }
+
+    #[test]
+    fn cited_refs_keeps_parentheses_that_belong_to_the_path() {
+        // Next.js route groups live inside the path; prose parentheses do not.
+        let body = "- Ref: `app/(dashboard)/banks/[id]/loading.tsx` (the canonical four lines)\n\
+                    - Ref: app/(auth)/register/page.tsx\n\
+                    - Ref: pkg/z.ts)";
+        assert_eq!(
+            cited_refs(body),
+            vec![
+                "app/(dashboard)/banks/[id]/loading.tsx",
+                "app/(auth)/register/page.tsx",
+                "pkg/z.ts"
+            ]
+        );
     }
 }
