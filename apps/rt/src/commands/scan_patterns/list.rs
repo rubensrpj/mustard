@@ -235,7 +235,7 @@ pub(crate) struct Rejection {
 /// every descendant it already matches, so `a/**` and `a/b/**` never both ship)
 /// and sorted — the worklist stays byte-stable, as the `run` output contract
 /// requires.
-pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
+pub(crate) fn globs_for(files: &[String], code_dirs: &std::collections::BTreeSet<String>) -> Vec<String> {
     let mut dirs: Vec<String> = files
         .iter()
         .filter_map(|f| {
@@ -247,6 +247,7 @@ pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
         .collect();
     dirs.sort();
     dirs.dedup();
+    dirs = promote_dominated_parents(dirs, code_dirs);
     // Ancestor-collapse: keep a dir only when no ALREADY-KEPT dir is a parent
     // of it. Sorted order guarantees a parent is visited before its children.
     let mut kept: Vec<String> = Vec::new();
@@ -257,6 +258,213 @@ pub(crate) fn globs_for(files: &[String]) -> Vec<String> {
         kept.push(d);
     }
     kept.into_iter().map(|d| format!("{d}/**")).collect()
+}
+
+/// The FACTUAL lead of a mold's `## Convention` section — where the cluster
+/// lives, what its members are named, and how many of them this house holds.
+///
+/// This exists because the authoring agent is measurably bad at exactly these
+/// three values and measurably good at everything else in a mold. Audited over
+/// one real enrich: every wrong claim a mold made was a TALLY, an ORDER or a
+/// PATH ("9 files" where there were 10; "all of them derive X" where two did
+/// not), while every claim that only reading could produce was right. Counting
+/// is not a judgement call — the census already holds the answer exactly, so
+/// asking a model to estimate it is spending inference to get a worse number.
+///
+/// So the line is rendered here, handed to the agent to copy verbatim (the same
+/// contract `paths:` already uses), and verified on the way in by
+/// `scan-patterns-apply`. The agent keeps the rest of `## Convention`: the
+/// visibility habits, the test placement, the derive sets — the things a
+/// program cannot see.
+///
+/// Deterministic: extensions are deduplicated and sorted, the globs come from
+/// [`globs_for`], and nothing here reads a clock or an absolute path.
+pub(crate) fn convention_line(c: &Candidate) -> String {
+    let mut exts: Vec<String> = c
+        .files
+        .iter()
+        .filter_map(|f| {
+            let name = f.rsplit(['/', '\\']).next()?;
+            let (_, ext) = name.rsplit_once('.')?;
+            (!ext.is_empty()).then(|| format!(".{}", ext.to_lowercase()))
+        })
+        .collect();
+    exts.sort();
+    exts.dedup();
+    let where_ = if c.paths.is_empty() { "(no recurring folder)".to_string() } else { c.paths.join(", ") };
+    let what = if exts.is_empty() { "(mixed)".to_string() } else { exts.join(", ") };
+    format!("Folder: {where_} · Extension: {what} · Files of this role in this subproject: {}", c.count)
+}
+
+/// Share of a subproject's own modules a cluster may cover before it stops
+/// being a ROLE and becomes the subproject itself.
+///
+/// A mold auto-loads whenever an edit matches its `paths:`. One that matches
+/// four edits in five is not teaching "how we write an X here" — it is teaching
+/// "how we write here", which is what the subproject's `CLAUDE.md` Guards
+/// already do, and it stacks on top of every genuine mold in the same house.
+/// The enrich agent kept reaching this conclusion by hand and stating it in its
+/// own words ("a folder-name cluster whose paths would load on top of every
+/// other mold"), inconsistently — refusing it in one subproject and keeping it
+/// in four others. Whether a glob covers the house is arithmetic over the
+/// model, so it stops being the agent's call.
+const SUBPROJECT_SATURATION: f32 = 0.8;
+
+/// …and the ratio above is only asked of a subproject with at least this many
+/// modules. Below it the measure carries no information: a house of three files
+/// has no corner for a role to occupy, so EVERY cluster in it covers most of
+/// the house and the test would drop them all — including the small, genuinely
+/// useful mold a two-file crate deserves. The floor is a property of the
+/// measure, not an exemption granted to any particular subproject.
+const MIN_MODULES_FOR_SATURATION: usize = 10;
+
+/// A cluster must claim at least this many sibling folders before their shared
+/// parent is even considered — two siblings are a coincidence, not a layout.
+const MIN_DOMINATING_SIBLINGS: usize = 3;
+
+/// …and must account for at least this share of the parent's code-bearing
+/// children. Below it the parent holds work the cluster has nothing to say
+/// about, and scoping the mold there would load it over unrelated edits.
+const DOMINANCE: f32 = 0.6;
+
+/// Replace a run of sibling directories with their shared parent when the
+/// cluster DOMINATES that parent.
+///
+/// Why this exists: [`globs_for`] derives one glob per directory that holds a
+/// member, and ancestor-collapse only removes a directory when another KEPT
+/// directory is its parent. That works for a flat layout — twenty modules
+/// directly inside one folder yield one glob — and fails completely for the
+/// layout where every member gets its own folder, because the shared parent
+/// holds no member FILE and so never enters the list to collapse against. The
+/// siblings are then all kept: one cluster in this workspace produced 37 globs
+/// while two neighbours in the SAME subproject and the SAME language produced
+/// one each. The difference was never the language; it was whether members sit
+/// in a folder together or in a folder each — and folder-per-member is the
+/// ordinary shape of component trees, feature modules, command directories and
+/// package-per-module layouts alike.
+///
+/// Dominance, not mere sharing, is the bar: the parent's OTHER code-bearing
+/// children are counted from the model's own module paths, so a cluster that
+/// occupies three folders out of thirty stays at three globs and never widens
+/// itself over twenty-seven folders of unrelated work. `code_dirs` is that
+/// evidence — every directory the model saw a module in.
+///
+/// Runs to a fixpoint (bounded), so a promoted parent can itself join its own
+/// siblings and promote again; deterministic, since every step sorts and
+/// deduplicates and the inputs are byte-stable.
+fn promote_dominated_parents(
+    dirs: Vec<String>,
+    code_dirs: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut current = dirs;
+    // A path has finitely many ancestors; the bound only guards against a
+    // future edit turning this into a cycle.
+    for _ in 0..16 {
+        let mut by_parent: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for d in &current {
+            if let Some(cut) = d.rfind('/') {
+                by_parent.entry(d[..cut].to_string()).or_default().push(d.clone());
+            }
+        }
+        let mut promoted: Vec<String> = Vec::new();
+        let mut consumed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (parent, siblings) in &by_parent {
+            if siblings.len() < MIN_DOMINATING_SIBLINGS {
+                continue;
+            }
+            let total = code_bearing_children(parent, code_dirs);
+            if total == 0 {
+                continue;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let share = siblings.len() as f32 / total as f32;
+            if share >= DOMINANCE {
+                promoted.push(parent.clone());
+                consumed.extend(siblings.iter().cloned());
+            }
+        }
+        if promoted.is_empty() {
+            return current;
+        }
+        let mut next: Vec<String> =
+            current.into_iter().filter(|d| !consumed.contains(d)).chain(promoted).collect();
+        next.sort();
+        next.dedup();
+        current = next;
+    }
+    current
+}
+
+/// Whether `paths` covers so much of `subproject` that the mold would load on
+/// nearly every edit in it — see [`SUBPROJECT_SATURATION`] for why that stops
+/// being a role.
+///
+/// Both sides are counted from the model's modules, never the filesystem: the
+/// denominator is the modules the subproject owns (a nested subproject's files
+/// belong to the nested one, so a parent house is not inflated by its child),
+/// and the numerator is those the globs match. A subproject the model has no
+/// modules for is never saturated — an empty denominator is missing evidence,
+/// not proof of coverage.
+///
+/// Both sides also exclude test terrain, and they must: a cluster is dropped
+/// outright when its home is under a test segment, so a glob can only ever
+/// cover production modules. Counting tests in the denominator alone measured
+/// the numerator against a universe the numerator could not reach, and the
+/// ratio fell by however many tests the subproject happened to carry. Measured
+/// here: a crate with 17 production modules and 57 test/fixture modules scored
+/// 23% for a glob covering every one of its production files, and shipped the
+/// whole-house mold this check exists to refuse. The bias is proportional to
+/// test volume, so the better-tested a subproject is the more reliably the
+/// check fails — which is exactly backwards.
+fn saturates_subproject(
+    paths: &[String],
+    subproject: &str,
+    modules: &[&Mod],
+    projects: &[&Proj],
+) -> bool {
+    let dirs: Vec<&str> = paths.iter().map(|p| p.trim_end_matches("/**")).collect();
+    let mut owned = 0usize;
+    let mut covered = 0usize;
+    for m in modules {
+        let path = m.path.replace('\\', "/");
+        // Ownership goes to the LONGEST matching project dir, so a nested
+        // subproject's files never inflate the house that contains it.
+        if owner_of(&path, projects).map(|p| p.dir.as_str()) != Some(subproject) {
+            continue;
+        }
+        if under_test(&path) {
+            continue; // same universe on both sides — see the doc comment.
+        }
+        owned += 1;
+        if dirs.iter().any(|d| path.starts_with(&format!("{d}/"))) {
+            covered += 1;
+        }
+    }
+    if owned < MIN_MODULES_FOR_SATURATION {
+        return false;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let share = covered as f32 / owned as f32;
+    share >= SUBPROJECT_SATURATION
+}
+
+/// How many DIRECT children of `parent` hold code anywhere beneath them,
+/// counted from the model's module directories. This is the denominator of the
+/// dominance test: it answers "how much of this folder would the mold be
+/// claiming?" without touching the filesystem.
+fn code_bearing_children(parent: &str, code_dirs: &std::collections::BTreeSet<String>) -> usize {
+    let prefix = format!("{parent}/");
+    let mut children: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for d in code_dirs {
+        if let Some(rest) = d.strip_prefix(&prefix) {
+            let head = rest.split('/').next().unwrap_or(rest);
+            if !head.is_empty() {
+                children.insert(head);
+            }
+        }
+    }
+    children.len()
 }
 
 /// Run `scan-patterns-list`. Prints a JSON array to stdout; exit 0 always.
@@ -318,6 +526,19 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
     // Module paths sorted once — every exemplar scan reads this in a stable order.
     let mut modules: Vec<&Mod> = model.modules.iter().collect();
     modules.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // Every directory the model saw a module in — the denominator of the
+    // dominance test in [`promote_dominated_parents`]. Built once here, from
+    // the model and never the filesystem, so the worklist stays a projection.
+    let code_dirs: std::collections::BTreeSet<String> = model
+        .modules
+        .iter()
+        .filter_map(|m| {
+            let norm = m.path.replace('\\', "/");
+            let cut = norm.rfind('/')?;
+            (cut > 0).then(|| norm[..cut].to_string())
+        })
+        .collect();
 
     // Slugs the enrich agent already refused with a recorded reason — a dead
     // candidate must not burn a dispatch on every scan.
@@ -397,6 +618,14 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 drop(role, project_dir, "mold_exists");
                 continue;
             }
+            let paths = globs_for(&house.files, &code_dirs);
+            // A glob set that covers the house is not a role's scope — see
+            // [`SUBPROJECT_SATURATION`]. Judged AFTER the globs are final, so
+            // the promotion above cannot smuggle a cluster past it.
+            if saturates_subproject(&paths, project_dir, &modules, &projects) {
+                drop(role, project_dir, "covers_whole_subproject");
+                continue;
+            }
             earned = true;
             candidates.push(Candidate {
                 subproject: project_dir.clone(),
@@ -409,7 +638,7 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
                 implements: role.implements.clone(),
                 count: house.count(),
                 exemplars: house.exemplars(),
-                paths: globs_for(&house.files),
+                paths,
                 files: house.files.clone(),
                 rank: rank_of.get(&role.affix.to_lowercase()).copied().unwrap_or(0),
             });
@@ -1754,18 +1983,157 @@ mod tests {
             "apps/gateway/services/edge.rs".to_string(),
             "README.md".to_string(),
         ];
+        let none = std::collections::BTreeSet::new();
         assert_eq!(
-            globs_for(&files),
+            globs_for(&files, &none),
             vec![
                 "apps/api/services/**".to_string(),
                 "apps/gateway/services/**".to_string()
             ]
         );
         assert_eq!(
-            globs_for(&[r"apps\api\services\user.rs".to_string()]),
+            globs_for(&[r"apps\api\services\user.rs".to_string()], &none),
             vec!["apps/api/services/**".to_string()]
         );
-        assert!(globs_for(&[]).is_empty(), "no files must mean no glob, never a root-wide one");
+        assert!(globs_for(&[], &none).is_empty(), "no files must mean no glob, never a root-wide one");
+    }
+
+    /// Folder-per-member: each member owns a directory, so the shared parent
+    /// holds no member FILE and ancestor-collapse — which only fires when a KEPT
+    /// directory is another's parent — has nothing to work with. Without
+    /// promotion every sibling ships its own glob.
+    #[test]
+    fn a_cluster_that_dominates_its_parent_collapses_to_it() {
+        let files: Vec<String> = ["Alpha", "Beta", "Gamma", "Delta"]
+            .iter()
+            .map(|n| format!("src/components/{n}/index.x"))
+            .collect();
+        // The parent holds one more code-bearing child the cluster does not
+        // claim: 4 of 5 is 80%, over the bar.
+        let code_dirs: std::collections::BTreeSet<String> =
+            ["Alpha", "Beta", "Gamma", "Delta", "Unrelated"]
+                .iter()
+                .map(|n| format!("src/components/{n}"))
+                .collect();
+        assert_eq!(
+            globs_for(&files, &code_dirs),
+            vec!["src/components/**".to_string()],
+            "four of five children is dominance — one glob, not four"
+        );
+    }
+
+    /// The other direction, and the reason dominance is the bar rather than
+    /// mere sharing: a cluster occupying a corner of a large folder must stay in
+    /// its corner. Widening here would load the mold over every unrelated edit
+    /// in the parent — the failure the promotion exists to avoid, inverted.
+    #[test]
+    fn a_cluster_that_does_not_dominate_keeps_its_own_globs() {
+        let files: Vec<String> =
+            ["Alpha", "Beta", "Gamma"].iter().map(|n| format!("src/components/{n}/index.x")).collect();
+        let mut code_dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for i in 0..20 {
+            code_dirs.insert(format!("src/components/Other{i}"));
+        }
+        for n in ["Alpha", "Beta", "Gamma"] {
+            code_dirs.insert(format!("src/components/{n}"));
+        }
+        let got = globs_for(&files, &code_dirs);
+        assert_eq!(got.len(), 3, "3 of 23 children is not dominance: {got:?}");
+        assert!(got.iter().all(|g| g.starts_with("src/components/") && g != "src/components/**"));
+    }
+
+    /// A cluster whose glob covers the whole house is the house, not a role.
+    /// Such a mold auto-loads on nearly every edit and stacks on top of every
+    /// genuine mold beside it — which is what the subproject's own Guards are
+    /// for. The enrich agent kept reaching this verdict by hand and applying it
+    /// inconsistently; the arithmetic settles it.
+    #[test]
+    fn a_cluster_that_covers_the_whole_subproject_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Every module of `apps/api` sits under `src/`, so a role mined on the
+        // `src` folder covers 100% of the house. The house is deliberately over
+        // MIN_MODULES_FOR_SATURATION — below that floor the ratio says nothing
+        // and the check correctly abstains.
+        // Directly in `src/`, so the folder role resolves its exemplars there.
+        let modules: String =
+            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+        write_model(
+            root,
+            &format!(
+                r#"{{
+              "projects": [{{"name":"api","dir":"apps/api"}}],
+              "roles": [
+                {{"affix":"src","kind":"folder","count":12,"common_dir":"apps/api/src"}},
+                {{"affix":"Service","kind":"suffix","count":4,"common_dir":"apps/api/src/services"}}
+              ],
+              "modules": [
+                {modules}
+                {{"path":"apps/api/src/services/UserService.x"}},
+                {{"path":"apps/api/src/services/OrderService.x"}}
+              ]
+            }}"#
+            ),
+        );
+        let slugs: Vec<String> = collect(root).into_iter().map(|c| c.slug).collect();
+        assert!(!slugs.contains(&"api-src".to_string()), "the house-wide cluster is dropped: {slugs:?}");
+        assert!(slugs.contains(&"api-service".to_string()), "the real role survives: {slugs:?}");
+        // The drop is REPORTED, never silent — that diagnostic is why the
+        // `--rejected` face exists.
+        let reasons: Vec<&str> = collect_rejected(root).iter().map(|r| r.reason).collect();
+        assert!(reasons.contains(&"covers_whole_subproject"), "reason recorded: {reasons:?}");
+    }
+
+    /// …and a well-tested subproject must reach the same verdict. The check
+    /// counts modules, and a test module can never be covered by a mold's glob
+    /// (a cluster under a test segment is dropped before it gets one), so
+    /// counting tests in the denominator alone measures the numerator against a
+    /// universe it cannot reach. The bias grows with test volume: the better
+    /// tested a subproject is, the more reliably the check would fail. Here the
+    /// house is the SAME 10 production modules as the test above, plus 30
+    /// tests — a 100% glob scoring 25% on the old arithmetic.
+    #[test]
+    fn test_volume_never_buys_a_cluster_past_the_house_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let prod: String =
+            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+        let tests: String =
+            (0..30).map(|i| format!(r#"{{"path":"apps/api/tests/fixtures/case{i}.x"}},"#)).collect();
+        write_model(
+            root,
+            &format!(
+                r#"{{
+              "projects": [{{"name":"api","dir":"apps/api"}}],
+              "roles": [
+                {{"affix":"src","kind":"folder","count":12,"common_dir":"apps/api/src"}},
+                {{"affix":"Service","kind":"suffix","count":4,"common_dir":"apps/api/src/services"}}
+              ],
+              "modules": [
+                {prod}
+                {tests}
+                {{"path":"apps/api/src/services/UserService.x"}},
+                {{"path":"apps/api/src/services/OrderService.x"}}
+              ]
+            }}"#
+            ),
+        );
+        let slugs: Vec<String> = collect(root).into_iter().map(|c| c.slug).collect();
+        assert!(
+            !slugs.contains(&"api-src".to_string()),
+            "tests must not dilute the denominator into letting the house through: {slugs:?}"
+        );
+        assert!(slugs.contains(&"api-service".to_string()), "the real role still survives: {slugs:?}");
+    }
+
+    /// Two siblings are a coincidence, not a layout — the floor keeps a pair
+    /// from claiming a parent even when the parent holds nothing else.
+    #[test]
+    fn two_siblings_alone_never_claim_their_parent() {
+        let files = vec!["src/x/A/index.x".to_string(), "src/x/B/index.x".to_string()];
+        let code_dirs: std::collections::BTreeSet<String> =
+            ["src/x/A", "src/x/B"].iter().map(ToString::to_string).collect();
+        assert_eq!(globs_for(&files, &code_dirs).len(), 2, "a pair stays a pair");
     }
 
     /// The worklist entry carries the glob, so the dispatched agent copies a

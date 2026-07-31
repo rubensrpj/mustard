@@ -22,6 +22,22 @@ const MIN_ROLE_PARTNERS: usize = 2;
 /// A folder name must recur under at least this many distinct parent dirs to
 /// count as a role folder (DTOs/, Mappers/, Services/ — one under each module).
 const MIN_ROLEFOLDER_PARENTS: usize = 3;
+/// …and a role folder must offer a CHOICE. Recurring under many parents proves
+/// a folder is systematic; it does not prove it is a ROLE. A build unit's code
+/// root recurs exactly the same way — once under every unit — and passes that
+/// test while naming nothing: it is the path you had to take, not a decision
+/// anyone made. The line is whether the folder has SIBLINGS: picking `DTOs/`
+/// over `Services/` is information, and a folder that is its parent's only
+/// child offered no such pick.
+///
+/// So a candidate is dropped when it is a solo child in MORE than this share of
+/// the places it appears. Measured across two unrelated real workspaces — one a
+/// flat multi-unit repository, the other a layered one with an entity-per-module
+/// backend — the two populations do not overlap: each workspace's code root
+/// scored 59% and 100%, while every folder that did name a role scored between
+/// 0% and 12%. A simple majority sits in that gap with room on both sides, so it
+/// is a boundary rather than a tuned number.
+const MAX_SOLO_SHARE: f32 = 0.5;
 /// A bare (single-token) class name must recur across at least this many
 /// distinct path-entities to count as a role (e.g. a nested `Validator`).
 const MIN_BARE_ENTITIES: usize = 3;
@@ -107,9 +123,15 @@ pub fn mine(
             folder_parents.entry(folder).or_default().insert(parent_name);
         }
     }
+    // …and the sibling test above: a folder that is usually its parent's only
+    // child named no role, it named the only way in. Built over EVERY directory
+    // level (not just a file's immediate parent), because the code root sits
+    // one level above the folders that do carry roles.
+    let dir_children = directory_children(symbols.iter().map(|s| s.path.as_str()));
     let role_folders: HashSet<String> = folder_parents
         .iter()
         .filter(|(_, p)| p.len() >= MIN_ROLEFOLDER_PARENTS)
+        .filter(|(f, _)| !is_solo_child(f, &dir_children))
         .map(|(f, _)| f.clone())
         .collect();
 
@@ -550,7 +572,7 @@ fn collect_symbols(modules: &[Module], loc_by_path: &HashMap<&str, usize>) -> Ve
     let mut seen: HashSet<(String, String)> = HashSet::new();
     for m in modules {
         for d in &m.declarations {
-            if !is_significant(d) || !seen.insert((m.path.clone(), d.name.clone())) {
+            if !is_significant(d, &m.path) || !seen.insert((m.path.clone(), d.name.clone())) {
                 continue;
             }
             out.push(Symbol {
@@ -566,11 +588,56 @@ fn collect_symbols(modules: &[Module], loc_by_path: &HashMap<&str, usize>) -> Ve
     out
 }
 
-fn is_significant(d: &Decl) -> bool {
-    matches!(
-        d.kind.as_str(),
-        "class" | "interface" | "record" | "struct" | "enum" | "trait" | "mixin" | "function" | "const" | "type"
-    ) && d.name.len() >= 3
+/// Kinds that are a unit on their own: a NAMED TYPE, which every language that
+/// has one uses as the thing an architectural role hangs on (`UserService`,
+/// `BankRepository`). Closed vocabulary — the generic `@definition.<kind>`
+/// suffix the `.scm` layer emits, never a grammar node.
+const UNIT_TYPE_KINDS: &[&str] =
+    &["class", "interface", "record", "struct", "enum", "trait", "mixin", "extension", "type"];
+
+/// Kinds that are a unit only when the declaration NAMES ITS OWN FILE.
+///
+/// A callable is not architecture by itself — a private helper buried among
+/// forty others says nothing about how the project is built, and treating it as
+/// a unit is what mints bare grammatical particles as roles. But a callable
+/// that names its file IS the file's subject, the same fact a named type states
+/// when it carries the name of the file that declares it. One rule, no
+/// exception list: whether a project spells its units as types or as callables
+/// is a property of the project, never a branch in this code.
+const UNIT_CALLABLE_KINDS: &[&str] = &["function", "const"];
+
+/// Whether a declaration is an architectural UNIT — the thing roles are mined
+/// from. Everything else is a MEMBER (`method`, `field`, `property`,
+/// `enum_member`): it lives inside a unit and feeds the digest's term index
+/// only. The distinction is drawn upstream, by each query set's generic
+/// `@definition.<kind>` vocabulary, and applied here identically for every one
+/// of them — this function knows no dialect and must never learn one.
+fn is_significant(d: &Decl, module_path: &str) -> bool {
+    if d.name.len() < 3 {
+        return false;
+    }
+    if UNIT_TYPE_KINDS.contains(&d.kind.as_str()) {
+        return true;
+    }
+    UNIT_CALLABLE_KINDS.contains(&d.kind.as_str()) && names_its_file(&d.name, module_path)
+}
+
+/// Whether `name` is the file's namesake — identifier and file stem equal once
+/// case and separators are dropped, so `close_gate`/`close_gate.x`,
+/// `useProject`/`useProject.x` and `UserService`/`user_service.x` all match.
+/// Separator- and case-blind on purpose: the convention is the WORD SEQUENCE,
+/// and the joint between words is spelled differently from project to project.
+/// No extension is inspected and no naming style is privileged.
+fn names_its_file(name: &str, module_path: &str) -> bool {
+    let file = module_path.rsplit(['/', '\\']).next().unwrap_or(module_path);
+    let stem = file.split('.').next().unwrap_or(file);
+    !stem.is_empty() && squash(stem) == squash(name)
+}
+
+/// Lowercase `s` keeping only ASCII alphanumerics (`close_gate` -> `closegate`,
+/// `useProject` -> `useproject`).
+fn squash(s: &str) -> String {
+    s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
 
 // --- union-find ------------------------------------------------------------
@@ -720,6 +787,48 @@ fn path_segs(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
+/// Every directory in the tree mapped to the set of directory names directly
+/// beneath it. Built over ALL levels, not just each file's immediate parent:
+/// the folders this feeds a verdict on sit at every depth, and a build unit's
+/// code root sits one level ABOVE the folders that do carry roles. The root
+/// itself is the empty key, so a top-level folder is measured too.
+fn directory_children<'a>(paths: impl Iterator<Item = &'a str>) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for path in paths {
+        let segs = path_segs(path);
+        // The last segment is the file itself — a file is not a child folder.
+        for i in 0..segs.len().saturating_sub(1) {
+            let parent = segs[..i].join("/");
+            out.entry(parent).or_default().insert(segs[i].to_string());
+        }
+    }
+    out
+}
+
+/// Whether `folder` is its parent's ONLY child in more than [`MAX_SOLO_SHARE`]
+/// of the places it appears — see that constant for why a solo child cannot be
+/// a role. A folder that appears nowhere is not solo (an empty denominator is
+/// missing evidence, never proof).
+fn is_solo_child(folder: &str, dir_children: &BTreeMap<String, BTreeSet<String>>) -> bool {
+    let mut seen = 0usize;
+    let mut solo = 0usize;
+    for children in dir_children.values() {
+        if !children.contains(folder) {
+            continue;
+        }
+        seen += 1;
+        if children.len() == 1 {
+            solo += 1;
+        }
+    }
+    if seen == 0 {
+        return false;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let share = solo as f32 / seen as f32;
+    share > MAX_SOLO_SHARE
+}
+
 /// Reduce an import to a readable collaborator label: the last two dotted
 /// namespace segments (`A.B.Notification.Services` -> `Notification.Services`),
 /// or the last path segment for path-style imports.
@@ -849,6 +958,76 @@ mod tests {
 
     fn ents(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A build unit's code root recurs under every unit — which is exactly the
+    /// shape "recurs under many distinct parents" was written to catch — yet it
+    /// names nothing. The sibling test separates them: the roles sit BESIDE
+    /// each other under one parent, the code root is alone under its own.
+    ///
+    /// Both layouts here are transcribed from real measurements, so the test
+    /// fails if the boundary ever stops separating them.
+    #[test]
+    fn a_folder_that_is_its_parents_only_child_is_not_a_role() {
+        // A layered workspace: each unit has ONE code root; inside it the real
+        // role folders sit side by side.
+        let paths = [
+            "apps/one/src/commands/a.x",
+            "apps/one/src/hooks/b.x",
+            "apps/one/src/shared/c.x",
+            "apps/two/src/commands/d.x",
+            "apps/two/src/hooks/e.x",
+            "apps/three/src/commands/f.x",
+            "apps/three/src/hooks/g.x",
+        ];
+        let kids = directory_children(paths.iter().copied());
+        assert!(
+            is_solo_child("src", &kids),
+            "the code root is alone under each unit — it names the only way in"
+        );
+        assert!(!is_solo_child("commands", &kids), "a role folder has siblings");
+        assert!(!is_solo_child("hooks", &kids), "…and so does the other one");
+    }
+
+    /// The entity-per-folder layout, where the roles recur once under every
+    /// entity. This is the case `MIN_ROLEFOLDER_PARENTS` exists for, and the
+    /// sibling test must leave it completely alone.
+    #[test]
+    fn roles_that_recur_under_every_entity_keep_their_siblings() {
+        let paths = [
+            "app/Modules/Banks/DTOs/a.x",
+            "app/Modules/Banks/Services/b.x",
+            "app/Modules/Banks/Repositories/c.x",
+            "app/Modules/Cards/DTOs/d.x",
+            "app/Modules/Cards/Services/e.x",
+            "app/Modules/Cards/Repositories/f.x",
+            "app/Modules/Loans/DTOs/g.x",
+            "app/Modules/Loans/Services/h.x",
+        ];
+        let kids = directory_children(paths.iter().copied());
+        for role in ["DTOs", "Services", "Repositories"] {
+            assert!(!is_solo_child(role, &kids), "{role} is chosen over its siblings");
+        }
+    }
+
+    /// An empty denominator is missing evidence, not proof of solitude.
+    #[test]
+    fn a_folder_that_appears_nowhere_is_never_solo() {
+        let kids = directory_children(["a/b/c.x"].iter().copied());
+        assert!(!is_solo_child("nowhere", &kids));
+    }
+
+    /// The share is a strict majority, so a folder split evenly between solo
+    /// and accompanied keeps its role — the tie goes to keeping evidence.
+    #[test]
+    fn exactly_half_solo_is_not_enough_to_drop_a_folder() {
+        let paths = [
+            "one/roles/a.x",   // solo under `one`
+            "two/roles/b.x",   // accompanied under `two`
+            "two/other/c.x",
+        ];
+        let kids = directory_children(paths.iter().copied());
+        assert!(!is_solo_child("roles", &kids), "1 of 2 is not MORE than half");
     }
 
     #[test]

@@ -48,6 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           manifest=plugin/.claude-plugin/plugin.json
+          cargo_toml=Cargo.toml
           pv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           IFS=. read -r ma mi pa <<<"$pv"
           nv="$ma.$mi.$((pa+1))"
@@ -55,9 +56,22 @@ jobs:
           sed -i "s/\"version\": \"$pv\"/\"version\": \"$nv\"/" "$manifest"
           grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
 
+          # O selo tem DUAS pernas e as duas precisam andar juntas. Um binário
+          # compilado sem MUSTARD_RELEASE_VERSION — todo build local, todo
+          # install.ps1, toda CI — resolve harness_version() para o
+          # CARGO_PKG_VERSION, ou seja, o [workspace.package] version daqui. Esse
+          # é o número que sai no `--version`, no `m{version}` da statusline e no
+          # carimbo `mustard.json#version` de cada instalação. Bumpar só o
+          # manifesto deixava o Cargo.toml em 0.1.0 por 28 releases: não lia como
+          # "build de dev", lia como release velho, e o aviso de drift do próprio
+          # harness discutia consigo mesmo. `tests/version_line.rs` reprova se as
+          # duas divergirem — este passo é o que as mantém iguais na origem.
+          sed -i "0,/^version = \"$pv\"$/s//version = \"$nv\"/" "$cargo_toml"
+          grep -q "^version = \"$nv\"$" "$cargo_toml"   # o sed realmente aplicou
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$manifest"
+          git add "$manifest" "$cargo_toml"
           git commit -m "chore(release): v$nv — bump automático pós-merge na main"
           # Rebase ANTES da tag: se outro merge entrou no meio-tempo, o commit
           # de bump é reescrito e a tag precisa apontar para o sha final.
@@ -76,12 +90,17 @@ jobs:
           git fetch origin dev
           git checkout -B dev-sync "origin/dev"
           dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
-          if [ "$dv" = "$nv" ]; then
-            echo "dev já está em v$nv — nada a propagar"
+          cv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ]; then
+            echo "dev já está em v$nv nas duas pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
             grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
-            git add "$manifest"
+            # Mesma razão da perna da main: sem isto o dev compila binários
+            # carimbados com uma versão que não existe mais.
+            sed -i "0,/^version = \"$cv\"$/s//version = \"$nv\"/" "$cargo_toml"
+            grep -q "^version = \"$nv\"$" "$cargo_toml"  # o sed realmente aplicou
+            git add "$manifest" "$cargo_toml"
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then
               echo "dev sincronizado: $dv -> $nv"

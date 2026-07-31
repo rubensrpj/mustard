@@ -1,0 +1,6 @@
+{
+  "core-kind": "Same role as core-status — TimelineKind / WorkspaceAlertKind are closed classification enums under domain/model/view/** and are already taught (derives, serde rename, classify/parse, no Unknown variant) by the core-status mold.",
+  "dashboard-source": "Both members (SavingsSource in types/economy.ts and the source field in types/specs.ts) are the same closed string-literal union mirroring a Rust serde enum that dashboard-kind-pattern already teaches under the identical paths — a second mold would load beside it and repeat it.",
+  "dashboard-summary": "Both exemplars (useEconomySummary.ts, useWorkspaceSummary.ts) declare no *Summary type of their own — they are TanStack query hooks importing EconomySummary/WorkspaceSummary from src/lib; their shape is exactly what dashboard-use-pattern teaches, under the identical paths.",
+  "rt-record": "Role already covered by rt-entry-pattern: InstallRecord and ValidateRecord are literal twins of each other, live inside apps/rt/src/commands/maint/ (already inside rt-entry's apps/rt/src/commands/** glob), and teach the same row-paired-with-a-Report shape — a second mold loading on the same edits would be padding, not a distinct lesson."
+}

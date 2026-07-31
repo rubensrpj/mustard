@@ -17,12 +17,38 @@ const TEST_DIR_SEGMENTS: &[&str] = &[
     "test",
     "tests",
     "__tests__",
-    "spec",
-    "specs",
     "testdata",
     "fixtures",
     "__mocks__",
 ];
+
+/// Segments that mark test terrain ONLY near the top of a project — because
+/// the same words are ordinary domain nouns everywhere else.
+///
+/// `spec/` beside the source tree is a real and widespread convention. `spec/`
+/// INSIDE the source tree is a folder about specifications, and the difference
+/// is where it sits, not what it is called. Treating the word as decisive at
+/// any depth cost this workspace 46 production modules and 1419 declarations —
+/// every module of its own `commands/spec/` family and its `domain/spec/`
+/// core — silently excluded from retrieval, so a request about specs could not
+/// reach the code that implements them. Nothing failed; the files were simply
+/// never candidates.
+///
+/// The unambiguous names above need no such qualification: no project calls a
+/// domain folder `__tests__` or `testdata`, so those stay decisive at any
+/// depth. This split is DATA — which words are ambiguous — not a rule about
+/// any language or framework.
+const AMBIGUOUS_TEST_DIR_SEGMENTS: &[&str] = &["spec", "specs"];
+
+/// How deep an [`AMBIGUOUS_TEST_DIR_SEGMENTS`] segment may sit and still count
+/// as test terrain (0-based index of the segment in the repo-relative path).
+///
+/// The convention places such a directory BESIDE the source tree, at the root
+/// of the project it tests: `spec/…` in a single-project repository, or
+/// `<subproject>/spec/…` under one level of monorepo nesting — index 0 through
+/// 2. Deeper than that it is inside a source tree, where it names a domain
+/// concept rather than a test suite.
+const AMBIGUOUS_MAX_DEPTH: usize = 2;
 
 /// Filename-stem suffixes that mark a file as a test/spec by convention, in any
 /// of the common separator styles (`.`, `_`, `-`) plus the bare `tests` plural.
@@ -39,9 +65,16 @@ const TEST_STEM_SUFFIXES: &[&str] = &[
 /// rejecting `latest` / `attest`, where the trailing `test` is not a word.
 const TEST_CAMEL_SUFFIXES: &[&str] = &["test", "spec"];
 
-/// Filename-stem prefixes that mark a file as a test by convention (e.g. the
-/// `test_`/`spec_` style). Matched case-insensitively against the stem.
-const TEST_STEM_PREFIXES: &[&str] = &["test_", "spec_"];
+/// Filename-stem prefixes that mark a file as a test by convention. Matched
+/// case-insensitively against the stem.
+///
+/// `test_` only. The spec conventions communities actually use are SUFFIXES —
+/// `foo_spec.rb`, `foo.spec.ts` — and both are already covered by
+/// [`TEST_STEM_SUFFIXES`]. There is no established `spec_foo` test convention,
+/// while `spec_views`, `spec_draft`, `spec_staleness` are ordinary names for
+/// modules ABOUT specifications. Carrying the prefix hid four such production
+/// modules, one of them the largest single file in its subproject.
+const TEST_STEM_PREFIXES: &[&str] = &["test_"];
 
 /// Single-line comment prefixes shared across the common comment styles. A
 /// trimmed line starting with any of these is treated as a comment line. This
@@ -65,12 +98,18 @@ pub fn is_test_path(rel: &str) -> bool {
     let slashed = rel.replace('\\', "/");
     let normalised = slashed.to_ascii_lowercase();
 
-    // Segment convention: any whole `/`-delimited segment is a test directory.
-    for segment in normalised.split('/') {
+    // Segment convention: an unambiguous test directory counts at any depth; an
+    // ambiguous one (a word that is also an ordinary domain noun) counts only
+    // where the convention actually places it — see
+    // [`AMBIGUOUS_TEST_DIR_SEGMENTS`].
+    for (i, segment) in normalised.split('/').enumerate() {
         if segment.is_empty() {
             continue;
         }
         if TEST_DIR_SEGMENTS.iter().any(|d| *d == segment) {
+            return true;
+        }
+        if i <= AMBIGUOUS_MAX_DEPTH && AMBIGUOUS_TEST_DIR_SEGMENTS.iter().any(|d| *d == segment) {
             return true;
         }
     }
@@ -175,9 +214,30 @@ mod tests {
         assert!(is_test_path("bar.spec.js"));
         assert!(is_test_path("a/b-test.kt"));
         assert!(is_test_path("a/widget-spec.rb"));
-        assert!(is_test_path("spec_runner.rb"));
         // A stem ending in `tests` (no extension separator) is a test stem.
         assert!(is_test_path("integrationtests.go"));
+        // `spec_` is NOT a prefix convention. The spec conventions in use are
+        // suffixes (`widget-spec.rb`, `bar.spec.js`), both asserted above,
+        // while `spec_*` names modules ABOUT specifications.
+        assert!(!is_test_path("src/spec_views.rs"), "a module about specs is not a test");
+        assert!(!is_test_path("src/commands/spec_draft.rs"));
+        // `test_` stays: it is the established convention.
+        assert!(is_test_path("test_runner.rb"));
+    }
+
+    #[test]
+    fn an_ambiguous_segment_counts_only_where_the_convention_puts_it() {
+        // `spec/` beside the source tree is the convention; `spec/` inside it
+        // is a domain folder. Same word, decided by where it sits — the
+        // distinction that cost this workspace 46 production modules.
+        assert!(is_test_path("spec/models/user_spec.rb"), "project-root spec/ is test terrain");
+        assert!(is_test_path("apps/api/spec/thing.rb"), "one level of monorepo nesting still is");
+        assert!(!is_test_path("apps/rt/src/commands/spec/cli.rs"), "inside the source tree it is a domain folder");
+        assert!(!is_test_path("packages/core/src/domain/spec/contract.rs"));
+        // Unambiguous names need no such qualification — nobody calls a domain
+        // folder `__tests__`, so depth never rescues one.
+        assert!(is_test_path("apps/rt/src/deep/nested/__tests__/x.ts"));
+        assert!(is_test_path("apps/rt/src/deep/nested/fixtures/x.rs"));
     }
 
     #[test]

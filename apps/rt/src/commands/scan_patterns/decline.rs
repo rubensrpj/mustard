@@ -35,36 +35,39 @@ pub(crate) fn declined(root: &Path) -> BTreeMap<String, String> {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-/// Run `scan-patterns-decline`: record `slug` → `reason` in the store.
-pub fn run(root: &Path, slug: &str, reason: &str) {
+/// Record `slug` → `reason`, returning the failure instead of printing it — the
+/// decline twin of [`super::apply::apply_one`], so a caller holding MANY
+/// refusals ([`super::relay`]) records them all through one copy of the rules.
+pub(crate) fn record(root: &Path, slug: &str, reason: &str) -> Result<(), String> {
     let slug = slug.trim();
     let reason = reason.trim();
     if slug.is_empty() || reason.is_empty() {
-        eprintln!("scan-patterns-decline: --slug and --reason must be non-empty");
-        std::process::exit(1);
+        return Err("--slug and --reason must be non-empty".to_string());
     }
 
     let mut map = declined(root);
     map.insert(slug.to_string(), reason.to_string());
-    let json = match serde_json::to_string_pretty(&map) {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("scan-patterns-decline: cannot serialise the store: {e}");
-            return;
-        }
-    };
+    let json =
+        serde_json::to_string_pretty(&map).map_err(|e| format!("cannot serialise the store: {e}"))?;
     let path = store_path(root);
     if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("scan-patterns-decline: cannot create {}: {e}", parent.display());
-            return;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    mfs::write_atomic(&path, format!("{json}\n").as_bytes())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// Run `scan-patterns-decline`: record `slug` → `reason` in the store.
+pub fn run(root: &Path, slug: &str, reason: &str) {
+    match record(root, slug, reason) {
+        Ok(()) => println!("scan-patterns-decline: recorded {}", slug.trim()),
+        Err(e) if e.starts_with("--slug") => {
+            eprintln!("scan-patterns-decline: {e}");
+            std::process::exit(1);
         }
+        Err(e) => eprintln!("scan-patterns-decline: {e}"),
     }
-    if let Err(e) = mfs::write_atomic(&path, format!("{json}\n").as_bytes()) {
-        eprintln!("scan-patterns-decline: cannot write {}: {e}", path.display());
-        return;
-    }
-    println!("scan-patterns-decline: recorded {slug}");
 }
 
 #[cfg(test)]
