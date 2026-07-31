@@ -41,6 +41,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # O bump precisa de cargo para manter o Cargo.lock alinhado com a versão
+      # (ver o passo abaixo). A imagem `ubuntu-latest` traz Rust, mas depender
+      # do que vem pré-instalado numa imagem é como o release da v0.1.29 falhou:
+      # por um pressuposto que ninguém tinha verificado. Mesma ação que a CI usa.
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Bump PATCH do plugin.json, tag, despacho do Release e selo no dev
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,7 +84,7 @@ jobs:
           # dependencia externa se move junto. Preferido a um `sed` no lock, que
           # nao distingue a nossa versao da de uma dependencia que por acaso
           # tenha o mesmo numero.
-          cargo update --workspace --offline
+          cargo update --workspace
           grep -q "^version = \"$nv\"$" Cargo.lock   # o lock realmente andou
 
           git config user.name  "github-actions[bot]"
@@ -114,7 +120,7 @@ jobs:
             grep -q "^version = \"$nv\"$" "$cargo_toml"  # o sed realmente aplicou
             # …e o lock junto, senão o `--locked` do Release reprova o dev pelo
             # mesmo motivo que reprovou a main.
-            cargo update --workspace --offline
+            cargo update --workspace
             grep -q "^version = \"$nv\"$" Cargo.lock
             git add "$manifest" "$cargo_toml" Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
