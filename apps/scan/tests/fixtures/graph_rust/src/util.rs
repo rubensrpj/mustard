@@ -6,6 +6,12 @@ pub struct Widget {
     pub width: usize,
 }
 
+impl Widget {
+    pub fn area(&self) -> usize {
+        self.width
+    }
+}
+
 pub enum Mode {
     Fast,
     Slow,

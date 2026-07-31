@@ -1,46 +1,75 @@
 {
   "version": 1,
   "equivalences": {
-    "actor": [
-      "not",
-      "sure"
+    "affix": [
+      "show"
+    ],
+    "alias": [
+      "main"
     ],
     "api": [
       "bees"
     ],
-    "arquivos": [
-      "files"
-    ],
     "assert": [
       "insight"
     ],
-    "attribute": [
-      "not",
-      "sure"
-    ],
     "auto": [
       "car"
+    ],
+    "cap": [
+      "heading"
+    ],
+    "cargo": [
+      "position"
     ],
     "clone": [
       "not",
       "gonna",
       "that"
     ],
+    "commands": [
+      "not",
+      "sure"
+    ],
+    "comment": [
+      "how"
+    ],
     "concern": [
       "care"
     ],
-    "decl": [
-      "dec"
+    "corpus": [
+      "province"
     ],
-    "declares": [
-      "the",
-      "commission",
-      "shall",
-      "adopt"
+    "criteria": [
+      "conditions"
+    ],
+    "criterion": [
+      "contemplative"
+    ],
+    "data": [
+      "date"
+    ],
+    "declaration": [
+      "conference"
+    ],
+    "degrades": [
+      "degradation"
+    ],
+    "deterministic": [
+      "determine"
     ],
     "domain": [
       "not",
       "sure"
+    ],
+    "emit": [
+      "not",
+      "gonna",
+      "able",
+      "that"
+    ],
+    "env": [
+      "approx"
     ],
     "exemplars": [
       "copies"
@@ -48,50 +77,36 @@
     "explicit": [
       "clear"
     ],
-    "face": [
-      "does"
+    "finalize": [
+      "total"
     ],
     "fix": [
       "unwrought"
     ],
-    "flatten": [
-      "low"
+    "frontmatter": [
+      "front"
     ],
-    "grammars": [
-      "lights"
+    "glob": [
+      "global"
     ],
-    "honest": [
-      "good"
+    "grammar": [
+      "lightness"
     ],
-    "i18n": [
-      "18n"
+    "grep": [
+      "strike"
     ],
-    "impl": [
-      "imprint"
+    "identifier": [
+      "identify"
     ],
-    "interval": [
-      "contract"
+    "install": [
+      "phantom"
     ],
-    "invalid": [
-      "creative"
+    "iso": [
+      "not",
+      "sure"
     ],
-    "invocation": [
-      "the"
-    ],
-    "iter": [
-      "ker"
-    ],
-    "literal": [
-      "ignoring",
-      "the",
-      "situation"
-    ],
-    "miss": [
-      "missing"
-    ],
-    "monorepo": [
-      "single",
-      "handed"
+    "modules": [
+      "process"
     ],
     "otel": [
       "steel"
@@ -99,29 +114,25 @@
     "partialeq": [
       "partialq"
     ],
+    "pid": [
+      "request"
+    ],
     "plus": [
       "more"
-    ],
-    "posttooluse": [
-      "post",
-      "72use"
     ],
     "pretooluse": [
       "pre",
       "sbs"
     ],
-    "prior": [
-      "higher"
+    "prompt": [
+      "background"
     ],
-    "proven": [
-      "source"
+    "prune": [
+      "plum"
     ],
-    "readable": [
-      "disposable"
-    ],
-    "refuses": [
-      "not",
-      "sure"
+    "redirect": [
+      "sorry",
+      "but"
     ],
     "regression": [
       "the",
@@ -130,40 +141,50 @@
     "relevance": [
       "fit"
     ],
-    "renderer": [
-      "render"
+    "render": [
+      "countries"
     ],
-    "resolver": [
-      "resolve"
+    "resolve": [
+      "issues"
     ],
-    "route": [
-      "road"
+    "role": [
+      "position"
     ],
-    "sessionstart": [
-      "session"
+    "roles": [
+      "positions"
     ],
-    "sqlite": [
-      "public",
-      "registry"
+    "silent": [
+      "the",
+      "commission",
+      "proposal"
+    ],
+    "stale": [
+      "stales"
     ],
     "stdout": [
       "stout"
     ],
-    "subprocess": [
-      "sub"
+    "stem": [
+      "new"
     ],
-    "symbol": [
-      "the",
-      "number"
+    "subagent": [
+      "sub",
+      "agent"
     ],
     "tauri": [
       "bulls"
     ],
+    "tier": [
+      "enterprise"
+    ],
+    "timestamp": [
+      "layer"
+    ],
+    "transcript": [
+      "sorry"
+    ],
     "true": [
       "other"
-    ],
-    "union": [
-      "sorry"
     ],
     "usage": [
       "use"
@@ -171,8 +192,15 @@
     "uses": [
       "use"
     ],
-    "vocab": [
-      "vocabulary"
+    "vec": [
+      "old"
+    ],
+    "verbatim": [
+      "the",
+      "week"
+    ],
+    "whitespace": [
+      "white"
     ]
   }
 }

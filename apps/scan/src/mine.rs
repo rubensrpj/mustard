@@ -550,7 +550,7 @@ fn collect_symbols(modules: &[Module], loc_by_path: &HashMap<&str, usize>) -> Ve
     let mut seen: HashSet<(String, String)> = HashSet::new();
     for m in modules {
         for d in &m.declarations {
-            if !is_significant(d) || !seen.insert((m.path.clone(), d.name.clone())) {
+            if !is_significant(d, &m.path) || !seen.insert((m.path.clone(), d.name.clone())) {
                 continue;
             }
             out.push(Symbol {
@@ -566,11 +566,55 @@ fn collect_symbols(modules: &[Module], loc_by_path: &HashMap<&str, usize>) -> Ve
     out
 }
 
-fn is_significant(d: &Decl) -> bool {
-    matches!(
-        d.kind.as_str(),
-        "class" | "interface" | "record" | "struct" | "enum" | "trait" | "mixin" | "function" | "const" | "type"
-    ) && d.name.len() >= 3
+/// Kinds that are a unit on their own: a NAMED TYPE, which every language that
+/// has one uses as the thing an architectural role hangs on (`UserService`,
+/// `BankRepository`). Closed vocabulary — the generic `@definition.<kind>`
+/// suffix the `.scm` layer emits, never a grammar node.
+const UNIT_TYPE_KINDS: &[&str] =
+    &["class", "interface", "record", "struct", "enum", "trait", "mixin", "extension", "type"];
+
+/// Kinds that are a unit only when the declaration NAMES ITS OWN FILE.
+///
+/// A callable is not architecture by itself — a private helper buried among
+/// forty others says nothing about how the project is built, and treating it as
+/// a unit is what mints English particles (`for`, `of`, `at`) as roles. But a
+/// callable that names its file IS the file's subject, exactly as `UserService`
+/// is the subject of `UserService.cs`: `close_gate.rs` declaring `close_gate`,
+/// `useProject.ts` declaring `useProject`. That is the same fact a
+/// class-oriented language states with a type, said with another keyword — so
+/// the rule is one rule, not a carve-out for function-oriented languages.
+const UNIT_CALLABLE_KINDS: &[&str] = &["function", "const"];
+
+/// Whether a declaration is an architectural UNIT — the thing roles are mined
+/// from. Everything else is a MEMBER (`method`, `field`, `property`,
+/// `enum_member`): it lives inside a unit and feeds the digest's term index
+/// only. C# and Dart already got this for free, because their dialects never
+/// emit a free `function`; this states the same line for every language.
+fn is_significant(d: &Decl, module_path: &str) -> bool {
+    if d.name.len() < 3 {
+        return false;
+    }
+    if UNIT_TYPE_KINDS.contains(&d.kind.as_str()) {
+        return true;
+    }
+    UNIT_CALLABLE_KINDS.contains(&d.kind.as_str()) && names_its_file(&d.name, module_path)
+}
+
+/// Whether `name` is the file's namesake — identifier and file stem equal once
+/// case and separators are dropped, so `close_gate.rs`/`close_gate`,
+/// `useProject.ts`/`useProject` and `user_service.py`/`UserService` all match.
+/// Separator-blind on purpose: the convention is the WORD sequence, and each
+/// language spells the joint differently.
+fn names_its_file(name: &str, module_path: &str) -> bool {
+    let file = module_path.rsplit(['/', '\\']).next().unwrap_or(module_path);
+    let stem = file.split('.').next().unwrap_or(file);
+    !stem.is_empty() && squash(stem) == squash(name)
+}
+
+/// Lowercase `s` keeping only ASCII alphanumerics (`close_gate` -> `closegate`,
+/// `useProject` -> `useproject`).
+fn squash(s: &str) -> String {
+    s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
 
 // --- union-find ------------------------------------------------------------
