@@ -11,6 +11,7 @@ git delete removes a unit whole, and a per-branch notebook collects what does no
 ## Network
 
 - Parent: [[spec.work-unit-lives-on-its]]
+- Depends on: [[wave.work-unit-lives-on-its.3-pr-door]]
 
 ## Tasks
 

@@ -49,7 +49,14 @@ pub struct ScanCleanGate;
 /// tracked modifications, staged entries, or untracked non-ignored files.
 /// `Some(false)` when clean. `None` for every unknown (no git, not a repo,
 /// failed invocation) so the caller can fail open.
-fn tree_is_dirty(cwd: &Path) -> Option<bool> {
+///
+/// `pub(crate)` so the base gate — which TRIGGERS a census refresh — consults
+/// the same predicate as this gate, which REFUSES one. Two spellings of
+/// "clean" is how the automatic path would start mining exactly where the
+/// user-invoked door is refused. Note it counts `.claude/` as dirt (unlike
+/// [`crate::commands::work_unit_open::dirty_paths`]), which is the whole point:
+/// the model the scan rewrites lives there.
+pub(crate) fn tree_is_dirty(cwd: &Path) -> Option<bool> {
     let out = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(cwd)

@@ -1,5 +1,6 @@
 pub mod cli;
 
+pub(crate) mod base_gate;
 pub mod emit_event;
 pub mod emit_phase;
 pub mod emit_pipeline;

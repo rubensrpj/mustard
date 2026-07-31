@@ -87,8 +87,11 @@ ceremony, code, notebook) lives on one branch, so deleting the branch deletes th
 - `plugin/commands/{mustard,status,stats,knowledge,maint,skills,qa,close,review,scan,unhook,rehook}.md`
   — the twelve doors that are removed, folded or turned into internal steps.
 - `plugin/commands/upsert.md` — absorbs the doctor, off and on flags.
-- `.claude/mustard/orchestrator.md` and its template under `apps/cli/templates/` — the router
-  learns the base gate and the four-door surface.
+- `packages/core/templates/mustard/orchestrator.md` and the delivered copy at
+  `.claude/mustard/orchestrator.md` — the router learns the base gate and the four-door
+  surface. The seed is the one under `packages/core/templates/` (`include_str!` at
+  `packages/core/src/platform/seeds.rs:31`); an anti-drift test compares the two, so both
+  are edited together. There is no `apps/cli/templates/.claude/mustard/` path.
 - `apps/rt/tests/run_command_surface.rs`, `apps/rt/tests/template_parity.rs` — the locked
   command surface both tests guard.
 

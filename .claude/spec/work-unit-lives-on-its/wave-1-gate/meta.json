@@ -1,10 +1,10 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": null,
+  "checkpoint": "2026-07-31T21:23:11.749Z",
   "parent": "work-unit-lives-on-its",
   "checklist": [
     {
@@ -15,7 +15,7 @@
     {
       "label": "apps/rt/src/commands/event/emit_pipeline.rs",
       "path": "apps/rt/src/commands/event/emit_pipeline.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "packages/core/src/domain/config.rs",
@@ -25,12 +25,12 @@
     {
       "label": ".claude/mustard/orchestrator.md",
       "path": ".claude/mustard/orchestrator.md",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/cli/templates/.claude/mustard/orchestrator.md",
       "path": "apps/cli/templates/.claude/mustard/orchestrator.md",
-      "done": false
+      "done": true
     }
   ]
 }

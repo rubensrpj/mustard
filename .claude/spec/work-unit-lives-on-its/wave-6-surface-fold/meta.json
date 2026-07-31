@@ -8,36 +8,6 @@
   "parent": "work-unit-lives-on-its",
   "checklist": [
     {
-      "label": "plugin/commands/mustard.md",
-      "path": "plugin/commands/mustard.md",
-      "done": false
-    },
-    {
-      "label": "plugin/commands/status.md",
-      "path": "plugin/commands/status.md",
-      "done": false
-    },
-    {
-      "label": "plugin/commands/stats.md",
-      "path": "plugin/commands/stats.md",
-      "done": false
-    },
-    {
-      "label": "plugin/commands/knowledge.md",
-      "path": "plugin/commands/knowledge.md",
-      "done": false
-    },
-    {
-      "label": "plugin/commands/maint.md",
-      "path": "plugin/commands/maint.md",
-      "done": false
-    },
-    {
-      "label": "plugin/commands/skills.md",
-      "path": "plugin/commands/skills.md",
-      "done": false
-    },
-    {
       "label": "plugin/commands/qa.md",
       "path": "plugin/commands/qa.md",
       "done": false
