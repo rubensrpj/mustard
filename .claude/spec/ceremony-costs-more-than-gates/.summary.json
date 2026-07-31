@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "ceremony-costs-more-than-gates",
+  "title": "ceremony costs more than the gates it guards",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "fusion",
+      "summary": "spec-draft materialises the whole layout in one call, and the text the user types becomes the approval",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "flows",
+      "summary": "The flows stop instructing the two gestures the engine no longer needs",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
