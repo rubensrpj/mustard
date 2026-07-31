@@ -1,0 +1,36 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "work-unit-lives-on-its",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "path": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "done": false
+    },
+    {
+      "label": "packages/core/src/domain/config.rs",
+      "path": "packages/core/src/domain/config.rs",
+      "done": false
+    },
+    {
+      "label": ".claude/mustard/orchestrator.md",
+      "path": ".claude/mustard/orchestrator.md",
+      "done": false
+    },
+    {
+      "label": "apps/cli/templates/.claude/mustard/orchestrator.md",
+      "path": "apps/cli/templates/.claude/mustard/orchestrator.md",
+      "done": false
+    }
+  ]
+}

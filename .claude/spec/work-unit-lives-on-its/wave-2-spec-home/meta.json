@@ -1,0 +1,36 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "work-unit-lives-on-its",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/spec/spec_draft.rs",
+      "path": "apps/rt/src/commands/spec/spec_draft.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/spec.md",
+      "path": "plugin/commands/spec.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/spec/resume-loop.md",
+      "path": "plugin/refs/spec/resume-loop.md",
+      "done": false
+    }
+  ]
+}
