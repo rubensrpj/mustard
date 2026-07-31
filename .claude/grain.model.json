@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 443,
-      "loc": 178197
+      "loc": 178254
     },
     {
       "language": "tsx",
@@ -70976,7 +70976,7 @@
     {
       "path": "packages/core/src/domain/ast/conventions.rs",
       "language": "rust",
-      "loc": 214,
+      "loc": 271,
       "imports": [
         "super::*"
       ],
@@ -70985,67 +70985,73 @@
         {
           "kind": "function",
           "name": "is_test_path",
-          "line": 64,
+          "line": 97,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stem_of",
-          "line": 106,
+          "line": 145,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ends_with_camel_word",
-          "line": 118,
+          "line": 157,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_comment",
-          "line": 149,
+          "line": 188,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "test_dir_segment_matches",
-          "line": 159,
+          "line": 198,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "test_stem_suffix_and_prefix_match",
-          "line": 171,
+          "line": 210,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_ambiguous_segment_counts_only_where_the_convention_puts_it",
+          "line": 229,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "foospec_camel_stem_is_test",
-          "line": 184,
+          "line": 244,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_test_paths_rejected",
-          "line": 197,
+          "line": 257,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "backslash_paths_are_normalised",
-          "line": 208,
+          "line": 268,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "comment_prefixes_match_after_trim",
-          "line": 215,
+          "line": 275,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_comment_lines_rejected",
-          "line": 227,
+          "line": 287,
           "supertypes": []
         }
       ]
