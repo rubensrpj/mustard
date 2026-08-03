@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "spec": "work-unit-lives-on-its",
+  "title": "The work unit lives on its branch. A base gate refuses to start an analysis outside an integration base or on a base behind its remote, and runs the census refresh there. Once the analysis is approved the branch is cut and the spec, its waves and the whole ceremony are materialized inside it. /mustard:spec called from within that branch resumes with no ceremony. Anything that surfaces during the work and does not belong to the spec goes into a per-branch notebook that becomes the next cycle's prompt. A new /mustard:pr door carries list, review and merge; /mustard:git gains delete. The exposed surface drops from fifteen doors to four: git, pr, spec, upsert.",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "gate",
+      "summary": "A base gate refuses to start an analysis off an integration base or on a base behind its remote, and refreshes the census there.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "spec-home",
+      "summary": "The branch is cut at approval and the spec, its waves and the whole ceremony are materialized inside it; resuming from within that branch costs no ceremony.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "pr-door",
+      "summary": "A new /mustard:pr door carries list, review and merge, absorbing what review, qa and close do today.",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "unit-tools",
+      "summary": "git delete removes a unit whole, and a per-branch notebook collects what does not belong to the current spec.",
+      "status": "in_progress"
+    },
+    {
+      "n": 5,
+      "role": "surface-prune",
+      "summary": "The six read-only and legacy doors are removed: mustard, status, stats, knowledge, maint and skills.",
+      "status": "in_progress"
+    },
+    {
+      "n": 6,
+      "role": "surface-fold",
+      "summary": "The pipeline steps stop being doors and the installation flags fold into upsert, leaving exactly four doors.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
