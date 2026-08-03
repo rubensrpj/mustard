@@ -45,7 +45,7 @@
     {
       "label": "apps/rt/tests/template_parity.rs",
       "path": "apps/rt/tests/template_parity.rs",
-      "done": false
+      "done": true
     }
   ]
 }

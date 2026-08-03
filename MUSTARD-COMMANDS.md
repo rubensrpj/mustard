@@ -10,7 +10,7 @@ Os diagramas usam [Mermaid](https://mermaid.js.org/) — renderizam direto no Gi
 > - **gate** = portão bloqueante (só passa se a condição for satisfeita).
 > - Termos técnicos (nomes de comandos, fases, eventos, arquivos) ficam no original.
 
-Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard:`**. A entrada do dia a dia é a **porta única** (`/mustard`, ou simplesmente descrever o pedido em linguagem natural).
+Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard:`**. A entrada do dia a dia **não é um comando**: você descreve o pedido em linguagem natural e o roteador — injetado em todo prompt — classifica e despacha.
 
 > **Fluxos internos:** `feature`, `bugfix`, `task` e `tactical-fix` são despachados pelo **roteador** (a porta única) — você descreve o que quer e ele escolhe o fluxo. Invocá-los direto (`/mustard:feature …`) continua valendo como atalho de força; não é necessário no dia a dia.
 
@@ -22,7 +22,7 @@ Como os comandos se encaixam. Tudo entra pela **porta única**, nasce de uma var
 
 ```mermaid
 flowchart TD
-    door["/mustard — porta única<br/>(classifica a intenção e roteia)"] -->|"feature (≥2 camadas / entidade nova)"| feat["/mustard:feature"]
+    door["prompt em linguagem natural<br/>(o roteador injetado classifica a intenção)"] -->|"feature (≥2 camadas / entidade nova)"| feat["/mustard:feature"]
     door -->|"erro / quebrado"| bug["/mustard:bugfix"]
     door -->|"1 camada / análise"| task["/mustard:task<br/>(delegação spec-less)"]
 
@@ -46,11 +46,6 @@ flowchart TD
 
     subgraph apoio["Apoio / fora do pipeline"]
         git["/mustard:git"]
-        maint["/mustard:maint"]
-        status["/mustard:status"]
-        stats["/mustard:stats"]
-        knowledge["/mustard:knowledge"]
-        skills["/mustard:skills"]
         unhook["/mustard:unhook"]
         rehook["/mustard:rehook"]
     end
@@ -87,20 +82,20 @@ O escopo é decidido **deterministicamente** (`plan-prepare` sobre o censo da sp
 
 # A porta única
 
-## `/mustard` — Roteamento por intenção
+## Roteamento por intenção — sem comando
 
-Descreva o que quer em linguagem natural — o roteador classifica (funcionalidade / mudança / correção / investigação + escopo), **narra como leu o pedido** e despacha o fluxo interno certo. Só pergunta em ambiguidade genuína.
+Descreva o que quer em linguagem natural — o roteador classifica (funcionalidade / mudança / correção / investigação + escopo), **narra como leu o pedido** e despacha o fluxo interno certo. Só pergunta em ambiguidade genuína. **Não há comando de entrada:** o roteador é injetado em todo prompt via `mustard.json#inject`, então digitar algo antes de descrever o trabalho não mudaria nada.
 
 | | |
 |---|---|
-| **Trigger** | `/mustard` — ou simplesmente descreva o trabalho ("adiciona importação de CSV", "tá com erro ao importar") |
+| **Trigger** | descrever o trabalho ("adiciona importação de CSV", "tá com erro ao importar") |
 | **Backend** | nenhum — roteia via `CLAUDE.md § Intent Routing` |
 | **Regra** | Nunca edita produção sem rotear; `/mustard:feature`, `/mustard:bugfix`, `/mustard:task`, `/mustard:tactical-fix` seguem disponíveis como atalhos de força |
 
 ```mermaid
 flowchart TD
-    start(["pedido em linguagem natural<br/>(ou /mustard)"]) --> desc{"descreveu trabalho?"}
-    desc -->|não| help["página de ajuda"]
+    start(["pedido em linguagem natural"]) --> desc{"descreveu trabalho?"}
+    desc -->|não| help["responde direto (sem rotear)"]
     desc -->|sim| classify["AI: classifica intenção + escopo<br/>e NARRA a leitura"]
     classify --> amb{"ambiguidade genuína?"}
     amb -->|sim| ask["UMA AskUserQuestion<br/>(opções inferíveis)"]
@@ -505,134 +500,6 @@ flowchart TD
 
 ---
 
-## `/mustard:maint` — Utilitários de manutenção
-
-| Ação | Backend | Descrição |
-|---|---|---|
-| `deps [--dry-run]` | `maint-deps` | Instala dependências de todos os subprojetos (comando por tipo: `pnpm install`, `cargo fetch`, `dotnet restore`…) |
-| `validate [--dry-run]` | `maint-validate` | Build + type-check por subprojeto (`pnpm typecheck`, `cargo check`…) |
-| `sync` | `scan` | Refresca o `grain.model.json` |
-| `doctor [--residue]` | `doctor` + `diagnose-otel` | Health check: wiring, drift, state-health, residue + telemetria OTEL — nunca bloqueia |
-
-```mermaid
-flowchart TD
-    start(["/mustard:maint &lt;ação&gt;"]) --> action{"ação?"}
-    action -->|deps| deps["mustard-rt run maint-deps<br/>(auto-descobre subprojetos do grain.model.json)"]
-    action -->|validate| val["mustard-rt run maint-validate<br/>(JSON: overall + validates[])"]
-    action -->|sync| sync["mustard-rt run scan → grain.model.json"]
-    action -->|doctor| doc["doctor (+ --residue) + diagnose-otel"]
-    doc --> consol["relatório consolidado:<br/>wiring · drift · state-health · residue<br/>(OK / WARN / FAIL — nunca bloqueia)"]
-```
-
-> O binário resolve os comandos por subprojeto sozinho — nunca ler a tabela de Agents ou o `CLAUDE.md` do subprojeto à mão para isso.
-
----
-
-# Observabilidade e conhecimento
-
-## `/mustard:status` — Status consolidado
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:status [--harness]` |
-| **Backend** | `status --format table` · `status --harness --format table` |
-| **Regra** | Sempre delega ao binário (nunca parsear NDJSON à mão); `--harness` é estritamente read-only |
-
-```mermaid
-flowchart TD
-    start(["/mustard:status [--harness]"]) --> mode{"--harness?"}
-    mode -->|não| st["mustard-rt run status --format table<br/>(git · specs ativas/órfãs · build · entity registry)"]
-    mode -->|sim| hn["mustard-rt run status --harness<br/>(lê settings.json, agrupa hooks por evento,<br/>resolve o modo de cada módulo)"]
-    st --> print["print verbatim"]
-    hn --> print
-    print --> orphan{"pipelines órfãos?"}
-    orphan -->|sim| suggest["sugere /mustard:close ou /mustard:maint"]
-```
-
----
-
-## `/mustard:stats` — Métricas do pipeline
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:stats [--hooks] [--since] [--event] [--compare] [--pr] [--days <n>]` |
-| **Backend** | `metrics collect` (default) · `metrics report` (--hooks) · `event-projections --view pr-metrics` (--pr, estilo DORA) |
-
-```mermaid
-flowchart TD
-    start(["/mustard:stats [flags]"]) --> flag{"flag?"}
-    flag -->|"(default)"| coll["metrics collect<br/>(superset: pipelines + hooks + RTK)"]
-    flag -->|--hooks| hooks["metrics report --since/--event/--compare"]
-    flag -->|--pr| pr["event-projections --view pr-metrics<br/>(pr.opened/merged + review.start/complete,<br/>pareados por spec ou branch)"]
-    coll --> print["print verbatim"]
-    hooks --> print
-    pr --> print
-    print --> sections["Summary → Active/Orphaned → Completed<br/>→ Last 7 Days → Enforcement → RTK gain"]
-```
-
----
-
-## `/mustard:knowledge` — Gestão de conhecimento
-
-Conhecimento = memória nativa do Claude Code (prosa durável) + eventos `decision`/`lesson` no NDJSON por spec (emitidos no CLOSE via `emit-event`).
-
-| Ação | Backend / propósito |
-|---|---|
-| `list [spec]` | `event-projections --view pipeline-state` — decisions[]/lessons[] da spec |
-| `search <term>` | MCP `search_knowledge` — match em title/detail dos eventos |
-| `add` | interativo → `emit-event --event decision`/`lesson` |
-| `notes [target]` | edita `notes.md` (injetado nos agentes; nunca sobrescrito pelo `/mustard:scan`) |
-| `audit` | compara memória nativa vs CLAUDE.md/skills (report-only) |
-| `report <period>` | relatórios de progresso via git |
-
-```mermaid
-flowchart TD
-    start(["/mustard:knowledge &lt;ação&gt;"]) --> action{"ação?"}
-    action -->|list| list["event-projections --view pipeline-state<br/>(decisions[] / lessons[])"]
-    action -->|search| search["MCP search_knowledge &lt;term&gt;"]
-    action -->|add| add["interativo → emit-event decision/lesson<br/>(append-only, nunca editado à mão)"]
-    action -->|notes| notes["edita notes.md do subprojeto"]
-    action -->|audit| audit["memória nativa vs CLAUDE.md/skills<br/>(report-only, nunca auto-edita)"]
-    action -->|report| rep["relatórios git (refs/knowledge/report.md)"]
-    list --> print["print verbatim (sempre com contagem)"]
-    search --> print
-    add --> print
-```
-
----
-
-# Skills
-
-## `/mustard:skills` — Gerenciador de skills
-
-| Ação | Backend |
-|---|---|
-| `install <name-or-path>` | manual — cópia para `.claude/skills/<name>/` + validação do frontmatter (sem fetch embutido) |
-| `create <name>` | skill `skill-creator` (não vem no pacote — instalar à parte) |
-| `list` | listagem de `.claude/skills/*/SKILL.md` + frontmatter |
-| `remove <name>` | apaga `.claude/skills/{name}/` (avisa se `source: scan`; `source: manual` exige confirmação) |
-| `optimize` / `eval` | loops do `skill-creator` (requer Python 3 + `claude` CLI) |
-| `update` | skills embutidas atualizam com o plugin (marketplace); as manuais são suas |
-
-O campo `source:` é territorial: `/mustard:scan` escreve só `source: scan`; `install`/`create` escrevem só `source: manual`; ausente → tratado como `manual` (conservador).
-
-```mermaid
-flowchart TD
-    start(["/mustard:skills &lt;ação&gt;"]) --> action{"ação?"}
-    action -->|install| inst["copiar p/ .claude/skills/&lt;name&gt;/<br/>→ valida frontmatter → source: manual"]
-    action -->|create| create["skill-creator (interativo)<br/>(inerte até instalá-lo à parte)"]
-    action -->|list| list["lista .claude/skills/ + frontmatter"]
-    action -->|remove| remove{"source?"}
-    remove -->|manual| confirm["pede confirmação"]
-    remove -->|scan| warn["avisa que é gerado pelo /mustard:scan"]
-    action -->|"optimize / eval"| opt["skill-creator (Python 3 + claude CLI)"]
-    action -->|update| upd["plugin via marketplace<br/>(ou mustard init, idempotente)"]
-```
-
-> Curiosidade que virou regra: o arquivo do comando chama-se `skills.md` (plural) porque `skill.md` colide com o marcador `SKILL.md` em filesystems case-insensitive (Windows/macOS) — e o plugin inteiro perderia a pasta `commands/`.
-
----
-
 # Harness (liga/desliga dos hooks)
 
 ## `/mustard:unhook` — Kill-switch do harness
@@ -691,7 +558,7 @@ flowchart TD
 
 | Comando | Categoria | Backend principal (`mustard-rt run …`) | Usa `grain.model.json`? |
 |---|---|---|---|
-| `/mustard` | porta única | — (roteia via `CLAUDE.md § Intent Routing`) | não |
+| _(prompt em linguagem natural)_ | porta única | — (roteia via `CLAUDE.md § Intent Routing`) | não |
 | `/mustard:upsert` | instalação (bootstrap) | `upsert` | não |
 | `/mustard:scan` | core | `scan --full`, `scan-guards-*`, `scan-patterns-*` | **produz** |
 | `/mustard:feature` | core · fluxo interno | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
@@ -703,14 +570,11 @@ flowchart TD
 | `/mustard:task` | delegação · fluxo interno | `agent-prompt-render`, `feature` (digest), `equivalence-learn` | indireto |
 | `/mustard:review` | revisão | `review-prefetch`, `diff-context`, `review-result`, `tactical-fix-detect` | não |
 | `/mustard:git` | git | `git-settle` (+ git nativo via `rtk`) | não |
-| `/mustard:maint` | manutenção | `maint-deps`, `maint-validate`, `scan`, `doctor`, `diagnose-otel` | refresca (sync) |
-| `/mustard:status` | observabilidade | `status` | não |
-| `/mustard:stats` | observabilidade | `metrics collect/report`, `event-projections` | não |
-| `/mustard:knowledge` | conhecimento | `event-projections`, `emit-event`, MCP `search_knowledge` | não |
-| `/mustard:skills` | skills | manual (sem backend `run`) | não |
 | `/mustard:unhook` | harness | `unhook` | não |
 | `/mustard:rehook` | harness | `rehook` | não |
 
 ---
 
 *Derivado dos comandos do plugin em `plugin/commands/`. Quando um fluxo mudar, re-derive deste diretório — ele é a fonte da verdade.*
+
+> **Regra de nomenclatura em `plugin/commands/`:** nunca nomeie um arquivo de comando `skill.md`. Em filesystems case-insensitive (Windows/macOS) ele colide com o marcador `SKILL.md` de pasta de skill, o loader do plugin trata a pasta `commands/` inteira como UMA skill, e todos os comandos somem.

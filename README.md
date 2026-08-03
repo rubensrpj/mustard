@@ -78,8 +78,9 @@ Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, 
 
 ```
 /mustard:scan       ← mapeia o repositório (uma vez; re-rode após grandes mudanças)
-/mustard            ← a porta única: descreva o que quer em palavras suas
 ```
+
+Depois disso não há comando para "começar": **descreva o trabalho em palavras suas**. O roteador é injetado em todo prompt e classifica o pedido sozinho.
 
 ### Para desenvolvedores deste repositório
 
@@ -115,11 +116,9 @@ Cada fase emite eventos; os *gates* bloqueiam o avanço. O **close-gate** não d
 
 Instalado como plugin, todo comando vive no namespace `/mustard:`.
 
-### A porta única
+### A porta única não é um comando
 
-| Comando | Papel |
-|---|---|
-| `/mustard` | **Comece por aqui.** Descreva o que quer em linguagem natural — ele classifica (feature / mudança / correção / investigação + escopo), narra como leu o pedido e despacha o fluxo certo. Só pergunta em ambiguidade genuína. |
+**Comece descrevendo o trabalho em linguagem natural** — não há comando de entrada. O roteador é injetado em todo prompt: ele classifica o pedido (feature / mudança / correção / investigação + escopo), narra como o leu e despacha o fluxo certo. Só pergunta em ambiguidade genuína.
 
 ### Pipeline
 
@@ -140,10 +139,6 @@ Instalado como plugin, todo comando vive no namespace `/mustard:`.
 |---|---|
 | `/mustard:task` | Delegação de trabalho sem spec (analyze, audit, refactor, docs…). |
 | `/mustard:git` | Commit/push/sync/merge — lê o *git flow* do `mustard.json`. Sobe sempre o trabalho completo; apenas operações reversíveis. |
-| `/mustard:maint` | Higiene do projeto: dependências, validate, sync, doctor. |
-| `/mustard:status` · `/mustard:stats` | Estado do pipeline e da entidade · métricas (DORA, economia de tokens). |
-| `/mustard:knowledge` | Base de conhecimento, padrões, convenções, auditoria de memória. |
-| `/mustard:skills` | Instala/cria/lista/otimiza/avalia *skills*. |
 | `/mustard:unhook` · `/mustard:rehook` | Desliga / religa o harness (hooks). |
 
 ---

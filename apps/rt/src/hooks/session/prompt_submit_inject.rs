@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn rejects_non_pipeline_prompts() {
         assert!(!is_pipeline_prompt("just a normal message"));
-        assert!(!is_pipeline_prompt("/mustard:status"));
+        assert!(!is_pipeline_prompt("/mustard:git"));
         assert!(!is_pipeline_prompt("/mustard:featureish thing"));
         assert!(!is_pipeline_prompt("text /mustard:feature mid-line"));
     }
@@ -278,7 +278,7 @@ mod tests {
         // No mustard.json in the tempdir: any `/mustard:*` command (pipeline
         // or not) is denied with the didactic pointer to /mustard:upsert.
         let (_dir, c) = ctx();
-        for prompt in ["/mustard:feature x", "/mustard:status", "  /MUSTARD:QA"] {
+        for prompt in ["/mustard:feature x", "/mustard:git", "  /MUSTARD:QA"] {
             let v = PromptSubmitInject.evaluate(&prompt_input(prompt), &c).unwrap();
             match v {
                 Verdict::Deny { reason } => {
@@ -467,7 +467,7 @@ mod tests {
         // A `/mustard:*` prompt is already inside the flow — strict Allow, and
         // no delivery marker is burned (the next free-text prompt still gets it).
         let v = PromptSubmitInject
-            .evaluate(&prompt_input_with_session("/mustard:status", "sess-1"), &c)
+            .evaluate(&prompt_input_with_session("/mustard:git", "sess-1"), &c)
             .unwrap();
         assert_eq!(v, Verdict::Allow, "slash command must not receive injectables");
         assert!(

@@ -35,17 +35,6 @@
       "checksum": null
     },
     {
-      "id": "ref:knowledge",
-      "category": "ref",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "refs/knowledge",
-      "checksum": null
-    },
-    {
       "id": "ref:spec",
       "category": "ref",
       "source": {
@@ -101,28 +90,6 @@
       "checksum": null
     },
     {
-      "id": "command:knowledge",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/knowledge.md",
-      "checksum": null
-    },
-    {
-      "id": "command:maint",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/maint.md",
-      "checksum": null
-    },
-    {
       "id": "command:qa",
       "category": "command",
       "source": {
@@ -153,39 +120,6 @@
       "version": null,
       "vendoredAt": "2026-05-19",
       "path": "commands/scan.md",
-      "checksum": null
-    },
-    {
-      "id": "command:skill",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/skills.md",
-      "checksum": null
-    },
-    {
-      "id": "command:stats",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/stats.md",
-      "checksum": null
-    },
-    {
-      "id": "command:status",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/status.md",
       "checksum": null
     },
     {

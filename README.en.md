@@ -78,8 +78,9 @@ This creates `mustard.json` (the single configuration) and the `.claude/` folder
 
 ```
 /mustard:scan       ← maps the repository (once; re-run after big changes)
-/mustard            ← the single door: describe what you want in your own words
 ```
+
+After that there is no command to "get started": **describe the work in your own words**. The router is injected on every prompt and classifies the request on its own.
 
 ### For developers of this repository
 
@@ -115,11 +116,9 @@ Every phase emits events; gates block progress. The **close-gate** refuses to cl
 
 Installed as a plugin, every command lives under the `/mustard:` namespace.
 
-### The single door
+### The single door is not a command
 
-| Command | Role |
-|---|---|
-| `/mustard` | **Start here.** Describe what you want in natural language — it classifies (feature / change / bugfix / investigation + scope), narrates how it read the request, and dispatches the right flow. Asks only on genuine ambiguity. |
+**Start by describing the work in natural language** — there is no entry command. The router is injected on every prompt: it classifies the request (feature / change / bugfix / investigation + scope), narrates how it read it, and dispatches the right flow. It asks only on genuine ambiguity.
 
 ### Pipeline
 
@@ -140,10 +139,6 @@ Installed as a plugin, every command lives under the `/mustard:` namespace.
 |---|---|
 | `/mustard:task` | Spec-less work delegation (analyze, audit, refactor, docs…). |
 | `/mustard:git` | Commit/push/sync/merge — reads the git flow from `mustard.json`. Always ships the complete work; reversible operations only. |
-| `/mustard:maint` | Project hygiene: dependencies, validate, sync, doctor. |
-| `/mustard:status` · `/mustard:stats` | Pipeline/entity state · metrics (DORA, token savings). |
-| `/mustard:knowledge` | Knowledge base, patterns, conventions, memory audit. |
-| `/mustard:skills` | Install/create/list/optimize/evaluate skills. |
 | `/mustard:unhook` · `/mustard:rehook` | Turns the harness (hooks) off / back on. |
 
 ---

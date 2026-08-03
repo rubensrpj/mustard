@@ -48,6 +48,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          the mustard-rt prefix there)",
     ),
     (
+        "diagnose-otel",
+        "OTEL half of the consolidated doctor report \
+         (commands/economy/otel/diagnose.rs); its only prose caller was the \
+         `/maint doctor` section, dropped by the four-door surface prune - a \
+         telemetry diagnostic with no scripted caller",
+    ),
+    (
         "docs-stale-check",
         "CLOSE gate 4 - run in-process by close-orchestrate and named (with \
          --skip-docs) in commands/mustard/close/SKILL.md; the CLI face is the \
@@ -66,10 +73,31 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          caller - flagged as dark surface in the F1 LOT C report",
     ),
     (
+        "maint-deps",
+        "user-invoked per-subproject dependency install \
+         (commands/maint/maint_deps.rs); its only prose caller was the `/maint \
+         deps` action, dropped by the four-door surface prune - a maintenance \
+         escape hatch with no scripted caller",
+    ),
+    (
+        "maint-validate",
+        "user-invoked per-subproject build/type-check \
+         (commands/maint/maint_validate.rs); its only prose caller was the \
+         `/maint validate` action, dropped by the four-door surface prune - a \
+         maintenance escape hatch with no scripted caller",
+    ),
+    (
         "mark-checklist-item",
         "instructed by the close-gate deny remediation \
          (commands/pipeline/close_gates.rs: mark each via mustard-rt run \
          mark-checklist-item)",
+    ),
+    (
+        "metrics",
+        "user-invoked pipeline/hook metrics (collect + report faces, \
+         commands/economy/); its only prose caller was the `/stats` door, \
+         dropped by the four-door surface prune - the dashboard renders the \
+         same `.metrics/` corpus through its own readers",
     ),
     (
         "metrics-wave-status",
@@ -100,6 +128,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          (commands/review/security_scan.rs, JS-era port); no product caller \
          since scripts/ was retired (flagged as dark surface in the F1 LOT C \
          report)",
+    ),
+    (
+        "status",
+        "user-invoked consolidated git/pipeline/harness report \
+         (commands/pipeline/status.rs); its only prose caller was the \
+         `/status` door, dropped by the four-door surface prune - an \
+         observability escape hatch with no scripted caller",
     ),
     (
         "worktree-gc",
