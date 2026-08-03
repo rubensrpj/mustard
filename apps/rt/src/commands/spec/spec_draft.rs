@@ -17,6 +17,15 @@
 //!     [--plan PATH]
 //! ```
 //!
+//! ## The branch is cut FIRST
+//!
+//! The draft is the first thing a work unit produces, and the unit IS its
+//! branch — so before a byte is written this command consumes the session's
+//! pending work-branch marker and checks that branch out (see
+//! [`cut_work_branch`]). Everything below then lands inside the unit: the
+//! `spec.md`, the wave layout and the negative proof. Nothing is written when
+//! the checkout fails on a protected integration base.
+//!
 //! ## Output
 //!
 //! When `--output PATH` is omitted, the new spec lands under
@@ -54,7 +63,7 @@
 //! unless `--force` is passed. Fail-open per file write (a single failure is
 //! reported but does not abort the rest of the layout).
 
-use crate::shared::context::project_dir;
+use crate::shared::context::{project_dir, session_id};
 use crate::commands::pipeline::plan_materialize;
 use crate::commands::spec::spec_scaffold;
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -437,6 +446,24 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         None => ConversationMaterial::default(),
     };
 
+    // ---- The unit's branch is cut BEFORE a single byte is written. ----
+    //
+    // The spec, its wave layout and its negative proof are the first things the
+    // work produces, and they belong to the unit — which IS the branch. They
+    // used to land on the integration base the analysis was approved from (a
+    // `.claude/spec/` carve-out in `work_branch_gate` existed precisely to let
+    // them). Cutting here puts the whole layout inside the branch in this one
+    // call, and keeps the proof's premise intact: the branch is cut off a fresh
+    // base, before wave 1, so the code the criteria describe still does not
+    // exist when `ac-negative-check` runs below.
+    let work_branch = match cut_work_branch(project_root) {
+        Ok(branch) => branch,
+        Err(detail) => {
+            emit_error("could not cut the work branch for this unit", &detail);
+            return 0;
+        }
+    };
+
     let auto_output = opts.output.is_none();
     let output = opts.output.unwrap_or_else(|| {
         ClaudePaths::for_project(project_root)
@@ -627,6 +654,11 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     if let (Some(obj), Some(downgrade)) = (report.as_object_mut(), scope_downgraded) {
         obj.insert("scopeDowngraded".to_string(), downgrade);
     }
+    // The branch this layout was written INTO — present only when a work unit
+    // was signalled, so a hand-run draft's report is byte-identical to before.
+    if let (Some(obj), Some(branch)) = (report.as_object_mut(), work_branch) {
+        obj.insert("workBranch".to_string(), json!(branch));
+    }
     // What the channel actually carried — so a material file that was read but
     // yielded nothing is visible in the report instead of looking like success.
     if let (Some(obj), false) = (report.as_object_mut(), material.is_empty()) {
@@ -652,6 +684,49 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     }
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     i32::from(refused) * 2
+}
+
+/// Cut this session's pending work branch so everything the draft writes lands
+/// INSIDE the unit — the same cut [`crate::hooks::write::work_branch_gate`]
+/// performs on a file mutation, taken here because `spec-draft` writes through
+/// the filesystem and no PreToolUse hook ever sees it.
+///
+/// `Ok(Some(branch))` — the unit's branch is the checkout (cut now, or already
+/// there). `Ok(None)` — no work unit was signalled at all (a hand-run draft, a
+/// test): nothing was promised, so nothing is enforced.
+///
+/// `Err(detail)` is reserved for the ONE outcome the draft must not survive:
+/// git refused the checkout *while the tree sits on a protected integration
+/// base*, so writing here would put the unit's artefacts on the base — the
+/// exact arrangement this reorder removes. A refusal anywhere else (another
+/// work branch, a linked worktree, a detached HEAD) warns on stderr and
+/// proceeds: nothing is landing on a base, so there is nothing to refuse. This
+/// mirrors the hook gate's own split, which denies only when staying would
+/// leave the edit on a protected branch.
+fn cut_work_branch(project_root: &Path) -> Result<Option<String>, String> {
+    use crate::commands::event::work_branch::{cut_pending_work_branch, is_protected, CutOutcome};
+
+    match cut_pending_work_branch(project_root, &session_id()) {
+        CutOutcome::NoPending => Ok(None),
+        CutOutcome::AlreadyThere(branch) | CutOutcome::Cut(branch) => Ok(Some(branch)),
+        CutOutcome::Failed { target, current, error } => {
+            let config = mustard_core::ProjectConfig::load(project_root);
+            let at = current.as_deref().unwrap_or("?");
+            if current.as_deref().is_some_and(|b| is_protected(b, &config)) {
+                Err(format!(
+                    "'{at}' is an integration base and checking out '{target}' failed ({error}); \
+                     drafting here would leave the spec, its waves and its proof on the base \
+                     instead of in the unit. Resolve the git state and draft again."
+                ))
+            } else {
+                eprintln!(
+                    "spec-draft: WARN: could not check out '{target}' ({error}); the draft is \
+                     written on '{at}', which is not an integration base."
+                );
+                Ok(None)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

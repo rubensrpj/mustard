@@ -128,7 +128,8 @@ pub enum ScanCmd {
         /// Emit the DROPPED roles instead of the worklist: `[{affix, kind,
         /// count, commonDir, subproject, reason}]`, reason from a closed set
         /// (`below_cluster_min`, `no_common_dir`, `test_terrain`, `no_owner`,
-        /// `empty_label`, `declined`, `mold_exists`, `no_exemplars`). Answers
+        /// `empty_label`, `declined`, `mold_exists`, `no_exemplars`,
+        /// `house_below_exemplars`, `covers_whole_subproject`). Answers
         /// "why is there no mold for X here?" without re-reading the funnel —
         /// every drop point is otherwise silent. Default output is unchanged.
         #[arg(long)]

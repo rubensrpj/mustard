@@ -10,7 +10,7 @@ Os diagramas usam [Mermaid](https://mermaid.js.org/) — renderizam direto no Gi
 > - **gate** = portão bloqueante (só passa se a condição for satisfeita).
 > - Termos técnicos (nomes de comandos, fases, eventos, arquivos) ficam no original.
 
-Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard:`**. A entrada do dia a dia é a **porta única** (`/mustard`, ou simplesmente descrever o pedido em linguagem natural).
+Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard:`**. A entrada do dia a dia **não é um comando**: você descreve o pedido em linguagem natural e o roteador — injetado em todo prompt — classifica e despacha.
 
 > **Fluxos internos:** `feature`, `bugfix`, `task` e `tactical-fix` são despachados pelo **roteador** (a porta única) — você descreve o que quer e ele escolhe o fluxo. Invocá-los direto (`/mustard:feature …`) continua valendo como atalho de força; não é necessário no dia a dia.
 
@@ -18,15 +18,19 @@ Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard
 
 ## Mapa do ecossistema
 
-Como os comandos se encaixam. Tudo entra pela **porta única**, nasce de uma varredura determinística (`/mustard:scan`) e converge para o fechamento auditável (`/mustard:close`).
+Como os comandos se encaixam. Tudo entra pela **porta única**, nasce de uma varredura determinística que o **porteiro de base** dispara sozinho, e converge para o merge auditável de `/mustard:pr`.
+
+**São QUATRO portas, e só quatro** — `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`. Todo o resto é fluxo interno: o roteador despacha, o usuário não digita. Revisão, QA e fechamento são passos de `/mustard:pr merge`; a varredura é um passo do porteiro de base; ligar/desligar o harness e diagnosticar a instalação são flags de `/mustard:upsert`; cancelar uma unidade abandonada é `/mustard:git delete`.
 
 ```mermaid
 flowchart TD
-    door["/mustard — porta única<br/>(classifica a intenção e roteia)"] -->|"feature (≥2 camadas / entidade nova)"| feat["/mustard:feature"]
-    door -->|"erro / quebrado"| bug["/mustard:bugfix"]
-    door -->|"1 camada / análise"| task["/mustard:task<br/>(delegação spec-less)"]
+    door["prompt em linguagem natural<br/>(o roteador injetado classifica a intenção)"] --> gate["porteiro de base<br/>(emit-pipeline: exige base do git.flow,<br/>atualizada; re-minera o censo)"]
+    gate -->|"feature (≥2 camadas / entidade nova)"| feat["/mustard:feature<br/>(fluxo interno)"]
+    gate -->|"erro / quebrado"| bug["/mustard:bugfix<br/>(fluxo interno)"]
+    gate -->|"1 camada / análise"| task["/mustard:task<br/>(delegação spec-less)"]
 
-    scan["/mustard:scan<br/>(rust, sem AI)"] -->|grain.model.json| feat
+    gate -->|"árvore limpa + censo velho"| scan["scan<br/>(rust, sem AI)"]
+    scan -->|grain.model.json| feat
     scan -->|grain.model.json| bug
 
     feat -->|spec.md + meta.json| spec["/mustard:spec<br/>(aprova / retoma)"]
@@ -34,29 +38,24 @@ flowchart TD
     bug -->|"full path: spec"| spec
 
     spec -->|EXECUTE| exec["EXECUTE<br/>(Task: agentes por onda)"]
-    exec --> review["/mustard:review"]
-    review --> qa["/mustard:qa"]
-    qa -->|"gate: pass"| close["/mustard:close"]
+    exec --> pr["/mustard:pr<br/>list · review · merge"]
+    pr -->|"passo: review"| rev["verdito registrado"]
+    pr -->|"passo: QA + CLOSE"| gates["close-orchestrate<br/>(build+test · qa-run · review-spans · docs)"]
+    gates -->|"gate: pass"| merge["merge + poda da unidade"]
 
-    review -. candidato .-> tf["/mustard:tactical-fix<br/>(sub-spec ligada ao pai)"]
-    qa -. candidato .-> tf
+    rev -. candidato .-> tf["/mustard:tactical-fix<br/>(sub-spec ligada ao pai)"]
+    gates -. candidato .-> tf
     tf --> spec
 
-    close -->|se código mudou| scan
+    merge --> gate
 
     subgraph apoio["Apoio / fora do pipeline"]
-        git["/mustard:git"]
-        maint["/mustard:maint"]
-        status["/mustard:status"]
-        stats["/mustard:stats"]
-        knowledge["/mustard:knowledge"]
-        skills["/mustard:skills"]
-        unhook["/mustard:unhook"]
-        rehook["/mustard:rehook"]
+        git["/mustard:git<br/>(commit · push · pr · delete)"]
+        upsert["/mustard:upsert<br/>(instala · --off · --on · --doctor)"]
     end
 ```
 
-**Princípio central:** o código-fonte **nunca é lido em massa**. O `/mustard:scan` minera o repositório uma vez para `grain.model.json`; os fluxos de pipeline consomem esse modelo via *digest* (`mustard-rt run feature`) e leem apenas as *anchors* (arquivos-âncora) que o digest aponta. É assim que o Mustard economiza contexto.
+**Princípio central:** o código-fonte **nunca é lido em massa**. A varredura minera o repositório para `grain.model.json`; os fluxos de pipeline consomem esse modelo via *digest* (`mustard-rt run feature`) e leem apenas as *anchors* (arquivos-âncora) que o digest aponta. É assim que o Mustard economiza contexto.
 
 ---
 
@@ -87,20 +86,20 @@ O escopo é decidido **deterministicamente** (`plan-prepare` sobre o censo da sp
 
 # A porta única
 
-## `/mustard` — Roteamento por intenção
+## Roteamento por intenção — sem comando
 
-Descreva o que quer em linguagem natural — o roteador classifica (funcionalidade / mudança / correção / investigação + escopo), **narra como leu o pedido** e despacha o fluxo interno certo. Só pergunta em ambiguidade genuína.
+Descreva o que quer em linguagem natural — o roteador classifica (funcionalidade / mudança / correção / investigação + escopo), **narra como leu o pedido** e despacha o fluxo interno certo. Só pergunta em ambiguidade genuína. **Não há comando de entrada:** o roteador é injetado em todo prompt via `mustard.json#inject`, então digitar algo antes de descrever o trabalho não mudaria nada.
 
 | | |
 |---|---|
-| **Trigger** | `/mustard` — ou simplesmente descreva o trabalho ("adiciona importação de CSV", "tá com erro ao importar") |
+| **Trigger** | descrever o trabalho ("adiciona importação de CSV", "tá com erro ao importar") |
 | **Backend** | nenhum — roteia via `CLAUDE.md § Intent Routing` |
 | **Regra** | Nunca edita produção sem rotear; `/mustard:feature`, `/mustard:bugfix`, `/mustard:task`, `/mustard:tactical-fix` seguem disponíveis como atalhos de força |
 
 ```mermaid
 flowchart TD
-    start(["pedido em linguagem natural<br/>(ou /mustard)"]) --> desc{"descreveu trabalho?"}
-    desc -->|não| help["página de ajuda"]
+    start(["pedido em linguagem natural"]) --> desc{"descreveu trabalho?"}
+    desc -->|não| help["responde direto (sem rotear)"]
     desc -->|sim| classify["AI: classifica intenção + escopo<br/>e NARRA a leitura"]
     classify --> amb{"ambiguidade genuína?"}
     amb -->|sim| ask["UMA AskUserQuestion<br/>(opções inferíveis)"]
@@ -116,20 +115,22 @@ flowchart TD
 
 # Comandos do pipeline (core)
 
-## `/mustard:scan` — Modelo do código-base
+## `scan` — Modelo do código-base *(fluxo interno)*
 
 Minera o repositório para `grain.model.json` (determinístico, agnóstico de linguagem, **sem AI**) e enriquece os mapas por subprojeto — Guards (prosa do/don't) e moldes de padrão. O enriquecimento é **padrão**: roda em silêncio ou pula em silêncio (fail-open), **nunca** pede confirmação de custo.
 
+**Não é passo que se roda.** O censo determinístico é re-minerado sozinho no **porteiro de base** — a base recém-atualizada, antes da primeira edição, é o único momento em que a árvore está limpa por construção, que é a pré-condição desta varredura (tudo que ela escreve é versionado). O que o porteiro não faz é o enriquecimento: ele é um processo Rust, e Guards e moldes são escritos por agentes. Por isso este fluxo existe, e quem o alcança é o roteador.
+
 | | |
 |---|---|
-| **Trigger** | `/mustard:scan [--root <dir>] [--out <path>]` |
+| **Trigger** | despachado pelo roteador (nunca digitado); `[--root <dir>] [--out <path>]` |
 | **Backend** | `scan --full` · `scan-guards-list/apply` · `scan-patterns-sweep/list/apply/decline` · `agent-prompt-render --role guards` |
 | **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade (+ a linha `@.claude/scan-map.md` no topo do `CLAUDE.md` do projeto) · blocos `## Guards` · moldes `{role}-pattern/SKILL.md` frescos |
 | **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ Guards (~6 linhas) e moldes — todo molde `source: scan` é varrido e re-autorado do zero a cada scan (adoção = `source: manual`); recusa vale UMA rodada |
 
 ```mermaid
 flowchart TD
-    start(["/mustard:scan"]) --> full["mustard-rt run scan --full<br/>(rust — sem AI, sem ler fonte)"]
+    start(["porteiro de base / roteador"]) --> full["mustard-rt run scan --full<br/>(rust — sem AI, sem ler fonte)"]
     full --> model[("grain.model.json<br/>+ .claude/scan-map.md por unidade<br/>(CLAUDE.md do projeto: só a linha @import;<br/>## Guards preservados)")]
 
     subgraph enrich["Enriquecimento padrão (fail-open)"]
@@ -285,61 +286,35 @@ flowchart TD
 
 ---
 
-## `/mustard:qa` — Fase de QA
+## `/mustard:pr` — A porta do Pull Request
 
-Roda cada Critério de Aceitação (AC) e reporta pass/fail. **Bloqueia o CLOSE** em falha. Read-only — um pass é um *exit code observado*, nunca uma inferência.
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:qa [--spec <name>]` |
-| **Backend** | `qa-run` (emite `qa.result`) · `tactical-fix-detect` |
-| **Gate** | `close-gate` exige `qa.result.overall=pass` (`MUSTARD_QA_GATE_MODE=strict\|warn\|off`); editar a spec após um pass → QA **stale** |
-
-```mermaid
-flowchart TD
-    start(["/mustard:qa"]) --> id["identifica spec (--spec ou active-specs[0])"]
-    id --> hasAC{"## Acceptance Criteria<br/>com ≥1 AC?"}
-    hasAC -->|não| stop(["'Spec has no Acceptance Criteria.'"])
-    hasAC -->|sim| run["emit stage QaReview → qa-run<br/>(arquivo operativo: spec.md,<br/>ou wave-plan.md após decompose)"]
-
-    run --> branch{"qa.result.overall"}
-    branch -->|pass| pass["emit stage Close — 'QA passed.'"]
-    branch -->|fail| fail["lista os ACs que falharam"]
-    branch -->|skip| skip["sem Command: ou todos em timeout<br/>(120s por AC) → warn; não bloqueia o CLOSE"]
-
-    fail --> iter{"3ª falha?"}
-    iter -->|não| run
-    iter -->|sim| ask["AskUserQuestion:<br/>(a) fix+retry (b) relaxar AC (c) abortar"]
-
-    pass --> tf["Tactical-fix discovery (pós-pass):<br/>tactical-fix-detect → tactical_fix.proposed<br/>(propõe, NUNCA cria sozinho)"]
-    tf --> gate["close-gate: exige overall=pass"]
-    gate --> done(["→ /mustard:close"])
-    skip --> done
-```
-
----
-
-## `/mustard:close` — Finalizar pipeline
-
-Roda todos os gates num comando só e, se tudo passa, **finaliza em-processo automaticamente** — a spec vira `completed` sem janela de carência; follow-up vai numa sub-spec ligada (`/mustard:tactical-fix`), nunca numa flag desta spec.
+Lista, revisa e mergeia. **Revisão, QA e fechamento são PASSOS daqui, não portas.** Nenhum deles é o que o operador se propõe a fazer — são o que precisa acontecer no caminho até o merge, e eram comandos só por herança. O merge também poda a unidade: volta pra base, puxa, remove a worktree e apaga o branch local e remoto.
 
 | | |
 |---|---|
-| **Trigger** | `/mustard:close` (gate de docs aceita `--skip-docs` para spec não-arquitetural) |
-| **Backend** | `close-orchestrate --spec` (encadeia a finalização em-processo) · `scan` condicional · `emit-event` (decision/lesson) |
-| **Pré-condição** | `BLOCKED` aberto ou item `- [ ]` no Checklist → ABORTA antes de qualquer gate |
-| **Regra** | NUNCA chamar `complete-spec` à mão, NUNCA emitir `pipeline.stage`/`outcome` à mão, NUNCA mover o diretório da spec (arquivamento é só evento) |
+| **Trigger** | `/mustard:pr <list\|review\|merge> [<nº do PR>] [--confirm]` |
+| **Backend** | `pr-list` · `pr-review` · `pr-merge` (dobra `git-settle`) · `review-prefetch` · `diff-context` · `close-orchestrate` (build+test · `qa-run` · review-spans · `docs-stale-check` · `pipeline-summary`) · `tactical-fix-detect` |
+| **Lei de ferro** | Merge nunca é silencioso: sem verdito `approved` registrado ele **avisa e pergunta** — nunca recusa de saída, nunca mergeia calado. `--confirm` é a resposta voltando |
+| **Regra** | NUNCA chamar `complete-spec` à mão, NUNCA mover o diretório da spec (arquivamento é só evento), NUNCA rodar QA antes do EXECUTE nem editar código durante o QA (read-only) |
 
 ```mermaid
 flowchart TD
-    start(["/mustard:close"]) --> pre{"pré-condições: BLOCKED aberto?<br/>checklist com item não marcado?"}
-    pre -->|sim| abortx(["ABORTA e reporta os itens"])
-    pre -->|não| rescan["mustard-rt run scan<br/>(se ## Files mexeu em código)"]
-    rescan --> orch["mustard-rt run close-orchestrate --spec<br/>(1 relatório JSON)"]
+    start(["/mustard:pr"]) --> act{"ação"}
+
+    act -->|list| list["pr-list — só de uma base de integração;<br/>de um branch de trabalho recusa e nomeia a base"]
+
+    act -->|review| brief["pr-review --pr N → briefing<br/>(spec, subprojeto, moldes daquele subprojeto)"]
+    brief --> fetch["review-prefetch + diff-context<br/>(fonte da verdade — não re-buscar)"]
+    fetch --> skill["emit review.start → Skill(code-review)<br/>(fallback: Task) → emit review.complete"]
+    skill --> verdict["pr-review --verdict approved|rejected --critical N<br/>(é isto que o merge lê)"]
+    verdict -. candidato .-> tf["tactical-fix-detect → tactical_fix.proposed<br/>(propõe, NUNCA cria sozinho)"]
+
+    act -->|merge| pre{"spec já 'completed'?"}
+    pre -->|não| orch["close-orchestrate --spec"]
 
     subgraph gates["Gates (dentro do close-orchestrate)"]
         orch --> g1["1. build + tests (verify-pipeline)"]
-        g1 --> g2["2. QA (qa-run) — fail bloqueia, skip passa"]
+        g1 --> g2["2. QA (qa-run) — fail E skip bloqueiam"]
         g2 --> g3["3. review-spans — span vermelho bloqueia"]
         g3 --> g4["4. docs-stale-check (--skip-docs opcional)"]
         g4 --> g5["5. pipeline-summary (advisory)"]
@@ -350,14 +325,18 @@ flowchart TD
     report --> orch
     overall -->|pass| chain["finaliza IN-PROCESS (chained: true):<br/>spec → completed · pipeline.complete<br/>auto-verificado · meta.json Close/Completed"]
 
-    chain --> know["emit-event decision/lesson<br/>(máx 3 cada; prosa durável → memória nativa)"]
-    know --> metrics["arquiva métricas →<br/>.claude/.metrics/{spec}.json"]
-    metrics --> banner["pipeline-summary → wave-tree →<br/>banner PIPELINE COMPLETE"]
-    banner --> epic["épico: auto-fold em-processo<br/>(filhas todas fechadas → dobra)"]
-    epic --> done(["pronto"])
+    pre -->|sim| merge
+    chain --> merge["pr-merge --pr N"]
+    merge --> answer{"action"}
+    answer -->|confirm| ask["nada foi tocado — AskUserQuestion,<br/>e só então --confirm"]
+    ask --> merge
+    answer -->|merge-failed| failed["provedor recusou<br/>(conflito, draft, checks) — nada podado"]
+    answer -->|merged| settled["mergeado + settle:<br/>volta à base, puxa, remove worktree,<br/>apaga branch local e remoto"]
+    settled --> know["emit-event decision/lesson ·<br/>capability create (máx 3 cada)"]
+    know --> done(["unidade retirada — de volta ao porteiro de base"])
 ```
 
-> Cancelamento: emite `pipeline.stage: Close` + `pipeline.outcome: Cancelled` — também sem mover nada no filesystem.
+> **Cancelar ≠ fechar.** Uma unidade abandonada sai por `/mustard:git delete <branch>`, da base: um gesto remove o branch, o remoto e o PR aberto — e tudo que a unidade produziu vivia naquele branch.
 
 ---
 
@@ -386,7 +365,7 @@ flowchart TD
 
 ---
 
-# Delegação e revisão
+# Delegação
 
 ## `/mustard:task` — Execução delegada (spec-less) *(fluxo interno)*
 
@@ -424,40 +403,6 @@ flowchart TD
 ```
 
 > Sem spec e sem close por design — precisa de rastro? Promova para `/mustard:feature` Light ou `/mustard:tactical-fix`.
-
----
-
-## `/mustard:review` — Revisão de Pull Request
-
-Detecta o PR, invoca a revisão e reporta. ZERO confirmações. Ao final, **emite o veredito** — sem `review.result` a spec fica presa em `ReviewPending`.
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:review [nº-ou-URL do PR]` (sem arg: auto-detecta o PR da branch) |
-| **Backend** | `review-prefetch` · `diff-context` · `emit-event review.start/complete` · `review-result --verdict --critical` · `tactical-fix-detect` |
-| **Provider** | `mustard.json#git.provider` (github/gitlab) |
-| **Budget** | ≤1 Bash p/ detecção · ≤1 Skill/Task · ≤4 chamadas de API |
-
-```mermaid
-flowchart TD
-    start(["/mustard:review [pr]"]) --> resolve{"argumento?"}
-    resolve -->|"número / URL"| ref["usa direto"]
-    resolve -->|nenhum| detect["gh pr view --json (branch atual)"]
-    detect --> noPR{"PR aberto?"}
-    noPR -->|não| stop(["'No open PR found. Run /git pr first.'"])
-    noPR -->|sim| ref
-
-    ref --> prefetch["review-prefetch --format json + diff-context<br/>(fonte da verdade — não re-buscar)"]
-    prefetch --> emit1["emit review.start"]
-    emit1 --> invoke["cola o diff como ## DIFF<br/>→ Skill(code-review)<br/>(fallback: Task general-purpose)"]
-    invoke --> emit2["emit review.complete → resultados verbatim"]
-
-    emit2 --> verdict["review-result --verdict approved|rejected<br/>--critical N (obrigatório — o resume gate lê isto;<br/>nunca gravar approved só p/ destravar)"]
-    verdict --> tf["Tactical-fix discovery:<br/>tactical-fix-detect → tactical_fix.proposed"]
-    tf --> out{"veredito?"}
-    out -->|APPROVED| done(["pronto"])
-    out -->|REJECTED| fixloop["fix-loop normal → re-review"]
-```
 
 ---
 
@@ -505,141 +450,20 @@ flowchart TD
 
 ---
 
-## `/mustard:maint` — Utilitários de manutenção
+# Instalação
 
-| Ação | Backend | Descrição |
+## `/mustard:upsert` — A porta da instalação
+
+Um assunto, uma porta: **o estado da instalação do Mustard neste projeto**. Sem flag, instala ou atualiza. As três flags são as outras três perguntas sobre esse mesmo estado — desliga, religa, e está saudável. Eram três portas separadas; partir um assunto em quatro comandos era divisão sem motivo.
+
+| Flag | O que faz | Backend |
 |---|---|---|
-| `deps [--dry-run]` | `maint-deps` | Instala dependências de todos os subprojetos (comando por tipo: `pnpm install`, `cargo fetch`, `dotnet restore`…) |
-| `validate [--dry-run]` | `maint-validate` | Build + type-check por subprojeto (`pnpm typecheck`, `cargo check`…) |
-| `sync` | `scan` | Refresca o `grain.model.json` |
-| `doctor [--residue]` | `doctor` + `diagnose-otel` | Health check: wiring, drift, state-health, residue + telemetria OTEL — nunca bloqueia |
+| *(nenhuma)* | Instala/atualiza: `.claude/settings.json`, os injetáveis de `.claude/mustard/`, `.claude/.gitignore` e o `mustard.json` da raiz. Idempotente e merge-only — o que já existe é preservado | `upsert` |
+| `--off` | Kill-switch: grava `"disableAllHooks": true` e limpa estado volátil (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). `permissions.deny/allow`, `statusLine` e `env` ficam intactos — silenciar o harness nunca remove as regras de segurança | `unhook` |
+| `--on` | Reverte o `--off`: remove a chave `disableAllHooks`; sem arquivo vivo, renomeia de volta o snapshot `settings.json.disabled*` mais recente. Diretórios voláteis não são recriados — o runtime os regenera | `rehook` |
+| `--doctor` | Relatório read-only de saúde da instalação. `--residue` audita estado residual; `--check <nome>` estreita para um check | `doctor` |
 
-```mermaid
-flowchart TD
-    start(["/mustard:maint &lt;ação&gt;"]) --> action{"ação?"}
-    action -->|deps| deps["mustard-rt run maint-deps<br/>(auto-descobre subprojetos do grain.model.json)"]
-    action -->|validate| val["mustard-rt run maint-validate<br/>(JSON: overall + validates[])"]
-    action -->|sync| sync["mustard-rt run scan → grain.model.json"]
-    action -->|doctor| doc["doctor (+ --residue) + diagnose-otel"]
-    doc --> consol["relatório consolidado:<br/>wiring · drift · state-health · residue<br/>(OK / WARN / FAIL — nunca bloqueia)"]
-```
-
-> O binário resolve os comandos por subprojeto sozinho — nunca ler a tabela de Agents ou o `CLAUDE.md` do subprojeto à mão para isso.
-
----
-
-# Observabilidade e conhecimento
-
-## `/mustard:status` — Status consolidado
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:status [--harness]` |
-| **Backend** | `status --format table` · `status --harness --format table` |
-| **Regra** | Sempre delega ao binário (nunca parsear NDJSON à mão); `--harness` é estritamente read-only |
-
-```mermaid
-flowchart TD
-    start(["/mustard:status [--harness]"]) --> mode{"--harness?"}
-    mode -->|não| st["mustard-rt run status --format table<br/>(git · specs ativas/órfãs · build · entity registry)"]
-    mode -->|sim| hn["mustard-rt run status --harness<br/>(lê settings.json, agrupa hooks por evento,<br/>resolve o modo de cada módulo)"]
-    st --> print["print verbatim"]
-    hn --> print
-    print --> orphan{"pipelines órfãos?"}
-    orphan -->|sim| suggest["sugere /mustard:close ou /mustard:maint"]
-```
-
----
-
-## `/mustard:stats` — Métricas do pipeline
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:stats [--hooks] [--since] [--event] [--compare] [--pr] [--days <n>]` |
-| **Backend** | `metrics collect` (default) · `metrics report` (--hooks) · `event-projections --view pr-metrics` (--pr, estilo DORA) |
-
-```mermaid
-flowchart TD
-    start(["/mustard:stats [flags]"]) --> flag{"flag?"}
-    flag -->|"(default)"| coll["metrics collect<br/>(superset: pipelines + hooks + RTK)"]
-    flag -->|--hooks| hooks["metrics report --since/--event/--compare"]
-    flag -->|--pr| pr["event-projections --view pr-metrics<br/>(pr.opened/merged + review.start/complete,<br/>pareados por spec ou branch)"]
-    coll --> print["print verbatim"]
-    hooks --> print
-    pr --> print
-    print --> sections["Summary → Active/Orphaned → Completed<br/>→ Last 7 Days → Enforcement → RTK gain"]
-```
-
----
-
-## `/mustard:knowledge` — Gestão de conhecimento
-
-Conhecimento = memória nativa do Claude Code (prosa durável) + eventos `decision`/`lesson` no NDJSON por spec (emitidos no CLOSE via `emit-event`).
-
-| Ação | Backend / propósito |
-|---|---|
-| `list [spec]` | `event-projections --view pipeline-state` — decisions[]/lessons[] da spec |
-| `search <term>` | MCP `search_knowledge` — match em title/detail dos eventos |
-| `add` | interativo → `emit-event --event decision`/`lesson` |
-| `notes [target]` | edita `notes.md` (injetado nos agentes; nunca sobrescrito pelo `/mustard:scan`) |
-| `audit` | compara memória nativa vs CLAUDE.md/skills (report-only) |
-| `report <period>` | relatórios de progresso via git |
-
-```mermaid
-flowchart TD
-    start(["/mustard:knowledge &lt;ação&gt;"]) --> action{"ação?"}
-    action -->|list| list["event-projections --view pipeline-state<br/>(decisions[] / lessons[])"]
-    action -->|search| search["MCP search_knowledge &lt;term&gt;"]
-    action -->|add| add["interativo → emit-event decision/lesson<br/>(append-only, nunca editado à mão)"]
-    action -->|notes| notes["edita notes.md do subprojeto"]
-    action -->|audit| audit["memória nativa vs CLAUDE.md/skills<br/>(report-only, nunca auto-edita)"]
-    action -->|report| rep["relatórios git (refs/knowledge/report.md)"]
-    list --> print["print verbatim (sempre com contagem)"]
-    search --> print
-    add --> print
-```
-
----
-
-# Skills
-
-## `/mustard:skills` — Gerenciador de skills
-
-| Ação | Backend |
-|---|---|
-| `install <name-or-path>` | manual — cópia para `.claude/skills/<name>/` + validação do frontmatter (sem fetch embutido) |
-| `create <name>` | skill `skill-creator` (não vem no pacote — instalar à parte) |
-| `list` | listagem de `.claude/skills/*/SKILL.md` + frontmatter |
-| `remove <name>` | apaga `.claude/skills/{name}/` (avisa se `source: scan`; `source: manual` exige confirmação) |
-| `optimize` / `eval` | loops do `skill-creator` (requer Python 3 + `claude` CLI) |
-| `update` | skills embutidas atualizam com o plugin (marketplace); as manuais são suas |
-
-O campo `source:` é territorial: `/mustard:scan` escreve só `source: scan`; `install`/`create` escrevem só `source: manual`; ausente → tratado como `manual` (conservador).
-
-```mermaid
-flowchart TD
-    start(["/mustard:skills &lt;ação&gt;"]) --> action{"ação?"}
-    action -->|install| inst["copiar p/ .claude/skills/&lt;name&gt;/<br/>→ valida frontmatter → source: manual"]
-    action -->|create| create["skill-creator (interativo)<br/>(inerte até instalá-lo à parte)"]
-    action -->|list| list["lista .claude/skills/ + frontmatter"]
-    action -->|remove| remove{"source?"}
-    remove -->|manual| confirm["pede confirmação"]
-    remove -->|scan| warn["avisa que é gerado pelo /mustard:scan"]
-    action -->|"optimize / eval"| opt["skill-creator (Python 3 + claude CLI)"]
-    action -->|update| upd["plugin via marketplace<br/>(ou mustard init, idempotente)"]
-```
-
-> Curiosidade que virou regra: o arquivo do comando chama-se `skills.md` (plural) porque `skill.md` colide com o marcador `SKILL.md` em filesystems case-insensitive (Windows/macOS) — e o plugin inteiro perderia a pasta `commands/`.
-
----
-
-# Harness (liga/desliga dos hooks)
-
-## `/mustard:unhook` — Kill-switch do harness
-
-Desabilita os hooks renomeando `settings.json` para `settings.json.disabled-<timestamp>` e limpa estado volátil (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). Reversível via `/mustard:rehook`.
-
-| Scope | O que toca |
+| Scope (`--off` / `--on`) | O que toca |
 |---|---|
 | `this` | só `<repo>/.claude/settings.json` (default) |
 | `monorepo` | `<repo>/.claude/` + todos `apps/*` e `packages/*` |
@@ -647,70 +471,50 @@ Desabilita os hooks renomeando `settings.json` para `settings.json.disabled-<tim
 
 ```mermaid
 flowchart TD
-    start(["/mustard:unhook [--scope] [--confirm]"]) --> run["mustard-rt run unhook --scope<br/>(nunca renomear à mão — o binário<br/>é dono do formato do timestamp)"]
-    run --> scopeChk{"scope all sem --confirm?"}
+    start(["/mustard:upsert [--off|--on|--doctor]"]) --> which{"flag?"}
+
+    which -->|nenhuma| ups["mustard-rt run upsert"]
+    ups --> lists["relata created / updated /<br/>preserved / migrated em linguagem clara"]
+    lists --> first{"installedBefore?"}
+    first -->|false| hint["primeira instalação: defaults funcionam;<br/>git.flow e specLang no mustard.json"]
+    first -->|true| doneU(["atualização aplicada"])
+    hint --> doneU
+
+    which -->|--off| off["mustard-rt run unhook --scope"]
+    which -->|--on| on["mustard-rt run rehook --scope"]
+    off --> scopeChk{"scope all sem --confirm?"}
+    on --> scopeChk
     scopeChk -->|sim| skip["global: state skipped (não toca)"]
     scopeChk -->|não| apply["aplica no scope"]
     skip --> report
-    apply --> report["print verbatim (state por entrada:<br/>disabled / missing / skipped / error)<br/>+ campo revert_with"]
-    report --> done(["sugere /mustard:rehook --scope &lt;mesmo&gt;"])
+    apply --> report["print verbatim — state por entrada<br/>(disabled/restored/already-active/<br/>no-snapshot/missing/skipped/error)"]
+
+    which -->|--doctor| doc["mustard-rt run doctor<br/>(read-only; cada check falho<br/>nomeia a própria remediação)"]
 ```
 
----
-
-## `/mustard:rehook` — Restaurar o harness
-
-Reverte o `/mustard:unhook`: acha o snapshot `settings.json.disabled*` mais recente em cada `.claude/` do escopo e renomeia de volta. Diretórios voláteis não são recriados — o runtime os regenera.
-
-| | |
-|---|---|
-| **Trigger** | `/mustard:rehook [--scope this\|monorepo\|all] [--confirm]` |
-| **Backend** | `mustard-rt run rehook --scope` |
-| **States** | restored · already-active · no-snapshot · missing · skipped · error |
-
-```mermaid
-flowchart TD
-    start(["/mustard:rehook [--scope] [--confirm]"]) --> run["mustard-rt run rehook --scope"]
-    run --> find["por .claude/ no scope:<br/>acha settings.json.disabled* mais recente"]
-    find --> state{"estado?"}
-    state -->|encontrado| restore["renomeia de volta → settings.json"]
-    state -->|já ativo| active["already-active"]
-    state -->|sem snapshot| nosnap["no-snapshot"]
-    state -->|sem .claude/| missing["missing"]
-    restore --> report["print verbatim (state por entrada)"]
-    active --> report
-    nosnap --> report
-    missing --> report
-    report --> allActive{"tudo already-active?"}
-    allActive -->|sim| hint["sugere: talvez quisesse /mustard:unhook"]
-```
+> Nunca editar `settings.json` à mão nem renomear um snapshot `settings.json.disabled*` — o binário é o único escritor. Arquivo ilegível vira `error` e fica byte a byte intacto: ele é a rede de segurança, e sobrescrever no escuro é o único desfecho pior que não agir.
 
 ---
 
 ## Tabela-resumo de todos os comandos
 
+**Quatro portas** (o usuário digita) e o resto são fluxos internos (o roteador despacha).
+
 | Comando | Categoria | Backend principal (`mustard-rt run …`) | Usa `grain.model.json`? |
 |---|---|---|---|
-| `/mustard` | porta única | — (roteia via `CLAUDE.md § Intent Routing`) | não |
-| `/mustard:upsert` | instalação (bootstrap) | `upsert` | não |
-| `/mustard:scan` | core | `scan --full`, `scan-guards-*`, `scan-patterns-*` | **produz** |
-| `/mustard:feature` | core · fluxo interno | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
-| `/mustard:bugfix` | core · fluxo interno | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |
-| `/mustard:spec` | core | `active-specs`, `resume-bootstrap`, `wave-advance` | indireto |
-| `/mustard:qa` | core | `qa-run`, `tactical-fix-detect` | não |
-| `/mustard:close` | core | `close-orchestrate` (+ `scan`) | refresca se mudou |
-| `/mustard:tactical-fix` | core · fluxo interno | `tactical-fix-create` | não |
-| `/mustard:task` | delegação · fluxo interno | `agent-prompt-render`, `feature` (digest), `equivalence-learn` | indireto |
-| `/mustard:review` | revisão | `review-prefetch`, `diff-context`, `review-result`, `tactical-fix-detect` | não |
-| `/mustard:git` | git | `git-settle` (+ git nativo via `rtk`) | não |
-| `/mustard:maint` | manutenção | `maint-deps`, `maint-validate`, `scan`, `doctor`, `diagnose-otel` | refresca (sync) |
-| `/mustard:status` | observabilidade | `status` | não |
-| `/mustard:stats` | observabilidade | `metrics collect/report`, `event-projections` | não |
-| `/mustard:knowledge` | conhecimento | `event-projections`, `emit-event`, MCP `search_knowledge` | não |
-| `/mustard:skills` | skills | manual (sem backend `run`) | não |
-| `/mustard:unhook` | harness | `unhook` | não |
-| `/mustard:rehook` | harness | `rehook` | não |
+| _(prompt em linguagem natural)_ | porta única | — (roteia via `CLAUDE.md § Intent Routing`) | não |
+| `/mustard:git` | **porta** · git | `git-settle`, `git-delete`, `notebook` (+ git nativo via `rtk`) | não |
+| `/mustard:pr` | **porta** · PR | `pr-list`, `pr-review`, `pr-merge`, `review-prefetch`, `diff-context`, `close-orchestrate`, `tactical-fix-detect` | não |
+| `/mustard:spec` | **porta** · core | `active-specs`, `resume-bootstrap`, `wave-advance`, `close-pipeline` | indireto |
+| `/mustard:upsert` | **porta** · instalação | `upsert`, `unhook`, `rehook`, `doctor` | não |
+| `scan` | fluxo interno (porteiro de base) | `scan --full`, `scan-guards-*`, `scan-patterns-*` | **produz** |
+| `/mustard:feature` | fluxo interno · core | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
+| `/mustard:bugfix` | fluxo interno · core | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |
+| `/mustard:tactical-fix` | fluxo interno · core | `tactical-fix-create` | não |
+| `/mustard:task` | fluxo interno · delegação | `agent-prompt-render`, `feature` (digest), `equivalence-learn` | indireto |
 
 ---
 
 *Derivado dos comandos do plugin em `plugin/commands/`. Quando um fluxo mudar, re-derive deste diretório — ele é a fonte da verdade.*
+
+> **Regra de nomenclatura em `plugin/commands/`:** nunca nomeie um arquivo de comando `skill.md`. Em filesystems case-insensitive (Windows/macOS) ele colide com o marcador `SKILL.md` de pasta de skill, o loader do plugin trata a pasta `commands/` inteira como UMA skill, e todos os comandos somem.

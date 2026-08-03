@@ -2,10 +2,12 @@
 //!
 //! ## Scope (ONE behavior)
 //!
-//! A `PreToolUse(Skill)` gate that blocks `/mustard:scan` while the working
-//! tree carries uncommitted work.
+//! A `PreToolUse(Skill)` gate that blocks the scan flow (`Skill(mustard:scan)`)
+//! while the working tree carries uncommitted work. The flow stopped being a
+//! door in the four-door prune, but the router still dispatches it as a skill,
+//! so this is still the moment to judge the tree.
 //!
-//! `/scan` rewrites **versioned** artifacts across the whole repo — the grain
+//! The scan rewrites **versioned** artifacts across the whole repo — the grain
 //! model (`.claude/grain.model.json`, `grain.dictionary.json`), every
 //! `.claude/scan-map.md`, the `## Guards` block of every subproject
 //! `CLAUDE.md`, and the `{role}-pattern` skill molds. None of that is
@@ -49,7 +51,14 @@ pub struct ScanCleanGate;
 /// tracked modifications, staged entries, or untracked non-ignored files.
 /// `Some(false)` when clean. `None` for every unknown (no git, not a repo,
 /// failed invocation) so the caller can fail open.
-fn tree_is_dirty(cwd: &Path) -> Option<bool> {
+///
+/// `pub(crate)` so the base gate — which TRIGGERS a census refresh — consults
+/// the same predicate as this gate, which REFUSES one. Two spellings of
+/// "clean" is how the automatic path would start mining exactly where the
+/// user-invoked door is refused. Note it counts `.claude/` as dirt (unlike
+/// [`crate::commands::work_unit_open::dirty_paths`]), which is the whole point:
+/// the model the scan rewrites lives there.
+pub(crate) fn tree_is_dirty(cwd: &Path) -> Option<bool> {
     let out = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(cwd)

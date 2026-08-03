@@ -172,6 +172,62 @@ pub enum ReviewCmd {
         #[arg(long)]
         from: Option<String>,
     },
+    /// The `/mustard:pr` door's LIST step: every open pull request of the base
+    /// the checkout is standing on, with its number, title, the provider's own
+    /// mergeable word, whether it is a draft and the head branch its unit lives
+    /// on. Runs ONLY from a `git.flow` integration base — from a work branch it
+    /// refuses and names the base to switch to. Fail-open on `gh`.
+    #[command(name = "pr-list")]
+    #[command(display_order = 86)]
+    PrList {
+        /// Any directory inside the repo (worktrees welcome — the command
+        /// resolves the main checkout itself). Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The `/mustard:pr` door's REVIEW step: resolve a pull request to its work
+    /// unit and print the review brief — the spec the unit belongs to, the
+    /// subproject its `## Files` name, and that subproject's skill shelf (the
+    /// same molds the implementer was dispatched with). With `--verdict` it
+    /// also RECORDS the outcome through the `review-result` path, which is what
+    /// `pr-merge` reads back.
+    #[command(name = "pr-review")]
+    #[command(display_order = 87)]
+    PrReview {
+        /// PR number. Omitted: the open PR of the current branch.
+        #[arg(long)]
+        pr: Option<u64>,
+        /// Verdict to record: `approved` or `rejected`. Omitted: the brief is
+        /// printed and nothing is recorded.
+        #[arg(long)]
+        verdict: Option<String>,
+        /// Count of critical findings (0 when `approved`).
+        #[arg(long, default_value_t = 0)]
+        critical: i64,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The `/mustard:pr` door's MERGE step: merge the pull request, then hand
+    /// the pruning to `git-settle` (back to the base, pull it, remove the
+    /// worktree, delete the local + remote branch). A unit whose review did not
+    /// come back `approved` is WARNED about and ASKED — the command answers
+    /// `action:"confirm"` and touches nothing; it never refuses. `--confirm` is
+    /// the operator's answer coming back.
+    #[command(name = "pr-merge")]
+    #[command(display_order = 88)]
+    PrMerge {
+        /// PR number. Omitted: the open PR of the current branch.
+        #[arg(long)]
+        pr: Option<u64>,
+        /// The operator's answer to the unreviewed-merge question. Without it
+        /// an unreviewed unit is asked about, never merged and never refused.
+        #[arg(long)]
+        confirm: bool,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
     #[command(display_order = 66)]
@@ -265,6 +321,13 @@ pub fn dispatch(cmd: ReviewCmd) {
         }
         ReviewCmd::AcNegativeCheck { spec, confirm, removal, from } => {
             review::ac_negative_check::run(spec.as_deref(), confirm, removal, from.as_deref());
+        }
+        ReviewCmd::PrList { root } => review::pr_door::run_list(&root),
+        ReviewCmd::PrReview { pr, verdict, critical, root } => {
+            review::pr_door::run_review(&root, pr, verdict.as_deref(), critical);
+        }
+        ReviewCmd::PrMerge { pr, confirm, root } => {
+            review::pr_door::run_merge(&root, pr, confirm);
         }
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

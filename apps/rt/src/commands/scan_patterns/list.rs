@@ -598,7 +598,16 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
         let mut earned = false;
         for (project_dir, house) in &by_project {
             if house.count() < MIN_EXEMPLARS {
-                continue; // this house is too thin; another may still teach.
+                // This house is too thin; another may still teach — so the role
+                // is not dropped, only THIS house is. Recorded per house all the
+                // same: the global fallback below fires only when no house
+                // qualified, so a role that earned a mold somewhere left every
+                // OTHER house silent, and the per-house rule that most often
+                // explains "why is there no mold for X here?" was the one rule
+                // the diagnostic could not answer. Measured on a real
+                // workspace: 8 of 34 vanished molds landed exactly here.
+                drop(role, project_dir, "house_below_exemplars");
+                continue;
             }
             // Lower-kebab the subproject short name too, so a PascalCase C# unit
             // (`DataAccess`) yields a consistent `dataaccess-<role>-pattern` folder.
@@ -1933,6 +1942,41 @@ mod tests {
             "every drop names itself, sorted by (reason, affix)"
         );
         assert!(collect(root).is_empty(), "and none of them became a candidate");
+    }
+
+    #[test]
+    fn a_house_too_thin_to_teach_says_so_instead_of_going_quiet() {
+        // A role can earn a mold in one house and miss in another. The global
+        // fallback only fires when NO house qualified, so the miss used to leave
+        // no trace at all — and "why does THIS subproject have no mold for X?"
+        // was the one question the diagnostic could not answer.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"},{"name":"web","dir":"apps/web"}],
+              "roles": [
+                {"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/<Name>/services",
+                 "dirs":["apps/api/services","apps/web/services"]}
+              ],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"apps/web/services/CartService.ts"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "the house with two exemplars still teaches");
+        assert_eq!(got[0].subproject, "apps/api");
+
+        let rejected = collect_rejected(root);
+        let thin: Vec<&Rejection> =
+            rejected.iter().filter(|r| r.reason == "house_below_exemplars").collect();
+        assert_eq!(thin.len(), 1, "the thin house is recorded, not skipped: {rejected:?}");
+        assert_eq!(thin[0].subproject, "apps/web", "and it names WHICH house went thin");
+        assert_eq!(thin[0].affix, "Service");
     }
 
     #[test]

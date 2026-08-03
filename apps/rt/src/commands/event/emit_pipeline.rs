@@ -169,6 +169,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // --- VALIDATE — each check exits BEFORE any event is written --------------
     validate_kind_or_exit(&opts.kind);
     let kind_base = resolve_kind_base_or_exit(&opts);
+    enforce_base_gate_or_exit(&opts);
     enforce_qa_gate_or_exit(&opts);
     let payload = parse_payload_or_exit(&opts);
 
@@ -286,6 +287,39 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts) -> Option<String> {
         Err(msg) => {
             eprintln!("emit-pipeline: {msg}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// BASE gate: `pipeline.kind` is the single pipeline-opening door — the emit the
+/// router runs at dispatch, BEFORE ANALYZE — so it is where the checkout is
+/// judged. Refuses (exit 2, before anything is written) when the tree is not
+/// sitting on one of `git.flow`'s integration bases, or when that base trails
+/// its remote; both refusals name the command that resolves them. See
+/// [`super::base_gate`] for why an unmeasurable checkout ABSTAINS instead of
+/// passing, and why the census refresh rides here.
+///
+/// Every other kind returns immediately: they are transitions INSIDE a unit
+/// that already crossed this gate, and a read-only request that never opens a
+/// pipeline never emits `pipeline.kind` at all — so it never reaches it.
+fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) {
+    if opts.kind != EVENT_PIPELINE_KIND {
+        return;
+    }
+    let project = project_dir();
+    let root = Path::new(&project);
+    let config = mustard_core::ProjectConfig::load(root);
+    match super::base_gate::evaluate(root, &config) {
+        super::base_gate::BaseVerdict::Refuse(reason) => {
+            eprintln!("BLOCKED: {reason}");
+            std::process::exit(2);
+        }
+        // Unmeasured — the gate did not run, so it has nothing to act on
+        // either: a census refresh needs the clean-base premise it just failed
+        // to establish.
+        super::base_gate::BaseVerdict::Abstain => {}
+        super::base_gate::BaseVerdict::Open(_) => {
+            super::base_gate::refresh_census_if_stale(root);
         }
     }
 }

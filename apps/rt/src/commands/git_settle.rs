@@ -98,7 +98,7 @@ pub(crate) fn main_checkout_root(from: &Path) -> Option<PathBuf> {
 
 /// A path as the report shows it: forward slashes, so one JSON shape reads the
 /// same on every platform.
-fn show(path: &Path) -> String {
+pub(crate) fn show(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -204,7 +204,11 @@ pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
 /// repo the unit touches cuts `{its own base}_{slug}` — `submodule-rules.md`
 /// derives a submodule's branch exactly this way — so the slug travels while the
 /// prefix does not.
-fn unit_slug(branch: &str) -> Option<&str> {
+///
+/// Shared with the per-branch notebook (`commands::event::notebook`), which keys
+/// a unit's records by exactly this slug — one spelling of "which unit is this",
+/// or the notebook of a submodule's branch would land in another file.
+pub(crate) fn unit_slug(branch: &str) -> Option<&str> {
     let name = branch.strip_prefix("worktree-").unwrap_or(branch);
     name.split_once('_').map(|(_, slug)| slug).filter(|s| !s.is_empty())
 }

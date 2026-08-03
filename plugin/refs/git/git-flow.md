@@ -6,6 +6,7 @@
 - Configuration & flow resolution
 - Work branches & the gate
 - Worktree contract
+- The notebook — the porta rule
 - PRs as the integration path (+ base→base promotion / backport)
 - Step 0 / 0b — resolve base, branch protection
 - Commit scope policy (the `add -A` law)
@@ -37,7 +38,20 @@ Every unit runs in its OWN worktree at `.claude/worktrees/{base}_{slug}`, so con
 
 - **Desktop / background CLI** — isolated automatically. A Desktop branch has no `{base}_` prefix, so `/git` falls back to the primary base (`git.flow["*"]`); pass an explicit `<target>` for any other base.
 - **Foreground CLI** — isolate before the first edit, ONE native step: `EnterWorktree name={base}_{slug}` (the `branch` echoed by `emit-pipeline`). The plugin's `WorktreeCreate` hook replaces the native cut: a `{base}_` name with a DECLARED base → fresh `origin/{base}` (idempotent; attaches an existing branch); any other name (the harness's own slug, e.g. `recursing-benz-063389`) → the native default cut, refused while the tree is dirty; an UNDECLARED `{base}_` prefix → loud abort. `mustard-rt run work-unit-open --spec {slug} --base {base}` remains the manual face of the same engine (then `EnterWorktree path={path}`).
-- **Abandoning an UNMERGED unit** — `ExitWorktree action=remove` (add `discard_changes: true` when dirty) deletes the worktree and local branch natively; if the branch was pushed, `rtk git push origin --delete {branch}`. `pr close` stays the ritual for MERGED units only.
+- **Abandoning an UNMERGED unit** — `/git delete <branch>`, run from an integration base. ONE gesture removes the unit whole (open PR, worktree, local branch, remote branch), and it refuses from a work branch, over a bare base, and over a name no ref carries. `pr close` stays the ritual for MERGED units only.
+
+## The notebook — the porta rule
+
+Every unit turns up something true but off-topic: a defect three files away, a rename nobody asked for, a question the current Acceptance Criteria cannot answer. There are exactly two doors for it, and the choice is one line:
+
+| What surfaced | Where it goes |
+|---------------|---------------|
+| It belongs to THIS spec (a criterion is wrong, a boundary moved) | **Amend the spec** — the amendment path (`ac-amend` for a frozen criterion). The unit's own contract changes, and the change is proved. |
+| It does NOT belong to this spec | **The notebook** — `mustard-rt run notebook --add "one line"`. The unit's contract is untouched. |
+
+**Per branch, never one global list.** The file lives at `.claude/spec/{slug}/notebook.md` — the same directory the spec, the waves and the ceremony are materialized into — so it travels with the unit, shows up in the PR diff, and disappears with the branch when `/git delete` retires it. Which work produced a pendency is information: it sets the item's priority and is the only thing that still makes it legible weeks later. A shared list loses that on the first append.
+
+**Closing the loop.** Read it back with `mustard-rt run notebook` (no `--add`), optionally naming another unit with `--unit {base}_{slug}`. `/git pr` prints it once the PR is open: the work is in review, so the notebook is now the next cycle's prompt — it goes back to the base gate as the next request, and the loop closes. An empty notebook prints nothing; items are never invented to fill it.
 
 ## PRs are the integration path
 

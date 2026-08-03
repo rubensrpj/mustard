@@ -25,6 +25,8 @@ Derive integration bases from `mustard.json#git.flow` (the non-`*` keys ∪ thei
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
+That emit IS the **base gate** — the one check before ANALYZE, and every pipeline-opening path crosses it (a read-only answer that opens no pipeline never emits, so it never reaches it). It refuses with exit 2, before anything is written, when the checkout is not one of those bases — a unit is cut FROM a base, never from another unit — or when the base trails `origin`. Each refusal names the command that resolves it (`git checkout {base}`, `git pull --ff-only origin {base}`): run it and re-dispatch, never route around it. A freshly updated base is also the only moment the tree is clean by construction, so a stale census is re-mined right there — `/scan` is not a step you run.
+
 `--intent` + `--base` compute the unit's `{base}_{slug}` branch (echoed as `branch` in the output) and record the `/git` PR target. Spec authoring (PLAN) writes IN-PLACE — the `work_branch_gate` carves out `.claude/spec/` (like `.claude/plans/`), so `spec.md` is written on the base branch with NO worktree; opening one just to author the spec collides with the in-place guard (the branch it needs is held by the worktree). Code writing (EXECUTE) is what isolates, in ONE native step: `EnterWorktree name=<branch from the output>` — the plugin's WorktreeCreate hook cuts it from a fresh `origin/{base}`, never from the default branch. Every path emits — no run is invisible. Read-only requests never branch or open a worktree. The options are the project's OWN bases, never a hardcoded pair.
 
 ## Delegate via Task
@@ -33,7 +35,9 @@ Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >
 
 ## Phases
 
-`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (the flow reclassifies upward as file count grows — trust its thresholds); Full runs them all. The flows drive these phases; `/mustard:qa` runs each `## Acceptance Criteria` and the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those flows — this file does not restate it.
+`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (the flow reclassifies upward as file count grows — trust its thresholds); Full runs them all. The flows drive these phases; `qa-run` runs each `## Acceptance Criteria` and the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those flows — this file does not restate it.
+
+**Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch, never something the user types. Review, QA and CLOSE are steps of `/mustard:pr merge`; the census refresh is a step of the base gate above; turning the harness off or on and diagnosing the install are flags of `/mustard:upsert`; cancelling an abandoned unit is `/mustard:git delete`. Never tell the user to run a command outside those four.
 
 ## Locating code
 

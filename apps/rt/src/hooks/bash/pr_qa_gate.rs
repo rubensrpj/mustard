@@ -69,7 +69,8 @@ pub(super) fn pr_qa_gate(command: &str, cwd: &str) -> Option<Verdict> {
         message: format!(
             "[qa-coupling] {moment} `{spec}` — no `qa.result` with overall=pass exists yet. \
              The canonical order runs QA BEFORE integration (close-pipeline fires while the unit \
-             is still live on its work branch). Run `/mustard:qa --spec {spec}` first, or accept \
+             is still live on its work branch). Run `mustard-rt run qa-run --spec {spec}` first, \
+             or accept \
              that this integrates unverified work — CLOSE will refuse the spec until QA passes."
         ),
     })

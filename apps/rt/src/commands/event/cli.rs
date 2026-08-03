@@ -11,6 +11,7 @@
 //! splitting the god-enum into families must not reshuffle the published CLI.
 
 use clap::Subcommand;
+use std::path::PathBuf;
 
 use crate::commands::{event};
 
@@ -101,6 +102,27 @@ pub enum EventCmd {
         #[arg(long, default_value = "json")]
         format: String,
     },
+    /// The per-branch NOTEBOOK of a work unit: what surfaced during the work
+    /// and does NOT belong to its spec. The porta rule is one line — what
+    /// belongs to the spec AMENDS the spec, what does not comes here. Records
+    /// live under `.claude/spec/<slug>/notebook.md`, beside the unit's own
+    /// state, so they travel with the branch and disappear with it. Without
+    /// `--add` it READS the notebook back; once the pull request opens, that
+    /// reading is the next cycle's prompt.
+    #[command(display_order = 90)]
+    Notebook {
+        /// The item to record — one note, stored as one line. Omitted: the
+        /// notebook is read, not written.
+        #[arg(long)]
+        add: Option<String>,
+        /// The work branch whose notebook this is, e.g. `dev_my-unit`.
+        /// Omitted: the branch the checkout is standing on.
+        #[arg(long)]
+        unit: Option<String>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `event`-family `run` subcommand.
@@ -131,5 +153,8 @@ pub fn dispatch(cmd: EventCmd) {
             wave,
             format,
         } => event::event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
+        EventCmd::Notebook { add, unit, root } => {
+            event::notebook::run(&root, unit.as_deref(), add.as_deref());
+        }
     }
 }

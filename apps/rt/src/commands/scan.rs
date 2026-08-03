@@ -18,7 +18,12 @@ use serde_json::{json, Value};
 use super::scan_claude;
 
 /// Default model location under the project's `.claude/` directory.
-fn default_model_path(root: &Path) -> PathBuf {
+///
+/// `pub(crate)` so the base gate's automatic refresh
+/// ([`crate::commands::event::base_gate`]) targets the SAME file this door
+/// writes — two spellings of the model path is how a refresh silently mines
+/// into a place no reader consults.
+pub(crate) fn default_model_path(root: &Path) -> PathBuf {
     root.join(".claude").join("grain.model.json")
 }
 
@@ -121,7 +126,11 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
 /// files. Parsing is deliberately dumb (the `path =` entries, nothing else): a
 /// `.gitmodules` we cannot read yields nothing to complain about, which is the
 /// fail-open default for a repo that has no submodules at all.
-fn hollow_submodules(root: &Path) -> Vec<String> {
+///
+/// `pub(crate)` so the base gate's automatic refresh runs the SAME preflight
+/// before mining — a refresh that skipped it would replace a complete model
+/// with a hollow one precisely where nobody is watching.
+pub(crate) fn hollow_submodules(root: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(root.join(".gitmodules")) else {
         return Vec::new(); // no submodules declared — nothing to check.
     };

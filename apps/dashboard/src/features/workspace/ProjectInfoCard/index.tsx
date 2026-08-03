@@ -438,7 +438,7 @@ export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
           title={t("overview.project.empty.title", "Sem modelo do projeto")}
           description={t(
             "overview.project.empty.description",
-            "Rode /mustard:scan para minerar linguagens e stacks deste workspace.",
+            "O modelo é minerado sozinho quando um pipeline abre a partir de uma base atualizada — descreva o trabalho e ele aparece aqui.",
           )}
         />
       ) : (
