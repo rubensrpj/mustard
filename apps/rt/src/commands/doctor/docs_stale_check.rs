@@ -23,7 +23,8 @@
 //! Other always-excluded directories: the shared [`fs::PRUNE_DIRS`] floor
 //! (`target/`, `node_modules/`, `.git/`, `dist/`, …) plus [`EXTRA_IGNORE_DIRS`].
 //!
-//! `/mustard:close` invokes this in its Verification Gate: by default a hit
+//! `close-orchestrate` — the CLOSE step of `/mustard:pr merge` — invokes this
+//! as gate 4 of its Verification Gate: by default a hit
 //! prints a warning; setting `MUSTARD_DOCS_AUDIT_MODE=strict` (or passing
 //! `--strict` here) makes the subcommand exit `1` so the gate fails.
 //!

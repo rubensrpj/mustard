@@ -35,7 +35,9 @@ Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >
 
 ## Phases
 
-`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (the flow reclassifies upward as file count grows — trust its thresholds); Full runs them all. The flows drive these phases; `/mustard:qa` runs each `## Acceptance Criteria` and the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those flows — this file does not restate it.
+`ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob (the flow reclassifies upward as file count grows — trust its thresholds); Full runs them all. The flows drive these phases; `qa-run` runs each `## Acceptance Criteria` and the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The full phase, gate and mid-pipeline change-request protocol lives in those flows — this file does not restate it.
+
+**Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch, never something the user types. Review, QA and CLOSE are steps of `/mustard:pr merge`; the census refresh is a step of the base gate above; turning the harness off or on and diagnosing the install are flags of `/mustard:upsert`; cancelling an abandoned unit is `/mustard:git delete`. Never tell the user to run a command outside those four.
 
 ## Locating code
 

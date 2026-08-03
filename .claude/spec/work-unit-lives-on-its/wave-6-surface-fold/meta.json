@@ -1,10 +1,10 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": null,
+  "checkpoint": "2026-08-03T09:14:33.648Z",
   "parent": "work-unit-lives-on-its",
   "checklist": [
     {
@@ -25,7 +25,7 @@
     {
       "label": "plugin/commands/scan.md",
       "path": "plugin/commands/scan.md",
-      "done": false
+      "done": true
     },
     {
       "label": "plugin/commands/unhook.md",
@@ -40,7 +40,7 @@
     {
       "label": "plugin/commands/upsert.md",
       "path": "plugin/commands/upsert.md",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/tests/template_parity.rs",

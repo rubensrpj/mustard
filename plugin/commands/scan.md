@@ -1,16 +1,19 @@
 ---
-description: Use when the user runs /scan or asks to analyze, discover, or rescan the codebase. Mines the repo into grain.model.json (deterministic, language-agnostic) and then enriches it as standard — subproject Guards prose + missing pattern-skill molds — the durable model the feature/spec pipeline consumes.
+description: An internal flow — not a door. The base gate re-mines the deterministic census on its own; this flow is the FULL pass (subproject maps + Guards prose + pattern-skill molds) the router runs when the census needs re-authoring after a large change. Weak fallback only: use when the router did not engage and the model is visibly stale.
 argument-hint: [--root <dir>] [--out <path>]
+user-invocable: false
 source: manual
 ---
 <!-- mustard:generated -->
-# /scan — Codebase model
+# scan — Codebase model
 
-`/scan [--root <dir>] [--out <path>]`. **Enrichment is STANDARD** — no `--full`/`--enrich` flag, no spend prompt. Every `/scan` does the deterministic model, the subproject maps, and both enrichment passes (Guards + pattern molds).
+**This is not a step you run.** The deterministic census is re-mined automatically at the **base gate** — the single pipeline-opening emit, where a freshly updated integration base is the one moment the tree is clean by construction. What the gate cannot do is the enrichment: it is a Rust process, and Guards prose and pattern molds are written by agents. So this flow is the FULL pass, and the router reaches it when the census needs re-authoring, never the user typing a command.
 
-**Git hygiene — the refresh is its OWN unit.** Everything `/scan` writes is **versioned**: the grain model, every `scan-map.md`, the `## Guards` of every subproject `CLAUDE.md`, and the `{role}-pattern` molds (`.claude/.gitignore` covers only runtime scratch). So:
-- **Before:** run it on a CLEAN tree — `scan-clean-gate` refuses otherwise, because under the `/git` `add -A` law the regenerated model could not be committed apart from your work.
-- **After:** if it produced changes, commit + push them as their own unit (`/git pr`). A re-scan over unchanged code is byte-stable and leaves the tree clean — no diff, nothing to push.
+**Enrichment is STANDARD** — no `--full`/`--enrich` flag, no spend prompt. Every run does the deterministic model, the subproject maps, and both enrichment passes (Guards + pattern molds).
+
+**Git hygiene — the refresh is its OWN unit.** Everything written here is **versioned**: the grain model, every `scan-map.md`, the `## Guards` of every subproject `CLAUDE.md`, and the `{role}-pattern` molds (`.claude/.gitignore` covers only runtime scratch). So:
+- **Before:** run it on a CLEAN tree — `scan-clean-gate` refuses otherwise, because under the `/git` `add -A` law the regenerated model could not be committed apart from your work. This is the same clean-tree premise the base gate checks before it re-mines.
+- **After:** if it produced changes, commit + push them as their own unit (`/mustard:git pr`). A re-scan over unchanged code is byte-stable and leaves the tree clean — no diff, nothing to push.
 
 ## 1. Deterministic model + maps (no AI, you do NOT read source)
 

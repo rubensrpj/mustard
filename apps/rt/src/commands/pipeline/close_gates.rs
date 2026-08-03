@@ -1013,11 +1013,12 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                 ),
                 "CLOSE requires the acceptance criteria to be verified",
                 &spec_ref.map_or_else(
-                    || "run /mustard:qa before closing, or set MUSTARD_QA_GATE_MODE=warn"
+                    || "run `mustard-rt run qa-run --spec <spec>` before closing, or set \
+                        MUSTARD_QA_GATE_MODE=warn"
                         .to_string(),
                     |s| {
                         format!(
-                            "run /mustard:qa or `mustard-rt run qa-run --spec {s}`, \
+                            "run `mustard-rt run qa-run --spec {s}`, \
                              or set MUSTARD_QA_GATE_MODE=warn"
                         )
                     },
@@ -1069,7 +1070,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                         },
                     ),
                     "a skip is not a verification — the criteria exist but were never exercised",
-                    "fix the AC commands and re-run /mustard:qa — or record the verdict from an \
+                    "fix the AC commands and re-run qa-run — or record the verdict from an \
                      EXTERNAL `mustard-rt run qa-run`, which is the run that can actually attempt \
                      them; confirm with the user and set MUSTARD_QA_GATE_MODE=warn to close anyway",
                 )
@@ -1088,7 +1089,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                     "a skip is not a verification — and a spec with nothing to verify has nothing \
                      to claim",
                     "author one criterion — a command that is red before the work and green after \
-                     — then re-run /mustard:qa; or confirm with the user and set \
+                     — then re-run `mustard-rt run qa-run`; or confirm with the user and set \
                      MUSTARD_QA_GATE_MODE=warn to close anyway",
                 )
             };
@@ -1122,7 +1123,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                     |s| format!("QA failed for spec \"{s}\": {failed_str}"),
                 ),
                 "CLOSE requires every acceptance criterion to pass",
-                "fix the failing criteria and re-run /mustard:qa, or set \
+                "fix the failing criteria and re-run `mustard-rt run qa-run`, or set \
                  MUSTARD_QA_GATE_MODE=warn",
             );
             if qa_mode == GateMode::Strict {
@@ -1146,7 +1147,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
             // QA passed, but the spec's acceptance source changed AFTER the QA
             // ran — the green was never re-verified against the current criteria
             // (e.g. a mid-pipeline change request folded into a new AC). Hold
-            // CLOSE until /mustard:qa re-runs.
+            // CLOSE until `qa-run` re-runs.
             let reason = format_gate_message(
                 "Close Gate",
                 &spec_ref.map_or_else(
@@ -1160,7 +1161,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                 ),
                 "an edit to the spec / acceptance criteria after QA means the pass was \
                  never re-verified",
-                "re-run /mustard:qa to re-verify the current criteria, or set \
+                "re-run `mustard-rt run qa-run` to re-verify the current criteria, or set \
                  MUSTARD_QA_GATE_MODE=warn",
             );
             if qa_mode == GateMode::Strict {
@@ -1206,7 +1207,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                     ),
                     "a mid-pipeline change may not be covered by the verified criteria",
                     "fold each behavioural request into ## Acceptance Criteria and re-run \
-                     /mustard:qa, or set MUSTARD_QA_COMPOSITION_GATE_MODE=warn",
+                     `mustard-rt run qa-run`, or set MUSTARD_QA_COMPOSITION_GATE_MODE=warn",
                 );
                 emit_close_gate_event(
                     cwd,

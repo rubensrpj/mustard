@@ -57,17 +57,6 @@
       "checksum": null
     },
     {
-      "id": "command:close",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/close.md",
-      "checksum": null
-    },
-    {
       "id": "command:feature",
       "category": "command",
       "source": {
@@ -90,25 +79,14 @@
       "checksum": null
     },
     {
-      "id": "command:qa",
+      "id": "command:pr",
       "category": "command",
       "source": {
         "kind": "first-party"
       },
       "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/qa.md",
-      "checksum": null
-    },
-    {
-      "id": "command:review",
-      "category": "command",
-      "source": {
-        "kind": "first-party"
-      },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "commands/review.md",
+      "vendoredAt": "2026-08-03",
+      "path": "commands/pr.md",
       "checksum": null
     },
     {

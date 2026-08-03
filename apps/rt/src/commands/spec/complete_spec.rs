@@ -1417,9 +1417,13 @@ mod tests {
     ///
     /// Asserted by the FACT, not the wording: no line may pair `complete-spec`
     /// with `emit-pipeline`, because that pairing IS the false attribution the
-    /// reader relied on (`close.md` told them the `emit-pipeline` gate rejects a
-    /// hand-call; it never sees one). The second half keeps the fix from passing
-    /// by deleting the guidance instead of correcting it.
+    /// reader relied on (the close ritual told them the `emit-pipeline` gate
+    /// rejects a hand-call; it never sees one). The second half keeps the fix
+    /// from passing by deleting the guidance instead of correcting it.
+    ///
+    /// The ritual lives in `pr.md` now: CLOSE stopped being a door of its own
+    /// and became the verification step `/mustard:pr merge` crosses. The promise
+    /// moved with it, so this ratchet reads its new home.
     #[test]
     fn the_shipped_ritual_names_the_protection_that_exists() {
         let ritual = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1427,7 +1431,7 @@ mod tests {
             .join("..")
             .join("plugin")
             .join("commands")
-            .join("close.md");
+            .join("pr.md");
         let text = std::fs::read_to_string(&ritual)
             .unwrap_or_else(|e| panic!("the shipped close ritual must be readable: {e}"));
 
@@ -1468,7 +1472,7 @@ mod tests {
         // the doc's own vocabulary for the leniency that no longer exists — this
         // is a check on the CLAIM, and it is the tightest honest anchor
         // available for prose.
-        for ritual in ["plugin/commands/close.md", "plugin/commands/qa.md"] {
+        for ritual in ["plugin/commands/pr.md", "plugin/pipeline-config.md"] {
             let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join(ritual);
             let body = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("{ritual} must be readable: {e}"));

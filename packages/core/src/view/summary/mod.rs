@@ -1,6 +1,6 @@
 //! Summary writer — the versionable `.summary.json` artefact.
 //!
-//! Every spec that goes through `/mustard:close` produces a
+//! Every spec that goes through the CLOSE gate produces a
 //! `{spec-dir}/.summary.json` file that is committed to git alongside the
 //! spec itself. It captures the information that matters to *other* users
 //! who clone the repo later: timeline, AC results, decisions, token economy,

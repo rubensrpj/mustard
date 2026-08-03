@@ -2,10 +2,12 @@
 //!
 //! ## Scope (ONE behavior)
 //!
-//! A `PreToolUse(Skill)` gate that blocks `/mustard:scan` while the working
-//! tree carries uncommitted work.
+//! A `PreToolUse(Skill)` gate that blocks the scan flow (`Skill(mustard:scan)`)
+//! while the working tree carries uncommitted work. The flow stopped being a
+//! door in the four-door prune, but the router still dispatches it as a skill,
+//! so this is still the moment to judge the tree.
 //!
-//! `/scan` rewrites **versioned** artifacts across the whole repo — the grain
+//! The scan rewrites **versioned** artifacts across the whole repo — the grain
 //! model (`.claude/grain.model.json`, `grain.dictionary.json`), every
 //! `.claude/scan-map.md`, the `## Guards` block of every subproject
 //! `CLAUDE.md`, and the `{role}-pattern` skill molds. None of that is

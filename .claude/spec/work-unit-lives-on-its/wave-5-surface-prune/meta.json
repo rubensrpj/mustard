@@ -1,10 +1,10 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": "2026-07-31T22:12:32.052Z",
+  "checkpoint": "2026-08-03T09:14:27.297Z",
   "parent": "work-unit-lives-on-its",
   "checklist": [
     {
