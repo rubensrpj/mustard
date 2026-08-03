@@ -32,12 +32,14 @@ Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`
 
 **Monorepo:** the gate cuts the branch in the PARENT only. Each dirty submodule gets its OWN `{base}_{slug}` branch (its own base prefix), cut by `/git` at commit time — see `submodule-rules.md`.
 
-## Worktree contract — one unit, one worktree
+## Isolation contract — the branch IS the unit, the worktree is the parallel case
 
-Every unit runs in its OWN worktree at `.claude/worktrees/{base}_{slug}`, so concurrent sessions never share a tree. The `{base}_` prefix is load-bearing — `/git` reads it to target the PR — and the branch is cut FROM `{base}`, so the right base in yields the right PR target out.
+Every unit lives on its OWN branch `{base}_{slug}`, cut in the MAIN checkout at APPROVAL by `spec-draft` — so the whole unit is written on it: `spec.md`, the waves, the ceremony and the code alike. That branch IS the isolation. The `{base}_` prefix is load-bearing — `/git` reads it to target the PR — and the branch is cut FROM `{base}`, so the right base in yields the right PR target out.
+
+A worktree at `.claude/worktrees/{base}_{slug}` is what keeps SEVERAL units in flight at once: it is cut only when the branch is not already checked out somewhere, so concurrent sessions never share a tree. One unit worked start to finish never needs one.
 
 - **Desktop / background CLI** — isolated automatically. A Desktop branch has no `{base}_` prefix, so `/git` falls back to the primary base (`git.flow["*"]`); pass an explicit `<target>` for any other base.
-- **Foreground CLI** — isolate before the first edit, ONE native step: `EnterWorktree name={base}_{slug}` (the `branch` echoed by `emit-pipeline`). The plugin's `WorktreeCreate` hook replaces the native cut: a `{base}_` name with a DECLARED base → fresh `origin/{base}` (idempotent; attaches an existing branch); any other name (the harness's own slug, e.g. `recursing-benz-063389`) → the native default cut, refused while the tree is dirty; an UNDECLARED `{base}_` prefix → loud abort. `mustard-rt run work-unit-open --spec {slug} --base {base}` remains the manual face of the same engine (then `EnterWorktree path={path}`).
+- **Foreground CLI** — the branch is already out from approval, so the isolation step DEGRADES rather than cutting twice: `EnterWorktree name={base}_{slug}` (the `branch` echoed by `emit-pipeline`) answers with the checkout that already holds it (`inPlace:true`, nothing created). `git worktree add` over a branch another tree holds is what git refuses with exit 128 — the degrade is what keeps that from ending the step. When the branch is NOT already out, the plugin's `WorktreeCreate` hook replaces the native cut: a `{base}_` name with a DECLARED base → fresh `origin/{base}` (idempotent; attaches an existing branch); any other name (the harness's own slug, e.g. `recursing-benz-063389`) → the native default cut, refused while the tree is dirty; an UNDECLARED `{base}_` prefix → loud abort. `mustard-rt run work-unit-open --spec {slug} --base {base}` remains the manual face of the same engine (then `EnterWorktree path={path}`).
 - **Abandoning an UNMERGED unit** — `/git delete <branch>`, run from an integration base. ONE gesture removes the unit whole (open PR, worktree, local branch, remote branch), and it refuses from a work branch, over a bare base, and over a name no ref carries. `pr close` stays the ritual for MERGED units only.
 
 ## The notebook — the porta rule
