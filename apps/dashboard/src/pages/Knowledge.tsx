@@ -243,7 +243,7 @@ export function Knowledge() {
                 title={t("knowledge.empty.noPatterns.title")}
                 description={
                   <>
-                    {t("knowledge.empty.noPatterns.body.before")}<code className="font-mono">/mustard:feature</code>{t("knowledge.empty.noPatterns.body.or")}<code className="font-mono">/mustard:bugfix</code>{t("knowledge.empty.noPatterns.body.invoke")}<code className="font-mono">/mustard:knowledge</code>{t("knowledge.empty.noPatterns.body.after")}
+                    {t("knowledge.empty.noPatterns.body.before")}<code className="font-mono">/mustard:feature</code>{t("knowledge.empty.noPatterns.body.or")}<code className="font-mono">/mustard:bugfix</code>{t("knowledge.empty.noPatterns.body.after")}
                   </>
                 }
               />

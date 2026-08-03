@@ -37,4 +37,4 @@ Edit the spec (Contexto, Critérios de Aceitação, Arquivos) and run /mustard:s
 
 ## Related
 
-`/mustard:review` and `/mustard:qa` § Tactical Fix Discovery — review/QA-time surfacing of candidates.
+`${CLAUDE_PLUGIN_ROOT}/commands/pr.md` § 2 and § 3a — review/QA-time surfacing of candidates, inside the PR door that carries both steps.

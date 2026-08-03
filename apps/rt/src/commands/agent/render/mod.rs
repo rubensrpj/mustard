@@ -47,14 +47,20 @@ use std::path::{Path, PathBuf};
 
 mod capabilities;
 mod prompt_ref;
-mod reference;
+// `pub(crate)` so the `/mustard:pr` door's review step reads a spec's declared
+// files through the SAME parser the dispatch prompt uses — a second reader of
+// `## Files` is a second spelling of the section, and the two would drift.
+pub(crate) mod reference;
 mod retry;
 mod role;
 // `pub` (not `mod`) only so the `dispatch_warns_on_uncurated_rules` integration
 // test can call `read_guards_block` through the lib face; every other item in it
 // stays `pub(crate)`.
 pub mod sections;
-mod skills;
+// `pub(crate)` for the same reason as `reference` above: the PR review step
+// hands the reviewer the shelf the IMPLEMENTER was dispatched with, which only
+// stays true while both read it from here.
+pub(crate) mod skills;
 
 // Re-exports that preserve the historical public surface so the compatibility
 // façade (`agent::agent_prompt_render`) and every in-crate consumer keep

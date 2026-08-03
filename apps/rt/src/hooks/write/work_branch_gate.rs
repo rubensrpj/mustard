@@ -25,6 +25,14 @@
 //!    consumed and no branch is ever created.
 //! 2. **No marker** → deny only a direct edit on a BARE integration branch
 //!    (an exact member of `git.flow`'s bases); any work branch edits freely.
+//!    `.claude/spec/…` is NOT exempt from this (it was, once): the spec belongs
+//!    to the unit, so it is written after the branch exists, never on the base.
+//!
+//! The git primitives this gate performs the cut with — the base refresh, the
+//! checkout, the `{base}_` base recovery, the protected-branch predicate — live
+//! in [`crate::commands::event::work_branch`], because `spec-draft` performs the
+//! SAME cut before it writes. A second spelling is how two doors that must agree
+//! about a branch stop agreeing.
 //!
 //! ## Two roots: state vs. the local tree (the nested-worktree fix)
 //!
@@ -65,6 +73,9 @@ use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::commands::event::work_branch::{
+    base_for, checkout_work_branch, current_branch, is_protected, refresh_integration_bases,
+};
 use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
 
@@ -128,135 +139,6 @@ fn local_tree_of(input: &HookInput, state_root: &str) -> String {
         return cwd.to_string();
     }
     state_root.to_string()
-}
-
-/// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None` on
-/// any failure (not a repo, detached HEAD reported as `"HEAD"`, git absent).
-fn current_branch(vcs: &str, root: &str) -> Option<String> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
-}
-
-/// `true` when a local branch `refs/heads/<branch>` exists.
-fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    Command::new(vcs)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
-/// to `Err(<stderr|io error>)`. Never panics.
-fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
-    let out = Command::new(vcs)
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let msg = stderr.trim();
-        Err(if msg.is_empty() {
-            format!("git exited with status {}", out.status)
-        } else {
-            msg.to_string()
-        })
-    }
-}
-
-/// Check out `target`, creating it off `base` when it does not yet exist.
-/// Carries the working-tree changes along (a plain `checkout`, no stash). If
-/// `base` is absent locally, branch off the current HEAD instead. Returns the
-/// git error string on failure.
-fn checkout_work_branch(vcs: &str, root: &str, target: &str, base: &str) -> Result<(), String> {
-    if local_branch_exists(vcs, root, target) {
-        return run_git(vcs, root, &["checkout", target]);
-    }
-    if local_branch_exists(vcs, root, base) {
-        return run_git(vcs, root, &["checkout", "-b", target, base]);
-    }
-    // Base branch not present locally — branch off the current HEAD.
-    run_git(vcs, root, &["checkout", "-b", target])
-}
-
-/// Refresh the project's integration bases (`git.flow`) to their `origin`
-/// remotes BEFORE a work branch is cut, so the branch is always based on the
-/// latest `dev`/`main`. Fire-and-forget: it returns nothing the caller must
-/// act on, and every git failure is swallowed. Fully FAIL-OPEN — offline, no
-/// remote, or a diverged base never blocks the edit and never panics.
-///
-/// 1. `git fetch origin` — on failure (offline / no remote) RETURN early and
-///    do nothing else; the branch is still cut from the local base.
-/// 2. For each integration base `B`:
-///    - when `B` is the checked-out branch (`Some(B) == current`) →
-///      `git merge --ff-only origin/B` fast-forwards it in place;
-///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
-///      make non-ff, so it safely fast-forwards the local ref without a
-///      checkout.
-///    Every per-base error (no matching origin ref, a diverged base, a base
-///    checked out in another worktree, …) is ignored — best-effort, keep going.
-fn refresh_integration_bases(vcs: &str, root: &str, config: &ProjectConfig, current: Option<&str>) {
-    // Offline / no remote → nothing to refresh; the branch is cut from the
-    // local base as before. Do NOT propagate the error.
-    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
-        return;
-    }
-    for base in config.git.integration_bases() {
-        // Best-effort per base — drop the result either way.
-        let _ = if current == Some(base.as_str()) {
-            run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
-        } else {
-            run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
-        };
-    }
-}
-
-/// Recover the integration base a work branch was cut from, from its NAME:
-/// among the project's integration bases (`git.flow`), the LONGEST base `B`
-/// such that `target` starts with `"{B}_"`. When none match, the project's
-/// primary base (`config.git.primary_base()`).
-///
-/// Longest-match disambiguates nested bases (a `dev_release` base wins over
-/// `dev` for `dev_release_x`). Agnostic — the base set and the primary both
-/// come from `git.flow`; no branch name is hardcoded.
-fn base_for(target: &str, config: &ProjectConfig) -> String {
-    let bases = config.git.integration_bases();
-    let mut best: Option<&str> = None;
-    for b in &bases {
-        if target.starts_with(&format!("{b}_")) && best.is_none_or(|cur| b.len() > cur.len()) {
-            best = Some(b.as_str());
-        }
-    }
-    best.map_or_else(|| config.git.primary_base(), str::to_string)
-}
-
-/// `true` when `branch` is a bare integration branch that must never be edited
-/// directly — an exact member of `config.git.integration_bases()` (`dev`,
-/// `main`/`master`, `develop`, … whatever `git.flow` declares). The `{base}_*`
-/// work branches (`dev_rubens`, `main_close-gate`, …) are NOT protected.
-fn is_protected(branch: &str, config: &ProjectConfig) -> bool {
-    config.git.integration_bases().contains(branch)
 }
 
 /// Canonicalise `p`, falling back to the path as-given on error — so relative
@@ -411,17 +293,15 @@ impl Check for WorkBranchGate {
                 // approved). Same contract as out-of-repo: allow, cut
                 // nothing, keep the marker.
                 Some(rel) if rel.starts_with(".claude/plans/") => return Ok(Verdict::Allow),
-                // Spec authoring (`.claude/spec/…`) is the pipeline's PLAN
-                // phase: the spec IS the plan, born before the work unit and
-                // gated by `/spec` before any code lands. Its state lives at the
-                // MAIN checkout (worktree redirect), so a `spec.md` edit is
-                // always judged against the main tree's branch — forcing a work
-                // branch here either denies (no marker yet) or collides with a
-                // worktree already holding `{base}_{slug}`: the PLAN-phase
-                // deadlock. Same contract as `.claude/plans/`: allow, cut
-                // nothing, keep the marker. The work branch is cut at EXECUTE,
-                // on the first SOURCE edit outside `.claude/`.
-                Some(rel) if rel.starts_with(".claude/spec/") => return Ok(Verdict::Allow),
+                // `.claude/spec/…` used to be carved out here too, so a spec
+                // could be authored on the protected base before any branch
+                // existed. It is NOT carved out any more: the spec is the first
+                // thing the work produces and it belongs to the unit, so the
+                // branch is cut BEFORE the draft
+                // ([`crate::commands::event::work_branch::cut_pending_work_branch`],
+                // called by `spec-draft`) and the whole layout — spec, waves,
+                // ceremony, proof — is written inside it. A spec write on a bare
+                // base is therefore refused like any other repo write.
                 Some(_) => {}
             }
         }
@@ -675,36 +555,60 @@ mod tests {
         assert!(context::pending_branch_for(root_s, sid).is_none());
     }
 
-    /// Spec authoring (`.claude/spec/…`) is carved out of branch protection like
-    /// `.claude/plans/`: the spec IS the pipeline's plan, authored during PLAN
-    /// (before the work unit) against the centralized main checkout. A `spec.md`
-    /// edit on a bare integration branch with NO marker must ALLOW and cut
-    /// nothing, even though a normal repo edit in the same state is denied.
+    /// AC-2 — spec authoring is NO LONGER carved out of branch protection.
+    ///
+    /// `.claude/spec/…` used to return `Allow` here whatever the branch, so a
+    /// spec was authored on the protected base and the unit's own artefacts
+    /// lived apart from the unit. The spec is the first thing the work produces,
+    /// so it is refused on a bare base exactly like any other repo write — and
+    /// WITH a pending marker the same write CUTS the branch, which is how the
+    /// draft comes to live inside the unit.
     #[test]
-    fn spec_authoring_allowed_on_protected_branch() {
+    fn spec_authoring_on_protected_base_is_refused_then_cuts_the_branch() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let root_s = root.to_str().unwrap();
         seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
         init_repo_on(root, "dev");
 
-        // Author a spec.md under the centralized `.claude/spec/…` (no marker).
+        // Author a spec.md under `.claude/spec/…` with NO work unit pending.
         let spec_dir = root.join(".claude").join("spec").join("notif");
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("spec.md"), "# spec").unwrap();
         let spec = spec_dir.join("spec.md");
+        let spec_s = spec.to_str().unwrap();
 
-        let (input, ctx) = pre_edit_input_for(root_s, "sess-spec", spec.to_str().unwrap());
+        let (input, ctx) = pre_edit_input_for(root_s, "sess-spec", spec_s);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
-            matches!(verdict, Verdict::Allow),
-            "spec authoring is carved out on a protected branch: {verdict:?}",
+            matches!(verdict, Verdict::Deny { .. }),
+            "a spec write on the bare integration base is refused like any other \
+             repo write — the carve-out is gone: {verdict:?}",
         );
-        // Cut nothing: HEAD stays on the integration branch.
         assert_eq!(
             current_branch("git", root_s).as_deref(),
             Some("dev"),
-            "no work branch was cut for a spec edit",
+            "a refusal cuts nothing",
+        );
+
+        // The same write, with the work unit signalled, lands INSIDE the unit:
+        // the marker is consumed and the branch is cut before the spec exists.
+        let sid = "sess-spec-marked";
+        context::set_pending_branch(root_s, sid, "dev_notif");
+        let (marked, ctx2) = pre_edit_input_for(root_s, sid, spec_s);
+        let verdict2 = WorkBranchGate.evaluate(&marked, &ctx2).expect("no error");
+        assert!(
+            matches!(verdict2, Verdict::Warn { .. }),
+            "the in-place cut nudges, it never refuses the spec write: {verdict2:?}",
+        );
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev_notif"),
+            "the spec is written on the unit's own branch",
+        );
+        assert!(
+            context::pending_branch_for(root_s, sid).is_none(),
+            "the marker is consumed by the spec write, like any first mutation",
         );
     }
 

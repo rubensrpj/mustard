@@ -12,7 +12,7 @@ Canonical: `ANALYZE→PLAN→EXECUTE→REVIEW→QA→CLOSE` (+`COORDINATE`). Thi
 | `PLAN` | write the spec: scope, waves, Acceptance Criteria (Full only) | plan materialised — `emit-phase --to Plan` |
 | `EXECUTE` | implement the change across delegated agents | `/mustard:spec` approval accepted, or Light straight after ANALYZE |
 | `REVIEW` | inspect produced code for correctness/conventions before QA | review agents dispatched — emits `review.*` events |
-| `QA` | run the spec's Acceptance Criteria commands, record pass/fail | `/mustard:qa` — emits `qa.result` |
+| `QA` | run the spec's Acceptance Criteria commands, record pass/fail | `qa-run` — emits `qa.result`; driven by `close-pipeline` in the wave loop, by `close-orchestrate` at `/mustard:pr merge` |
 | `CLOSE` | finalize: gates, mark completed, commit — archival is event-only | `close_gate` hook gates the emit |
 | `COORDINATE` | parent-level orchestration of a multi-spec roadmap | a spec with children enters coordination |
 
@@ -26,7 +26,7 @@ Canonical: `ANALYZE→PLAN→EXECUTE→REVIEW→QA→CLOSE` (+`COORDINATE`). Thi
 
 ### Close — Deterministic Gate Chain
 
-`/close` → `close-orchestrate`: gates = `verify-pipeline` (build+test; lint only when `stack.md [scripts]` declares), `qa-run`, `review-spans`, `docs-stale-check`, + advisory `pipeline-summary`. `overall=pass` auto-finalizes in-process, emitting `closed-followup` + `pipeline.complete`; terminal `completed` is a separate stage. Unchecked-`- [ ]` abort: `/close` SKILL precondition, not a gate.
+`close-orchestrate` (the CLOSE step of `/mustard:pr merge`): gates = `verify-pipeline` (build+test; lint only when `stack.md [scripts]` declares), `qa-run`, `review-spans`, `docs-stale-check`, + advisory `pipeline-summary`. `overall=pass` auto-finalizes in-process, emitting `closed-followup` + `pipeline.complete`; terminal `completed` is a separate stage. Unchecked-`- [ ]` abort: a precondition of that step, not a gate.
 
 ### Spec Artifact — Two Layers
 
@@ -78,7 +78,7 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 | Module | Matcher | Mode env | Blocks on |
 |--------|---------|----------|-----------|
 | `close_gate` | CLOSE emit | `MUSTARD_CLOSE_GATE_MODE` (strict) | build/test fail |
-| `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (strict) | no `qa.result`, `fail`, or spec/wave-plan edited after it (stale → re-run `/mustard:qa`) |
+| `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (strict) | no `qa.result`, `fail`, or spec/wave-plan edited after it (stale → re-run `mustard-rt run qa-run --spec {spec}`) |
 | `close_gate` (checklist) | same | `MUSTARD_CHECKLIST_GATE_MODE` (strict) | unchecked `- [ ]` |
 | `close_gate` (debt) | same | `MUSTARD_DEBT_GATE_MODE` (strict) | unresolved tracked debt |
 | `approve-spec` (approval) | `approve-spec` run | `MUSTARD_APPROVAL_MODE` (strict) | no `<spec>/.approved-by-user` marker — approval must come from the USER: plan-mode accept (`ExitPlanMode` → `plan_approval_observer`) or the approval `AskUserQuestion` (`approval_marker_observer`); strict refuses (exit≠0), warn nudges, off disables |
@@ -97,4 +97,4 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 
 ### Destructive-ops Law (BG01–BG13)
 
-Two redundant layers: `permissions.deny` holds every canonical spelling (start-anchored, survives `/unhook`); `safety.rs` keeps the full BG01–BG13 table with substring semantics — wrapper-prefix insensitive (`rtk`/`sudo` spellings escape start-anchored globs) + the shapes globs cannot express (flag clusters, reordering, `format <letter>:`); `--force-with-lease` stays allowed. Secret files: same design — 24 deny globs + `secret_files.rs` (case-insensitive full-path substring).
+Two redundant layers: `permissions.deny` holds every canonical spelling (start-anchored, survives `/mustard:upsert --off`); `safety.rs` keeps the full BG01–BG13 table with substring semantics — wrapper-prefix insensitive (`rtk`/`sudo` spellings escape start-anchored globs) + the shapes globs cannot express (flag clusters, reordering, `format <letter>:`); `--force-with-lease` stays allowed. Secret files: same design — 24 deny globs + `secret_files.rs` (case-insensitive full-path substring).

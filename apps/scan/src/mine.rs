@@ -571,8 +571,11 @@ fn collect_symbols(modules: &[Module], loc_by_path: &HashMap<&str, usize>) -> Ve
     let mut out = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
     for m in modules {
+        // Computed once per module: whether this file declares a single unit,
+        // which is the second way its callables earn unit status ([`sole_unit`]).
+        let sole = sole_unit(m);
         for d in &m.declarations {
-            if !is_significant(d, &m.path) || !seen.insert((m.path.clone(), d.name.clone())) {
+            if !is_significant(d, &m.path, sole) || !seen.insert((m.path.clone(), d.name.clone())) {
                 continue;
             }
             out.push(Symbol {
@@ -612,14 +615,58 @@ const UNIT_CALLABLE_KINDS: &[&str] = &["function", "const"];
 /// only. The distinction is drawn upstream, by each query set's generic
 /// `@definition.<kind>` vocabulary, and applied here identically for every one
 /// of them — this function knows no dialect and must never learn one.
-fn is_significant(d: &Decl, module_path: &str) -> bool {
+fn is_significant(d: &Decl, module_path: &str, sole: bool) -> bool {
     if d.name.len() < 3 {
         return false;
     }
     if UNIT_TYPE_KINDS.contains(&d.kind.as_str()) {
         return true;
     }
-    UNIT_CALLABLE_KINDS.contains(&d.kind.as_str()) && names_its_file(&d.name, module_path)
+    UNIT_CALLABLE_KINDS.contains(&d.kind.as_str())
+        && (names_its_file(&d.name, module_path) || sole)
+}
+
+/// Whether `m` declares exactly ONE unit candidate — the second way a callable
+/// earns unit status ([`is_significant`]).
+///
+/// [`names_its_file`] rests on the file being NAMED by whoever wrote it. Where
+/// a layout fixes the filename instead — position in the tree carrying the
+/// meaning a name would carry — the author still names the declaration, after
+/// the domain or the verb. The namesake test then answers "no" for every file
+/// in that layout at once, and a whole area leaves the census with no symbol.
+/// Measured on a real workspace: one request-handling tree of 47 modules went
+/// from 45 symbols to 0, and every mold teaching its convention vanished with
+/// them.
+///
+/// Counting recurrence would not fix it. How often a name repeats under a
+/// shared stem has no gap between convention and noise — measured across two
+/// unrelated workspaces, the population runs 4045 / 74 / 27 / 4 and 6562 / 22 /
+/// 6 / 0, a continuous tail — so any floor drawn there is a curated number
+/// waiting to be wrong in the next repository.
+///
+/// Singularity needs no floor. [`UNIT_CALLABLE_KINDS`] is justified by a helper
+/// "buried among forty others"; the opposite of forty is ONE. A file declaring
+/// a single unit IS that declaration, whatever name the layout imposed on the
+/// file. The cleanup that motivated the namesake test survives untouched,
+/// because a bare grammatical particle is never the only thing a file declares:
+/// this readmitted 429 of 4626 dropped callables in one workspace and 23 of
+/// 6653 in the other, with no particle among them.
+fn sole_unit(m: &Module) -> bool {
+    let mut names: HashSet<&str> = HashSet::new();
+    for d in &m.declarations {
+        if d.name.len() < 3 {
+            continue;
+        }
+        if UNIT_TYPE_KINDS.contains(&d.kind.as_str())
+            || UNIT_CALLABLE_KINDS.contains(&d.kind.as_str())
+        {
+            names.insert(d.name.as_str());
+            if names.len() > 1 {
+                return false;
+            }
+        }
+    }
+    names.len() == 1
 }
 
 /// Whether `name` is the file's namesake — identifier and file stem equal once
@@ -958,6 +1005,75 @@ mod tests {
 
     fn ents(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// One module whose declarations are all callables — the shape
+    /// [`sole_unit`] judges.
+    fn callables(path: &str, names: &[&str]) -> Module {
+        Module {
+            path: path.to_string(),
+            declarations: names
+                .iter()
+                .map(|n| Decl { kind: "const".into(), name: (*n).to_string(), ..Decl::default() })
+                .collect(),
+            ..Module::default()
+        }
+    }
+
+    /// A layout that fixes the filename leaves the author no way to make a
+    /// declaration its file's namesake: the file is named for its POSITION and
+    /// the declaration for the verb it answers. Being the only unit in the file
+    /// says the same thing the namesake test says, without needing the two
+    /// names to agree — so the census keeps seeing an area that would otherwise
+    /// leave it entirely.
+    #[test]
+    fn a_lone_callable_is_its_files_subject_whatever_the_file_is_called() {
+        let m = callables("api/banks/x/route.ts", &["PUT"]);
+        assert!(!names_its_file("PUT", &m.path), "the layout named the file, not the author");
+        assert!(sole_unit(&m), "it is the only unit the file declares");
+        assert!(
+            is_significant(&m.declarations[0], &m.path, sole_unit(&m)),
+            "so it is the file's subject and belongs in the census"
+        );
+    }
+
+    /// …and the cleanup the namesake test was written for is untouched, because
+    /// singularity is exactly what a buried helper does NOT have. No floor is
+    /// consulted here: one is one in every repository.
+    #[test]
+    fn a_callable_buried_among_others_is_still_not_a_unit() {
+        let m = callables("lib/helpers.ts", &["formatDate", "parseAmount", "clamp"]);
+        assert!(!sole_unit(&m), "three units in one file — none of them is its subject");
+        for d in &m.declarations {
+            assert!(
+                !is_significant(d, &m.path, false),
+                "{} is a member of a helper bag, not architecture",
+                d.name
+            );
+        }
+    }
+
+    /// A named type never needed either test, and must not start depending on
+    /// one: a file carrying a type PLUS helpers still yields the type.
+    #[test]
+    fn a_named_type_is_a_unit_even_when_it_shares_its_file() {
+        let m = Module {
+            path: "domain/user_service.cs".into(),
+            declarations: vec![
+                Decl { kind: "class".into(), name: "UserService".into(), ..Decl::default() },
+                Decl { kind: "const".into(), name: "DefaultPageSize".into(), ..Decl::default() },
+            ],
+            ..Module::default()
+        };
+        assert!(!sole_unit(&m), "two candidates — singularity does not apply");
+        assert!(
+            is_significant(&m.declarations[0], &m.path, false),
+            "a named type stands on its own kind"
+        );
+        assert!(
+            !is_significant(&m.declarations[1], &m.path, false),
+            "…and the constant beside it does not ride along"
+        );
     }
 
     /// A build unit's code root recurs under every unit — which is exactly the

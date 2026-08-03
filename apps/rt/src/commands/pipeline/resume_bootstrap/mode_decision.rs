@@ -1,15 +1,19 @@
 //! Resume-mode decision + refresh signal.
 //!
-//! Two event-driven verdicts:
+//! Three answers, all degrading to the conservative path when the evidence is
+//! missing:
 //! - [`decide_mode`] — `continued` / `reanalyzed` / `ask` from the pipeline
 //!   state view + dispatch-failure presence.
 //! - [`compute_needs_refresh`] — whether a `pipeline.wave.complete` landed
 //!   after the last `pipeline.resume_mode`, plus that resume event's age (used
 //!   by [`super::run`] to debounce re-emission).
-//!
-//! Both fail-open: missing events degrade to the conservative path.
+//! - [`inside_own_work_branch`] — whether the checkout ALREADY is this spec's
+//!   own `{base}_{slug}` branch. A FACT, not a routing decision: what to skip
+//!   because of it (the table, the header, the *implement now* confirm) is the
+//!   picker's judgement and stays in the picker.
 
 use super::{AUTO_CONTINUE_TTL_MS, PipelineDispatchFailurePayload, PipelineStateView};
+use crate::commands::event::work_branch::{compute_work_branch, current_branch};
 use mustard_core::domain::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
@@ -118,5 +122,125 @@ pub(super) fn decide_mode(
         Some(_) => "reanalyzed".to_string(),
         // No task dispatch yet — orchestrator decides.
         None => "ask".to_string(),
+    }
+}
+
+/// `true` when the checkout IS this spec's own work branch — the
+/// `{base}_{slug}` name for one of the project's `git.flow` integration bases.
+///
+/// The work unit is the branch plus everything the work produced: the spec, its
+/// waves, its ceremony and the code. So a caller standing on that branch is
+/// already inside the unit it is asking about — there is no spec to pick, no
+/// stage to introduce and nothing to confirm. The picker reads this to resume
+/// with no ceremony; the DECISION of what ceremony to drop stays there, this
+/// only reports where the tree is.
+///
+/// The name is not re-derived: [`compute_work_branch`] is the same function
+/// that minted the pending marker, so the two spellings cannot drift.
+///
+/// `false` for every uncertainty — an empty spec, a VCS opt-out, a directory
+/// that is not a repository, a detached HEAD. A resume that cannot SHOW it is
+/// inside the unit takes the ceremony, which is what it always did.
+pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
+    if spec.trim().is_empty() {
+        return false;
+    }
+    let config = mustard_core::ProjectConfig::load(project);
+    let Some(vcs) = config.vcs() else {
+        return false;
+    };
+    let root = project.to_string_lossy().into_owned();
+    let Some(current) = current_branch(&vcs, &root) else {
+        return false;
+    };
+    config
+        .git
+        .integration_bases()
+        .iter()
+        .any(|base| compute_work_branch(base, spec, None, "", "", &root) == current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    /// Run a git command in `root`, asserting success — test scaffolding only.
+    fn git(root: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// A repo whose single commit lives on `base`, with `git.flow` declared so
+    /// the base set is DERIVED (nothing here assumes `dev`/`main`).
+    fn repo_on(root: &Path, base: &str, flow_json: &str) {
+        std::fs::write(
+            root.join("mustard.json"),
+            format!(r#"{{"git":{{"flow":{flow_json}}}}}"#),
+        )
+        .unwrap();
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", base]);
+        std::fs::write(root.join("f.txt"), "hi").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "init"]);
+    }
+
+    /// AC-3 — a resume asked for from inside the unit's own branch is
+    /// RECOGNISED as such, which is what lets the picker drop the ceremony.
+    ///
+    /// The spec, its waves and its code all live on `{base}_{slug}`, so a caller
+    /// standing there is already inside the unit it is naming: nothing to pick,
+    /// nothing to introduce, nothing to confirm. Every other position — the
+    /// bare base, another unit's branch, a repo-less directory — keeps the
+    /// ceremony, because none of them SHOWS the caller is inside this unit.
+    #[test]
+    fn resume_inside_own_branch_is_recognised_from_the_branch_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "dev", r#"{"*":"dev","dev":"main"}"#);
+
+        assert!(
+            !inside_own_work_branch(root, "my-spec"),
+            "the integration base is not the unit's branch",
+        );
+
+        git(root, &["checkout", "-b", "dev_my-spec"]);
+        assert!(
+            inside_own_work_branch(root, "my-spec"),
+            "`{{base}}_{{slug}}` for this spec IS the unit's branch",
+        );
+
+        // Any declared base counts — the unit could have been cut off `main`.
+        git(root, &["checkout", "-b", "main_my-spec"]);
+        assert!(
+            inside_own_work_branch(root, "my-spec"),
+            "the base half is derived from git.flow, not hardcoded to the primary",
+        );
+
+        // Another unit's branch is not this one, however similar the name.
+        git(root, &["checkout", "-b", "dev_my-spec-two"]);
+        assert!(
+            !inside_own_work_branch(root, "my-spec"),
+            "a neighbouring unit's branch must not answer for this spec",
+        );
+
+        // Agnostic: a develop/master project answers against ITS bases.
+        let other = tempfile::tempdir().unwrap();
+        repo_on(other.path(), "develop_my-spec", r#"{"*":"develop","develop":"master"}"#);
+        assert!(inside_own_work_branch(other.path(), "my-spec"));
+
+        // Unmeasurable ⇒ false: a directory that is not a repository keeps the
+        // ceremony rather than claiming a position nobody observed.
+        let bare = tempfile::tempdir().unwrap();
+        assert!(!inside_own_work_branch(bare.path(), "my-spec"));
+        assert!(!inside_own_work_branch(root, "  "), "an empty spec names no branch");
     }
 }

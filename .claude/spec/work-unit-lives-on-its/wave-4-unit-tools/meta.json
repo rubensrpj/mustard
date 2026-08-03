@@ -1,0 +1,36 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-07-31T22:12:21.951Z",
+  "parent": "work-unit-lives-on-its",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/git_settle.rs",
+      "path": "apps/rt/src/commands/git_settle.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/work_branch.rs",
+      "path": "apps/rt/src/commands/event/work_branch.rs",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/git.md",
+      "path": "plugin/commands/git.md",
+      "done": true
+    },
+    {
+      "label": "plugin/refs/git/git-flow.md",
+      "path": "plugin/refs/git/git-flow.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": true
+    }
+  ]
+}

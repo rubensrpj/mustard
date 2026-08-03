@@ -1,11 +1,22 @@
-//! Auto-branch name computation for the porta-unica `pipeline.kind` signal.
+//! The work unit's branch: its NAME, and the CUT that creates it.
 //!
-//! Pure, self-contained git-ref helpers lifted out of `emit_pipeline`: given a
-//! spec or intent plus the project's integration base, compute the
-//! `{base}_{slug}` work-branch name the first file edit of a work unit checks
-//! out. The only I/O is reading `mustard.json` for the slug locale.
+//! Two halves, one subject. The naming half is pure: given a spec or intent
+//! plus the project's integration base, compute the `{base}_{slug}` work-branch
+//! name the unit lives on (the only I/O is reading `mustard.json` for the slug
+//! locale). The cutting half runs git: refresh the integration bases from
+//! `origin`, then check the branch out, creating it off its base.
+//!
+//! Both halves live here because three callers must agree about them and a
+//! second spelling is how they stop agreeing:
+//! [`crate::hooks::write::work_branch_gate`] (the first file mutation of a
+//! session), [`crate::commands::spec::spec_draft`] (the draft, which cuts the
+//! branch so the spec is written INSIDE the unit rather than on the base), and
+//! [`super::emit_pipeline`] (which pre-computes the name into the pending
+//! marker). The base set itself is never re-derived here — it comes from
+//! [`mustard_core::domain::config::GitConfig`], the single owner.
 
 use std::path::Path;
+use std::process::Command;
 
 /// Resolve the effective integration base for the auto-branch prefix.
 ///
@@ -114,6 +125,228 @@ pub(crate) fn compute_work_branch(
         }
     };
     sanitize_git_ref(&format!("{base}_{slug}"))
+}
+
+// ---------------------------------------------------------------------------
+// The cut — git primitives shared by the hook gate and the draft
+// ---------------------------------------------------------------------------
+
+/// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None` on
+/// any failure (not a repo, detached HEAD reported as `"HEAD"`, git absent).
+pub(crate) fn current_branch(vcs: &str, root: &str) -> Option<String> {
+    let out = Command::new(vcs)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// `true` when a local branch `refs/heads/<branch>` exists.
+fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
+    Command::new(vcs)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
+/// to `Err(<stderr|io error>)`. Never panics.
+fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
+    let out = Command::new(vcs)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = stderr.trim();
+        Err(if msg.is_empty() {
+            format!("git exited with status {}", out.status)
+        } else {
+            msg.to_string()
+        })
+    }
+}
+
+/// Check out `target`, creating it off `base` when it does not yet exist.
+/// Carries the working-tree changes along (a plain `checkout`, no stash). If
+/// `base` is absent locally, branch off the current HEAD instead. Returns the
+/// git error string on failure.
+pub(crate) fn checkout_work_branch(
+    vcs: &str,
+    root: &str,
+    target: &str,
+    base: &str,
+) -> Result<(), String> {
+    if local_branch_exists(vcs, root, target) {
+        return run_git(vcs, root, &["checkout", target]);
+    }
+    if local_branch_exists(vcs, root, base) {
+        return run_git(vcs, root, &["checkout", "-b", target, base]);
+    }
+    // Base branch not present locally — branch off the current HEAD.
+    run_git(vcs, root, &["checkout", "-b", target])
+}
+
+/// Refresh the project's integration bases (`git.flow`) to their `origin`
+/// remotes BEFORE a work branch is cut, so the branch is always based on the
+/// latest `dev`/`main`. Fire-and-forget: it returns nothing the caller must
+/// act on, and every git failure is swallowed. Offline, no remote, or a
+/// diverged base never blocks the cut and never panics.
+///
+/// 1. `git fetch origin` — on failure (offline / no remote) RETURN early and
+///    do nothing else; the branch is still cut from the local base.
+/// 2. For each integration base `B`:
+///    - when `B` is the checked-out branch (`Some(B) == current`) →
+///      `git merge --ff-only origin/B` fast-forwards it in place;
+///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
+///      make non-ff, so it safely fast-forwards the local ref without a
+///      checkout.
+///    Every per-base error (no matching origin ref, a diverged base, a base
+///    checked out in another worktree, …) is ignored — best-effort, keep going.
+pub(crate) fn refresh_integration_bases(
+    vcs: &str,
+    root: &str,
+    config: &mustard_core::ProjectConfig,
+    current: Option<&str>,
+) {
+    // Offline / no remote → nothing to refresh; the branch is cut from the
+    // local base as before. Do NOT propagate the error.
+    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
+        return;
+    }
+    for base in config.git.integration_bases() {
+        // Best-effort per base — drop the result either way.
+        let _ = if current == Some(base.as_str()) {
+            run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
+        } else {
+            run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+        };
+    }
+}
+
+/// Recover the integration base a work branch was cut from, from its NAME:
+/// among the project's integration bases (`git.flow`), the LONGEST base `B`
+/// such that `target` starts with `"{B}_"`. When none match, the project's
+/// primary base (`config.git.primary_base()`).
+///
+/// Longest-match disambiguates nested bases (a `dev_release` base wins over
+/// `dev` for `dev_release_x`). Agnostic — the base set and the primary both
+/// come from `git.flow`; no branch name is hardcoded.
+pub(crate) fn base_for(target: &str, config: &mustard_core::ProjectConfig) -> String {
+    let bases = config.git.integration_bases();
+    let mut best: Option<&str> = None;
+    for b in &bases {
+        if target.starts_with(&format!("{b}_")) && best.is_none_or(|cur| b.len() > cur.len()) {
+            best = Some(b.as_str());
+        }
+    }
+    best.map_or_else(|| config.git.primary_base(), str::to_string)
+}
+
+/// `true` when `branch` is a bare integration branch that must never be
+/// developed on directly — an exact member of `config.git.integration_bases()`
+/// (`dev`, `main`/`master`, `develop`, … whatever `git.flow` declares). The
+/// `{base}_*` work branches (`dev_rubens`, `main_close-gate`, …) are NOT
+/// protected.
+pub(crate) fn is_protected(branch: &str, config: &mustard_core::ProjectConfig) -> bool {
+    config.git.integration_bases().contains(branch)
+}
+
+/// What [`cut_pending_work_branch`] did — the closed set, so a caller that must
+/// decide (refuse? warn? say nothing?) reads a state instead of guessing from a
+/// bool. `NoPending` and `AlreadyThere` are deliberately apart: "no work unit
+/// was signalled" and "the unit's branch is already the checkout" both leave
+/// git untouched and mean opposite things to the caller.
+///
+/// No serde derive — the JSON shape belongs to whichever command reports it
+/// (`spec-draft` folds it into its own document).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CutOutcome {
+    /// No `pending-work-branch` marker for this session (or no VCS at all):
+    /// nothing was ever promised, so nothing was cut.
+    NoPending,
+    /// The checkout was ALREADY the pending branch; the marker was consumed and
+    /// git was not touched.
+    AlreadyThere(String),
+    /// The branch was created (or checked out) by this call. Carries its name.
+    Cut(String),
+    /// Git refused the checkout. Carries the branch that was wanted, the branch
+    /// the tree actually sits on (`None` on a detached HEAD / probe failure),
+    /// and git's own message. The JUDGEMENT of how bad that is lives in the
+    /// caller: staying on an integration base is a refusal for one caller and
+    /// merely a warning for another.
+    Failed {
+        target: String,
+        current: Option<String>,
+        error: String,
+    },
+}
+
+/// Consume this session's `pending-work-branch` marker and check that branch
+/// out in `project`, creating it off its base.
+///
+/// The non-hook door to the SAME cut [`crate::hooks::write::work_branch_gate`]
+/// performs on the first file mutation. `spec-draft` calls it because the spec
+/// must be written INSIDE the unit: the draft is the first thing the work
+/// produces, and it used to land on the integration base (a `.claude/spec/`
+/// carve-out existed precisely to let it). Cutting here moves the draft, the
+/// wave layout and the negative proof onto the branch, in that one call.
+///
+/// Idempotent by construction: the marker is cleared on every outcome that
+/// leaves the tree on the target branch, so a second call answers `NoPending`.
+/// The marker is KEPT on a failure — the intent survives for a retry, exactly
+/// as the hook gate keeps it.
+pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
+    let config = mustard_core::ProjectConfig::load(project);
+    // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
+    // branch to cut and nothing to guard.
+    let Some(vcs) = config.vcs() else {
+        return CutOutcome::NoPending;
+    };
+    let root = project.to_string_lossy().into_owned();
+    let Some(target) = crate::shared::context::pending_branch_for(&root, session) else {
+        return CutOutcome::NoPending;
+    };
+
+    let current = current_branch(&vcs, &root);
+    if current.as_deref() == Some(target.as_str()) {
+        crate::shared::context::clear_pending_branch(&root, session);
+        return CutOutcome::AlreadyThere(target);
+    }
+
+    // Refresh from origin FIRST so the unit is cut from the latest base.
+    refresh_integration_bases(&vcs, &root, &config, current.as_deref());
+    let base = base_for(&target, &config);
+    match checkout_work_branch(&vcs, &root, &target, &base) {
+        Ok(()) => {
+            crate::shared::context::clear_pending_branch(&root, session);
+            CutOutcome::Cut(target)
+        }
+        Err(error) => CutOutcome::Failed {
+            target,
+            current,
+            error,
+        },
+    }
 }
 
 #[cfg(test)]

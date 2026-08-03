@@ -16,12 +16,12 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 
 ```mermaid
 flowchart LR
-    repo[("Repository")] -->|"/mustard:scan (Rust, no AI)"| model[("grain.model.json")]
+    repo[("Repository")] -->|"census at the base gate (Rust, no AI)"| model[("grain.model.json")]
     model -->|digest| anchors["~12 anchors<br/>(anchor files)"]
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
-1. **`/mustard:scan`** mines the repository **once** into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints.
+1. The **census** mines the repository into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
 2. Pipeline commands consume that model through a **digest** (`mustard-rt run feature`, `scan spec`) and read only the ~12 anchors the digest points at.
 3. Result: **context economy** — the digest finds *where to look*; it does not replace reading.
 
@@ -74,12 +74,7 @@ cd /path/to/your/project
 mustard init
 ```
 
-This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and run:
-
-```
-/mustard:scan       ← maps the repository (once; re-run after big changes)
-/mustard            ← the single door: describe what you want in your own words
-```
+This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and **describe the work in your own words** — there is no command to "get started", and no mapping step to run. The router is injected on every prompt and classifies the request on its own; the base gate mines the repository on the way in.
 
 ### For developers of this repository
 
@@ -115,36 +110,30 @@ Every phase emits events; gates block progress. The **close-gate** refuses to cl
 
 Installed as a plugin, every command lives under the `/mustard:` namespace.
 
-### The single door
+### The single door is not a command
+
+**Start by describing the work in natural language** — there is no entry command. The router is injected on every prompt: it classifies the request (feature / change / bugfix / investigation + scope), narrates how it read it, and dispatches the right flow. It asks only on genuine ambiguity.
+
+### The four doors
+
+There are **four**, and only four — what you type. Everything else is an internal flow the router dispatches.
 
 | Command | Role |
 |---|---|
-| `/mustard` | **Start here.** Describe what you want in natural language — it classifies (feature / change / bugfix / investigation + scope), narrates how it read the request, and dispatches the right flow. Asks only on genuine ambiguity. |
-
-### Pipeline
-
-| Command | Role |
-|---|---|
-| `/mustard:scan` | Mines the repository into `grain.model.json` (deterministic, no AI) and enriches per-subproject maps (Guards + pattern molds). |
-| `/mustard:feature` | Full feature pipeline: understand, research via digest, plan, implement. |
-| `/mustard:bugfix` | Autonomous diagnosis + fix. Fast path (1-2 files) or full path (lean spec). |
+| `/mustard:git` | Commit/push/sync/PR — reads the git flow from `mustard.json`. Always ships the complete work; reversible operations only. `delete <branch>` cancels an abandoned unit, removing branch, remote and PR in one gesture. |
+| `/mustard:pr` | Lists, reviews and merges PRs. **Review, QA and close are steps here**, not commands: the merge crosses the gates (build+tests, QA, review spans, docs) and then prunes the unit. |
 | `/mustard:spec` | Single picker — approves a planned spec or resumes one in progress. |
-| `/mustard:review` | Adversarial per-subproject review (auto-detects the branch's PR or takes a number/URL). |
-| `/mustard:qa` | Runs the acceptance criteria (ACs) and reports pass/fail. Blocks CLOSE on failure. |
-| `/mustard:close` | Verifies build/review/QA, archives the spec, and emits the completion banner. |
-| `/mustard:tactical-fix` | Creates a sub-spec linked to a parent, preserving SDD purity. |
+| `/mustard:upsert` | Installs/updates Mustard in the project. `--off` / `--on` turn the harness off and back on; `--doctor` diagnoses the installation. |
 
-### Support
+### Internal flows (the router picks)
 
-| Command | Role |
+| Flow | Role |
 |---|---|
-| `/mustard:task` | Spec-less work delegation (analyze, audit, refactor, docs…). |
-| `/mustard:git` | Commit/push/sync/merge — reads the git flow from `mustard.json`. Always ships the complete work; reversible operations only. |
-| `/mustard:maint` | Project hygiene: dependencies, validate, sync, doctor. |
-| `/mustard:status` · `/mustard:stats` | Pipeline/entity state · metrics (DORA, token savings). |
-| `/mustard:knowledge` | Knowledge base, patterns, conventions, memory audit. |
-| `/mustard:skills` | Install/create/list/optimize/evaluate skills. |
-| `/mustard:unhook` · `/mustard:rehook` | Turns the harness (hooks) off / back on. |
+| census | Mines the repository into `grain.model.json` (deterministic, no AI) and enriches per-subproject maps (Guards + pattern molds). Triggered by the base gate. |
+| `feature` | Full feature pipeline: understand, research via digest, plan, implement. |
+| `bugfix` | Autonomous diagnosis + fix. Fast path (1-2 files) or full path (lean spec). |
+| `tactical-fix` | Creates a sub-spec linked to a parent, preserving SDD purity. |
+| `task` | Spec-less work delegation (analyze, audit, refactor, docs…). |
 
 ---
 

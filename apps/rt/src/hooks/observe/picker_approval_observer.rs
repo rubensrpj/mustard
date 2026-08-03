@@ -21,7 +21,7 @@
 //! prompt, and the submitted text arrives verbatim in `raw.prompt` — including
 //! its leading slash command, which the harness does NOT expand away before the
 //! hook sees it (verified against this project's own `user.prompt` event log:
-//! `/mustard:git pr close`, `/mustard:skills list` are recorded literally). The
+//! `/mustard:git pr close` is recorded literally). The
 //! model writes neither the prompt nor its text, so the gesture stays
 //! unforgeable.
 //!

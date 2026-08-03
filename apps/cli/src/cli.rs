@@ -7,7 +7,7 @@
 //!
 //! Retired: `update` (versioned refreshes come from the plugin marketplace; a
 //! re-run of `init` re-stamps `mustard.json#version`) and `review` (the
-//! /mustard:review SKILL drives the native code-review skill).
+//! `/mustard:pr review` step drives the native code-review skill).
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

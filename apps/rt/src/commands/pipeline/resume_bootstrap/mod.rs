@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use context_loader::{generate_context_on_resume, load_pruned_prior_summaries, wikilinked_summary_targets};
 use dispatch_failure::render_dispatch_failure;
 use event_emission::{emit_resume_mode, emit_scope_for_session};
-use mode_decision::{compute_needs_refresh, decide_mode};
+use mode_decision::{compute_needs_refresh, decide_mode, inside_own_work_branch};
 use post_execute_gate::{
     apply_post_execute_gate, block_full_without_wave, block_unapproved_execute,
     signal_approved_plan_ready,
@@ -147,6 +147,21 @@ pub struct ResumeBootstrap {
     /// [`crate::commands::spec::approve_spec::clarify_state`].
     #[serde(rename = "clarifyRecordsNothing")]
     pub clarify_records_nothing: bool,
+    /// `true` when the checkout ALREADY is this spec's own `{base}_{slug}` work
+    /// branch — the unit's home, where its spec, its waves, its ceremony and its
+    /// code all live.
+    ///
+    /// The picker reads it to resume with NO ceremony: a caller standing inside
+    /// the unit has nothing to pick from a table, nothing to be introduced to
+    /// and nothing to confirm — the *implement now* question asks whether to
+    /// start work the caller is demonstrably already inside. Classified by
+    /// [`mode_decision::inside_own_work_branch`], which reports the position and
+    /// decides no routing: what to skip is the picker's call.
+    ///
+    /// Fail-open default `false` — the pre-field reading, where every resume
+    /// paid the ceremony.
+    #[serde(rename = "insideWorkBranch")]
+    pub inside_work_branch: bool,
     /// Most recent unrecovered dispatch failure (if any, within 10 min).
     #[serde(rename = "lastDispatchFailure", skip_serializing_if = "Option::is_none")]
     pub last_dispatch_failure: Option<serde_json::Value>,
@@ -351,6 +366,14 @@ pub fn run(spec: &str, json_flag: bool) {
     // --- Mode decision. ---
     out.mode = decide_mode(view.as_ref(), dispatch_failure.as_ref());
 
+    // --- Where the caller is standing. ---
+    //
+    // Inside the unit's own `{base}_{slug}` branch there is no spec to pick, no
+    // stage to introduce and no *implement now* to answer — the caller is
+    // already in the work. Reported as a position, never as a route: the picker
+    // owns what it drops because of it.
+    out.inside_work_branch = inside_own_work_branch(&project, spec);
+
     // --- D5: entry-into-Execute approval hard-gate. ---
     //
     // A Full-scope spec must NOT begin EXECUTE without an explicit `/spec`
@@ -453,6 +476,7 @@ fn print_table(out: &ResumeBootstrap) {
     println!("currentWave      : {}", out.current_wave);
     println!("totalWaves       : {}", out.total_waves);
     println!("neverDispatched  : {}", out.never_dispatched);
+    println!("insideWorkBranch : {}", out.inside_work_branch);
     println!("isStub           : {}", out.is_stub);
     let failure_str = match out.last_dispatch_failure.as_ref() {
         None => "(none)".to_string(),

@@ -16,12 +16,12 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 
 ```mermaid
 flowchart LR
-    repo[("Repositório")] -->|"/mustard:scan (Rust, sem IA)"| model[("grain.model.json")]
+    repo[("Repositório")] -->|"varredura no porteiro de base (Rust, sem IA)"| model[("grain.model.json")]
     model -->|digest| anchors["~12 anchors<br/>(arquivos-âncora)"]
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
-1. **`/mustard:scan`** minera o repositório **uma vez** para um modelo durável (`grain.model.json`) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*.
+1. A **varredura** minera o repositório para um modelo durável (`grain.model.json`) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
 2. Os comandos de pipeline consomem esse modelo via **digest** (`mustard-rt run feature`, `scan spec`) e leem apenas as ~12 *anchors* que o digest aponta.
 3. Resultado: **economia de contexto** — o digest acha *onde olhar*, não substitui ler.
 
@@ -74,12 +74,7 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e rode:
-
-```
-/mustard:scan       ← mapeia o repositório (uma vez; re-rode após grandes mudanças)
-/mustard            ← a porta única: descreva o que quer em palavras suas
-```
+Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e **descreva o trabalho em palavras suas** — não há comando para "começar", nem passo de mapeamento para rodar. O roteador é injetado em todo prompt e classifica o pedido sozinho; o porteiro de base minera o repositório no caminho de entrada.
 
 ### Para desenvolvedores deste repositório
 
@@ -115,36 +110,30 @@ Cada fase emite eventos; os *gates* bloqueiam o avanço. O **close-gate** não d
 
 Instalado como plugin, todo comando vive no namespace `/mustard:`.
 
-### A porta única
+### A porta única não é um comando
+
+**Comece descrevendo o trabalho em linguagem natural** — não há comando de entrada. O roteador é injetado em todo prompt: ele classifica o pedido (feature / mudança / correção / investigação + escopo), narra como o leu e despacha o fluxo certo. Só pergunta em ambiguidade genuína.
+
+### As quatro portas
+
+São **quatro**, e só quatro — o que você digita. Todo o resto é fluxo interno que o roteador despacha.
 
 | Comando | Papel |
 |---|---|
-| `/mustard` | **Comece por aqui.** Descreva o que quer em linguagem natural — ele classifica (feature / mudança / correção / investigação + escopo), narra como leu o pedido e despacha o fluxo certo. Só pergunta em ambiguidade genuína. |
-
-### Pipeline
-
-| Comando | Papel |
-|---|---|
-| `/mustard:scan` | Minera o repositório em `grain.model.json` (determinístico, sem IA) e enriquece os mapas por subprojeto (Guards + moldes de padrão). |
-| `/mustard:feature` | Pipeline completo de feature: entende, pesquisa via digest, planeja, implementa. |
-| `/mustard:bugfix` | Diagnóstico + correção autônomos. *Fast path* (1-2 arquivos) ou *full path* (spec enxuta). |
+| `/mustard:git` | Commit/push/sync/PR — lê o *git flow* do `mustard.json`. Sobe sempre o trabalho completo; só operações reversíveis. `delete <branch>` cancela uma unidade abandonada, removendo branch, remoto e PR de uma vez. |
+| `/mustard:pr` | Lista, revisa e mergeia PRs. **Revisão, QA e fechamento são passos daqui**, não comandos: o merge cruza os gates (build+testes, QA, review-spans, docs) e depois poda a unidade. |
 | `/mustard:spec` | *Picker* único — aprova uma spec planejada ou retoma uma em andamento. |
-| `/mustard:review` | Revisão adversarial por subprojeto (auto-detecta o PR do branch ou aceita número/URL). |
-| `/mustard:qa` | Executa os critérios de aceitação (AC) e reporta pass/fail. Bloqueia o CLOSE em falha. |
-| `/mustard:close` | Verifica build/review/QA, arquiva a spec e emite o banner de conclusão. |
-| `/mustard:tactical-fix` | Cria uma sub-spec ligada a um pai, preservando a pureza do SDD. |
+| `/mustard:upsert` | Instala/atualiza o Mustard no projeto. `--off` / `--on` desligam e religam o harness; `--doctor` diagnostica a instalação. |
 
-### Apoio
+### Fluxos internos (o roteador escolhe)
 
-| Comando | Papel |
+| Fluxo | Papel |
 |---|---|
-| `/mustard:task` | Delegação de trabalho sem spec (analyze, audit, refactor, docs…). |
-| `/mustard:git` | Commit/push/sync/merge — lê o *git flow* do `mustard.json`. Sobe sempre o trabalho completo; apenas operações reversíveis. |
-| `/mustard:maint` | Higiene do projeto: dependências, validate, sync, doctor. |
-| `/mustard:status` · `/mustard:stats` | Estado do pipeline e da entidade · métricas (DORA, economia de tokens). |
-| `/mustard:knowledge` | Base de conhecimento, padrões, convenções, auditoria de memória. |
-| `/mustard:skills` | Instala/cria/lista/otimiza/avalia *skills*. |
-| `/mustard:unhook` · `/mustard:rehook` | Desliga / religa o harness (hooks). |
+| varredura | Minera o repositório em `grain.model.json` (determinístico, sem IA) e enriquece os mapas por subprojeto (Guards + moldes de padrão). Disparada pelo porteiro de base. |
+| `feature` | Pipeline completo de feature: entende, pesquisa via digest, planeja, implementa. |
+| `bugfix` | Diagnóstico + correção autônomos. *Fast path* (1-2 arquivos) ou *full path* (spec enxuta). |
+| `tactical-fix` | Cria uma sub-spec ligada a um pai, preservando a pureza do SDD. |
+| `task` | Delegação de trabalho sem spec (analyze, audit, refactor, docs…). |
 
 ---
 

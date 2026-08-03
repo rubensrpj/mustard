@@ -114,8 +114,9 @@ Isso cria a pasta `.claude/` (hooks, skills e configuração) e o
 dentro do projeto** — os hooks do Mustard já estão ligados via
 `.claude/settings.json`; nenhum passo extra é necessário.
 
-Comandos úteis dentro do Claude Code: `/scan` (mapeia o projeto),
-`/feature` (pipeline de feature), `/bugfix`, `/status`.
+São quatro portas dentro do Claude Code: `/mustard:git`, `/mustard:pr`,
+`/mustard:spec` e `/mustard:upsert`. Para COMEÇAR um trabalho não há comando —
+descreva o pedido em palavras suas e o roteador escolhe o fluxo sozinho.
 
 ---
 
