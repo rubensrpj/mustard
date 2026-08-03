@@ -23,6 +23,27 @@
 //!   through [`review_result::record_review`], the one recorder `review-result`
 //!   already uses, so the merge step reads what the REVIEW phase has always
 //!   written.
+//!
+//! ## The spec is read out of the PR's OWN branch
+//!
+//! A review runs from an integration base — that is the door's design — and the
+//! spec no longer lives there: this unit's whole layout (`spec.md`, the waves,
+//! the ceremony) is materialized INSIDE `{base}_{slug}`. Reading
+//! `.claude/spec/{slug}/spec.md` off the checkout therefore finds NOTHING from a
+//! base, and the brief would come back with `spec_path`, `subproject` and
+//! `patterns` all null while `pr.md` promises them. So the text is read from the
+//! head ref itself — `git show {head}:.claude/spec/{slug}/spec.md` — with the
+//! remote-tracking ref and then the working tree as fallbacks
+//! ([`read_spec_text`]); `spec_source` reports which one answered, because "the
+//! spec is not in this checkout" and "the unit has no spec" are different facts
+//! and must not print the same.
+//!
+//! The recorded verdict is the mirror image and needs no such hop: `.claude/` is
+//! redirected state, resolved to the MAIN checkout from inside any linked
+//! worktree, and `.claude/spec/*/.events/` is gitignored — so the ONE store the
+//! unit reads its own `review.result` back from is the main checkout's, whatever
+//! branch happens to be out. Recording from the base writes exactly the file the
+//! unit reads, and it adds nothing tracked to the base's tree.
 //! - **`pr-merge`** — merges, then hands the pruning to
 //!   [`git_settle::settle_at`]: returning to the base, pulling it, removing the
 //!   worktree and deleting the local + remote branch IS the exit ritual, already
@@ -55,7 +76,8 @@ use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
-use crate::shared::branch_state::base_of_branch;
+use crate::commands::work_unit_open::checkout_holding_branch;
+use crate::shared::branch_state::{base_of_branch, unit_slug_of_branch};
 
 // ---------------------------------------------------------------------------
 // Shared plumbing — the provider, the bases, and the PR↔unit link
@@ -115,19 +137,46 @@ fn bases_and_branch(root: &Path) -> (Vec<String>, String) {
     (bases, branch)
 }
 
-/// The spec slug a work branch names: everything after its `{base}_` prefix
-/// (the harness's `worktree-` prefix stripped first, exactly as `git-settle`
-/// reads it).
+/// The spec slug a work branch names — [`unit_slug_of_branch`], the crate's ONE
+/// spelling of the question, shared with the per-branch notebook.
 ///
 /// `None` when the branch carries no declared base prefix — a PR opened by hand
 /// or a base→base promotion has no work unit, and therefore no spec to review
 /// against or verdict to read.
 fn spec_of_branch(branch: &str, bases: &[String]) -> Option<String> {
-    let base = base_of_branch(branch, bases)?;
-    let name = branch.strip_prefix("worktree-").unwrap_or(branch);
-    name.strip_prefix(&format!("{base}_"))
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    unit_slug_of_branch(branch, bases)
+}
+
+/// Where a unit's spec lives, relative to the repository root.
+fn spec_rel_path(slug: &str) -> String {
+    format!(".claude/spec/{slug}/spec.md")
+}
+
+/// The spec text of `slug` as the PR's OWN branch carries it.
+///
+/// `git show <head>:.claude/spec/<slug>/spec.md`, never the working tree. This
+/// spec moved the spec directory ONTO the work branch, and `pr-review` runs from
+/// an integration base by design — so the file is simply not in the checkout,
+/// and reading from disk answered `null` for `spec_path`, `subproject` AND
+/// `patterns` on every single review. The local ref is tried first (the author
+/// reviewing their own unit) and the remote-tracking ref second (the reviewer
+/// who only ever fetched it).
+///
+/// The on-disk read stays as the last fallback: for a unit checked out IN PLACE
+/// the tree and the branch are the same thing, and for a spec that was never
+/// committed it is the only copy there is.
+fn spec_text_of_unit(root: &Path, head: &str, slug: &str) -> Option<String> {
+    let rel = spec_rel_path(slug);
+    for reference in [format!("{head}:{rel}"), format!("origin/{head}:{rel}")] {
+        if let Some(text) = git_out(root, &["show", &reference]).filter(|t| !t.trim().is_empty()) {
+            return Some(text);
+        }
+    }
+    let on_disk = mustard_core::ClaudePaths::for_project(root)
+        .ok()
+        .and_then(|p| p.for_spec(slug).ok())
+        .map(|p| p.dir().join("spec.md"))?;
+    std::fs::read_to_string(on_disk).ok().filter(|t| !t.trim().is_empty())
 }
 
 /// The pull request a command was pointed at, reduced to the two facts every
@@ -330,26 +379,40 @@ fn review_brief(
     critical: i64,
 ) -> PrReviewReport {
     let spec = spec_of_branch(&facts.head, bases);
-    let spec_dir = spec.as_deref().and_then(|slug| {
-        mustard_core::ClaudePaths::for_project(root)
-            .ok()
-            .and_then(|p| p.for_spec(slug).ok())
-            .map(|p| p.dir().to_path_buf())
-    });
-    let spec_md = spec_dir.map(|d| d.join("spec.md")).filter(|p| p.exists());
-    let spec_text = spec_md
+    let spec_text = spec
         .as_deref()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default();
-    let subproject = spec_subproject(&spec_text);
+        .and_then(|slug| spec_text_of_unit(root, &facts.head, slug));
+    // Named only when the spec was really found — a path on an `ok:true` report
+    // is a promise that something is there.
+    let spec_path = spec
+        .as_deref()
+        .filter(|_| spec_text.is_some())
+        .map(|slug| spec_rel_path(slug));
+    let subproject = spec_subproject(spec_text.as_deref().unwrap_or_default());
     let patterns = subproject
         .as_deref()
         .map(|sub| build_skills_list(root, sub))
         .filter(|shelf| !shelf.is_empty());
 
+    // Record where the UNIT can see it. The spec directory rides the work
+    // branch now, so a base checkout does not track it and a verdict written
+    // there would land in a tree the unit never reads. The checkout that HOLDS
+    // the head branch is that tree — the main checkout after an in-place cut,
+    // or the unit's own worktree. With none (the branch exists only on the
+    // server) the main checkout's shared `.claude/` is the only home there is.
+    let unit_root = checkout_holding_branch(root, &facts.head)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.to_path_buf());
     let recorded = match (spec.as_deref(), verdict) {
         (Some(slug), Some(v)) => {
-            review_result::record_review(root, slug, v, critical, subproject.as_deref(), None);
+            review_result::record_review(
+                &unit_root,
+                slug,
+                v,
+                critical,
+                subproject.as_deref(),
+                None,
+            );
             true
         }
         _ => false,
@@ -361,9 +424,9 @@ fn review_brief(
         pr: facts.number,
         head: facts.head.clone(),
         spec,
-        // Shown with forward slashes so one report reads the same on every
-        // platform, the way `git-settle` prints its paths.
-        spec_path: spec_md.map(|p| p.to_string_lossy().replace('\\', "/")),
+        // Repo-relative, forward slashes: one report reads the same on every
+        // platform and carries no machine path.
+        spec_path,
         subproject,
         patterns,
         recorded,

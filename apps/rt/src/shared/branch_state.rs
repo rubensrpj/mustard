@@ -95,6 +95,23 @@ pub(crate) fn base_of_branch(branch: &str, bases: &[String]) -> Option<String> {
     bases.iter().find(|b| b.as_str() == prefix).cloned()
 }
 
+/// The spec slug a work branch names: everything after the `{base}_` prefix
+/// [`base_of_branch`] recognised. `None` for anything that is not a work unit of
+/// THIS project — a bare base, a hand-cut `feature/x`, or a `feature_x` whose
+/// prefix names no declared base.
+///
+/// The ONE spelling of "which unit is this" for every consumer that has to NAME
+/// the unit's directory: the `/pr` door resolving a head ref to its spec, and
+/// the per-branch notebook resolving a branch to `.claude/spec/{slug}/`. It is
+/// deliberately built on [`base_of_branch`] rather than on a bare
+/// `split_once('_')`: the loose split accepted ANY prefix, so `--unit feature_x`
+/// silently opened the notebook of a spec called `x`.
+pub(crate) fn unit_slug_of_branch(branch: &str, bases: &[String]) -> Option<String> {
+    let base = base_of_branch(branch, bases)?;
+    let name = branch.strip_prefix("worktree-").unwrap_or(branch);
+    name.strip_prefix(&format!("{base}_")).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 /// Split a full ref name into `(remote, branch)` — `remote` is `None` for a
 /// local head. Any other namespace (tags, notes, stash) answers `None`.
 fn split_ref(refname: &str) -> Option<(Option<&str>, &str)> {
