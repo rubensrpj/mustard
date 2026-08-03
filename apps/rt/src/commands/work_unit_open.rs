@@ -98,6 +98,37 @@ fn ref_exists(dir: &Path, full_ref: &str) -> bool {
     git_ok(dir, &["rev-parse", "--verify", "--quiet", full_ref])
 }
 
+/// The checkout that ALREADY has `branch` out — the main checkout, a linked
+/// worktree, anywhere git knows about. `None` when no tree holds it.
+///
+/// It parses the RAW porcelain instead of going through
+/// [`git_settle::parse_worktrees`], and that is the whole point: that parser
+/// keeps only entries under `.claude/worktrees/`, so the tree this question is
+/// really about — the MAIN checkout — is invisible to it. Since `spec-draft`
+/// cuts the unit's branch in the main checkout at approval, the branch is
+/// normally already out there by the time EXECUTE asks to isolate, and
+/// `git worktree add` refuses a branch another tree holds with exit 128.
+///
+/// One probe, two callers ([`open_at`] and [`hook_create`]), so the manual face
+/// and the `WorktreeCreate` hook cannot disagree about whether a unit is already
+/// isolated.
+pub(crate) fn checkout_holding_branch(main: &Path, branch: &str) -> Option<String> {
+    let porcelain = git_out(main, &["worktree", "list", "--porcelain"])?;
+    let mut path: Option<String> = None;
+    for line in porcelain.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(p.trim().replace('\\', "/"));
+        } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
+            if b.trim() == branch {
+                return path;
+            }
+        } else if line.trim().is_empty() {
+            path = None;
+        }
+    }
+    None
+}
+
 /// The work-unit branch the INVOKING tree sits on, `None` when it sits on
 /// anything else (an integration base, a detached HEAD, an unreadable repo).
 ///
@@ -285,6 +316,27 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
             "fetched": false,
         });
     }
+    // The branch may already be CHECKED OUT somewhere else — normally the MAIN
+    // checkout, because `spec-draft` cuts the unit's branch there at approval
+    // and the whole unit (spec, waves, ceremony, code) is written inside it.
+    // That branch IS the isolation, so the unit is already isolated in place:
+    // report it and touch nothing. Attempting the cut here is what git refuses
+    // with exit 128, which turned the EXECUTE step into a hard failure on the
+    // arrangement that is now the DEFAULT.
+    //
+    // A worktree is still cut whenever the branch is NOT already out — that is
+    // the parallel-work case, and it keeps several units in flight at once.
+    if let Some(path) = checkout_holding_branch(&main, &target) {
+        return json!({
+            "ok": true,
+            "path": path,
+            "branch": target,
+            "base": base,
+            "created": false,
+            "inPlace": true,
+            "fetched": false,
+        });
+    }
     if wt_path.exists() {
         // Unregistered leftover dir — never clobber someone's files.
         return json!({ "ok": false, "reason": "path-occupied", "path": wt_str });
@@ -384,6 +436,15 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         .unwrap_or_default();
     if let Some(e) = entries.iter().find(|e| e.branch == name) {
         return Ok(e.path.clone());
+    }
+    // Already checked out somewhere — the main checkout after `spec-draft` cut
+    // the unit's branch there at approval. That tree IS the isolation, so name
+    // it and let the session enter it. Falling through would run `git worktree
+    // add` on a branch another tree holds, which git refuses with exit 128 —
+    // and a non-zero exit here ABORTS the whole `EnterWorktree` (see the
+    // module doc of [`crate::hooks::worktree_create`]). Degrade, never fail.
+    if let Some(path) = checkout_holding_branch(&main, &name) {
+        return Ok(path);
     }
     if wt_path.exists() {
         return Err(format!("WorktreeCreate: path already occupied: {requested}"));
@@ -630,6 +691,42 @@ mod tests {
         let path = v["path"].as_str().expect("path");
         let wt_head = git_out(Path::new(path), &["rev-parse", "HEAD"]).expect("wt head");
         assert_eq!(wt_head, pre_sha, "existing branch reused, not re-cut from origin");
+    }
+
+    /// The EXECUTE isolation step DEGRADES when the unit's branch is already
+    /// checked out in the main checkout — which is now the DEFAULT arrangement,
+    /// because `spec-draft` cuts that branch at approval and writes the whole
+    /// unit inside it. `git worktree add` refuses such a branch with exit 128,
+    /// so both faces (the manual command and the `WorktreeCreate` hook) must
+    /// report the checkout that already holds it instead of failing.
+    #[test]
+    fn a_branch_already_checked_out_in_place_is_reported_not_re_cut() {
+        let (_dir, main) = fixture();
+        git(&main, &["checkout", "-b", "dev_inplace"]);
+        let root = main_checkout_root(&main).expect("main checkout").to_string_lossy().replace('\\', "/");
+
+        // The manual face: `ok:true`, `inPlace:true`, nothing created.
+        let v = open_at(&WorkUnitOpenOpts { branch: Some("dev_inplace".into()), ..opts(&main) });
+        assert_eq!(v["ok"], json!(true), "the step degrades, it never fails: {v}");
+        assert_eq!(v["inPlace"], json!(true), "{v}");
+        assert_eq!(v["created"], json!(false), "nothing was cut");
+        assert_eq!(v["branch"], json!("dev_inplace"));
+        assert_eq!(v["path"], json!(root), "the checkout that already holds the branch");
+        assert!(
+            !main.join(".claude").join("worktrees").join("dev_inplace").exists(),
+            "no worktree is added over a branch another tree holds",
+        );
+
+        // The hook face: the same answer, as the path EnterWorktree enters. A
+        // non-zero exit here would abort the isolation altogether.
+        let got = hook_create("dev_inplace", &main).expect("degrades instead of aborting");
+        assert_eq!(got.replace('\\', "/"), root);
+
+        // And the parallel-work case still cuts: a branch NOT already out gets
+        // its own worktree, which is what keeps several units in flight.
+        let other = open_at(&WorkUnitOpenOpts { spec: Some("parallel".into()), ..opts(&main) });
+        assert_eq!(other["created"], json!(true), "{other}");
+        assert!(other.get("inPlace").is_none(), "a fresh cut is not in place: {other}");
     }
 
     #[test]

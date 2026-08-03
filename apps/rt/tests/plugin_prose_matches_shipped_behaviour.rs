@@ -465,6 +465,98 @@ fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
     );
 }
 
+/// The isolation prose teaches the branch the harness actually cuts.
+///
+/// This one is here because its absence had a cost, and the cost was paid every
+/// turn. Wave 2 removed the `.claude/spec/` carve-out from `work_branch_gate`
+/// and `spec-draft` began cutting `{base}_{slug}` in the MAIN checkout at
+/// approval — the branch became the isolation. The orchestrator's own paragraph
+/// kept teaching the opposite ("writes IN-PLACE … on the base branch with NO
+/// worktree"), and that file is injected on EVERY user prompt: the router was
+/// told the deleted behaviour once per turn while the gate denied it. The
+/// paragraphs on either side were rewritten in the same wave; this one was not,
+/// and nothing guarded the sentence.
+#[test]
+fn isolation_prose_teaches_the_branch_cut_at_approval() {
+    // --- 1. The shipped seed no longer teaches the deleted carve-out -------
+    // The compiled-in seed is what `upsert` lays down in every project, so this
+    // reads the text that actually ships.
+    let seed = mustard_core::ORCHESTRATOR_MD;
+    for deleted in ["writes IN-PLACE", "carves out `.claude/spec/`"] {
+        assert!(
+            !seed.contains(deleted),
+            "the orchestrator seed still teaches `{deleted}` — the carve-out wave 2 removed",
+        );
+    }
+
+    // Anchored: the paragraph a reader arrives at is the one that computes the
+    // unit's branch, not some later section that happens to mention isolation.
+    let branch_line = line_with(seed, "compute the unit's `{base}_{slug}` branch")
+        .expect("the orchestrator seed no longer says where the unit's branch comes from");
+    assert!(
+        branch_line.contains("cut at APPROVAL"),
+        "the paragraph never says WHEN the branch is cut: {branch_line}",
+    );
+    assert!(
+        branch_line.contains("inPlace"),
+        "the paragraph never names what EXECUTE answers when the branch is \
+         already out: {branch_line}",
+    );
+    // Naming the degrade is not teaching it: the worktree has to be shown as
+    // the parallel case, or a reader still takes it for the default step.
+    assert!(
+        branch_line.contains("parallel-work"),
+        "the paragraph demotes the worktree without saying what it is FOR: {branch_line}",
+    );
+
+    // --- 2. The `/git` ref defines the same contract ----------------------
+    let flow = read("plugin/refs/git/git-flow.md");
+    assert!(
+        !flow.contains("Every unit runs in its OWN worktree"),
+        "git-flow.md still teaches one-worktree-per-unit as the arrangement",
+    );
+    let contract = line_with(&flow, "## Isolation contract")
+        .expect("git-flow.md no longer defines the isolation contract");
+    assert!(
+        contract.contains("parallel"),
+        "the contract heading still sells the worktree as the rule: {contract}",
+    );
+
+    // --- 3. This repository's delivered copy has not drifted ---------------
+    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
+    // the template does not update an already-seeded project.
+    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered_line = line_with(&delivered, "compute the unit's `{base}_{slug}` branch")
+        .expect("the delivered injectable no longer says where the unit's branch comes from");
+    assert_eq!(
+        delivered_line, branch_line,
+        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
+         re-seed it, or this project reads the behaviour it just deleted",
+    );
+
+    // --- 4. The code really behaves the way the prose now promises ---------
+    // Without this half the sentences above outlive the mechanism: they would
+    // keep promising a denial and a degrade after either was reverted.
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        !gate.contains("rel.starts_with(\".claude/spec/\") => return Ok(Verdict::Allow)"),
+        "the gate carves `.claude/spec/` out again, so the prose promises a \
+         denial that never fires",
+    );
+    let draft = read("apps/rt/src/commands/spec/spec_draft.rs");
+    assert!(
+        draft.contains("fn cut_work_branch"),
+        "spec-draft no longer cuts the unit's branch, so nothing makes the \
+         branch the isolation the prose describes",
+    );
+    let open = read("apps/rt/src/commands/work_unit_open.rs");
+    assert!(
+        open.contains("checkout_holding_branch") && open.contains("\"inPlace\""),
+        "the isolation step no longer reports a branch already checked out — \
+         it would fail with exit 128 on the arrangement that is now the default",
+    );
+}
+
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
 /// of names for one agent, which is why six names spell five reservations.
 const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];

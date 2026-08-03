@@ -2,5 +2,6 @@
 
 - Spec: `work-unit-lives-on-its`
 - Verdict: **REJECTED**
-- Critical findings: 2
+- Critical findings: 1
+- Subproject: `apps/rt`
 

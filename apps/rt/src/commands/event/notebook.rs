@@ -33,7 +33,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::commands::git_settle::{git_out, unit_slug};
+use crate::commands::git_settle::git_out;
+use crate::shared::branch_state::unit_slug_of_branch;
 
 /// The checkout the notebook belongs to — the CURRENT working tree, not the
 /// main one.
@@ -94,19 +95,31 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
         Some(u) => u.to_string(),
         None => git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default(),
     };
-    // No `{base}_` prefix means no unit — an integration base and a hand-cut
-    // branch alike. The notebook is per-unit by construction, so there is
-    // nowhere to put the item and saying so is the only honest answer.
-    let Some(slug) = unit_slug(&branch) else {
+    // No `{base}_` prefix of a DECLARED base means no unit — an integration
+    // base, a hand-cut `feature/x` and a `feature_x` alike. The notebook is
+    // per-unit by construction, so there is nowhere to put the item and saying
+    // so is the only honest answer.
+    //
+    // The bases come from the project's own `git.flow`, through the same
+    // predicate the `/pr` door resolves a head ref with: a loose split on the
+    // first `_` would accept ANY prefix, so `--unit feature_x` would silently
+    // open the notebook of a spec called `x`.
+    let bases: Vec<String> = mustard_core::ProjectConfig::load(&project)
+        .git
+        .integration_bases()
+        .into_iter()
+        .collect();
+    let Some(slug) = unit_slug_of_branch(&branch, &bases) else {
         return json!({
             "ok": false,
             "reason": "no-unit",
             "branch": branch,
-            "hint": "the notebook is per work unit — run it from a `{base}_{slug}` branch, \
-                     or name one with `--unit dev_my-unit`",
+            "bases": bases,
+            "hint": "the notebook is per work unit — run it from a `{base}_{slug}` branch \
+                     whose base is one of this project's own (`git.flow`), or name one with \
+                     `--unit {base}_{slug}`",
         });
     };
-    let slug = slug.to_string();
 
     let path = mustard_core::ClaudePaths::spec_dir_or_unchecked(&project, &slug).join("notebook.md");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -257,5 +270,17 @@ mod tests {
 
         let loose = notebook_at(root, Some("no-prefix-branch"), None);
         assert_eq!(loose["reason"], json!("no-unit"));
+
+        // The prefix must name a DECLARED base, not merely sit before an
+        // underscore: `feature_x` is not a unit of this project, and accepting
+        // it would open `.claude/spec/x/notebook.md` — another unit's file —
+        // without a word.
+        let foreign = notebook_at(root, Some("feature_x"), Some("would land in the wrong unit"));
+        assert_eq!(foreign["reason"], json!("no-unit"), "report: {foreign}");
+        assert!(
+            !root.join(".claude/spec/x/notebook.md").exists(),
+            "an undeclared prefix must never write into another unit's notebook",
+        );
+        assert_eq!(foreign["bases"], json!(["dev", "main"]), "the refusal names the bases it knows");
     }
 }
