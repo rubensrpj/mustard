@@ -439,7 +439,7 @@ fn review_brief(
 // ---------------------------------------------------------------------------
 
 /// What the merge step is allowed to do next.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MergeConsent {
     /// Merge now.
     Proceed,
@@ -544,6 +544,7 @@ pub(crate) struct PrMergeReport {
 /// provider, `settle` runs the exit ritual. Injected so the consent rule can be
 /// exercised without a provider, a network or a repository — and so a test can
 /// prove that an unreviewed merge calls NEITHER.
+#[must_use]
 fn merge_core(
     root: &Path,
     facts: &PrFacts,
