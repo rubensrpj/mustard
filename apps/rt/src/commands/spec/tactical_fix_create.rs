@@ -153,6 +153,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         flags: mustard_core::MetaFlags::default(),
         // TF checklists stay in the spec markdown (root meta carries none).
         checklist: Vec::new(),
+        findings: Vec::new(),
         raw: serde_json::Value::Null,
     };
     if let Err(e) = spec_scaffold::write_meta_json(&spec_dir, &meta) {

@@ -260,6 +260,145 @@ fn one_line(raw: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Finding item
+// ---------------------------------------------------------------------------
+
+/// Which producer wrote a finding. Two exist, and both already put their
+/// evidence on disk in a machine-readable shape — the record below is seeded
+/// from those files by a collector, never retyped by hand.
+///
+/// Closed on purpose: a producer this build cannot name must not be folded
+/// into one it can, because the routing gate reports *who* found the thing and
+/// a mis-attributed finding is worse than an unreadable one. A third producer
+/// is a schema migration, not a new string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingSource {
+    /// The reviewer subagent's `review/findings*.md` — what an adversarial
+    /// read of the work turned up.
+    Review,
+    /// The acceptance-criteria proof ledger (`ac-proof.json`): the
+    /// `Removal::Survived` column (the criterion stayed green with the work
+    /// torn out of the tree, so it verifies something the work did not do)
+    /// and the `Removal::EvidenceRemoved` column (the removal took the
+    /// criterion's own evidence with it — a declared coverage gap, not a
+    /// failed criterion).
+    ProofLedger,
+}
+
+/// What was decided about a finding — its destination. Four positions, and
+/// every one of them carries the reason in full, because a destination without
+/// a reason is not a destination: it is the same silence the finding started
+/// in. This mirrors [`ChecklistItem::dropped`], where the reason IS the state:
+/// there is no destination to set without saying why, and a blank/whitespace
+/// reason does not count ([`FindingRoute::reason`] ignores it).
+///
+/// Adjacently tagged on the wire (`{"kind": "…", "reason": "…"}`) so the
+/// destination word and its reason are two named JSON fields a reader can see
+/// without knowing the Rust type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
+pub enum FindingRoute {
+    /// Became an acceptance criterion — the finding is now something the proof
+    /// gate runs on every wave. The reason names what the criterion asserts.
+    Criterion(String),
+    /// Became a change request against the spec or plan in flight. The reason
+    /// states what has to change.
+    ChangeRequest(String),
+    /// Became queued work — a task or a follow-up spec someone picks up later.
+    /// The reason states where it was queued and why not now.
+    QueuedWork(String),
+    /// Let go ON PURPOSE, with a stated reason. Terminal, and — exactly like
+    /// [`ChecklistState::Dropped`] — *not* open work: a deliberate decision is
+    /// a destination, not forgetting.
+    Dropped(String),
+}
+
+impl FindingRoute {
+    /// The stated reason, trimmed — `None` when only whitespace was written
+    /// where a reason should be. Every predicate reads through this, so a
+    /// mute route can never pass for a decision.
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        let raw = match self {
+            Self::Criterion(r) | Self::ChangeRequest(r) | Self::QueuedWork(r) | Self::Dropped(r) => {
+                r
+            }
+        };
+        Some(raw.trim()).filter(|r| !r.is_empty())
+    }
+}
+
+/// One finding: a verified discovery made INSIDE a work unit, plus what was
+/// decided about it. A finding with no destination is not a recorded finding —
+/// it is forgotten work, which is precisely the state both producers leave
+/// their output in today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingItem {
+    /// Identifier — `F-1` for a reviewer finding, or the criterion id the
+    /// ledger column belongs to (`AC-3`) so the two sides of the same
+    /// criterion stay joinable.
+    pub id: String,
+    /// Which producer wrote it.
+    pub source: FindingSource,
+    /// One-sentence statement of what was found (narrative locale).
+    pub statement: String,
+    /// Where the finding went, and why. `None` while nobody has decided — the
+    /// open position. Additive + serde-compatible: historical JSON without the
+    /// field deserialises to `None` and the field is omitted from output while
+    /// absent, keeping written sidecars byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<FindingRoute>,
+}
+
+/// Where a finding stands. Two positions, not four: *which* destination it got
+/// is [`FindingRoute`]'s job, and a gate only ever asks whether anybody still
+/// owes this finding a decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FindingState {
+    /// Nobody decided yet — no destination, or one written without a reason.
+    Open,
+    /// A destination was declared, with its reason. Terminal.
+    Routed,
+}
+
+impl FindingItem {
+    /// The finding's position. A route whose reason is blank or whitespace is
+    /// no route at all and the finding stays [`FindingState::Open`], so a
+    /// destination can never be recorded mutely.
+    #[must_use]
+    pub fn state(&self) -> FindingState {
+        match self.route() {
+            Some(_) => FindingState::Routed,
+            None => FindingState::Open,
+        }
+    }
+
+    /// The declared destination — `None` when the finding was never routed (or
+    /// carries only whitespace where the reason should be).
+    #[must_use]
+    pub fn route(&self) -> Option<&FindingRoute> {
+        self.routed.as_ref().filter(|r| r.reason().is_some())
+    }
+
+    /// `true` when a destination was declared for this finding.
+    #[must_use]
+    pub fn is_routed(&self) -> bool {
+        self.route().is_some()
+    }
+
+    /// `true` when the finding still owes a decision. This is the predicate a
+    /// gate must use to decide "somebody still has to answer for this": a
+    /// plain `routed.is_none()` is the same trap [`ChecklistItem::is_open`]
+    /// documents — it would count a finding deliberately DROPPED, with its
+    /// reason written down, as forgotten work.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.state() == FindingState::Open
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Spec input
 // ---------------------------------------------------------------------------
 
@@ -901,5 +1040,95 @@ mod tests {
         )
         .expect("round-trips");
         assert_eq!(round.state(), ChecklistState::Dropped);
+    }
+
+    // --- findings: a discovery plus what was decided about it ---------------
+
+    #[test]
+    fn finding_item_round_trips_with_route_and_reason() {
+        let item = FindingItem {
+            id: "AC-3".into(),
+            source: FindingSource::ProofLedger,
+            statement: "the criterion stayed green with the work torn out".into(),
+            routed: Some(FindingRoute::Criterion(
+                "replaced by a criterion that runs the collector".into(),
+            )),
+        };
+        let text = serde_json::to_string(&item).expect("serializes");
+        // The wire words are pinned: a reader of the sidecar sees the producer
+        // and the destination as named JSON, never a re-parsed sentence.
+        assert!(text.contains(r#""source":"proof_ledger""#), "{text}");
+        assert!(text.contains(r#""kind":"criterion""#), "{text}");
+        let back: FindingItem = serde_json::from_str(&text).expect("round-trips");
+        assert_eq!(back, item);
+        assert_eq!(
+            back.route().and_then(FindingRoute::reason),
+            Some("replaced by a criterion that runs the collector")
+        );
+        assert_eq!(back.state(), FindingState::Routed);
+        assert!(back.is_routed());
+    }
+
+    #[test]
+    fn finding_item_route_pins_the_four_destination_words() {
+        // The four destinations the design fixed, and the exact JSON each
+        // emits — a later variant must be additive, never a rename of these.
+        for (route, word) in [
+            (FindingRoute::Criterion("r".into()), "criterion"),
+            (FindingRoute::ChangeRequest("r".into()), "change_request"),
+            (FindingRoute::QueuedWork("r".into()), "queued_work"),
+            (FindingRoute::Dropped("r".into()), "dropped"),
+        ] {
+            let text = serde_json::to_string(&route).expect("serializes");
+            assert_eq!(text, format!(r#"{{"kind":"{word}","reason":"r"}}"#));
+            let back: FindingRoute = serde_json::from_str(&text).expect("round-trips");
+            assert_eq!(back.reason(), Some("r"));
+        }
+        // Both producer words are pinned too.
+        assert_eq!(
+            serde_json::to_string(&FindingSource::Review).expect("serializes"),
+            r#""review""#
+        );
+        assert_eq!(
+            serde_json::to_string(&FindingSource::ProofLedger).expect("serializes"),
+            r#""proof_ledger""#
+        );
+    }
+
+    #[test]
+    fn finding_item_is_open_distinguishes_open_from_dropped_with_a_reason() {
+        // JSON without the `routed` key (the shape a collector seeds) → open,
+        // and the field is not invented on the way back out.
+        let fresh: FindingItem = serde_json::from_str(
+            r#"{"id":"F-1","source":"review","statement":"the guard never runs"}"#,
+        )
+        .expect("parses");
+        assert_eq!(fresh.state(), FindingState::Open);
+        assert!(fresh.is_open());
+        assert!(!fresh.is_routed());
+        let text = serde_json::to_string(&fresh).expect("serializes");
+        assert!(!text.contains("routed"), "{text}");
+
+        // A destination written without a reason is not a destination: the
+        // finding keeps owing a decision instead of quietly leaving the list.
+        let mute = FindingItem {
+            routed: Some(FindingRoute::Dropped("   ".into())),
+            ..fresh.clone()
+        };
+        assert_eq!(mute.state(), FindingState::Open);
+        assert!(mute.is_open(), "a mute route does not settle the finding");
+
+        // Dropped WITH a stated reason is a decision someone wrote down — it
+        // is not open work, exactly as a dropped checklist item is not.
+        let dropped = FindingItem {
+            routed: Some(FindingRoute::Dropped("duplicate of F-1".into())),
+            ..fresh
+        };
+        assert_eq!(dropped.state(), FindingState::Routed);
+        assert_eq!(
+            dropped.route().and_then(FindingRoute::reason),
+            Some("duplicate of F-1")
+        );
+        assert!(!dropped.is_open(), "a finding dropped on purpose is not pending");
     }
 }

@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "every-finding-must-have-declared",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/review/finding_collect.rs",
+      "path": "apps/rt/src/commands/review/finding_collect.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/review/mod.rs",
+      "path": "apps/rt/src/commands/review/mod.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/review/cli.rs",
+      "path": "apps/rt/src/commands/review/cli.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": false
+    }
+  ]
+}
