@@ -1,0 +1,31 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-04T10:21:52.345Z",
+  "parent": "work-unit-has-one-name",
+  "checklist": [
+    {
+      "label": "plugin/commands/spec.md",
+      "path": "plugin/commands/spec.md",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/feature.md",
+      "path": "plugin/commands/feature.md",
+      "done": true
+    },
+    {
+      "label": "plugin/refs/spec/resume-loop.md",
+      "path": "plugin/refs/spec/resume-loop.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/spec_flow_prose.rs",
+      "path": "apps/rt/tests/spec_flow_prose.rs",
+      "done": true
+    }
+  ]
+}

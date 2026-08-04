@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "give-scan-flow-commands-it",
+  "title": "Give the /scan flow the commands it currently forbids scripts for: a file face on the patterns relay (--content @path, shared with the apply), a --subproject filter on scan-patterns-list, a scan.md rule that permits N relay calls at === END === boundaries while still forbidding splits inside a block, and a patterns prompt that stops promising the channel never truncates plus a documented re-dispatch convergence procedure",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "commands",
+      "summary": "Give the two envelope-consuming commands a file face through ONE shared reader, and expose the subproject filter the worklist already computes.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "docs",
+      "summary": "Re-aim what the flow TEACHES: stop promising the channel is size-safe, stop forbidding the file the harness itself writes, permit N relay calls at block boundaries, and document how a truncated return",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

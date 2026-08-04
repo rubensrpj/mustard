@@ -71,8 +71,11 @@ pub enum EventCmd {
         /// event exists for the spec.
         #[arg(long = "allow-no-qa")]
         allow_no_qa: bool,
-        /// Free-form natural-language request. On `--kind pipeline.kind` for a
-        /// spec-less run it seeds the auto-branch slug (`{base}_{slug}`).
+        /// Free-form natural-language request. On `--kind pipeline.kind` it
+        /// MINTS the unit's canonical name: one slug for the `{base}_{slug}`
+        /// branch, the events and the spec directory (hand it to `spec-draft
+        /// --slug`). It supersedes a disagreeing `--spec`, and the report says
+        /// so via `renamedFrom`.
         #[arg(long)]
         intent: Option<String>,
         /// Integration base the work branch is cut from. On

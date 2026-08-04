@@ -41,6 +41,7 @@ fn drafted_context_is_prose_only() {
         let out = tmp.path().join(format!("draft-{scope}-{lang}"));
         run(SpecDraftOpts {
             intent: "Keep the harness honest about what it measured".into(),
+            slug: None,
             scope: scope.into(),
             lang: lang.into(),
             signals: None,

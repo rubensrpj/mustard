@@ -39,7 +39,12 @@ const DISPATCH_RECORD_EVENTS: &[&str] = &[
 ///
 /// Fail-open: an empty or unreadable log answers `false`, which is exactly what
 /// an empty log means — nothing on record.
-pub(super) fn wave_dispatch_recorded(events: &[HarnessEvent], spec: &str) -> bool {
+///
+/// `pub(crate)` because the `/spec` picker asks the SAME question when it
+/// decides whether a wave-plan row reads "running" or "not started yet". Two
+/// answers to "has this started?" drift; one witness list with two readers
+/// cannot (re-exported from [`super`]).
+pub(crate) fn wave_dispatch_recorded(events: &[HarnessEvent], spec: &str) -> bool {
     events.iter().any(|e| {
         e.spec.as_deref() == Some(spec) && DISPATCH_RECORD_EVENTS.contains(&e.event.as_str())
     })

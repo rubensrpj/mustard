@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-04T03:44:10.422Z",
+  "parent": "give-scan-flow-commands-it",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/agent/render/role.rs",
+      "path": "apps/rt/src/commands/agent/render/role.rs",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/scan.md",
+      "path": "plugin/commands/scan.md",
+      "done": true
+    },
+    {
+      "label": "MUSTARD-COMMANDS.md",
+      "path": "MUSTARD-COMMANDS.md",
+      "done": true
+    }
+  ]
+}

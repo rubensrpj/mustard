@@ -382,8 +382,15 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("ac.skeleton.command", Locale::EnUs) => "<runnable command that verifies this criterion>",
         // Trailing build-green SAFETY criterion — the ONE tautology the linter
         // tolerates (last AC), the compile-floor beneath the behaviour ACs above.
-        ("ac.safety.build_green", Locale::PtBr) => "o build e os testes do projeto passam verdes",
-        ("ac.safety.build_green", Locale::EnUs) => "the project build and tests pass green",
+        //
+        // It says BUILD and nothing more, because the command it is minted with is
+        // the project's build command (`ProjectConfig::build_command_or_fallback`)
+        // and nothing more. The older wording promised "and the tests" over a
+        // command that never compiled a test — a safety net reporting on a pass it
+        // never took, which is the exact defect an acceptance criterion exists to
+        // catch. A spec that wants the suite says so in a criterion of its own.
+        ("ac.safety.build_green", Locale::PtBr) => "o build do projeto passa verde",
+        ("ac.safety.build_green", Locale::EnUs) => "the project build passes green",
 
         // Scan-digest enrichment block injected into the Context section by
         // `spec_draft::context_enrichment` — the anchors/precedent the digest

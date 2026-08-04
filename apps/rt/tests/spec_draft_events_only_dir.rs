@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 fn opts(output: &Path) -> SpecDraftOpts {
     SpecDraftOpts {
         intent: "Record the harness safety instruments".into(),
+        slug: None,
         scope: "light".into(),
         lang: "en-US".into(),
         signals: None,

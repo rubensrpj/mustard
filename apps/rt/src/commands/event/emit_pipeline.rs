@@ -18,6 +18,17 @@
 //! This matches the pattern used by `emit_phase` and every other harness
 //! emitter: telemetry is never load-bearing, so a write failure must never
 //! break the pipeline.
+//!
+//! ## The unit is NAMED here
+//!
+//! `--kind pipeline.kind` is the pipeline-opening door, and it is the first
+//! moment both a base and an intent exist — so it is where the work unit's one
+//! name is minted ([`mint_unit_name_at`]), from the same derivation
+//! `spec-draft` names the spec directory with. That slug then files the
+//! events, the session→spec binding and the `{base}_{slug}` branch alike. A
+//! `--spec` that disagrees is superseded, never silently preferred: the report
+//! carries `spec` (the name that won) plus `renamedFrom` (the one that did
+//! not).
 
 use crate::shared::context::{project_dir, session_id};
 use mustard_core::time::now_iso8601;
@@ -117,8 +128,11 @@ pub struct EmitPipelineOpts {
     /// inside its own flow, or an explicit user override).
     pub allow_no_qa: bool,
     /// Free-form natural-language request. Only consulted on
-    /// `--kind pipeline.kind` for a spec-less run: it seeds the auto-branch
-    /// slug (`{base}_{slug}`) when no `--spec` is present. Ignored otherwise.
+    /// `--kind pipeline.kind`, where it MINTS the unit's canonical name (see
+    /// [`mint_unit_name_at`]): that one slug names the `{base}_{slug}` branch,
+    /// the events, and — through `spec-draft --slug` — the spec directory. It
+    /// supersedes a disagreeing `--spec`, and the report says so. Ignored for
+    /// every other kind.
     pub intent: Option<String>,
     /// Integration base branch the work branch is cut from. On
     /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}`. When
@@ -181,7 +195,15 @@ pub fn run(opts: EmitPipelineOpts) {
     // transition (AC-W2-6). The event router opens its store on demand — no
     // eager open here.
     let kind = opts.kind.clone();
-    let spec = opts.spec.clone();
+    // The unit's ONE name. On `pipeline.kind` with an `--intent` it is minted
+    // here and replaces `--spec` for the whole run, so the events, the
+    // session→spec binding and the work branch are all filed under the string
+    // `spec-draft` will name the spec directory with. Every other call keeps
+    // the caller's `--spec` verbatim.
+    let minted = mint_unit_name(&opts);
+    let spec = minted
+        .as_ref()
+        .map_or_else(|| opts.spec.clone(), |m| m.slug.clone());
     let ts = now_iso8601();
     // Env → newest REAL `.claude/.session/<id>/` dir. The resolver never picks
     // a placeholder bucket (`unknown`, the OTEL collector's `otel-unattached`)
@@ -229,7 +251,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // Remove the terminal-state marker (keyed on the predicate, so it runs for
     // every kind), then echo the one deterministic success line.
     cleanup_terminal_state(&kind, &payload, &spec);
-    echo_success(&kind, &spec, work_branch);
+    echo_success(&kind, &spec, work_branch, minted.and_then(|m| m.renamed_from));
 }
 
 /// The process cwd, degrading to the configured project dir (never panics) —
@@ -359,6 +381,81 @@ fn parse_payload_or_exit(opts: &EmitPipelineOpts) -> Value {
             }
         },
     }
+}
+
+/// The unit's canonical NAME, decided at the base gate.
+///
+/// `slug` is what the whole unit is filed under from that moment on — the
+/// events, the session→spec binding, the `{base}_{slug}` branch, and (through
+/// `spec-draft`, which consumes it) the spec directory. `renamed_from` carries
+/// the `--spec` the caller asked for when it disagreed, so the rename is
+/// VISIBLE in the report rather than discovered a phase later as two names for
+/// one unit.
+pub(crate) struct MintedName {
+    /// The canonical slug this unit is called, everywhere.
+    pub(crate) slug: String,
+    /// The `--spec` the caller passed, when it was not the minted name.
+    pub(crate) renamed_from: Option<String>,
+}
+
+/// Mint the unit's canonical name for `--kind pipeline.kind`.
+///
+/// The gate is the first moment both a base and an intent exist, and it already
+/// computes `{base}_{slug}` — so it is where the name is DECIDED, once, from
+/// the same derivation `spec-draft` names the spec directory with
+/// ([`crate::commands::spec::spec_slug::canonical_for_project`]). Before this,
+/// the caller invented a `--spec` here and the draft derived its own slug from
+/// its own `--intent`; nothing reconciled them, and a unit could carry two
+/// names at once.
+///
+/// **A disagreeing `--spec` loses, and the report says so** (`spec` +
+/// `renamedFrom`, plus a stderr line naming both). The alternative — refusing
+/// the call — is louder but it rejects the dispatch line as it is written
+/// today, which passes an invented `--spec` beside the `--intent`; and
+/// preferring the caller's spelling silently is precisely how the two names
+/// were born. What is not on the table is silence.
+///
+/// `None` — there is nothing to mint: another kind, or no `--intent` to mint
+/// FROM (a caller naming a unit that already exists). The run is then
+/// byte-identical to before.
+pub(crate) fn mint_unit_name_at(
+    project: &Path,
+    kind: &str,
+    spec: &str,
+    intent: Option<&str>,
+) -> Option<MintedName> {
+    if kind != EVENT_PIPELINE_KIND {
+        return None;
+    }
+    let intent = intent.map(str::trim).filter(|s| !s.is_empty())?;
+    let slug = crate::commands::spec::spec_slug::canonical_for_project(intent, project);
+    if slug.trim().is_empty() {
+        return None;
+    }
+    let asked = spec.trim();
+    let renamed_from = (!asked.is_empty() && asked != slug).then(|| asked.to_string());
+    Some(MintedName { slug, renamed_from })
+}
+
+/// [`mint_unit_name_at`] against the process's project root, announcing a
+/// rename on stderr (stdout carries the one JSON line gates byte-compare).
+fn mint_unit_name(opts: &EmitPipelineOpts) -> Option<MintedName> {
+    let project = project_dir();
+    let minted = mint_unit_name_at(
+        Path::new(&project),
+        &opts.kind,
+        &opts.spec,
+        opts.intent.as_deref(),
+    )?;
+    if let Some(asked) = minted.renamed_from.as_deref() {
+        eprintln!(
+            "emit-pipeline: this unit is named '{}' — minted from --intent, and it names the \
+             branch, the events and the spec directory alike. The requested --spec '{asked}' is \
+             NOT used: a unit has one name.",
+            minted.slug
+        );
+    }
+    Some(minted)
 }
 
 /// Route the primary event to the NDJSON sink, then its legacy→new alias twin
@@ -509,15 +606,30 @@ fn cleanup_terminal_state(kind: &str, payload: &Value, spec: &str) {
     }
 }
 
-/// The one deterministic success line — `{ok, kind, spec[, branch]}`. No
-/// timestamp/session (run outputs are byte-compared in gates); the NDJSON row
-/// carries those. `branch` is present only on `pipeline.kind`, for the
-/// `EnterWorktree` hand-off. The emitter used to succeed in TOTAL silence, which
-/// made the harness's own traceability tool opaque on the happy path.
-fn echo_success(kind: &str, spec: &str, work_branch: Option<String>) {
+/// The one deterministic success line — `{ok, kind, spec[, branch][,
+/// renamedFrom]}`. No timestamp/session (run outputs are byte-compared in
+/// gates); the NDJSON row carries those. `branch` is present only on
+/// `pipeline.kind`, for the `EnterWorktree` hand-off. The emitter used to
+/// succeed in TOTAL silence, which made the harness's own traceability tool
+/// opaque on the happy path.
+///
+/// `spec` is the name the unit ACTUALLY carries from here on — the minted one
+/// when the gate named it ([`mint_unit_name_at`]) — and `renamedFrom` appears
+/// only when that differs from the `--spec` the caller asked for, so a reader
+/// can SEE the rename instead of inferring it. Both keys are omitted when they
+/// have nothing to say, which keeps every other call byte-identical.
+fn echo_success(
+    kind: &str,
+    spec: &str,
+    work_branch: Option<String>,
+    renamed_from: Option<String>,
+) {
     let mut done = json!({ "ok": true, "kind": kind, "spec": spec });
     if let Some(branch) = work_branch {
         done["branch"] = json!(branch);
+    }
+    if let Some(asked) = renamed_from {
+        done["renamedFrom"] = json!(asked);
     }
     println!("{done}");
 }
@@ -1345,6 +1457,67 @@ mod tests {
         let other = unknown_kind_message("bogus.kind");
         assert!(other.contains("Valid kinds"), "{other}");
         assert!(!other.contains("work-type"), "{other}");
+    }
+
+    /// AC-1 — the pipeline-opening door NAMES the unit, once.
+    ///
+    /// The name it mints is the same string `spec-draft` derives from the same
+    /// intent (one derivation, several callers), it is what `{base}_{slug}` is
+    /// built from, and it supersedes a `--spec` the caller invented — visibly,
+    /// through `renamedFrom`. Nothing is minted when there is nothing to mint
+    /// FROM, so every other call stays byte-identical.
+    #[test]
+    fn the_base_gate_mints_the_canonical_slug() {
+        use crate::commands::event::work_branch::compute_work_branch;
+        use crate::commands::spec::spec_slug;
+        use mustard_core::SupportedLocale;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        std::fs::write(
+            project.join("mustard.json"),
+            r#"{"lang":"en-US","git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+
+        let intent = "Work unit has one name";
+        let minted = mint_unit_name_at(
+            project,
+            EVENT_PIPELINE_KIND,
+            "invented-at-dispatch",
+            Some(intent),
+        )
+        .expect("an intent at the opening door always names the unit");
+
+        // ONE derivation: the gate's name is the draft's name, byte for byte.
+        assert_eq!(minted.slug, spec_slug::canonical(intent, SupportedLocale::EnUs));
+        // ...and it is the name the branch carries.
+        assert_eq!(
+            compute_work_branch(
+                "dev",
+                &minted.slug,
+                Some(intent),
+                "sess-abcdef12",
+                "2026-08-03T10:00:00.000Z",
+                &project.to_string_lossy(),
+            ),
+            format!("dev_{}", minted.slug),
+        );
+        // The disagreement is REPORTED, never silently resolved either way.
+        assert_eq!(minted.renamed_from.as_deref(), Some("invented-at-dispatch"));
+
+        // A `--spec` that already agrees is not a rename.
+        let agreeing = mint_unit_name_at(project, EVENT_PIPELINE_KIND, &minted.slug, Some(intent))
+            .expect("still minted");
+        assert!(agreeing.renamed_from.is_none(), "nothing was renamed");
+
+        // Nothing to mint FROM (a caller naming an existing unit), and nothing
+        // to mint FOR (any other kind) — both leave `--spec` untouched.
+        assert!(mint_unit_name_at(project, EVENT_PIPELINE_KIND, "existing-unit", None).is_none());
+        assert!(
+            mint_unit_name_at(project, EVENT_PIPELINE_WAVE_START, "existing-unit", Some(intent))
+                .is_none(),
+        );
     }
 
     #[test]

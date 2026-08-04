@@ -61,7 +61,9 @@
 
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
-use crate::commands::review::dependency_precheck;
+// `VERDICT_KEY` is imported bare because `json!` takes a key as a token
+// sequence, not a path expression.
+use crate::commands::review::dependency_precheck::{self, VERDICT_KEY};
 use mustard_core::domain::model::event::{
     HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_START,
 };
@@ -382,6 +384,10 @@ fn wave_precheck(spec_dir: &Path, wave: u32, role: &str, subproject: &str) -> Op
 /// Trimming that marker away hands the orchestrator a bare green for a wave
 /// nothing ever looked at. The sentence the gate already writes must reach
 /// whoever is about to dispatch.
+///
+/// `verdict` survives on BOTH branches for exactly that hazard, stated so a
+/// reader needs no knowledge of which other key to look for: a trim that drops
+/// it turns a decline back into a bare `ok: true`.
 fn lean_precheck(full: &Value) -> Value {
     let ok = full.get("ok").and_then(Value::as_bool).unwrap_or(true);
     let checks = full
@@ -389,8 +395,13 @@ fn lean_precheck(full: &Value) -> Value {
         .cloned()
         .unwrap_or_else(|| json!([]));
     let skipped = dependency_precheck::skip_reason(full);
+    let verdict = dependency_precheck::verdict(full).to_string();
     if ok {
-        let mut lean = json!({ "ok": true, "checks_performed": checks });
+        let mut lean = json!({
+            "ok": true,
+            "checks_performed": checks,
+            VERDICT_KEY: verdict,
+        });
         if let (Some(reason), Some(obj)) = (skipped, lean.as_object_mut()) {
             obj.insert(
                 dependency_precheck::SKIPPED_KEY.to_string(),
@@ -402,6 +413,7 @@ fn lean_precheck(full: &Value) -> Value {
     json!({
         "ok": false,
         "checks_performed": checks,
+        VERDICT_KEY: verdict,
         "missing": full.get("missing").cloned().unwrap_or_else(|| json!([])),
         "suggested_tactical_fix_files":
             full.get("suggested_tactical_fix_files").cloned().unwrap_or_else(|| json!([])),
@@ -945,6 +957,13 @@ mod tests {
             json!([]),
             "a declined gate performed no checks: {pc}"
         );
+        // The trim must also carry the verdict that SAYS so, so telling a
+        // decline from a pass does not depend on knowing about `skipped`.
+        assert_eq!(
+            dependency_precheck::verdict(pc),
+            dependency_precheck::VERDICT_DECLINED,
+            "the trim must carry the verdict, not just the skip: {pc}"
+        );
 
         // Control: a TS wave IS judged, so no skip marker is invented for it.
         seed_one_wave(project, "ts", "web", "- apps/web/src/Panel.tsx");
@@ -955,6 +974,11 @@ mod tests {
         assert!(
             pc.get(dependency_precheck::SKIPPED_KEY).is_none(),
             "a stack the gate understands is not reported as skipped: {pc}"
+        );
+        assert_eq!(
+            dependency_precheck::verdict(pc),
+            dependency_precheck::VERDICT_PASS,
+            "a wave that WAS judged carries the pass verdict: {pc}"
         );
     }
 }
