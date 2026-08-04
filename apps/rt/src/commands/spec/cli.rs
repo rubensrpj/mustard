@@ -138,9 +138,16 @@ pub enum SpecCmd {
     /// comma-separated list embedded in `spec.md` as a comment.
     #[command(display_order = 57)]
     SpecDraft {
-        /// Free-text intent (becomes the spec title + slug seed).
+        /// Free-text intent — the spec TITLE, and the last-resort slug seed.
         #[arg(long)]
         intent: String,
+        /// The unit's canonical name, as minted by the base gate
+        /// (`emit-pipeline --kind pipeline.kind` reports it as `spec`). Used
+        /// VERBATIM — the draft consumes the name the unit already carries
+        /// instead of deriving a second one from `--intent`. Omitted: the slug
+        /// half of the work branch this call cuts, else the intent.
+        #[arg(long)]
+        slug: Option<String>,
         /// `light` (single-shot) or `full` (wave plan).
         #[arg(long, default_value = "full")]
         scope: String,
@@ -387,6 +394,7 @@ pub fn dispatch(cmd: SpecCmd) {
         }
         SpecCmd::SpecDraft {
             intent,
+            slug,
             scope,
             lang,
             signals,
@@ -400,6 +408,7 @@ pub fn dispatch(cmd: SpecCmd) {
         } => {
             spec::spec_draft::run(spec::spec_draft::SpecDraftOpts {
                 intent,
+                slug,
                 scope,
                 lang,
                 signals,

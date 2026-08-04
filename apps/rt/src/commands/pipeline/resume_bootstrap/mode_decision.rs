@@ -135,8 +135,21 @@ pub(super) fn decide_mode(
 /// with no ceremony; the DECISION of what ceremony to drop stays there, this
 /// only reports where the tree is.
 ///
-/// The name is not re-derived: [`compute_work_branch`] is the same function
-/// that minted the pending marker, so the two spellings cannot drift.
+/// What the equality actually rests on — because the docstring that used to
+/// stand here guaranteed something this function does not: it claimed the name
+/// "is not re-derived" since [`compute_work_branch`] is shared with the gate.
+/// The FUNCTION is shared; the ARGUMENT is not, and the argument is what
+/// diverged. The gate was handed the slug the caller invented at dispatch while
+/// `spec-draft` derived its own from its own `--intent`, so a unit carried two
+/// names and this comparison answered `false` from inside its own branch.
+///
+/// The name IS rebuilt here, from `spec`. What makes that sound is upstream and
+/// nothing in this file enforces it: the unit is named ONCE, at the base gate
+/// ([`crate::commands::event::emit_pipeline::mint_unit_name_at`]), and
+/// `spec-draft` CONSUMES that name — `--slug`, else the slug half of the branch
+/// it cut — instead of minting a second one. So `spec` is the same string
+/// `{base}_{slug}` was built from. That invariant lives in those two commands;
+/// the test below is where it is checked end to end.
 ///
 /// `false` for every uncertainty — an empty spec, a VCS opt-out, a directory
 /// that is not a repository, a detached HEAD. A resume that cannot SHOW it is
@@ -242,5 +255,56 @@ mod tests {
         let bare = tempfile::tempdir().unwrap();
         assert!(!inside_own_work_branch(bare.path(), "my-spec"));
         assert!(!inside_own_work_branch(root, "  "), "an empty spec names no branch");
+    }
+
+    /// AC-3 — the case that FAILED before the unit had one name, driven through
+    /// the real minting call rather than a hand-written slug.
+    ///
+    /// The gate names the unit from `--intent`; the branch is cut from THAT
+    /// name; the spec is filed under it. Standing on that branch,
+    /// `inside_own_work_branch` must answer `true` — which is what lets the
+    /// picker resume with no ceremony. The second half is the defect itself:
+    /// the slug the caller invented at dispatch names a branch this tree is not
+    /// on, so a unit whose spec had been filed under it could never report
+    /// itself inside its own branch.
+    #[test]
+    fn inside_work_branch_holds_when_the_gate_named_the_unit() {
+        use crate::commands::event::emit_pipeline::mint_unit_name_at;
+        use mustard_core::domain::model::event::EVENT_PIPELINE_KIND;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "dev", r#"{"*":"dev","dev":"main"}"#);
+        // Declare the slug language too — the gate resolves it from here, so
+        // the fixture must not depend on the default happening to agree.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"lang":"en-US","git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+
+        // What the dispatch really does: an `--intent` plus a `--spec` the
+        // caller invented. The gate mints the unit's name from the intent.
+        let invented = "invented-at-dispatch";
+        let intent = "Work unit has one name";
+        let minted = mint_unit_name_at(root, EVENT_PIPELINE_KIND, invented, Some(intent))
+            .expect("the opening door names the unit");
+        assert_eq!(minted.renamed_from.as_deref(), Some(invented), "the fixture disagrees on purpose");
+
+        // The branch is cut from the MINTED name — `spec-draft` then files the
+        // spec under that same string.
+        let branch = compute_work_branch("dev", &minted.slug, Some(intent), "", "", &root.to_string_lossy());
+        git(root, &["checkout", "-b", &branch]);
+
+        assert!(
+            inside_own_work_branch(root, &minted.slug),
+            "the unit named at the gate reports itself inside its own branch — \
+             this is the no-ceremony resume actually firing",
+        );
+        assert!(
+            !inside_own_work_branch(root, invented),
+            "and the name the caller invented is NOT this unit: a spec filed under \
+             it would report `false` from inside the branch, which is the defect",
+        );
     }
 }

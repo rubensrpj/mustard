@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "work-unit-has-one-name",
+  "checklist": [
+    {
+      "label": "plugin/commands/spec.md",
+      "path": "plugin/commands/spec.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/feature.md",
+      "path": "plugin/commands/feature.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/spec/resume-loop.md",
+      "path": "plugin/refs/spec/resume-loop.md",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/spec_flow_prose.rs",
+      "path": "apps/rt/tests/spec_flow_prose.rs",
+      "done": false
+    }
+  ]
+}

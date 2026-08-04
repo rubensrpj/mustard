@@ -1,0 +1,21 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-04T09:22:27.459Z",
+  "parent": "work-unit-has-one-name",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/active_specs.rs",
+      "path": "apps/rt/src/commands/spec/active_specs.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/dependency_precheck.rs",
+      "path": "apps/rt/src/commands/review/dependency_precheck.rs",
+      "done": true
+    }
+  ]
+}

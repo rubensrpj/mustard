@@ -12,10 +12,21 @@
 //!     --intent "<free-text intent>" \
 //!     --scope  light|full \
 //!     --lang   pt-BR|en-US \
+//!     [--slug  <the name the base gate minted>] \
 //!     [--signals layers,files,...] \
 //!     [--output PATH] \
 //!     [--plan PATH]
 //! ```
+//!
+//! ## The unit is NAMED before the draft runs
+//!
+//! `--intent` is the spec TITLE. It is no longer where the unit's name comes
+//! from on the pipeline path: the base gate mints that name
+//! (`emit-pipeline --kind pipeline.kind`, which reports it as `spec`) and this
+//! command CONSUMES it — `--slug` verbatim, or, when the flag is absent, the
+//! slug half of the work branch the cut below just put the tree on. Deriving a
+//! second name from `--intent` is the last resort, for a hand-run draft that no
+//! work unit ever signalled. See [`resolve_slug`].
 //!
 //! ## The branch is cut FIRST
 //!
@@ -29,7 +40,7 @@
 //! ## Output
 //!
 //! When `--output PATH` is omitted, the new spec lands under
-//! `.claude/spec/{slug}/` (`slug` derived from `--intent`).
+//! `.claude/spec/{slug}/` (`slug` per [`resolve_slug`]).
 //!
 //! The spec dir is materialised as:
 //!
@@ -106,8 +117,14 @@ pub fn tone_prompt_instruction(tone: Tone) -> &'static str {
 
 /// Options for `mustard-rt run spec-draft`.
 pub struct SpecDraftOpts {
-    /// Free-text intent (becomes the spec title + slug seed).
+    /// Free-text intent — the spec TITLE, and the LAST-RESORT slug seed (see
+    /// [`resolve_slug`]).
     pub intent: String,
+    /// The unit's canonical name, minted at the base gate and reported there as
+    /// `spec`. Present ⇒ used VERBATIM: the draft consumes the name the unit
+    /// already carries instead of deriving a second one. Absent ⇒ the work
+    /// branch, then the intent — see [`resolve_slug`].
+    pub slug: Option<String>,
     /// `light` or `full`.
     pub scope: String,
     /// `pt-BR` / `en-US` (BCP-47 only — short forms rejected).
@@ -428,11 +445,6 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         emit_error("invalid --lang (expected BCP-47 `pt-BR` or `en-US`)", &opts.lang);
         return 0;
     };
-    let slug = slug_from_intent(&opts.intent, lang_locale);
-    if slug.is_empty() {
-        emit_error("intent did not yield a slug", &opts.intent);
-        return 0;
-    }
     // The channel is read and checked BEFORE anything is written: a malformed
     // material file must not leave a half-drafted spec behind.
     let material = match opts.material.as_deref() {
@@ -463,6 +475,20 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
             return 0;
         }
     };
+
+    // The unit's name — CONSUMED, not invented, whenever the unit already has
+    // one. Resolved after the cut because the branch is what remembers it.
+    let slug = resolve_slug(
+        project_root,
+        opts.slug.as_deref(),
+        work_branch.as_deref(),
+        &opts.intent,
+        lang_locale,
+    );
+    if slug.is_empty() {
+        emit_error("intent did not yield a slug", &opts.intent);
+        return 0;
+    }
 
     let auto_output = opts.output.is_none();
     let output = opts.output.unwrap_or_else(|| {
@@ -1329,22 +1355,42 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Max number of words kept in a generated slug. A paragraph-length intent is
-/// cut here — on a word boundary, never mid-word (the old 60-char `.take`
-/// decapitated the final word, e.g. `…contas-a-r`).
-const SLUG_MAX_TOKENS: usize = 5;
+/// The unit's name, asked of whatever actually KNOWS it, in that order:
+///
+/// 1. `--slug` — the name the base gate minted for this unit
+///    ([`crate::commands::event::emit_pipeline::mint_unit_name_at`]). Verbatim:
+///    the draft is consuming a decision, not making one.
+/// 2. the work branch this call just cut — `{base}_{slug}`, so its slug half IS
+///    the gate's name ([`work_branch::slug_of_work_branch`]). The session
+///    marker that carried the name is consumed by that cut, but the branch
+///    keeps it, which makes the branch the durable record.
+/// 3. `--intent`, through the SAME derivation the gate mints with
+///    ([`spec_slug::canonical`]) — the hand-run draft that no work unit ever
+///    signalled, byte-identical to the behaviour this command always had.
+///
+/// Steps 1 and 2 are what stop a unit carrying two names: before them the gate
+/// was handed a slug the caller invented while the draft derived its own from
+/// its own `--intent`, and nothing reconciled the two — so `resume-bootstrap`
+/// rebuilt `{base}_{slug}` from the spec and never matched the checkout.
+fn resolve_slug(
+    project_root: &Path,
+    explicit: Option<&str>,
+    work_branch: Option<&str>,
+    intent: &str,
+    lang: Locale,
+) -> String {
+    use crate::commands::event::work_branch;
+    use crate::commands::spec::spec_slug;
 
-/// Derive a kebab-case slug from a free-text intent by delegating to the
-/// canonical [`mustard_core::slugify`] — per-locale accent fold + stopword
-/// drop — instead of a hand-rolled char map that kept stopwords (`em`, `a`,
-/// `de`) and mangled accents (`visão` → `vis-o`). Capped to the first
-/// [`SLUG_MAX_TOKENS`] words so the cut always lands on a boundary.
-fn slug_from_intent(intent: &str, lang: Locale) -> String {
-    mustard_core::slugify(intent, lang)
-        .split('-')
-        .take(SLUG_MAX_TOKENS)
-        .collect::<Vec<_>>()
-        .join("-")
+    if let Some(given) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return given.to_string();
+    }
+    if let Some(from_branch) = work_branch.and_then(|branch| {
+        work_branch::slug_of_work_branch(branch, &mustard_core::ProjectConfig::load(project_root))
+    }) {
+        return from_branch;
+    }
+    spec_slug::canonical(intent, lang)
 }
 
 /// Canonical lowercase string for the scope (matches `Scope` `serde` rename).
@@ -1393,26 +1439,70 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// AC-2 — the draft CONSUMES the unit's name instead of minting a second
+    /// one.
+    ///
+    /// The gate names the unit (`emit-pipeline --kind pipeline.kind` reports it
+    /// as `spec`); handing that name here must land the spec directory under
+    /// it, with `--intent` keeping only its OTHER job — the spec title. The
+    /// fixture is only worth anything because the two differ: the slug the
+    /// draft would have derived is asserted absent from disk.
     #[test]
-    fn slug_basic_kebab() {
-        assert_eq!(slug_from_intent("Add user CRUD", Locale::EnUs), "add-user-crud");
-        assert_eq!(
-            slug_from_intent("  ---  Fix login   bug  ", Locale::EnUs),
-            "fix-login-bug"
-        );
-    }
+    fn spec_draft_consumes_the_slug_it_is_given() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
 
-    #[test]
-    fn slug_drops_stopwords_no_midword_cut() {
-        // Field report (sialia): the hand-rolled slug kept "em/a/de" and cut
-        // "receber" → "r". Delegating to slugify drops stopwords per-locale and
-        // the token cap lands on a word boundary.
-        let s = slug_from_intent(
-            "Espelhar em contas a pagar a visão de listagem de contas a receber",
-            Locale::PtBr,
+        let given = "work-unit-has-one-name";
+        let intent = "Something the drafter would have slugged completely differently";
+        let derived = crate::commands::spec::spec_slug::canonical(intent, Locale::EnUs);
+        assert_ne!(derived, given, "the fixture only proves something if the two differ");
+
+        let code = run_at(
+            project,
+            SpecDraftOpts {
+                intent: intent.to_string(),
+                slug: Some(given.to_string()),
+                scope: "light".into(),
+                lang: "en-US".into(),
+                signals: None,
+                output: None,
+                material: None,
+                waves: 1,
+                plan: None,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            },
         );
-        assert_eq!(s, "espelhar-contas-pagar-visao-listagem");
-        assert!(!s.ends_with('-'));
+        assert_eq!(code, 0, "a light draft with an explicit name exits clean");
+
+        let spec_root = project.join(".claude").join("spec");
+        assert!(
+            spec_root.join(given).join("spec.md").exists(),
+            "the spec lands under the name the unit already carries",
+        );
+        assert!(
+            !spec_root.join(&derived).exists(),
+            "and NOT under a second name derived from the intent",
+        );
+        // `--intent` keeps its other job.
+        let body = std::fs::read_to_string(spec_root.join(given).join("spec.md")).unwrap();
+        assert!(body.contains(intent), "the intent is still the spec title:\n{body}");
+
+        // Without the flag, the name still comes from the UNIT: the slug half
+        // of the branch this draft cut. Only a draft that no unit signalled
+        // (no branch at all) derives one from the intent.
+        std::fs::write(
+            project.join("mustard.json"),
+            r#"{"lang":"en-US","git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_slug(project, None, Some("dev_named-at-the-gate"), intent, Locale::EnUs),
+            "named-at-the-gate",
+        );
+        assert_eq!(resolve_slug(project, None, None, intent, Locale::EnUs), derived);
     }
 
     #[test]
@@ -1477,16 +1567,6 @@ mod tests {
             "backfill must not regress an advanced spec to ANALYZE",
         );
         assert_eq!(phase_to_count(dir.path(), "demo-spec", "ANALYZE"), 0);
-    }
-
-    #[test]
-    fn slug_caps_on_word_boundary() {
-        // 10 content words → first 5 kept, cut on a boundary (no partial word).
-        let s = slug_from_intent(
-            "alpha beta gamma delta epsilon zeta eta theta iota kappa",
-            Locale::EnUs,
-        );
-        assert_eq!(s, "alpha-beta-gamma-delta-epsilon");
     }
 
     /// Build a [`DigestQuery`] from the literal JSON the scan binary emits —
@@ -1709,6 +1789,7 @@ mod tests {
         let out = dir.path().join("specs").join("light");
         run(SpecDraftOpts {
             intent: "Demo intent".into(),
+            slug: None,
             scope: "light".into(),
             lang: "pt-BR".into(),
             signals: None,
@@ -1750,6 +1831,7 @@ mod tests {
         let out = dir.path().join("specs").join("epic");
         run(SpecDraftOpts {
             intent: "Demo intent".into(),
+            slug: None,
             scope: "full".into(),
             lang: "pt-BR".into(),
             signals: None,
@@ -1807,6 +1889,7 @@ mod tests {
             let out = dir.path().join("specs").join("rt");
             run(SpecDraftOpts {
                 intent: "Demo roundtrip intent".into(),
+                slug: None,
                 scope: scope.into(),
                 lang: lang.into(),
                 signals: None,
@@ -1844,6 +1927,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let opts = SpecDraftOpts {
             intent: "Demo intent".into(),
+            slug: None,
             scope: "full".into(),
             lang: "pt-BR".into(),
             signals: None,
@@ -1871,6 +1955,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let opts = SpecDraftOpts {
             intent: "Demo".into(),
+            slug: None,
             scope: "light".into(),
             lang: "pt".into(),
             signals: None,
@@ -1903,6 +1988,7 @@ mod tests {
         });
         run(SpecDraftOpts {
             intent: "Demo intent".into(),
+            slug: None,
             scope: "light".into(),
             lang: "en-US".into(),
             signals: None,
@@ -2078,6 +2164,7 @@ mod tests {
             let out = dir.path().join(name);
             run(SpecDraftOpts {
                 intent: "Demo intent".into(),
+                slug: None,
                 scope: "light".into(),
                 lang: "en-US".into(),
                 signals: None,
@@ -2141,6 +2228,7 @@ mod tests {
     fn fused_opts(intent: &str, plan: &std::path::Path) -> SpecDraftOpts {
         SpecDraftOpts {
             intent: intent.to_string(),
+            slug: None,
             scope: "full".into(),
             lang: "en-US".into(),
             signals: None,
@@ -2173,7 +2261,7 @@ mod tests {
         let spec_dir = project
             .join(".claude")
             .join("spec")
-            .join(slug_from_intent(intent, Locale::EnUs));
+            .join(crate::commands::spec::spec_slug::canonical(intent, Locale::EnUs));
         // The draft's own two artefacts...
         assert!(spec_dir.join("spec.md").exists(), "spec.md");
         assert!(spec_dir.join("meta.json").exists(), "meta.json");
@@ -2225,7 +2313,7 @@ mod tests {
         let spec_dir = project
             .join(".claude")
             .join("spec")
-            .join(slug_from_intent(intent, Locale::EnUs));
+            .join(crate::commands::spec::spec_slug::canonical(intent, Locale::EnUs));
         assert!(
             !spec_dir.join("wave-plan.md").exists(),
             "a refusal must leave no wave-plan.md behind",
@@ -2275,7 +2363,7 @@ mod tests {
         let spec_dir = project
             .join(".claude")
             .join("spec")
-            .join(slug_from_intent(intent, Locale::EnUs));
+            .join(crate::commands::spec::spec_slug::canonical(intent, Locale::EnUs));
 
         // The dead end the prose must not send anyone down: the draft's own
         // artefacts survived, so drafting again refuses instead of repairing.

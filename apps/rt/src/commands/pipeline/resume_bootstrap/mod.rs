@@ -60,8 +60,11 @@ use stage_resolver::{
 };
 use wave_progress::{
     count_wave_progress_from_fs, derive_role_from_wave_path, find_wave_spec_path,
-    wave_dispatch_recorded,
 };
+/// The dispatch record, re-exported: the `/spec` picker reads the same witness
+/// list this module folds into `neverDispatched`, so a scaffolded plan cannot
+/// be "never dispatched" here and "running" in the listing.
+pub(crate) use wave_progress::wave_dispatch_recorded;
 
 /// Window inside which auto-continue applies (10 minutes since last event).
 const AUTO_CONTINUE_TTL_MS: i64 = 10 * 60 * 1_000;

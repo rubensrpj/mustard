@@ -1,0 +1,41 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-04T09:22:26.959Z",
+  "parent": "work-unit-has-one-name",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "path": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/base_gate.rs",
+      "path": "apps/rt/src/commands/event/base_gate.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/event/cli.rs",
+      "path": "apps/rt/src/commands/event/cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/spec/spec_draft.rs",
+      "path": "apps/rt/src/commands/spec/spec_draft.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/spec/cli.rs",
+      "path": "apps/rt/src/commands/spec/cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
+      "done": true
+    }
+  ]
+}

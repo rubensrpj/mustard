@@ -39,6 +39,8 @@
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use mustard_core::domain::meta;
+use mustard_core::domain::model::event::HarnessEvent;
+use mustard_core::view::projection::read_workspace_events;
 use mustard_core::{translate, SupportedLocale};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -46,6 +48,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::commands::git_settle::git_out;
+use crate::commands::pipeline::resume_bootstrap::wave_dispatch_recorded;
 use crate::shared::branch_state::{BranchEnumerator, BranchRefs};
 
 // ---------------------------------------------------------------------------
@@ -982,11 +985,20 @@ fn make_unique_from_chars(s: &str, used: &HashMap<String, String>) -> String {
 /// `first_active_wave` is supplied by the caller because the answer has two
 /// sources — the filesystem for a checked-out spec, the branch's tree for an
 /// in-flight one — and this function must not care which.
+///
+/// `dispatched` says whether anything was ever handed out for this spec
+/// ([`plan_was_dispatched`]). It is REQUIRED to word the wave column, because
+/// `first_active_wave` alone cannot: `wave-scaffold` writes every wave
+/// directory `Outcome=Active` before an agent runs, so the first active wave of
+/// a plan nobody started is wave 1 — the same answer a plan whose wave 1 is in
+/// flight gives. The two words ask for opposite actions (start it vs. resume
+/// it), and this table is the surface where the operator CHOOSES.
 fn derive_status(
     spec: &SpecCandidate,
     kind: &SpecKind,
     parent_aliases: &HashMap<String, String>,
     first_active_wave: Option<&str>,
+    dispatched: bool,
 ) -> String {
     // Special kinds override the normal status derivation.
     match kind {
@@ -1004,13 +1016,43 @@ fn derive_status(
             return format!("TF→{alias}");
         }
     }
-    // Wave plan with active waves: derive "W{N} em exec" for the first active wave
+    // Wave plan with active waves: "W{N} em exec" once something was actually
+    // dispatched, "W{N} a iniciar" while the plan is only scaffolded.
     if spec.is_wave_plan {
         if let Some(wave) = first_active_wave {
-            return format!("W{wave} em exec");
+            return if dispatched {
+                format!("W{wave} em exec")
+            } else {
+                format!("W{wave} a iniciar")
+            };
         }
     }
     "-".to_string()
+}
+
+/// Whether this spec's plan was ever actually HANDED OUT, as opposed to merely
+/// scaffolded.
+///
+/// The witness is the dispatch record — the very one `resume-bootstrap` folds
+/// into `neverDispatched` ([`wave_dispatch_recorded`]), asked here rather than
+/// re-derived, so the picker and the resume cannot answer "has this started?"
+/// differently.
+///
+/// The second clause covers the rows the checkout does not carry. The event log
+/// is local: it has nothing to say about a unit whose waves ran in another
+/// clone, and a listing that read its silence as "never started" would invent
+/// the mirror image of the defect being fixed. A wave already CLOSED on that
+/// branch is retroactive proof of a dispatch — the same category
+/// `pipeline.wave.complete` occupies in the witness list above.
+///
+/// Fail-open in the direction of the old reading: with no record and no closed
+/// wave, the row says "start it", which is what an empty log means.
+fn plan_was_dispatched(
+    events: &[HarnessEvent],
+    name: &str,
+    progress: Option<&WaveProgress>,
+) -> bool {
+    wave_dispatch_recorded(events, name) || progress.is_some_and(|p| p.done > 0)
 }
 
 /// Find the number of the first wave-N subdir that has `Outcome=Active`.
@@ -1175,7 +1217,7 @@ fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) 
         "Estágio: ANLZ=Analyze  PLAN=Plan  EXEC=Execute  ??=malformed (meta ausente)  CLR→fu=closed-followup (Close+Active)".to_string(),
     );
     lines.push(
-        "Esc: lt=light  fl=full  Status: TF→xx=tactical-fix  Wn em exec=wave em execução  ⚠ malformed=meta incompleta  closed-followup=spec fechada com follow-up pendente".to_string(),
+        "Esc: lt=light  fl=full  Status: TF→xx=tactical-fix  Wn em exec=wave em execução  Wn a iniciar=plano montado, nada despachado ainda (comece por ela)  ⚠ malformed=meta incompleta  closed-followup=spec fechada com follow-up pendente".to_string(),
     );
     lines.push(
         "Onde: -=na árvore atual  {branch}=spec em voo, o diretório só existe nesse branch (troque de branch antes de agir)".to_string(),
@@ -1339,6 +1381,15 @@ fn build_output(root: &Path) -> (ActiveSpecsOutput, usize) {
     // 3. Parse headers and filter to active specs
     candidates = filter_active(candidates);
 
+    // 3b. The dispatch record, read ONCE for the whole listing — and only when
+    //     a wave plan is actually being rendered, so a listing with none never
+    //     pays for the walk. Fail-open: an unreadable log is an empty slice.
+    let events: Vec<HarnessEvent> = if candidates.iter().any(|c| c.is_wave_plan) {
+        read_workspace_events(root)
+    } else {
+        Vec::new()
+    };
+
     // 4. Sort by date descending (newest first), name ascending to break ties —
     //    two sources merge here, so the order must not depend on read_dir.
     candidates.sort_by(|a, b| {
@@ -1434,8 +1485,14 @@ fn build_output(root: &Path) -> (ActiveSpecsOutput, usize) {
             (true, None) => find_first_active_wave(&candidate.spec_dir),
         };
 
-        let status =
-            derive_status(candidate, &kind, &parent_aliases, first_active_wave.as_deref());
+        let dispatched = plan_was_dispatched(&events, &candidate.name, progress.as_ref());
+        let status = derive_status(
+            candidate,
+            &kind,
+            &parent_aliases,
+            first_active_wave.as_deref(),
+            dispatched,
+        );
 
         let (location, branch) = match &candidate.location {
             SpecLocation::Tree => ("tree".to_string(), None),
@@ -1997,6 +2054,112 @@ mod tests {
         );
         // Advisory only — nothing about the row itself changed.
         assert!(table.contains("| a  | 2026-01-01-hollow"), "row still listed: {table}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Scaffolded vs. running
+    // -----------------------------------------------------------------------
+
+    /// Seed a wave-plan spec exactly as `wave-scaffold` leaves it: every wave
+    /// directory materialised and `Outcome=Active`, none of them closed.
+    fn make_scaffolded_plan(root: &Path, name: &str) {
+        let dir = root.join(".claude").join("spec").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), format!("# {name}\n\n## Resumo\n\nPlano.\n")).unwrap();
+        std::fs::write(dir.join("wave-plan.md"), "# wave plan\n").unwrap();
+        std::fs::write(dir.join("meta.json"), r#"{"stage":"Execute","outcome":"Active"}"#).unwrap();
+        for wave in ["wave-1-a", "wave-2-b"] {
+            let wave_dir = dir.join(wave);
+            std::fs::create_dir_all(&wave_dir).unwrap();
+            std::fs::write(wave_dir.join("spec.md"), format!("# {wave}\n")).unwrap();
+            std::fs::write(
+                wave_dir.join("meta.json"),
+                r#"{"stage":"Execute","outcome":"Active"}"#,
+            )
+            .unwrap();
+        }
+    }
+
+    /// Put ONE `pipeline.wave.start` for `name` on the record — the witness
+    /// `resume-bootstrap` reads, in the shard layout it reads it from.
+    fn record_a_dispatch(root: &Path, name: &str) {
+        let events_dir = root.join(".claude").join("spec").join(name).join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        let line = serde_json::json!({
+            "event": mustard_core::domain::model::event::EVENT_PIPELINE_WAVE_START,
+            "kind": "pipeline",
+            "ts": "2026-02-01T00:00:00.000Z",
+            "v": 1,
+            "spec": name,
+            "session_id": "seed",
+            "wave": 1,
+            "actor": "test",
+            "payload": { "wave": 1 },
+        });
+        std::fs::write(events_dir.join("seed.ndjson"), format!("{line}\n")).unwrap();
+    }
+
+    /// **AC-4.** A wave directory is born `Outcome=Active` at scaffold time, so
+    /// the first active wave of a plan NOBODY dispatched is wave 1 — the same
+    /// answer a plan whose wave 1 is in flight gives. The table used to print
+    /// `W1 em exec` for both, which asks the operator to RESUME work that never
+    /// started; measured live as `0/2` + `W1 em exec` against a spec
+    /// `resume-bootstrap` reported as `neverDispatched: true`.
+    ///
+    /// Both halves are asserted, on two trees that differ ONLY by the dispatch
+    /// record: the scaffolded plan stops claiming execution (and the legend
+    /// explains the word it prints instead), while the plan with one
+    /// `pipeline.wave.start` on record still reads `em exec` — otherwise the fix
+    /// would just have moved the wrong word onto the other state.
+    #[test]
+    fn a_scaffolded_plan_is_not_reported_as_running() {
+        let name = "2026-02-01-scaffolded-plan";
+
+        let idle = tempdir().unwrap();
+        make_scaffolded_plan(idle.path(), name);
+        let (out, _) = build_output(idle.path());
+        let row = out
+            .specs
+            .iter()
+            .find(|s| s.name == name)
+            .expect("the scaffolded plan must still be listed");
+        let progress = row.progress.as_ref().expect("a wave plan reports progress");
+        assert_eq!(
+            (progress.done, progress.total),
+            (0, 2),
+            "fixture: nothing is closed yet"
+        );
+        assert!(
+            !row.status.contains("em exec"),
+            "a plan nobody dispatched must not read as running: {}",
+            row.status
+        );
+        assert_eq!(
+            row.status, "W1 a iniciar",
+            "the column must ask the operator to START it"
+        );
+
+        // The legend is what the reader trusts to decode the column.
+        let table = render_table(&out.specs, &out.branch_scan, SupportedLocale::default());
+        assert!(
+            table.contains("Wn a iniciar="),
+            "the legend must explain the status the table now prints: {table}"
+        );
+
+        // Control: the same tree, plus one dispatch on record.
+        let running = tempdir().unwrap();
+        make_scaffolded_plan(running.path(), name);
+        record_a_dispatch(running.path(), name);
+        let (out, _) = build_output(running.path());
+        let row = out
+            .specs
+            .iter()
+            .find(|s| s.name == name)
+            .expect("the dispatched plan must be listed");
+        assert_eq!(
+            row.status, "W1 em exec",
+            "a plan with a dispatch on record still reads as running"
+        );
     }
 
     // -----------------------------------------------------------------------
