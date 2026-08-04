@@ -9,6 +9,7 @@ pub mod qa_run;
 pub mod gate_regression_check;
 pub mod analyze_validation;
 pub mod ac_negative_check;
+pub mod finding_collect;
 pub mod security_scan;
 pub mod dependency_precheck;
 pub mod work_removed;

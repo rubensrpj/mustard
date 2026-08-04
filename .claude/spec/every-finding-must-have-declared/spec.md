@@ -81,6 +81,11 @@ Onda 2 — o coletor:
 - `apps/rt/src/commands/review/cli.rs` — a variante no enum e o braço no dispatch
 - `apps/rt/tests/run_command_surface.rs` — a lista trancada de comandos publicados
 
+Cascata da onda 2 — dois arquivos fora da fronteira, ambos com aviso do portão:
+
+- `apps/rt/src/commands/review/ac_negative_check.rs` — `resolve_spec_file` sobe para `pub(crate)`. O coletor lê o ledger que esse módulo escreve; um segundo localizador é exatamente como os dois passariam a apontar para specs diferentes com o mesmo nome
+- `apps/rt/tests/template_parity.rs` — linha justificada na `RUNTIME_WHITELIST`, porque o quarto registro do comando (um chamador real) só chega na onda 3. A catraca reprova quando a justificativa vira redundante, o que força a remoção da linha
+
 Onda 3 — a porta e o portão:
 
 - `apps/rt/src/commands/spec/mark_finding.rs` — novo; a porta que declara o destino

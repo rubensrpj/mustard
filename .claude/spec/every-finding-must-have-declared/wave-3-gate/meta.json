@@ -15,7 +15,7 @@
     {
       "label": "apps/rt/src/commands/spec/cli.rs",
       "path": "apps/rt/src/commands/spec/cli.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/pipeline/close_gates.rs",
@@ -25,7 +25,7 @@
     {
       "label": "apps/rt/tests/run_command_surface.rs",
       "path": "apps/rt/tests/run_command_surface.rs",
-      "done": false
+      "done": true
     }
   ]
 }

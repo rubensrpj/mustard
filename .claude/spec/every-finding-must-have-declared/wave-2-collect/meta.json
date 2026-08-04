@@ -1,31 +1,31 @@
 {
-  "stage": "Plan",
+  "stage": "Execute",
   "outcome": "Active",
-  "phase": null,
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-08-04T20:08:16.066Z",
   "parent": "every-finding-must-have-declared",
   "checklist": [
     {
       "label": "apps/rt/src/commands/review/finding_collect.rs",
       "path": "apps/rt/src/commands/review/finding_collect.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/review/mod.rs",
       "path": "apps/rt/src/commands/review/mod.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/review/cli.rs",
       "path": "apps/rt/src/commands/review/cli.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/tests/run_command_surface.rs",
       "path": "apps/rt/tests/run_command_surface.rs",
-      "done": false
+      "done": true
     }
   ]
 }

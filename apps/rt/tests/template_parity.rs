@@ -66,6 +66,14 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          section 3 dispatch chain",
     ),
     (
+        "finding-collect",
+        "deterministic seeder of meta.json#findings from the reviewer's files \
+         and the ac-proof.json removal column \
+         (commands/review/finding_collect.rs); the close sub-gate that reads the \
+         seeded key is the consumer being built around it - until it lands, this \
+         CLI face is the only way to take a collection",
+    ),
+    (
         "gate-regression-check",
         "regression-gate engine consumed in-process \
          (commands/agent/context_inject.rs build_vocab_matcher; \
