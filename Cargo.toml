@@ -24,7 +24,7 @@ exclude = ["apps/dashboard/src-tauri", "apps/translate"]
 # it does not read as "a dev build" — it reads as a real, old release, and the
 # harness's own drift warning starts arguing with itself. That is exactly what
 # happened while this sat at 0.1.0 through twenty-eight published releases.
-version = "0.1.33"
+version = "0.1.34"
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
