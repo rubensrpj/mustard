@@ -19,7 +19,6 @@
 //! only non-zero exit is a flat refusal of a path that is not a mold SKILL.md — a
 //! caller bug worth surfacing.
 
-use std::io::Read as _;
 use std::path::Path;
 
 use mustard_core::io::fs as mfs;
@@ -28,6 +27,13 @@ use mustard_core::io::fs as mfs;
 /// write anywhere else. A valid mold lives at `…/.claude/skills/<x>-pattern/SKILL.md`.
 const SKILLS_SEGMENT: &str = "/.claude/skills/";
 const MOLD_SUFFIX: &str = "-pattern/SKILL.md";
+
+/// The ONE phrasing of "there is no body to write", so the blank case reads the
+/// same whichever side reaches it first — [`resolve_content`] (the CLI face,
+/// which stops there) or the [`Applied::Empty`] arm (any other caller of
+/// [`apply_one`]). Two spellings of one event is how a caller starts guessing
+/// whether they mean different things.
+const EMPTY_BODY: &str = "scan-patterns-apply: empty mold body — nothing to write";
 
 /// What happened to ONE mold — the verdict [`apply_one`] returns instead of
 /// printing and exiting.
@@ -117,14 +123,23 @@ pub(crate) fn apply_one(path: &Path, body: &str, root: &Path) -> Applied {
 /// Run `scan-patterns-apply`.
 ///
 /// - `path`: the mold `SKILL.md` to write (`{subproject}/.claude/skills/{slug}-pattern/SKILL.md`).
-/// - `content`: the agent's authored SKILL.md body, or `-` to read it from stdin.
+/// - `content`: the agent's authored SKILL.md body, `-` to read it from stdin,
+///   or `@<path>` to read it from that file — the SAME three channels
+///   [`super::relay`] accepts, through the same reader, so the two commands
+///   cannot drift apart on what `--content` means.
 ///
 /// Create-only: an existing mold is left untouched (the sweep already removed
 /// the generated ones; a survivor is hand-authored). On a successful write
 /// prints a one-line confirmation and exits 0. A path that is not a mold
 /// SKILL.md exits 1; every other recoverable error is fail-open.
 pub fn run(path: &Path, content: &str, root: &Path) {
-    let body = resolve_content(content).unwrap_or_default();
+    // Nothing to write, and [`resolve_content`] already named WHY — the IO
+    // failure of an unreadable `@<path>`, or the blank body. Falling through
+    // with an empty string instead would hand `apply_one` a body the agent
+    // never authored, and STACK `empty mold body` on top of the IO failure —
+    // blaming the AGENT for what the FILE did. Two reasons for one event is
+    // one reason too many, and the wrong one reads last.
+    let Some(body) = resolve_content(content) else { return };
     match apply_one(path, &body, root) {
         Applied::Created => println!("scan-patterns-apply: created {}", path.display()),
         Applied::BadPath => {
@@ -145,7 +160,10 @@ pub fn run(path: &Path, content: &str, root: &Path) {
             "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
             path.display()
         ),
-        Applied::Empty => eprintln!("scan-patterns-apply: empty mold body — nothing to write"),
+        // Unreachable from this face — `resolve_content` stops a blank body
+        // above — but `apply_one` is shared with the relay, so the arm keeps
+        // the verdict answerable rather than silent.
+        Applied::Empty => eprintln!("{EMPTY_BODY}"),
         Applied::Refused(defects) => {
             eprintln!(
                 "scan-patterns-apply: refusing {} — malformed mold, NOT written:\n  - {}",
@@ -302,20 +320,35 @@ fn normalise(s: &str) -> String {
     s.replace('\\', "/")
 }
 
-/// Resolve the mold body: `-` reads from stdin, anything else is the literal
-/// text. Returns `None` when the resolved body is blank (nothing to write).
+/// Apply's OWN blank-check, and nothing more, on top of the shared envelope
+/// reader ([`super::read_envelope`]): `-` reads stdin, `@<path>` reads that
+/// file, anything else is the literal body. `None` when there is nothing to
+/// write — a blank body, or a `@<path>` that could not be read.
+///
+/// The resolution itself is NOT duplicated here. This command and
+/// [`super::relay`] each used to keep a copy with a divergent contract, so the
+/// file face would have had to be written twice; now the reader is one and only
+/// the trim is local. The IO failure is named on stderr rather than folded into
+/// the blank case, because "the file could not be read" and "the agent authored
+/// an empty body" are different things to fix.
+///
+/// Every `None` leaves stderr already carrying its reason — exactly one line,
+/// either the IO failure or [`EMPTY_BODY`] — which is what lets [`run`] stop on
+/// it without adding a second. It used to `unwrap_or_default()` into
+/// [`apply_one`], so an unreadable path printed its IO error and then
+/// `empty mold body` underneath it: the true reason first, the misleading one
+/// last, and the last is the one a reader keeps (found in review, 2026-08-04).
 fn resolve_content(content: &str) -> Option<String> {
-    let raw = if content == "-" {
-        let mut buf = String::new();
-        if std::io::stdin().read_to_string(&mut buf).is_err() {
+    let raw = match super::read_envelope(content) {
+        super::Envelope::Raw(text) | super::Envelope::Json(text) => text,
+        super::Envelope::Unreadable(e) => {
+            eprintln!("scan-patterns-apply: {e}");
             return None;
         }
-        buf
-    } else {
-        content.to_string()
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
+        eprintln!("{EMPTY_BODY}");
         None
     } else {
         Some(trimmed.to_string())
@@ -354,6 +387,36 @@ mod tests {
     fn resolve_content_blanks_are_none() {
         assert!(resolve_content("   \n  ").is_none());
         assert_eq!(resolve_content("# mold").as_deref(), Some("# mold"));
+        // A `@<path>` that cannot be read is the OTHER `None`, and it is the
+        // one `run` must stop on: it has already named the IO failure, so
+        // carrying an empty body onward would print `empty mold body` under it
+        // and blame the agent for the file's failure.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-return.json");
+        assert!(resolve_content(&format!("@{}", missing.display())).is_none());
+    }
+
+    /// AC-4 — the apply takes the SAME `@<path>` face the relay does, through
+    /// the SAME reader. Two copies of the resolution is how the relay grew a
+    /// file face the apply lacked, so the shared reader is the guard: a body
+    /// too large for an argv reaches either command the same way.
+    #[test]
+    fn apply_reads_the_mold_body_from_a_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = dir.path().join("authored-mold.md");
+        std::fs::write(&on_disk, valid_mold("api-service-pattern")).unwrap();
+
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
+        run(&path, &format!("@{}", on_disk.display()), dir.path());
+
+        let written = std::fs::read_to_string(&path).expect("the mold is written from the file");
+        assert!(written.contains("## Purpose"), "the body survives whole: {written}");
+        assert!(super::super::origin::is_mustard_generated(&written), "still stamped as generated");
+        // The literal face is untouched: a body passed inline still resolves.
+        assert_eq!(
+            resolve_content(&valid_mold("api-x-pattern")).as_deref(),
+            Some(valid_mold("api-x-pattern").as_str())
+        );
     }
 
     /// A well-formed generated mold body — frontmatter-first, `name` +

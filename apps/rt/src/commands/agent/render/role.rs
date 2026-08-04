@@ -151,7 +151,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
          `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
          worklist; do NOT write any file — the caller pipes your WHOLE return to \
          scan-patterns-relay, which splits it on those demarcators, so deliver every mold \
-         in one message and never worry about its size. Canonical mold format (frontmatter first): name = the \
+         in one message: the RELAY has no size limit. The CHANNEL carrying your return does, \
+         and it cuts from the FRONT — so open with your first `=== FILE:` block and write no \
+         preamble; whatever sits at the top is lost first, and it takes the earliest molds \
+         with it. Canonical mold format (frontmatter first): name = the \
          worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
          ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
          `paths` value (a YAML list — this is the one key the platform reads to decide when \
@@ -192,12 +195,12 @@ fn build_patterns_role_block(subproject: &str) -> String {
 /// the worklist must stay inside the template's `## TASK` section body
 /// (`collapse_empty_sections` would otherwise drop the emptied heading).
 pub(crate) fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String {
-    let normalized = normalize_subproject(subproject);
+    // The filter lives with the worklist, not here: `scan-patterns-list` offers
+    // the SAME narrowing on its `--subproject` flag, so this render is one of
+    // two consumers of one filter rather than a second copy of it.
+    let normalized = crate::commands::scan_patterns::list::normalize_subproject(subproject);
     let mine: Vec<crate::commands::scan_patterns::list::Candidate> =
-        crate::commands::scan_patterns::list::collect(project)
-            .into_iter()
-            .filter(|c| c.subproject == normalized)
-            .collect();
+        crate::commands::scan_patterns::list::collect_in(project, Some(subproject));
     let mut out = if mine.is_empty() {
         eprintln!(
             "agent-prompt-render: WARN: --role patterns: empty mold worklist for \
@@ -259,17 +262,6 @@ fn render_patterns_worklist(
         }
     }
     out.trim_end().to_string()
-}
-
-/// Normalise the `--subproject` flag to the forward-slashed root-relative form
-/// `scan-patterns-list` emits in `Candidate.subproject`: backslashes folded,
-/// trailing `/` and leading `./` stripped; the root (`.`) maps to `""` (which
-/// matches no candidate — molds are never authored for the workspace root).
-fn normalize_subproject(subproject: &str) -> String {
-    let s = subproject.replace('\\', "/");
-    let s = s.trim_end_matches('/');
-    let s = s.strip_prefix("./").unwrap_or(s);
-    if s == "." { String::new() } else { s.to_string() }
 }
 
 /// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`
@@ -450,8 +442,9 @@ mod tests {
     fn patterns_role_block_carries_delivery_contract() {
         // The patterns block must scope to the subproject, demand the exemplar
         // reads, name the demarcated return format and forbid self-writing —
-        // the caller pipes the WHOLE return to scan-patterns-relay, which is
-        // also why the agent is told its return size does not matter.
+        // the caller pipes the WHOLE return to scan-patterns-relay. Size is
+        // stated two-sidedly: the relay has no limit, the CHANNEL does and it
+        // cuts from the front — so the block asks for blocks-first, no preamble.
         let dir = tempdir().unwrap();
         let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
         assert!(block.starts_with("ROLE: patterns"), "cue missing: {block}");
