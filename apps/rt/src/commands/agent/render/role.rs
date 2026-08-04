@@ -192,12 +192,12 @@ fn build_patterns_role_block(subproject: &str) -> String {
 /// the worklist must stay inside the template's `## TASK` section body
 /// (`collapse_empty_sections` would otherwise drop the emptied heading).
 pub(crate) fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String {
-    let normalized = normalize_subproject(subproject);
+    // The filter lives with the worklist, not here: `scan-patterns-list` offers
+    // the SAME narrowing on its `--subproject` flag, so this render is one of
+    // two consumers of one filter rather than a second copy of it.
+    let normalized = crate::commands::scan_patterns::list::normalize_subproject(subproject);
     let mine: Vec<crate::commands::scan_patterns::list::Candidate> =
-        crate::commands::scan_patterns::list::collect(project)
-            .into_iter()
-            .filter(|c| c.subproject == normalized)
-            .collect();
+        crate::commands::scan_patterns::list::collect_in(project, Some(subproject));
     let mut out = if mine.is_empty() {
         eprintln!(
             "agent-prompt-render: WARN: --role patterns: empty mold worklist for \
@@ -259,17 +259,6 @@ fn render_patterns_worklist(
         }
     }
     out.trim_end().to_string()
-}
-
-/// Normalise the `--subproject` flag to the forward-slashed root-relative form
-/// `scan-patterns-list` emits in `Candidate.subproject`: backslashes folded,
-/// trailing `/` and leading `./` stripped; the root (`.`) maps to `""` (which
-/// matches no candidate — molds are never authored for the workspace root).
-fn normalize_subproject(subproject: &str) -> String {
-    let s = subproject.replace('\\', "/");
-    let s = s.trim_end_matches('/');
-    let s = s.strip_prefix("./").unwrap_or(s);
-    if s == "." { String::new() } else { s.to_string() }
 }
 
 /// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`

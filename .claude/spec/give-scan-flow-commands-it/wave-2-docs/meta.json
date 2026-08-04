@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "give-scan-flow-commands-it",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/agent/render/role.rs",
+      "path": "apps/rt/src/commands/agent/render/role.rs",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/scan.md",
+      "path": "plugin/commands/scan.md",
+      "done": false
+    },
+    {
+      "label": "MUSTARD-COMMANDS.md",
+      "path": "MUSTARD-COMMANDS.md",
+      "done": false
+    }
+  ]
+}

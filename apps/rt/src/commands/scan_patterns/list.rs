@@ -468,16 +468,67 @@ fn code_bearing_children(parent: &str, code_dirs: &std::collections::BTreeSet<St
 }
 
 /// Run `scan-patterns-list`. Prints a JSON array to stdout; exit 0 always.
-/// `rejected` swaps the payload for the drop diagnostic; the default output is
-/// byte-identical to before the flag existed (the `/scan` flow consumes it).
-pub fn run(root: &Path, rejected: bool) {
+/// `rejected` swaps the payload for the drop diagnostic; `subproject` narrows
+/// EITHER payload to one house. With neither, the output is byte-identical to
+/// before the flags existed (the `/scan` flow consumes it).
+pub fn run(root: &Path, rejected: bool, subproject: Option<&str>) {
     // `to_string` cannot fail for these shapes; fall back to `[]` defensively.
     let json = if rejected {
-        serde_json::to_string(&collect_rejected(root))
+        serde_json::to_string(&collect_rejected_in(root, subproject))
     } else {
-        serde_json::to_string(&collect(root))
+        serde_json::to_string(&collect_in(root, subproject))
     };
     println!("{}", json.unwrap_or_else(|_| "[]".to_string()));
+}
+
+/// Normalise a subproject path to the forward-slashed root-relative form
+/// [`Candidate::subproject`] carries: backslashes folded, a trailing `/` and a
+/// leading `./` stripped; the root (`.`) maps to `""`, which matches no
+/// candidate — molds are never authored for the workspace root.
+///
+/// This lives with the worklist rather than with any consumer of it. Normalising
+/// a subproject path is the worklist's own concern; the prompt renderer that
+/// filters by it (`agent-prompt-render --role patterns`) is a consumer of the
+/// filter, not its owner — and while it owned this function the CLI could not
+/// offer the same filter without copying it.
+pub(crate) fn normalize_subproject(subproject: &str) -> String {
+    let s = subproject.replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    let s = s.strip_prefix("./").unwrap_or(s);
+    if s == "." {
+        String::new()
+    } else {
+        s.to_string()
+    }
+}
+
+/// [`collect`] narrowed to ONE house when the caller names one — the worklist
+/// question the `/scan` convergence check asks ("how many clusters are left in
+/// THIS subproject?"), which otherwise needed a grouping script over the whole
+/// list.
+///
+/// An unknown subproject yields an EMPTY list, never everything: the filter is
+/// an equality test on the normalised dir, so a typo answers "nothing here"
+/// rather than silently widening to the workspace. Crate-visible because the
+/// patterns prompt renderer asks the very same question in-process.
+pub(crate) fn collect_in(root: &Path, subproject: Option<&str>) -> Vec<Candidate> {
+    let mut out = collect(root);
+    if let Some(want) = subproject.map(normalize_subproject) {
+        out.retain(|c| c.subproject == want);
+    }
+    out
+}
+
+/// The `--rejected` twin of [`collect_in`]: the drop diagnostic narrowed to one
+/// house. Only drops the funnel could ATTRIBUTE to a subproject survive the
+/// filter — a role rejected before ownership was settled carries no house
+/// (`subproject: ""`), so it belongs to no per-house view by construction.
+fn collect_rejected_in(root: &Path, subproject: Option<&str>) -> Vec<Rejection> {
+    let mut out = collect_rejected(root);
+    if let Some(want) = subproject.map(normalize_subproject) {
+        out.retain(|r| r.subproject == want);
+    }
+    out
 }
 
 /// The `--rejected` twin of [`collect`]: every role the worklist dropped, with
@@ -1158,6 +1209,82 @@ mod tests {
         assert_eq!(c.implements.as_deref(), Some("BaseService"));
         // Only the two matching hand-written files are exemplars (README excluded).
         assert_eq!(c.exemplars, vec!["apps/api/services/OrderService.ts", "apps/api/services/UserService.ts"]);
+    }
+
+    /// AC-5 — the same normalised filter the prompt renderer already used,
+    /// exposed on the CLI: it narrows BOTH faces (the worklist and the
+    /// `--rejected` diagnostic), and an unknown house yields an EMPTY list
+    /// rather than everything.
+    #[test]
+    fn list_filters_the_worklist_by_subproject() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Two houses share one `Service` role (both earn a mold), and a second
+        // `Repo` role is thick enough in `apps/api` but too thin in `apps/web`
+        // — so the fixture yields candidates in both houses AND a rejection
+        // attributed to one of them.
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"},{"name":"web","dir":"apps/web"}],
+              "roles": [
+                {"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services","dirs":["apps/web/services"],"decl_kind":"class"},
+                {"affix":"Repo","kind":"suffix","count":3,"common_dir":"apps/api/repos","dirs":["apps/web/repos"],"decl_kind":"class"}
+              ],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"apps/web/services/CartService.ts"},
+                {"path":"apps/web/services/AuthService.ts"},
+                {"path":"apps/api/repos/UserRepo.ts"},
+                {"path":"apps/api/repos/OrderRepo.ts"},
+                {"path":"apps/web/repos/CartRepo.ts"}
+              ]
+            }"#,
+        );
+
+        let all = collect_in(root, None);
+        let houses: std::collections::BTreeSet<&str> =
+            all.iter().map(|c| c.subproject.as_str()).collect();
+        assert!(houses.len() >= 2, "the fixture must span two houses: {houses:?}");
+
+        // One house only — and every spelling of the same path resolves to it,
+        // because the CLI value goes through the SAME normalisation the render
+        // uses (backslashes folded, trailing `/` and leading `./` stripped).
+        for spelling in ["apps/api", "apps/api/", "./apps/api", r"apps\api"] {
+            let mine = collect_in(root, Some(spelling));
+            assert!(!mine.is_empty(), "`{spelling}` must resolve to the house");
+            assert!(
+                mine.iter().all(|c| c.subproject == "apps/api"),
+                "`{spelling}` leaked another house: {:?}",
+                mine.iter().map(|c| c.subproject.as_str()).collect::<Vec<_>>()
+            );
+            assert!(mine.len() < all.len(), "`{spelling}` must narrow the worklist");
+        }
+
+        // The `--rejected` diagnostic takes the SAME filter — that face is what
+        // the convergence check reads, so a filter on only one of them would
+        // still need the grouping script this replaces.
+        let dropped = collect_rejected_in(root, None);
+        assert!(
+            dropped.iter().any(|r| r.subproject == "apps/web"),
+            "the fixture must drop a web house: {dropped:?}"
+        );
+        let web = collect_rejected_in(root, Some("apps/web"));
+        assert!(!web.is_empty(), "the diagnostic must answer for one house");
+        assert!(
+            web.iter().all(|r| r.subproject == "apps/web"),
+            "the diagnostic leaked another house: {web:?}"
+        );
+
+        // An unknown subproject yields NOTHING — never everything. A typo that
+        // silently widened back to the workspace would make the convergence
+        // count read as if no cluster had been closed.
+        assert!(collect_in(root, Some("apps/nope")).is_empty(), "unknown house → empty worklist");
+        assert!(
+            collect_rejected_in(root, Some("apps/nope")).is_empty(),
+            "unknown house → empty diagnostic"
+        );
     }
 
     #[test]

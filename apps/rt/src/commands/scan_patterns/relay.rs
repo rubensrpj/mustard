@@ -35,10 +35,21 @@
 //! instead of the eleven behind it. `ok:false` means at least one block needs
 //! attention — the caller re-dispatches THAT agent, and the report names which.
 //!
-//! Fail-open per the `mustard-rt run` contract: an unreadable or blockless
-//! input prints an empty report and exits 0.
+//! ## The three channels
+//!
+//! The envelope arrives through [`super::read_envelope`]: `-` reads stdin,
+//! `@<path>` reads that file, anything else is the literal text. The file face
+//! exists because the harness PERSISTS a return that exceeds its inline limit
+//! and hands the orchestrator only a path — measured at 3 of 10 dispatches on a
+//! mid-sized workspace, so it is the ordinary case rather than an edge one.
+//!
+//! Fail-open per the `mustard-rt run` contract — but fail-open is not the same
+//! as fail-SILENT. Two ways of reading nothing used to print the same
+//! `ok:true, blocks:0` as an agent that genuinely returned nothing: a `@<path>`
+//! that could not be read at all, and a persisted return that WAS read and
+//! demarcated no block. Both now land in `skipped`, so `ok:false` names them.
+//! A blockless RAW envelope keeps the empty, `ok:true` report it always had.
 
-use std::io::Read as _;
 use std::path::Path;
 
 use serde::Serialize;
@@ -55,14 +66,14 @@ enum Block {
 }
 
 /// A mold that was NOT written, and why — the actionable half of the report.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct Rejected {
     path: String,
     defects: Vec<String>,
 }
 
 /// What the relay did, as one byte-stable JSON document.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Report {
     /// False when any block needs the caller's attention.
@@ -83,9 +94,34 @@ struct Report {
 
 /// Run `scan-patterns-relay`: apply every block in the agent's return.
 pub fn run(root: &Path, content: &str) {
-    let envelope = resolve_content(content);
+    let report = relay(root, content);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{\"ok\":false}".into())
+    );
+}
+
+/// The testable core of [`run`]: resolve the envelope, apply every block and
+/// fold the verdicts into the report — pure of stdout, so a caller (and a test)
+/// can read the verdict instead of re-parsing printed JSON. Mirrors the split
+/// [`apply_one`]/[`Applied`] already uses for ONE block.
+fn relay(root: &Path, content: &str) -> Report {
+    let resolved = super::read_envelope(content);
+    // Only a JSON envelope can hit the read-but-blockless hole below; a raw one
+    // keeps the fail-open empty report it always had.
+    let from_json = matches!(resolved, super::Envelope::Json(_));
+    let (envelope, unreadable) = match resolved {
+        super::Envelope::Raw(text) | super::Envelope::Json(text) => (text, None),
+        super::Envelope::Unreadable(e) => (String::new(), Some(e)),
+    };
     let blocks = parse(&envelope);
     let mut report = Report { blocks: blocks.len(), ..Report::default() };
+    if let Some(e) = unreadable {
+        // Fail-open still exits 0, but never as `ok:true, blocks:0` — that
+        // reads as "the agent returned nothing to apply" when in truth nothing
+        // was READ.
+        report.skipped.push(Rejected { path: super::content_label(content), defects: vec![e] });
+    }
 
     for block in blocks {
         match block {
@@ -117,6 +153,22 @@ pub fn run(root: &Path, content: &str) {
         }
     }
 
+    // The other door onto the same silence: the persisted return WAS read and
+    // parsed, and demarcated nothing. Left alone that prints `ok:true,
+    // blocks:0` — indistinguishable from an agent that authored nothing, which
+    // is exactly the report an unreadable path used to print.
+    if from_json && report.blocks == 0 {
+        report.skipped.push(Rejected {
+            path: super::content_label(content),
+            defects: vec![
+                "read as a harness-persisted return (valid JSON) but it demarcates no \
+                 `=== FILE:` / `=== DECLINE:` block — the file WAS read, so this is not \
+                 `the agent returned nothing`"
+                    .into(),
+            ],
+        });
+    }
+
     // Sorted so two runs over the same envelope print identical bytes.
     report.created.sort();
     report.declined.sort();
@@ -127,10 +179,7 @@ pub fn run(root: &Path, content: &str) {
     report.ok =
         report.refused.is_empty() && report.collisions.is_empty() && report.skipped.is_empty();
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{\"ok\":false}".into())
-    );
+    report
 }
 
 /// Split the envelope into its demarcated blocks, ignoring prose around them.
@@ -190,16 +239,6 @@ fn demarcator(line: &str, keyword: &str) -> Option<String> {
 /// Forward-slash a declared path so one envelope reads the same on either OS.
 fn normalise(p: &str) -> String {
     p.replace('\\', "/")
-}
-
-/// The envelope: the flag's value, or stdin when it is `-` (the default).
-fn resolve_content(content: &str) -> String {
-    if content != "-" {
-        return content.to_string();
-    }
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
 }
 
 #[cfg(test)]
@@ -291,6 +330,107 @@ mod tests {
         );
         assert_eq!(demarcator("not a marker", "=== FILE:"), None);
         assert_eq!(demarcator("=== FILE:  ===", "=== FILE:"), None);
+    }
+
+    /// AC-1 — the harness persists a return that exceeds its inline limit and
+    /// hands the orchestrator only a PATH. `@<path>` must apply those blocks
+    /// exactly as if they had arrived on stdin; without it the only route was a
+    /// hand-written script, which the `/scan` flow forbids in capitals.
+    #[test]
+    fn relay_reads_an_envelope_from_a_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target = "apps/api/.claude/skills/api-file-pattern/SKILL.md";
+        let envelope = format!(
+            "Here is my return.\n\n=== FILE: {target} ===\n{}\n=== END ===\n",
+            mold("api-file", "apps/api/src/file/**")
+        );
+        let on_disk = root.join("persisted-return.txt");
+        std::fs::write(&on_disk, &envelope).unwrap();
+
+        let report = relay(root, &format!("@{}", on_disk.display()));
+        assert!(report.ok, "a readable file is not an error: {report:?}");
+        assert_eq!(report.blocks, 1, "the file's block is found: {report:?}");
+        assert!(root.join(target).exists(), "the mold lands exactly as it would from stdin");
+    }
+
+    /// AC-2 — the persisted file's OWN shape, verified against three real
+    /// returns: a pretty-printed array of `{type, text}` whose last element is
+    /// the harness's `agentId`/`<usage>` trailer. The envelope is recovered by
+    /// harvesting the `text` fields, so no script is needed to unwrap it, and
+    /// the trailer (which demarcates nothing) cannot add a block.
+    #[test]
+    fn relay_reads_the_harness_json_array_of_text_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target = "apps/api/.claude/skills/api-json-pattern/SKILL.md";
+        let envelope = format!(
+            "Grounding complete. Delivering 1 mold.\n\n=== FILE: {target} ===\n{}\n=== END ===\n",
+            mold("api-json", "apps/api/src/json/**")
+        );
+        let persisted = serde_json::json!([
+            {"type": "text", "text": envelope},
+            {"type": "text", "text": "agentId: a21f1a5dbd1ce6474\n<usage>subagent_tokens: 215294\ntool_uses: 71</usage>"},
+        ]);
+        let on_disk = root.join("persisted-return.json");
+        std::fs::write(&on_disk, serde_json::to_string_pretty(&persisted).unwrap()).unwrap();
+
+        let report = relay(root, &format!("@{}", on_disk.display()));
+        assert!(report.ok, "the harness shape is not an error: {report:?}");
+        assert_eq!(report.blocks, 1, "the usage trailer adds no block: {report:?}");
+        assert!(root.join(target).exists(), "the envelope is recovered from the harness's own shape");
+    }
+
+    /// AC-3 — a `@<path>` that cannot be read must NAME the failure. Degrading
+    /// to an empty envelope would print `ok:true, blocks:0`, which reads as
+    /// "the agent returned nothing to apply" when in truth nothing was READ.
+    #[test]
+    fn an_unreadable_content_path_is_reported_never_silently_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-return.txt");
+
+        let report = relay(dir.path(), &format!("@{}", missing.display()));
+        assert!(!report.ok, "an unread envelope must never print ok:true: {report:?}");
+        assert_eq!(report.blocks, 0);
+        assert_eq!(report.skipped.len(), 1, "the IO failure is the one entry: {report:?}");
+        assert!(
+            report.skipped[0].defects[0].contains("no-such-return.txt"),
+            "the report names what could not be read: {report:?}"
+        );
+        // Channel parity: stdin's fail-open behaviour is untouched — only the
+        // NEW file channel ever reports an IO failure.
+        assert!(
+            matches!(super::super::read_envelope("plain literal envelope"), super::super::Envelope::Raw(_)),
+            "a literal value is still the envelope itself"
+        );
+    }
+
+    /// AC-9 — the same silence entering by the other door: the file WAS read
+    /// and parsed as a persisted return, yet demarcates nothing. Reporting
+    /// `ok:true, blocks:0` there is indistinguishable from an agent that
+    /// authored nothing.
+    #[test]
+    fn a_json_envelope_with_no_blocks_says_so_instead_of_reporting_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = dir.path().join("persisted-return.json");
+        std::fs::write(
+            &on_disk,
+            r#"[{"type":"text","text":"I could not find anything worth a mold."}]"#,
+        )
+        .unwrap();
+
+        let report = relay(dir.path(), &format!("@{}", on_disk.display()));
+        assert!(!report.ok, "a read-but-blockless return is not a silent ok:true: {report:?}");
+        assert_eq!(report.blocks, 0);
+        assert!(
+            report.skipped.iter().any(|s| s.defects.iter().any(|d| d.contains("demarcates no"))),
+            "the report says the file was READ and carried no block: {report:?}"
+        );
+
+        // The control the AC names: a blockless RAW envelope keeps its existing
+        // empty, ok:true report — this must not become a new failure mode.
+        let raw = relay(dir.path(), "I could not find anything worth a mold.");
+        assert!(raw.ok && raw.skipped.is_empty(), "raw prose behaviour is unchanged: {raw:?}");
     }
 
     /// Two runs over one envelope must print identical bytes — the report is

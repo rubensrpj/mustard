@@ -19,7 +19,6 @@
 //! only non-zero exit is a flat refusal of a path that is not a mold SKILL.md — a
 //! caller bug worth surfacing.
 
-use std::io::Read as _;
 use std::path::Path;
 
 use mustard_core::io::fs as mfs;
@@ -117,7 +116,10 @@ pub(crate) fn apply_one(path: &Path, body: &str, root: &Path) -> Applied {
 /// Run `scan-patterns-apply`.
 ///
 /// - `path`: the mold `SKILL.md` to write (`{subproject}/.claude/skills/{slug}-pattern/SKILL.md`).
-/// - `content`: the agent's authored SKILL.md body, or `-` to read it from stdin.
+/// - `content`: the agent's authored SKILL.md body, `-` to read it from stdin,
+///   or `@<path>` to read it from that file — the SAME three channels
+///   [`super::relay`] accepts, through the same reader, so the two commands
+///   cannot drift apart on what `--content` means.
 ///
 /// Create-only: an existing mold is left untouched (the sweep already removed
 /// the generated ones; a survivor is hand-authored). On a successful write
@@ -302,17 +304,24 @@ fn normalise(s: &str) -> String {
     s.replace('\\', "/")
 }
 
-/// Resolve the mold body: `-` reads from stdin, anything else is the literal
-/// text. Returns `None` when the resolved body is blank (nothing to write).
+/// Apply's OWN blank-check, and nothing more, on top of the shared envelope
+/// reader ([`super::read_envelope`]): `-` reads stdin, `@<path>` reads that
+/// file, anything else is the literal body. `None` when there is nothing to
+/// write — a blank body, or a `@<path>` that could not be read.
+///
+/// The resolution itself is NOT duplicated here. This command and
+/// [`super::relay`] each used to keep a copy with a divergent contract, so the
+/// file face would have had to be written twice; now the reader is one and only
+/// the trim is local. The IO failure is named on stderr rather than folded into
+/// the blank case, because "the file could not be read" and "the agent authored
+/// an empty body" are different things to fix.
 fn resolve_content(content: &str) -> Option<String> {
-    let raw = if content == "-" {
-        let mut buf = String::new();
-        if std::io::stdin().read_to_string(&mut buf).is_err() {
+    let raw = match super::read_envelope(content) {
+        super::Envelope::Raw(text) | super::Envelope::Json(text) => text,
+        super::Envelope::Unreadable(e) => {
+            eprintln!("scan-patterns-apply: {e}");
             return None;
         }
-        buf
-    } else {
-        content.to_string()
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -354,6 +363,29 @@ mod tests {
     fn resolve_content_blanks_are_none() {
         assert!(resolve_content("   \n  ").is_none());
         assert_eq!(resolve_content("# mold").as_deref(), Some("# mold"));
+    }
+
+    /// AC-4 — the apply takes the SAME `@<path>` face the relay does, through
+    /// the SAME reader. Two copies of the resolution is how the relay grew a
+    /// file face the apply lacked, so the shared reader is the guard: a body
+    /// too large for an argv reaches either command the same way.
+    #[test]
+    fn apply_reads_the_mold_body_from_a_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = dir.path().join("authored-mold.md");
+        std::fs::write(&on_disk, valid_mold("api-service-pattern")).unwrap();
+
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
+        run(&path, &format!("@{}", on_disk.display()), dir.path());
+
+        let written = std::fs::read_to_string(&path).expect("the mold is written from the file");
+        assert!(written.contains("## Purpose"), "the body survives whole: {written}");
+        assert!(super::super::origin::is_mustard_generated(&written), "still stamped as generated");
+        // The literal face is untouched: a body passed inline still resolves.
+        assert_eq!(
+            resolve_content(&valid_mold("api-x-pattern")).as_deref(),
+            Some(valid_mold("api-x-pattern").as_str())
+        );
     }
 
     /// A well-formed generated mold body — frontmatter-first, `name` +

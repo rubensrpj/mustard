@@ -1,0 +1,41 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-04T02:45:09.014Z",
+  "parent": "give-scan-flow-commands-it",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/scan_patterns/mod.rs",
+      "path": "apps/rt/src/commands/scan_patterns/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/scan_patterns/relay.rs",
+      "path": "apps/rt/src/commands/scan_patterns/relay.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/scan_patterns/apply.rs",
+      "path": "apps/rt/src/commands/scan_patterns/apply.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/scan_patterns/list.rs",
+      "path": "apps/rt/src/commands/scan_patterns/list.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/scan_cli.rs",
+      "path": "apps/rt/src/commands/scan_cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/agent/render/role.rs",
+      "path": "apps/rt/src/commands/agent/render/role.rs",
+      "done": true
+    }
+  ]
+}
