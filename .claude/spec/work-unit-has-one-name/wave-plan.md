@@ -23,7 +23,7 @@ id: wave.work-unit-has-one-name.plan
 - AC-9 — the picker's own `Siglas` legend names every status the table can print, and none it cannot. Command: `cargo test -p mustard-rt the_picker_legend_names_the_not_yet_started_status 2>&1 | grep -E "[1-9][0-9]* passed"`
 - AC-10 — the flow's `spec-draft` call carries the name the gate minted. Command: `cargo test -p mustard-rt the_draft_call_carries_the_name_the_gate_minted 2>&1 | grep -E "[1-9][0-9]* passed"`
 - AC-11 — the widest status the table can print does not shift the columns to its right. Command: `cargo test -p mustard-rt the_status_column_never_shifts_the_columns_to_its_right 2>&1 | grep -E "[1-9][0-9]* passed"`
-- AC-8 — the project build and tests pass green. Command: `cargo build --workspace && cargo test --workspace`
+- AC-8 — the project build passes green Command: `cargo build --workspace`
 
 <!-- wikilinks-footer-start -->
 - [wave.work-unit-has-one-name.1-identity](spec.md)

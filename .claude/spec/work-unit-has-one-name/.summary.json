@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "work-unit-has-one-name",
+  "title": "Work unit has one name and the ok signals stop lying: insideWorkBranch compares the recorded branch instead of a rebuilt slug, the picker approval shortcut works from the bare letter the table asks for, the status column reads neverDispatched, and a declined precheck stops reusing the ok field",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "identity",
+      "summary": "The unit's name is minted ONCE, at the base gate, and the draft consumes it — so the branch, the spec directory, the events and the notebook stop being able to disagree.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "signals",
+      "summary": "Two signals stop reporting a state nobody reached: the picker table stops calling a scaffolded plan `running`, and a precheck that declined to judge stops looking like one that passed.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "prose",
+      "summary": "The flow documents stop promising two things they cannot deliver: an approval from a bare letter, and a Full path whose first census read can only abstain.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
