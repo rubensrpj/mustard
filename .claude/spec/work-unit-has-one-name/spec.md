@@ -65,8 +65,17 @@ A Full unit opened through the base gate carries ONE name from the gate to the c
 - **AC-7** — when the Full path is followed from `feature.md`, then the text sends the reader to the full-plan machinery BEFORE the census-dependent step, so the first `plan-prepare` is not guaranteed to abstain
   Command: `cargo test -p mustard-rt the_full_path_reaches_full_plan_before_the_census_step 2>&1 | grep -E "[1-9][0-9]* passed"`
   Control: `cargo test -p mustard-rt --test spec_flow_prose 2>&1 | grep -E "[1-9][0-9]* passed"`
+- **AC-9** — when the picker table prints a status, then the page's own `Siglas` legend names it — the scaffolded-but-never-dispatched one included, and says what it asks the reader to do — and names nothing the table cannot print, so the key is never shorter NOR longer than the behaviour
+  Command: `cargo test -p mustard-rt the_picker_legend_names_the_not_yet_started_status 2>&1 | grep -E "[1-9][0-9]* passed"`
+  Control: `cargo test -p mustard-rt --test spec_flow_prose 2>&1 | grep -E "[1-9][0-9]* passed"`
+- **AC-10** — when the flow calls `spec-draft`, then the call the operator reads carries the name the gate minted, so the page never teaches that the draft may invent a second one
+  Command: `cargo test -p mustard-rt the_draft_call_carries_the_name_the_gate_minted 2>&1 | grep -E "[1-9][0-9]* passed"`
+  Control: `cargo test -p mustard-rt --test spec_flow_prose 2>&1 | grep -E "[1-9][0-9]* passed"`
+- **AC-11** — when the widest status the table can print lands in a row, then the `Onde` and `Resumo` columns still start where the header puts them, so the new status does not mis-render the table it was added to
+  Command: `cargo test -p mustard-rt the_status_column_never_shifts_the_columns_to_its_right 2>&1 | grep -E "[1-9][0-9]* passed"`
+  Control: `cargo test -p mustard-rt --lib commands::spec::active_specs 2>&1 | grep -E "[1-9][0-9]* passed"`
 - **AC-8** — the project build and tests pass green
-  Command: `cargo build --workspace`
+  Command: `cargo build --workspace && cargo test --workspace`
 
 <!-- PLAN -->
 
@@ -89,6 +98,7 @@ A Full unit opened through the base gate carries ONE name from the gate to the c
 - `plugin/refs/feature/full-plan.md` — the Full path's own `spec-draft` call carries the unit's name too, or the one-name rule holds on the Light path only (cascade, found in review)
 - `packages/core/templates/mustard/orchestrator.md`, `.claude/mustard/orchestrator.md` — the page that MINTS the name says the report is the source and must be carried forward; the `.claude/` copy is the same file deployed (cascade, found in review)
 - `apps/rt/tests/spec_flow_prose.rs` — pins both prose contracts: the draft call carries the gate's name, and the picker legend names the status the renderer now prints (cascade, found in review)
+- `packages/core/src/platform/i18n.rs` — the trailing safety criterion every draft is born with stops promising a test run its minted command never takes (cascade, found in review 2: the same ok-signal defect, one level up — in the sentence the TOOL authors)
 
 ## Boundaries
 

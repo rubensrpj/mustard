@@ -1161,6 +1161,19 @@ fn stage_abbrev(stage: &str) -> String {
 /// stay recognisable, short enough not to push `Resumo` off the screen.
 const ONDE_WIDTH: usize = 20;
 
+/// Width of the `Status` column — wide enough for the LONGEST value
+/// [`derive_status`] can return, so no row pushes `Onde`/`Resumo` out of
+/// alignment.
+///
+/// The census: `closed-followup` (15) is the widest, then `W10 a iniciar` (13),
+/// `W1 a iniciar` (12), `⚠ malformed` (11), `W1 em exec` (10), `TF→xx` (5),
+/// `-` (1). The column was 10 while the widest was 15, so every long row shifted
+/// the two columns to its right — a table that mis-renders the very status this
+/// unit added is the same class of defect it exists to remove.
+///
+/// Header, separator and row all derive from this one number; they cannot drift.
+const STATUS_WIDTH: usize = 15;
+
 /// Generate a markdown table from the list of active specs.
 ///
 /// Columns: `#`, `Spec`, `Esc`, `Estágio`, `Prog`, `Status`, `Onde`, `Resumo`
@@ -1168,13 +1181,21 @@ const ONDE_WIDTH: usize = 20;
 /// `lang` drives the legend line for the third `Onde` value — new user-facing
 /// copy comes from the catalogue, never from a literal in this file.
 fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) -> String {
-    // Column headers
-    let header = "| #  | Spec                                          | Esc | Estágio | Prog | Status     | Onde                 | Resumo";
-    let separator = "|----|-----------------------------------------------|-----|---------|------|------------|----------------------|-----------------------------------------------------|";
+    // Column headers — the `Status` cell is built from STATUS_WIDTH rather than
+    // typed out, so widening the column can never leave the header behind.
+    let header = format!(
+        "| #  | Spec                                          | Esc | Estágio | Prog | {label:<width$} | Onde                 | Resumo",
+        label = "Status",
+        width = STATUS_WIDTH,
+    );
+    let separator = format!(
+        "|----|-----------------------------------------------|-----|---------|------|{dashes}|----------------------|-----------------------------------------------------|",
+        dashes = "-".repeat(STATUS_WIDTH + 2),
+    );
 
     let mut lines: Vec<String> = Vec::new();
-    lines.push(header.to_string());
-    lines.push(separator.to_string());
+    lines.push(header);
+    lines.push(separator);
 
     for spec in specs {
         let prog = spec
@@ -1195,7 +1216,7 @@ fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) 
         let esc = format!("{scope_str:<3}");
         let stage_col = format!("{stage_str:<7}");
         let prog_col = format!("{prog:>4}");
-        let status_col = format!("{:<10}", spec.status);
+        let status_col = format!("{:<width$}", spec.status, width = STATUS_WIDTH);
         // `-` for the checkout, the branch name for an in-flight spec: the eye
         // only catches the rows that are NOT where the operator is standing.
         let onde = spec
@@ -2159,6 +2180,82 @@ mod tests {
         assert_eq!(
             row.status, "W1 em exec",
             "a plan with a dispatch on record still reads as running"
+        );
+    }
+
+    /// **AC-11.** Every value [`derive_status`] can return has to FIT the column
+    /// it is printed in, or that row pushes `Onde` and `Resumo` to the right and
+    /// the table stops lining up on exactly the rows the operator most needs to
+    /// read.
+    ///
+    /// The column was 10 wide while `closed-followup` (15) was already
+    /// reachable, and wave 2 of this unit added `W{N} a iniciar` (12-13) — a
+    /// status that mis-renders the table is the same class of defect this unit
+    /// exists to remove, in miniature.
+    ///
+    /// Asserted structurally, against the pipe that OPENS `Onde`: it must sit at
+    /// the same offset on the header, on the separator and on every row. So
+    /// widening one of the three and forgetting the other two fails here rather
+    /// than in the operator's terminal.
+    #[test]
+    fn the_status_column_never_shifts_the_columns_to_its_right() {
+        // Every shape `derive_status` can return, widest included.
+        let statuses = [
+            "-",
+            "TF→ab",
+            "W1 em exec",
+            "W1 a iniciar",
+            "W10 a iniciar",
+            "⚠ malformed",
+            "closed-followup",
+        ];
+        let rows: Vec<ActiveSpec> = statuses
+            .iter()
+            .zip('a'..='z')
+            .map(|(status, letter)| ActiveSpec {
+                name: format!("2026-03-0{letter}-row"),
+                stage: "Plan".to_string(),
+                outcome: "Active".to_string(),
+                scope: Some("full".to_string()),
+                parent: None,
+                parent_alias: None,
+                progress: None,
+                resumo: "Uma linha.".to_string(),
+                letter: letter.to_string(),
+                status: (*status).to_string(),
+                clarify_records_nothing: false,
+                location: "tree".to_string(),
+                branch: None,
+            })
+            .collect();
+
+        let table = render_table(&rows, &ok_scan(), SupportedLocale::default());
+        let mut lines = table.lines();
+        let header = lines.next().expect("the table opens with its header");
+        // Char offset, not byte: `Estágio` and `⚠ malformed` are multi-byte, and
+        // the padding that has to line up counts characters.
+        let anchor_byte = header
+            .find("| Onde")
+            .expect("the header no longer carries the `Onde` column");
+        let anchor = header[..anchor_byte].chars().count();
+
+        for line in std::iter::once(lines.next().expect("separator")).chain(
+            // The data rows, and nothing after them (legend lines follow).
+            lines.take_while(|l| l.starts_with("| ")),
+        ) {
+            assert_eq!(
+                line.chars().nth(anchor),
+                Some('|'),
+                "the `Onde` column does not start where the header puts it \
+                 (offset {anchor}) — the Status column is too narrow for one of \
+                 its own values:\n{table}"
+            );
+        }
+
+        // And the widest status is printed WHOLE, not silently truncated.
+        assert!(
+            table.contains("closed-followup"),
+            "the widest status must survive the column it is padded into: {table}"
         );
     }
 

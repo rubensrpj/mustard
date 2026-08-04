@@ -330,7 +330,7 @@ fn the_full_path_reaches_full_plan_before_the_census_step() {
     }
 }
 
-/// AC-10 — the picker's own legend names the status the table can now print.
+/// **AC-9** — the picker's own legend names the status the table can now print.
 ///
 /// The renderer gained `W{N} a iniciar` for a plan that was scaffolded and never
 /// dispatched, and `active_specs` pins the legend it renders itself. The picker
@@ -370,10 +370,41 @@ fn the_picker_legend_names_the_not_yet_started_status() {
         "`active_specs` no longer renders `a iniciar` — the picker legend now \
          decodes a status nothing emits",
     );
+
+    // The key must not be shorter than the behaviour in EITHER direction, so the
+    // remaining values `derive_status` can return are asserted too. `⚠ malformed`
+    // and `closed-followup` were reachable long before this unit and the picker
+    // legend never named them: the reader met them with no key at all.
+    for status in ["⚠ malformed", "closed-followup"] {
+        assert!(
+            // The literal `derive_status` returns it as, quotes included.
+            renderer.contains(&format!("\"{status}\"")),
+            "`active_specs` no longer emits `{status}` — drop it from the picker \
+             legend rather than leaving a key for a status nothing prints",
+        );
+        assert!(
+            legend.contains(status),
+            "the legend never names `{status}`, a status the table prints today: {legend}",
+        );
+    }
+
+    // And nothing the table CANNOT print may sit in the key. `BLOCK` did — a
+    // status no branch of `derive_status` returns — which is the phantom half of
+    // the same defect: a key entry that guarantees a behaviour nobody wrote.
+    assert!(
+        !legend.contains("BLOCK"),
+        "the legend names `BLOCK`, which `derive_status` never returns — a key \
+         entry for a status the table cannot print: {legend}",
+    );
+    assert!(
+        !renderer.contains("BLOCK"),
+        "`active_specs` started emitting `BLOCK` — teach the picker legend the \
+         status before the operator meets it undecoded",
+    );
 }
 
-/// The flow hands the draft the name the GATE minted, rather than letting it
-/// derive a second one.
+/// **AC-10** — the flow hands the draft the name the GATE minted, rather than
+/// letting it derive a second one.
 ///
 /// The engine no longer depends on this — `spec-draft` reads the slug half of
 /// the unit's branch when no `--slug` arrives, which is what closes the chain on
