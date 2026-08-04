@@ -28,6 +28,13 @@ use mustard_core::io::fs as mfs;
 const SKILLS_SEGMENT: &str = "/.claude/skills/";
 const MOLD_SUFFIX: &str = "-pattern/SKILL.md";
 
+/// The ONE phrasing of "there is no body to write", so the blank case reads the
+/// same whichever side reaches it first — [`resolve_content`] (the CLI face,
+/// which stops there) or the [`Applied::Empty`] arm (any other caller of
+/// [`apply_one`]). Two spellings of one event is how a caller starts guessing
+/// whether they mean different things.
+const EMPTY_BODY: &str = "scan-patterns-apply: empty mold body — nothing to write";
+
 /// What happened to ONE mold — the verdict [`apply_one`] returns instead of
 /// printing and exiting.
 ///
@@ -126,7 +133,13 @@ pub(crate) fn apply_one(path: &Path, body: &str, root: &Path) -> Applied {
 /// prints a one-line confirmation and exits 0. A path that is not a mold
 /// SKILL.md exits 1; every other recoverable error is fail-open.
 pub fn run(path: &Path, content: &str, root: &Path) {
-    let body = resolve_content(content).unwrap_or_default();
+    // Nothing to write, and [`resolve_content`] already named WHY — the IO
+    // failure of an unreadable `@<path>`, or the blank body. Falling through
+    // with an empty string instead would hand `apply_one` a body the agent
+    // never authored, and STACK `empty mold body` on top of the IO failure —
+    // blaming the AGENT for what the FILE did. Two reasons for one event is
+    // one reason too many, and the wrong one reads last.
+    let Some(body) = resolve_content(content) else { return };
     match apply_one(path, &body, root) {
         Applied::Created => println!("scan-patterns-apply: created {}", path.display()),
         Applied::BadPath => {
@@ -147,7 +160,10 @@ pub fn run(path: &Path, content: &str, root: &Path) {
             "scan-patterns-apply: mold already exists at {} — left unchanged (hand-authored/adopted; the sweep only removes `source: scan`)",
             path.display()
         ),
-        Applied::Empty => eprintln!("scan-patterns-apply: empty mold body — nothing to write"),
+        // Unreachable from this face — `resolve_content` stops a blank body
+        // above — but `apply_one` is shared with the relay, so the arm keeps
+        // the verdict answerable rather than silent.
+        Applied::Empty => eprintln!("{EMPTY_BODY}"),
         Applied::Refused(defects) => {
             eprintln!(
                 "scan-patterns-apply: refusing {} — malformed mold, NOT written:\n  - {}",
@@ -315,6 +331,13 @@ fn normalise(s: &str) -> String {
 /// the trim is local. The IO failure is named on stderr rather than folded into
 /// the blank case, because "the file could not be read" and "the agent authored
 /// an empty body" are different things to fix.
+///
+/// Every `None` leaves stderr already carrying its reason — exactly one line,
+/// either the IO failure or [`EMPTY_BODY`] — which is what lets [`run`] stop on
+/// it without adding a second. It used to `unwrap_or_default()` into
+/// [`apply_one`], so an unreadable path printed its IO error and then
+/// `empty mold body` underneath it: the true reason first, the misleading one
+/// last, and the last is the one a reader keeps (found in review, 2026-08-04).
 fn resolve_content(content: &str) -> Option<String> {
     let raw = match super::read_envelope(content) {
         super::Envelope::Raw(text) | super::Envelope::Json(text) => text,
@@ -325,6 +348,7 @@ fn resolve_content(content: &str) -> Option<String> {
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
+        eprintln!("{EMPTY_BODY}");
         None
     } else {
         Some(trimmed.to_string())
@@ -363,6 +387,13 @@ mod tests {
     fn resolve_content_blanks_are_none() {
         assert!(resolve_content("   \n  ").is_none());
         assert_eq!(resolve_content("# mold").as_deref(), Some("# mold"));
+        // A `@<path>` that cannot be read is the OTHER `None`, and it is the
+        // one `run` must stop on: it has already named the IO failure, so
+        // carrying an empty body onward would print `empty mold body` under it
+        // and blame the agent for the file's failure.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-return.json");
+        assert!(resolve_content(&format!("@{}", missing.display())).is_none());
     }
 
     /// AC-4 — the apply takes the SAME `@<path>` face the relay does, through
