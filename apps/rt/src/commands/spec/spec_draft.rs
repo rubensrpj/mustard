@@ -477,7 +477,9 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     };
 
     // The unit's name — CONSUMED, not invented, whenever the unit already has
-    // one. Resolved after the cut because the branch is what remembers it.
+    // one. Resolved after the cut because the BRANCH is what remembers it: the
+    // one just cut, or the one already under the tree when the auto-branch hook
+    // cut it first (which is what happens on every shipped run).
     let slug = resolve_slug(
         project_root,
         opts.slug.as_deref(),
@@ -1360,18 +1362,29 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
 /// 1. `--slug` — the name the base gate minted for this unit
 ///    ([`crate::commands::event::emit_pipeline::mint_unit_name_at`]). Verbatim:
 ///    the draft is consuming a decision, not making one.
-/// 2. the work branch this call just cut — `{base}_{slug}`, so its slug half IS
-///    the gate's name ([`work_branch::slug_of_work_branch`]). The session
-///    marker that carried the name is consumed by that cut, but the branch
-///    keeps it, which makes the branch the durable record.
+/// 2. the unit's BRANCH — `{base}_{slug}`, so its slug half IS the gate's name
+///    ([`work_branch::slug_of_work_branch`]). Asked of the branch this call just
+///    cut when it cut one, and otherwise of the CHECKOUT: the session marker
+///    that carried the name from the gate is consumed by whoever cuts first, and
+///    on the shipped path that is the auto-branch hook on the flow's first
+///    write — long before the draft runs. So [`cut_work_branch`] answers `None`
+///    there, and reading only its answer would leave this leg unreachable on
+///    exactly the path it exists for. The branch is what still remembers.
 /// 3. `--intent`, through the SAME derivation the gate mints with
 ///    ([`spec_slug::canonical`]) — the hand-run draft that no work unit ever
-///    signalled, byte-identical to the behaviour this command always had.
+///    signalled (the tree sits on an integration base, or on no branch at all),
+///    byte-identical to the behaviour this command always had.
 ///
 /// Steps 1 and 2 are what stop a unit carrying two names: before them the gate
 /// was handed a slug the caller invented while the draft derived its own from
 /// its own `--intent`, and nothing reconciled the two — so `resume-bootstrap`
 /// rebuilt `{base}_{slug}` from the spec and never matched the checkout.
+///
+/// Step 2 is deliberately BLIND to how the checkout got there. A draft standing
+/// on `{base}_{slug}` is inside a unit that is already named, and drafting a
+/// second name from there is the defect, not the fallback: if the intent really
+/// opens a NEW unit, the gate minted its name and the marker or the hook put its
+/// branch under the tree first.
 fn resolve_slug(
     project_root: &Path,
     explicit: Option<&str>,
@@ -1385,9 +1398,17 @@ fn resolve_slug(
     if let Some(given) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         return given.to_string();
     }
-    if let Some(from_branch) = work_branch.and_then(|branch| {
-        work_branch::slug_of_work_branch(branch, &mustard_core::ProjectConfig::load(project_root))
-    }) {
+    let config = mustard_core::ProjectConfig::load(project_root);
+    let unit_branch = match work_branch {
+        Some(branch) => Some(branch.to_string()),
+        None => config.vcs().and_then(|vcs| {
+            work_branch::current_branch(&vcs, &project_root.to_string_lossy())
+        }),
+    };
+    if let Some(from_branch) = unit_branch
+        .as_deref()
+        .and_then(|branch| work_branch::slug_of_work_branch(branch, &config))
+    {
         return from_branch;
     }
     spec_slug::canonical(intent, lang)
@@ -1503,6 +1524,83 @@ mod tests {
             "named-at-the-gate",
         );
         assert_eq!(resolve_slug(project, None, None, intent, Locale::EnUs), derived);
+    }
+
+    /// AC-2/AC-3, the leg the flag does not cover — the name survives the hook
+    /// cutting the branch FIRST.
+    ///
+    /// The shipped order is: the gate mints the name and drops the pending
+    /// marker → the flow's first write trips the auto-branch hook, which cuts
+    /// `{base}_{slug}` and CONSUMES the marker → `spec-draft` runs. By then
+    /// `cut_pending_work_branch` answers `NoPending`, so a draft that only
+    /// looked at what it cut itself had nothing to consume and derived a second
+    /// name from `--intent` — on every full run, which is the one path this unit
+    /// exists for. The fixture reproduces that order exactly: a real repo, a
+    /// work branch already checked out, NO marker on disk.
+    #[test]
+    fn spec_draft_recovers_the_unit_name_from_the_branch_it_stands_on() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+        std::fs::write(
+            project.join("mustard.json"),
+            r#"{"lang":"en-US","git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+
+        // A repository standing on the unit's branch, with nothing pending.
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(project)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-b", "dev"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-m", "base", "--no-gpg-sign"]);
+        git(&["checkout", "-b", "dev_named-at-the-gate"]);
+
+        let intent = "Something the drafter would have slugged completely differently";
+        let derived = crate::commands::spec::spec_slug::canonical(intent, Locale::EnUs);
+        assert_ne!(derived, "named-at-the-gate", "the fixture only proves something if they differ");
+
+        // No `--slug`, no marker: exactly what `spec-draft` meets on a full run.
+        assert_eq!(
+            resolve_slug(project, None, None, intent, Locale::EnUs),
+            "named-at-the-gate",
+            "the draft must consume the name its own branch carries",
+        );
+
+        let code = run_at(
+            project,
+            SpecDraftOpts {
+                intent: intent.to_string(),
+                slug: None,
+                scope: "light".into(),
+                lang: "en-US".into(),
+                signals: None,
+                output: None,
+                material: None,
+                waves: 1,
+                plan: None,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            },
+        );
+        assert_eq!(code, 0, "a light draft inside the unit's branch exits clean");
+
+        let spec_root = project.join(".claude").join("spec");
+        assert!(
+            spec_root.join("named-at-the-gate").join("spec.md").exists(),
+            "the spec lands under the name the branch carries",
+        );
+        assert!(!spec_root.join(&derived).exists(), "and NOT under a second, invented name");
     }
 
     #[test]

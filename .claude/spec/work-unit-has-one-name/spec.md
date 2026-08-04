@@ -86,6 +86,9 @@ A Full unit opened through the base gate carries ONE name from the gate to the c
 - `plugin/commands/spec.md` — the picker stops promising that a bare letter mints the approval marker
 - `plugin/commands/feature.md` — the Full path is sent to the full-plan machinery before the census-dependent step, and the `--plan` form is named
 - `plugin/refs/spec/resume-loop.md` — the no-ceremony promise now holds, so its wording is checked against what the code does
+- `plugin/refs/feature/full-plan.md` — the Full path's own `spec-draft` call carries the unit's name too, or the one-name rule holds on the Light path only (cascade, found in review)
+- `packages/core/templates/mustard/orchestrator.md`, `.claude/mustard/orchestrator.md` — the page that MINTS the name says the report is the source and must be carried forward; the `.claude/` copy is the same file deployed (cascade, found in review)
+- `apps/rt/tests/spec_flow_prose.rs` — pins both prose contracts: the draft call carries the gate's name, and the picker legend names the status the renderer now prints (cascade, found in review)
 
 ## Boundaries
 

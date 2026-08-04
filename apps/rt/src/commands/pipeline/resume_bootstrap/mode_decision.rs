@@ -146,10 +146,19 @@ pub(super) fn decide_mode(
 /// The name IS rebuilt here, from `spec`. What makes that sound is upstream and
 /// nothing in this file enforces it: the unit is named ONCE, at the base gate
 /// ([`crate::commands::event::emit_pipeline::mint_unit_name_at`]), and
-/// `spec-draft` CONSUMES that name — `--slug`, else the slug half of the branch
-/// it cut — instead of minting a second one. So `spec` is the same string
-/// `{base}_{slug}` was built from. That invariant lives in those two commands;
-/// the test below is where it is checked end to end.
+/// `spec-draft` CONSUMES that name instead of minting a second one — `--slug`
+/// when the caller carries the gate's report forward, else the slug half of the
+/// unit's BRANCH ([`crate::commands::event::work_branch::slug_of_work_branch`]),
+/// which is the leg that does not depend on any caller getting an argument
+/// right: the draft writes inside the unit, so the branch under it is already
+/// `{base}_{slug}` and the spec directory is named from that same string.
+///
+/// So this equality holds by CONSTRUCTION on the only arrangement in which it
+/// can be asked: a spec drafted inside its unit was named from the branch, and a
+/// draft that met no branch at all (a hand-run on an integration base) built no
+/// `{base}_{slug}` for anyone to stand on — this answers `false` there, as it
+/// should. The invariant lives in those two commands, not here; the test below
+/// is where it is checked end to end.
 ///
 /// `false` for every uncertainty — an empty spec, a VCS opt-out, a directory
 /// that is not a repository, a detached HEAD. A resume that cannot SHOW it is
@@ -291,10 +300,51 @@ mod tests {
             .expect("the opening door names the unit");
         assert_eq!(minted.renamed_from.as_deref(), Some(invented), "the fixture disagrees on purpose");
 
-        // The branch is cut from the MINTED name — `spec-draft` then files the
-        // spec under that same string.
+        // The branch is cut from the MINTED name — the auto-branch hook does it
+        // on the flow's first write, which is BEFORE `spec-draft` runs and which
+        // CONSUMES the pending marker. The fixture reproduces that order: the
+        // branch is under the tree and there is no marker left for the draft to
+        // read. A draft that only looked at what it cut itself found nothing
+        // here and derived a second name — on every full run.
         let branch = compute_work_branch("dev", &minted.slug, Some(intent), "", "", &root.to_string_lossy());
         git(root, &["checkout", "-b", &branch]);
+
+        // ...and the draft really is run, with a DIVERGENT intent, because the
+        // claim under test is not that the branch spells the minted name — it is
+        // that the spec ends up filed under that same string. Asserting the
+        // first and assuming the second is exactly how this reported `true` in a
+        // test while reporting `false` in the checkout it was written for.
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let other_intent = "Give the ok signals a verdict field";
+        let would_have_derived = crate::commands::spec::spec_slug::canonical_for_project(other_intent, root);
+        assert_ne!(would_have_derived, minted.slug, "the fixture only proves something if they differ");
+        let code = crate::commands::spec::spec_draft::run_at(
+            root,
+            crate::commands::spec::spec_draft::SpecDraftOpts {
+                intent: other_intent.to_string(),
+                slug: None,
+                scope: "light".into(),
+                lang: "en-US".into(),
+                signals: None,
+                output: None,
+                material: None,
+                waves: 1,
+                plan: None,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            },
+        );
+        assert_eq!(code, 0, "the draft inside the unit's branch exits clean");
+        let spec_root = root.join(".claude").join("spec");
+        assert!(
+            spec_root.join(&minted.slug).join("spec.md").exists(),
+            "the spec must be filed under the name the gate minted",
+        );
+        assert!(
+            !spec_root.join(&would_have_derived).exists(),
+            "and NOT under a second name derived from the draft's own intent",
+        );
 
         assert!(
             inside_own_work_branch(root, &minted.slug),

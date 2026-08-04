@@ -145,7 +145,8 @@ pub enum SpecCmd {
         /// (`emit-pipeline --kind pipeline.kind` reports it as `spec`). Used
         /// VERBATIM — the draft consumes the name the unit already carries
         /// instead of deriving a second one from `--intent`. Omitted: the slug
-        /// half of the work branch this call cuts, else the intent.
+        /// half of the unit's work branch — the one this call cuts, else the
+        /// one already checked out — and only then the intent.
         #[arg(long)]
         slug: Option<String>,
         /// `light` (single-shot) or `full` (wave plan).

@@ -330,6 +330,85 @@ fn the_full_path_reaches_full_plan_before_the_census_step() {
     }
 }
 
+/// AC-10 — the picker's own legend names the status the table can now print.
+///
+/// The renderer gained `W{N} a iniciar` for a plan that was scaffolded and never
+/// dispatched, and `active_specs` pins the legend it renders itself. The picker
+/// page carries a SECOND legend — the literal `Siglas` block the operator reads
+/// to decode the table — and nothing pinned it. A legend shorter than the
+/// behaviour is the same defect this unit removes, in miniature: the reader
+/// meets a status the key does not explain and has to open the source to learn
+/// whether `a iniciar` means start it or resume it.
+#[test]
+fn the_picker_legend_names_the_not_yet_started_status() {
+    let picker = read("plugin/commands/spec.md");
+    let legend = line_with(&picker, "**Siglas**")
+        .expect("the picker no longer carries the Siglas legend at all");
+
+    assert!(
+        legend.contains("W{N} em exec"),
+        "the legend dropped the dispatched-and-running status: {legend}",
+    );
+    assert!(
+        legend.contains("W{N} a iniciar"),
+        "the legend never names the scaffolded-but-never-dispatched status the \
+         table now prints, so the reader meets a status the key cannot decode: {legend}",
+    );
+    // Naming it is not explaining it: the two statuses ask for OPPOSITE actions,
+    // and that is the whole reason the status was split in two.
+    assert!(
+        legend.contains("nothing dispatched yet"),
+        "the legend names `a iniciar` without saying what it means for the \
+         reader's next action — start it, never resume it: {legend}",
+    );
+
+    // And the renderer still prints it, or the legend explains a status the
+    // table stopped producing.
+    let renderer = read("apps/rt/src/commands/spec/active_specs.rs");
+    assert!(
+        renderer.contains("a iniciar"),
+        "`active_specs` no longer renders `a iniciar` — the picker legend now \
+         decodes a status nothing emits",
+    );
+}
+
+/// The flow hands the draft the name the GATE minted, rather than letting it
+/// derive a second one.
+///
+/// The engine no longer depends on this — `spec-draft` reads the slug half of
+/// the unit's branch when no `--slug` arrives, which is what closes the chain on
+/// the shipped path. But the call the operator reads is where the one-name rule
+/// is either visible or invisible, and a flow that never mentions the gate's
+/// answer teaches that the draft is free to name the unit.
+#[test]
+fn the_draft_call_carries_the_name_the_gate_minted() {
+    let feature = read("plugin/commands/feature.md");
+    let draft = line_with(&feature, "run spec-draft --intent")
+        .expect("/feature no longer calls spec-draft");
+    assert!(
+        draft.contains("--slug"),
+        "the draft call does not carry the unit's name, so the flow reads as if \
+         the draft may invent one: {draft}",
+    );
+    assert!(
+        draft.contains("NOT yours to choose"),
+        "the call passes `--slug` without saying where its value comes from — a \
+         reader who fills it in from their own head mints the second name this \
+         unit exists to remove: {draft}",
+    );
+
+    // The page that MINTS it must say the report is the source, or the two ends
+    // of the hand-off name different things.
+    let router = read("packages/core/templates/mustard/orchestrator.md");
+    let gate = line_with(&router, "That call is also where the unit is NAMED")
+        .expect("the router never says the base gate names the unit");
+    assert!(
+        gate.contains("renamedFrom") && gate.contains("spec-draft --slug"),
+        "the router names the unit without telling the reader to carry that \
+         value into the draft: {gate}",
+    );
+}
+
 /// The sentences this wave supersedes, verbatim as the pages carried them
 /// BEFORE the edit — each one verified present at that point, so the sweep
 /// above genuinely fails against the old content rather than asserting nothing.
