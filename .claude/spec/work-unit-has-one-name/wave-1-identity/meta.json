@@ -1,10 +1,10 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": "EXECUTE",
   "scope": null,
   "lang": "en-US",
-  "checkpoint": "2026-08-04T09:22:26.959Z",
+  "checkpoint": "2026-08-04T10:02:39.570Z",
   "parent": "work-unit-has-one-name",
   "checklist": [
     {
@@ -15,7 +15,7 @@
     {
       "label": "apps/rt/src/commands/event/base_gate.rs",
       "path": "apps/rt/src/commands/event/base_gate.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/event/cli.rs",
