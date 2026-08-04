@@ -46,19 +46,6 @@ pub(crate) fn resolve_base(
     }
 }
 
-/// Resolve the slug lang for the auto-branch from `mustard.json` — `lang`
-/// (legacy) then `specLang`, defaulting to `pt-BR` (mirrors
-/// [`mustard_core::ProjectConfig::i18n`] precedence). A branch is not
-/// user-facing prose, but the slug helper still strips accents per-locale.
-fn branch_lang(project: &str) -> String {
-    let config = mustard_core::ProjectConfig::load(Path::new(project));
-    config
-        .lang
-        .clone()
-        .or(config.spec_lang.clone())
-        .unwrap_or_else(|| "pt-BR".to_string())
-}
-
 /// A short, ref-safe fallback token from the session id. `unknown`/empty →
 /// `work` so the branch always has a non-empty tail.
 fn short_sid(sid: &str) -> String {
@@ -97,8 +84,12 @@ fn sanitize_git_ref(raw: &str) -> String {
 /// `{base}_{slug}`, sanitised to a valid git ref. The `{base}_` prefix records
 /// the integration branch the work is cut from, so the gate (and `/git`) can
 /// recover the PR-target from the name alone. Slug precedence:
-/// 1. `--spec` when present (already a slug);
-/// 2. else `--intent` slugified for the project's lang;
+/// 1. `--spec` when present (already a slug — at the base gate that is the
+///    name `emit_pipeline` just MINTED, so this leg carries the canonical one);
+/// 2. else `--intent` through the canonical derivation
+///    ([`crate::commands::spec::spec_slug::canonical_for_project`]) — the SAME
+///    one `spec-draft` names the spec directory with, so the branch half and
+///    the directory cannot be two different spellings of one unit;
 /// 3. else a date-based fallback (`YYYY-MM-DD` from the event `ts`) suffixed
 ///    with a short session id for uniqueness.
 /// Never fails — every branch degrades to a valid ref.
@@ -113,7 +104,7 @@ pub(crate) fn compute_work_branch(
     let slug = if !spec.trim().is_empty() {
         spec.trim().to_string()
     } else if let Some(intent) = intent.map(str::trim).filter(|s| !s.is_empty()) {
-        crate::commands::spec::spec_slug::for_lang(intent, &branch_lang(project))
+        crate::commands::spec::spec_slug::canonical_for_project(intent, Path::new(project))
     } else {
         // Date-based fallback from the shared event timestamp, plus a short
         // session id so two spec-less/intent-less runs on the same day differ.
@@ -260,6 +251,32 @@ pub(crate) fn base_for(target: &str, config: &mustard_core::ProjectConfig) -> St
         }
     }
     best.map_or_else(|| config.git.primary_base(), str::to_string)
+}
+
+/// The SLUG half of a work branch — `dev_my-unit` → `my-unit` — read against
+/// the project's declared integration bases. The inverse of
+/// [`compute_work_branch`]'s `{base}_{slug}` join.
+///
+/// This is the DURABLE record of a unit's name. The `pending-work-branch`
+/// marker that carried the name from the gate is consumed and deleted by the
+/// first checkout ([`cut_pending_work_branch`]), so after that moment the
+/// branch itself is the only thing that still remembers what the unit is
+/// called — which is what lets `spec-draft` consume the gate's name instead of
+/// deriving a second one.
+///
+/// `None` when the name carries no declared `{base}_` prefix: it is then not a
+/// work unit's branch at all, and inventing a slug out of it would mint the
+/// very third name this module exists to prevent. The longest-match rule is
+/// [`crate::commands::work_unit_open::unit_base_of_name`] — the same question
+/// the worktree engine asks, never a second parser.
+pub(crate) fn slug_of_work_branch(
+    branch: &str,
+    config: &mustard_core::ProjectConfig,
+) -> Option<String> {
+    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
+    let base = crate::commands::work_unit_open::unit_base_of_name(branch, &bases)?;
+    let slug = branch.strip_prefix(&format!("{base}_"))?.trim();
+    (!slug.is_empty()).then(|| slug.to_string())
 }
 
 /// `true` when `branch` is a bare integration branch that must never be

@@ -134,6 +134,15 @@ pub enum ScanCmd {
         /// every drop point is otherwise silent. Default output is unchanged.
         #[arg(long)]
         rejected: bool,
+        /// Narrow EITHER payload to ONE subproject dir (root-relative, e.g.
+        /// `apps/rt`) — the convergence question "how many clusters are left in
+        /// this house?", which otherwise needed a grouping script over the whole
+        /// list. Normalised like the render's own filter (backslashes folded,
+        /// trailing `/` and leading `./` stripped), so either spelling resolves.
+        /// An unknown subproject yields `[]`, never everything. Omitted: the
+        /// whole workspace, byte-identical to before this flag existed.
+        #[arg(long)]
+        subproject: Option<String>,
     },
     /// Write one enrich-agent-authored pattern mold to its
     /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only,
@@ -148,8 +157,13 @@ pub enum ScanCmd {
         /// Path to the mold `SKILL.md` to write.
         #[arg(long)]
         path: PathBuf,
-        /// Authored SKILL.md body, or `-` to read it from stdin. `allow_hyphen_values`
-        /// so a body starting with `-`/`---` frontmatter is not mistaken for a flag.
+        /// Authored SKILL.md body; `-` reads it from stdin (the default) and
+        /// `@<path>` reads it from that file — the SAME three channels
+        /// `scan-patterns-relay` accepts, resolved by the same reader. `@` opens
+        /// a path only when the value carries no newline, so a literal body
+        /// (which always spans lines) is never mistaken for one.
+        /// `allow_hyphen_values` so a body starting with `-`/`---` frontmatter
+        /// is not mistaken for a flag.
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
         /// Workspace root the mold's claims are checked against — every `Ref:`
@@ -194,9 +208,16 @@ pub enum ScanCmd {
         /// Workspace root the molds are written under. Defaults to `.`.
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// The agent's return, or `-` to read it from stdin (the default —
-        /// a whole return is too large for an argv). `allow_hyphen_values` so
-        /// an envelope opening with `-`/`---` is not mistaken for a flag.
+        /// The agent's return. `-` reads it from stdin (the default — a whole
+        /// return is too large for an argv) and `@<path>` reads it from that
+        /// file, which is the form the harness FORCES when a return exceeds its
+        /// inline limit and is persisted to disk. The file may hold the raw
+        /// envelope or the harness's own JSON shape; both are unwrapped, and a
+        /// path that cannot be read is REPORTED rather than degraded to an empty
+        /// envelope. `@` opens a path only when the value carries no newline, so
+        /// a literal envelope (which always spans lines) is never mistaken for
+        /// one. `allow_hyphen_values` so an envelope opening with `-`/`---` is
+        /// not mistaken for a flag.
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         content: String,
     },
@@ -226,7 +247,9 @@ pub fn dispatch(cmd: ScanCmd) {
             scan_guards::apply::run(&path, &root, &guards)
         }
         ScanCmd::ScanLapidation { root } => crate::commands::lapidation::run(&root),
-        ScanCmd::ScanPatternsList { root, rejected } => scan_patterns::list::run(&root, rejected),
+        ScanCmd::ScanPatternsList { root, rejected, subproject } => {
+            scan_patterns::list::run(&root, rejected, subproject.as_deref())
+        }
         ScanCmd::ScanPatternsApply { path, content, root } => {
             scan_patterns::apply::run(&path, &content, &root)
         }

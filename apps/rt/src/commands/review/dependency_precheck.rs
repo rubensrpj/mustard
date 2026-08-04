@@ -18,6 +18,13 @@
 //! symbols exist — it says nothing about whether the CAPABILITY the wave needs
 //! is present, and this gate does not attempt to find out.
 //!
+//! `ok` also cannot say whether the gate JUDGED at all: a clean pass and a
+//! decline both ship as `ok: true`, told apart only by a reader who knows to
+//! look for the [`SKIPPED_KEY`]. Every report therefore also carries
+//! [`VERDICT_KEY`] ([`VERDICT_PASS`] / [`VERDICT_FAIL`] / [`VERDICT_DECLINED`]),
+//! which names that answer outright. `ok` keeps its meaning untouched — the
+//! consumers that read it today are unaffected, and `skipped` keeps working.
+//!
 //! Environment override `MUSTARD_DEPENDENCY_PRECHECK_MODE`:
 //!  - `off`  → force `ok: true` regardless of detection
 //!  - `warn` → emit the report as-is (orchestrator treats advisory)
@@ -143,6 +150,59 @@ pub(crate) const SKIPPED_STACK_UNSUPPORTED: &str = "stack-unsupported";
 /// one thing the skip branch exists to prevent.
 pub(crate) fn skip_reason(report: &Value) -> Option<&str> {
     report.get(SKIPPED_KEY).and_then(Value::as_str)
+}
+
+// ---------------------------------------------------------------------------
+// Verdict — the answer `ok` cannot give on its own
+// ---------------------------------------------------------------------------
+
+/// JSON key naming what this gate ACTUALLY answered, beside the `ok` it
+/// qualifies. It exists because `ok: true` fuses two states a reader must keep
+/// apart — see the module doc — and telling them apart currently requires
+/// knowing that the absence of a second key means "this one really passed".
+///
+/// The labels are `&'static str` consts rather than an enum on purpose: the
+/// report is a `serde_json::Value` document and `wave-advance` reads the field
+/// back out of a trimmed copy, so writer and reader agree on the spelling
+/// without either depending on the other's types.
+pub(crate) const VERDICT_KEY: &str = "verdict";
+
+/// The passes named in `checks_performed` were TAKEN and came back clean.
+pub(crate) const VERDICT_PASS: &str = "pass";
+
+/// The passes were TAKEN and came back with something missing. Redundant with
+/// `ok: false` by design: without it, the only honest label left for a failing
+/// report would be `pass`, and a verdict that lies on one branch teaches the
+/// reader to distrust it on all of them.
+pub(crate) const VERDICT_FAIL: &str = "fail";
+
+/// The pass was NEVER TAKEN — the gate declined to judge (unsupported stack) or
+/// could not (no spec argument, unreadable spec). This is the state that used
+/// to be indistinguishable from a clean pass.
+pub(crate) const VERDICT_DECLINED: &str = "declined";
+
+/// The verdict a report carries.
+///
+/// Callers that TRIM a report (`wave-advance` folds the per-wave verdict into
+/// its round) must carry this through, for the same reason [`skip_reason`] must
+/// be carried: dropped on the way out, the report arrives as a bare `ok: true`
+/// and is read as a clean pass.
+///
+/// Fail-open for a report minted before this field existed: the answer is
+/// DERIVED from the two fields that were already there, never defaulted — a
+/// missing field must not be able to mint the greenest reading.
+pub(crate) fn verdict(report: &Value) -> &str {
+    if let Some(stated) = report.get(VERDICT_KEY).and_then(Value::as_str) {
+        return stated;
+    }
+    if skip_reason(report).is_some() {
+        return VERDICT_DECLINED;
+    }
+    if report.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        VERDICT_PASS
+    } else {
+        VERDICT_FAIL
+    }
 }
 
 /// One detected dependency reference.
@@ -980,6 +1040,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
                 "spec": null,
                 "subproject": null,
                 "suggested_tactical_fix_files": [],
+                VERDICT_KEY: VERDICT_DECLINED,
                 "would_be_created_here": [],
                 "error": "no-spec-arg",
             })
@@ -1037,6 +1098,8 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
             "spec": spec_slug,
             "subproject": null,
             "suggested_tactical_fix_files": [],
+            // Not a `fail`: nothing was judged, the spec could not be opened.
+            VERDICT_KEY: VERDICT_DECLINED,
             "would_be_created_here": [],
             "error": "spec-not-readable",
         });
@@ -1054,6 +1117,9 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
             "spec": spec_slug,
             "subproject": null,
             "suggested_tactical_fix_files": [],
+            // A real pass, not a decline: the spec WAS read and declares no
+            // files, so there was nothing for this gate to find wrong.
+            VERDICT_KEY: VERDICT_PASS,
             "would_be_created_here": [],
             "reason": "no-files-section",
         });
@@ -1120,6 +1186,9 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
             "spec": spec_slug,
             "subproject": subproject_field,
             "suggested_tactical_fix_files": [],
+            // Said outright, so telling this apart from a clean pass no longer
+            // depends on the reader knowing to look for `skipped`.
+            VERDICT_KEY: VERDICT_DECLINED,
             "would_be_created_here": would_be_created_here.into_iter().collect::<Vec<_>>(),
         });
     }
@@ -1223,6 +1292,9 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
         "spec": spec_slug,
         "subproject": subproject_field,
         "suggested_tactical_fix_files": suggested.into_iter().collect::<Vec<_>>(),
+        // This branch is the only one that actually judged: the verdict follows
+        // `ok` here, and never says `declined`.
+        VERDICT_KEY: if effective_ok { VERDICT_PASS } else { VERDICT_FAIL },
         "would_be_created_here": would_be_created_here.into_iter().collect::<Vec<_>>(),
     })
 }
@@ -1283,6 +1355,79 @@ mod tests {
             green.get("checks_performed").and_then(Value::as_array),
             Some(&Vec::new()),
             "a green report that verified nothing must say so, not stay silent: {green}"
+        );
+    }
+
+    /// **AC-5.** A gate that DECLINED to judge and a gate that judged and found
+    /// nothing wrong both ship `ok: true`; the only thing separating them was a
+    /// key the reader had to know to look for. The report now says which one it
+    /// is, in a field whose name is the question.
+    ///
+    /// Three legs, because a verdict that is constant proves nothing: the
+    /// declined report is not labelled a pass, the judged-clean one is, and a
+    /// judged-and-failing one is neither — so `verdict` never contradicts the
+    /// `ok` it rides beside. `ok` and `skipped` are asserted unchanged: today's
+    /// consumers read both, and this field is additive.
+    #[test]
+    fn a_declined_precheck_is_not_a_pass() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        let spec_dir = root.join(".claude").join("spec").join("demo");
+        // `find_project_root` anchors on `.claude/`.
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::create_dir_all(root.join("apps").join("api")).unwrap();
+        std::fs::create_dir_all(root.join("apps").join("web").join("src")).unwrap();
+
+        // A C# target: the JSX/import extractor and the `export`/`pub` grep have
+        // nothing to say about it, so the gate declines to judge.
+        let cs = spec_dir.join("cs.md");
+        std::fs::write(&cs, "# Demo\n\n## Files\n- apps/api/Domain/Payable.cs\n").unwrap();
+        let declined = check(&cs.to_string_lossy(), None);
+        assert_eq!(
+            declined.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "declining to judge stays fail-open: {declined}"
+        );
+        assert_eq!(
+            verdict(&declined),
+            VERDICT_DECLINED,
+            "a gate that did not look must not read as a pass: {declined}"
+        );
+        assert_eq!(
+            skip_reason(&declined),
+            Some(SKIPPED_STACK_UNSUPPORTED),
+            "the older marker keeps working — the verdict is additive: {declined}"
+        );
+
+        // Control: a stack this gate DOES parse, with nothing missing.
+        let ts = spec_dir.join("ts.md");
+        std::fs::write(&ts, "# Demo\n\n## Files\n- apps/web/src/Panel.tsx\n").unwrap();
+        let passed = check(&ts.to_string_lossy(), None);
+        assert_eq!(passed.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            verdict(&passed),
+            VERDICT_PASS,
+            "a gate that looked and found nothing wrong is a pass: {passed}"
+        );
+        assert!(
+            skip_reason(&passed).is_none(),
+            "a stack the gate understands is not reported as skipped: {passed}"
+        );
+
+        // And a report that judged and found a gap is labelled neither.
+        let gap = spec_dir.join("gap.md");
+        std::fs::write(
+            &gap,
+            "# Demo\n\n## Files\n- apps/web/src/Panel.tsx\n\n## Tasks\n\
+             - [ ] render <MissingWidget /> inside the panel\n",
+        )
+        .unwrap();
+        let failed = check(&gap.to_string_lossy(), None);
+        assert_eq!(failed.get("ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            verdict(&failed),
+            VERDICT_FAIL,
+            "the verdict must never contradict the `ok` it rides beside: {failed}"
         );
     }
 
