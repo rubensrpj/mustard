@@ -359,7 +359,11 @@ fn strip_marker(line: &str) -> &str {
 
 /// Collapse every whitespace run to a single space, so one finding stays one
 /// line in a sidecar three consumers read line-wise.
-fn one_line(raw: &str) -> String {
+///
+/// `pub(crate)` so `mark-finding` folds the DESTINATION's reason exactly as the
+/// collector folds the statement: both halves of one record are printed on one
+/// line by the close gate, and two foldings are how they would drift.
+pub(crate) fn one_line(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

@@ -234,6 +234,7 @@ mod tests {
             close: GateMode::Strict,
             debt: GateMode::Strict,
             checklist: GateMode::Strict,
+            findings: GateMode::Strict,
             qa: GateMode::Strict,
         }
     }

@@ -69,9 +69,10 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
         "finding-collect",
         "deterministic seeder of meta.json#findings from the reviewer's files \
          and the ac-proof.json removal column \
-         (commands/review/finding_collect.rs); the close sub-gate that reads the \
-         seeded key is the consumer being built around it - until it lands, this \
-         CLI face is the only way to take a collection",
+         (commands/review/finding_collect.rs); consumed IN-PROCESS by the close \
+         findings sub-gate (commands/pipeline/close_gates.rs: open_findings), \
+         which re-collects on every CLOSE - the CLI face is the standalone \
+         collection a reader takes before deciding",
     ),
     (
         "gate-regression-check",
@@ -99,6 +100,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
         "instructed by the close-gate deny remediation \
          (commands/pipeline/close_gates.rs: mark each via mustard-rt run \
          mark-checklist-item)",
+    ),
+    (
+        "mark-finding",
+        "instructed by the close-gate deny remediation, once per open finding \
+         (commands/pipeline/close_gates.rs: finding_refusal prints the exact \
+         mustard-rt run mark-finding line that settles each one)",
     ),
     (
         "metrics",
