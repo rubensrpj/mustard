@@ -151,7 +151,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
          `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
          worklist; do NOT write any file — the caller pipes your WHOLE return to \
          scan-patterns-relay, which splits it on those demarcators, so deliver every mold \
-         in one message and never worry about its size. Canonical mold format (frontmatter first): name = the \
+         in one message: the RELAY has no size limit. The CHANNEL carrying your return does, \
+         and it cuts from the FRONT — so open with your first `=== FILE:` block and write no \
+         preamble; whatever sits at the top is lost first, and it takes the earliest molds \
+         with it. Canonical mold format (frontmatter first): name = the \
          worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
          ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
          `paths` value (a YAML list — this is the one key the platform reads to decide when \
@@ -439,8 +442,9 @@ mod tests {
     fn patterns_role_block_carries_delivery_contract() {
         // The patterns block must scope to the subproject, demand the exemplar
         // reads, name the demarcated return format and forbid self-writing —
-        // the caller pipes the WHOLE return to scan-patterns-relay, which is
-        // also why the agent is told its return size does not matter.
+        // the caller pipes the WHOLE return to scan-patterns-relay. Size is
+        // stated two-sidedly: the relay has no limit, the CHANNEL does and it
+        // cuts from the front — so the block asks for blocks-first, no preamble.
         let dir = tempdir().unwrap();
         let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
         assert!(block.starts_with("ROLE: patterns"), "cue missing: {block}");

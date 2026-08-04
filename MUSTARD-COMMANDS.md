@@ -124,7 +124,7 @@ Minera o repositório para `grain.model.json` (determinístico, agnóstico de li
 | | |
 |---|---|
 | **Trigger** | despachado pelo roteador (nunca digitado); `[--root <dir>] [--out <path>]` |
-| **Backend** | `scan --full` · `scan-guards-list/apply` · `scan-patterns-sweep/list/apply/decline` · `agent-prompt-render --role guards` |
+| **Backend** | `scan --full` · `scan-guards-list/apply` · `scan-patterns-sweep/list/relay/apply/decline` · `agent-prompt-render --role guards\|patterns` |
 | **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade (+ a linha `@.claude/scan-map.md` no topo do `CLAUDE.md` do projeto) · blocos `## Guards` · moldes `{role}-pattern/SKILL.md` frescos |
 | **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ Guards (~6 linhas) e moldes — todo molde `source: scan` é varrido e re-autorado do zero a cada scan (adoção = `source: manual`); recusa vale UMA rodada |
 
@@ -140,8 +140,9 @@ flowchart TD
         gag --> gap["scan-guards-apply (stdin)<br/>~6 linhas do/don't"]
         gap --> pl["scan-patterns-list<br/>(clusters de role ≥3, sem teto)"]
         pl --> pag["Task: 1 agente mustard-patterns<br/>por subprojeto (read-only, 1 msg)"]
-        pag --> pap["scan-patterns-apply<br/>(create-only, atômico, etiqueta EN)"]
-        pag --> pd["scan-patterns-decline<br/>(recusa registrada — vale 1 rodada)"]
+        pag --> rel["scan-patterns-relay<br/>(retorno INTEIRO: stdin ou<br/>arquivo persistido via --content @path)"]
+        rel --> pap["scan-patterns-apply<br/>(create-only, atômico, etiqueta EN)"]
+        rel --> pd["scan-patterns-decline<br/>(recusa registrada — vale 1 rodada)"]
     end
 
     pap --> done(["consumido por /mustard:feature e<br/>/mustard:bugfix via digest"])
@@ -149,6 +150,8 @@ flowchart TD
 ```
 
 > Um Guard pode abrir com `[critical]` na forma checável `never <proibido> in <glob>` — vira gate de edição (`MUSTARD_GUARD_GATE_MODE=strict|warn`, default `warn`). Guards sem marca são consultivos.
+
+> **Retorno do agente de moldes.** Ele vai INTEIRO para `scan-patterns-relay`: `--content -` (stdin, o padrão) ou `--content @<caminho>` quando o harness passou do limite inline e persistiu o retorno em arquivo — o mesmo leitor aceita o envelope cru **e** o JSON do harness (desembrulha os campos `text`), e um caminho ilegível vira `ok:false` em vez de envelope vazio. `scan-patterns-apply` aceita os mesmos três canais (`-`, `@<caminho>`, corpo literal). Dividir o envelope só nas fronteiras `=== END ===` é permitido (o relay é idempotente por bloco e o relatório é aditivo); dentro de um bloco, nunca. Para medir a convergência de um subprojeto: `scan-patterns-list --subproject <dir>` (com `--rejected`, os motivos de descarte).
 
 ---
 
