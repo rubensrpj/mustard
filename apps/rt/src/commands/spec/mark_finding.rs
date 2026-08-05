@@ -148,9 +148,11 @@ pub(crate) fn mark(
         ));
     };
 
-    // Located by id alone: the two producers mint disjoint id spaces by
-    // construction (a reviewer finding is `F-<file stem>`, a ledger finding is
-    // the criterion's own id), so one id names one finding.
+    // Located by id alone: an id is the producer's own name for the discovery
+    // (`F-<file stem>` for the reviewer, the criterion id for the ledger)
+    // followed by a fingerprint of the statement, so one id names one finding —
+    // and a rewritten source cannot bring a NEW discovery in under this
+    // decision, because a different statement is a different id.
     let Some(idx) = meta.findings.iter().position(|f| f.id == id) else {
         return Err(unknown_id_message(spec, id, &meta.findings));
     };

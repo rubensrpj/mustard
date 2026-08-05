@@ -1,15 +1,16 @@
 {
-  "stage": "Execute",
+  "stage": "QaReview",
   "outcome": "Active",
-  "phase": "EXECUTE",
+  "phase": "CLOSE",
   "scope": "full",
   "lang": "pt-BR",
-  "checkpoint": "2026-08-04T20:37:54.186Z",
+  "checkpoint": "2026-08-04T21:01:47.983Z",
   "isWavePlan": true,
   "totalWaves": 3,
-  "currentWave": 2,
+  "currentWave": 3,
   "completedWaves": [
     1,
-    2
+    2,
+    3
   ]
 }

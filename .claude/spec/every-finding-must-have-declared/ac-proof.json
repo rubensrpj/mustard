@@ -119,8 +119,38 @@
       "removal_exit": null,
       "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
       "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "command": "cargo test -p mustard-rt close_orchestrate_blocks_on_open_finding",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
     }
   ],
   "amendments": [],
-  "additions": []
+  "additions": [
+    {
+      "id": "AC-8",
+      "at": "2026-08-05T00:51:04.667Z",
+      "reason": "a revisao provou que close-orchestrate chama complete_spec::finalize direto, sem atravessar gate_close_for_spec, entao o portao desta unidade fica inerte no caminho documentado e a metrica 1 da spec nao e cumprida; o usuario aprovou corrigir nesta unidade, aceitando que divida e checklist passem a ser cobrados no /pr",
+      "statement": "quando o fecho vem pelo caminho do dia a dia (close-orchestrate) e existe achado sem destino, entao o fecho e recusado ali tambem, e nao apenas no emit-phase --to CLOSE",
+      "command": "cargo test -p mustard-rt close_orchestrate_blocks_on_open_finding",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/every-finding-must-have-declared/spec.md",
+        ".claude/spec/every-finding-must-have-declared/wave-plan.md"
+      ]
+    }
+  ]
 }

@@ -1792,11 +1792,18 @@ mod tests {
             "precondition: the finding starts open"
         );
 
+        // The id is asked of the collection rather than spelled here: a finding
+        // is identified by its discovery, so its id carries a fingerprint of
+        // what was found.
+        let open = open_findings(cwd, Some("found"));
+        let [finding] = open.as_slice() else {
+            panic!("exactly one open finding was seeded, got {open:?}");
+        };
         assert_eq!(
             crate::commands::spec::mark_finding::mark(
                 dir.path(),
                 spec_dir.to_str().unwrap(),
-                "F-findings",
+                &finding.id,
                 mustard_core::domain::spec::contract::FindingRoute::Dropped(
                     "already covered by AC-2".to_string()
                 ),

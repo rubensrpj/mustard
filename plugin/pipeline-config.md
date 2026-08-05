@@ -26,7 +26,7 @@ Canonical: `ANALYZE→PLAN→EXECUTE→REVIEW→QA→CLOSE` (+`COORDINATE`). Thi
 
 ### Close — Deterministic Gate Chain
 
-`close-orchestrate` (the CLOSE step of `/mustard:pr merge`): gates = `verify-pipeline` (build+test; lint only when `stack.md [scripts]` declares), `qa-run`, `review-spans`, `docs-stale-check`, + advisory `pipeline-summary`. `overall=pass` auto-finalizes in-process, emitting `closed-followup` + `pipeline.complete`; terminal `completed` is a separate stage. Unchecked-`- [ ]` abort: a precondition of that step, not a gate.
+`close-orchestrate` (the CLOSE step of `/mustard:pr merge`): gates = `verify-pipeline` (build+test; lint only when `stack.md [scripts]` declares), `qa-run`, `review-spans`, `docs-stale-check`, `close-gates` (the sub-gates `emit-phase --to CLOSE` runs: debt markers, checklist, findings, QA, build — one refusal set for both close doors), + advisory `pipeline-summary`. `overall=pass` auto-finalizes in-process, emitting `closed-followup` + `pipeline.complete`; terminal `completed` is a separate stage.
 
 ### Spec Artifact — Two Layers
 

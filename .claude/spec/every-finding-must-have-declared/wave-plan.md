@@ -19,4 +19,7 @@ id: wave.every-finding-must-have-declared.plan
 - AC-4 — quando sobra achado aberto, entao o fecho e recusado e a recusa nomeia o achado e o comando que o resolve. Command: `cargo test -p mustard-rt findings_gate_denies_open_finding` Expect: `[1-9][0-9]* passed` Control: `cargo test -p mustard-rt run_close_gates_denies_missing_qa_when_strict`
 - AC-5 — quando todo achado tem destino declarado, inclusive um descartado COM motivo, entao o portao de achados deixa o fecho seguir. Command: `cargo test -p mustard-rt findings_gate_allows_when_every_finding_routed` Expect: `[1-9][0-9]* passed` Control: `cargo test -p mustard-rt run_close_gates_denies_missing_qa_when_strict`
 - AC-6 — quando o operador declara o destino pela porta, entao o sidecar registra destino E motivo, e a porta recusa a declaracao sem motivo. Command: `cargo test -p mustard-rt mark_finding_records_route_and_refuses_without_reason` Expect: `[1-9][0-9]* passed` Control: `cargo test -p mustard-rt run_close_gates_denies_missing_qa_when_strict`
+- **AC-8** — quando o fecho vem pelo caminho do dia a dia (close-orchestrate) e existe achado sem destino, entao o fecho e recusado ali tambem, e nao apenas no emit-phase --to CLOSE
+  Command: `cargo test -p mustard-rt close_orchestrate_blocks_on_open_finding`
+  Expect: `[1-9][0-9]* passed`
 - AC-7 — o workspace continua verde. Command: `cargo test --workspace` Expect: `[1-9][0-9]* passed`

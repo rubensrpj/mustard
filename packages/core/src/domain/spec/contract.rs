@@ -335,9 +335,14 @@ impl FindingRoute {
 /// their output in today.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingItem {
-    /// Identifier — `F-1` for a reviewer finding, or the criterion id the
-    /// ledger column belongs to (`AC-3`) so the two sides of the same
-    /// criterion stay joinable.
+    /// Identifier — the producer's own name for where the discovery was made
+    /// (`F-<findings file stem>` for a reviewer finding, the criterion id for a
+    /// ledger one, so the two sides of the same criterion stay joinable by
+    /// prefix) followed by a fingerprint of the statement. The fingerprint is
+    /// what makes the identity the DISCOVERY rather than its container: both
+    /// producers rewrite their file in place, and an id taken from the file
+    /// alone would hand the next round's finding the destination somebody
+    /// declared for the last one.
     pub id: String,
     /// Which producer wrote it.
     pub source: FindingSource,
