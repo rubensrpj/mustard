@@ -1,0 +1,31 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-04T21:01:47.992Z",
+  "parent": "every-finding-must-have-declared",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/mark_finding.rs",
+      "path": "apps/rt/src/commands/spec/mark_finding.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/spec/cli.rs",
+      "path": "apps/rt/src/commands/spec/cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/close_gates.rs",
+      "path": "apps/rt/src/commands/pipeline/close_gates.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": true
+    }
+  ]
+}

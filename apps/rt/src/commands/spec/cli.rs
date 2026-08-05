@@ -367,6 +367,38 @@ pub enum SpecCmd {
         #[arg(long)]
         reason: String,
     },
+    /// Declare the DESTINATION of one collected finding, and why it went there.
+    ///
+    /// The seeding half (`finding-collect`) decides nothing: it reads the
+    /// reviewer's `review/findings*.md` and the `removal` column of
+    /// `ac-proof.json` and records what was found. This is the other half — the
+    /// only writer of a finding's destination, mirroring `mark-checklist-item
+    /// --drop --reason`. A destination with no stated reason is REFUSED (exit
+    /// 2): it would leave the finding in exactly the silence it started in, and
+    /// the close gate would keep reading it as open.
+    ///
+    /// Terminal: a finding already carrying a destination answers
+    /// `already-routed` when the same decision is restated, and refuses a
+    /// different one rather than overwriting a decision in silence.
+    #[command(name = "mark-finding")]
+    #[command(display_order = 92)]
+    MarkFinding {
+        /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
+        /// its directory.
+        #[arg(long, alias = "from-spec")]
+        spec: Option<String>,
+        /// The finding's id, as `finding-collect` reported it (`F-findings…`
+        /// for a reviewer file, the criterion id for a ledger column).
+        #[arg(long)]
+        id: Option<String>,
+        /// Where the finding went: `criterion` | `change-request` | `queued` |
+        /// `dropped`.
+        #[arg(long)]
+        to: Option<String>,
+        /// Why it went there. Mandatory — a blank reason is refused.
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -487,6 +519,14 @@ pub fn dispatch(cmd: SpecCmd) {
                 expect,
                 reason,
             });
+        }
+        SpecCmd::MarkFinding { spec: slug, id, to, reason } => {
+            spec::mark_finding::run(
+                slug.as_deref(),
+                id.as_deref(),
+                to.as_deref(),
+                reason.as_deref(),
+            );
         }
     }
 }

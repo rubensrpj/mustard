@@ -803,7 +803,11 @@ fn classify_removal(status: &str) -> (Verdict, Removal, Option<String>) {
 ///
 /// The ledger lives beside the markdown, so the spec directory is always the
 /// file's parent — one rule for all three spellings.
-fn resolve_spec_file(root: &Path, spec: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)` so the finding collector reaches the spec directory by exactly
+/// this rule: it reads the ledger this module writes, and a second resolver is
+/// how the two would end up pointing at different specs for the same name.
+pub(crate) fn resolve_spec_file(root: &Path, spec: &str) -> Option<PathBuf> {
     let as_path = Path::new(spec);
     if as_path.is_file() {
         return Some(as_path.to_path_buf());

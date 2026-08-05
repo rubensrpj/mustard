@@ -1,0 +1,21 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-04T20:08:10.907Z",
+  "parent": "every-finding-must-have-declared",
+  "checklist": [
+    {
+      "label": "packages/core/src/domain/spec/contract.rs",
+      "path": "packages/core/src/domain/spec/contract.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/domain/meta.rs",
+      "path": "packages/core/src/domain/meta.rs",
+      "done": true
+    }
+  ]
+}

@@ -1345,6 +1345,9 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
         // in each WAVE's sidecar after the scaffold — never in the root meta
         // (explicit OUT of the checklist-progresso spec).
         checklist: Vec::new(),
+        // Findings are seeded by the collector from what the review and the
+        // proof ledger actually recorded — never invented at draft time.
+        findings: Vec::new(),
         raw: serde_json::Value::Null,
     }
 }
