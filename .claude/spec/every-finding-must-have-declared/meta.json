@@ -7,6 +7,80 @@
   "checkpoint": "2026-08-04T21:01:47.983Z",
   "isWavePlan": true,
   "totalWaves": 3,
+  "findings": [
+    {
+      "id": "F-findings-apps-rt-2f42e8e7",
+      "source": "review",
+      "statement": "MINOR — arquivo de revisão limpo ainda cunha pseudo-achado",
+      "routed": {
+        "kind": "queued_work",
+        "reason": "atrito real e recorrente: revisao aprovada sem achados cunha um pseudo-achado com statement none, e toda unidade passa a precisar descarta-lo. O coletor precisa reconhecer a forma vazia. Nao entra aqui porque muda o leitor de markdown, que acabou de ser revisado e aprovado"
+      }
+    },
+    {
+      "id": "F-findings-apps-rt-46d2677b",
+      "source": "review",
+      "statement": "MINOR — forma dos argumentos diverge do irmão",
+      "routed": {
+        "kind": "dropped",
+        "reason": "divergencia deliberada e ja justificada no modulo: Option<String> com validacao a mao compra o texto de recusa didatico que um String obrigatorio do clap nao produz. Uniformizar custaria a mensagem, que e metade do valor da porta"
+      }
+    },
+    {
+      "id": "F-findings-apps-rt-7b829564",
+      "source": "review",
+      "statement": "MINOR — o build roda duas vezes no /pr",
+      "routed": {
+        "kind": "queued_work",
+        "reason": "close-orchestrate passa a rodar build/type/lint/test duas vezes (verify-pipeline e o sub-portao de build). Neste repo so buildCommand esta configurado, entao e rebuild no-op; num projeto com testCommand e uma segunda suite inteira no /pr. Otimizacao propria, com medicao antes"
+      }
+    },
+    {
+      "id": "F-findings-apps-rt-aa23b677",
+      "source": "review",
+      "statement": "MAJOR — os três testes do change request não são nomeados por AC nenhum",
+      "routed": {
+        "kind": "queued_work",
+        "reason": "nao e corrigivel nesta unidade e a recusa e a prova: ac-add foi tentado e respondeu criterion_not_proven, porque o comportamento ja esta em pe e o comando volta VERDE. Falta ao harness uma porta para prender teste escrito DENTRO da propria unidade, descoberto na revisao. Unidade propria"
+      }
+    },
+    {
+      "id": "F-findings-apps-rt-aa725284",
+      "source": "review",
+      "statement": "MINOR — o portão ignora o `ok` do próprio coletor",
+      "routed": {
+        "kind": "change_request",
+        "reason": "corrigido nesta passada: open_findings passa a respeitar FindingCollectReport::ok e fica em silencio quando a coleta nao pode ser gravada, porque a remediacao impressa (mark-finding) escreve no mesmo sidecar e falharia igual. Preso pelo teste findings_gate_stays_quiet_when_the_collection_could_not_be_recorded"
+      }
+    },
+    {
+      "id": "F-findings-packages-core-3592965d",
+      "source": "review",
+      "statement": "MINOR — os três testes do change request não são nomeados por AC",
+      "routed": {
+        "kind": "queued_work",
+        "reason": "mesmo achado que F-findings-apps-rt-aa23b677, visto pelo revisor do core. Mesma unidade de follow-up"
+      }
+    },
+    {
+      "id": "F-findings-packages-core-84394c50",
+      "source": "review",
+      "statement": "MINOR — AC-8 sem linha de Control",
+      "routed": {
+        "kind": "dropped",
+        "reason": "Control e opcional por design e sua ausencia e WARN, nunca recusa. Acrescenta-lo agora exigiria ac-amend, que recusa substituto verde, e o AC-8 ja tem prova vermelha registrada no ledger. Decisao consciente de nao mexer"
+      }
+    },
+    {
+      "id": "F-findings-packages-core-8a0cfb78",
+      "source": "review",
+      "statement": "MAJOR — o portão descarta o `ok` do próprio coletor",
+      "routed": {
+        "kind": "change_request",
+        "reason": "mesmo achado que F-findings-apps-rt-aa725284, visto pelo revisor do core e reproduzido ao vivo por ele. Corrigido na mesma passada, mesmo teste"
+      }
+    }
+  ],
   "currentWave": 3,
   "completedWaves": [
     1,

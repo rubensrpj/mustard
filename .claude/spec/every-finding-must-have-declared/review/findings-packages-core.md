@@ -1,49 +1,29 @@
-# Review — packages/core (+ rt cascade)
+# Re-review — packages/core (após o ciclo de correção)
 
-## AC results — every named test run, real output
+## VERDICT: APPROVED — 0 blocking findings
 
-- AC-1 `cargo test -p mustard-core finding_item` → `5 passed, 624 filtered out` PASS (control `checklist_round_trips_with_done_state` → `1 passed`)
-- AC-2 `cargo test -p mustard-rt finding_collect_reads_both_sources` → `2 passed` PASS
-- AC-3 `finding_collect_preserves_declared_route` → `1 passed` (lib + bin) PASS
-- AC-4 `findings_gate_denies_open_finding` → `1 passed` PASS (name is `…_and_names_the_command`, prefix matches the filter)
-- AC-5 `findings_gate_allows_when_every_finding_routed` → `1 passed` PASS
-- AC-6 `mark_finding_records_route_and_refuses_without_reason` → `1 passed` PASS
-- AC-7 `cargo test --workspace` → `4757 passed, 0 failed, 6 ignored (70 suites)` PASS. `cargo clippy --workspace --all-targets` exit 0 (no new deny).
+Guards do core mantidos: `domain/spec/contract.rs` e `domain/meta.rs` continuam livres de IO; o único caminho de escrita é `write_meta` -> `io::fs::write_atomic`; nenhum `unwrap`/`expect` fora de `#[cfg(test)]`; a mudança em `Meta` é puramente aditiva. Nenhum molde do core cobre `domain/spec/**` — verificado, não presumido.
 
-## Guards / molds
+## Acceptance Criteria — cada comando rodado, saída real
 
-Clean. No `*-pattern` skill matches `domain/spec/contract.rs` (all molds scope to `domain/model/view/**` or `domain/economy/**`). Core writes go through `write_meta` → `io::fs::write_atomic`; `domain/spec` stays IO-free; no `unwrap/expect` outside `#[cfg(test)]`. The rt four-registration guard is satisfied for both new commands (enum + dispatch + `run_command_surface` 93 + `template_parity` whitelist); `mustard-rt run --help` lists `finding-collect` and `mark-finding`.
+Todos os oito verdes, com controle verde ao lado onde declarado. `cargo test --workspace` → 0 failed.
 
-## Live proof the feature works
+## Prova ponta a ponta contra o binário compilado
 
-Built binary, temp project: `emit-phase --to CLOSE` exits **1** naming both producers and the exact `mark-finding` line; after routing both, exit **0**. Default is strict without setting `MUSTARD_FINDINGS_GATE_MODE`.
+- Prosa real de revisor: o coletor sobre cópias dos próprios `review/findings-*.md` desta spec rendeu **8 registros distintos**, um por cabeçalho com severidade; marcadores de resultado de AC corretamente não cunhados.
+- **O CRÍTICO da rodada anterior está corrigido:** achado da rodada 1 roteado `--to dropped`, `findings.md` sobrescrito com a rodada 2, `emit-phase --to CLOSE` → **exit 1**, nomeando `F-findings-1531cd9f` e a linha exata de `mark-finding`; a decisão da rodada 1 sobreviveu no registro. Antes: exit 0 com rota herdada.
+- **O MAIOR da rodada anterior está corrigido:** fonte que para de reportar mantém o registro roteado (`retained`) e descarta só os indecisos (`stale`).
+- **AC-8 no caminho real:** `close-orchestrate` emitiu linha `"name": "close-gates", "ok": false` carregando a recusa verbatim, `overall: "fail"`, `"chained": false`. Controle positivo: depois do `mark-finding --to queued`, a mesma linha voltou `ok: true`.
+- **Nenhum dano ao sidecar:** rodar o coletor sobre o `meta.json` real acrescentou só a chave `findings`; todas as outras linhas byte-idênticas.
 
-## CRITICAL — the gate is silently defeated on the normal retry path
+## MAJOR — o portão descarta o `ok` do próprio coletor
 
-`finding_collect.rs:209/232`: identity is `(source, file-stem | criterion-id)`, never the discovery, while the statement is refreshed from disk. `review_result` overwrites `review/findings.md` under the same name on every review round, so round 2's finding is born already routed by round 1's decision. Proven end-to-end:
+`apps/rt/src/commands/pipeline/close_gates.rs:572` — `open_findings` descarta `FindingCollectReport::ok`. Reproduzido ao vivo: um diretório de spec com `review/findings.md` e **sem** `meta.json` recusa o CLOSE, enquanto a remediação impressa e o seu fallback falham os dois (`error: spec "demo" carries no readable meta.json…`, `"error": "meta-not-found"`). Só `MUSTARD_FINDINGS_GATE_MODE=warn` escapa. Alcance baixo, mas é a terceira revisão seguida que o aponta.
 
-```
-# round 1 finding routed  --to dropped --reason "cosmetic, not worth a wave"
-# findings.md overwritten with "ROUND TWO: the collector inherits a stale decision"
-$ mustard-rt run emit-phase --to CLOSE --spec demo2   → exit=0
-  "statement": "ROUND TWO: the collector inherits a stale decision",
-  "routed": { "kind": "dropped", "reason": "cosmetic, not worth a wave" }
-```
+## MINOR — os três testes do change request não são nomeados por AC
 
-CLOSE passed with a finding nobody ever decided about — exactly the "denunciar deixa de significar alguma coisa" the unit exists to close. Same hole on the ledger side: `AC-1` flipping `survived` → `evidence-removed` is a *different* discovery under the same id and inherits the route.
+`.claude/spec/every-finding-must-have-declared/spec.md:53` — as três sub-requisições do change request de 21:26 são cobertas só pela suíte do AC-7; nenhum AC nomeia seus testes, contra a convenção que os outros sete critérios seguem.
 
-## MAJOR — the collector destroys the one datum it says it preserves
+## MINOR — AC-8 sem linha de Control
 
-`finding_collect.rs:233` builds only from `fresh`, so a source that transiently stops reporting drops the record *and its declared destination*. Proven: ledger `survived` → mark `--to criterion` → ledger `red` (`"stale": 1`) → ledger `survived` again → `"open": 1` and `routed` gone. This contradicts the module doc ("a re-collection preserves it VERBATIM") and the unit's own DECISIONS entry ("a silent rewrite loses the one datum no collector can reproduce") — here it is a silent delete.
-
-## MINOR — the gate ignores the collector's own `ok`
-
-`close_gates.rs:572` ignores `FindingCollectReport::ok`: a spec dir with findings but no readable `meta.json` blocks CLOSE on findings that `mark-finding` refuses to route ("take a collection with `finding-collect` first", which itself errors `meta-not-found`) — circular, escapable only via `MUSTARD_FINDINGS_GATE_MODE=warn`. Low reachability (scaffolded specs always carry `meta.json`).
-
-## MINOR — one finding per reviewer file
-
-One finding per reviewer *file* with the first quotable line as the statement: a findings file holding five findings is settled by one destination that names only the first.
-
-## Change requests
-
-The two CHANGE REQUESTS ("ar", "segue") carry no requirement, so nothing was silently dropped there.
+`.claude/spec/every-finding-must-have-declared/spec.md:59` — AC-8 não declara `Control:`, diferente de AC-1..AC-6.

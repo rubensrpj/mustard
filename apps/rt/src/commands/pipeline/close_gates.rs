@@ -569,11 +569,27 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 ///
 /// Fail-quiet on an unnamed spec: with no spec there is no work unit whose
 /// findings could be owed, and this gate must not answer for one it cannot name.
+///
+/// Fail-quiet on a collection that could not be RECORDED, for a harder reason:
+/// the remedy this gate prints would not work. `report.ok` is false exactly when
+/// the findings had nowhere to be written — an unresolved spec, a missing or
+/// unreadable `meta.json`, a failed write — and `mark-finding` writes to that
+/// same sidecar, so refusing here would name a command that answers
+/// `meta-not-found` and send the operator in a circle with only
+/// `MUSTARD_FINDINGS_GATE_MODE=warn` as a way out. A gate whose remediation
+/// cannot succeed is worse than one that stays silent: it teaches the reader
+/// that the escape hatch is the normal path. The broken state itself is not
+/// invisible — a spec with no readable sidecar is what the surrounding gates and
+/// `doctor` already speak about.
 fn open_findings(cwd: &str, spec: Option<&str>) -> Vec<FindingItem> {
     let Some(spec) = spec.filter(|s| !s.is_empty()) else {
         return Vec::new();
     };
-    finding_collect::collect(Path::new(cwd), spec)
+    let report = finding_collect::collect(Path::new(cwd), spec);
+    if !report.ok {
+        return Vec::new();
+    }
+    report
         .findings
         .into_iter()
         .filter(FindingItem::is_open)
@@ -1825,6 +1841,44 @@ mod tests {
         assert!(open_findings(dir.path().to_str().unwrap(), None).is_empty());
         let verdict = run_close_gates(dir.path().to_str().unwrap(), Some("quiet"), only_findings());
         assert!(!verdict.is_blocking(), "{verdict:?}");
+    }
+
+    /// A collection that could not be RECORDED never refuses CLOSE — because the
+    /// refusal would name a command that cannot succeed.
+    ///
+    /// The shape: a spec directory carrying a reviewer's findings file but no
+    /// readable `meta.json`. The findings are real, but they have nowhere to be
+    /// written, so `mark-finding` — the one remedy the refusal prints — answers
+    /// `meta-not-found` too. Refusing here left the operator circling between two
+    /// commands that both fail, with `MUSTARD_FINDINGS_GATE_MODE=warn` as the
+    /// only exit; three consecutive reviews reported it before it was settled.
+    #[test]
+    fn findings_gate_stays_quiet_when_the_collection_could_not_be_recorded() {
+        let dir = make_project();
+        let cwd = dir.path().to_str().unwrap();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("orphan").unwrap();
+        std::fs::create_dir_all(sp.dir().join("review")).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Spec\n").unwrap();
+        std::fs::write(
+            sp.dir().join("review").join("findings.md"),
+            "## MAJOR — something real was found here\n",
+        )
+        .unwrap();
+        // No `meta.json` is written: the collection has nowhere to land.
+        assert!(
+            !std::fs::exists(sp.dir().join("meta.json")).unwrap_or(false),
+            "the shape under test is a spec dir with no readable sidecar"
+        );
+
+        assert!(
+            open_findings(cwd, Some("orphan")).is_empty(),
+            "an unrecordable collection must not be read as owed work"
+        );
+        let verdict = run_close_gates(cwd, Some("orphan"), only_findings());
+        assert!(
+            !verdict.is_blocking(),
+            "a gate whose remedy cannot succeed must not refuse: {verdict:?}"
+        );
     }
 
     /// Run the close gates over a spec whose only recorded verdict is a `skip`
