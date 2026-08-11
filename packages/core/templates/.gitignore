@@ -8,6 +8,20 @@
 # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
 worktrees/
 
+# Sanctioned throwaway evidence: the write gate lets a diagnosis write here on a
+# protected integration base (`work_branch_gate`), so it must be ignored by
+# construction — scratch decides between hypotheses, it never joins the unit.
+scratch/
+
 # Per-spec event log + blob spill.
 spec/*/.events/
 spec/*/.blobs/
+
+# Runtime output the harness writes into `.claude/` while working. A spec's own
+# content stays VERSIONED — it belongs to its unit — but these sidecars are
+# regenerable, and untracked they are what blocks the exit ritual: the harness
+# competing with itself for a clean tree.
+feature-digest.json
+spec/*/qa-report.json
+spec/*/qa-report.html
+spec/*/qa/
