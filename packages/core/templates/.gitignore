@@ -3,7 +3,12 @@
 .harness/
 .metrics/
 .agent-state/
+.agent-memory/
 .pipeline-states/
+
+# Compaction memory (session-scoped, pruned after 24h by the session cleanup
+# observer, which is also the only thing that ever reads it).
+.compact-state/
 
 # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
 worktrees/
@@ -13,9 +18,31 @@ worktrees/
 # construction — scratch decides between hypotheses, it never joins the unit.
 scratch/
 
+# Rendered dispatch prompts (`agent-prompt-render --emit ref` writes the full
+# text to a file and prints only the reference). Regenerable from the same
+# render — one directory per spec, plus the spec-less one.
+.dispatch/
+spec/*/.dispatch/
+
 # Per-spec event log + blob spill.
 spec/*/.events/
 spec/*/.blobs/
+
+# Per-machine settings the installer writes over the seeded ones (statusLine
+# binary path and friends) — a real path on one machine, wrong on every other.
+settings.local.json
+
+# Local session/editor state and the runtime knowledge + memory stores. Written
+# per project, regenerable, and none of it is code.
+knowledge/
+memory/
+agent-memory/
+.session/
+.obsidian/
+
+# Dashboard runtime handles (the port file and the pid of the live server).
+.dashboard.pid
+.dashboard.port
 
 # Runtime output the harness writes into `.claude/` while working. A spec's own
 # content stays VERSIONED — it belongs to its unit — but these sidecars are
@@ -28,3 +55,8 @@ spec/*/.blobs/
 feature-digest.json
 spec/*/qa-report.json
 spec/*/qa-report.html
+spec/*/.memory-approved
+spec/*/economy-baselines.json
+spec/*/wave-*/diff.md
+spec/*/wave-*/prompt.md
+spec/*/wave-*/warnings.txt

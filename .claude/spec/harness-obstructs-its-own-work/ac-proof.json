@@ -156,13 +156,13 @@
     },
     {
       "id": "AC-5",
-      "command": "cargo test -p mustard-rt a_refused_advance_names_dirt_only_when_the_tree_was_dirty",
+      "command": "cargo test -p mustard-rt a_refused_advance_separates_divergence_from_dirt",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-rt git_settle",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
@@ -190,20 +190,20 @@
     },
     {
       "id": "AC-7",
-      "command": "cargo test -p mustard-core the_seeded_ignore_hides_every_artefact_the_harness_writes",
+      "command": "cargo test -p mustard-core the_seeded_ignore_hides_every_path_the_runtime_writes",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-core claude_paths",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s\n     Running unittests src\\lib."
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Compiling mustard-core v0.1.34 (C:\\Atiz\\mustard\\packages\\core)\n    Finished `test` profile [unoptimi"
     },
     {
       "id": "AC-8",
@@ -240,7 +240,48 @@
       "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
     }
   ],
-  "amendments": [],
+  "amendments": [
+    {
+      "id": "AC-7",
+      "at": "2026-08-11T18:12:30.171Z",
+      "reason": "review MAJOR: the criterion claimed every harness artefact is hidden while the test asserted a self-chosen 4-item list; a fresh repo seeded with the template still shows 7 untracked runtime paths that this repo's own root ignore already covers — the same omission class as the previous round's CRITICAL",
+      "superseded_command": "cargo test -p mustard-core the_seeded_ignore_hides_every_artefact_the_harness_writes",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when the seeded ignore file is in place and the harness writes its artefacts, then `git status --porcelain` reports nothing.",
+      "command": "cargo test -p mustard-core the_seeded_ignore_hides_every_path_the_runtime_writes",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when a fresh project is seeded with the shipped ignore template and every path the runtime actually writes is created, then git reports nothing dirty — the paths come from the writers in the code, not from a list the test chose for itself",
+      "rewrote": [
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-gate.fix-loop.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-prose-apps-rt.fix-loop.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-settle-apps-rt.fix-loop.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/spec.md",
+        ".claude/spec/harness-obstructs-its-own-work/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-5",
+      "at": "2026-08-11T18:13:00.413Z",
+      "reason": "review MINOR: labelling dirty-tree whenever status is non-empty sends the operator to clean the tree when the actual obstacle is a diverged base that no cleaning will fix",
+      "superseded_command": "cargo test -p mustard-rt a_refused_advance_names_dirt_only_when_the_tree_was_dirty",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when git refuses the fast-forward, then the report names `dirty-tree` if the tree was dirty and `non-ff-or-no-remote` if it was clean.",
+      "command": "cargo test -p mustard-rt a_refused_advance_separates_divergence_from_dirt",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when git refuses the fast-forward, then the report separates a genuine divergence from a merely dirty tree, so the operator is pointed at the real obstacle",
+      "rewrote": [
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-gate.fix-loop.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-prose-apps-rt.fix-loop.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/.dispatch/wave-0-settle-apps-rt.fix-loop.prompt.md",
+        ".claude/spec/harness-obstructs-its-own-work/spec.md",
+        ".claude/spec/harness-obstructs-its-own-work/wave-plan.md"
+      ]
+    }
+  ],
   "additions": [
     {
       "id": "AC-11",

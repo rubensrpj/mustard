@@ -406,14 +406,32 @@ fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
         if git_ok(main, &["merge", "--ff-only", &format!("origin/{current}")]) {
             json!({ "branch": current, "updated": true })
         } else {
-            // WHY git refused, asked AFTER the fact. A dirty tree is the common
-            // case and deserves its own name; anything else is a real divergence
-            // or an unreachable remote. An unreadable status reads as clean: it
-            // is the absence of a measurement, and inventing dirt from it would
-            // put the old guess back in a new place.
+            // WHY git refused, asked AFTER the fact — and asked of GIT, not of
+            // the tree's mood. The question that separates the two obstacles is
+            // whether a fast-forward was possible AT ALL: if the base is an
+            // ancestor of origin's tip, the advance was a fast-forward git
+            // declined to perform, and the only thing that declines it is a path
+            // in the working tree. If it is NOT an ancestor, the histories have
+            // parted (or origin/<base> is unknown) and no amount of cleaning will
+            // help.
+            //
+            // Reading the dirt ALONE mislabelled exactly the case where being
+            // pointed at the wrong obstacle costs most: a genuine divergence on a
+            // coincidentally dirty tree answered `dirty-tree`, sending the
+            // operator to tidy files while the real problem was the history
+            // (found in review, 2026-08-11). The dirt still has to be there for
+            // `dirty-tree` to be claimed — a refusal on a clean tree that git
+            // could have fast-forwarded is something neither name explains, and
+            // guessing "dirty" over it would put the old invention back.
+            //
+            // An unreadable status reads as clean, and an unmeasurable ancestry
+            // reads as divergence: both are the absence of a measurement, and
+            // both fall to the name that promises the least.
+            let ff_possible =
+                git_ok(main, &["merge-base", "--is-ancestor", &current, &format!("origin/{current}")]);
             let dirty =
                 git_out(main, &["status", "--porcelain"]).is_some_and(|s| !s.trim().is_empty());
-            let reason = if dirty { "dirty-tree" } else { "non-ff-or-no-remote" };
+            let reason = if ff_possible && dirty { "dirty-tree" } else { "non-ff-or-no-remote" };
             json!({ "branch": current, "updated": false, "reason": reason })
         }
     } else {
@@ -716,10 +734,28 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // user back on the work branch, so a pass that changed nothing also LOOKS
     // like it changed nothing. Best-effort: a checkout git refuses is reported,
     // never forced.
-    let restored_to_unit = in_place
-        && !base_advanced
-        && in_place_exited
-        && git_ok(&main, &["checkout", &unit_branch]);
+    //
+    // Answered from the FACT — where the checkout actually IS when the pass ends
+    // — and not from the exit status of the restore, for the same reason the
+    // prune gate reads `holds_origin_tip` rather than the fetch's status. Every
+    // way of ARRIVING on the unit branch is the same news to the operator: we put
+    // them back, or the exit checkout was refused and they never left. A field
+    // computed from "did our restore run" answered `false` for the second one,
+    // about a session already exactly where the work is (found in review,
+    // 2026-08-11). The question it answers is "am I still on my unit?", so only
+    // the answer can decide it.
+    //
+    // A pruned unit leaves the checkout on its base and reports `false` — there
+    // is no branch left to be on.
+    let restored_to_unit = in_place && {
+        if in_place_exited && !base_advanced {
+            // Best-effort, and only where we are the ones who moved them: a
+            // checkout git refuses shows up as `false` below, measured rather
+            // than assumed, and nothing is ever forced.
+            let _ = git_ok(&main, &["checkout", &unit_branch]);
+        }
+        git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default() == unit_branch
+    };
 
     // One entry per repository the unit lives in. Settle still ACTS only on the
     // repo it was pointed at — this is the report refusing to claim the unit is
@@ -1624,7 +1660,7 @@ mod tests {
     /// The assertion stays because the BEHAVIOUR must, and it is now measured
     /// against git rather than against a scan that had to agree with git.
     ///
-    /// The refusal half moved to `a_refused_advance_names_dirt_only_when_the_tree_was_dirty`,
+    /// The refusal half moved to `a_refused_advance_separates_divergence_from_dirt`,
     /// which is where a tree git really does refuse now belongs.
     #[test]
     fn gitlink_only_dirt() {
@@ -1779,6 +1815,18 @@ mod tests {
     /// prune still refuses, because origin moved on and the advance was blocked.
     /// Then the obstacle is removed and the same command prunes: the advance is
     /// the only variable in the pair.
+    ///
+    /// The squash direction — ancestry FALSE while the unit is merged — cannot be
+    /// staged from a git fixture at all: it is merged only because the provider
+    /// says so, and this command asks the provider through a real `gh` process.
+    /// It is proven one layer down, on the ports, by
+    /// `branch_state::tests::classifier_answers_one_state_per_situation`: a unit
+    /// whose refs are contained NOWHERE and are accounted for solely by a merged
+    /// pull request's frozen head classifies `awaiting-prune`, with
+    /// `!ancestry`. What this test adds on top is that the prune gate consumes
+    /// that verdict without a second opinion: the refusal below happens to a unit
+    /// the report already calls `merged: true`, so the gate is demonstrably not
+    /// reusing the merge evidence — and the only thing it does read is the base.
     #[test]
     fn prune_authorisation_reads_the_base_advance_not_unit_ancestry() {
         let (_dir, main) = fixture();
@@ -1809,6 +1857,12 @@ mod tests {
         );
         assert_eq!(v["reason"], json!("base-behind"), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
+        assert_eq!(
+            v["unit"]["merged"],
+            json!(true),
+            "the merge verification passed and the prune still refused — the gate \
+             does not reuse that evidence, it reads the base: {v}",
+        );
         assert!(
             git_ok(&main, &["rev-parse", "--verify", "dev_done"]),
             "…so an ancestry gate would have pruned here, and this one did not: {v}",
@@ -1835,7 +1889,7 @@ mod tests {
     /// the advance carried `partners.graphql.ts`, and the same merge run by hand
     /// went through without a complaint.
     ///
-    /// Both halves live in `a_refused_advance_names_dirt_only_when_the_tree_was_dirty`,
+    /// Both halves live in `a_refused_advance_separates_divergence_from_dirt`,
     /// where dirt git really does refuse still stops the advance.
     #[test]
     fn a_dirty_tree_the_advance_does_not_touch_still_fast_forwards() {
@@ -1868,26 +1922,35 @@ mod tests {
         );
     }
 
-    /// AC-5 — the SAME diagnosis the pre-check used to give, now produced after
-    /// the attempt instead of instead of it: `dirty-tree` when the tree really
-    /// was dirty, `non-ff-or-no-remote` when it was clean.
+    /// AC-5 — a refused advance names the obstacle git actually hit: `dirty-tree`
+    /// only where a fast-forward was possible and the tree stopped it,
+    /// `non-ff-or-no-remote` where the histories have parted.
     ///
-    /// Both halves in one test on purpose: a refusal reason that names dirt is
-    /// only worth anything if the clean case names something else.
+    /// Three legs, because the interesting case is the one where the two
+    /// conditions disagree. A diagnosis read off the tree alone answers
+    /// `dirty-tree` for ANY refusal over a dirty tree — including a divergence
+    /// that dirt had nothing to do with, which sends the operator to clean files
+    /// while the real obstacle is the history (found in review, 2026-08-11). Leg
+    /// 3 is exactly that case, and it is what the pre-change code got wrong.
     #[test]
-    fn a_refused_advance_names_dirt_only_when_the_tree_was_dirty() {
-        // DIRTY — git refuses rather than overwrite the untracked squatter, and
-        // `status --porcelain` confirms the tree really was dirty.
+    fn a_refused_advance_separates_divergence_from_dirt() {
+        // 1. DIRT — the base IS an ancestor of origin's tip, so the advance was a
+        // fast-forward; git refused only because an untracked file squats on the
+        // incoming path. Cleaning really is the move here.
         let (_dir, main) = fixture();
         block_the_advance(&main);
+        assert!(
+            git_ok(&main, &["merge-base", "--is-ancestor", "dev", "origin/dev"]),
+            "the fixture must reproduce a possible FAST-FORWARD, refused by the tree",
+        );
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
         assert_eq!(v["baseCheckout"]["reason"], json!("dirty-tree"), "{v}");
         assert_eq!(v["baseAdvance"]["reason"], json!("dirty-tree"), "the refusal repeats it: {v}");
 
-        // CLEAN — the base carries a commit origin never saw, so the advance is
-        // not a fast-forward at all. Nothing is modified, and the diagnosis must
-        // not invent dirt to explain a divergence.
+        // 2. DIVERGENCE on a clean tree — the base carries a commit origin never
+        // saw, so the advance is not a fast-forward at all. Nothing is modified,
+        // and the diagnosis must not invent dirt to explain a divergence.
         let (_dir2, main2) = fixture();
         std::fs::write(main2.join("local-only.txt"), "committed here, never pushed").expect("file");
         git(&main2, &["add", "-A"]);
@@ -1900,6 +1963,29 @@ mod tests {
         let v = settle_at(&main2, Some("dev_done"));
         assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
         assert_eq!(v["baseCheckout"]["reason"], json!("non-ff-or-no-remote"), "{v}");
+
+        // 3. BOTH — the same divergence, with dirt that has nothing to do with
+        // it. The obstacle is still the history: no cleaning of `unrelated.txt`
+        // will ever make this a fast-forward. The pre-change diagnosis read the
+        // tree alone and answered `dirty-tree` here.
+        let (_dir3, main3) = fixture();
+        std::fs::write(main3.join("local-only.txt"), "committed here, never pushed").expect("file");
+        git(&main3, &["add", "-A"]);
+        git(&main3, &["commit", "-m", "diverge the base"]);
+        std::fs::write(main3.join("unrelated.txt"), "dirt the advance never touches").expect("dirt");
+        let dirt = git_out(&main3, &["status", "--porcelain"]).expect("status");
+        assert!(dirt.contains("unrelated.txt"), "the fixture must ALSO be dirty: {dirt:?}");
+        assert!(
+            !git_ok(&main3, &["merge-base", "--is-ancestor", "dev", "origin/dev"]),
+            "…while the base is genuinely diverged",
+        );
+        let v = settle_at(&main3, Some("dev_done"));
+        assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
+        assert_eq!(
+            v["baseCheckout"]["reason"],
+            json!("non-ff-or-no-remote"),
+            "a divergence stays a divergence, however dirty the tree happens to be: {v}",
+        );
     }
 
     /// A base left behind must not answer `ok:true` — AND must not be pruned
@@ -1953,9 +2039,9 @@ mod tests {
     /// submodule's only dirt was `.claude/feature-digest.json`, written by the
     /// digest, and it left the base behind.
     ///
-    /// Paired with `a_refused_advance_names_dirt_only_when_the_tree_was_dirty`,
-    /// so this cannot widen into "never dirty": an untracked file that COLLIDES
-    /// with an incoming path still stops the advance, because git stops it.
+    /// Paired with `a_refused_advance_separates_divergence_from_dirt`, so this
+    /// cannot widen into "never dirty": an untracked file that COLLIDES with an
+    /// incoming path still stops the advance, because git stops it.
     #[test]
     fn untracked_scratch_does_not_block_the_advance() {
         let (_dir, main) = fixture();
@@ -2079,9 +2165,14 @@ mod tests {
     /// incident look like data loss even though nothing was lost. A pass that
     /// changed nothing has to LOOK like a pass that changed nothing.
     ///
-    /// Both halves, so the restore cannot become unconditional: the same unit
-    /// over a base that CAN advance is pruned, and then the checkout stays on the
-    /// base — there is no work branch left to go back to.
+    /// Three legs, because the field answers WHERE THE OPERATOR IS and that has
+    /// three shapes. The restore cannot become unconditional: the same unit over
+    /// a base that CAN advance is pruned, and then the checkout stays on the base
+    /// and the field reads `false` — there is no work branch left to go back to.
+    /// And the field cannot be read off the restore's exit status either: when
+    /// the exit checkout was itself refused, nobody ever left the unit branch,
+    /// and a `false` there would describe a session that is already exactly where
+    /// the work is (found in review, 2026-08-11).
     #[test]
     fn a_refused_prune_restores_the_unit_branch() {
         let (_dir, main) = fixture();
@@ -2141,6 +2232,40 @@ mod tests {
             git_out(&main2, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
             Some("dev"),
             "…and the checkout stays on the base it just advanced: {v}",
+        );
+
+        // The third leg: the exit checkout is itself refused, so the pass never
+        // moved the operator anywhere. `inplace.txt` is tracked on the unit
+        // branch and absent from the base, so a local edit to it makes git refuse
+        // to check the base out — measured below rather than assumed.
+        let (_dir3, main3) = fixture();
+        in_place_unit(&main3);
+        git(&main3, &["checkout", "dev"]);
+        std::fs::write(main3.join("diverge.txt"), "committed here, never pushed").expect("file");
+        git(&main3, &["add", "-A"]);
+        git(&main3, &["commit", "-m", "the base diverges from origin"]);
+        git(&main3, &["checkout", "dev_inplace"]);
+        std::fs::write(main3.join("inplace.txt"), "edited, and only this branch has it")
+            .expect("overlapping local change");
+        assert!(
+            !git_ok(&main3, &["checkout", "dev"]),
+            "the fixture must reproduce a REFUSED exit checkout — otherwise it \
+             proves nothing",
+        );
+
+        let v = settle_at(&main3, Some("dev_inplace"));
+
+        assert_eq!(v["unit"]["action"], json!("partial"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
+        assert_eq!(
+            v["unit"]["restoredToUnit"],
+            json!(true),
+            "nobody left the unit branch, so the report must not claim otherwise: {v}",
+        );
+        assert_eq!(
+            git_out(&main3, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("dev_inplace"),
+            "…and the fact backs it: {v}",
         );
     }
 }

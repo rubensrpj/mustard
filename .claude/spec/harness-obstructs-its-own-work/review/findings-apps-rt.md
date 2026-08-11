@@ -1,64 +1,57 @@
-# Review — apps/rt — REJECTED (1 critical, 1 major, 1 minor)
+# Review — apps/rt — APPROVED (0 critical, 1 major, 3 minor)
 
-## AC results (reviewer ran every command)
+`cargo test --workspace` → 4788 passed, 0 failed, 6 ignored (exit 0).
+`cargo clippy --workspace --all-targets` → 0 errors, 173 pre-existing warnings.
+Every AC run with real output: AC-1..AC-9, AC-11, AC-13, AC-14 pass (several report `1 passed`
+on each of two targets, since the module compiles into both the lib and bin test binaries);
+AC-12 `git check-ignore` exit 0; AC-10 `cargo build --workspace` 0 errors.
+Controls: `git_settle` 28×2 · `work_branch_gate` · `prose_teaches` 10 · `claude_paths` 16 ·
+`run_command_surface` 8 · `template_parity` 3 — all green.
 
-AC-1..AC-10 all PASS. Controls: `git_settle` 52 passed · `work_branch_gate` 21 passed ·
-`prose_teaches` 10 passed · `claude_paths` 16 passed. `cargo test --workspace` → 4782 passed,
-0 failed. `cargo clippy --workspace --all-targets` → exit 0. Tests judged mutation-sensitive:
-each inverts an assertion the old code satisfied (e.g. AC-3 flipped `remoteDeleted` true→false).
+Guards + molds: no new `run` subcommand (both reverse ratchets green); `rt-gate-pattern`
+respected — `WorkBranchGate` stays a stateless unit `Check`, the carve-out is a pure
+`fn is_harness_carve_out(&str) -> bool` reached before any IO, and `relative_to_cwd` normalises
+to `/` so the prefix matches on Windows; observers and `main.rs` untouched; no `unwrap`/`expect`
+outside `#[cfg(test)]`; new report fields deterministic; `merged_refs` deleted, not silenced.
 
-Guards + molds: no new `run` subcommand (four-registration rule N/A); `rt-gate-pattern` respected
-— `WorkBranchGate` stays a stateless unit `Check`, the carve-out is a pure
-`fn is_harness_carve_out(&str) -> bool` with self-allow before any IO; observers untouched;
-`main.rs` untouched; new report fields deterministic. No violation found.
+Prior round's findings confirmed closed: `.claude/.gitignore` byte-identical to the template,
+`seed_gitignore` merges by line at `project_seed.rs:335`, `restoredToUnit` covered by AC-14,
+`spec/*/qa/` out of the template while this repo's 31 `qa/report.md` stay tracked.
 
-## CRITICAL — the scratch carve-out ships without its safety net in this repo
+## MAJOR — AC-7 verifies less than it claims
 
-`.gitignore` (and the tracked `.claude/.gitignore`) still have no `scratch/` entry:
+The test picks its own 4-item `ARTEFACTS` list. Seeding the shipped template into a fresh repo
+and writing the paths the runtime really creates leaves SEVEN untracked:
 
 ```
-$ git check-ignore --no-index .claude/scratch/probe.sh
-rc=1        # NOT ignored
+?? .claude/.compact-state/s.json        (session_cleanup_observer.rs:183)
+?? .claude/.dispatch/x.md               (wave_done.rs:913)
+?? .claude/knowledge/k.md               (epic_fold.rs:167)
+?? .claude/spec/demo/.dispatch/w1.md
+?? .claude/spec/demo/.memory-approved   (context_inject.rs:281)
+?? .claude/spec/demo/economy-baselines.json
+?? .claude/.dashboard.pid
 ```
 
-Wave 2 made the write gate ALLOW `.claude/scratch/` (`work_branch_gate.rs:332`), but the ignore
-landed only in `packages/core/templates/.gitignore`. `seed_gitignore(&claude_dir, false)` at
-`packages/core/src/platform/project_seed.rs:150` PRESERVES an existing file, so no
-already-initialised project — mustard included — ever receives it. Combined with the standing
-iron law at `plugin/commands/git.md:10` (`add -A`, never a partial scope), the first diagnosis
-that follows the new instruction at `plugin/commands/bugfix.md:19` commits its throwaway probe
-into the unit. That line promises the opposite: "The seeded `.claude/.gitignore` ignores
-`scratch/`, so scratch never reaches a diff and never joins the unit" — measurably false where
-it ships. The spec's own Definitions say scratch is "never committed, never part of the unit".
+All seven are already covered by this repository's own root `.gitignore` (lines 71, 99-100, 115,
+106, 127, 83) and absent from `packages/core/templates/.gitignore` — the SAME omission class as
+the previous round's CRITICAL, different entries. Not blocking (the spec's Definitions narrow
+"harness artefact" to three sidecars, and wave 1 removed the dirty pre-check outright), but the
+criterion's wording and the test's name are broader than what ships.
 
-AC-7 cannot catch this: it seeds the template into a FRESH temp repo, which is the one case that
-already works. Note the implementer did add `feature-digest.json` and `spec/*/qa-report.json` to
-the template — both already present in the root `.gitignore` (lines 103, 122) — so the root file
-was in view; only the genuinely new entry was omitted.
+## MINOR — AC-2's proof is one-directional
 
-## MAJOR — `restoredToUnit` is new behaviour with zero coverage
+`git_settle.rs:1783` proves ancestry is not SUFFICIENT; it never exercises a non-ancestor
+(squash) unit, which no fixture can reach without a provider stub. The claim still holds
+structurally — there is no ancestry test anywhere in the prune path — and the test doc says so.
 
-`apps/rt/src/commands/git_settle.rs:687-690` performs a real `git checkout <unit_branch>` and
-`:760` publishes a new report field. `grep -n "restoredToUnit\|restored_to_unit"` over the file
-returns ONLY those two lines — no test in the 52-test `git_settle` control ever asserts it is
-`true`, and no AC names it. An untested git side effect on the failing path is exactly the path
-this unit exists to make trustworthy.
+## MINOR — `restoredToUnit` and `nextAction` reach no operator prose
 
-## MINOR — template/repo disagree on QA reports
+`git.md:47` only says "print each JSON verbatim". Two new mechanisms with no documented reader,
+in the same unit whose sibling ratchet file exists to catch exactly that. (Raised independently
+by the root reviewer.)
 
-The template now ignores `spec/*/qa/`, while this repo tracks 31 files under
-`.claude/spec/*/qa/` (`git ls-files … | grep -c "/qa/"` → 31). New projects will hide what this
-one versions.
+## MINOR — `restoredToUnit:false` is ambiguous
 
-## What holds
-
-The prune is gated by `base_advanced` read at `:611-616` before the prune block at `:630`; the
-remote delete is inside `floor_clear` at `:671-672`; the pre-check and its gitlink exemption are
-gone with `merge --ff-only` as sole authority; `merged_refs` was deleted rather than silenced.
-
-## Orchestrator verification (independent, not the reviewer's word)
-
-- `git check-ignore --no-index .claude/scratch/probe.sh` → rc=1 — CONFIRMED not ignored.
-- `grep -n "restoredToUnit\|restored_to_unit" apps/rt/src/commands/git_settle.rs` → 2 hits
-  (`:687` definition, `:760` publication) — CONFIRMED zero coverage.
-- `git ls-files .claude/spec | grep -c "/qa/"` → 31 — CONFIRMED.
+At `git_settle.rs:719`: when the in-place `checkout <base>` was itself refused, the operator IS
+on the unit branch but the field reads false.

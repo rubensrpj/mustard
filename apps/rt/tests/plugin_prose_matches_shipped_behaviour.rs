@@ -598,6 +598,23 @@ fn bugfix_prose_teaches_the_material_channel() {
          written after the spec it was meant to fill (assemble at {assemble_at}, \
          draft at {draft_at})",
     );
+    // …and the ordering warning must describe the mechanism the way `/feature`
+    // §2.2 does. "Refused, the flow dead-ends" alone warns of a wall the common
+    // path never hits: once the base gate has NAMED the unit, the pending marker
+    // makes the auto-branch hook cut the branch on this very write and it lands.
+    // Two flows describing one mechanism differently is how a reader learns to
+    // trust neither (found in review, 2026-08-11).
+    let order = line_with(&bugfix, "Order, said out loud")
+        .expect("the bugfix prose no longer states when the unit's branch is cut");
+    assert!(
+        order.contains("pending marker"),
+        "the ordering warning omits the case that actually happens — the marker \
+         cutting the branch on this write: {order}",
+    );
+    assert!(
+        order.contains("REFUSED"),
+        "…and it must still name the case that IS a dead end: {order}",
+    );
     let kinds = line_with(&bugfix, ".claude/.cache/spec-material.json")
         .expect("checked above");
     for kind in ["definitions", "decisions", "findings"] {
@@ -670,6 +687,11 @@ fn bugfix_prose_teaches_the_material_channel() {
         gate.contains("rel.starts_with(\".claude/scratch/\")"),
         "the write gate no longer carves out `.claude/scratch/`, so the prose \
          sends a diagnosis at a path the gate denies",
+    );
+    assert!(
+        gate.contains("context::pending_branch_for"),
+        "the gate no longer reads a pending marker, so §3's ordering warning \
+         describes a landing nothing performs",
     );
     let ignore = read("packages/core/templates/.gitignore");
     assert!(
@@ -757,6 +779,69 @@ fn hygiene_prose_teaches_the_collision_condition() {
         "the harness no longer reports a LIST of active specs, so a spec left \
          parked beside new work would have nowhere to be listed",
     );
+}
+
+/// The exit ritual's REFUSAL reaches the operator who has to act on it.
+///
+/// This unit turned the settle's verdict from a certificate into a gate: a pass
+/// that cannot advance the base now prunes nothing, restores an in-place unit to
+/// its work branch and names the command to rerun. Every one of those is a
+/// mechanism the operator only meets through `pr close` — and the procedure
+/// still said "(pull, remove the worktree, delete local + remote branch)",
+/// which describes the happy path only. A field emitted for a reader who is
+/// never told to read it is the inert half this ratchet file exists to catch
+/// (found in review, 2026-08-11, by both reviewers independently).
+#[test]
+fn settle_refusal_prose_teaches_the_fields_the_gate_now_emits() {
+    let git_md = read("plugin/commands/git.md");
+    let close = line_with(&git_md, "pr close** — one close per repo")
+        .expect("`/git` no longer documents the `pr close` procedure at all");
+
+    // --- 1. The shape of a refusal, and that it touched nothing -------------
+    assert!(
+        close.contains("base-behind"),
+        "the procedure never names the refusal this unit introduces: {close}",
+    );
+    for promise in ["PRUNES NOTHING", "nextAction", "restoredToUnit"] {
+        assert!(
+            close.contains(promise),
+            "the refusal is described without `{promise}`, so the operator meets \
+             it first in raw JSON: {close}",
+        );
+    }
+    // The obstacle names are the whole reason `baseAdvance` exists: without them
+    // "base-behind" reads as one situation when it is three, and two of the
+    // three are not fixed by cleaning the tree.
+    for reason in ["baseAdvance", "dirty-tree", "ahead-of-origin"] {
+        assert!(
+            close.contains(reason),
+            "the prose sends the reader to a verdict without `{reason}`: {close}",
+        );
+    }
+    // The move the operator would otherwise invent is exactly the one the
+    // refusal declined to make.
+    assert!(
+        close.contains("never finish a refused settle by hand"),
+        "nothing warns against finishing the ritual manually, which is the \
+         improvisation the refusal exists to prevent: {close}",
+    );
+
+    // --- 2. The engine really emits every field the prose promises ----------
+    // Without this half the paragraph could outlive the mechanism it describes.
+    let settle = read("apps/rt/src/commands/git_settle.rs");
+    for field in ["\"restoredToUnit\"", "report[\"nextAction\"]", "report[\"baseAdvance\"]"] {
+        assert!(
+            settle.contains(field),
+            "git-settle no longer emits {field}, so `/git` documents a field \
+             nobody prints",
+        );
+    }
+    for reason in ["\"base-behind\"", "\"dirty-tree\"", "\"ahead-of-origin\""] {
+        assert!(
+            settle.contains(reason),
+            "git-settle no longer produces the reason {reason} the prose teaches",
+        );
+    }
 }
 
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair

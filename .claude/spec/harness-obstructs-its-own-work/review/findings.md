@@ -1,68 +1,47 @@
-# Review — root (.) — REJECTED (1 critical, 1 major, 2 minor)
+# Review — root (.) — APPROVED (0 critical, 3 minor)
 
-All 10 ACs pass, each run individually plus its control (`git_settle` 52, `work_branch_gate` 21,
-`prose_teaches` 10, `claude_paths` 16). Full `cargo test --workspace`: no FAILED/panicked line.
-`cargo clippy --workspace --all-targets`: 0 `error:` lines.
+Every AC run by the reviewer with real output: AC-1..AC-9, AC-11, AC-13, AC-14 → `1 passed` each;
+AC-12 → `git check-ignore -v --no-index .claude/scratch/probe.sh` prints
+`.claude/.gitignore:14:scratch/`, rc 0; AC-10 → `cargo build --workspace` 0 errors.
+Controls: `git_settle` 56 · `work_branch_gate` 21 · `prose_teaches` 10 · `claude_paths` 16.
+`cargo test --workspace`: no FAILED/panicked. `cargo clippy --workspace --all-targets`: 0 errors.
 
-## CRITICAL — the new prune gate permanently strands a merged unit whose base is AHEAD of origin
+Guards: no new `run` subcommand; no panic/unwrap/expect outside `#[cfg(test)]`; observers and
+`main.rs` untouched; new report fields byte-stable; `seed_gitignore` writes through
+`crate::io::fs::write_atomic`, never `std::fs`. Mold contract is vacuous — no `*-pattern`
+directory exists, so the earlier review's `rt-gate-pattern` compliance claim was unverifiable
+(not a defect).
 
-`git_settle.rs:635` gates the prune on `base_advanced`, which is `report["updated"] == true`.
-For a base that is NOT the checked-out branch, `update_bases` computes that from
-`git fetch origin <b>:<b>` (line 426), which git rejects with exit 1 when the local base is
-ahead — the code even names it (`ahead-of-origin`, line 435, measured as
-`merge-base --is-ancestor origin/<b> <b>`). But an ahead base DOES hold origin's tip, which is
-verbatim the spec's own Definition of "base advanced" ("the local integration base holds
-origin's tip after the ff-only advance"). So the authorising FACT is true and the gate reads
-FALSE.
+Independent checks that HELD:
+- Prune gate really precedes the prune (`base_advanced` at :644-648, prune block at :662-710);
+  remote delete inside `floor_clear` at :703-704; `blocks_fast_forward`/`status_path` gone.
+- "A repo with no remote can never settle now" — REFUTED: `is_merged` (:371) already measures
+  against `origin/<base>`, so no remote never passed the gate to begin with.
+- Negative control real: 31 files tracked under `.claude/spec/*/qa/`, and
+  `git check-ignore .claude/spec/demo/qa/report.md` → rc 1.
+- `mustard_core::CLAUDE_GITIGNORE` is `include_str!` of the shipped template, so the test
+  exercises the real file; `.claude/.gitignore` and the template are byte-identical.
+- Mutation sensitivity reasoned per test: each new assertion inverts a value the pre-change code
+  produced (`remoteDeleted` true→false, `updated` false→true, `Deny`→`Allow`,
+  `Preserved`→`Updated`).
 
-Reproduced end-to-end with the shipped binary (bases dev/main, HEAD on dev, unit `main_unit`
-merged into `origin/main`, local `main` ahead by 1):
+## MINOR 1 — `plugin/commands/bugfix.md:29` describes a dead-end that usually is not one
 
-```
-"ok": false,  "unit": { "merged": true, "action": "partial",
-   "branchDeleted": false, "remoteDeleted": false },
-"otherBases": [ { "branch": "main", "updated": false, "reason": "ahead-of-origin" } ],
-"reason": "base-behind",
-"nextAction": "mustard-rt run git-settle --unit main_unit"
-```
+The ordering warning says a write from a bare integration base "is REFUSED and the flow dead-ends
+here", omitting the case `feature.md:42` spells out: with a pending marker the auto-branch hook
+cuts the branch ON that very write and it lands. Two flows now describe the same mechanism
+differently. Errs conservative, but tells the reader of a dead-end the common path does not hit.
 
-Two reruns produce byte-identical output — the prescribed `nextAction` provably cannot clear it,
-and the reason label is factually inverted ("behind" for a base that is ahead). No sanctioned
-escape exists: `plugin/commands/git.md` forbids pushing a base directly ("PRs are the only
-integration path") and forbids the manual fallback ("Never chase a refusal with a manual
-`git branch -D` — the refusals are the guard"). The command's own comment at `git_settle.rs:772-778`
-already records that `updated:false` conflates behind / ahead-of-origin / held-by-another-worktree;
-harmless while it only labelled a report, a deadlock now that it AUTHORISES an operation.
+## MINOR 2 — `plugin/commands/git.md:47` has no prose for the refusal this unit introduces
 
-No AC covers this case: AC-1 and AC-2 both drive `base_advanced` false via BLOCKED advances,
-never via AHEAD.
+It still describes the second settle as "(pull, remove the worktree, delete local + remote
+branch)". True of the happy path, but the refusal shape this unit adds — `base-behind` +
+`nextAction` + `restoredToUnit`, nothing pruned — has no operator-facing prose and no AC
+ratcheting it.
 
-The symmetric case is fine: on the current-base path `merge --ff-only` answers "Already up to
-date" (exit 0) when local is ahead, so the defect is confined to the `others`/fetch path.
+## MINOR 3 — `apps/rt/src/commands/git_settle.rs:414` mislabels a divergence on a dirty tree
 
-## MAJOR — `restoredToUnit` is new, mutating, and untested
-
-`git_settle.rs:687-690` runs `git checkout <unit_branch>` on the failing in-place path and
-reports it at line 760. `grep restoredToUnit` across `apps/rt` returns only those two hits — no
-test, no AC, and it is outside the spec's declared Files-table change for this file. Verified
-empirically: `restoredToUnit: true`, HEAD back on `dev_unit`, nothing pruned. It works — but a
-mutation on the refusal path with zero coverage is one refactor from silently regressing.
-(The apps/rt reviewer raised the same finding independently.)
-
-## MINOR — `plugin/commands/bugfix.md:29` omits the ordering warning `/feature` spells out
-
-It sends the flow to write `.claude/.cache/spec-material.json`, a path `is_harness_carve_out`
-(`work_branch_gate.rs:141`) does NOT carve out. `/feature` §2.2 states the rule explicitly
-("the base gate … comes BEFORE this write … a write from an integration base is refused and the
-flow dead-ends here"); the bugfix paragraph inherits the risk without inheriting the warning.
-
-## MINOR — `packages/core/templates/.gitignore:26` adds `spec/*/qa-report.html`, undeclared
-
-The spec's Files table lists `scratch/`, `feature-digest.json`, `spec/*/qa-report.json`,
-`spec/*/qa/`. The `.html` line is consistent and justified in the test, but was not declared.
-
-## Orchestrator verification (independent, not the reviewer's word)
-
-- Read `git_settle.rs:404-439` and `:605-654`: `base_advanced` is `updated == true`; the
-  `others` path sets `updated:false` even when `merge-base --is-ancestor origin/<b> <b>`
-  succeeds — i.e. when the base demonstrably HOLDS origin's tip. CONFIRMED by construction.
+A refused advance is labelled `dirty-tree` whenever `status --porcelain` is non-empty, so a
+genuine divergence that happens on a coincidentally dirty tree reports `dirty-tree` and points
+the operator at cleaning rather than at the divergence. Acknowledged in the adjacent comment as
+"the common case". Note AC-5 currently SPECIFIES this behaviour, so changing it needs `ac-amend`.
