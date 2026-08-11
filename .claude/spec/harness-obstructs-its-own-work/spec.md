@@ -64,6 +64,7 @@ No irreversible step of the exit ritual runs on an unverified precondition — t
 | `plugin/commands/bugfix.md` | DIAGNOSE names the scratch path for runnable evidence; its findings, decisions and definitions are assembled and passed to the draft through the existing material channel; a proven root cause drafts a minimal spec. | 3 |
 | `plugin/refs/feature/spec-hygiene.md` | Step 3 asks only on overlap with the active spec, or when the new work was not explicitly requested in the same message; otherwise one recorded line and proceed. | 3 |
 | `apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs` | Two ratchets in the file's existing shape, holding both prose changes to the behaviour they describe. | 3 |
+| `apps/rt/src/shared/branch_state.rs` | Declared cascade, not planned work: wave 1 moved the settle to `try_merged_refs`, which left `merged_refs` a wrapper with test-only callers and a `dead_code` warning. The wrapper is deleted rather than silenced, its documentation folded into the function that survives, and its two test callers read the pair directly. | 1 (cascade) |
 
 ## Boundaries
 

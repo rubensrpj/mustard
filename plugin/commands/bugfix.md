@@ -16,6 +16,8 @@ Run `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-hygiene.md`; ensure `mustard-rt run
 
 **DIAGNOSE.** Dispatch Explore (`≤15 tool uses (warn 12), ≤3 full reads`), prompt rendered via `agent-prompt-render --role explore --task-text … --emit ref` (spec-less; pass the stub verbatim). Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation. When ≥2 distinct symptoms surface, DIAGNOSE + fix each separately, scoped to its own anchors.
 
+**Runnable evidence goes in `.claude/scratch/`.** When two hypotheses are settled faster by RUNNING something than by arguing it — a shell probe, a data fixture, a `mustard-rt run …` call — write it there and run it. That prefix is carved out of branch protection (`work_branch_gate`), so it is writable on a bare integration base BEFORE any unit exists: the write is allowed, no branch is cut, and a pending marker survives for the first real edit. The seeded `.claude/.gitignore` ignores `scratch/`, so scratch never reaches a diff and never joins the unit. **Its limit:** cargo does not compile files under `.claude/`, so evidence that must COMPILE inside a crate cannot live there — no carve-out can make a throwaway Rust integration test work in scratch. For that case open the unit early and write the throwaway inside it; §3 carries the diagnosis into the spec either way, so opening early costs nothing.
+
 **Root-cause cache** (in-memory): `sha256(bugDescription|affectedFiles)` + a content hash; reused on a Structural retry when the hash matches and the failure stays inside `affectedFiles`.
 
 ## 2. ASSESS
@@ -24,7 +26,13 @@ Run `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-hygiene.md`; ensure `mustard-rt run
 
 ## 3. Full Path spec
 
-Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → ask once → persist). Lean, per `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-language.md`: `## Contexto` + `## Acceptance Criteria` (PRD layer); `## Causa raiz` + `## Plano` + `## Limites` (Plano layer). No divider/PRD-subsection headings. MUST include ≥1 AC: a reproduction command that exits non-zero before the fix, 0 after.
+**Assemble the material FIRST — then draft. DIAGNOSE's output is an INPUT to the spec, never something retyped into it afterwards:** what the hand does not retype is simply lost, and the root cause is exactly what gets lost. Write everything §1 established into one JSON file, `.claude/.cache/spec-material.json` — `definitions` (a term this conversation settled + what it means HERE) · `decisions` (a choice + the REASON it was taken) · `findings` (a verified statement + the `file` and `line` it was checked at — the located root cause lands here, and so does a hypothesis the diagnosis REFUTED). Then pass it:
+
+`mustard-rt run spec-draft --intent "<symptom>" --slug <the unit name the base gate reported> --scope full --lang <bcp47> --material .claude/.cache/spec-material.json`
+
+Exact schema, the per-kind refusals and the FAIL-CLOSED contract (an unknown key or a half-entry aborts the draft rather than degrading to an empty channel): `/feature` §2.2 — this flow uses the same channel, it simply never used to. Nothing established → omit `--material` and the draft is byte-identical to one written before the channel existed. The three sections it writes (`## Definitions` / `## Decisions` / `## Evidence`) are written by the drafter and never by hand.
+
+**Weight follows the diagnosis.** A root cause already DEMONSTRATED — the finding rides in with its `file:line` — drafts the MINIMAL spec: `## Contexto` + `## Acceptance Criteria` + `## Limites`, and nothing else. The discovery sections are dropped because they no longer have work to do: `## Causa raiz` would restate what `## Evidence` already carries with its file and line, and `## Plano` would narrate a fix the tasks already name. A cause still ARGUED (competing hypotheses, cross-layer trace) keeps both. Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → ask once → persist). Lean either way, per `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-language.md`; PRD layer = `## Contexto` + `## Acceptance Criteria`, Plano layer = `## Causa raiz` + `## Plano` + `## Limites`. No divider/PRD-subsection headings. MUST include ≥1 AC: a reproduction command that exits non-zero before the fix, 0 after.
 
 Once the slug exists, run `mustard-rt run digest-adherence-finalize --spec {slug}` (fire-and-forget telemetry; never blocks). Print the spec, then *"Run `/mustard:spec` to approve and proceed to EXECUTE."*
 

@@ -12,7 +12,7 @@
 //!   the server was invisible to one, and an IN-PLACE unit (cut on the main
 //!   checkout, no worktree — the default shape) was invisible to the other.
 //! - [`StateClassifier`] answers **what state each branch is in**, crossing the
-//!   enumerator with TWO local measurements — ancestry ([`merged_refs`]) and
+//!   enumerator with TWO local measurements — ancestry ([`try_merged_refs`]) and
 //!   commits of the branch's own ([`refs_ahead_of_base`]) — and the [`PrLookup`]
 //!   port. It never enumerates and it never acts.
 //!
@@ -273,7 +273,7 @@ impl BranchEnumerator {
 /// reachability read of this module.
 ///
 /// Two questions fold through it, and they must never drift apart: "is this ref
-/// on its base now" ([`merged_refs`], asked of a base) and "does this merge
+/// on its base now" ([`try_merged_refs`], asked of a base) and "does this merge
 /// account for that ref" ([`GitReachability`], asked of a merged pull request's
 /// frozen head). One `for-each-ref` covers both ref namespaces, so a branch that
 /// exists only on the server is measured by the same call as a local one.
@@ -294,7 +294,7 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 }
 
 /// The work-unit REFS already reachable from their base — measured LOCALLY, with
-/// no network at all.
+/// no network at all — plus whether git ANSWERED at all.
 ///
 /// Keyed on the full refname, not on the branch name. The name-keyed set this
 /// replaces inserted `dev_x` as soon as ANY of its refs was contained, so a
@@ -305,13 +305,10 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 /// The network only ever CONFIRMS this (via [`PrLookup`]); it is never required
 /// to reach an answer, which is what keeps the sweep honest offline. Fail-open
 /// per base: a base with no local ref simply contributes nothing.
-pub(crate) fn merged_refs(git: GitOut<'_>, bases: &[String]) -> BTreeSet<String> {
-    try_merged_refs(git, bases).0
-}
-
-/// [`merged_refs`], keeping apart "git ANSWERED, nothing is contained" from
-/// "git never answered" — the same split [`BranchEnumerator::try_sweep`] draws,
-/// and for the same reason.
+///
+/// The second half of the pair keeps apart "git ANSWERED, nothing is contained"
+/// from "git never answered" — the same split [`BranchEnumerator::try_sweep`]
+/// draws, and for the same reason.
 ///
 /// The two are indistinguishable in the set alone, and they ask for opposite
 /// verdicts: the first says a merged branch really moved past its merge, the
@@ -781,7 +778,7 @@ pub(crate) struct StateClassifier<'a> {
     reach: &'a dyn Reachability,
     /// Whether the containment read behind `merged` actually ANSWERED.
     ///
-    /// [`merged_refs`] is fail-open: a git that will not answer yields an empty
+    /// [`try_merged_refs`] is fail-open: a git that will not answer yields an empty
     /// set, which is indistinguishable from "nothing is contained". Told apart,
     /// the two ask for opposite verdicts — the second means the branch really
     /// moved past its merge, the first means nobody looked — and printing the
@@ -811,7 +808,7 @@ impl<'a> StateClassifier<'a> {
 
     /// One verdict per enumerated branch, in the enumerator's order.
     ///
-    /// `merged` is the locally measured ancestry set ([`merged_refs`]) and
+    /// `merged` is the locally measured ancestry set ([`try_merged_refs`]) and
     /// `ahead` the locally measured set of units carrying commits of their own
     /// ([`refs_ahead_of_base`]); the PR port only ever CONFIRMS a merge the
     /// local measurement missed (a portal that squashes produces no ancestry),
@@ -1568,7 +1565,7 @@ refs/tags/v1.0_dev aaa7
 
         // Ancestry answers YES — the branch IS its base — and that used to be
         // the whole verdict.
-        let merged = merged_refs(&git_read, &bases());
+        let merged = try_merged_refs(&git_read, &bases()).0;
         assert!(
             merged.contains("refs/heads/dev_fresh"),
             "git reports a freshly cut branch as merged into its base — per REF",
@@ -1635,7 +1632,7 @@ refs/tags/v1.0_dev aaa7
         assert_eq!(names, vec!["dev_landed"], "the remote of a merged unit is owed its prune");
         assert_eq!(pending[0].state, UnitState::AwaitingPrune);
 
-        let merged = merged_refs(&git_read, &bases());
+        let merged = try_merged_refs(&git_read, &bases()).0;
         let ahead = refs_ahead_of_base(&git_read, swept.units(), &bases());
         let reach = GitReachability::new(&git_read);
         let states =
