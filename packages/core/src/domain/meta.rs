@@ -41,7 +41,7 @@
 //!   `eprintln!` warning, but writers produced after Wave 3 only emit BCP-47.
 
 use crate::domain::model::view::Flags;
-use crate::domain::spec::contract::ChecklistItem;
+use crate::domain::spec::contract::{ChecklistItem, FindingItem};
 use crate::io::fs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,6 +121,17 @@ pub struct Meta {
     /// checklist-less sidecars is preserved on round-trip.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checklist: Vec<ChecklistItem>,
+    /// Findings raised inside this spec / wave, each with the destination that
+    /// was decided for it — the events-first home of what the reviewer and the
+    /// acceptance-criteria proof ledger discovered, so a close gate can ask
+    /// [`FindingItem::is_open`] instead of reading prose.
+    /// Additive + serde-compatible on the exact terms the `checklist` field
+    /// set: a `meta.json` written before this field deserialises to an empty
+    /// list, and an empty list elides the key entirely
+    /// (`skip_serializing_if`), so the byte shape of every sidecar written so
+    /// far survives a round-trip untouched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<FindingItem>,
     /// Forward-compatible catch-all. Any field a future Mustard adds lands here
     /// and is preserved on round-trip writes. Per the
     /// [`core-lenient-serde-model`] skill, this is the boundary type's contract.
@@ -153,6 +164,7 @@ impl Meta {
             total_waves: None,
             flags: MetaFlags::default(),
             checklist: Vec::new(),
+            findings: Vec::new(),
             raw: Value::Null,
         }
     }
@@ -361,6 +373,7 @@ pub fn write_meta(path: &Path, meta: &Meta) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::spec::contract::{FindingRoute, FindingSource};
     use tempfile::tempdir;
 
     #[test]
@@ -379,6 +392,7 @@ mod tests {
             total_waves: None,
             flags: MetaFlags::default(),
             checklist: Vec::new(),
+            findings: Vec::new(),
             raw: Value::Null,
         };
         write_meta(&path, &meta).unwrap();
@@ -552,6 +566,68 @@ mod tests {
         // The typed field owns the key — it must not leak into the `raw`
         // flatten catch-all.
         assert!(back.raw.get("checklist").is_none());
+    }
+
+    #[test]
+    fn finding_item_absent_key_reads_empty_and_write_does_not_invent_it() {
+        // The additive contract, on the same terms as `checklist`: a
+        // `meta.json` written before the `findings` field existed reads as an
+        // empty list, and writing it back does not add the key — the sidecar
+        // comes out byte-identical for every spec already on disk.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(&path, br#"{"stage":"Execute","outcome":"Active"}"#).unwrap();
+        let meta = read_meta(&path).expect("reads");
+        assert!(meta.findings.is_empty());
+        write_meta(&path, &meta).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"findings\""), "{text}");
+    }
+
+    #[test]
+    fn finding_item_round_trips_through_the_sidecar_with_its_destination() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        let mut meta = Meta::new(
+            Some("QaReview"),
+            Some("Active"),
+            Some("QA"),
+            Some("full"),
+            Some("pt-BR"),
+            None,
+            None,
+        );
+        meta.findings = vec![
+            FindingItem {
+                id: "F-1".into(),
+                source: FindingSource::Review,
+                statement: "the gate never reads the reviewer's file".into(),
+                routed: Some(FindingRoute::ChangeRequest(
+                    "the close gate must consult both producers".into(),
+                )),
+            },
+            FindingItem {
+                id: "AC-3".into(),
+                source: FindingSource::ProofLedger,
+                statement: "removal took the criterion's own evidence with it".into(),
+                routed: None,
+            },
+        ];
+        write_meta(&path, &meta).unwrap();
+        let back = read_meta(&path).expect("reads");
+        assert_eq!(back.findings.len(), 2);
+        // The destination and its reason survive the sidecar intact.
+        assert_eq!(
+            back.findings[0].route().and_then(FindingRoute::reason),
+            Some("the close gate must consult both producers")
+        );
+        assert!(!back.findings[0].is_open());
+        // The ledger-side finding is still owed a decision.
+        assert_eq!(back.findings[1].source, FindingSource::ProofLedger);
+        assert!(back.findings[1].is_open(), "an unrouted finding still owes a destination");
+        // The typed field owns the key — it must not leak into the `raw`
+        // flatten catch-all.
+        assert!(back.raw.get("findings").is_none());
     }
 
     #[test]

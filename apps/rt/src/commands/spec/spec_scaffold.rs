@@ -283,6 +283,7 @@ mod tests {
             total_waves: None,
             flags: MetaFlags::default(),
             checklist: Vec::new(),
+            findings: Vec::new(),
             raw: serde_json::Value::Null,
         }
     }

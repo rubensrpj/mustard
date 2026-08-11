@@ -2,9 +2,35 @@
 //! they all pass, **finalize the spec deterministically**.
 //!
 //! Replaces the imperative step list inside `close/SKILL.md`. Runs the gates
-//! (verify-pipeline → qa-run → review-spans → docs-stale-check →
+//! (verify-pipeline → qa-run → review-spans → docs-stale-check → close-gates →
 //! pipeline-summary) in order, captures a pass/fail per gate, and derives an
 //! `overall` verdict from the boolean vector.
+//!
+//! ## The CLOSE gates are gates HERE too
+//!
+//! `close-gates` is [`crate::commands::pipeline::close_gates::gate_close_for_spec`]
+//! — the debt-marker / checklist / findings / QA / build sub-gates that
+//! `emit-phase --to CLOSE` runs. It is taken here because this composite is the
+//! close path the everyday ritual documents (`/pr` → `close-orchestrate`), and
+//! this composite calls [`crate::commands::spec::complete_spec::finalize`]
+//! DIRECTLY: `finalize` writes the `pipeline.phase: CLOSE` state through its own
+//! emitter, never through `emit_phase::run_at`, so every sub-gate that lives
+//! behind `gate_close_for_spec` used to be unreachable from here. A gate only one
+//! of two close doors consults is not a gate — it is a suggestion the busier door
+//! walks past.
+//!
+//! Its refusal is treated as any other failed gate: `overall: "fail"`,
+//! `chained: false`, no finalize, and the refusal text carried in the gate's
+//! `summary` so the operator reads WHICH finding, TODO or unmarked item held the
+//! close and the exact command that settles it.
+//!
+//! It is taken WHOLE, not sub-gate by sub-gate. Its build stage re-runs the
+//! `mustard.json` build/type/lint/test commands the `verify-pipeline` gate above
+//! already exercised, which costs a second pass on a project that configures a
+//! test command. That cost is accepted rather than carved around: a composite
+//! that picked which sub-gates apply to it would be the same divergence this
+//! wiring exists to remove, and the pass is governed by the operator's own
+//! `MUSTARD_CLOSE_GATE_MODE`, not by a knob invented here.
 //!
 //! ## Deterministic chaining (no LLM judgement)
 //!
@@ -43,6 +69,8 @@
 //!     { "name": "verify-pipeline", "ok": true,  "duration_ms": 123 },
 //!     { "name": "qa-run",          "ok": true,  "duration_ms": 456, "summary": "pass" },
 //!     { "name": "docs-stale-check","ok": true,  "duration_ms": 78 },
+//!     { "name": "close-gates",     "ok": false, "duration_ms": 34,
+//!       "summary": "⛔ Close Gate — 1 finding(s) … still have no destination …" },
 //!     { "name": "pipeline-summary","ok": true,  "duration_ms": 12 }
 //!   ],
 //!   "chained":  true,
@@ -193,7 +221,12 @@ pub fn run(opts: CloseOrchestrateOpts) {
         });
     }
 
-    // 5. pipeline-summary (advisory — always passes).
+    // 5. close-gates — the sub-gates `emit-phase --to CLOSE` runs. Taken LAST
+    //    among the blocking gates so the cheap, spec-scoped refusals above are
+    //    already in the report when this one speaks.
+    gates.push(close_gates_gate(&cwd, &opts.spec));
+
+    // 6. pipeline-summary (advisory — always passes).
     let spec_dir = format!(".claude/spec/{}", opts.spec);
     let (sum_ok, sum_dur, _) = run_subcmd(&["pipeline-summary", "--spec-dir", &spec_dir]);
     gates.push(GateReport {
@@ -212,11 +245,7 @@ pub fn run(opts: CloseOrchestrateOpts) {
     // Deterministic chaining: when every gate passes, finalize the spec in
     // process (no LLM judgement, no subprocess) and auto-verify the
     // `pipeline.complete` event landed. A failing gate is report-only.
-    let (chained, verified) = if overall_pass {
-        finalize_and_verify(&opts.spec)
-    } else {
-        (false, None)
-    };
+    let (chained, verified) = chain_close(&cwd, &opts.spec, &gates);
 
     let total = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let report = CloseReport {
@@ -236,12 +265,55 @@ pub fn run(opts: CloseOrchestrateOpts) {
 /// [`close_overall`].
 const ADVISORY_GATE: &str = "pipeline-summary";
 
+/// Gate name of the CLOSE sub-gates ([`close_gates_gate`]). Blocking, like every
+/// other name in the vector except [`ADVISORY_GATE`].
+const CLOSE_GATES_GATE: &str = "close-gates";
+
 /// Derive the close verdict from the gate vector. The advisory [`ADVISORY_GATE`]
 /// (`pipeline-summary`) is excluded: it only renders the Done/Left/Next report,
 /// so a transient failure there must never block the close. Every blocking gate
-/// (verify-pipeline / qa-run / review-spans / docs-stale-check) must pass.
+/// (verify-pipeline / qa-run / review-spans / docs-stale-check / close-gates)
+/// must pass.
 fn close_overall(gates: &[GateReport]) -> bool {
     gates.iter().filter(|g| g.name != ADVISORY_GATE).all(|g| g.ok)
+}
+
+/// The CLOSE sub-gates, as one gate row of this composite's report.
+///
+/// `ok` is [`crate::commands::pipeline::close_gates::gate_close_for_spec`]'s
+/// answer with the modes it resolves from the environment, so `/pr` and
+/// `emit-phase --to CLOSE` refuse the same trees for the same reasons and honour
+/// the same `MUSTARD_*_GATE_MODE` overrides. The refusal text becomes the row's
+/// `summary` VERBATIM: it already names the offending finding / marker / item and
+/// the exact command that settles it, and a gate that refuses without saying what
+/// to do teaches the reader to route around it.
+fn close_gates_gate(cwd: &Path, spec: &str) -> GateReport {
+    let started = std::time::Instant::now();
+    let refusal = crate::commands::pipeline::close_gates::gate_close_for_spec(
+        &cwd.to_string_lossy(),
+        spec,
+    )
+    .err();
+    GateReport {
+        name: CLOSE_GATES_GATE.to_string(),
+        ok: refusal.is_none(),
+        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        summary: refusal,
+    }
+}
+
+/// Finalize the spec when — and only when — the gate vector allows it.
+///
+/// The verdict comes from [`close_overall`] over the SAME vector the report
+/// prints, so "the report says fail" and "the close did not happen" can never
+/// disagree. Returns `(chained, verified)`: a refusing vector is report-only,
+/// which means [`finalize_and_verify`] is not reached at all and nothing is
+/// written, emitted or marked `completed`.
+fn chain_close(cwd: &Path, spec: &str, gates: &[GateReport]) -> (bool, Option<bool>) {
+    if !close_overall(gates) {
+        return (false, None);
+    }
+    finalize_and_verify(cwd, spec)
 }
 
 /// Finalize the spec in-process and confirm the close landed.
@@ -256,8 +328,7 @@ fn close_overall(gates: &[GateReport]) -> bool {
 /// `pipeline.complete` event landed in the per-spec NDJSON window. Both steps
 /// are deterministic; `complete_spec`'s emits are idempotent, so a re-run after
 /// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
-fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+fn finalize_and_verify(cwd: &Path, spec: &str) -> (bool, Option<bool>) {
     // Use `finalize`, NOT `run_complete`: the QA gate above already ran every AC
     // and, crucially, gated on the RECORDED `qa.result overall=pass` — the same
     // fact `run_complete`'s admission would read, so routing here would refuse
@@ -266,9 +337,9 @@ fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
     // strict: until it was fixed it accepted `skip`, and this line asserted a
     // verification that had not happened. `finalize` is the qa-less terminal path
     // `close-pipeline` already uses for exactly this reason.
-    let _ = crate::commands::spec::complete_spec::finalize(&cwd, spec);
+    let _ = crate::commands::spec::complete_spec::finalize(cwd, spec);
     let verified = crate::commands::event::verify_emit::verify_event_landed(
-        &cwd,
+        cwd,
         "pipeline.complete",
         Some(spec),
         Some("60s"),
@@ -280,7 +351,7 @@ fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
     // `fold_epic` is idempotent (skips when `epic.complete` already exists), so
     // a re-run after an already-folded epic is a no-op. Fail-open: errors are
     // swallowed — the close already succeeded.
-    auto_fold_completed_epics(&cwd);
+    auto_fold_completed_epics(cwd);
     (true, Some(verified))
 }
 
@@ -395,10 +466,17 @@ mod tests {
     /// Write one `qa.result` for `spec` through the production router, so the
     /// gate reads a real event row rather than a hand-built fixture.
     fn emit_qa_result(cwd: &Path, spec: &str, overall: &str) {
+        emit_qa_result_at(cwd, spec, overall, "2026-07-26T00:00:00.000Z");
+    }
+
+    /// The same, with the verdict's timestamp named — the CLOSE gates refuse a
+    /// QA pass older than the `spec.md` it claims to have verified, so a test
+    /// that seeds both files has to say when the run happened.
+    fn emit_qa_result_at(cwd: &Path, spec: &str, overall: &str, ts: &str) {
         use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
-            ts: "2026-07-26T00:00:00.000Z".to_string(),
+            ts: ts.to_string(),
             session_id: "s-test".to_string(),
             wave: 0,
             actor: Actor { kind: ActorKind::Cli, id: Some("test".to_string()), actor_type: None },
@@ -407,6 +485,112 @@ mod tests {
             spec: Some(spec.to_string()),
         };
         let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
+    }
+
+    /// Seed a project whose spec carries one finding nobody has decided
+    /// anything about — the tree the `/pr` close used to walk straight past.
+    fn seed_spec_with_an_open_finding(cwd: &Path, spec: &str) {
+        let sp = mustard_core::ClaudePaths::for_project(cwd)
+            .unwrap()
+            .for_spec(spec)
+            .unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Spec\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(sp.dir().join("review")).unwrap();
+        std::fs::write(
+            sp.dir().join("review").join("findings.md"),
+            "# Findings\n\n- MAJOR — the everyday close never reaches the gate\n",
+        )
+        .unwrap();
+    }
+
+    /// AC-8 — the everyday close path answers to the CLOSE gates.
+    ///
+    /// `/pr` documents `close-orchestrate`, and this composite calls
+    /// `complete_spec::finalize` DIRECTLY, so `gate_close_for_spec` — where the
+    /// debt, checklist, findings, QA and build sub-gates live — never ran here.
+    /// A spec whose reviewer left an undecided finding closed through this door
+    /// while `emit-phase --to CLOSE` refused the very same tree. The proof is on
+    /// both halves: the gate REFUSES and says which finding, and the finalize is
+    /// not reached — read through the same `verify_event_landed` the chained
+    /// close uses to confirm itself.
+    #[test]
+    fn close_orchestrate_blocks_on_open_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        seed_spec_with_an_open_finding(cwd, "found");
+
+        let gate = close_gates_gate(cwd, "found");
+        assert_eq!(gate.name, CLOSE_GATES_GATE);
+        assert!(!gate.ok, "an undecided finding must fail the close gate: {gate:?}");
+        let summary = gate.summary.clone().expect("a refusal carries its reason");
+        assert!(
+            summary.contains("the everyday close never reaches the gate"),
+            "the operator must read WHICH finding held the close: {summary}"
+        );
+        assert!(
+            summary.contains("mustard-rt run mark-finding --spec found --id F-findings"),
+            "and the exact command that settles it: {summary}"
+        );
+
+        // A blocking gate that fails is report-only: no finalize, no
+        // `pipeline.complete`, nothing marked completed.
+        let gates = vec![
+            GateReport { name: "verify-pipeline".to_string(), ok: true, duration_ms: 1, summary: None },
+            gate,
+        ];
+        assert!(!close_overall(&gates), "the vector must fail the close");
+        assert_eq!(chain_close(cwd, "found", &gates), (false, None));
+        assert!(
+            !crate::commands::event::verify_emit::verify_event_landed(
+                cwd,
+                "pipeline.complete",
+                Some("found"),
+                Some("1h"),
+            ),
+            "the close must not have been chained over an undecided finding"
+        );
+
+        // Control — the same tree, once the destination is declared and QA has a
+        // recorded pass: the gate opens. So the refusal above is this finding's,
+        // not a gate that answers no to everything.
+        let spec_dir = mustard_core::ClaudePaths::for_project(cwd)
+            .unwrap()
+            .for_spec("found")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        let open = crate::commands::review::finding_collect::collect(
+            cwd,
+            spec_dir.to_str().unwrap(),
+        );
+        let [finding] = open.findings.as_slice() else {
+            panic!("exactly one finding was seeded, got {:?}", open.findings);
+        };
+        crate::commands::spec::mark_finding::mark(
+            cwd,
+            spec_dir.to_str().unwrap(),
+            &finding.id,
+            mustard_core::domain::spec::contract::FindingRoute::QueuedWork(
+                "queued as its own unit".to_string(),
+            ),
+        )
+        .expect("the door records the destination");
+        // Dated ahead of the seeded `spec.md` on purpose: the QA gate refuses a
+        // pass that predates the spec it claims to have verified.
+        emit_qa_result_at(cwd, "found", "pass", "2099-01-01T00:00:00.000Z");
+
+        let reopened = close_gates_gate(cwd, "found");
+        assert!(
+            reopened.ok,
+            "a decided finding holds nothing back: {:?}",
+            reopened.summary
+        );
     }
 
     #[test]
