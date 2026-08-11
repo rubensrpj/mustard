@@ -21,7 +21,10 @@ spec/*/.blobs/
 # content stays VERSIONED — it belongs to its unit — but these sidecars are
 # regenerable, and untracked they are what blocks the exit ritual: the harness
 # competing with itself for a clean tree.
+#
+# `spec/*/qa/report.md` is deliberately NOT here: the QA transcript is the
+# unit's own record of which criteria passed, the peer of `review/verdict.md`,
+# and the close commits it. Only the machine renders of it are regenerable.
 feature-digest.json
 spec/*/qa-report.json
 spec/*/qa-report.html
-spec/*/qa/

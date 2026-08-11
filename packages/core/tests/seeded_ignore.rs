@@ -9,8 +9,8 @@
 //! cover them, so the more the harness worked, the dirtier its own tree became,
 //! and the exit ritual (`git-settle`) kept tripping over files the harness
 //! itself had just written. In the field the sole dirt blocking a `pr close`
-//! was `.claude/feature-digest.json`, with `.claude/spec/<slug>/qa/` and
-//! `qa-report.json` queued to do it again on the next close.
+//! was `.claude/feature-digest.json`, with a spec's `qa-report.json` and
+//! `qa-report.html` queued to do it again on the next close.
 //!
 //! Asserting the template CONTAINS a line would prove nothing about matching:
 //! a `.gitignore` pattern is anchored (or not) by where it sits and whether it
@@ -33,17 +33,22 @@ use std::process::Command;
 const ARTEFACTS: &[&str] = &[
     // `run feature` writes the full digest here on every query.
     "feature-digest.json",
-    // The QA renderer writes all three side by side for one spec.
+    // The MACHINE renders of a spec's QA — regenerable from the run.
     "spec/demo/qa-report.json",
     "spec/demo/qa-report.html",
-    "spec/demo/qa/report.md",
     // Sanctioned scratch evidence: the write gate lets a diagnosis land here on
     // a protected base, so it has to be ignored by construction.
     "scratch/probe.sh",
 ];
 
 /// A spec's OWN content — versioned, part of the unit. The negative control.
-const SPEC_CONTENT: &str = "spec/demo/spec.md";
+///
+/// `qa/report.md` sits here and not in [`ARTEFACTS`] on purpose: it is the
+/// unit's record of WHICH criteria passed, the peer of `review/verdict.md`, and
+/// the close commits it (this repository versions 31 of them). Ignoring it
+/// would hide from every new project exactly what this one keeps — the review
+/// finding that sent this file back. Only its machine renders are regenerable.
+const SPEC_CONTENT: &[&str] = &["spec/demo/spec.md", "spec/demo/qa/report.md"];
 
 #[test]
 fn the_seeded_ignore_hides_every_artefact_the_harness_writes() {
@@ -62,14 +67,18 @@ fn the_seeded_ignore_hides_every_artefact_the_harness_writes() {
         ARTEFACTS.len(),
     );
 
-    // Negative control: the spec itself is NOT swallowed by the same rules.
-    write_under_claude(root, SPEC_CONTENT, "# spec");
+    // Negative control: the unit's own record is NOT swallowed by the same rules.
+    for rel in SPEC_CONTENT {
+        write_under_claude(root, rel, "# unit record");
+    }
     let status = git_status(root);
-    assert!(
-        status.contains("spec.md"),
-        "a spec belongs to its unit and stays versioned — only the sidecars are \
-         runtime output, but git reported: {status:?}",
-    );
+    for rel in SPEC_CONTENT {
+        assert!(
+            status.contains(rel),
+            "{rel} belongs to its unit and stays versioned — only the sidecars \
+             are runtime output, but git reported: {status:?}",
+        );
+    }
     assert!(
         !status.contains("qa-report") && !status.contains("feature-digest"),
         "…and adding it must not un-hide the artefacts: {status:?}",

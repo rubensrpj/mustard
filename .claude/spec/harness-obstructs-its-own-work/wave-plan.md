@@ -22,4 +22,15 @@ id: wave.harness-obstructs-its-own-work.plan
 - AC-7 — when the seeded ignore file is in place and the harness writes its artefacts, then `git status --porcelain` reports nothing. Command: `cargo test -p mustard-core the_seeded_ignore_hides_every_artefact_the_harness_writes`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-core claude_paths`
 - AC-8 — when the bugfix flow reaches its spec step, then its prose instructs assembling the material file and passing `--material` to `spec-draft`. Command: `cargo test -p mustard-rt bugfix_prose_teaches_the_material_channel`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt prose_teaches`
 - AC-9 — when the hygiene ref describes step 3, then it conditions the question on overlap with the active spec instead of asking unconditionally. Command: `cargo test -p mustard-rt hygiene_prose_teaches_the_collision_condition`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt prose_teaches`
+- **AC-11** — when the unit's base already HOLDS origin's tip (it is ahead of origin, so the fetch refuses), then the prune is authorised — the gate reads the fact, not the fetch exit status
+  Command: `cargo test -p mustard-rt a_base_ahead_of_origin_authorises_the_prune`
+  Expect: `[1-9][0-9]* passed`
+- **AC-12** — when the write gate allows a scratch path in this repository, then git also ignores it, so an add -A cannot sweep throwaway evidence into the unit
+  Command: `git check-ignore --no-index .claude/scratch/probe.sh`
+- **AC-13** — when the harness seeds its ignore file over one that already exists, then the lines missing from it are appended instead of the whole file being skipped, so an already-initialised project receives new entries
+  Command: `cargo test -p mustard-core seeding_over_an_existing_ignore_adds_the_missing_lines`
+  Expect: `[1-9][0-9]* passed`
+- **AC-14** — when the prune is refused on an in-place unit, then the checkout is restored to the unit branch and the report says so, so the refusal leaves the operator where the work is
+  Command: `cargo test -p mustard-rt a_refused_prune_restores_the_unit_branch`
+  Expect: `[1-9][0-9]* passed`
 - AC-10 — the workspace still builds. Command: `cargo build --workspace`

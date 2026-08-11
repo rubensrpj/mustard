@@ -36,6 +36,74 @@
       "stderr_excerpt": ""
     },
     {
+      "id": "AC-11",
+      "command": "cargo test -p mustard-rt a_base_ahead_of_origin_authorises_the_prune",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
+      "id": "AC-12",
+      "command": "git check-ignore --no-index .claude/scratch/probe.sh",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-13",
+      "command": "cargo test -p mustard-core seeding_over_an_existing_ignore_adds_the_missing_lines",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s\n     Running unittests src\\lib."
+    },
+    {
+      "id": "AC-14",
+      "command": "cargo test -p mustard-rt a_refused_prune_restores_the_unit_branch",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
       "id": "AC-2",
       "command": "cargo test -p mustard-rt prune_authorisation_reads_the_base_advance_not_unit_ancestry",
       "expect": "[1-9][0-9]* passed",
@@ -173,5 +241,54 @@
     }
   ],
   "amendments": [],
-  "additions": []
+  "additions": [
+    {
+      "id": "AC-11",
+      "at": "2026-08-11T16:35:28.588Z",
+      "reason": "review CRITICAL: base_advanced reads updated==true, which the others/fetch path sets false for a base that CONTAINS origin's tip — the authorising fact is true and the gate reads false, stranding the unit forever with the inverted label base-behind",
+      "statement": "when the unit's base already HOLDS origin's tip (it is ahead of origin, so the fetch refuses), then the prune is authorised — the gate reads the fact, not the fetch exit status",
+      "command": "cargo test -p mustard-rt a_base_ahead_of_origin_authorises_the_prune",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/harness-obstructs-its-own-work/spec.md",
+        ".claude/spec/harness-obstructs-its-own-work/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-12",
+      "at": "2026-08-11T16:35:29.250Z",
+      "reason": "review CRITICAL: the carve-out allows the write but the ignore landed only in the template, and seed_gitignore preserves an existing file — so no already-initialised project, this one included, ever receives it",
+      "statement": "when the write gate allows a scratch path in this repository, then git also ignores it, so an add -A cannot sweep throwaway evidence into the unit",
+      "command": "git check-ignore --no-index .claude/scratch/probe.sh",
+      "expect": null,
+      "wrote": [
+        ".claude/spec/harness-obstructs-its-own-work/spec.md",
+        ".claude/spec/harness-obstructs-its-own-work/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-13",
+      "at": "2026-08-11T16:35:49.186Z",
+      "reason": "review CRITICAL, second half: seed_gitignore preserves an existing file, so a template line added today never reaches any project initialised yesterday — which is why the scratch carve-out shipped without its safety net",
+      "statement": "when the harness seeds its ignore file over one that already exists, then the lines missing from it are appended instead of the whole file being skipped, so an already-initialised project receives new entries",
+      "command": "cargo test -p mustard-core seeding_over_an_existing_ignore_adds_the_missing_lines",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/harness-obstructs-its-own-work/spec.md",
+        ".claude/spec/harness-obstructs-its-own-work/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-14",
+      "at": "2026-08-11T16:35:52.366Z",
+      "reason": "review MAJOR raised independently by both reviewers: restoredToUnit runs a real git checkout on the refusal path and is published in the report, with no test and no criterion naming it",
+      "statement": "when the prune is refused on an in-place unit, then the checkout is restored to the unit branch and the report says so, so the refusal leaves the operator where the work is",
+      "command": "cargo test -p mustard-rt a_refused_prune_restores_the_unit_branch",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/harness-obstructs-its-own-work/spec.md",
+        ".claude/spec/harness-obstructs-its-own-work/wave-plan.md"
+      ]
+    }
+  ]
 }

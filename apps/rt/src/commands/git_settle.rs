@@ -468,6 +468,37 @@ fn sync_submodule_pointers(main: &Path, submodules: &[String]) -> Vec<Value> {
         .collect()
 }
 
+/// Whether one base report says the base HOLDS origin's tip — the single fact
+/// that authorises the prune, because it is what puts the merged work in the
+/// local tree.
+///
+/// `updated:true` is the usual way to hold it: the advance ran. But a base can
+/// hold origin's tip with NO advance left to run, and then the operation that
+/// would advance it REFUSES — `fetch origin <b>:<b>` rewinds nothing, so it
+/// rejects a base that is AHEAD of origin. [`update_bases`] already asks git
+/// which of the three refusals happened and names that one `ahead-of-origin`;
+/// reading the exit status instead turned "you already have it" into "you do
+/// not have it".
+///
+/// That inversion DEADLOCKED the unit once the same value started gating the
+/// prune: the pass answered `ok:false` + `base-behind` about a base that was
+/// ahead, the `nextAction` it prescribed reproduced byte-identical output on
+/// every rerun, and no sanctioned escape existed — `plugin/commands/git.md`
+/// forbids pushing a base directly (pull requests are the only integration
+/// path) and forbids chasing a refusal with a manual `branch -D`. Found in
+/// review, 2026-08-11.
+///
+/// The REPORT is deliberately left alone: `updated` still means "the advance
+/// ran", which is true, and `ahead-of-origin` still names why it did not need
+/// to. Only the GATE moves, from the exit status to the fact.
+///
+/// The current-base path cannot reach the second arm and needs no equivalent:
+/// `merge --ff-only` answers "Already up to date" with exit 0 there, so an ahead
+/// base already reads `updated:true`. This makes the two paths agree.
+fn holds_origin_tip(report: &Value) -> bool {
+    report["updated"] == json!(true) || report["reason"] == json!("ahead-of-origin")
+}
+
 /// Whether a settle pass may answer `ok`.
 ///
 /// A FINISHING shape (`settled`/`partial`) that left the unit's own base behind
@@ -608,11 +639,12 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     //
     // Read BEFORE the prune, because it GATES the prune: a base that did not
     // advance has to stop the deletion, not merely annotate it afterwards.
-    let advanced = |report: &Value| report["updated"] == json!(true);
+    //
+    // And read as a FACT, not as an exit status — see [`holds_origin_tip`].
     let base_advanced = if base_report["branch"] == json!(base) {
-        advanced(&base_report)
+        holds_origin_tip(&base_report)
     } else {
-        other_bases.iter().any(|b| b["branch"] == json!(base) && advanced(b))
+        other_bases.iter().any(|b| b["branch"] == json!(base) && holds_origin_tip(b))
     };
 
     // Prune the unit — the IRREVERSIBLE half of the ritual, and therefore the
@@ -1947,5 +1979,168 @@ mod tests {
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["complete"], json!(true), "{v}");
         assert_eq!(v["repos"], json!([{ "repo": ".", "branch": "dev_done", "settled": true }]), "{v}");
+    }
+
+    /// AC-11 — a base that already HOLDS origin's tip authorises the prune, even
+    /// though the operation that would advance it refuses.
+    ///
+    /// `fetch origin <base>:<base>` rewinds nothing, so it rejects a base that is
+    /// AHEAD of origin — the one shape where the local tree holds MORE of the
+    /// merged work than the server, not less. Gating on the exit status turned
+    /// that into `base-behind`, and because the same gate now stops the prune,
+    /// the refusal repeated identically on every rerun with no sanctioned way
+    /// out: the close protocol forbids pushing a base directly and forbids
+    /// finishing a refused settle by hand.
+    ///
+    /// The unit's base is reached through `otherBases` here — the settle runs
+    /// from a checkout that is not on it, which is exactly when the refspec
+    /// fetch (rather than `merge --ff-only`) does the advancing.
+    ///
+    /// Both halves, so reading the fact cannot become "prune anyway": a base that
+    /// genuinely DIVERGED refuses the same fetch, git says it is not ahead, and
+    /// the prune waits.
+    #[test]
+    fn a_base_ahead_of_origin_authorises_the_prune() {
+        let (_dir, main) = fixture();
+        git(&main, &["push", "origin", "dev_done"]);
+        // The base takes everything origin has, then adds a commit origin has
+        // never seen: it HOLDS origin's tip, and `fetch dev:dev` will refuse.
+        git(&main, &["merge", "--ff-only", "origin/dev"]);
+        std::fs::write(main.join("local-only.txt"), "committed here, never pushed").expect("file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "the base moves ahead of origin"]);
+        // Settle from a checkout that is NOT the base, so the base is advanced
+        // through the refspec fetch.
+        git(&main, &["checkout", "-b", "sidetrack"]);
+
+        let v = settle_at(&main, Some("dev_done"));
+
+        let base = &v["otherBases"][0];
+        assert_eq!(base["branch"], json!("dev"), "the unit's base is reported here: {v}");
+        assert_eq!(
+            base["updated"],
+            json!(false),
+            "the fixture must reproduce a REFUSED advance — otherwise it proves nothing: {v}",
+        );
+        assert_eq!(base["reason"], json!("ahead-of-origin"), "…and git must name it: {v}");
+        assert_eq!(v["ok"], json!(true), "the base holds the merged work: {v}");
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
+        assert!(
+            git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
+            "the EFFECT, not the report: the prune really ran",
+        );
+
+        // The other half: a base that diverged is NOT ahead, and waits.
+        let (_dir2, main2) = fixture();
+        git(&main2, &["push", "origin", "dev_done"]);
+        std::fs::write(main2.join("local-only.txt"), "committed here, never pushed").expect("file");
+        git(&main2, &["add", "-A"]);
+        git(&main2, &["commit", "-m", "the base diverges from origin"]);
+        git(&main2, &["checkout", "-b", "sidetrack"]);
+
+        let v = settle_at(&main2, Some("dev_done"));
+
+        assert_eq!(v["otherBases"][0]["reason"], json!("non-ff-or-unavailable"), "{v}");
+        assert_eq!(v["ok"], json!(false), "a divergence is not a holding: {v}");
+        assert_eq!(v["reason"], json!("base-behind"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
+        assert!(
+            git_ok(&main2, &["rev-parse", "--verify", "dev_done"]),
+            "the branch survives the refusal",
+        );
+    }
+
+    /// Build an IN-PLACE unit on top of [`fixture`]: the unit branch cut on the
+    /// MAIN checkout (no worktree of its own), pushed, merged into origin/dev,
+    /// local dev rewound one merge, and the checkout left sitting ON the unit
+    /// branch — the exact post-merge state the exit ritual has to resolve.
+    fn in_place_unit(main: &Path) {
+        git(main, &["merge", "--ff-only", "origin/dev"]);
+        git(main, &["checkout", "-b", "dev_inplace"]);
+        std::fs::write(main.join("inplace.txt"), "the work").expect("file");
+        git(main, &["add", "-A"]);
+        git(main, &["commit", "-m", "in-place work"]);
+        git(main, &["push", "origin", "dev_inplace"]);
+        git(main, &["checkout", "dev"]);
+        git(main, &["merge", "--no-ff", "dev_inplace", "-m", "merge dev_inplace"]);
+        git(main, &["push", "origin", "dev"]);
+        git(main, &["reset", "--hard", "HEAD~1"]);
+        git(main, &["checkout", "dev_inplace"]);
+    }
+
+    /// AC-14 — an in-place prune the base did not authorise puts the checkout
+    /// back on the unit branch, and says so.
+    ///
+    /// The exit half of the ritual runs FIRST (settle checks out the base so the
+    /// branch becomes deletable), so a refusal that stops after it strands the
+    /// session on a base that does not hold the merged work yet: every file of
+    /// the unit reads pre-merge in the editor, which is what made the field
+    /// incident look like data loss even though nothing was lost. A pass that
+    /// changed nothing has to LOOK like a pass that changed nothing.
+    ///
+    /// Both halves, so the restore cannot become unconditional: the same unit
+    /// over a base that CAN advance is pruned, and then the checkout stays on the
+    /// base — there is no work branch left to go back to.
+    #[test]
+    fn a_refused_prune_restores_the_unit_branch() {
+        let (_dir, main) = fixture();
+        in_place_unit(&main);
+        // Make the advance impossible with a CLEAN tree: a commit of the base's
+        // own that origin never saw, so origin/dev stops being a descendant.
+        git(&main, &["checkout", "dev"]);
+        std::fs::write(main.join("diverge.txt"), "committed here, never pushed").expect("file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "the base diverges from origin"]);
+        git(&main, &["checkout", "dev_inplace"]);
+
+        let v = settle_at(&main, Some("dev_inplace"));
+
+        assert_eq!(v["unit"]["inPlace"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("partial"), "the prune was refused: {v}");
+        assert_eq!(v["ok"], json!(false), "{v}");
+        assert_eq!(v["reason"], json!("base-behind"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
+        assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
+        assert_eq!(v["unit"]["restoredToUnit"], json!(true), "the report says it: {v}");
+
+        // The EFFECT the field cares about: the operator is back where the work
+        // is, and the work is back in the tree.
+        assert_eq!(
+            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("dev_inplace"),
+            "the checkout returned to the unit branch: {v}",
+        );
+        assert!(
+            main.join("inplace.txt").exists(),
+            "…so the unit's files are in the tree again, not the pre-merge base",
+        );
+        assert!(git_ok(&main, &["rev-parse", "--verify", "dev_inplace"]), "local branch alive");
+        assert!(
+            !git_out(&main, &["ls-remote", "--heads", "origin", "dev_inplace"])
+                .unwrap_or_default()
+                .is_empty(),
+            "remote branch alive",
+        );
+
+        // The other half: nothing about the unit changed, only the obstacle. The
+        // base advances, the prune runs, and there is nothing to restore.
+        let (_dir2, main2) = fixture();
+        in_place_unit(&main2);
+
+        let v = settle_at(&main2, Some("dev_inplace"));
+
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
+        assert_eq!(
+            v["unit"]["restoredToUnit"],
+            json!(false),
+            "a pruned unit has no branch to return to: {v}",
+        );
+        assert_eq!(
+            git_out(&main2, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some("dev"),
+            "…and the checkout stays on the base it just advanced: {v}",
+        );
     }
 }
