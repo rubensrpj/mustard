@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "every-finding-must-have-declared",
+  "title": "todo achado precisa de destino declarado antes de fechar a spec",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "core",
+      "summary": "O achado ganha modelo: um item que ou tem destino declarado, ou esta aberto — espelhando ChecklistItem.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "collect",
+      "summary": "O coletor deterministico le as duas fontes que hoje ninguem le e semeia os achados no sidecar.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "gate",
+      "summary": "A porta que declara o destino e o portao que recusa o fecho enquanto sobrar achado aberto.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
