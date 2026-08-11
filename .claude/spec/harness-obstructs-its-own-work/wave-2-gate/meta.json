@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "harness-obstructs-its-own-work",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "done": false
+    },
+    {
+      "label": "packages/core/templates/.gitignore",
+      "path": "packages/core/templates/.gitignore",
+      "done": false
+    },
+    {
+      "label": "packages/core/tests/seeded_ignore.rs",
+      "path": "packages/core/tests/seeded_ignore.rs",
+      "done": false
+    }
+  ]
+}

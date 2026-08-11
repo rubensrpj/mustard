@@ -1,0 +1,16 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "harness-obstructs-its-own-work",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/git_settle.rs",
+      "path": "apps/rt/src/commands/git_settle.rs",
+      "done": false
+    }
+  ]
+}

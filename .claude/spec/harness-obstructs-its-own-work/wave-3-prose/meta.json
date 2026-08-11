@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "harness-obstructs-its-own-work",
+  "checklist": [
+    {
+      "label": "plugin/commands/bugfix.md",
+      "path": "plugin/commands/bugfix.md",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/feature/spec-hygiene.md",
+      "path": "plugin/refs/feature/spec-hygiene.md",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "done": false
+    }
+  ]
+}
