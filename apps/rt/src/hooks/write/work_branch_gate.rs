@@ -13,11 +13,24 @@
 //!    branch actually active (both names in the warning), never silently
 //!    cleared — and a protected-branch deny keeps the marker so the next
 //!    attempt retries the cut.
-//!    A cut that lands IN-PLACE on the MAIN checkout answers `Warn` with the
-//!    isolation hint (`EnterWorktree name=…`) — informative only, the edit
-//!    proceeds; a cut inside a linked worktree (already isolated) or a
-//!    submodule (a superproject-scoped hint would be wrong there) stays a
-//!    silent `Allow`.
+//!    A cut is NOT taken when the MAIN checkout already holds ANOTHER unit's
+//!    branch: [`checkout_work_branch`] is a plain checkout, so it would carry
+//!    that unit's uncommitted edits onto this unit's branch and leave the
+//!    session already working here on a branch it never asked for. This unit
+//!    gets its OWN worktree instead — through
+//!    [`crate::commands::work_unit_open::hook_create`], the same engine
+//!    `WorktreeCreate` runs, so the environment the project DECLARES travels
+//!    with it — and the edit is `Deny`d until the session is inside that tree.
+//!    Every other position keeps the in-place cut, silently: an integration
+//!    base (the ordinary first unit), a detached or unreadable HEAD (an
+//!    unmeasured position must never trigger an isolation nobody asked for), a
+//!    linked worktree (already isolated, and its own session owns it) and a
+//!    submodule (a superproject-scoped worktree is the wrong tree).
+//!    An in-place cut used to answer `Warn` with a standing `EnterWorktree`
+//!    hint on the first edit of EVERY unit. That nudge is retired: isolation
+//!    now HAPPENS where it is needed instead of being offered every time, and
+//!    a suggestion that fires unconditionally is what teaches operators to
+//!    stop reading.
 //!    The router pre-computed the branch name and stored it as the session's
 //!    `pending-work-branch` marker via `emit-pipeline --kind pipeline.kind`
 //!    (see [`crate::commands::event::emit_pipeline`]); this hook is the
@@ -76,7 +89,7 @@ use std::process::Command;
 use crate::commands::event::work_branch::{
     base_for, checkout_work_branch, current_branch, is_protected, refresh_integration_bases,
 };
-use crate::commands::work_unit_open::dirty_paths;
+use crate::commands::work_unit_open::{dirty_paths, hook_create};
 use crate::shared::context;
 
 /// How many dirty paths a checkout-failure verdict spells out before
@@ -203,8 +216,8 @@ fn is_distinct_repo(vcs: &str, state_root: &str, nested: &Path) -> bool {
 /// `true` when `root` hosts the repository's MAIN checkout: `--git-dir` and
 /// `--git-common-dir` resolve to the SAME path (a linked worktree's git-dir
 /// lives under `<common>/worktrees/<name>`, so they differ). Fail-closed to
-/// `false` when a probe fails — the in-place nudge is informative only and
-/// must never fire on guesswork.
+/// `false` when a probe fails — an UNPROVEN position must never divert a unit
+/// into a worktree, so a failed probe keeps the in-place cut.
 fn is_main_checkout(vcs: &str, root: &str) -> bool {
     match (
         git_abs_path(vcs, root, "--git-dir"),
@@ -213,6 +226,26 @@ fn is_main_checkout(vcs: &str, root: &str) -> bool {
         (Some(a), Some(b)) => canonicalize_or(&a) == canonicalize_or(&b),
         _ => false,
     }
+}
+
+/// `true` when the tree HOLDS work that is not this unit's — its HEAD names a
+/// branch that is neither `target` nor a bare integration base, i.e. ANOTHER
+/// unit's branch, with that unit's uncommitted edits sitting in the tree.
+///
+/// The partition is the one this gate already uses: an integration base is
+/// nobody's work (the ordinary first unit cuts off it in place), and everything
+/// else is somebody's. It is deliberately not narrowed to a `{base}_` shape —
+/// a hand-made `feature/x` carries edits exactly the same way, and taking its
+/// checkout costs exactly the same.
+///
+/// `None` (unreadable HEAD) and git's `"HEAD"` (a detached checkout) are NOT
+/// measurements of a position, so neither counts: an unmeasured HEAD keeps
+/// today's cut rather than triggering an isolation the operator did not ask for.
+fn holds_other_work(current: Option<&str>, target: &str, config: &ProjectConfig) -> bool {
+    let Some(branch) = current.filter(|b| *b != "HEAD") else {
+        return false;
+    };
+    branch != target && !is_protected(branch, config)
 }
 
 /// The submodule's OWN integration base: its remote default branch
@@ -357,6 +390,44 @@ impl Check for WorkBranchGate {
             return Ok(Verdict::Allow);
         }
 
+        // 2.5 The MAIN checkout is ALREADY HOLDING another unit. Taking it is
+        //     the defect this step exists to remove: `checkout_work_branch` is
+        //     a plain checkout (no stash), so the other unit's uncommitted
+        //     edits would ride along onto THIS unit's branch and the session
+        //     already working here would find itself on a branch it never
+        //     asked for. Cut this unit its own worktree instead — through the
+        //     SAME engine `WorktreeCreate` runs, so the declared environment
+        //     (`mustard.json#worktree`) travels with it — and refuse the edit
+        //     until the session is inside that tree.
+        //
+        //     The MAIN checkout only: a linked worktree is already isolated
+        //     and its own session owns it, and a submodule would be handed a
+        //     superproject-scoped worktree, which is the wrong tree.
+        //
+        //     The marker is KEPT: inside the worktree the branch is already
+        //     out, so the already-on-target fast path above consumes it there.
+        if !in_submodule
+            && holds_other_work(current.as_deref(), &target, &config)
+            && is_main_checkout(&vcs, &local)
+        {
+            if let Ok(path) = hook_create(&target, Path::new(&local)) {
+                return Ok(Verdict::Deny {
+                    reason: format!(
+                        "O checkout principal está na branch '{}', de OUTRA unidade de \
+                         trabalho — criar '{target}' aqui carregaria as edições não \
+                         commitadas dela junto. Esta unidade tem worktree própria: \
+                         EnterWorktree path={path}",
+                        current.as_deref().unwrap_or("?")
+                    ),
+                });
+            }
+            // The worktree could not be cut (base ref absent, path occupied,
+            // a name git refuses…). Leaving the unit with nowhere at all to go
+            // is worse than the arrangement we are improving on, so fall
+            // through to the in-place cut — which reconciles or refuses on its
+            // own terms below.
+        }
+
         // 3. Refresh the integration bases from origin FIRST so the branch is
         //    cut from the latest dev/main. Fail-open: offline / no remote /
         //    non-ff never blocks the edit (see refresh_integration_bases).
@@ -374,23 +445,12 @@ impl Check for WorkBranchGate {
         //    the historical single-session behavior).
         match checkout_work_branch(&vcs, &local, &target, &base) {
             Ok(()) => {
+                // Silent. The in-place cut used to answer `Warn` with a
+                // standing `EnterWorktree` hint on the first edit of EVERY
+                // unit; isolation now HAPPENS at 2.5 where it is needed, and a
+                // suggestion that fires unconditionally is the shape this
+                // project has twice found teaches operators to stop reading.
                 context::clear_pending_branch(&project, &sid);
-                // The cut landed IN-PLACE when the hosting tree is the MAIN
-                // checkout — legitimate (cheap, off the protected base), but
-                // un-isolated: say so ONCE, naming the native step that
-                // isolates the unit. A linked worktree is already isolated; a
-                // submodule cut would name a branch the superproject-scoped
-                // EnterWorktree cannot attach. Informative only — Warn lets
-                // the edit through; never a mode, never a block.
-                if !in_submodule && is_main_checkout(&vcs, &local) {
-                    return Ok(Verdict::Warn {
-                        message: format!(
-                            "branch '{target}' criada in-place no checkout principal — o \
-                             trabalho segue aqui. Para isolar esta unidade numa worktree \
-                             própria: EnterWorktree name={target}"
-                        ),
-                    });
-                }
                 Ok(Verdict::Allow)
             }
             Err(e) => {
@@ -515,12 +575,12 @@ mod tests {
         let sid = "sess-branch-test";
         context::set_pending_branch(root_s, sid, "dev_my-thing");
 
-        // First Write of the work unit fires the gate. The cut lands in-place
-        // on the MAIN checkout → the informative Warn nudge (EnterWorktree
-        // hint); the edit still proceeds.
+        // First Write of the work unit fires the gate. The checkout sits on a
+        // bare integration base — nobody's work — so the cut lands in place,
+        // silently: the standing worktree nudge is retired.
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(matches!(verdict, Verdict::Warn { .. }), "in-place cut nudges: {verdict:?}");
+        assert!(matches!(verdict, Verdict::Allow), "in-place cut is silent: {verdict:?}");
 
         // HEAD is now on the target branch, created off `dev` (from the prefix)...
         assert_eq!(
@@ -598,8 +658,8 @@ mod tests {
         let (marked, ctx2) = pre_edit_input_for(root_s, sid, spec_s);
         let verdict2 = WorkBranchGate.evaluate(&marked, &ctx2).expect("no error");
         assert!(
-            matches!(verdict2, Verdict::Warn { .. }),
-            "the in-place cut nudges, it never refuses the spec write: {verdict2:?}",
+            matches!(verdict2, Verdict::Allow),
+            "the in-place cut is silent, it never refuses the spec write: {verdict2:?}",
         );
         assert_eq!(
             current_branch("git", root_s).as_deref(),
@@ -741,8 +801,8 @@ mod tests {
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
-            matches!(verdict, Verdict::Warn { .. }),
-            "a failing `git fetch origin` must not block the edit (in-place cut → nudge): {verdict:?}",
+            matches!(verdict, Verdict::Allow),
+            "a failing `git fetch origin` must not block the edit: {verdict:?}",
         );
         assert_eq!(
             current_branch("git", root_s).as_deref(),
@@ -809,7 +869,7 @@ mod tests {
         context::set_pending_branch(proj_s, sid, "dev_new-thing");
         let (input, ctx) = pre_edit_input(proj_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(matches!(verdict, Verdict::Warn { .. }), "edit proceeds with nudge: {verdict:?}");
+        assert!(matches!(verdict, Verdict::Allow), "edit proceeds: {verdict:?}");
         assert_eq!(
             current_branch("git", proj_s).as_deref(),
             Some("dev_new-thing"),
@@ -845,7 +905,7 @@ mod tests {
 
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        assert!(matches!(verdict, Verdict::Warn { .. }), "in-place cut nudges: {verdict:?}");
+        assert!(matches!(verdict, Verdict::Allow), "in-place cut is silent: {verdict:?}");
         assert_eq!(
             current_branch("git", root_s).as_deref(),
             Some("develop_feature"),
@@ -1164,34 +1224,103 @@ mod tests {
         );
     }
 
-    /// The in-place nudge: a cut that lands on the MAIN checkout answers Warn
-    /// naming the exact isolation step (`EnterWorktree name=<target>`) — and
-    /// the edit still proceeds (branch cut, marker consumed). The two carved
-    /// exemptions stay silent Allows: a linked worktree
-    /// (`nested_worktree_marker_cuts_branch_locally`) and a submodule
-    /// (`own_git_root_submodule_resolves_nested_base`).
+    /// The SECOND unit gets a worktree instead of TAKING the checkout.
+    ///
+    /// The main checkout already holds another unit's branch, with that unit's
+    /// uncommitted edits in the tree. The gate used to run a plain
+    /// `checkout -b` regardless, which carried those edits onto this unit's
+    /// branch and left the first session somewhere it never asked to be. Now
+    /// the second unit is cut its OWN worktree, the edit is refused until the
+    /// session is inside it, and the first unit keeps both its branch and its
+    /// uncommitted work.
     #[test]
-    fn in_place_cut_warns_with_enter_worktree_hint() {
+    fn second_unit_gets_a_worktree_instead_of_taking_the_checkout() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let root_s = root.to_str().unwrap();
         seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
         init_repo_on(root, "dev");
 
-        let sid = "sess-nudge";
-        context::set_pending_branch(root_s, sid, "dev_nudged-thing");
+        // A FIRST unit is already in flight in the main checkout, and its work
+        // is uncommitted — which is exactly what a plain checkout carries off.
+        git(root, &["checkout", "-b", "dev_first"]);
+        std::fs::write(root.join("f.txt"), "first unit, uncommitted").unwrap();
+
+        // A SECOND unit is signalled for this session.
+        let sid = "sess-second-unit";
+        context::set_pending_branch(root_s, sid, "dev_second");
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
-        let Verdict::Warn { message } = verdict else {
-            panic!("in-place cut on the main checkout must Warn, got {verdict:?}");
+        let Verdict::Deny { reason } = verdict else {
+            panic!("the second unit must not take the checkout, got {verdict:?}");
         };
         assert!(
-            message.contains("EnterWorktree name=dev_nudged-thing"),
-            "the nudge names the exact native isolation step: {message}",
+            reason.contains("EnterWorktree path=") && reason.contains("dev_second"),
+            "the refusal names where the unit went: {reason}",
         );
-        assert!(message.contains("in-place"), "the nudge says why it fired: {message}");
-        // Informative, not a refusal: the cut happened and the marker is gone.
-        assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_nudged-thing"));
-        assert!(context::pending_branch_for(root_s, sid).is_none(), "marker consumed");
+
+        // The unit really went somewhere: its own worktree, on its own branch.
+        let wt = root.join(".claude").join("worktrees").join("dev_second");
+        assert!(wt.is_dir(), "the second unit got its own worktree: {reason}");
+        assert_eq!(
+            current_branch("git", wt.to_string_lossy().as_ref()).as_deref(),
+            Some("dev_second"),
+            "the worktree holds the second unit's branch",
+        );
+
+        // The first unit is untouched — branch AND uncommitted edits.
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev_first"),
+            "the checkout was not taken",
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).unwrap(),
+            "first unit, uncommitted",
+            "the first unit's uncommitted work stayed where it was",
+        );
+
+        // The marker SURVIVES: inside the worktree the branch is already out,
+        // so the already-on-target fast path consumes it there.
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("dev_second"),
+            "the intent survives for the edit that lands inside the worktree",
+        );
+    }
+
+    /// A DETACHED HEAD is not a measured position: it must keep today's
+    /// in-place cut rather than divert the unit into a worktree nobody asked
+    /// for. `git rev-parse --abbrev-ref HEAD` answers the literal `HEAD` there,
+    /// which is neither the target nor a protected base — the exact shape that
+    /// would otherwise read as "another unit is here".
+    #[test]
+    fn detached_head_keeps_the_in_place_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+        git(root, &["checkout", "--detach", "HEAD"]);
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("HEAD"),
+            "precondition: git reports a detached HEAD as `HEAD`",
+        );
+
+        let sid = "sess-detached";
+        context::set_pending_branch(root_s, sid, "dev_detached-thing");
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev_detached-thing"),
+            "the branch was cut in place, as before",
+        );
+        assert!(
+            !root.join(".claude").join("worktrees").exists(),
+            "an unmeasured HEAD never triggers an isolation",
+        );
     }
 }

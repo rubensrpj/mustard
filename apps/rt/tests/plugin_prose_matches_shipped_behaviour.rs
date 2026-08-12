@@ -557,6 +557,105 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     );
 }
 
+/// The worktree prose teaches what a SECOND unit gets, what travels with it,
+/// and what the collector reaps.
+///
+/// Three mechanisms shipped in this spec while the operator prose still
+/// described the world without them: the gate now DIVERTS a second unit into
+/// its own worktree instead of taking a checkout another unit is working in,
+/// the project DECLARES the environment that travels with a cut
+/// (`mustard.json#worktree`), and the collector ACTS on what is orphaned
+/// instead of printing a warning about it. A worktree nobody is told about is
+/// a worktree nobody enters — and the ref is where `/git` sends the reader.
+#[test]
+fn worktree_prose_teaches_the_second_unit_the_declaration_and_the_reaper() {
+    let flow = read("plugin/refs/git/git-flow.md");
+
+    // --- 1. The divert is taught where the gate's decision is taught --------
+    let another = line_with(&flow, "ANOTHER unit's branch")
+        .expect("the gate prose never says what happens when the checkout holds another unit");
+    assert!(
+        another.contains("EnterWorktree path="),
+        "the row names no step the session can actually take: {another}",
+    );
+    assert!(
+        another.contains("denied"),
+        "the row must say the edit is REFUSED — a worktree appearing beside an \
+         allowed edit would leave the write on the other unit's branch: {another}",
+    );
+    // The counterweight, deliberately: a rule that only added "isolate more"
+    // would divert on a HEAD nobody measured, which is an isolation the
+    // operator never asked for.
+    let unmeasured = line_with(&flow, "detached / unreadable HEAD")
+        .expect("the gate prose no longer says what an unreadable HEAD does");
+    assert!(
+        unmeasured.contains("in-place"),
+        "an unmeasured position must keep today's cut: {unmeasured}",
+    );
+    // --- 2. The declaration and the reaper, in the isolation contract -------
+    let carry = line_with(&flow, "**`carry`**")
+        .expect("the contract never names the verb that copies a declared path");
+    assert!(
+        carry.contains("COPIED") && carry.contains("leak"),
+        "`carry` must say it is a copy AND why a link would be wrong: {carry}",
+    );
+    let link = line_with(&flow, "**`link`**")
+        .expect("the contract never names the verb that points a heavy directory");
+    assert!(
+        link.contains("junction") || link.contains("symlink"),
+        "`link` must say what it actually creates: {link}",
+    );
+    let reaper = line_with(&flow, "The collector reaps what is ORPHANED")
+        .expect("the contract never says what the collector does");
+    for taught in ["--apply", "uncommitted", "PID"] {
+        assert!(
+            reaper.contains(taught),
+            "the reaper paragraph omits `{taught}` — it acts, it refuses over work, \
+             and it knows an orphan by its owner: {reaper}",
+        );
+    }
+
+    // --- 3. The code really does each of the three --------------------------
+    // Without this half every sentence above outlives its mechanism.
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        gate.contains("fn holds_other_work"),
+        "the gate no longer asks whether the checkout holds another unit",
+    );
+    assert!(
+        gate.contains("hook_create(&target"),
+        "the gate names the divert but cuts no worktree, so the refusal would \
+         send the session to a path that does not exist",
+    );
+    assert!(
+        !gate.contains("EnterWorktree name="),
+        "the standing in-place nudge the prose says is retired still fires",
+    );
+
+    let open = read("apps/rt/src/commands/work_unit_open.rs");
+    assert!(
+        open.contains("fn carry_environment") && open.contains("worktree.linked()"),
+        "nothing reads the declaration, so a fresh worktree still lands without \
+         the environment the project declared",
+    );
+    assert!(
+        open.contains("mklink /J"),
+        "the prose promises a junction on Windows, where an unprivileged \
+         symlink_dir is refused",
+    );
+
+    let gc = read("apps/rt/src/commands/maint/worktree_gc.rs");
+    assert!(
+        gc.contains("gc(repo, DEFAULT_AGE_DAYS, /* apply = */ true)"),
+        "the SessionStart probe went back to dry-run, so nothing is ever collected",
+    );
+    assert!(
+        gc.contains("process_liveness") && gc.contains("dirty_paths"),
+        "the collector lost either the owner probe that makes it prompt or the \
+         work probe that makes it safe",
+    );
+}
+
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
 /// of names for one agent, which is why six names spell five reservations.
 const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];

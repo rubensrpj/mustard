@@ -28,15 +28,39 @@ Read `mustard.json` from the **project root** via the `Read` tool (not `cat`); m
 
 Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`). The `{base}_` prefix **records the integration branch the work was cut from**; `/git` recovers a branch's base / PR-target from it (longest match against the integration bases). The branch is **auto-created off `<base>` on the first file edit**: the router picks the base (asking "de qual base?" when the project has more than one), pre-computes the name (`emit-pipeline --base <base>`), and `work_branch_gate` cuts + checks it out on the first `Write`/`Edit`. Read-only requests never branch.
 
-**The gate** (`work_branch_gate`, PreToolUse Write/Edit) judges the LOCAL tree hosting the edit, so a nested worktree on a work branch is never blocked by the main checkout's branch. With a pending-unit marker it cuts `{base}_{slug}` off the freshly fetched base and allows (fail-open — a git failure warns, never blocks); with no marker, a direct edit on a bare integration base is **denied** — except planning artifacts (`.claude/plans/` and `.claude/spec/`), always allowed, since the spec IS the plan, authored in-place before the work unit — while any `{base}_*` work branch edits freely.
+**The gate** (`work_branch_gate`, PreToolUse Write/Edit) judges the LOCAL tree hosting the edit, so a nested worktree on a work branch is never blocked by the main checkout's branch. With no marker, a direct edit on a bare integration base is **denied** — except `.claude/plans/`, harness state authored *before* the unit exists (`.claude/spec/` is NOT carved out: the spec belongs to the unit, so it is written after the branch exists) — while any `{base}_*` work branch edits freely.
+
+With a pending-unit marker the gate asks WHERE the checkout is before it cuts:
+
+| The checkout is on | What happens |
+|--------------------|--------------|
+| a bare integration base — nobody's work | cut `{base}_{slug}` off the freshly fetched base, **in place**, silently |
+| THIS unit's branch already | consume the marker, say nothing |
+| a detached / unreadable HEAD | the in-place cut, unchanged — an unmeasured position never triggers an isolation nobody asked for |
+| **ANOTHER unit's branch** | do **not** take the checkout: this unit gets its OWN worktree and the edit is **denied** with `EnterWorktree path=…` |
+
+The last row is why worktrees exist here. A checkout carries the uncommitted work of whoever is in it, and `git checkout` moves that work along — so taking the checkout for a second unit silently drags the first unit's edits onto the second unit's branch. The second unit is diverted instead, through the same engine `WorktreeCreate` runs, so the declared environment travels with it (below). Fail-open throughout: a git failure warns and reconciles the marker to the branch actually active, never blocks, and a worktree that cannot be cut degrades to the in-place cut. There is no standing "you could isolate this" nudge — isolation happens where it is needed instead of being offered every time.
 
 **Monorepo:** the gate cuts the branch in the PARENT only. Each dirty submodule gets its OWN `{base}_{slug}` branch (its own base prefix), cut by `/git` at commit time — see `submodule-rules.md`.
 
-## Isolation contract — the branch IS the unit, the worktree is the parallel case
+## Isolation contract — the branch IS the unit, the worktree is what a SECOND unit gets (parallel work)
 
 Every unit lives on its OWN branch `{base}_{slug}`, cut in the MAIN checkout at APPROVAL by `spec-draft` — so the whole unit is written on it: `spec.md`, the waves, the ceremony and the code alike. That branch IS the isolation. The `{base}_` prefix is load-bearing — `/git` reads it to target the PR — and the branch is cut FROM `{base}`, so the right base in yields the right PR target out.
 
-A worktree at `.claude/worktrees/{base}_{slug}` is what keeps SEVERAL units in flight at once: it is cut only when the branch is not already checked out somewhere, so concurrent sessions never share a tree. One unit worked start to finish never needs one.
+A worktree at `.claude/worktrees/{base}_{slug}` is what a **second** unit gets — one opened while the main checkout already holds another. It is cut only when the branch is not already checked out somewhere, so concurrent sessions never share a tree. One unit worked start to finish never needs one, and the first unit in the checkout never loses it.
+
+**The project DECLARES what travels.** `git worktree add` writes only VERSIONED files, so every git-ignored path the project needs to run is simply absent from a fresh cut — the operator lands in a directory that builds nothing. The harness cannot guess which those are (copying every ignored path drags `node_modules`/`target` along; picking a subset is a curated guess), so `mustard.json#worktree` states them once and the cut obeys — two verbs, because the costs are opposite:
+
+```json
+{ "worktree": { "carry": [".env", ".env.local"], "link": ["node_modules", "target"] } }
+```
+
+- **`carry`** — COPIED. Small, environment-specific, authored in place: a link would leak the worktree's edits back into the main checkout.
+- **`link`** — POINTED at the main checkout's copy (a directory junction on Windows, a symlink elsewhere). Heavy and regenerable: duplicating these is the ten-minute wait that makes a worktree unusable, and pointing is harmless because nothing in them is authored.
+
+Both default to empty — a project that declares nothing behaves exactly as before. A declared path that cannot travel is a loud WARN, never a failed cut: losing the isolation over a missing `.env` costs more than the gap it reports.
+
+**The collector reaps what is ORPHANED.** `worktree-gc` runs at every SessionStart with `--apply` — it removes, it does not report. It never touches a work unit's worktree (`{base}_…` — that is `git-settle`'s job exclusively) and never one holding uncommitted or untracked work, whatever its age. For the harness's own scratch trees the name carries the PID of whoever cut it, so "orphan or busy" is a question with an exact answer: owner gone → collected now, not in a week. Age stays only as the fallback for a worktree whose owner cannot be read — unmeasured ownership authorises nothing.
 
 - **Desktop / background CLI** — isolated automatically. A Desktop branch has no `{base}_` prefix, so `/git` falls back to the primary base (`git.flow["*"]`); pass an explicit `<target>` for any other base.
 - **Foreground CLI** — the branch is already out from approval, so the isolation step DEGRADES rather than cutting twice: `EnterWorktree name={base}_{slug}` (the `branch` echoed by `emit-pipeline`) answers with the checkout that already holds it (`inPlace:true`, nothing created). `git worktree add` over a branch another tree holds is what git refuses with exit 128 — the degrade is what keeps that from ending the step. When the branch is NOT already out, the plugin's `WorktreeCreate` hook replaces the native cut: a `{base}_` name with a DECLARED base → fresh `origin/{base}` (idempotent; attaches an existing branch); any other name (the harness's own slug, e.g. `recursing-benz-063389`) → the native default cut, refused while the tree is dirty; an UNDECLARED `{base}_` prefix → loud abort. `mustard-rt run work-unit-open --spec {slug} --base {base}` remains the manual face of the same engine (then `EnterWorktree path={path}`).
