@@ -670,9 +670,15 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
         "the SessionStart probe went back to dry-run, so nothing is ever collected",
     );
     assert!(
-        gc.contains("process_liveness") && gc.contains("dirty_paths"),
+        gc.contains("process_liveness") && gc.contains("enum Contents"),
         "the collector lost either the owner probe that makes it prompt or the \
          work probe that makes it safe",
+    );
+    assert!(
+        !gc.contains("dirty_paths(&wt)"),
+        "the collector decides by the CUT decision's probe again — the one that \
+         reads a failed measurement as clean and drops the candidate's own \
+         `.claude/` contents, which is how an --apply sweep deleted unsaved files",
     );
 }
 

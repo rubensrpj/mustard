@@ -2,6 +2,6 @@
 
 - Spec: `worktree-isolation-becomes-usable-it`
 - Verdict: **REJECTED**
-- Critical findings: 2
+- Critical findings: 1
 - Subproject: `apps/rt`
 

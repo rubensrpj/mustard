@@ -25,4 +25,7 @@ id: wave.worktree-isolation-becomes-usable-it.plan
 - **AC-11** — when spec-draft cuts a unit branch and the checkout already holds another unit uncommitted work, then the cut itself refuses instead of checking out
   Command: `cargo test -p mustard-rt the_branch_cut_itself_refuses_a_busy_checkout`
   Expect: `[1-9][0-9]* passed`
+- **AC-12** — when the collector cannot positively establish that a candidate holds no work, then it refuses to remove it, and a candidate directory holding files under .claude is seen as holding work
+  Command: `cargo test -p mustard-rt the_collector_refuses_what_it_could_not_prove_empty`
+  Expect: `[1-9][0-9]* passed`
 - AC-10 — the workspace still builds. Command: `cargo build --workspace`

@@ -24,9 +24,30 @@
 //!
 //! Widening what a destructive sweep can see demands the other half of the
 //! platform's own contract, so it is here too: a worktree that still HOLDS WORK
-//! (uncommitted or untracked changes, `.claude/` excepted) is never removed,
-//! whatever its age. What removal can cost is then a checkout with nothing in
-//! it — its branch survives `git worktree remove` untouched.
+//! (uncommitted or untracked changes, `.claude/` INCLUDED — see below) is never
+//! removed, whatever its age. What removal can cost is then a checkout with
+//! nothing in it — its branch survives `git worktree remove` untouched.
+//!
+//! ## Only a positive observation of emptiness deletes
+//!
+//! That refusal is worth exactly what the probe behind it is worth, and the
+//! probe belongs to the CALLER. The cut decision's probe
+//! ([`crate::commands::work_unit_open::dirty_paths`]) answers a different
+//! question — "may I cut a worktree here?" — with the opposite failure posture:
+//! a failed `git status` reads as CLEAN (a refusal may only stand on a positive
+//! observation) and every path under `.claude/` is dropped as redirected
+//! harness state. Both are right there and catastrophic here. This collector's
+//! candidates LIVE under `.claude/worktrees/`, so that carve-out hides a
+//! candidate's OWN contents; and `git status` run inside a directory that is
+//! not its own checkout answers about the ENCLOSING repository, so a directory
+//! holding unsaved files was reported clean and `--apply` deleted them.
+//! Reproduced twice, files lost both times.
+//!
+//! So the collector measures with its own [`contents`] probe, whose posture is
+//! the one ownership already takes one decision earlier: what could not be
+//! measured is never an authorisation. It asks git only where git can speak for
+//! the candidate ITSELF, walks a plain directory's own contents otherwise, and
+//! keeps whatever it could not settle.
 //!
 //! ## Where it looks
 //!
@@ -91,8 +112,9 @@
 //! - `pipeline.economy.operation.invoked { operation: "worktree-gc", duration_ms }`
 //!   — the universal `/economia` operation marker (W12 contract).
 
+use crate::commands::git_settle::git_out;
 use crate::commands::review::work_removed::scratch_prefix;
-use crate::commands::work_unit_open::{dirty_paths, is_unit_worktree_name};
+use crate::commands::work_unit_open::is_unit_worktree_name;
 use crate::shared::context::{current_spec, session_id};
 use crate::shared::proc::process_liveness;
 use mustard_core::time::now_iso8601;
@@ -261,6 +283,127 @@ fn ownership(worktree: &Path, prefix: &str) -> Ownership {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Contents — the collector's OWN work probe
+// ---------------------------------------------------------------------------
+
+/// What the collector could ESTABLISH about what a candidate holds.
+///
+/// Deliberately not a `bool`: a caller that DELETES has to tell "I measured
+/// nothing in there" from "I could not measure", and only the first authorises
+/// removal. It is the posture [`Ownership::Unknown`] already takes for the
+/// owner probe, one decision earlier.
+enum Contents {
+    /// Positively observed to hold nothing: git answered for THIS checkout and
+    /// reported no change, or the directory itself was walked and no file was
+    /// found. The only verdict that authorises removal.
+    ProvenEmpty,
+    /// Something was positively observed inside — uncommitted, untracked, or
+    /// simply a file sitting in a directory git does not track at all.
+    HoldsWork,
+    /// Nothing could be established. Never an authorisation.
+    Unproven,
+}
+
+/// `git status --porcelain` for `worktree` — but ONLY when git answers about
+/// `worktree` ITSELF.
+///
+/// A directory that is not its own checkout resolves to the ENCLOSING
+/// repository, and `git -C <plain-dir> status` then reports the MAIN
+/// checkout's dirt: an answer about a tree the collector is not deciding on,
+/// which made a candidate's protection depend on whether an unrelated tree
+/// happened to be dirty. Comparing `rev-parse --show-toplevel` against the
+/// candidate is what separates a registered worktree (git can speak for it)
+/// from a plain directory (it cannot).
+///
+/// `None` means "not measured" — never "clean".
+fn own_checkout_status(worktree: &Path) -> Option<String> {
+    let top = git_out(worktree, &["rev-parse", "--show-toplevel"])?;
+    let here = std::fs::canonicalize(worktree).ok()?;
+    let there = std::fs::canonicalize(Path::new(&top)).ok()?;
+    if here != there {
+        return None;
+    }
+    git_out(worktree, &["status", "--porcelain"])
+}
+
+/// Whether git's own bookkeeping claims this path is a checkout: an
+/// administrative record under `<repo>/.git/worktrees/<name>`, or a `.git`
+/// pointer inside the candidate. Either one says the answer that mattered was
+/// git's — so [`own_checkout_status`] not having produced one is a FAILURE TO
+/// MEASURE, not an empty tree.
+fn claimed_as_checkout(repo: &Path, worktree: &Path) -> bool {
+    if worktree.join(".git").exists() {
+        return true;
+    }
+    worktree
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| repo.join(".git").join("worktrees").join(name).is_dir())
+}
+
+/// How deep the direct walk descends before it stops asking: a candidate with
+/// structure this deep is not an empty directory by any reading.
+const MAX_WALK_DEPTH: u32 = 24;
+
+/// Whether `dir` holds ANY file at all, git's own bookkeeping (`.git`) aside.
+///
+/// The judgement a plain directory can still take when git cannot speak for
+/// it: one file is one thing to lose. A symlink counts as a file (its
+/// `file_type` is neither dir nor regular), which errs towards keeping.
+///
+/// `None` when the directory could not be read — read by the caller as
+/// unproven, NEVER as empty.
+fn holds_any_file(dir: &Path, depth: u32) -> Option<bool> {
+    if depth == 0 {
+        return Some(true);
+    }
+    for entry in std::fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        if entry.file_name().to_string_lossy() == ".git" {
+            continue;
+        }
+        if entry.file_type().ok()?.is_dir() {
+            if holds_any_file(&entry.path(), depth - 1)? {
+                return Some(true);
+            }
+        } else {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// What `worktree` holds, measured with the posture a caller that DELETES
+/// needs: everything unmeasured is [`Contents::Unproven`], and unproven keeps.
+///
+/// NOT [`crate::commands::work_unit_open::dirty_paths`] — see the module
+/// header. That probe serves the cut decision, reads a failed measurement as
+/// clean, and drops every path under `.claude/`; this one sees the candidate's
+/// own contents, `.claude/` included, and refuses what it could not settle.
+fn contents(repo: &Path, worktree: &Path) -> Contents {
+    if let Some(status) = own_checkout_status(worktree) {
+        // git spoke for THIS checkout, so its answer is the whole answer — no
+        // carve-out: a candidate's own `.claude/` is its contents, not the
+        // harness state the redirect points elsewhere.
+        return if status.lines().any(|line| !line.trim().is_empty()) {
+            Contents::HoldsWork
+        } else {
+            Contents::ProvenEmpty
+        };
+    }
+    // git could not speak for the candidate, so the directory answers for
+    // itself. A file found is a positive observation and settles it; finding
+    // none only settles it when nothing claimed the path was a checkout git
+    // was supposed to answer for.
+    match holds_any_file(worktree, MAX_WALK_DEPTH) {
+        Some(true) => Contents::HoldsWork,
+        None => Contents::Unproven,
+        Some(false) if claimed_as_checkout(repo, worktree) => Contents::Unproven,
+        Some(false) => Contents::ProvenEmpty,
+    }
+}
+
 /// Best-effort age signal for `worktree` (full path to the agent worktree dir).
 ///
 /// 1. `<repo>/.git/worktrees/<basename>/HEAD` mtime — `git worktree add`
@@ -408,13 +551,28 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
         // ONLY of an entry already judged eligible — over the threshold, or an
         // orphan — so the probe that runs at every SessionStart never spawns a
         // `git status` per worktree just to report an age.
-        if !dirty_paths(&wt).is_empty() {
-            report.kept.push(KeptEntry {
-                path,
-                age_days: age,
-                reason: "holds uncommitted work".into(),
-            });
-            continue;
+        //
+        // And a candidate is removed on a POSITIVE observation of emptiness
+        // alone: the same rule ownership takes above, where an unanswered
+        // liveness probe authorises nothing.
+        match contents(repo, &wt) {
+            Contents::ProvenEmpty => {}
+            Contents::HoldsWork => {
+                report.kept.push(KeptEntry {
+                    path,
+                    age_days: age,
+                    reason: "holds uncommitted work".into(),
+                });
+                continue;
+            }
+            Contents::Unproven => {
+                report.kept.push(KeptEntry {
+                    path,
+                    age_days: age,
+                    reason: "could not be proven empty".into(),
+                });
+                continue;
+            }
         }
 
         if !apply {
@@ -549,10 +707,18 @@ mod tests {
         file.set_modified(when)
     }
 
-    /// Create a fake agent worktree at `<repo>/.claude/worktrees/<slug>`
-    /// alongside the matching `.git/worktrees/<basename>/HEAD` marker. The
-    /// marker is the file `age_signal` reads first; backdating it controls the
-    /// computed age without needing a real `git worktree add`.
+    /// Cut an agent worktree at `<repo>/.claude/worktrees/<slug>` of a REAL
+    /// repository and backdate `.git/worktrees/<basename>/HEAD` — the file
+    /// `age_signal` reads first — so the computed age is whatever the test
+    /// needs.
+    ///
+    /// A real `git worktree add` rather than a directory with a token file in
+    /// it, because the collector now judges a candidate by what it can
+    /// ESTABLISH about its contents: git can speak for a registered worktree
+    /// and answers "clean", while a plain directory holding a file holds
+    /// something and is never removed. The old fixture — a bare directory with
+    /// `src/touch.txt` inside — asserted precisely the behaviour that deleted
+    /// real files.
     ///
     /// The name is a SLUG, the shape `WorktreeCreate` actually hands over — the
     /// old `agent-<id>` fixture matched a prefix the platform never emits, so
@@ -560,15 +726,13 @@ mod tests {
     fn fake_worktree(repo: &Path, id: &str, age_days: u64) -> PathBuf {
         let basename = format!("recursing-{id}-063389");
         let wt = repo.join(".claude").join("worktrees").join(&basename);
-        fs::create_dir_all(wt.join("src")).unwrap();
-        // A token file inside so std::fs::remove_dir_all has something to do.
-        fs::write(wt.join("src").join("touch.txt"), "x").unwrap();
+        Command::new("git")
+            .args(["worktree", "add", "--detach", &wt.to_string_lossy(), "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("git");
 
-        let admin = repo.join(".git").join("worktrees").join(&basename);
-        fs::create_dir_all(&admin).unwrap();
-        let head = admin.join("HEAD");
-        fs::write(&head, "ref: refs/heads/worktree-agent-x\n").unwrap();
-
+        let head = repo.join(".git").join("worktrees").join(&basename).join("HEAD");
         let when = SystemTime::now() - Duration::from_secs(age_days * 86_400 + 60);
         let _ = backdate(&head, when);
 
@@ -660,8 +824,9 @@ mod tests {
     #[test]
     fn dry_run_does_not_remove_anything() {
         let dir = tempdir().unwrap();
-        let wt = fake_worktree(dir.path(), "old", 30);
-        let report = gc(dir.path(), 7, /* apply = */ false);
+        let repo = seeded_repo(dir.path(), "gc-dry-run");
+        let wt = fake_worktree(&repo, "old", 30);
+        let report = gc(&repo, 7, /* apply = */ false);
         assert!(wt.exists(), "dry-run must not touch the filesystem");
         assert!(report.removed.is_empty());
         // The eligible worktree shows up in `kept[]` with reason "dry-run".
@@ -674,11 +839,12 @@ mod tests {
     #[test]
     fn apply_removes_only_above_threshold() {
         let dir = tempdir().unwrap();
-        let young = fake_worktree(dir.path(), "young", 1);
-        let edge = fake_worktree(dir.path(), "edge", 7);
-        let old = fake_worktree(dir.path(), "old", 30);
+        let repo = seeded_repo(dir.path(), "gc-threshold");
+        let young = fake_worktree(&repo, "young", 1);
+        let edge = fake_worktree(&repo, "edge", 7);
+        let old = fake_worktree(&repo, "old", 30);
 
-        let report = gc(dir.path(), 7, /* apply = */ true);
+        let report = gc(&repo, 7, /* apply = */ true);
 
         // The 1-day and 7-day worktrees survive; only the 30-day one goes.
         assert!(young.exists(), "1d worktree must survive");
@@ -710,9 +876,10 @@ mod tests {
         // simulation now acts. A stale, unowned worktree goes; a young one
         // stays, so what changed is the ACTION, not the rule.
         let dir = tempdir().unwrap();
-        let old = fake_worktree(dir.path(), "old", 30);
-        let young = fake_worktree(dir.path(), "young", 1);
-        session_start_probe(dir.path());
+        let repo = seeded_repo(dir.path(), "gc-probe-acts");
+        let old = fake_worktree(&repo, "old", 30);
+        let young = fake_worktree(&repo, "young", 1);
+        session_start_probe(&repo);
         assert!(!old.exists(), "a stale orphan is collected, not merely counted");
         assert!(young.exists(), "and the age fallback still spares a young one");
     }
@@ -825,6 +992,101 @@ mod tests {
         let _ = std::fs::remove_dir_all(&orphan);
     }
 
+    /// Plant the `.git/worktrees/<name>/HEAD` marker [`age_signal`] reads
+    /// first, backdated to `when`.
+    ///
+    /// For a candidate that is NOT a worktree this is an AGE SIGNAL and nothing
+    /// else: git honours no registration without the `gitdir` file beside it,
+    /// and [`contents`] settles a directory holding a file by walking it —
+    /// long before anything asks who claims the path.
+    fn age_marker(repo: &Path, name: &str, when: SystemTime) {
+        let admin = repo.join(".git").join("worktrees").join(name);
+        fs::create_dir_all(&admin).unwrap();
+        let head = admin.join("HEAD");
+        fs::write(&head, "ref: refs/heads/detached\n").unwrap();
+        let _ = backdate(&head, when);
+    }
+
+    /// AC-12 — the collector removes on a POSITIVE observation of emptiness and
+    /// on nothing else. Both halves, in the two shapes the field has:
+    ///
+    /// (a) a candidate whose emptiness could not be ESTABLISHED — git's own
+    ///     bookkeeping claims the path is a checkout, and git cannot speak for
+    ///     it — is kept, not removed;
+    /// (b) a plain directory under `.claude/worktrees/`, never registered as a
+    ///     worktree, holding a file under `.claude/`, is seen as HOLDING WORK.
+    ///
+    /// (b) is the reproduction that found the defect. `git status` run inside a
+    /// directory that is not its own checkout answers about the ENCLOSING
+    /// repository, and the cut decision's probe then drops everything under
+    /// `.claude/` as redirected state — so the candidate's own contents were
+    /// invisible, "clean" was read from a tree nobody was deciding on, and
+    /// `--apply` deleted unsaved files. The first assertion below pins that
+    /// blindness in place, so this test fails the day the collector goes back
+    /// to asking it.
+    #[test]
+    fn the_collector_refuses_what_it_could_not_prove_empty() {
+        let dir = tempdir().unwrap();
+        let repo = seeded_repo(dir.path(), "gc-unproven");
+        let stale = SystemTime::now() - Duration::from_secs(30 * 86_400);
+
+        // (b) A directory where the collector looks, holding an unsaved file
+        // under `.claude/`. No `git worktree add`, no `.git` of its own.
+        let holding = repo.join(".claude").join("worktrees").join("pasta-antiga");
+        let precious = holding.join(".claude").join("precioso.txt");
+        fs::create_dir_all(holding.join(".claude")).unwrap();
+        fs::write(&precious, "trabalho que ninguem salvou").unwrap();
+        age_marker(&repo, "pasta-antiga", stale);
+
+        // (a) A path git's bookkeeping calls a checkout, with no checkout there
+        // to measure: nothing about THIS directory can be established.
+        let ghost = repo.join(".claude").join("worktrees").join("pasta-fantasma");
+        fs::create_dir_all(&ghost).unwrap();
+        age_marker(&repo, "pasta-fantasma", stale);
+
+        // The mechanism that lost the files: the CUT decision's probe reports
+        // both candidates clean, because it answers about the enclosing repo
+        // and drops everything under `.claude/`.
+        for candidate in [&holding, &ghost] {
+            assert!(
+                crate::commands::work_unit_open::dirty_paths(candidate).is_empty(),
+                "fixture: the cut probe is blind here — that is the defect ({})",
+                candidate.display(),
+            );
+        }
+
+        let report = gc(&repo, DEFAULT_AGE_DAYS, /* apply = */ true);
+        let reason_for = |p: &Path| {
+            report
+                .kept
+                .iter()
+                .find(|k| k.path == p.display().to_string())
+                .map_or_else(String::new, |k| k.reason.clone())
+        };
+
+        assert!(report.removed.is_empty(), "nothing was proven empty: {:?}", report.removed);
+        assert!(precious.exists(), "the unsaved file survives an --apply sweep");
+        assert_eq!(
+            fs::read_to_string(&precious).unwrap_or_default(),
+            "trabalho que ninguem salvou",
+            "and survives with its contents intact",
+        );
+        assert_eq!(
+            reason_for(&holding),
+            "holds uncommitted work",
+            "a directory holding files under `.claude/` holds work: {:?}",
+            report.kept.iter().map(|k| (&k.path, &k.reason)).collect::<Vec<_>>(),
+        );
+
+        assert!(ghost.exists(), "what could not be measured is never removed");
+        assert_eq!(
+            reason_for(&ghost),
+            "could not be proven empty",
+            "and the report says it was never established, not that it was clean: {:?}",
+            report.kept.iter().map(|k| (&k.path, &k.reason)).collect::<Vec<_>>(),
+        );
+    }
+
     /// AC-6 — the worktree an interrupted removal pass leaves behind lives in
     /// the OS temp directory, outside the only tree the collector used to walk.
     /// It is now within reach AND collected by the session-start sweep.
@@ -885,8 +1147,9 @@ mod tests {
     #[test]
     fn age_signal_prefers_admin_head_over_dir_mtime() {
         let dir = tempdir().unwrap();
-        let wt = fake_worktree(dir.path(), "x", 30);
-        let signal = age_signal(dir.path(), &wt).expect("HEAD marker is present");
+        let repo = seeded_repo(dir.path(), "gc-age-signal");
+        let wt = fake_worktree(&repo, "x", 30);
+        let signal = age_signal(&repo, &wt).expect("HEAD marker is present");
         let days = age_days_since(signal).unwrap_or(0);
         assert!(days >= 29, "expected ~30d, got {days}");
     }

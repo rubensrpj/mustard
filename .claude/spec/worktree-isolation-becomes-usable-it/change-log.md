@@ -15,3 +15,11 @@ _Solicitações registradas automaticamente durante o pipeline (mid-spec). O `sp
 - **2026-08-12T15:40:39.562Z** _(QaReview)_ — **Instruction:** Remover TODA a maquinaria de worktree que o mustard adiciona para isolar unidade de trabalho. Sai: a secao worktree do mustard.json (carry/link), carry_environment, copy_tree, link_dir e a junction do Windows, o desvio do portao de escrita para cortar worktree, e a prosa que ensina esse arranjo. No lugar, quando o checkout ja segura o branch de OUTRA unidade com trabalho nao commitado, o portao RECUSA e nomeia o que fazer (commitar ou guardar antes de abrir a segunda unidade) em vez de desviar. Motivo: o processo tem de ser simples e sem atrito; copiar ou ligar ambiente para dentro de um worktree e maquina demais para o que se pediu, e a junction destroi o diretorio do checkout principal quando o worktree e removido (reproduzido com e sem --force). FICA de pe o coletor de worktrees orfaos: ele nao cria nada, apenas recolhe os que o Claude Code corta por conta propria, que aparecem no repositorio com ou sem o mustard.
 - **2026-08-12T15:42:46.008Z** _(QaReview)_ — vc usa girias e termos que não dá pra entender
 - **2026-08-12T15:47:06.687Z** _(QaReview)_ — sim
+- **2026-08-12T16:51:09.378Z** _(QaReview)_ — uma melhoria, hoje os branches deveriam ser criados assim: fix/... - feature/... - hotfix/
+- **2026-08-12T17:03:39.225Z** _(QaReview)_ — fix e feature a partir da develop ou dev deacordo com mustard.json e hotfix de qas ou produção/main
+- **2026-08-12T17:09:02.005Z** _(QaReview)_ — unico ponto que não entendi é sobre hotfix que pode sair de qas ou main/produção como será identificado?
+- **2026-08-12T17:20:18.044Z** _(QaReview)_ — e se fosse questionado ao usuário antes de decidir como opção?
+- **2026-08-12T17:22:03.791Z** _(QaReview)_ — mas ai terei que pedir ou inicio a conversa com o termo que eu quero feature, fix, hotfix...?
+- **2026-08-12T17:45:22.901Z** _(QaReview)_ — mas deveria ser algo que sempre deveria ser questinado ao usuário, porém, trazendo a opção padrão de acordo com o cenário, mas deixando ele escolher qualquer um e de qual branch será iniciado
+- **2026-08-12T17:51:13.272Z** _(QaReview)_ — isso, aprovado
+- **2026-08-12T18:36:11.134Z** _(QaReview)_ — sim

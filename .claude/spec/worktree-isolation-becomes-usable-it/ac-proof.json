@@ -53,6 +53,23 @@
       "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
     },
     {
+      "id": "AC-12",
+      "command": "cargo test -p mustard-rt the_collector_refuses_what_it_could_not_prove_empty",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
       "id": "AC-2",
       "command": "cargo test -p mustard-rt a_fresh_worktree_holds_no_link_into_the_main_checkout",
       "expect": "[1-9][0-9]* passed",
@@ -283,6 +300,18 @@
       "reason": "A revisao provou que a verificacao vive so no hook de escrita, enquanto quem realmente troca de branch e cut_pending_work_branch, chamado por spec-draft antes de qualquer escrita. Sem criterio nesse ponto, a protecao continua sendo testada onde ela nao decide nada.",
       "statement": "when spec-draft cuts a unit branch and the checkout already holds another unit uncommitted work, then the cut itself refuses instead of checking out",
       "command": "cargo test -p mustard-rt the_branch_cut_itself_refuses_a_busy_checkout",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-12",
+      "at": "2026-08-12T18:36:31.442Z",
+      "reason": "A revisao provou perda de dados: o coletor decide por dirty_paths, que descarta de proposito todo caminho sob .claude/ e devolve lista vazia quando a sondagem falha. As candidatas do coletor vivem sob .claude/worktrees/, entao o proprio conteudo delas e invisivel para a guarda, e ausencia de medicao passa por ausencia de trabalho. Quem apaga precisa da propria sondagem.",
+      "statement": "when the collector cannot positively establish that a candidate holds no work, then it refuses to remove it, and a candidate directory holding files under .claude is seen as holding work",
+      "command": "cargo test -p mustard-rt the_collector_refuses_what_it_could_not_prove_empty",
       "expect": "[1-9][0-9]* passed",
       "wrote": [
         ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
