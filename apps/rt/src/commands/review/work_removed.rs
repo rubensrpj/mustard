@@ -259,6 +259,10 @@ pub(crate) fn build(root: &Path, spec_dir: &Path, from: &str) -> Result<RemovedT
     }
     removed.removed_text = before.difference(&after).cloned().collect();
     removed.removed_text.extend(deleted);
+    // The ledger is read off the tree's CONTENT above; committing after it
+    // changes nothing the pass reads, and is what leaves an abandoned scratch
+    // tree collectable instead of permanently mistaken for unsaved work.
+    record_the_strip(&removed.tree);
     Ok(removed)
 }
 
@@ -309,16 +313,68 @@ fn prune_empty_parents(tree: &Path, file: &Path) {
     }
 }
 
+/// Everything in a scratch worktree's name BEFORE the creating process id:
+/// `mustard-removal-{slug}-`.
+///
+/// Published rather than inlined because the collector
+/// ([`crate::commands::maint::worktree_gc`]) has to recognise these trees in
+/// the temp directory — they are the only worktrees the harness cuts outside
+/// `.claude/worktrees/`, and for years nothing could reap the ones an
+/// interrupted pass left behind. One function so the name is written in one
+/// place and read in the other, never guessed twice.
+pub(crate) fn scratch_prefix(root: &Path) -> String {
+    let slug = root
+        .file_name()
+        .map_or_else(|| "project".to_string(), |n| n.to_string_lossy().into_owned());
+    format!("mustard-removal-{slug}-")
+}
+
 /// A scratch path outside the project: the system temp directory, named for
 /// this process so two concurrent runs never collide.
 ///
 /// Outside the project on purpose — a worktree nested under `root` would be
-/// walked by every tool that scans the tree, including this one.
+/// walked by every tool that scans the tree, including this one. The trailing
+/// process id is what later tells an ABANDONED scratch tree from one a live
+/// pass is still working in.
 fn scratch_path(root: &Path) -> PathBuf {
-    let slug = root
-        .file_name()
-        .map_or_else(|| "project".to_string(), |n| n.to_string_lossy().into_owned());
-    std::env::temp_dir().join(format!("mustard-removal-{slug}-{}", std::process::id()))
+    std::env::temp_dir().join(format!("{}{}", scratch_prefix(root), std::process::id()))
+}
+
+/// Record the strip as a commit in the scratch tree, so what the strip did is
+/// not indistinguishable from work someone forgot to save.
+///
+/// The tree is detached at `HEAD`, so the commit is unreachable and costs
+/// nothing but a loose object git prunes on its own. What it buys is that
+/// `git status --porcelain` comes back EMPTY: the collector refuses to remove
+/// any worktree holding uncommitted or untracked changes — rightly, that guard
+/// is what makes collecting safe at all — and without this the manufactured
+/// dirt of the strip would read as an operator's unsaved work, so every
+/// abandoned scratch tree would be protected forever.
+///
+/// Identity and signing are supplied on the command line: this must not depend
+/// on the machine's git config, and a repo with `commit.gpgsign` on must not
+/// stall a review pass on a passphrase prompt. Best-effort — a failure leaves
+/// the tree dirty, which costs collectability and nothing else.
+fn record_the_strip(tree: &Path) {
+    if !git_ok(tree, &["add", "-A"]) {
+        return;
+    }
+    let _ = git_ok(
+        tree,
+        &[
+            "-c",
+            "user.name=mustard",
+            "-c",
+            "user.email=mustard@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "--quiet",
+            "-m",
+            "mustard: work taken away for the removal pass",
+        ],
+    );
 }
 
 #[cfg(test)]
@@ -492,6 +548,21 @@ mod tests {
             "after marker_kept"
         );
         assert!(root.join("added.txt").is_file());
+
+        // The strip is RECORDED, so what it did is never mistaken for work
+        // somebody forgot to save. This is what a killed pass leaves behind,
+        // and it is the exact predicate the collector applies before removing
+        // anything: a tree reading dirty here would be protected forever, so
+        // the leak this closes would still be a leak.
+        assert!(
+            crate::commands::work_unit_open::dirty_paths(&scratch).is_empty(),
+            "an abandoned scratch tree must not read as holding work: {:?}",
+            crate::commands::work_unit_open::dirty_paths(&scratch)
+        );
+        assert!(
+            git_out(&scratch, &["rev-parse", "--verify", "HEAD"]).is_some(),
+            "and it is still a checkout the collector can hand to git"
+        );
 
         // And the scratch tree is gone once the handle drops.
         drop(removed);

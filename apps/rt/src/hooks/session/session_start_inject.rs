@@ -325,11 +325,12 @@ impl Check for SessionStartInject {
         // remove the PID file on `SessionEnd`.
         spawn_otel_collector(&cwd);
         run_spec_hygiene(&cwd);
-        // Wave 1 (mustard-unification): advisory probe for orphan agent
-        // worktrees under `<repo>/.claude/worktrees/` (every name that is not
-        // a work unit's `{base}_…` — there is no `agent-` prefix). Read-only;
-        // emits a single stderr warning when the orphan count exceeds the
-        // module's threshold. Fail-open at every step.
+        // Collect orphan worktrees — those under `<repo>/.claude/worktrees/`
+        // whose name is not a work unit's `{base}_…`, plus the removal-proof
+        // scratch trees an interrupted review left in the OS temp directory. It
+        // REMOVES what is orphaned (owner gone) or stale, and never touches a
+        // work unit's worktree or one holding uncommitted work. Fail-open at
+        // every step.
         crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
         // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
         // advisory probe for drift in the project's `.claude/` directory.

@@ -28,9 +28,40 @@
 //! whatever its age. What removal can cost is then a checkout with nothing in
 //! it — its branch survives `git worktree remove` untouched.
 //!
-//! This subcommand enumerates those worktrees, computes each one's age, and
-//! removes those older than `--age-days N`. Dry-run by default; `--apply` is
-//! required to mutate the filesystem.
+//! ## Where it looks
+//!
+//! `<repo>/.claude/worktrees/` is where the platform puts an agent's worktree,
+//! and for a long time it was the only tree walked. It is not the only place
+//! the harness cuts one: the removal-proof pass
+//! ([`crate::commands::review::work_removed`]) cuts its scratch checkout into
+//! the OS temp directory, deliberately outside the project. An interrupted pass
+//! therefore leaked a worktree NOTHING could ever reap — observed in the field.
+//! So the sweep also reaches the temp directory, for the harness's own
+//! `mustard-removal-{slug}-{pid}` name and only for it, and only when
+//! `<repo>/.git/worktrees/<name>` proves the candidate is registered to THIS
+//! repository (the temp directory is shared by every project on the machine,
+//! and a directory name is not ownership).
+//!
+//! ## Ownership beats age
+//!
+//! That same scratch name carries the process id of whoever cut it. Asking
+//! whether that process still exists answers "orphan or busy" EXACTLY, so a
+//! worktree abandoned a minute ago is collected a minute later instead of in a
+//! week — the age threshold only ever existed because nothing else told the
+//! collector. Ownership is read from the harness's own prefix and never
+//! anywhere else: a platform slug like `recursing-benz-063389` also ends in
+//! digits, and reading those as a process id would authorise removing the
+//! worktree of a live agent.
+//!
+//! Age stays as the FALLBACK, for every worktree whose owner cannot be read —
+//! no ownership, or a liveness probe that could not answer. Unmeasured
+//! ownership never authorises removal.
+//!
+//! This subcommand enumerates those worktrees, resolves each one's owner and
+//! age, and removes the orphaned ones plus those older than `--age-days N`.
+//! Dry-run by default; `--apply` is required to mutate the filesystem. The
+//! `SessionStart` probe passes `--apply`: reporting an orphan every session and
+//! never collecting it is how the leak above survived.
 //!
 //! ## Age signal
 //!
@@ -60,8 +91,10 @@
 //! - `pipeline.economy.operation.invoked { operation: "worktree-gc", duration_ms }`
 //!   — the universal `/economia` operation marker (W12 contract).
 
+use crate::commands::review::work_removed::scratch_prefix;
 use crate::commands::work_unit_open::{dirty_paths, is_unit_worktree_name};
 use crate::shared::context::{current_spec, session_id};
+use crate::shared::proc::process_liveness;
 use mustard_core::time::now_iso8601;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
@@ -128,7 +161,7 @@ struct GcReport {
 /// `worktrees/` has no typed accessor on `ClaudePaths` (it's a legacy direct
 /// child of `.claude/`); routing via `claude_dir()` keeps the boundary owned
 /// by the canonical handle without expanding W4 scope.
-fn list_collectable_worktrees(repo: &Path) -> Vec<PathBuf> {
+fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
     let Ok(paths) = ClaudePaths::for_project(repo) else {
         return Vec::new();
     };
@@ -138,8 +171,7 @@ fn list_collectable_worktrees(repo: &Path) -> Vec<PathBuf> {
     let Ok(read) = std::fs::read_dir(&root) else {
         return Vec::new();
     };
-    let mut out: Vec<PathBuf> = read
-        .flatten()
+    read.flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
         .filter(|p| {
@@ -147,9 +179,86 @@ fn list_collectable_worktrees(repo: &Path) -> Vec<PathBuf> {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| !is_unit_worktree_name(n, &bases))
         })
-        .collect();
+        .collect()
+}
+
+/// The removal-proof scratch checkouts of THIS repository still sitting in the
+/// OS temp directory — the worktrees the harness cuts outside the project, and
+/// so the ones no sweep of `.claude/worktrees/` has ever been able to see.
+///
+/// Two conditions, both required, because the temp directory belongs to every
+/// project and every tool on the machine:
+///
+/// 1. the name starts with this repo's own [`scratch_prefix`], and
+/// 2. `<repo>/.git/worktrees/<name>` exists — git's own record that this
+///    checkout is registered to this repository. A directory that merely
+///    happens to be named like ours (another clone with the same folder name)
+///    fails it, and `git worktree remove` would have refused it anyway.
+fn list_abandoned_scratch_worktrees(repo: &Path) -> Vec<PathBuf> {
+    let prefix = scratch_prefix(repo);
+    let Ok(read) = std::fs::read_dir(std::env::temp_dir()) else {
+        return Vec::new();
+    };
+    read.flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
+                name.starts_with(&prefix)
+                    && repo.join(".git").join("worktrees").join(name).is_dir()
+            })
+        })
+        .collect()
+}
+
+/// Every worktree this sweep may consider, from both places the harness cuts
+/// one, sorted so the report is byte-stable.
+fn list_collectable_worktrees(repo: &Path) -> Vec<PathBuf> {
+    let mut out = list_agent_worktrees(repo);
+    out.extend(list_abandoned_scratch_worktrees(repo));
     out.sort();
     out
+}
+
+// ---------------------------------------------------------------------------
+// Ownership
+// ---------------------------------------------------------------------------
+
+/// What the collector could learn about who owns a worktree.
+enum Ownership {
+    /// The name names a process id, and that process is still running: someone
+    /// is working in there right now.
+    Alive,
+    /// The name names a process id, and no such process exists. An orphan —
+    /// now, not in seven days.
+    Gone,
+    /// The name carries no process id, or the liveness probe could not answer
+    /// at all. Nothing was measured, so nothing is authorised: the age
+    /// threshold decides instead.
+    Unknown,
+}
+
+/// Read the owner of `worktree` out of its own name.
+///
+/// ONLY the harness's own `mustard-removal-{slug}-{pid}` names carry an owner,
+/// and the id is taken from what follows `prefix` in full — never from "the
+/// digits at the end". Platform slugs end in digits too
+/// (`recursing-benz-063389`), and reading one of those as a process id would
+/// hand a live agent's worktree to the sweep.
+fn ownership(worktree: &Path, prefix: &str) -> Ownership {
+    let Some(pid) = worktree
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|name| name.strip_prefix(prefix))
+        .and_then(|tail| tail.parse::<u32>().ok())
+    else {
+        return Ownership::Unknown;
+    };
+    match process_liveness(pid) {
+        Some(true) => Ownership::Alive,
+        Some(false) => Ownership::Gone,
+        None => Ownership::Unknown,
+    }
 }
 
 /// Best-effort age signal for `worktree` (full path to the agent worktree dir).
@@ -251,44 +360,58 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
     };
 
     let threshold = u64::from(age_days);
+    let prefix = scratch_prefix(repo);
 
     for wt in list_collectable_worktrees(repo) {
         let path = wt.display().to_string();
-        let Some(mtime) = age_signal(repo, &wt) else {
-            report.kept.push(KeptEntry {
-                path,
-                age_days: None,
-                reason: "unknown age".into(),
-            });
-            continue;
-        };
-        let Some(age) = age_days_since(mtime) else {
-            report.kept.push(KeptEntry {
-                path,
-                age_days: None,
-                reason: "unknown age".into(),
-            });
-            continue;
-        };
+        // Two `fs::metadata` calls, no process spawn — cheap enough to resolve
+        // for every entry so the report can state an age even when the verdict
+        // did not come from one.
+        let age = age_signal(repo, &wt).and_then(age_days_since);
 
-        if age <= threshold {
-            report.kept.push(KeptEntry {
-                path,
-                age_days: Some(age),
-                reason: "below threshold".into(),
-            });
-            continue;
+        match ownership(&wt, &prefix) {
+            // A live owner is working in there. No age can override that.
+            Ownership::Alive => {
+                report.kept.push(KeptEntry {
+                    path,
+                    age_days: age,
+                    reason: "owner alive".into(),
+                });
+                continue;
+            }
+            // The owner is gone and we MEASURED that: eligible immediately.
+            Ownership::Gone => {}
+            // Nothing measured — fall back to age, exactly as before.
+            Ownership::Unknown => {
+                let Some(age) = age else {
+                    report.kept.push(KeptEntry {
+                        path,
+                        age_days: None,
+                        reason: "unknown age".into(),
+                    });
+                    continue;
+                };
+                if age <= threshold {
+                    report.kept.push(KeptEntry {
+                        path,
+                        age_days: Some(age),
+                        reason: "below threshold".into(),
+                    });
+                    continue;
+                }
+            }
         }
 
-        // Holds work → never removed, at any age: the exception the platform's
-        // own periodic sweep makes, and what keeps collecting by "not a work
-        // unit" safe rather than merely wider. Asked ONLY of an entry already
-        // over the threshold — the probe that runs at every SessionStart must
-        // not spawn a `git status` per worktree just to report an age.
+        // Holds work → never removed, at ANY age and under ANY owner: the
+        // exception the platform's own periodic sweep makes, and what keeps
+        // collecting by "not a work unit" safe rather than merely wider. Asked
+        // ONLY of an entry already judged eligible — over the threshold, or an
+        // orphan — so the probe that runs at every SessionStart never spawns a
+        // `git status` per worktree just to report an age.
         if !dirty_paths(&wt).is_empty() {
             report.kept.push(KeptEntry {
                 path,
-                age_days: Some(age),
+                age_days: age,
                 reason: "holds uncommitted work".into(),
             });
             continue;
@@ -297,7 +420,7 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
         if !apply {
             report.kept.push(KeptEntry {
                 path,
-                age_days: Some(age),
+                age_days: age,
                 reason: "dry-run".into(),
             });
             continue;
@@ -353,33 +476,30 @@ fn emit_telemetry(repo: &Path, duration_ms: u128) {
 // SessionStart helper
 // ---------------------------------------------------------------------------
 
-/// Threshold for the `SessionStart` advisory warning: more than this many
-/// orphan worktrees older than the default `age_days` triggers a single
-/// `eprintln!` (telemetry-only; never blocks).
-const SESSION_WARN_THRESHOLD: usize = 3;
-
-/// Default `--age-days` value used by the CLI and the SessionStart probe.
+/// Default `--age-days` value used by the CLI and the SessionStart probe — the
+/// FALLBACK for a worktree whose owner cannot be read at all, not the rule.
 pub const DEFAULT_AGE_DAYS: u32 = 7;
 
-/// Idempotent `SessionStart` probe: count worktrees older than
-/// [`DEFAULT_AGE_DAYS`] and emit a stderr warning when the count exceeds
-/// [`SESSION_WARN_THRESHOLD`]. Never mutates the filesystem.
+/// Idempotent `SessionStart` collection: remove the worktrees that are proven
+/// orphaned (owner gone) or stale beyond [`DEFAULT_AGE_DAYS`], and say on
+/// stderr how many went.
+///
+/// It COLLECTS rather than reports, which is the whole point. Running the same
+/// sweep in simulation at every session start and printing a count above a
+/// threshold is how a leaked worktree survived indefinitely: the fact was on
+/// screen every single session and nothing ever acted on it. Acting is safe
+/// here for a reason that predates this — [`gc`] already refuses a work unit's
+/// worktree (that is `git-settle`'s alone) and refuses any worktree holding
+/// uncommitted or untracked work, whatever its owner or age.
 ///
 /// Fail-open: a missing `.claude/worktrees/` directory or any IO failure
-/// degrades to a silent no-op — the warning is advisory and must not break a
-/// session boot.
+/// degrades to a silent no-op — a session boot must never break on this.
 pub fn session_start_probe(repo: &Path) {
-    let report = gc(repo, DEFAULT_AGE_DAYS, /* apply = */ false);
-    // `dry-run` kept entries that exceed the threshold are the orphan set.
-    let orphan_count = report
-        .kept
-        .iter()
-        .filter(|k| k.reason == "dry-run")
-        .count();
-    if orphan_count > SESSION_WARN_THRESHOLD {
+    let report = gc(repo, DEFAULT_AGE_DAYS, /* apply = */ true);
+    if !report.removed.is_empty() {
         eprintln!(
-            "[worktree-gc] {orphan_count} orphan worktrees older than {DEFAULT_AGE_DAYS}d in {} — \
-             run `mustard-rt run worktree-gc --apply` to clean up.",
+            "[worktree-gc] collected {} orphan worktree(s) in {}",
+            report.removed.len(),
             repo.display()
         );
     }
@@ -585,11 +705,181 @@ mod tests {
     }
 
     #[test]
-    fn session_start_probe_does_not_remove_files() {
+    fn session_start_probe_collects_instead_of_reporting() {
+        // The behaviour this wave exists for: the probe that used to run in
+        // simulation now acts. A stale, unowned worktree goes; a young one
+        // stays, so what changed is the ACTION, not the rule.
         let dir = tempdir().unwrap();
         let old = fake_worktree(dir.path(), "old", 30);
+        let young = fake_worktree(dir.path(), "young", 1);
         session_start_probe(dir.path());
-        assert!(old.exists(), "probe is read-only");
+        assert!(!old.exists(), "a stale orphan is collected, not merely counted");
+        assert!(young.exists(), "and the age fallback still spares a young one");
+    }
+
+    // -----------------------------------------------------------------------
+    // Ownership — the scratch worktrees the removal pass cuts into temp
+    // -----------------------------------------------------------------------
+
+    /// A real repo with one commit, at `<tmp>/<name>` so its scratch prefix is
+    /// unique to this test (the temp directory is shared with every other test
+    /// and every other project on the machine).
+    fn seeded_repo(dir: &Path, name: &str) -> PathBuf {
+        let repo = dir.join(name);
+        fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "-b", "dev"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            Command::new("git").args(&args).current_dir(&repo).output().expect("git");
+        }
+        fs::write(repo.join("mustard.json"), r#"{"git":{"flow":{"*":"dev"}}}"#).unwrap();
+        fs::write(repo.join("a.txt"), "seed").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-m", "seed"]] {
+            Command::new("git").args(&args).current_dir(&repo).output().expect("git");
+        }
+        repo
+    }
+
+    /// Cut a scratch worktree of `repo` where the removal pass cuts one — the
+    /// OS temp directory, named `mustard-removal-{slug}-{pid}` — and hand back
+    /// its path. Mirrors `work_removed::scratch_path` through the shared
+    /// prefix, so the fixture cannot drift from the real name.
+    fn scratch_worktree(repo: &Path, pid: u32) -> PathBuf {
+        let tree = std::env::temp_dir().join(format!("{}{pid}", scratch_prefix(repo)));
+        let _ = std::fs::remove_dir_all(&tree);
+        Command::new("git")
+            .args(["worktree", "add", "--detach", &tree.to_string_lossy(), "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("git");
+        tree
+    }
+
+    /// A process id that is certainly NOT running: spawn something trivial,
+    /// take its id, and wait for it to exit.
+    fn dead_pid() -> u32 {
+        let mut child = Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("git");
+        let pid = child.id();
+        let _ = child.wait();
+        pid
+    }
+
+    /// AC-4 — a worktree whose owner is gone is collected NOW, minutes old,
+    /// nowhere near the seven-day threshold. Two-sided: the identical worktree
+    /// owned by a process that IS alive survives, so what collected the first
+    /// one was ownership and not merely the widened reach.
+    #[test]
+    fn an_orphan_worktree_is_collected_without_waiting_for_age() {
+        let dir = tempdir().unwrap();
+        let repo = seeded_repo(dir.path(), "gc-orphan-age");
+        let orphan = scratch_worktree(&repo, dead_pid());
+        assert!(orphan.exists(), "fixture: the scratch worktree was cut");
+
+        let report = gc(&repo, DEFAULT_AGE_DAYS, /* apply = */ true);
+        assert!(
+            !orphan.exists(),
+            "an orphan minutes old is collected: {:?}",
+            report.kept.iter().map(|k| &k.reason).collect::<Vec<_>>()
+        );
+        assert_eq!(report.removed.len(), 1, "{:?}", report.removed);
+
+        let busy = scratch_worktree(&repo, std::process::id());
+        let report = gc(&repo, DEFAULT_AGE_DAYS, /* apply = */ true);
+        assert!(busy.exists(), "a worktree whose owner is alive is never touched");
+        assert!(
+            report.kept.iter().any(|k| k.reason == "owner alive"),
+            "and the report names the owner, not the age: {:?}",
+            report.kept.iter().map(|k| &k.reason).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&busy);
+    }
+
+    /// AC-5 — the collector that now ACTS still refuses a worktree holding
+    /// work, even when its owner is provably gone. The guard that made acting
+    /// safe is not weakened by acting.
+    #[test]
+    fn the_acting_collector_still_refuses_a_worktree_holding_work() {
+        let dir = tempdir().unwrap();
+        let repo = seeded_repo(dir.path(), "gc-orphan-dirty");
+        let orphan = scratch_worktree(&repo, dead_pid());
+        fs::write(orphan.join("unsaved.txt"), "never committed").unwrap();
+
+        session_start_probe(&repo);
+        assert!(orphan.exists(), "untracked work survives an orphaned owner");
+
+        let report = gc(&repo, DEFAULT_AGE_DAYS, /* apply = */ true);
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
+        assert!(
+            report.kept.iter().any(|k| k.reason == "holds uncommitted work"),
+            "and the report says why: {:?}",
+            report.kept.iter().map(|k| &k.reason).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&orphan);
+    }
+
+    /// AC-6 — the worktree an interrupted removal pass leaves behind lives in
+    /// the OS temp directory, outside the only tree the collector used to walk.
+    /// It is now within reach AND collected by the session-start sweep.
+    #[test]
+    fn an_abandoned_removal_worktree_is_within_reach_and_collected() {
+        let dir = tempdir().unwrap();
+        let repo = seeded_repo(dir.path(), "gc-abandoned-proof");
+        let abandoned = scratch_worktree(&repo, dead_pid());
+
+        assert!(
+            list_collectable_worktrees(&repo).contains(&abandoned),
+            "reach: the sweep sees a worktree outside .claude/worktrees/"
+        );
+        session_start_probe(&repo);
+        assert!(!abandoned.exists(), "and collects it");
+    }
+
+    /// The temp directory belongs to the whole machine, so a look-alike that
+    /// this repository never registered is not ours to remove.
+    #[test]
+    fn a_scratch_name_this_repo_never_registered_is_out_of_reach() {
+        let dir = tempdir().unwrap();
+        let repo = seeded_repo(dir.path(), "gc-lookalike");
+        let impostor = std::env::temp_dir().join(format!("{}{}", scratch_prefix(&repo), 4_242));
+        fs::create_dir_all(&impostor).unwrap();
+
+        let found = list_collectable_worktrees(&repo);
+        assert!(
+            !found.contains(&impostor),
+            "no `.git/worktrees/<name>` record, so not this repo's to collect"
+        );
+        let _ = std::fs::remove_dir_all(&impostor);
+    }
+
+    /// Ownership is read from the harness's own prefix and from nothing else —
+    /// a platform slug ending in digits is NOT a process id.
+    #[test]
+    fn a_slugs_trailing_digits_are_never_read_as_an_owner() {
+        let prefix = scratch_prefix(Path::new("/x/proj"));
+        assert_eq!(prefix, "mustard-removal-proj-");
+        assert!(matches!(
+            ownership(Path::new("/x/.claude/worktrees/recursing-benz-063389"), &prefix),
+            Ownership::Unknown
+        ));
+        assert!(matches!(
+            ownership(Path::new("/tmp/mustard-removal-proj-notanumber"), &prefix),
+            Ownership::Unknown
+        ));
+        assert!(matches!(
+            ownership(
+                &std::env::temp_dir().join(format!("{prefix}{}", std::process::id())),
+                &prefix
+            ),
+            Ownership::Alive
+        ));
     }
 
     #[test]

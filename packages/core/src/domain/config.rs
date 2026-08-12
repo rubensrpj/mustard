@@ -116,6 +116,92 @@ impl GitConfig {
     }
 }
 
+/// The `worktree` block of `mustard.json` — what a freshly cut worktree must
+/// receive BEYOND the versioned files git puts there.
+///
+/// `git worktree add` writes only tracked content, so every git-IGNORED path
+/// the project needs to run is absent from a fresh cut: the operator lands in a
+/// directory that builds nothing. The harness cannot infer which ignored paths
+/// those are — copying all of them drags `node_modules`/`target` along, and
+/// copying a hand-picked subset is a curated guess — so the project DECLARES
+/// them here and the harness obeys.
+///
+/// Two verbs, because the costs are opposite:
+///
+/// - [`carry`](WorktreeConfig::carry) — COPIED. For small environment-specific
+///   files (`.env` and its siblings). A copy is required, not a nicety: a link
+///   would leak the worktree's edits back into the main checkout.
+/// - [`link`](WorktreeConfig::link) — POINTED at the main checkout's copy
+///   (`node_modules`, `target`). Heavy and regenerable: duplicating them is the
+///   ten-minute wait that makes worktrees unusable, and a link is harmless
+///   because nothing in them is authored.
+///
+/// Both default to EMPTY, so a project that declares nothing behaves exactly as
+/// before this block existed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WorktreeConfig {
+    /// Git-ignored paths COPIED into a fresh worktree, repo-root-relative.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carry: Vec<String>,
+    /// Heavy regenerable directories POINTED at the main checkout's copy,
+    /// repo-root-relative.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link: Vec<String>,
+}
+
+impl WorktreeConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.carry.is_empty() && self.link.is_empty()
+    }
+
+    /// Declared `carry` paths, normalised by [`normalise_relpaths`].
+    #[must_use]
+    pub fn carried(&self) -> Vec<String> {
+        normalise_relpaths(&self.carry)
+    }
+
+    /// Declared `link` paths, normalised by [`normalise_relpaths`].
+    #[must_use]
+    pub fn linked(&self) -> Vec<String> {
+        normalise_relpaths(&self.link)
+    }
+}
+
+/// Normalise declared repo-root-relative paths, fail-open like
+/// [`ProjectConfig::injectables`]: a malformed entry is DROPPED (one typo
+/// silences that entry, never the whole population step).
+///
+/// Trimmed, backslashes folded to `/`, a leading `./` and trailing `/` removed,
+/// duplicates collapsed (order preserved). Dropped: blanks, absolute paths
+/// (`/etc/passwd`, `C:\secrets`) and anything carrying a `..` component — a
+/// declaration names what lives INSIDE the project, and the populator resolves
+/// these against a worktree root it must not escape.
+#[must_use]
+pub fn normalise_relpaths(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in raw {
+        let path = entry.trim().replace('\\', "/");
+        let path = path.strip_prefix("./").unwrap_or(&path).trim_end_matches('/');
+        if path.is_empty() || path.starts_with('/') {
+            continue;
+        }
+        // `C:/x` — a Windows drive-absolute path in the `/`-folded form.
+        if path.chars().nth(1) == Some(':') {
+            continue;
+        }
+        if path.split('/').any(|seg| seg == "..") {
+            continue;
+        }
+        let path = path.to_string();
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// `subprojects.exclude` / `.include` — repo-root-relative path overrides.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Subprojects {
@@ -260,6 +346,11 @@ pub struct Commands {
 pub struct ProjectConfig {
     /// Git promotion flow + provider + submodule flag.
     pub git: GitConfig,
+    /// What a freshly cut worktree receives beyond the versioned files — see
+    /// [`WorktreeConfig`]. Absent/empty ⇒ nothing extra travels (today's
+    /// behaviour).
+    #[serde(skip_serializing_if = "WorktreeConfig::is_empty")]
+    pub worktree: WorktreeConfig,
 
     #[serde(skip_serializing_if = "Option::is_none", alias = "build_command")]
     pub build_command: Option<String>,
@@ -693,6 +784,53 @@ mod tests {
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.injectables().len(), 1);
         assert!(!cfg.injectables()[0].once, "absent once defaults to false");
+    }
+
+    #[test]
+    fn worktree_declaration_round_trips_and_is_absent_when_empty() {
+        let dir = tempdir().unwrap();
+        // A project that declares nothing writes nothing — byte-identical to a
+        // config from before the block existed.
+        let plain = ProjectConfig::default();
+        plain.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("worktree"), "an empty declaration is not serialized: {raw}");
+
+        let mut cfg = ProjectConfig::default();
+        cfg.worktree.carry = vec![".env".into(), "apps/web/.env.local".into()];
+        cfg.worktree.link = vec!["node_modules".into(), "target".into()];
+        cfg.write(dir.path()).unwrap();
+        let back = ProjectConfig::load(dir.path());
+        assert_eq!(back.worktree.carried(), vec![".env", "apps/web/.env.local"]);
+        assert_eq!(back.worktree.linked(), vec!["node_modules", "target"]);
+    }
+
+    #[test]
+    fn load_without_worktree_defaults_to_empty() {
+        // An older mustard.json that predates the block loads fine and declares
+        // nothing — the fail-open Default is what keeps today's behaviour.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"make"}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.worktree.is_empty());
+        assert!(cfg.worktree.carried().is_empty() && cfg.worktree.linked().is_empty());
+    }
+
+    #[test]
+    fn normalise_relpaths_drops_what_would_escape_the_worktree() {
+        let got = normalise_relpaths(&[
+            "  .env  ".into(),
+            "./apps\\web\\.env.local".into(),
+            "node_modules/".into(),
+            "".into(),
+            "   ".into(),
+            "/etc/passwd".into(),
+            "C:\\secrets".into(),
+            "../../outside".into(),
+            "apps/../../escape".into(),
+            ".env".into(), // duplicate
+        ]);
+        assert_eq!(got, vec![".env", "apps/web/.env.local", "node_modules"], "{got:?}");
     }
 
     #[test]

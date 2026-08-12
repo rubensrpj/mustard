@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "worktree-isolation-becomes-usable-it",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "done": false
+    },
+    {
+      "label": "plugin/refs/git/git-flow.md",
+      "path": "plugin/refs/git/git-flow.md",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "done": false
+    }
+  ]
+}

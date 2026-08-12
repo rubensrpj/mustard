@@ -83,8 +83,8 @@ pub use domain::economy::{EconomyScope, EconomySummary, SavingsSource};
 // (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
 // `domain/config.rs`.
 pub use domain::config::{
-    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, ProjectConfig, RolePattern,
-    Runtime, Subprojects, BUILD_COMMAND_FALLBACK,
+    glob_matches, normalise_relpaths, Amend, Commands, GateModes, GitConfig, Injectable,
+    ProjectConfig, RolePattern, Runtime, Subprojects, WorktreeConfig, BUILD_COMMAND_FALLBACK,
 };
 // Agnostic build/test/lint/type-check command detection (`detect_commands` for
 // `init`, `detect_commands_for_unit` for the per-subproject `scan` pass). See
