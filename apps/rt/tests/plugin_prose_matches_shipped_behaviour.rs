@@ -568,7 +568,7 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
 /// instead of printing a warning about it. A worktree nobody is told about is
 /// a worktree nobody enters — and the ref is where `/git` sends the reader.
 #[test]
-fn worktree_prose_teaches_the_second_unit_the_declaration_and_the_reaper() {
+fn worktree_prose_teaches_the_declared_environment() {
     let flow = read("plugin/refs/git/git-flow.md");
 
     // --- 1. The divert is taught where the gate's decision is taught --------

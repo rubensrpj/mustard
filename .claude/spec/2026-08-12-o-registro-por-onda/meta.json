@@ -1,0 +1,9 @@
+{
+  "stage": "Analyze",
+  "outcome": "Active",
+  "phase": null,
+  "scope": "light",
+  "lang": "en-US",
+  "checkpoint": "2026-08-12T08:21:21.869Z",
+  "parent": "worktree-isolation-becomes-usable-it"
+}

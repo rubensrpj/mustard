@@ -1224,36 +1224,49 @@ mod tests {
         );
     }
 
-    /// The SECOND unit gets a worktree instead of TAKING the checkout.
+    /// The arrangement both halves below rest on: the main checkout already
+    /// holds another unit's branch, with that unit's uncommitted edits in the
+    /// tree, when a SECOND unit is signalled for this session. The gate used to
+    /// run a plain `checkout -b` regardless, which carried those edits onto
+    /// this unit's branch and left the first session somewhere it never asked
+    /// to be.
     ///
-    /// The main checkout already holds another unit's branch, with that unit's
-    /// uncommitted edits in the tree. The gate used to run a plain
-    /// `checkout -b` regardless, which carried those edits onto this unit's
-    /// branch and left the first session somewhere it never asked to be. Now
-    /// the second unit is cut its OWN worktree, the edit is refused until the
-    /// session is inside it, and the first unit keeps both its branch and its
-    /// uncommitted work.
-    #[test]
-    fn second_unit_gets_a_worktree_instead_of_taking_the_checkout() {
+    /// Returns the fixture's guard (dropping it deletes the tree), the checkout
+    /// root, the session the second unit was signalled for, and the refusal the
+    /// gate answered — a Deny is the premise of both halves, so it is asserted
+    /// here.
+    fn a_second_unit_arrives_on_a_busy_checkout(
+        sid: &str,
+    ) -> (tempfile::TempDir, PathBuf, String) {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let root_s = root.to_str().unwrap();
-        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
-        init_repo_on(root, "dev");
+        let root = dir.path().to_path_buf();
+        let root_s = root.to_str().unwrap().to_string();
+        seed_flow(&root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(&root, "dev");
 
         // A FIRST unit is already in flight in the main checkout, and its work
         // is uncommitted — which is exactly what a plain checkout carries off.
-        git(root, &["checkout", "-b", "dev_first"]);
+        git(&root, &["checkout", "-b", "dev_first"]);
         std::fs::write(root.join("f.txt"), "first unit, uncommitted").unwrap();
 
         // A SECOND unit is signalled for this session.
-        let sid = "sess-second-unit";
-        context::set_pending_branch(root_s, sid, "dev_second");
-        let (input, ctx) = pre_edit_input(root_s, sid);
+        context::set_pending_branch(&root_s, sid, "dev_second");
+        let (input, ctx) = pre_edit_input(&root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         let Verdict::Deny { reason } = verdict else {
             panic!("the second unit must not take the checkout, got {verdict:?}");
         };
+        (dir, root, reason)
+    }
+
+    /// The SECOND unit gets a worktree instead of TAKING the checkout: it is
+    /// cut its OWN worktree, the edit is refused until the session is inside
+    /// it, and the checkout is left on the first unit's branch.
+    #[test]
+    fn a_second_unit_is_isolated_instead_of_taking_the_checkout() {
+        let sid = "sess-second-unit";
+        let (_dir, root, reason) = a_second_unit_arrives_on_a_busy_checkout(sid);
+        let root_s = root.to_str().unwrap();
         assert!(
             reason.contains("EnterWorktree path=") && reason.contains("dev_second"),
             "the refusal names where the unit went: {reason}",
@@ -1268,16 +1281,11 @@ mod tests {
             "the worktree holds the second unit's branch",
         );
 
-        // The first unit is untouched — branch AND uncommitted edits.
+        // The checkout was left untouched: still the first unit's branch.
         assert_eq!(
             current_branch("git", root_s).as_deref(),
             Some("dev_first"),
             "the checkout was not taken",
-        );
-        assert_eq!(
-            std::fs::read_to_string(root.join("f.txt")).unwrap(),
-            "first unit, uncommitted",
-            "the first unit's uncommitted work stayed where it was",
         );
 
         // The marker SURVIVES: inside the worktree the branch is already out,
@@ -1286,6 +1294,27 @@ mod tests {
             context::pending_branch_for(root_s, sid).as_deref(),
             Some("dev_second"),
             "the intent survives for the edit that lands inside the worktree",
+        );
+    }
+
+    /// The first unit keeps BOTH its branch and its uncommitted work. The edits
+    /// were in the tree when the second unit arrived; a plain `checkout -b`
+    /// would have carried them onto the second unit's branch.
+    #[test]
+    fn the_first_units_uncommitted_work_stays_where_it_was() {
+        let (_dir, root, _reason) =
+            a_second_unit_arrives_on_a_busy_checkout("sess-second-unit-first-keeps-work");
+        let root_s = root.to_str().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).unwrap(),
+            "first unit, uncommitted",
+            "the first unit's uncommitted work stayed where it was",
+        );
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev_first"),
+            "and it stayed on the FIRST unit's branch — never carried onto the second's",
         );
     }
 

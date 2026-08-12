@@ -1290,17 +1290,30 @@ mod tests {
         (dir, main)
     }
 
-    #[test]
-    fn a_declared_environment_travels_into_a_fresh_worktree() {
-        // The fact the block exists for: `git worktree add` writes only
-        // VERSIONED files, so a fresh cut has neither `.env` nor
-        // `node_modules` — the operator lands in a directory that cannot run.
-        let (_dir, main) = fixture_with_environment(
+    /// The arrangement both halves below rest on, cut once: a project that
+    /// declares a small git-ignored file under `carry` and a heavy regenerable
+    /// directory under `link`, and a worktree freshly cut from it. Returns the
+    /// fixture's guard (dropping it deletes the tree), the main checkout and
+    /// the fresh worktree.
+    ///
+    /// The fact the block exists for: `git worktree add` writes only VERSIONED
+    /// files, so a fresh cut has neither `.env` nor `node_modules` — the
+    /// operator lands in a directory that cannot run.
+    fn fresh_worktree_with_declared_environment(
+        branch: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let (dir, main) = fixture_with_environment(
             r#"{"git":{"flow":{"*":"dev","dev":"main"}},
                 "worktree":{"carry":[".env"],"link":["node_modules"]}}"#,
         );
-        let got = hook_create("dev_withenv", &main).expect("creates");
-        let wt = Path::new(&got);
+        let got = hook_create(branch, &main).expect("creates");
+        let wt = PathBuf::from(got);
+        (dir, main, wt)
+    }
+
+    #[test]
+    fn a_declared_carry_path_lands_in_a_fresh_worktree() {
+        let (_dir, main, wt) = fresh_worktree_with_declared_environment("dev_withcarry");
 
         // `carry` is a REAL copy: an edit inside the worktree must NOT reach
         // the main checkout (which is exactly what a link would do).
@@ -1311,6 +1324,11 @@ mod tests {
             "TOKEN=main",
             "a carried file is a copy — edits never leak back into the main checkout",
         );
+    }
+
+    #[test]
+    fn a_declared_link_path_reaches_the_main_checkout() {
+        let (_dir, main, wt) = fresh_worktree_with_declared_environment("dev_withlink");
 
         // `link` is the main checkout's directory, seen from here: what changes
         // there is visible here, because nothing was duplicated.

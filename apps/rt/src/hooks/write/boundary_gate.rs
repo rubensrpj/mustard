@@ -154,42 +154,138 @@ fn resolve_boundary_spec(cwd: &str, session_id: Option<&str>) -> Option<String> 
         .and_then(|s| s.get("specName").and_then(|v| v.as_str()).map(str::to_string))
 }
 
-/// Resolve the spec.md file for a pipeline-state. Mirrors `resolveSpecFile`:
-/// `.claude/spec/{specName}/spec.md` (flat layout), with a wave-plan branch that
-/// looks for a `wave-{N}-*/spec.md` child directory first.
+/// Resolve the spec file(s) whose `## Files` / `## Boundaries` a Write/Edit is
+/// checked against — `.claude/spec/{specName}/spec.md` (flat layout), with a
+/// wave-plan branch that resolves `wave-{N}-*/spec.md` instead.
 ///
-/// `spec_name` is the spec identifier (from the JSON state file stem or the
-/// projection's `spec` field). `view` is the typed projection — `None` means
-/// wave info is unknown, so the flat `spec.md` is used.
-fn resolve_spec_file(
+/// ## Which wave, and why it is not one number
+///
+/// A dispatch round runs EVERY wave of the lowest incomplete dependency level at
+/// once ([`crate::commands::pipeline::wave_advance`]'s own contract), so while a
+/// round is in flight there are several waves writing. The projection's
+/// `currentWave` is a scalar — `max(completedWaves) + 1` — so during round 1 it
+/// says `1` to every sibling. Checking each of them against wave 1's file list
+/// meant the wave-2 agent got a boundary warning on every single edit, INCLUDING
+/// the files wave 2's own `## Files` declares. A gate that cries wolf on a
+/// correctly declared file teaches the operator to ignore the gate.
+///
+/// So the wave is resolved in this order:
+///
+/// 1. **The wave the WRITER belongs to** — the stamp its dispatch carried into
+///    its own transcript, read back by
+///    [`crate::hooks::task::subagent_inject::wave_from_child_transcript`]. This
+///    is the only signal that differs between siblings in flight; when it
+///    resolves, the boundary is exactly one wave's and the gate is at its
+///    narrowest.
+/// 2. **Every wave of the round in flight** — the union of the `## Files` of the
+///    waves at the lowest incomplete dependency level. Strictly narrower than
+///    allowing everything, and it can never accuse a correctly declared file.
+///    This is the honest answer when the writer cannot be identified: the gate
+///    stays on, it just stops naming a wave it did not establish.
+///
+/// `spec_name` is the spec identifier. `view` is the typed projection — `None`
+/// means wave info is unknown, so the flat `spec.md` is used. `input` is the
+/// hook invocation, the only per-writer thing in scope.
+///
+/// Fail-open: an unresolvable spec dir yields an empty list and the caller
+/// passes the edit through.
+fn resolve_boundary_files(
     cwd: &str,
     spec_name: &str,
     view: Option<&PipelineStateView>,
-) -> Option<std::path::PathBuf> {
-    let base = ClaudePaths::for_project(Path::new(cwd))
+    input: &HookInput,
+) -> Vec<std::path::PathBuf> {
+    let Ok(base) = ClaudePaths::for_project(Path::new(cwd))
         .and_then(|p| p.for_spec(spec_name))
         .map(|sp| sp.dir().to_path_buf())
-        .ok()?;
+    else {
+        return Vec::new();
+    };
     if !base.exists() {
-        return None;
+        return Vec::new();
     }
-    let is_wave_plan = view
-        .and_then(|v| v.is_wave_plan)
-        .unwrap_or(false);
+    let is_wave_plan = view.and_then(|v| v.is_wave_plan).unwrap_or(false);
     if is_wave_plan {
-        let wave = view.map_or(1, |v| v.current_wave);
-        let prefix = format!("wave-{wave}-");
-        if let Ok(entries) = fs::read_dir(&base) {
-            for entry in entries.into_iter().filter(|e| e.is_dir && e.file_name.starts_with(&prefix)) {
-                let cand = entry.path.join("spec.md");
-                if fs::exists(&cand) {
-                    return Some(cand);
-                }
+        if let Some(wave) = crate::hooks::task::subagent_inject::wave_from_child_transcript(input) {
+            if let Some(file) = wave_boundary_file(&base, wave) {
+                return vec![file];
             }
+        }
+        let round: Vec<std::path::PathBuf> = waves_in_flight(cwd, spec_name, view)
+            .into_iter()
+            .filter_map(|wave| wave_boundary_file(&base, wave))
+            .collect();
+        if !round.is_empty() {
+            return round;
         }
     }
     let root = base.join("spec.md");
-    if root.exists() { Some(root) } else { None }
+    if root.exists() { vec![root] } else { Vec::new() }
+}
+
+/// The `wave-{wave}-*/spec.md` under `base`, or `None` when the wave has no
+/// directory (or no `spec.md`) on disk. The role is unknown here, so the
+/// shared resolver is asked with an empty one and takes its `wave-{N}-*`
+/// fallback — the SAME scanner the dispatch used to find the wave's spec, so
+/// the boundary read here cannot disagree with the boundary the wave's agent
+/// was handed.
+fn wave_boundary_file(base: &Path, wave: u32) -> Option<std::path::PathBuf> {
+    crate::commands::pipeline::dispatch_plan::wave_spec_path(base, wave, "")
+}
+
+/// The waves of the round currently in flight: those at the LOWEST dependency
+/// level that has not completed, which is exactly the set `wave-advance`
+/// dispatches together.
+///
+/// Derived from the same two sources the dispatcher uses — the wave plan's DAG
+/// ([`crate::commands::pipeline::dispatch_plan::build_plan`]) and the
+/// projection's `completedWaves` — so this set cannot drift from the round the
+/// orchestrator actually launched.
+///
+/// Fail-open: a spec whose plan yields nothing pending falls back to the
+/// projection's scalar, so a late edit still lands on a wave rather than on
+/// nothing; an empty plan yields an empty set and the caller falls through to
+/// the parent `spec.md`.
+fn waves_in_flight(cwd: &str, spec_name: &str, view: Option<&PipelineStateView>) -> Vec<u32> {
+    use crate::commands::pipeline::dispatch_plan;
+
+    let project = Path::new(cwd);
+    let spec_dir = dispatch_plan::resolve_spec_dir(project, spec_name);
+    let plan = dispatch_plan::build_plan(project, &spec_dir, spec_name, None);
+    let completed: &[u32] = view.map_or(&[], |v| v.completed_waves.as_slice());
+    let pending: Vec<&dispatch_plan::DispatchItem> = plan
+        .iter()
+        .filter(|it| !completed.contains(&it.wave))
+        .collect();
+    let Some(level) = pending.iter().map(|it| it.level).min() else {
+        return view.map_or_else(Vec::new, |v| vec![v.current_wave]);
+    };
+    pending
+        .iter()
+        .filter(|it| it.level == level)
+        .map(|it| it.wave)
+        .collect()
+}
+
+/// Name the boundary the gate ACTUALLY checked, so the author can go and look at
+/// it: `{spec}/{wave-dir}` for one wave, `{spec}/{a}+{b}` when the round's waves
+/// were taken together, and the bare spec slug when the parent `spec.md` was the
+/// boundary.
+///
+/// Naming matters here: the parent's own `## Files` may well list the edited
+/// path, so citing the parent slug would send the author to a section that
+/// already contains it.
+fn boundary_label(spec_name: &str, files: &[std::path::PathBuf]) -> String {
+    let waves: Vec<&str> = files
+        .iter()
+        .filter_map(|f| f.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()))
+        .filter(|n| n.starts_with("wave-"))
+        .collect();
+    if waves.is_empty() {
+        spec_name.to_string()
+    } else {
+        format!("{spec_name}/{}", waves.join("+"))
+    }
 }
 
 /// Extract the allowed path patterns from a spec's `## Files` and
@@ -548,25 +644,28 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if phase == "CLOSE" || is_terminal {
         return None;
     }
-    let spec_file = resolve_spec_file(cwd, spec_name, view.as_ref())?;
-    let spec_text = fs::read_to_string(&spec_file).ok()?;
-    let patterns = extract_allowed_patterns(&spec_text);
+    // The boundary is a LIST because a dispatch round can have several waves
+    // writing at once — see `resolve_boundary_files`. The declared patterns are
+    // their union: a path any wave of the round declared is inside the boundary.
+    let spec_files = resolve_boundary_files(cwd, spec_name, view.as_ref(), input);
+    let mut patterns: Vec<String> = Vec::new();
+    for spec_file in &spec_files {
+        let Ok(spec_text) = fs::read_to_string(spec_file) else {
+            continue;
+        };
+        for pattern in extract_allowed_patterns(&spec_text) {
+            if !patterns.contains(&pattern) {
+                patterns.push(pattern);
+            }
+        }
+    }
     if patterns.is_empty() {
         return None;
     }
     if patterns.iter().any(|p| pattern_matches(&rel, p)) {
         return None;
     }
-    // The boundary actually checked: when `resolve_spec_file` landed on a
-    // WAVE's spec (`wave-N-*/spec.md`), the verdict must name THAT wave — the
-    // parent's own `## Files` may well list the edited path, so naming the
-    // parent slug sends the author to a section that already contains it.
-    let boundary_name = spec_file
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .filter(|n| n.starts_with("wave-"))
-        .map_or_else(|| spec_name.to_string(), |wave| format!("{spec_name}/{wave}"));
+    let boundary_name = boundary_label(spec_name, &spec_files);
     // Mismatch — decide the verdict.
     match mode {
         BoundaryMode::Strict => Some(Verdict::Deny {
@@ -942,6 +1041,202 @@ mod tests {
             ..input
         };
         assert!(boundary_gate(&allowed, &cwd_str).is_none());
+    }
+
+    /// Seed a spec whose round dispatches waves 1 and 2 TOGETHER (same
+    /// dependency level) with wave 3 behind them, each wave declaring one file
+    /// of its own, and bind `sess` to it. Returns the project root as a string.
+    fn parallel_round_spec(cwd: &Path, sid: &str) -> String {
+        let paths = ClaudePaths::for_project(cwd).expect("paths");
+        let sp = paths.for_spec("round").expect("spec paths");
+        let spec_dir = sp.dir().to_path_buf();
+        std::fs::create_dir_all(&spec_dir).expect("spec dir");
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "| Wave | Spec | Role | Depends on | Summary |\n\
+             |------|------|------|------------|---------|\n\
+             | 1 | [[wave-1-carry]] | carry | — | carries |\n\
+             | 2 | [[wave-2-reap]] | reap | — | reaps |\n\
+             | 3 | [[wave-3-isolate]] | isolate | [[wave-1-carry]] | isolates |\n",
+        )
+        .expect("wave plan");
+        for (dir, file) in [
+            ("wave-1-carry", "src/carry.rs"),
+            ("wave-2-reap", "src/reap.rs"),
+            ("wave-3-isolate", "src/isolate.rs"),
+        ] {
+            std::fs::create_dir_all(spec_dir.join(dir)).expect("wave dir");
+            std::fs::write(
+                spec_dir.join(dir).join("spec.md"),
+                format!("# {dir}\n\n## Files\n\n- `{file}`\n"),
+            )
+            .expect("wave spec");
+        }
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        // One non-terminal event so the projection exists. Nothing has completed,
+        // so its scalar `current_wave` is 1 — which is the whole problem.
+        crate::shared::events::writer_ndjson::write_event_with_ts(
+            cwd,
+            Some("round"),
+            None,
+            sid,
+            "pipeline.status",
+            "pipeline",
+            None,
+            Some(sid),
+            Some("boundary-test"),
+            None,
+            &json!({ "to": "active" }),
+            Some("2026-08-12T00:00:00.000Z"),
+        )
+        .expect("seed event written");
+        crate::shared::context::bind_session_spec(&cwd_str, sid, "round");
+        cwd_str
+    }
+
+    /// A `PreToolUse(Edit)` on `file` from an unidentified writer.
+    fn round_edit(cwd_str: &str, sid: &str, file: &str) -> HookInput {
+        HookInput {
+            tool_name: Some("Edit".to_string()),
+            tool_input: json!({ "file_path": file }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd_str.to_string()),
+            session_id: Some(sid.to_string()),
+            ..HookInput::default()
+        }
+    }
+
+    /// A dispatch ROUND runs every wave of the lowest incomplete dependency
+    /// level AT ONCE, so waves 1 and 2 are both writing while the projection's
+    /// `currentWave` — a scalar, `max(completedWaves) + 1` — still reads 1.
+    /// Resolving the boundary from that scalar checked BOTH agents against wave
+    /// 1's file list, so the wave-2 agent was warned on every edit it made,
+    /// including on the files its own `## Files` declares. A gate that cries
+    /// wolf on a correctly declared file trains the operator to ignore the gate.
+    ///
+    /// Three-sided, because a gate that never warns would pass a one-sided test:
+    /// a sibling's declared file passes, a file NO wave of the round declared
+    /// still warns, and the warning names the boundary it actually checked.
+    #[test]
+    fn a_parallel_siblings_declared_file_is_not_accused() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let sid = "sess-round";
+        let cwd_str = parallel_round_spec(cwd, sid);
+
+        // The sibling's own declared file — the measured false accusation.
+        assert!(
+            boundary_gate(&round_edit(&cwd_str, sid, "src/reap.rs"), &cwd_str).is_none(),
+            "wave 2 declares src/reap.rs in its own ## Files"
+        );
+        assert!(
+            boundary_gate(&round_edit(&cwd_str, sid, "src/carry.rs"), &cwd_str).is_none(),
+            "wave 1 declares src/carry.rs in its own ## Files"
+        );
+
+        // Wave 3 is at the NEXT level — not in this round — so its file is
+        // outside the boundary, and the warning names the round it checked.
+        match boundary_gate(&round_edit(&cwd_str, sid, "src/isolate.rs"), &cwd_str) {
+            Some(Verdict::Warn { message }) => {
+                assert!(
+                    message.contains("wave-1-carry+wave-2-reap"),
+                    "the warning must name the round it checked: {message}"
+                );
+            }
+            other => panic!("a file no wave of the round declared must warn, got {other:?}"),
+        }
+    }
+
+    /// When the WRITER can be identified, the boundary is that one wave's — the
+    /// gate at its narrowest. Same round as
+    /// [`a_parallel_siblings_declared_file_is_not_accused`], but the hook input
+    /// carries what a real `PreToolUse` inside a subagent carries (`agent_id` +
+    /// `transcript_path`), which locates the child's own transcript and the wave
+    /// stamp its dispatch left on the first line.
+    ///
+    /// The stamp is produced by the REAL dispatch expansion here, never written
+    /// by hand: a fixture-shaped marker would keep passing after the stamp
+    /// format moved.
+    #[test]
+    fn the_writing_agents_own_wave_narrows_the_boundary() {
+        use crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER;
+        use crate::hooks::task::subagent_inject::SubagentInject;
+
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let sid = "sess-narrow";
+        let cwd_str = parallel_round_spec(cwd, sid);
+
+        // The dispatch the wave-2 agent received, expanded + stamped by the hook.
+        let rel = ".claude/spec/round/.dispatch/wave-2-reap.first.prompt.md";
+        std::fs::create_dir_all(cwd.join(".claude/spec/round/.dispatch")).expect("dispatch dir");
+        std::fs::write(cwd.join(rel), "<!-- PREFIX-STABLE -->\n## ROLE\nROLE: reap\n")
+            .expect("rendered prompt");
+        let verdict = SubagentInject
+            .evaluate(
+                &HookInput {
+                    tool_name: Some("Task".to_string()),
+                    tool_input: json!({
+                        "prompt": format!("{PROMPT_REF_MARKER} {rel}\nStub — pass verbatim.\n"),
+                        "subagent_type": "impl",
+                    }),
+                    hook_event_name: Some("PreToolUse".to_string()),
+                    ..HookInput::default()
+                },
+                &Ctx {
+                    project_dir: cwd_str.clone(),
+                    trigger: Some(Trigger::PreToolUse),
+                    workspace_root: None,
+                },
+            )
+            .expect("hook must not error");
+        let Verdict::Rewrite { tool_input } = verdict else {
+            panic!("a ref stub must be rewritten, got {verdict:?}");
+        };
+        let stamped = tool_input
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .expect("rewritten prompt")
+            .to_string();
+
+        // Claude Code persists that prompt as the first line of the CHILD's own
+        // transcript, stored beside the parent's under the documented layout.
+        let transcripts = cwd.join("transcripts");
+        std::fs::create_dir_all(transcripts.join("sess/subagents")).expect("child dir");
+        let parent = transcripts.join("sess.jsonl");
+        std::fs::write(&parent, "{\"type\":\"summary\"}\n").expect("parent transcript");
+        std::fs::write(
+            transcripts.join("sess/subagents/agent-child2.jsonl"),
+            format!(
+                "{}\n",
+                json!({ "type": "user", "isSidechain": true, "message": { "content": stamped } })
+            ),
+        )
+        .expect("child transcript");
+
+        let from_wave_2 = |file: &str| HookInput {
+            agent_id: Some("child2".to_string()),
+            raw: json!({ "transcript_path": parent.to_string_lossy() }),
+            ..round_edit(&cwd_str, sid, file)
+        };
+
+        assert!(
+            boundary_gate(&from_wave_2("src/reap.rs"), &cwd_str).is_none(),
+            "the writing wave's own declared file always passes"
+        );
+        match boundary_gate(&from_wave_2("src/carry.rs"), &cwd_str) {
+            Some(Verdict::Warn { message }) => {
+                assert!(
+                    message.contains("round/wave-2-reap"),
+                    "an identified writer is checked against its OWN wave alone: {message}"
+                );
+                assert!(
+                    !message.contains("wave-1-carry"),
+                    "the sibling's boundary is not this writer's: {message}"
+                );
+            }
+            other => panic!("a sibling's file is outside this writer's boundary, got {other:?}"),
+        }
     }
 
     /// A MIXED spec — some Files entries backticked, some bare — is the

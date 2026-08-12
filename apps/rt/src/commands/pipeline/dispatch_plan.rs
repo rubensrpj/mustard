@@ -633,7 +633,11 @@ fn files_to_subproject(project: &Path, files: &[String]) -> String {
 /// Resolve the on-disk `wave-{wave}-{role}/spec.md` path. Prefers the exact
 /// `{role}` directory; falls back to the first `wave-{wave}-*` directory when
 /// the role suffix differs (the plan table role can diverge from the folder).
-fn wave_spec_path(spec_dir: &Path, wave: u32, role: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)`: [`crate::hooks::write::boundary_gate`] resolves the very same
+/// file to read a wave's declared boundary, and a second prefix scanner there
+/// could disagree with the one the dispatch used.
+pub(crate) fn wave_spec_path(spec_dir: &Path, wave: u32, role: &str) -> Option<PathBuf> {
     let exact = spec_dir.join(format!("wave-{wave}-{role}")).join("spec.md");
     if exact.is_file() {
         return Some(exact);
