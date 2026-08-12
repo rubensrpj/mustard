@@ -557,54 +557,65 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     );
 }
 
-/// The worktree prose teaches what a SECOND unit gets, what travels with it,
-/// and what the collector reaps.
+/// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
+/// environment declaration.
 ///
-/// Three mechanisms shipped in this spec while the operator prose still
-/// described the world without them: the gate now DIVERTS a second unit into
-/// its own worktree instead of taking a checkout another unit is working in,
-/// the project DECLARES the environment that travels with a cut
-/// (`mustard.json#worktree`), and the collector ACTS on what is orphaned
-/// instead of printing a warning about it. A worktree nobody is told about is
-/// a worktree nobody enters — and the ref is where `/git` sends the reader.
+/// The environment-carrying design was withdrawn after review: `link` planted a
+/// Windows directory junction inside the worktree, and `git worktree remove`
+/// DESCENDS a junction — so closing a unit deleted the MAIN checkout's
+/// `node_modules`, with and without `--force`. The shipped prose told operators
+/// to declare exactly that, which made following the documentation the way to
+/// lose your dependencies. What remains is a refusal (commit or stash, then open
+/// the second unit) and the orphan collector, which creates nothing and only
+/// reaps the worktrees Claude Code cuts on its own.
 #[test]
-fn worktree_prose_teaches_the_declared_environment() {
+fn worktree_prose_teaches_the_refusal_and_the_reaper() {
     let flow = read("plugin/refs/git/git-flow.md");
 
-    // --- 1. The divert is taught where the gate's decision is taught --------
-    let another = line_with(&flow, "ANOTHER unit's branch")
+    // --- 1. The refusal is taught where the gate's decision is taught -------
+    let another = line_with(&flow, "ANOTHER unit's branch, with uncommitted work")
         .expect("the gate prose never says what happens when the checkout holds another unit");
     assert!(
-        another.contains("EnterWorktree path="),
-        "the row names no step the session can actually take: {another}",
+        another.contains("REFUSED") || another.contains("denied"),
+        "the row must say the edit is REFUSED: {another}",
+    );
+    // Naming the refusal is not teaching it — the row must name the act that
+    // unblocks it, or the operator is stopped with nowhere to go.
+    assert!(
+        another.contains("commit or stash"),
+        "the row refuses without naming what unblocks it: {another}",
     );
     assert!(
-        another.contains("denied"),
-        "the row must say the edit is REFUSED — a worktree appearing beside an \
-         allowed edit would leave the write on the other unit's branch: {another}",
+        another.contains("paths"),
+        "the row must promise the paths holding the work are named: {another}",
     );
-    // The counterweight, deliberately: a rule that only added "isolate more"
-    // would divert on a HEAD nobody measured, which is an isolation the
-    // operator never asked for.
+    // The counterweights, deliberately: a rule that only added "refuse more"
+    // would stop on a HEAD nobody measured, and on a clean tree where nothing
+    // can ride along.
     let unmeasured = line_with(&flow, "detached / unreadable HEAD")
         .expect("the gate prose no longer says what an unreadable HEAD does");
     assert!(
         unmeasured.contains("in-place"),
         "an unmeasured position must keep today's cut: {unmeasured}",
     );
-    // --- 2. The declaration and the reaper, in the isolation contract -------
-    let carry = line_with(&flow, "**`carry`**")
-        .expect("the contract never names the verb that copies a declared path");
+    let clean = line_with(&flow, "ANOTHER unit's branch, tree CLEAN")
+        .expect("the gate prose never says what a CLEAN checkout does");
     assert!(
-        carry.contains("COPIED") && carry.contains("leak"),
-        "`carry` must say it is a copy AND why a link would be wrong: {carry}",
+        clean.contains("in-place"),
+        "a clean checkout loses nothing, so it must keep the cut: {clean}",
     );
-    let link = line_with(&flow, "**`link`**")
-        .expect("the contract never names the verb that points a heavy directory");
-    assert!(
-        link.contains("junction") || link.contains("symlink"),
-        "`link` must say what it actually creates: {link}",
-    );
+
+    // --- 2. No environment declaration survives anywhere in the ref ---------
+    for withdrawn in ["mustard.json#worktree", "\"carry\"", "\"link\"", "**`carry`**", "**`link`**"]
+    {
+        assert!(
+            !flow.contains(withdrawn),
+            "the ref still teaches `{withdrawn}` — following it plants a junction \
+             whose removal deletes the main checkout's directory",
+        );
+    }
+
+    // --- 3. The reaper, which is NOT withdrawn ------------------------------
     let reaper = line_with(&flow, "The collector reaps what is ORPHANED")
         .expect("the contract never says what the collector does");
     for taught in ["--apply", "uncommitted", "PID"] {
@@ -615,34 +626,43 @@ fn worktree_prose_teaches_the_declared_environment() {
         );
     }
 
-    // --- 3. The code really does each of the three --------------------------
+    // --- 4. The code really does each of them -------------------------------
     // Without this half every sentence above outlives its mechanism.
+    let branch = read("apps/rt/src/commands/event/work_branch.rs");
+    assert!(
+        branch.contains("fn holds_other_work") && branch.contains("fn busy_checkout"),
+        "nothing asks whether the checkout holds another unit's uncommitted work",
+    );
+    assert!(
+        branch.contains("CutOutcome::Refused"),
+        "the cut `spec-draft` takes at approval — the door that opens FIRST — no \
+         longer refuses, so the gate's guard is again the only one",
+    );
     let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
     assert!(
-        gate.contains("fn holds_other_work"),
-        "the gate no longer asks whether the checkout holds another unit",
+        gate.contains("busy_checkout(Path::new(&local)"),
+        "the gate no longer takes the shared refusal, so the two doors can disagree",
     );
     assert!(
-        gate.contains("hook_create(&target"),
-        "the gate names the divert but cuts no worktree, so the refusal would \
-         send the session to a path that does not exist",
+        !gate.contains("hook_create"),
+        "the gate cuts a worktree again — the divert the prose says is withdrawn",
     );
-    assert!(
-        !gate.contains("EnterWorktree name="),
-        "the standing in-place nudge the prose says is retired still fires",
-    );
+    for nudge in ["EnterWorktree path=", "EnterWorktree name="] {
+        assert!(
+            !gate.contains(nudge),
+            "the gate still answers `{nudge}` — it sends the session into a worktree \
+             nobody asked for, or nudges it there on every unit",
+        );
+    }
 
     let open = read("apps/rt/src/commands/work_unit_open.rs");
-    assert!(
-        open.contains("fn carry_environment") && open.contains("worktree.linked()"),
-        "nothing reads the declaration, so a fresh worktree still lands without \
-         the environment the project declared",
-    );
-    assert!(
-        open.contains("mklink /J"),
-        "the prose promises a junction on Windows, where an unprivileged \
-         symlink_dir is refused",
-    );
+    for gone in ["fn carry_environment", "fn link_dir", "mklink /J", "worktree.linked()"] {
+        assert!(
+            !open.contains(gone),
+            "`{gone}` is back: a fresh cut plants something of the harness's own, \
+             and a link inside a worktree is what `git worktree remove` descends",
+        );
+    }
 
     let gc = read("apps/rt/src/commands/maint/worktree_gc.rs");
     assert!(

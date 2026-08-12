@@ -36,29 +36,21 @@ With a pending-unit marker the gate asks WHERE the checkout is before it cuts:
 |--------------------|--------------|
 | a bare integration base — nobody's work | cut `{base}_{slug}` off the freshly fetched base, **in place**, silently |
 | THIS unit's branch already | consume the marker, say nothing |
-| a detached / unreadable HEAD | the in-place cut, unchanged — an unmeasured position never triggers an isolation nobody asked for |
-| **ANOTHER unit's branch** | do **not** take the checkout: this unit gets its OWN worktree and the edit is **denied** with `EnterWorktree path=…` |
+| a detached / unreadable HEAD | the in-place cut, unchanged — an unmeasured position never triggers a refusal nobody asked for |
+| ANOTHER unit's branch, tree CLEAN | the in-place cut — nothing rides along, and the branch is still cut off its base |
+| **ANOTHER unit's branch, with uncommitted work** | **REFUSED**: the edit is denied, and the refusal names that branch, the paths holding the uncommitted work, and what unblocks it — **commit or stash that work**, then open the second unit |
 
-The last row is why worktrees exist here. A checkout carries the uncommitted work of whoever is in it, and `git checkout` moves that work along — so taking the checkout for a second unit silently drags the first unit's edits onto the second unit's branch. The second unit is diverted instead, through the same engine `WorktreeCreate` runs, so the declared environment travels with it (below). Fail-open throughout: a git failure warns and reconciles the marker to the branch actually active, never blocks, and a worktree that cannot be cut degrades to the in-place cut. There is no standing "you could isolate this" nudge — isolation happens where it is needed instead of being offered every time.
+The last row is the whole point. A checkout carries the uncommitted work of whoever is in it, and `git checkout` moves that work along — so taking the checkout for a second unit silently drags the first unit's edits onto the second unit's branch. The harness refuses instead of guessing: it never stashes for you, never moves anyone's work, and never diverts the unit somewhere you did not ask to go. The SAME refusal is taken by the cut `spec-draft` performs at approval, which is the door that opens first — one decision, both doors. Fail-open elsewhere: a git failure warns and reconciles the marker to the branch actually active, never blocks. There is no standing "you could isolate this" nudge.
 
 **Monorepo:** the gate cuts the branch in the PARENT only. Each dirty submodule gets its OWN `{base}_{slug}` branch (its own base prefix), cut by `/git` at commit time — see `submodule-rules.md`.
 
-## Isolation contract — the branch IS the unit, the worktree is what a SECOND unit gets (parallel work)
+## Isolation contract — the branch IS the unit; a second unit in parallel is REFUSED, never diverted
 
 Every unit lives on its OWN branch `{base}_{slug}`, cut in the MAIN checkout at APPROVAL by `spec-draft` — so the whole unit is written on it: `spec.md`, the waves, the ceremony and the code alike. That branch IS the isolation. The `{base}_` prefix is load-bearing — `/git` reads it to target the PR — and the branch is cut FROM `{base}`, so the right base in yields the right PR target out.
 
-A worktree at `.claude/worktrees/{base}_{slug}` is what a **second** unit gets — one opened while the main checkout already holds another. It is cut only when the branch is not already checked out somewhere, so concurrent sessions never share a tree. One unit worked start to finish never needs one, and the first unit in the checkout never loses it.
+**A second unit is refused, not accommodated.** When the checkout already holds another unit's branch with uncommitted work, the harness stops and says so: commit or stash that work first. It does not stash on your behalf and it does not open a second workspace for you. Cutting a worktree for the second unit was tried and withdrawn — a fresh worktree receives only what git tracks (no `.env`, no `node_modules`), so making it usable meant linking those directories back to the main checkout, and `git worktree remove` **descends** a Windows directory junction: removing the worktree deleted the main checkout's own directory, with and without `--force`. The harness therefore plants nothing inside a worktree beyond `git submodule update`.
 
-**The project DECLARES what travels.** `git worktree add` writes only VERSIONED files, so every git-ignored path the project needs to run is simply absent from a fresh cut — the operator lands in a directory that builds nothing. The harness cannot guess which those are (copying every ignored path drags `node_modules`/`target` along; picking a subset is a curated guess), so `mustard.json#worktree` states them once and the cut obeys — two verbs, because the costs are opposite:
-
-```json
-{ "worktree": { "carry": [".env", ".env.local"], "link": ["node_modules", "target"] } }
-```
-
-- **`carry`** — COPIED. Small, environment-specific, authored in place: a link would leak the worktree's edits back into the main checkout.
-- **`link`** — POINTED at the main checkout's copy (a directory junction on Windows, a symlink elsewhere). Heavy and regenerable: duplicating these is the ten-minute wait that makes a worktree unusable, and pointing is harmless because nothing in them is authored.
-
-Both default to empty — a project that declares nothing behaves exactly as before. A declared path that cannot travel is a loud WARN, never a failed cut: losing the isolation over a missing `.env` costs more than the gap it reports.
+You can still work in parallel — cut a worktree yourself (`git worktree add`, or Claude Code's own isolated tasks), or use a second clone. What the harness will not do is move your uncommitted work for you.
 
 **The collector reaps what is ORPHANED.** `worktree-gc` runs at every SessionStart with `--apply` — it removes, it does not report. It never touches a work unit's worktree (`{base}_…` — that is `git-settle`'s job exclusively) and never one holding uncommitted or untracked work, whatever its age. For the harness's own scratch trees the name carries the PID of whoever cut it, so "orphan or busy" is a question with an exact answer: owner gone → collected now, not in a week. Age stays only as the fallback for a worktree whose owner cannot be read — unmeasured ownership authorises nothing.
 

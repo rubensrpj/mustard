@@ -42,15 +42,18 @@ Two sessions on the same folder can hold two units at once without either losing
 
 ## Acceptance Criteria
 
-- AC-1 — when a project declares a `carry` path and a worktree is cut, then that path exists inside the worktree as a real copy. Command: `cargo test -p mustard-rt a_declared_carry_path_lands_in_a_fresh_worktree`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_unit_open`
-- AC-2 — when a project declares a `link` path, then the worktree reaches the main checkout's copy instead of duplicating it. Command: `cargo test -p mustard-rt a_declared_link_path_reaches_the_main_checkout`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_unit_open`
-- AC-3 — when a declared path cannot travel, then the creation still succeeds and the report names that path. Command: `cargo test -p mustard-rt what_did_not_travel_is_named_and_never_aborts`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_unit_open`
+- AC-1 — when a worktree is cut, then it receives only what git and its submodules bring, and the harness adds nothing of its own Command: `cargo test -p mustard-rt a_fresh_worktree_receives_only_git_and_submodules`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_unit_open`
+- AC-2 — when a worktree is cut, then it holds no link of any kind reaching back into the main checkout Command: `cargo test -p mustard-rt a_fresh_worktree_holds_no_link_into_the_main_checkout`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_unit_open`
+- AC-3 — when the harness refuses to start a second unit, then the refusal names the paths that hold uncommitted work Command: `cargo test -p mustard-rt the_refusal_names_the_paths_holding_uncommitted_work`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_unit_open`
 - AC-4 — when a worktree's owning process no longer exists and it holds no work, then the session-start collector removes it without waiting for any age threshold. Command: `cargo test -p mustard-rt an_orphan_worktree_is_collected_without_waiting_for_age`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt worktree_gc`
 - AC-5 — when a worktree holds uncommitted or untracked work, then the acting collector still refuses to remove it, whatever its owner or age. Command: `cargo test -p mustard-rt the_acting_collector_still_refuses_a_worktree_holding_work`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt worktree_gc`
 - AC-6 — when a removal-proof worktree is left behind by an interrupted run, then it is within the collector's reach and is collected. Command: `cargo test -p mustard-rt an_abandoned_removal_worktree_is_within_reach_and_collected`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt worktree_gc`
-- AC-7 — when the checkout already holds a different unit's branch, then the new unit is cut into its own worktree and the checkout is left untouched. Command: `cargo test -p mustard-rt a_second_unit_is_isolated_instead_of_taking_the_checkout`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_branch_gate`
+- AC-7 — when the checkout already holds a different unit branch carrying uncommitted work, then the new unit is refused and the checkout is left untouched Command: `cargo test -p mustard-rt a_second_unit_is_refused_instead_of_taking_the_checkout`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_branch_gate`
 - AC-8 — when a second unit is isolated, then the first unit's uncommitted work stays on the first unit's branch. Command: `cargo test -p mustard-rt the_first_units_uncommitted_work_stays_where_it_was`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt work_branch_gate`
-- AC-9 — when the operator prose describes isolation, then it teaches the declared environment and the second-unit rule. Command: `cargo test -p mustard-rt worktree_prose_teaches_the_declared_environment`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt prose_teaches`
+- AC-9 — when the operator prose describes what happens with a second unit, then it teaches the refusal and the orphan collector, and mentions no environment declaration Command: `cargo test -p mustard-rt worktree_prose_teaches_the_refusal_and_the_reaper`  Expect: `[1-9][0-9]* passed`  Control: `cargo test -p mustard-rt prose_teaches`
+- **AC-11** — when spec-draft cuts a unit branch and the checkout already holds another unit uncommitted work, then the cut itself refuses instead of checking out
+  Command: `cargo test -p mustard-rt the_branch_cut_itself_refuses_a_busy_checkout`
+  Expect: `[1-9][0-9]* passed`
 - AC-10 — the workspace still builds. Command: `cargo build --workspace`
 
 <!-- PLAN -->
@@ -59,19 +62,23 @@ Two sessions on the same folder can hold two units at once without either losing
 
 | File | What changes | Wave |
 |---|---|---|
-| `packages/core/src/domain/config.rs` | New `worktree` section beside `git`: `carry` (paths copied) and `link` (heavy directories pointed at the main checkout). Both default empty — a project that declares nothing behaves exactly as today. | 1 |
-| `apps/rt/src/commands/work_unit_open.rs` | A freshly cut worktree is populated from that declaration, next to the submodule step and with the same forgiving posture: a failure warns loudly and never aborts the creation. Reports what did not travel. | 1 |
-| `apps/rt/src/commands/maint/worktree_gc.rs` | The session-start probe stops running in simulation and collects what is orphaned; ownership is read from the creator's process id instead of waiting seven days; the search widens to the temp-dir prefix the removal proof uses. Both refusals stay untouched. | 2 |
+| `packages/core/src/domain/config.rs` | The `worktree` section (`carry`/`link`) is REMOVED with `normalise_relpaths`, its only reader. An older config carrying the block still loads — it lands in the unknown-key catch-all, read by nobody. | 3 |
+| `packages/core/src/lib.rs` | The `WorktreeConfig` / `normalise_relpaths` re-exports go with it. | 3 |
+| `apps/rt/src/commands/work_unit_open.rs` | `carry_environment`, `copy_tree`, `link_dir` (and the Windows junction) are REMOVED: a cut receives what git and `init_submodules` bring, and nothing else. `init_submodules` stays — it is the pre-existing behaviour. | 3 |
+| `apps/rt/src/commands/event/work_branch.rs` | The refusal itself: `holds_other_work` moves here and `busy_checkout` composes it with the dirty-path probe, so ONE decision serves both doors. `cut_pending_work_branch` — the door `spec-draft` opens at approval, BEFORE the write gate — answers the new `CutOutcome::Refused` instead of checking out over another unit's work. | 3 |
+| `apps/rt/src/commands/spec/spec_draft.rs` | `cut_work_branch` surfaces that refusal as an error the operator can act on, rather than warning and writing the spec onto someone else's branch. | 3 |
+| `packages/core/src/platform/i18n.rs` | `workbranch.busy.refusal` — the one sentence both doors say, in the project's configured language. | 3 |
+| `apps/rt/src/commands/maint/worktree_gc.rs` | The session-start probe stops running in simulation and collects what is orphaned; ownership is read from the creator's process id instead of waiting seven days; the search widens to the temp-dir prefix the removal proof uses. Both refusals stay untouched. NOT withdrawn — the collector creates nothing, it only reaps what Claude Code cuts on its own. | 2 |
 | `apps/rt/src/commands/review/work_removed.rs` | The removal-proof worktree becomes reachable by the collector, so an interrupted run no longer leaks a directory nothing can reap. | 2 |
-| `apps/rt/src/hooks/write/work_branch_gate.rs` | Before checking a unit's branch out, the gate asks what the checkout is on: an integration base cuts in place as today; another unit's branch cuts a worktree instead of taking the checkout. The standing "EnterWorktree" nudge is retired. | 3 |
-| `plugin/refs/git/git-flow.md` | Operator prose: a worktree is what a SECOND unit gets, the project declares what it carries, the collector reaps what is orphaned. | 3 |
+| `apps/rt/src/hooks/write/work_branch_gate.rs` | Step 2.5 stops cutting a worktree: when the checkout holds another unit's branch with uncommitted work it now REFUSES (`Deny`), naming the branch, the paths and the act that unblocks it. A clean checkout keeps the in-place cut. The standing "EnterWorktree" nudge stays retired. | 3 |
+| `plugin/refs/git/git-flow.md` | Operator prose: a second unit is REFUSED (commit or stash), the environment declaration is gone, the collector still reaps what is orphaned. | 3 |
 | `apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs` | One ratchet holding that prose to the shipped behaviour, in the file's existing shape. | 3 |
 
 ## Boundaries
 
-IN: the project's declaration of what a worktree receives; populating a fresh worktree from it; naming what did not travel; making the existing collector act and keying it on ownership; bringing the removal-proof worktree within its reach; the gate's decision between cutting in place and isolating; the operator prose for all of it.
+IN (amended after review — the environment-carrying design was WITHDRAWN): removing the declaration and everything that planted it in a cut; the ONE refusal both doors take when the checkout holds another unit's uncommitted work (the write gate and the cut `spec-draft` performs at approval); making the existing collector act and keying it on ownership; bringing the removal-proof worktree within its reach; the operator prose for all of it.
 
-OUT: removing worktree support (considered and rejected — Claude Code cuts them regardless); inferring the environment instead of declaring it; the `.claude/` redirect that keeps harness state single; what the collector refuses to touch (unit worktrees, and any worktree holding work); moving a unit that is already established in the checkout; the separate-clone workflow, which stays available and unmanaged.
+OUT: carrying or LINKING any path into a cut worktree (`git worktree remove` descends a Windows junction and deleted the main checkout's directory — reproduced with and without `--force`); diverting a second unit into a worktree; removing worktree SUPPORT (Claude Code cuts them regardless, so the collector stays); `init_submodules`, which is pre-existing and untouched; the `.claude/` redirect that keeps harness state single; what the collector refuses to touch (unit worktrees, and any worktree holding work); moving a unit that is already established in the checkout; the separate-clone workflow, which stays available and unmanaged.
 
 ## Definitions
 

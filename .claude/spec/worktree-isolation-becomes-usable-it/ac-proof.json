@@ -3,13 +3,13 @@
   "criteria": [
     {
       "id": "AC-1",
-      "command": "cargo test -p mustard-rt a_declared_carry_path_lands_in_a_fresh_worktree",
+      "command": "cargo test -p mustard-rt a_fresh_worktree_receives_only_git_and_submodules",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-rt work_unit_open",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
@@ -36,14 +36,31 @@
       "stderr_excerpt": ""
     },
     {
-      "id": "AC-2",
-      "command": "cargo test -p mustard-rt a_declared_link_path_reaches_the_main_checkout",
+      "id": "AC-11",
+      "command": "cargo test -p mustard-rt the_branch_cut_itself_refuses_a_busy_checkout",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-rt work_unit_open",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt a_fresh_worktree_holds_no_link_into_the_main_checkout",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
@@ -54,13 +71,13 @@
     },
     {
       "id": "AC-3",
-      "command": "cargo test -p mustard-rt what_did_not_travel_is_named_and_never_aborts",
+      "command": "cargo test -p mustard-rt the_refusal_names_the_paths_holding_uncommitted_work",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-rt work_unit_open",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
@@ -122,13 +139,13 @@
     },
     {
       "id": "AC-7",
-      "command": "cargo test -p mustard-rt a_second_unit_is_isolated_instead_of_taking_the_checkout",
+      "command": "cargo test -p mustard-rt a_second_unit_is_refused_instead_of_taking_the_checkout",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-rt work_branch_gate",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
@@ -156,13 +173,13 @@
     },
     {
       "id": "AC-9",
-      "command": "cargo test -p mustard-rt worktree_prose_teaches_the_declared_environment",
+      "command": "cargo test -p mustard-rt worktree_prose_teaches_the_refusal_and_the_reaper",
       "expect": "[1-9][0-9]* passed",
-      "control_command": "cargo test -p mustard-rt prose_teaches",
+      "control_command": null,
       "verdict": "proven",
       "proof": "red",
-      "control": "green",
-      "control_exit": 0,
+      "control": "not-declared",
+      "control_exit": null,
       "confirmation": "not-taken",
       "exit": 0,
       "confirmation_exit": null,
@@ -172,6 +189,105 @@
       "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
     }
   ],
-  "amendments": [],
-  "additions": []
+  "amendments": [
+    {
+      "id": "AC-1",
+      "at": "2026-08-12T15:42:10.330Z",
+      "reason": "O usuario retirou toda a maquinaria de worktree: copiar ambiente para dentro de um worktree e maquina demais para o que se pediu. O criterio inverte de sentido e passa a ser catraca contra a reintroducao.",
+      "superseded_command": "cargo test -p mustard-rt a_declared_carry_path_lands_in_a_fresh_worktree",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when a project declares a `carry` path and a worktree is cut, then that path exists inside the worktree as a real copy.",
+      "command": "cargo test -p mustard-rt a_fresh_worktree_receives_only_git_and_submodules",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when a worktree is cut, then it receives only what git and its submodules bring, and the harness adds nothing of its own",
+      "rewrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "at": "2026-08-12T15:42:28.950Z",
+      "reason": "A junction que o verbo link plantava e seguida por git worktree remove no Windows, que apaga o conteudo do diretorio ligado no checkout PRINCIPAL: reproduzido com e sem --force. O verbo sai e o criterio vira catraca contra a reintroducao.",
+      "superseded_command": "cargo test -p mustard-rt a_declared_link_path_reaches_the_main_checkout",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when a project declares a `link` path, then the worktree reaches the main checkout's copy instead of duplicating it.",
+      "command": "cargo test -p mustard-rt a_fresh_worktree_holds_no_link_into_the_main_checkout",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when a worktree is cut, then it holds no link of any kind reaching back into the main checkout",
+      "rewrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "at": "2026-08-12T15:47:22.604Z",
+      "reason": "Nada mais viaja para dentro de um worktree, entao nao ha o que reportar como nao viajado. O aviso que o usuario pediu passa a ser o da recusa: ela precisa dizer QUAIS arquivos estao com trabalho nao salvo.",
+      "superseded_command": "cargo test -p mustard-rt what_did_not_travel_is_named_and_never_aborts",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when a declared path cannot travel, then the creation still succeeds and the report names that path.",
+      "command": "cargo test -p mustard-rt the_refusal_names_the_paths_holding_uncommitted_work",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when the harness refuses to start a second unit, then the refusal names the paths that hold uncommitted work",
+      "rewrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-7",
+      "at": "2026-08-12T15:47:23.850Z",
+      "reason": "A segunda unidade deixa de ganhar worktree e passa a ser recusada. O resultado observavel e o mesmo que importava: o checkout de quem ja estava trabalhando nao e tocado.",
+      "superseded_command": "cargo test -p mustard-rt a_second_unit_is_isolated_instead_of_taking_the_checkout",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when the checkout already holds a different unit's branch, then the new unit is cut into its own worktree and the checkout is left untouched.",
+      "command": "cargo test -p mustard-rt a_second_unit_is_refused_instead_of_taking_the_checkout",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when the checkout already holds a different unit branch carrying uncommitted work, then the new unit is refused and the checkout is left untouched",
+      "rewrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-9",
+      "at": "2026-08-12T15:47:34.415Z",
+      "reason": "A prosa ensinava a declarar carry/link e o desvio para worktree, que deixam de existir. Passa a ensinar a recusa e o coletor de orfaos.",
+      "superseded_command": "cargo test -p mustard-rt worktree_prose_teaches_the_declared_environment",
+      "superseded_expect": "[1-9][0-9]* passed",
+      "superseded_statement": "when the operator prose describes isolation, then it teaches the declared environment and the second-unit rule.",
+      "command": "cargo test -p mustard-rt worktree_prose_teaches_the_refusal_and_the_reaper",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when the operator prose describes what happens with a second unit, then it teaches the refusal and the orphan collector, and mentions no environment declaration",
+      "rewrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review-apps-rt.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/.dispatch/wave-0-review.first.prompt.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    }
+  ],
+  "additions": [
+    {
+      "id": "AC-11",
+      "at": "2026-08-12T15:47:35.885Z",
+      "reason": "A revisao provou que a verificacao vive so no hook de escrita, enquanto quem realmente troca de branch e cut_pending_work_branch, chamado por spec-draft antes de qualquer escrita. Sem criterio nesse ponto, a protecao continua sendo testada onde ela nao decide nada.",
+      "statement": "when spec-draft cuts a unit branch and the checkout already holds another unit uncommitted work, then the cut itself refuses instead of checking out",
+      "command": "cargo test -p mustard-rt the_branch_cut_itself_refuses_a_busy_checkout",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/worktree-isolation-becomes-usable-it/spec.md",
+        ".claude/spec/worktree-isolation-becomes-usable-it/wave-plan.md"
+      ]
+    }
+  ]
 }

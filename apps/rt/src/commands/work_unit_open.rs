@@ -19,11 +19,15 @@
 //! inside any worktree — a per-worktree copy would only shadow it (undocumented
 //! precedence) and freeze arrangements at open time.
 //!
-//! The project's own ENVIRONMENT does travel, but only what the project
-//! DECLARES: `mustard.json#worktree.carry` is copied in and `.link` is pointed
-//! at the main checkout ([`carry_environment`]). A fresh cut carries versioned
-//! files and submodules only, so without that step every git-ignored path the
-//! project needs to run — `.env`, `node_modules` — is simply missing.
+//! Nothing ELSE is planted either: a cut receives what git tracks plus what
+//! [`init_submodules`] populates, and nothing the harness invented. Carrying or
+//! LINKING the project's git-ignored environment (`.env`, `node_modules`) was
+//! tried and withdrawn: a directory junction inside the worktree is DESCENDED by
+//! `git worktree remove`, which deleted the main checkout's own directory (with
+//! and without `--force`), so the removal of a worktree destroyed the tree it
+//! pointed at. A worktree therefore lacks whatever git ignores, by design; the
+//! second unit that would need one is REFUSED instead
+//! ([`crate::hooks::write::work_branch_gate`]).
 //!
 //! Error posture: config/user/state errors are LOUD (`ok:false` + exit 1) —
 //! an unknown `--base` here is the same disease `resolve_base` now rejects at
@@ -517,7 +521,6 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     };
     add.map_err(|e| format!("WorktreeCreate: git worktree add failed: {e}"))?;
     let _ = init_submodules(&wt_path);
-    let _ = carry_environment(&main, &wt_path, &config);
     Ok(wt_str)
 }
 
@@ -569,192 +572,6 @@ fn init_submodules(worktree: &Path) -> Option<Result<(), String>> {
         );
     }
     Some(outcome)
-}
-
-/// How a declared path travels into a fresh worktree — the two verbs of
-/// `mustard.json#worktree`, whose costs are OPPOSITE (see
-/// [`mustard_core::WorktreeConfig`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Verb {
-    /// A real COPY. Small, environment-specific, and authored in place: a link
-    /// would leak the worktree's edits back into the main checkout.
-    Carry,
-    /// A POINTER at the main checkout's directory. Heavy and regenerable, so
-    /// duplicating it is the ten-minute wait that makes worktrees unusable.
-    Link,
-}
-
-impl Verb {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Carry => "carry",
-            Self::Link => "link",
-        }
-    }
-}
-
-/// Populate a FRESHLY CUT worktree with the environment the project DECLARED —
-/// `mustard.json#worktree.carry` (copied) and `.link` (pointed at the main
-/// checkout).
-///
-/// `git worktree add` writes only VERSIONED files, so every git-ignored path the
-/// project needs to run is absent: the operator is dropped into a directory that
-/// cannot build. Which paths those are is not knowable from here — copying every
-/// ignored path drags `node_modules`/`target` along, and picking a subset is a
-/// guess — so the project states them once and this step obeys. A project that
-/// declares nothing does exactly what it did before (no declaration, no work).
-///
-/// Same posture as [`init_submodules`]: the filesystem is FORGIVING. Every
-/// failure degrades to a loud WARN and the creation continues — a non-zero exit
-/// here kills the whole `EnterWorktree`, which would cost the operator the
-/// isolation itself over a missing `.env`.
-///
-/// Returns the paths that did NOT travel (one line each, empty when everything
-/// did) so the operator learns the gap BEFORE hitting it mid-work, and a test
-/// can observe the decision.
-fn carry_environment(
-    main: &Path,
-    worktree: &Path,
-    config: &mustard_core::ProjectConfig,
-) -> Vec<String> {
-    let declared = config
-        .worktree
-        .carried()
-        .into_iter()
-        .map(|rel| (rel, Verb::Carry))
-        .chain(config.worktree.linked().into_iter().map(|rel| (rel, Verb::Link)));
-
-    let mut stranded: Vec<String> = Vec::new();
-    for (rel, verb) in declared {
-        if let Err(reason) = plant(main, worktree, &rel, verb) {
-            stranded.push(format!("{rel} ({}): {reason}", verb.as_str()));
-        }
-    }
-    if !stranded.is_empty() {
-        eprintln!(
-            "WorktreeCreate: WARN: the declared environment did NOT fully travel into {}:\n  {}\n\
-             The worktree exists and is usable, but whatever needs those paths fails HERE and \
-             not in the main checkout. Fix the declaration in mustard.json#worktree (`carry` \
-             copies a file, `link` points a heavy directory at the main checkout) or provide \
-             them by hand before working in this worktree.",
-            worktree.display(),
-            stranded.join("\n  "),
-        );
-    }
-    stranded
-}
-
-/// Plant ONE declared path in the worktree. `Err(reason)` is what the operator
-/// is told about a path that stayed behind — never a fatal error.
-///
-/// Nothing is ever OVERWRITTEN: a path already in the worktree (a tracked file
-/// the declaration also names, a leftover) is left exactly as git wrote it and
-/// reported, because clobbering versioned content to plant an ignored one is a
-/// worse defect than the missing file.
-fn plant(main: &Path, worktree: &Path, rel: &str, verb: Verb) -> Result<(), String> {
-    if is_repo_machinery(rel) {
-        return Err("refused — `.claude/` already resolves to the MAIN checkout from inside a \
-                    worktree (that redirect is what keeps the harness's state single) and `.git` \
-                    is git's own"
-            .to_string());
-    }
-    let src = main.join(rel);
-    let dst = worktree.join(rel);
-    // `symlink_metadata` on both sides: it does not follow links, so a link
-    // whose target is gone still reads as PRESENT — creating over it fails.
-    if src.symlink_metadata().is_err() {
-        return Err("declared, but absent from the main checkout — nothing to take".to_string());
-    }
-    if dst.symlink_metadata().is_ok() {
-        return Err("already in the worktree — left untouched".to_string());
-    }
-    if verb == Verb::Link && !src.is_dir() {
-        return Err("`link` points a DIRECTORY at the main checkout, and this is a file — \
-                    declare it under `carry` instead (a linked file would leak edits back)"
-            .to_string());
-    }
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    match verb {
-        Verb::Carry => copy_tree(&src, &dst).map_err(|e| format!("copy failed: {e}")),
-        Verb::Link => link_dir(&src, &dst).map_err(|e| format!("link failed: {e}")),
-    }
-}
-
-/// Whether a declared path is the repository's own machinery rather than the
-/// project's environment — `.claude/` (redirected harness state) or `.git`.
-fn is_repo_machinery(rel: &str) -> bool {
-    matches!(rel, ".claude" | ".git")
-        || rel.starts_with(".claude/")
-        || rel.starts_with(".git/")
-}
-
-/// Recursive copy of `src` onto `dst`, which must not exist yet.
-///
-/// Directory-ness is read from `symlink_metadata`, so a symlink INSIDE a carried
-/// tree is copied as the file it points at rather than descended into — a link
-/// cycle would otherwise recurse forever.
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(src)?;
-    if !meta.is_dir() {
-        std::fs::copy(src, dst)?;
-        return Ok(());
-    }
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
-    }
-    Ok(())
-}
-
-/// Point `dst` at the directory `src`, WITHOUT requiring an elevated user.
-///
-/// `std::os::windows::fs::symlink_dir` asks for
-/// `SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE`, which Windows honours only
-/// when Developer Mode is on; otherwise it needs `SeCreateSymbolicLinkPrivilege`
-/// or an administrator, and fails with `ERROR_PRIVILEGE_NOT_HELD` (1314). A
-/// directory JUNCTION needs no privilege at all, so it is the fallback — and it
-/// has to go through `mklink /J`, because std's own `junction_point` is still
-/// unstable (rust-lang/rust#121709) and this crate builds on stable.
-///
-/// `mklink` is a `cmd.exe` BUILTIN, not a program, hence `cmd /S /C`. The
-/// command line is assembled with `raw_arg` for the reason
-/// [`crate::util::platform::build_shell_command`] documents: `std`'s own
-/// quoting follows `CommandLineToArgvW` rules that `cmd.exe` does not, which
-/// would corrupt a path carrying spaces. `"` cannot appear in a Windows path,
-/// so the inner quotes cannot be escaped out of.
-#[cfg(windows)]
-fn link_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    let Err(symlink_err) = std::os::windows::fs::symlink_dir(src, dst) else {
-        return Ok(());
-    };
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.raw_arg(format!(
-        "/S /C \"mklink /J \"{}\" \"{}\"\"",
-        dst.display(),
-        src.display()
-    ));
-    match cmd.output() {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => Err(std::io::Error::other(format!(
-            "symlink refused ({symlink_err}) and the junction fallback failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))),
-        Err(e) => Err(std::io::Error::other(format!(
-            "symlink refused ({symlink_err}) and `cmd /C mklink /J` could not run: {e}"
-        ))),
-    }
-}
-
-/// See the `#[cfg(windows)]` variant for why that one needs a fallback. Here a
-/// symlink is unprivileged by construction.
-#[cfg(not(windows))]
-fn link_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(src, dst)
 }
 
 /// Run `work-unit-open` from `opts.root`, print the single-line JSON report,
@@ -1290,113 +1107,182 @@ mod tests {
         (dir, main)
     }
 
-    /// The arrangement both halves below rest on, cut once: a project that
-    /// declares a small git-ignored file under `carry` and a heavy regenerable
-    /// directory under `link`, and a worktree freshly cut from it. Returns the
-    /// fixture's guard (dropping it deletes the tree), the main checkout and
-    /// the fresh worktree.
+    /// Every path under `wt`, worktree-root-relative with `/` separators, never
+    /// descending into git's own `.git` entry. The enumeration the two
+    /// assertions below rest on — an empty walk would make either of them pass
+    /// over an unexamined tree, so both check what it found.
+    fn entries_under(wt: &Path, rel: &str, out: &mut Vec<String>) {
+        let Ok(read) = std::fs::read_dir(if rel.is_empty() {
+            wt.to_path_buf()
+        } else {
+            wt.join(rel)
+        }) else {
+            return;
+        };
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if rel.is_empty() && name == ".git" {
+                continue; // git's own bookkeeping, not content the cut received
+            }
+            let child = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            let is_dir = entry
+                .path()
+                .symlink_metadata()
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            out.push(child.clone());
+            if is_dir {
+                entries_under(wt, &child, out);
+            }
+        }
+    }
+
+    /// Create a directory LINK at `dst` pointing at `src`, or `None` when this
+    /// host refuses one (Windows without Developer Mode, no `mklink`). Test
+    /// scaffolding ONLY — the engine plants no link of any kind any more, so
+    /// the positive control below has to make its own.
+    fn try_link_dir(src: &Path, dst: &Path) -> Option<()> {
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(src, dst).is_ok() {
+                return Some(());
+            }
+            let out = Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    dst.to_string_lossy().as_ref(),
+                    src.to_string_lossy().as_ref(),
+                ])
+                .output()
+                .ok()?;
+            out.status.success().then_some(())
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(src, dst).ok()
+        }
+    }
+
+    /// AC-1 — a fresh worktree receives what GIT brings plus what its
+    /// SUBMODULES bring, and nothing the harness invented.
     ///
-    /// The fact the block exists for: `git worktree add` writes only VERSIONED
-    /// files, so a fresh cut has neither `.env` nor `node_modules` — the
-    /// operator lands in a directory that cannot run.
-    fn fresh_worktree_with_declared_environment(
-        branch: &str,
-    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
-        let (dir, main) = fixture_with_environment(
-            r#"{"git":{"flow":{"*":"dev","dev":"main"}},
-                "worktree":{"carry":[".env"],"link":["node_modules"]}}"#,
+    /// Carrying the project's git-ignored environment into a cut (and LINKING
+    /// the heavy part of it) shipped once and was withdrawn: `git worktree
+    /// remove` descends a Windows junction, so removing the worktree deleted the
+    /// MAIN checkout's directory the link pointed at. What is left is the plain
+    /// cut — which is why the second unit is refused instead of diverted.
+    #[test]
+    fn a_fresh_worktree_receives_only_git_and_submodules() {
+        // --- 1. What git and its submodules bring DOES arrive ---------------
+        let (_subdir, sub_main) = fixture_with_submodule();
+        let sub_wt = PathBuf::from(hook_create("dev_onlygit-sub", &sub_main).expect("creates"));
+        assert!(sub_wt.join("a.txt").is_file(), "the versioned files travel");
+        assert!(sub_wt.join(".gitmodules").is_file(), "the submodule declaration travels");
+        assert!(
+            init_submodules(&sub_wt).is_some(),
+            "a declared submodule is acted on — that is the second (and last) population step",
         );
-        let got = hook_create(branch, &main).expect("creates");
-        let wt = PathBuf::from(got);
-        (dir, main, wt)
+
+        // --- 2. Nothing else does ------------------------------------------
+        // The premise: `.env` and `node_modules/` exist in the main checkout and
+        // are git-IGNORED, so only a harness step could put them in a cut.
+        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        assert!(main.join(".env").is_file() && main.join("node_modules").is_dir());
+        let wt = PathBuf::from(hook_create("dev_onlygit", &main).expect("creates"));
+
+        let tracked: Vec<String> = git_out(&wt, &["ls-files"])
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().trim_matches('"').to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(tracked.contains(&"a.txt".to_string()), "the fixture really tracks files");
+        // A tracked path implies its parent directories — those are git's too.
+        let mut allowed: Vec<String> = Vec::new();
+        for path in &tracked {
+            let mut prefix = String::new();
+            for segment in path.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(segment);
+                if !allowed.contains(&prefix) {
+                    allowed.push(prefix.clone());
+                }
+            }
+        }
+
+        let mut found: Vec<String> = Vec::new();
+        entries_under(&wt, "", &mut found);
+        assert!(found.contains(&"a.txt".to_string()), "the walk really enumerated the worktree");
+        for entry in &found {
+            assert!(
+                allowed.contains(entry),
+                "the harness added '{entry}' to a fresh cut — a worktree receives only what \
+                 git and its submodules bring (git tracks: {allowed:?})",
+            );
+        }
+        assert!(!wt.join(".env").exists(), "a git-ignored file never travels");
+        assert!(!wt.join("node_modules").exists(), "a git-ignored directory never travels");
     }
 
+    /// AC-2 — nothing inside a fresh worktree points back into the main
+    /// checkout.
+    ///
+    /// This is the withdrawn defect stated as a property. A directory junction
+    /// planted in the worktree is DESCENDED by `git worktree remove`, which
+    /// deleted the main checkout's `node_modules` — with and without `--force`,
+    /// and silently in the plain case. So the invariant is not "the link is
+    /// well-formed", it is that there is NO link.
     #[test]
-    fn a_declared_carry_path_lands_in_a_fresh_worktree() {
-        let (_dir, main, wt) = fresh_worktree_with_declared_environment("dev_withcarry");
+    fn a_fresh_worktree_holds_no_link_into_the_main_checkout() {
+        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        let wt = PathBuf::from(hook_create("dev_nolink", &main).expect("creates"));
+        let wt_real = std::fs::canonicalize(&wt).unwrap_or_else(|_| wt.clone());
 
-        // `carry` is a REAL copy: an edit inside the worktree must NOT reach
-        // the main checkout (which is exactly what a link would do).
-        assert_eq!(std::fs::read_to_string(wt.join(".env")).expect("carried"), "TOKEN=main");
-        std::fs::write(wt.join(".env"), "TOKEN=worktree").expect("edit the copy");
-        assert_eq!(
-            std::fs::read_to_string(main.join(".env")).expect("main .env"),
-            "TOKEN=main",
-            "a carried file is a copy — edits never leak back into the main checkout",
-        );
-    }
+        // The probe: a reparse point / symlink anywhere inside the cut, or any
+        // entry that RESOLVES outside it (which a junction does even where the
+        // platform does not report it as a symlink).
+        let escapes = |root: &Path| -> Vec<String> {
+            let mut found: Vec<String> = Vec::new();
+            entries_under(root, "", &mut found);
+            found
+                .into_iter()
+                .filter(|rel| {
+                    let path = root.join(rel);
+                    let linked = path
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    let outside = std::fs::canonicalize(&path)
+                        .map(|real| !real.starts_with(&wt_real))
+                        .unwrap_or(false);
+                    linked || outside
+                })
+                .collect()
+        };
 
-    #[test]
-    fn a_declared_link_path_reaches_the_main_checkout() {
-        let (_dir, main, wt) = fresh_worktree_with_declared_environment("dev_withlink");
-
-        // `link` is the main checkout's directory, seen from here: what changes
-        // there is visible here, because nothing was duplicated.
-        assert_eq!(
-            std::fs::read_to_string(wt.join("node_modules/pkg/index.js")).expect("through link"),
-            "one",
-        );
-        std::fs::write(main.join("node_modules/pkg/index.js"), "two").expect("regenerate");
-        assert_eq!(
-            std::fs::read_to_string(wt.join("node_modules/pkg/index.js")).expect("through link"),
-            "two",
-            "a linked directory IS the main checkout's — never a copy of it",
-        );
-    }
-
-    #[test]
-    fn an_undeclared_project_receives_exactly_what_it_did_before() {
-        // Both lists default to empty, so a project that declares nothing gets
-        // no population step at all — today's behaviour, byte for byte.
-        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev"}}}"#);
-        let config = mustard_core::ProjectConfig::load(&main);
-        let got = hook_create("dev_nodecl", &main).expect("creates");
+        let mut walked: Vec<String> = Vec::new();
+        entries_under(&wt, "", &mut walked);
+        assert!(walked.contains(&"a.txt".to_string()), "the walk really enumerated the worktree");
         assert!(
-            carry_environment(&main, Path::new(&got), &config).is_empty(),
-            "nothing declared, nothing attempted and nothing reported",
+            escapes(&wt).is_empty(),
+            "a fresh cut holds a link reaching out of it: {:?}",
+            escapes(&wt),
         );
-        assert!(!Path::new(&got).join(".env").exists(), "an undeclared path never travels");
-    }
 
-    #[test]
-    fn what_did_not_travel_is_named_and_never_aborts_the_creation() {
-        // A silent partial environment is the defect: the operator must learn
-        // the gap HERE, not mid-work. And the filesystem is forgiving like the
-        // network — a non-zero exit would kill the whole EnterWorktree.
-        let (dir, main) = fixture_with_environment(
-            r#"{"git":{"flow":{"*":"dev"}},
-                "worktree":{"carry":[".env.production",".claude/settings.local.json"],
-                            "link":[".env","node_modules"]}}"#,
-        );
-        let config = mustard_core::ProjectConfig::load(&main);
-        let got = hook_create("dev_gaps", &main).expect("the environment never aborts creation");
-        let wt = Path::new(&got);
-        assert!(wt.is_dir(), "the worktree exists and is usable");
-        assert!(wt.join("node_modules/pkg/index.js").is_file(), "the sound entry still travelled");
-
-        // The report itself, observed on a destination in the state a FRESH cut
-        // hands over (the worktree above has already been populated once).
-        let fresh = dir.path().join("fresh-cut");
-        std::fs::create_dir_all(&fresh).expect("fresh dst");
-        let stranded = carry_environment(&main, &fresh, &config);
-        let report = stranded.join("\n");
-        assert_eq!(stranded.len(), 3, "one line per path that stayed behind: {report}");
-        assert!(
-            report.contains(".env.production") && report.contains("absent from the main checkout"),
-            "a declared path the main checkout does not have is named: {report}",
-        );
-        assert!(
-            report.contains(".claude/settings.local.json") && report.contains("refused"),
-            "`.claude/` keeps resolving to the main checkout — never populated: {report}",
-        );
-        assert!(
-            report.contains(".env (link)") && report.contains("carry"),
-            "a FILE declared under `link` is refused with the verb that fits it: {report}",
-        );
-        assert!(
-            !Path::new(&got).join(".claude").join("settings.local.json").exists(),
-            "the refusal is real — nothing was written under .claude/",
-        );
+        // Positive control — the probe can SEE such a link, so the emptiness
+        // above is a measurement and not a blind spot. Skipped only where this
+        // host refuses to create one at all.
+        if try_link_dir(&main.join("node_modules"), &wt.join("node_modules")).is_some() {
+            let seen = escapes(&wt);
+            assert!(
+                seen.iter().any(|rel| rel == "node_modules"),
+                "the probe missed a link planted by hand: {seen:?}",
+            );
+        }
     }
 
     #[test]

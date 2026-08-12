@@ -723,20 +723,32 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 /// there). `Ok(None)` — no work unit was signalled at all (a hand-run draft, a
 /// test): nothing was promised, so nothing is enforced.
 ///
-/// `Err(detail)` is reserved for the ONE outcome the draft must not survive:
-/// git refused the checkout *while the tree sits on a protected integration
-/// base*, so writing here would put the unit's artefacts on the base — the
-/// exact arrangement this reorder removes. A refusal anywhere else (another
-/// work branch, a linked worktree, a detached HEAD) warns on stderr and
-/// proceeds: nothing is landing on a base, so there is nothing to refuse. This
-/// mirrors the hook gate's own split, which denies only when staying would
-/// leave the edit on a protected branch.
+/// `Err(detail)` covers the two outcomes the draft must not survive:
+///
+/// 1. the checkout holds ANOTHER unit's branch with uncommitted work, so the
+///    cut was REFUSED ([`crate::commands::event::work_branch::busy_checkout`]).
+///    Proceeding would write this unit's spec, waves and proof onto the other
+///    unit's branch — and drafting is the moment that arrangement is decided,
+///    because this door opens before any `Write` reaches the hook gate. The
+///    refusal is surfaced verbatim: it already names the branch, the paths and
+///    the act that unblocks it.
+/// 2. git refused the checkout *while the tree sits on a protected integration
+///    base*, so writing here would put the unit's artefacts on the base — the
+///    exact arrangement this reorder removes. A git refusal anywhere else
+///    (another work branch, a linked worktree, a detached HEAD) warns on stderr
+///    and proceeds: nothing is landing on a base, so there is nothing to refuse.
+///    This mirrors the hook gate's own split, which denies only when staying
+///    would leave the edit on a protected branch.
 fn cut_work_branch(project_root: &Path) -> Result<Option<String>, String> {
     use crate::commands::event::work_branch::{cut_pending_work_branch, is_protected, CutOutcome};
 
     match cut_pending_work_branch(project_root, &session_id()) {
         CutOutcome::NoPending => Ok(None),
         CutOutcome::AlreadyThere(branch) | CutOutcome::Cut(branch) => Ok(Some(branch)),
+        CutOutcome::Refused(busy) => {
+            let lang = mustard_core::ProjectConfig::load(project_root).i18n().lang;
+            Err(busy.reason(lang))
+        }
         CutOutcome::Failed { target, current, error } => {
             let config = mustard_core::ProjectConfig::load(project_root);
             let at = current.as_deref().unwrap_or("?");

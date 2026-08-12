@@ -288,6 +288,108 @@ pub(crate) fn is_protected(branch: &str, config: &mustard_core::ProjectConfig) -
     config.git.integration_bases().contains(branch)
 }
 
+/// `true` when the tree HOLDS work that is not this unit's — its HEAD names a
+/// branch that is neither `target` nor a bare integration base, i.e. ANOTHER
+/// unit's branch.
+///
+/// The partition is the one both doors already use: an integration base is
+/// nobody's work (the ordinary first unit cuts off it in place), and everything
+/// else is somebody's. It is deliberately not narrowed to a `{base}_` shape — a
+/// hand-made `feature/x` carries edits exactly the same way, and taking its
+/// checkout costs exactly the same.
+///
+/// `None` (unreadable HEAD) and git's `"HEAD"` (a detached checkout) are NOT
+/// measurements of a position, so neither counts: an unmeasured HEAD keeps
+/// today's cut rather than triggering a refusal the operator did not ask for.
+pub(crate) fn holds_other_work(
+    current: Option<&str>,
+    target: &str,
+    config: &mustard_core::ProjectConfig,
+) -> bool {
+    let Some(branch) = current.filter(|b| *b != "HEAD") else {
+        return false;
+    };
+    branch != target && !is_protected(branch, config)
+}
+
+/// How many dirty paths a verdict spells out before summarising — a hook
+/// message is one line in the transcript.
+const MAX_DIRTY_NAMED: usize = 5;
+
+/// `{paths}` and `{more}` for a dirty-path list: the first
+/// [`MAX_DIRTY_NAMED`] names, then ` (+N)` for whatever is left (empty when
+/// nothing is). ONE truncation, rendered into two different sentences — the
+/// refusal below and the gate's checkout-failure note.
+pub(crate) fn name_dirty_paths(dirty: &[String]) -> (String, String) {
+    let shown: Vec<&str> = dirty.iter().take(MAX_DIRTY_NAMED).map(String::as_str).collect();
+    let more = dirty.len().saturating_sub(shown.len());
+    let tail = if more == 0 { String::new() } else { format!(" (+{more})") };
+    (shown.join(", "), tail)
+}
+
+/// The checkout is BUSY: it holds ANOTHER unit's branch AND that unit's work is
+/// still uncommitted, so [`checkout_work_branch`] — a plain checkout, no stash —
+/// would carry those edits onto this unit's branch and leave the session already
+/// working here on a branch it never asked for.
+///
+/// The measured facts, kept apart from the sentence built out of them, so the
+/// gate and the draft REPORT the same refusal in their own shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BusyCheckout {
+    /// The branch the checkout is on — another unit's.
+    pub(crate) current: String,
+    /// The branch that was going to be cut here.
+    pub(crate) target: String,
+    /// The uncommitted paths that would have ridden along.
+    pub(crate) dirty: Vec<String>,
+}
+
+impl BusyCheckout {
+    /// The one sentence both doors say: WHERE the checkout is, WHAT is
+    /// uncommitted there, and WHAT to do about it. Catalogue-rendered in the
+    /// project's configured language.
+    pub(crate) fn reason(&self, lang: mustard_core::platform::i18n::Locale) -> String {
+        let (paths, more) = name_dirty_paths(&self.dirty);
+        mustard_core::platform::i18n::translate("workbranch.busy.refusal", lang)
+            .replace("{current}", &self.current)
+            .replace("{target}", &self.target)
+            .replace("{paths}", &paths)
+            .replace("{more}", &more)
+    }
+}
+
+/// THE decision — taken once, for both doors. `Some` when cutting `target` in
+/// `root` would take a checkout that belongs to another unit AND destroy nothing
+/// less than its uncommitted work; `None` when the cut is safe to make.
+///
+/// Both conditions are required and neither is enough alone: another unit's
+/// branch with a CLEAN tree loses nothing (the branch keeps its commits, and the
+/// cut still comes off the integration base), while a dirty tree on THIS unit's
+/// branch or on a bare base is the ordinary first-unit case.
+///
+/// The dirt is measured with [`crate::commands::work_unit_open::dirty_paths`] —
+/// the same probe the worktree door uses, `.claude/` carved out because it is
+/// redirected state rather than code.
+pub(crate) fn busy_checkout(
+    root: &Path,
+    current: Option<&str>,
+    target: &str,
+    config: &mustard_core::ProjectConfig,
+) -> Option<BusyCheckout> {
+    if !holds_other_work(current, target, config) {
+        return None;
+    }
+    let dirty = crate::commands::work_unit_open::dirty_paths(root);
+    if dirty.is_empty() {
+        return None;
+    }
+    Some(BusyCheckout {
+        current: current.unwrap_or_default().to_string(),
+        target: target.to_string(),
+        dirty,
+    })
+}
+
 /// What [`cut_pending_work_branch`] did — the closed set, so a caller that must
 /// decide (refuse? warn? say nothing?) reads a state instead of guessing from a
 /// bool. `NoPending` and `AlreadyThere` are deliberately apart: "no work unit
@@ -306,6 +408,11 @@ pub(crate) enum CutOutcome {
     AlreadyThere(String),
     /// The branch was created (or checked out) by this call. Carries its name.
     Cut(String),
+    /// REFUSED: the checkout holds another unit's branch with uncommitted work,
+    /// so cutting here would carry that work off ([`busy_checkout`]). Nothing
+    /// was touched and the marker is KEPT — the unit was never started, so
+    /// there is nothing to consume.
+    Refused(BusyCheckout),
     /// Git refused the checkout. Carries the branch that was wanted, the branch
     /// the tree actually sits on (`None` on a detached HEAD / probe failure),
     /// and git's own message. The JUDGEMENT of how bad that is lives in the
@@ -330,8 +437,14 @@ pub(crate) enum CutOutcome {
 ///
 /// Idempotent by construction: the marker is cleared on every outcome that
 /// leaves the tree on the target branch, so a second call answers `NoPending`.
-/// The marker is KEPT on a failure — the intent survives for a retry, exactly
-/// as the hook gate keeps it.
+/// The marker is KEPT on a failure and on a refusal — the intent survives for a
+/// retry, exactly as the hook gate keeps it.
+///
+/// The refusal is the point the review found missing: this door opens FIRST
+/// (`spec-draft` calls it at approval, before any `Write` reaches the hook
+/// gate), so a guard living only in the gate never ran. The decision is
+/// [`busy_checkout`], the same one the gate takes — one predicate, one message,
+/// two doors.
 pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
     let config = mustard_core::ProjectConfig::load(project);
     // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
@@ -348,6 +461,12 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
     if current.as_deref() == Some(target.as_str()) {
         crate::shared::context::clear_pending_branch(&root, session);
         return CutOutcome::AlreadyThere(target);
+    }
+
+    // The checkout may belong to ANOTHER unit that has not committed yet:
+    // refuse before touching git, so its work stays where its author left it.
+    if let Some(busy) = busy_checkout(project, current.as_deref(), &target, &config) {
+        return CutOutcome::Refused(busy);
     }
 
     // Refresh from origin FIRST so the unit is cut from the latest base.
@@ -447,5 +566,119 @@ mod tests {
         dm.git.flow.insert("develop".to_string(), "master".to_string());
         assert_eq!(super::resolve_base(Some("master"), &dm), Ok("master".to_string()));
         assert!(super::resolve_base(Some("dev"), &dm).is_err(), "unknown base → loud error");
+    }
+
+    // -----------------------------------------------------------------------
+    // The cut itself — the door that opens FIRST
+    // -----------------------------------------------------------------------
+
+    /// Run git in `root`, asserting success — test scaffolding only.
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// AC-11 — the CUT itself refuses a busy checkout.
+    ///
+    /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
+    /// `WorkBranchGate::evaluate`: the previous round's tests all went through
+    /// the gate and passed while the real defect sat here. `spec-draft` calls
+    /// this function at APPROVAL — before any `Write` exists for a PreToolUse
+    /// hook to see — so a guard living only in the gate was a guard on the door
+    /// that opens second.
+    #[test]
+    fn the_branch_cut_itself_refuses_a_busy_checkout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("cfg");
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(root.join("f.txt"), "seed").expect("seed");
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "init"]);
+
+        // A FIRST unit holds the checkout, with its work still uncommitted.
+        git(root, &["checkout", "-b", "dev_first"]);
+        std::fs::write(root.join("f.txt"), "first unit, uncommitted").expect("dirty");
+
+        // A SECOND unit is signalled — this is what `spec-draft` consumes.
+        let sid = "sess-cut-refuses";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+
+        let outcome = super::cut_pending_work_branch(root, sid);
+        let super::CutOutcome::Refused(busy) = outcome else {
+            panic!("the cut must refuse a busy checkout, got {outcome:?}");
+        };
+        assert_eq!(busy.current, "dev_first");
+        assert_eq!(busy.target, "dev_second");
+        assert!(busy.dirty.contains(&"f.txt".to_string()), "{:?}", busy.dirty);
+        let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
+        assert!(
+            reason.contains("dev_first") && reason.contains("dev_second") && reason.contains("f.txt"),
+            "the refusal names both branches and the work at risk: {reason}",
+        );
+
+        // Nothing was touched: the checkout still holds the first unit, its
+        // uncommitted work is intact, and the second branch does not exist.
+        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).expect("read"),
+            "first unit, uncommitted",
+        );
+        assert!(
+            !super::local_branch_exists("git", &root_s, "dev_second"),
+            "a refused cut creates no branch",
+        );
+        // The marker SURVIVES — the unit was never started, so nothing was
+        // consumed and the next attempt retries after the commit or stash.
+        assert_eq!(
+            crate::shared::context::pending_branch_for(&root_s, sid).as_deref(),
+            Some("dev_second"),
+            "a refusal consumes no intent",
+        );
+    }
+
+    /// The counterweight: with the SAME arrangement minus the uncommitted work,
+    /// the cut proceeds. Nothing rides along from a clean tree, so refusing
+    /// there would be friction with no defect behind it.
+    #[test]
+    fn a_clean_checkout_lets_the_cut_through() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("cfg");
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(root.join("f.txt"), "seed").expect("seed");
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "init"]);
+        git(root, &["checkout", "-b", "dev_first"]);
+        std::fs::write(root.join("f.txt"), "first unit, committed").expect("work");
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "first unit work"]);
+
+        let sid = "sess-cut-clean";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        let outcome = super::cut_pending_work_branch(root, sid);
+        assert_eq!(outcome, super::CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
+        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_second"));
     }
 }
