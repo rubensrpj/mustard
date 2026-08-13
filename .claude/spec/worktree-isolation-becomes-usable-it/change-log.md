@@ -23,3 +23,8 @@ _Solicitações registradas automaticamente durante o pipeline (mid-spec). O `sp
 - **2026-08-12T17:45:22.901Z** _(QaReview)_ — mas deveria ser algo que sempre deveria ser questinado ao usuário, porém, trazendo a opção padrão de acordo com o cenário, mas deixando ele escolher qualquer um e de qual branch será iniciado
 - **2026-08-12T17:51:13.272Z** _(QaReview)_ — isso, aprovado
 - **2026-08-12T18:36:11.134Z** _(QaReview)_ — sim
+- **2026-08-13T10:24:48.741Z** _(QaReview)_ — sim
+- **2026-08-13T11:12:30.636Z** _(QaReview)_ — por isso é problema? é tão simples o que foi pedido, remover worktree, sempre iniciar uma branch ao tocar no projeto que deve ser perguntado o tipo de branch
+- **2026-08-13T11:15:37.802Z** _(QaReview)_ — como assim perfeito? Outro ponto, os arquivos que mustard gerar devem ficar na branch elas serão integradas ao dev após o merge
+- **2026-08-13T11:18:22.459Z** _(QaReview)_ — sim, conserta
+- **2026-08-13T12:10:06.697Z** _(QaReview)_ — que demora

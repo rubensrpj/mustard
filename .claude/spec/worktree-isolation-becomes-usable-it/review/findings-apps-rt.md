@@ -1,39 +1,35 @@
-## Verdict: REJECTED — 1 critical (re-review after the withdrawal fix loop)
+## Verdict — REJECTED (1 critical) — third review
 
-All 11 ACs and all controls green; full `cargo test -p mustard-rt` → 3965 passed, 0 failed; clippy 0 errors.
+All 12 ACs green; `cargo test --workspace` 0 failed across 34 suites; clippy 0 errors. The withdrawal is real (`carry_environment`/`link_dir`/`WorktreeConfig`/`normalise_relpaths` exist nowhere outside `#[cfg(test)]`). The previous critical (the acting collector) is genuinely closed: `Contents { ProvenEmpty, HoldsWork, Unproven }` is reachable and `Unproven` keeps, and the collector is still effective.
 
-**Prior criticals genuinely closed.** `fn carry_environment`, `fn link_dir`, `WorktreeConfig`, `normalise_relpaths` no longer exist outside `#[cfg(test)]`. `cut_pending_work_branch` — the door `spec-draft` opens first — now takes `busy_checkout` and answers `CutOutcome::Refused`; AC-11 drives that function directly, not the gate. The `Deny` now renders through `translate("workbranch.busy.refusal")`, closing the prior i18n nit.
+### CRITICAL — the refusal is blind to exactly the work this project leaves uncommitted
 
-## CRITICAL — the acting collector deletes unsaved work when its safety probe cannot answer
+`apps/rt/src/commands/event/work_branch.rs:382` measures the checkout with `dirty_paths`, which drops **every** `.claude/` path (`work_unit_open.rs:238`) and returns an empty list on a failed probe (`:222`). Step 2.5 of the gate runs **only in the main checkout** (`work_branch_gate.rs:397`), where `.claude/` is NOT redirected state — it is the tracked home of the unit's `spec.md`, waves, `ac-proof.json` and review verdicts (`git check-ignore` exits 1; `git ls-files .claude/spec/…` lists them).
 
-`apps/rt/src/commands/maint/worktree_gc.rs:411` guards removal with `dirty_paths(&wt)`, and `apps/rt/src/commands/work_unit_open.rs:222` returns `Vec::new()` on **any** git failure. So "could not measure" reads as "holds nothing" — the exact inversion this wave's own recorded decision forbids for `process_liveness` ("treat `None` as not measured, not allowed"), left in place one line later for the work probe. Line 498 is what makes it bite: `session_start_probe` now runs `apply = true` at **every** SessionStart (it was `apply = false` before this wave), so the latent opt-in path became automatic.
-
-Reproduced end to end in a scratch repo — a stale directory under `.claude/worktrees/` (not a registered worktree, the shape the field already has) holding two unsaved files:
-
+Live proof on this repo:
 ```
-main checkout status: (clean)
-git -C .claude/worktrees/bright-running-fox status --porcelain → (empty — it answered about the MAIN repo)
-mustard-rt run worktree-gc --apply → "removed": [".claude\\worktrees\\bright-running-fox"]
-precious.txt still there? NO — DELETED
+$ git -C /c/Atiz/mustard status --porcelain
+ M .claude/spec/worktree-isolation-becomes-usable-it/change-log.md
+ M .claude/spec/worktree-isolation-becomes-usable-it/change-requests.ndjson
 ```
+Both filtered → `dirty_paths` = `[]` → `busy_checkout` = `None` → the gate runs a plain `checkout -b`. Scratch repro confirms the consequence: a first unit on `dev_first` with an uncommitted `.claude/spec/unit-one/spec.md`, `git checkout -b dev_second`, and the spec file rode along.
 
-`git status` inside a non-worktree directory resolves to the enclosing repo, so the candidate's protection depends on an unrelated fact (whether the main checkout has non-`.claude/` dirt). Not fail-open-to-safe — fail-open-to-arbitrary. Confirmed live on this repo: `run worktree-gc` reports `.claude/worktrees/recursing-benz-063389` (age 22d, no `.git` file, no admin record) as reason `"dry-run"` — i.e. the next SessionStart removes it, having judged it by the main checkout. It is empty today; the guard is not. AC-5 does not cover this class: its fixture is a real registered worktree, where git can answer.
+So AC-8's property ("the first unit's uncommitted work stays on the first unit's branch") is false for the NORMAL state of an in-flight unit between approval and `/git` — precisely the window a second session opens in.
 
-INDEPENDENTLY CONFIRMED BY THE ORCHESTRATOR (2026-08-12), and the mechanism is sharper than fail-open-on-failure. The probe does not merely fail — it is BLINDED BY DESIGN for exactly the tree the collector walks. `dirty_paths` deliberately drops every path under `.claude/` (`work_unit_open.rs:238`), and a directory under `.claude/worktrees/` reports its own contents under that prefix:
+This is the same class the wave already fixed one file over: `worktree_gc.rs` grew a whole `Contents` probe because `dirty_paths`'s carve-out and fail-open posture are wrong for a caller that destroys — and the caller that CARRIES ANOTHER UNIT'S WORK AWAY kept the blind probe. The consumer's judgement must live in the consumer.
 
+INDEPENDENTLY CONFIRMED BY THE ORCHESTRATOR (2026-08-13) on the live checkout:
 ```
-scratch repo, .claude/worktrees/pasta-antiga/precioso.txt holding unsaved work
-git -C .claude/worktrees/pasta-antiga status --porcelain  →  "?? .claude/"
-after the .claude/ carve-out at work_unit_open.rs:238      →  (empty)  →  read as CLEAN  →  eligible for removal
+3 modified paths, all under .claude/spec/, all tracked (git ls-files confirms)
+after the .claude/ carve-out: 0 remain  ->  busy_checkout answers None  ->  no refusal
 ```
 
-So the carve-out that makes `dirty_paths` correct for its ORIGINAL caller (a worktree cut decision, where `.claude/` is redirected state and not code) is precisely what blinds it for this one. The judgement belongs in the consumer: a deleting caller must treat "not measured" as "not allowed", and must not inherit a carve-out written for a different question.
+### Non-blocking
 
-## Non-blocking
+- **major** — the change request approved mid-pipeline (branches as `fix/…`, `feature/…`, `hotfix/…`, base chosen by the operator) is implemented nowhere, covered by no AC, and has no follow-up spec — it exists only as a change-log line.
+- **major** — commit `1a15d4bd` puts ~1.2k lines belonging to spec `2026-08-12-o-registro-por-onda` on this unit's branch, outside its Boundaries.
+- **major** — the spec's own field evidence is still uncollected: `mustard-removal-mustard-31860` is kept as `"holds uncommitted work"` (guard behaving correctly; the leak needs one manual removal).
+- **minor** — AC-3 declares Control `work_unit_open`; the test lives at `work_branch_gate.rs:1302`.
+- **minor** — the AC-9 ratchet literal `"mklink /J"` cannot match the arg-array spelling; that clause is inert.
 
-- **major** — the field leak the spec cites as its own evidence is still not collected. `mustard-removal-mustard-31860` (PID dead) is now within reach but kept as "holds uncommitted work" because it predates `record_the_strip` (`work_removed.rs:265`). Needs one manual `git worktree remove --force`.
-- **minor** — spec AC-3 declares Control `work_unit_open`, but its test lives in `work_branch_gate.rs:1302`.
-- **minor** — the AC-9 ratchet's `"mklink /J"` literal (`plugin_prose_matches_shipped_behaviour.rs:659`) cannot match the arg-array spelling actually used, so that clause is inert.
-- **minor** — commit `1a15d4bd` bundles ~1.2k lines for a different spec onto this unit's branch.
-
-<VERDICT>{"verdict":"rejected","critical":1,"findings":[{"severity":"critical","location":"apps/rt/src/commands/maint/worktree_gc.rs:411","summary":"the now-acting SessionStart collector treats an unmeasurable dirty-probe as 'holds nothing'; worse, dirty_paths drops every .claude/ path by design, which is exactly where the collector's candidates live, so their contents are invisible to the guard"},{"severity":"major","location":"apps/rt/src/commands/review/work_removed.rs:265","summary":"the live leak mustard-removal-mustard-31860 is within reach but still kept as holding work"},{"severity":"minor","location":".claude/spec/worktree-isolation-becomes-usable-it/spec.md:47","summary":"AC-3 declares the wrong Control module"},{"severity":"minor","location":"apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs:659","summary":"the mklink ratchet clause is inert"},{"severity":"minor","location":"apps/rt/src/hooks/write/boundary_gate.rs:1","summary":"commit 1a15d4bd bundles a different spec onto this branch"}]}</VERDICT>
+<VERDICT>{"verdict":"rejected","critical":1,"findings":[{"severity":"critical","location":"apps/rt/src/commands/event/work_branch.rs:382","summary":"busy_checkout measures with dirty_paths, which drops every .claude/ path and reads a failed probe as clean, so a first unit whose uncommitted work is its spec/waves/review (the normal window, and this checkout's live state) is invisible and the second unit takes the checkout anyway — AC-7/AC-8 defeated"},{"severity":"major","location":".claude/spec/worktree-isolation-becomes-usable-it/change-log.md:24","summary":"approved mid-pipeline request for fix/feature/hotfix branch naming has no AC, no code and no follow-up spec"},{"severity":"major","location":"apps/rt/src/hooks/write/boundary_gate.rs:1","summary":"commit 1a15d4bd bundles ~1.2k lines of a different spec onto this unit's branch"},{"severity":"major","location":"apps/rt/src/commands/review/work_removed.rs:325","summary":"the field leak cited as the spec's evidence is within reach but still kept as holding work"},{"severity":"minor","location":".claude/spec/worktree-isolation-becomes-usable-it/spec.md:47","summary":"AC-3 declares the wrong Control module"},{"severity":"minor","location":"apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs:659","summary":"the mklink ratchet clause is inert"}]}</VERDICT>

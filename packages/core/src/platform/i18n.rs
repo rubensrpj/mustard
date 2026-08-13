@@ -599,6 +599,27 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              the second unit."
         }
 
+        // The SAME refusal when the probe could not answer at all (`git status`
+        // failed, or answered in a shape the parser does not understand). It is
+        // a distinct sentence because there are no paths to name, and rendering
+        // the one above with an empty list would print "work in: ." — which
+        // teaches the operator that the refusal is noise. `{current}`/`{target}`
+        // are interpolated by `work_branch::BusyCheckout::reason`.
+        ("workbranch.busy.unmeasured", Locale::PtBr) => {
+            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, e NÃO consegui \
+             medir o que há de não commitado ali (o `git status` não respondeu). Criar '{target}' \
+             aqui levaria junto qualquer trabalho pendente, para dentro de outra unidade. Commite \
+             ou guarde (`git stash`) o que houver — ou conserte o estado do git — antes de abrir a \
+             segunda unidade."
+        }
+        ("workbranch.busy.unmeasured", Locale::EnUs) => {
+            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, and the \
+             uncommitted work there could NOT be measured (`git status` did not answer). Cutting \
+             '{target}' here would carry whatever is pending along into a different unit. Commit \
+             or stash (`git stash`) whatever is there — or repair the git state — before opening \
+             the second unit."
+        }
+
         // Work-unit SURFACING — the three places the harness says out loud that
         // a work unit is somewhere other than the checkout, or that the exit
         // ritual is still owed. All three are user-facing (a listing legend, a

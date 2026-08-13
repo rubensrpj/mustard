@@ -29,10 +29,14 @@
 //!    Every other position keeps the in-place cut, silently: an integration
 //!    base (the ordinary first unit), a CLEAN checkout on another unit's branch
 //!    (nothing rides along, and the cut still comes off the base), a detached or
-//!    unreadable HEAD (an unmeasured position must never trigger a refusal
-//!    nobody asked for), a linked worktree (already isolated, and its own
-//!    session owns it) and a submodule (whose HEAD is judged against the
-//!    superproject's bases).
+//!    unreadable HEAD (an unmeasured POSITION must never trigger a refusal
+//!    nobody asked for) and a submodule (whose HEAD is judged against the
+//!    superproject's bases). A linked worktree is NOT among them any more: it
+//!    carries its holder's uncommitted work exactly like the main checkout, so
+//!    it is judged by the same predicate.
+//!    An unmeasured POSITION and unmeasured WORK part ways deliberately: a
+//!    detached HEAD says nobody's unit is here, while a `git status` that cannot
+//!    answer says nothing at all about the work — and the second is refused.
 //!    An in-place cut used to answer `Warn` with a standing `EnterWorktree`
 //!    hint on the first edit of EVERY unit. That nudge is retired: a suggestion
 //!    that fires unconditionally is what teaches operators to stop reading.
@@ -213,21 +217,6 @@ fn is_distinct_repo(vcs: &str, state_root: &str, nested: &Path) -> bool {
     }
 }
 
-/// `true` when `root` hosts the repository's MAIN checkout: `--git-dir` and
-/// `--git-common-dir` resolve to the SAME path (a linked worktree's git-dir
-/// lives under `<common>/worktrees/<name>`, so they differ). Fail-closed to
-/// `false` when a probe fails — an UNPROVEN position must never divert a unit
-/// into a worktree, so a failed probe keeps the in-place cut.
-fn is_main_checkout(vcs: &str, root: &str) -> bool {
-    match (
-        git_abs_path(vcs, root, "--git-dir"),
-        git_abs_path(vcs, root, "--git-common-dir"),
-    ) {
-        (Some(a), Some(b)) => canonicalize_or(&a) == canonicalize_or(&b),
-        _ => false,
-    }
-}
-
 /// The submodule's OWN integration base: its remote default branch
 /// (`git symbolic-ref --short refs/remotes/origin/HEAD`, `origin/` stripped),
 /// falling back to its current branch. `None` when neither resolves (detached
@@ -385,16 +374,26 @@ impl Check for WorkBranchGate {
         //
         //     The decision is `busy_checkout`, shared with `spec-draft`'s cut —
         //     that door opens FIRST (at approval, before any Write), so a guard
-        //     living only here never ran.
+        //     living only here never ran. It is taken here on the SAME terms:
+        //     this gate used to ask `is_main_checkout` first, which the cut
+        //     never asked, so one predicate was answering two questions. That
+        //     narrowing belonged to the WITHDRAWN divert — there was no point
+        //     cutting a worktree from inside a worktree — and it does not
+        //     transfer to a refusal: a linked worktree carries its holder's
+        //     uncommitted work exactly like the main checkout does, and a plain
+        //     checkout there moves it onto the second unit's branch just the
+        //     same. Worse, that probe failed to `false`, so a position it could
+        //     not read SKIPPED the refusal in silence — the same
+        //     unmeasured-reads-as-safe disease `checkout_work` exists to end.
         //
-        //     The MAIN checkout only: a linked worktree is already isolated and
-        //     its own session owns it, and a submodule's HEAD is judged against
-        //     the SUPERproject's bases, which would misread its position.
+        //     A SUBMODULE is still excluded, for a reason of its own that
+        //     survives: its HEAD is judged against the SUPERproject's bases,
+        //     which misreads its position outright.
         //
         //     The marker is KEPT: the unit was never started, so there is
         //     nothing to consume, and the next attempt (after the operator
         //     resolves git) retries the cut.
-        if !in_submodule && is_main_checkout(&vcs, &local) {
+        if !in_submodule {
             if let Some(busy) =
                 busy_checkout(Path::new(&local), current.as_deref(), &target, &config)
             {
@@ -522,6 +521,18 @@ mod tests {
         .unwrap();
     }
 
+    /// The harness's OWN volatile state under `.claude/`, as the seeded
+    /// `.claude/.gitignore` covers it in the field.
+    ///
+    /// Committed by every fixture here because the busy-checkout probe counts
+    /// `.claude/` — a unit's uncommitted work IS its `.claude/spec/…`. Without
+    /// this the pending-work-branch marker the gate itself writes
+    /// (`.claude/.session/…`) would read as the tree's uncommitted work, and
+    /// every fixture below would refuse over the harness's own droppings rather
+    /// than over anybody's work.
+    const HARNESS_SCRATCH_IGNORE: &str = ".claude/.session/\n.claude/.harness/\n\
+         .claude/.cache/\n.claude/.metrics/\n.claude/.agent-state/\n.claude/worktrees/\n";
+
     /// Init a git repo whose sole commit lives on `base` (created before the
     /// first commit so it exists regardless of the platform's default branch).
     fn init_repo_on(root: &Path, base: &str) {
@@ -530,8 +541,34 @@ mod tests {
         git(root, &["config", "user.name", "t"]);
         git(root, &["checkout", "-b", base]);
         std::fs::write(root.join("f.txt"), "hi").unwrap();
-        git(root, &["add", "."]);
+        std::fs::write(root.join(".gitignore"), HARNESS_SCRATCH_IGNORE).unwrap();
+        git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "init"]);
+    }
+
+    /// The path a unit's own spec lives at — the shape the field really has.
+    const FIRST_UNIT_SPEC: &str = ".claude/spec/first-unit/spec.md";
+
+    /// Put a FIRST unit on the checkout with the uncommitted work the field
+    /// actually carries: its own `.claude/spec/…`, tracked and modified.
+    ///
+    /// Everything the harness generates for a unit lives IN the work branch and
+    /// is integrated at merge time — `spec-draft` cuts the branch first and
+    /// writes the spec afterwards, and a spec write on a bare base is denied —
+    /// so between approval and the merge THIS is what an in-flight unit's
+    /// uncommitted work looks like. The old fixture used a source file, which
+    /// is why these tests passed while the live checkout (three modified spec
+    /// files and nothing else) was read as clean.
+    fn a_first_unit_holds_the_checkout(root: &Path) {
+        git(root, &["checkout", "-b", "dev_first"]);
+        let spec = root.join(".claude").join("spec").join("first-unit");
+        std::fs::create_dir_all(&spec).unwrap();
+        std::fs::write(spec.join("spec.md"), "# first unit\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "first unit: draft"]);
+        // …and then the unit keeps working, uncommitted, exactly as it does
+        // between one commit and the next.
+        std::fs::write(spec.join("spec.md"), "# first unit\n\nuncommitted\n").unwrap();
     }
 
     /// Marker `dev_my-thing` on a repo whose base is `dev` → the gate recovers
@@ -1239,8 +1276,7 @@ mod tests {
 
         // A FIRST unit is already in flight in the main checkout, and its work
         // is uncommitted — which is exactly what a plain checkout carries off.
-        git(&root, &["checkout", "-b", "dev_first"]);
-        std::fs::write(root.join("f.txt"), "first unit, uncommitted").unwrap();
+        a_first_unit_holds_the_checkout(&root);
 
         // A SECOND unit is signalled for this session.
         context::set_pending_branch(&root_s, sid, "dev_second");
@@ -1298,6 +1334,12 @@ mod tests {
 
     /// AC-3 — the refusal NAMES the paths holding the uncommitted work, so the
     /// operator knows what to commit or stash without hunting for it.
+    ///
+    /// Both shapes are the unit's OWN `.claude/spec/…`, because that is what an
+    /// in-flight unit's uncommitted work is: the spec, the waves, the proof, the
+    /// change log and the review verdicts all ride the branch to the merge. A
+    /// source file in this fixture proved nothing about the case that was
+    /// actually invisible.
     #[test]
     fn the_refusal_names_the_paths_holding_uncommitted_work() {
         let dir = tempfile::tempdir().unwrap();
@@ -1305,12 +1347,16 @@ mod tests {
         let root_s = root.to_str().unwrap().to_string();
         seed_flow(&root, r#"{"*":"dev","dev":"main"}"#);
         init_repo_on(&root, "dev");
-        git(&root, &["checkout", "-b", "dev_first"]);
-
-        // Two shapes of uncommitted work: a tracked file modified, and a file
-        // git has never seen. Both would ride along on a plain checkout.
-        std::fs::write(root.join("f.txt"), "first unit, uncommitted").unwrap();
-        std::fs::write(root.join("brand-new.rs"), "fn main() {}").unwrap();
+        // Tracked and modified: the unit's spec, drafted then edited further.
+        a_first_unit_holds_the_checkout(&root);
+        // And a file git has never seen — the unit's change log, just written
+        // NEXT TO the tracked spec (git collapses a wholly-untracked directory
+        // into one entry, so an untracked path only earns its own line where
+        // something tracked already lives — which is where the field's
+        // `change-log.md` and `change-requests.ndjson` actually sit). Both
+        // shapes would ride along on a plain checkout.
+        let brand_new = ".claude/spec/first-unit/change-log.md";
+        std::fs::write(root.join(brand_new), "# change log\n").unwrap();
 
         let sid = "sess-refusal-names-paths";
         context::set_pending_branch(&root_s, sid, "dev_second");
@@ -1319,8 +1365,8 @@ mod tests {
         let Verdict::Deny { reason } = verdict else {
             panic!("a busy checkout must be refused, got {verdict:?}");
         };
-        assert!(reason.contains("f.txt"), "the modified path is named: {reason}");
-        assert!(reason.contains("brand-new.rs"), "the untracked path is named: {reason}");
+        assert!(reason.contains(FIRST_UNIT_SPEC), "the modified path is named: {reason}");
+        assert!(reason.contains(brand_new), "the untracked path is named: {reason}");
         // Naming them is not enough — the refusal has to say what unblocks it.
         let lower = reason.to_lowercase();
         assert!(
@@ -1332,6 +1378,10 @@ mod tests {
     /// AC-8 — the first unit keeps BOTH its branch and its uncommitted work.
     /// The edits were in the tree when the second unit arrived; a plain
     /// `checkout -b` would have carried them onto the second unit's branch.
+    ///
+    /// The work in question is the first unit's own `.claude/spec/…` — the
+    /// thing an in-flight unit actually has uncommitted, and the thing the
+    /// probe used to drop wholesale.
     #[test]
     fn the_first_units_uncommitted_work_stays_where_it_was() {
         let (_dir, root, _reason) =
@@ -1339,8 +1389,8 @@ mod tests {
         let root_s = root.to_str().unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(root.join("f.txt")).unwrap(),
-            "first unit, uncommitted",
+            std::fs::read_to_string(root.join(FIRST_UNIT_SPEC)).unwrap(),
+            "# first unit\n\nuncommitted\n",
             "the first unit's uncommitted work stayed where it was",
         );
         assert_eq!(

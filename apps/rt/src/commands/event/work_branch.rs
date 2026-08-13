@@ -312,6 +312,99 @@ pub(crate) fn holds_other_work(
     branch != target && !is_protected(branch, config)
 }
 
+// ---------------------------------------------------------------------------
+// The cut's OWN work probe
+// ---------------------------------------------------------------------------
+
+/// What the cut could ESTABLISH about the checkout it is about to take over.
+///
+/// Deliberately not a `Vec<String>`: a caller that CHECKS OUT OVER a tree has to
+/// tell "I measured nothing here" from "I could not measure", and only the first
+/// authorises the checkout. It is the posture
+/// [`crate::commands::maint::worktree_gc`]'s `Contents` already takes, pointed
+/// the other way round because the caller is the other way round: that one
+/// DELETES, so an unproven candidate is KEPT; this one carries another unit's
+/// work off, so an unproven checkout is REFUSED. Refusing costs the operator one
+/// commit; being wrong in the other direction costs them their work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckoutWork {
+    /// git answered for this tree and reported nothing: a plain checkout carries
+    /// nothing off, so the cut is safe to make.
+    ProvenClean,
+    /// Paths positively observed as uncommitted or untracked — `.claude/`
+    /// included.
+    Holds(Vec<String>),
+    /// Nothing could be established: the probe failed, or git answered in a
+    /// shape this parser does not understand. Never an authorisation.
+    Unproven,
+}
+
+/// What `root`'s working tree holds, measured the way the CUT decision needs it.
+///
+/// NOT [`crate::commands::work_unit_open::dirty_paths`], and the two differences
+/// between them are the whole reason this probe exists:
+///
+/// 1. **`.claude/` counts.** Everything the harness generates for a unit —
+///    `spec.md`, the waves, `ac-proof.json`, the change log, the review verdicts
+///    — lives IN the work branch and is integrated into the base at merge time:
+///    `spec-draft` cuts the branch FIRST and writes the spec afterwards, and a
+///    spec write on a bare integration base is denied
+///    ([`crate::hooks::write::work_branch_gate`]). So between approval and the
+///    merge, a unit's uncommitted work IS its `.claude/spec/…`, and a probe that
+///    drops those paths reads the NORMAL state of an in-flight unit as an empty
+///    tree. `dirty_paths`' carve-out was written when `.claude/` was treated as
+///    redirected shared state; that reasoning does not hold for this consumer,
+///    where `.claude/spec/…` is branch content that rides a checkout exactly
+///    like source code does. The VOLATILE harness state (`.claude/.session/`,
+///    `.cache/`, `.harness/`, `.metrics/`, `.agent-state/`, `spec/*/.events/`, …)
+///    is gitignored by the seeded `.claude/.gitignore`, so
+///    `git status --porcelain` never reports it and dropping the carve-out
+///    surfaces branch CONTENT only — never the harness's own droppings.
+/// 2. **A failed measurement is not "clean".** `dirty_paths` reads an
+///    unanswerable probe as an empty list, which is right for ITS callers: they
+///    REFUSE a cut, so an unmeasured probe merely lets the ordinary path
+///    through. Here the failure mode runs the other way — an unmeasured probe
+///    would carry another unit's uncommitted work onto a second branch,
+///    silently. So an unanswerable probe is [`CheckoutWork::Unproven`], and the
+///    caller refuses on it.
+pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
+    let Some(out) = crate::commands::git_settle::git_out(root, &["status", "--porcelain"]) else {
+        return CheckoutWork::Unproven;
+    };
+    let mut paths = Vec::new();
+    let mut spoken = 0usize;
+    for line in out.lines() {
+        let line = line.trim_start();
+        if line.is_empty() {
+            continue;
+        }
+        spoken += 1;
+        // `XY <path>`, but NEVER sliced at a fixed column: `git_out` trims the
+        // whole output, so the FIRST entry loses its leading status space
+        // (`" M a.txt"` arrives as `"M a.txt"`). Split on the first space
+        // instead — the status codes never contain one, the path may.
+        let Some((code, rest)) = line.split_once(' ') else { continue };
+        if code.len() > 2 || !code.chars().all(|c| "MADRCU?!".contains(c)) {
+            continue; // not a status entry we understand — skip, never guess
+        }
+        // A rename reports `old -> new`; the destination is the live path.
+        let rest = rest.trim_start();
+        let path = rest.rsplit(" -> ").next().unwrap_or(rest).trim().trim_matches('"');
+        if path.is_empty() {
+            continue;
+        }
+        paths.push(path.to_string());
+    }
+    match (paths.is_empty(), spoken) {
+        (false, _) => CheckoutWork::Holds(paths),
+        (true, 0) => CheckoutWork::ProvenClean,
+        // git SPOKE and this parser did not understand a word of it. That is a
+        // failed measurement, not an empty tree — and reading it as empty is
+        // exactly how another unit's work rides off on a plain checkout.
+        (true, _) => CheckoutWork::Unproven,
+    }
+}
+
 /// How many dirty paths a verdict spells out before summarising — a hook
 /// message is one line in the transcript.
 const MAX_DIRTY_NAMED: usize = 5;
@@ -340,16 +433,29 @@ pub(crate) struct BusyCheckout {
     pub(crate) current: String,
     /// The branch that was going to be cut here.
     pub(crate) target: String,
-    /// The uncommitted paths that would have ridden along.
-    pub(crate) dirty: Vec<String>,
+    /// WHAT was established about the work that would have ridden along: the
+    /// paths positively observed ([`CheckoutWork::Holds`]), or the fact that the
+    /// probe could not answer ([`CheckoutWork::Unproven`]).
+    /// [`CheckoutWork::ProvenClean`] never appears here — that is not busy.
+    pub(crate) work: CheckoutWork,
 }
 
 impl BusyCheckout {
     /// The one sentence both doors say: WHERE the checkout is, WHAT is
     /// uncommitted there, and WHAT to do about it. Catalogue-rendered in the
     /// project's configured language.
+    ///
+    /// Two sentences, one per measurement. An unmeasured checkout says exactly
+    /// that: rendering the named-paths sentence with an empty list would print
+    /// "uncommitted work in: ." and teach the operator that the refusal is
+    /// noise.
     pub(crate) fn reason(&self, lang: mustard_core::platform::i18n::Locale) -> String {
-        let (paths, more) = name_dirty_paths(&self.dirty);
+        let CheckoutWork::Holds(dirty) = &self.work else {
+            return mustard_core::platform::i18n::translate("workbranch.busy.unmeasured", lang)
+                .replace("{current}", &self.current)
+                .replace("{target}", &self.target);
+        };
+        let (paths, more) = name_dirty_paths(dirty);
         mustard_core::platform::i18n::translate("workbranch.busy.refusal", lang)
             .replace("{current}", &self.current)
             .replace("{target}", &self.target)
@@ -367,9 +473,13 @@ impl BusyCheckout {
 /// cut still comes off the integration base), while a dirty tree on THIS unit's
 /// branch or on a bare base is the ordinary first-unit case.
 ///
-/// The dirt is measured with [`crate::commands::work_unit_open::dirty_paths`] —
-/// the same probe the worktree door uses, `.claude/` carved out because it is
-/// redirected state rather than code.
+/// The work at risk is measured with [`checkout_work`], this decision's OWN
+/// probe — NOT [`crate::commands::work_unit_open::dirty_paths`], which drops
+/// every path under `.claude/` and reads a failed probe as clean. Both of those
+/// are right for the callers that REFUSE a cut on what they measure and wrong
+/// here, where an unseen path is another unit's work carried off in silence: a
+/// unit's uncommitted `.claude/spec/…` IS its work between approval and merge,
+/// and "could not measure" means "there IS work" (see [`checkout_work`]).
 pub(crate) fn busy_checkout(
     root: &Path,
     current: Option<&str>,
@@ -379,14 +489,14 @@ pub(crate) fn busy_checkout(
     if !holds_other_work(current, target, config) {
         return None;
     }
-    let dirty = crate::commands::work_unit_open::dirty_paths(root);
-    if dirty.is_empty() {
+    let work = checkout_work(root);
+    if matches!(work, CheckoutWork::ProvenClean) {
         return None;
     }
     Some(BusyCheckout {
         current: current.unwrap_or_default().to_string(),
         target: target.to_string(),
-        dirty,
+        work,
     })
 }
 
@@ -583,6 +693,54 @@ mod tests {
         assert!(ok, "git {args:?} failed");
     }
 
+    /// The harness's OWN volatile state under `.claude/`, as the seeded
+    /// `.claude/.gitignore` covers it in the field. Every fixture here commits
+    /// it, because without it the pending-work-branch marker this very decision
+    /// consumes (`.claude/.session/…`) would itself read as the tree's
+    /// uncommitted work — and the fixtures would then pass for a reason the
+    /// field does not have.
+    const HARNESS_SCRATCH_IGNORE: &str = ".claude/.session/\n.claude/.harness/\n\
+         .claude/.cache/\n.claude/.metrics/\n.claude/.agent-state/\n.claude/worktrees/\n";
+
+    /// A repo on `dev` (flow `{*: dev, dev: main}`) with one commit carrying
+    /// `mustard.json`, the harness-scratch ignore and a seed source file.
+    fn seed_repo(root: &std::path::Path) {
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("cfg");
+        std::fs::write(root.join(".gitignore"), HARNESS_SCRATCH_IGNORE).expect("ignore");
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(root.join("f.txt"), "seed").expect("seed");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "init"]);
+    }
+
+    /// The path a unit's own spec lives at — the shape the field really has.
+    const FIRST_UNIT_SPEC: &str = ".claude/spec/first-unit/spec.md";
+
+    /// Put a FIRST unit on the checkout with the uncommitted work the field
+    /// actually carries: its own `.claude/spec/…`, tracked and modified. Between
+    /// approval and the merge that IS the unit's work — the spec, the waves, the
+    /// proof, the change log and the review verdicts all live in the branch and
+    /// are integrated at merge time — and a probe that drops `.claude/` sees an
+    /// empty tree here.
+    fn a_first_unit_holds_the_checkout(root: &std::path::Path) {
+        git(root, &["checkout", "-b", "dev_first"]);
+        let spec = root.join(".claude").join("spec").join("first-unit");
+        std::fs::create_dir_all(&spec).expect("spec dir");
+        std::fs::write(spec.join("spec.md"), "# first unit\n").expect("spec");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "first unit: draft"]);
+        // …and then the unit keeps working, uncommitted, exactly as it does
+        // between one commit and the next.
+        std::fs::write(spec.join("spec.md"), "# first unit\n\nuncommitted\n").expect("dirty");
+    }
+
     /// AC-11 — the CUT itself refuses a busy checkout.
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
@@ -591,27 +749,18 @@ mod tests {
     /// this function at APPROVAL — before any `Write` exists for a PreToolUse
     /// hook to see — so a guard living only in the gate was a guard on the door
     /// that opens second.
+    ///
+    /// The work at risk is the shape the FIELD has: the first unit's own
+    /// `.claude/spec/…`, tracked and modified. A source file made this pass
+    /// while the live checkout — three modified spec files and nothing else —
+    /// was read as clean, because the probe dropped every `.claude/` path.
     #[test]
     fn the_branch_cut_itself_refuses_a_busy_checkout() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let root_s = root.to_string_lossy().to_string();
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
-        )
-        .expect("cfg");
-        git(root, &["init"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("f.txt"), "seed").expect("seed");
-        git(root, &["add", "."]);
-        git(root, &["commit", "-m", "init"]);
-
-        // A FIRST unit holds the checkout, with its work still uncommitted.
-        git(root, &["checkout", "-b", "dev_first"]);
-        std::fs::write(root.join("f.txt"), "first unit, uncommitted").expect("dirty");
+        seed_repo(root);
+        a_first_unit_holds_the_checkout(root);
 
         // A SECOND unit is signalled — this is what `spec-draft` consumes.
         let sid = "sess-cut-refuses";
@@ -623,10 +772,18 @@ mod tests {
         };
         assert_eq!(busy.current, "dev_first");
         assert_eq!(busy.target, "dev_second");
-        assert!(busy.dirty.contains(&"f.txt".to_string()), "{:?}", busy.dirty);
+        let super::CheckoutWork::Holds(dirty) = &busy.work else {
+            panic!("the paths were positively observed, got {:?}", busy.work);
+        };
+        assert!(
+            dirty.iter().any(|p| p == FIRST_UNIT_SPEC),
+            "the unit's own spec is its uncommitted work: {dirty:?}",
+        );
         let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
         assert!(
-            reason.contains("dev_first") && reason.contains("dev_second") && reason.contains("f.txt"),
+            reason.contains("dev_first")
+                && reason.contains("dev_second")
+                && reason.contains(FIRST_UNIT_SPEC),
             "the refusal names both branches and the work at risk: {reason}",
         );
 
@@ -634,8 +791,8 @@ mod tests {
         // uncommitted work is intact, and the second branch does not exist.
         assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
         assert_eq!(
-            std::fs::read_to_string(root.join("f.txt")).expect("read"),
-            "first unit, uncommitted",
+            std::fs::read_to_string(root.join(FIRST_UNIT_SPEC)).expect("read"),
+            "# first unit\n\nuncommitted\n",
         );
         assert!(
             !super::local_branch_exists("git", &root_s, "dev_second"),
@@ -650,33 +807,88 @@ mod tests {
         );
     }
 
+    /// AC-11, the other half of the same decision: a checkout the probe could
+    /// NOT measure is refused too.
+    ///
+    /// "I could not measure" is not "there is nothing here". This caller's
+    /// failure mode is that another unit's work rides a plain checkout onto a
+    /// second branch, so an unanswerable probe has to refuse: that costs the
+    /// operator one commit, while the opposite costs them their work. A corrupt
+    /// index is the fixture because it is the real thing — `git status` exits
+    /// 128 on it while `rev-parse HEAD` still names the branch, which is exactly
+    /// the state where the old probe answered "clean".
+    #[test]
+    fn an_unmeasurable_checkout_is_refused_by_the_cut_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        seed_repo(root);
+        git(root, &["checkout", "-b", "dev_first"]);
+
+        // The index is unreadable: `git status` cannot answer for this tree.
+        std::fs::write(root.join(".git").join("index"), "not-an-index").expect("corrupt");
+        assert_eq!(
+            super::checkout_work(root),
+            super::CheckoutWork::Unproven,
+            "precondition: the probe really cannot answer here",
+        );
+        assert_eq!(
+            super::current_branch("git", &root_s).as_deref(),
+            Some("dev_first"),
+            "precondition: the POSITION is still readable — only the WORK is not",
+        );
+
+        let sid = "sess-cut-unmeasured";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        let outcome = super::cut_pending_work_branch(root, sid);
+        let super::CutOutcome::Refused(busy) = outcome else {
+            panic!("an unmeasurable checkout must be refused, got {outcome:?}");
+        };
+        assert_eq!(busy.work, super::CheckoutWork::Unproven);
+
+        // The refusal SAYS it could not measure rather than naming an empty
+        // list of paths, and still tells the operator what unblocks it.
+        let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
+        assert!(
+            reason.contains("dev_first") && reason.contains("dev_second"),
+            "both branches are named: {reason}",
+        );
+        let lower = reason.to_lowercase();
+        assert!(lower.contains("not be measured"), "it says what it could not do: {reason}");
+        assert!(lower.contains("stash"), "and what unblocks it: {reason}");
+
+        // Nothing was touched.
+        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert!(
+            !super::local_branch_exists("git", &root_s, "dev_second"),
+            "a refused cut creates no branch",
+        );
+    }
+
     /// The counterweight: with the SAME arrangement minus the uncommitted work,
     /// the cut proceeds. Nothing rides along from a clean tree, so refusing
-    /// there would be friction with no defect behind it.
+    /// there would be friction with no defect behind it — and the harness's own
+    /// `.claude/` scratch (the pending marker this very call consumes) is
+    /// gitignored, so it never counts as somebody's work.
     #[test]
     fn a_clean_checkout_lets_the_cut_through() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let root_s = root.to_string_lossy().to_string();
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
-        )
-        .expect("cfg");
-        git(root, &["init"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("f.txt"), "seed").expect("seed");
-        git(root, &["add", "."]);
-        git(root, &["commit", "-m", "init"]);
+        seed_repo(root);
         git(root, &["checkout", "-b", "dev_first"]);
         std::fs::write(root.join("f.txt"), "first unit, committed").expect("work");
-        git(root, &["add", "."]);
+        git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "first unit work"]);
 
         let sid = "sess-cut-clean";
         crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        assert_eq!(
+            super::checkout_work(root),
+            super::CheckoutWork::ProvenClean,
+            "the marker just written under `.claude/.session/` is gitignored, \
+             so the tree is positively clean",
+        );
         let outcome = super::cut_pending_work_branch(root, sid);
         assert_eq!(outcome, super::CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
         assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_second"));

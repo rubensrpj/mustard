@@ -218,6 +218,15 @@ fn non_unit_start(
 ///
 /// Fail-open: no git, not a repository, or a failed probe yields an EMPTY list
 /// (read as "clean"). The refusal only ever stands on a positive observation.
+///
+/// Both properties are right ONLY for callers that REFUSE on what they measure
+/// — this probe's own `hook_create`, the gate's checkout-failure note,
+/// `work_removed` — so an unmeasured tree merely lets the ordinary path
+/// through. Two callers need the opposite posture and have their own probes,
+/// deliberately: `worktree_gc`'s `Contents` (it DELETES, so unproven keeps) and
+/// [`crate::commands::event::work_branch::checkout_work`] (it CHECKS OUT OVER a
+/// tree, so unproven refuses — and a unit's uncommitted `.claude/spec/…` is its
+/// work, not redirected state). Do not point either of them back here.
 pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
     let Some(out) = git_out(dir, &["status", "--porcelain"]) else {
         return Vec::new();

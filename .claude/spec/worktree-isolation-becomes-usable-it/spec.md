@@ -76,6 +76,7 @@ Two sessions on the same folder can hold two units at once without either losing
 | `apps/rt/src/hooks/write/work_branch_gate.rs` | Step 2.5 stops cutting a worktree: when the checkout holds another unit's branch with uncommitted work it now REFUSES (`Deny`), naming the branch, the paths and the act that unblocks it. A clean checkout keeps the in-place cut. The standing "EnterWorktree" nudge stays retired. | 3 |
 | `plugin/refs/git/git-flow.md` | Operator prose: a second unit is REFUSED (commit or stash), the environment declaration is gone, the collector still reaps what is orphaned. | 3 |
 | `apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs` | One ratchet holding that prose to the shipped behaviour, in the file's existing shape. | 3 |
+| `packages/core/templates/.gitignore` | Cascade of the refusal's own probe: `busy_checkout` now counts `.claude/` (a unit's uncommitted work IS its `.claude/spec/…`), so the seeded `.claude/.gitignore` must cover the harness's OWN volatile scratch — `.session/` above all, where the pending-work-branch marker lives. Without it a seeded project's every second-unit cut would be refused over the harness's droppings. | 3 |
 
 ## Boundaries
 

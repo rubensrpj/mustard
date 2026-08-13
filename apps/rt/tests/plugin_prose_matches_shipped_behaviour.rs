@@ -638,6 +638,13 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
         "the cut `spec-draft` takes at approval — the door that opens FIRST — no \
          longer refuses, so the gate's guard is again the only one",
     );
+    assert!(
+        branch.contains("fn checkout_work") && !branch.contains("dirty_paths(root)"),
+        "the refusal measures with the CUT-blind probe again — the one that drops \
+         the unit's own `.claude/spec/…` and reads a failed measurement as clean, \
+         which is how a second unit took a checkout holding another unit's whole \
+         spec, waves and proof while `git status` named all three",
+    );
     let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
     assert!(
         gate.contains("busy_checkout(Path::new(&local)"),
