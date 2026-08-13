@@ -19,6 +19,16 @@
 //! inside any worktree — a per-worktree copy would only shadow it (undocumented
 //! precedence) and freeze arrangements at open time.
 //!
+//! Nothing ELSE is planted either: a cut receives what git tracks plus what
+//! [`init_submodules`] populates, and nothing the harness invented. Carrying or
+//! LINKING the project's git-ignored environment (`.env`, `node_modules`) was
+//! tried and withdrawn: a directory junction inside the worktree is DESCENDED by
+//! `git worktree remove`, which deleted the main checkout's own directory (with
+//! and without `--force`), so the removal of a worktree destroyed the tree it
+//! pointed at. A worktree therefore lacks whatever git ignores, by design; the
+//! second unit that would need one is REFUSED instead
+//! ([`crate::hooks::write::work_branch_gate`]).
+//!
 //! Error posture: config/user/state errors are LOUD (`ok:false` + exit 1) —
 //! an unknown `--base` here is the same disease `resolve_base` now rejects at
 //! emit time. Only the network is forgiving: a failed `git fetch origin` never
@@ -208,6 +218,15 @@ fn non_unit_start(
 ///
 /// Fail-open: no git, not a repository, or a failed probe yields an EMPTY list
 /// (read as "clean"). The refusal only ever stands on a positive observation.
+///
+/// Both properties are right ONLY for callers that REFUSE on what they measure
+/// — this probe's own `hook_create`, the gate's checkout-failure note,
+/// `work_removed` — so an unmeasured tree merely lets the ordinary path
+/// through. Two callers need the opposite posture and have their own probes,
+/// deliberately: `worktree_gc`'s `Contents` (it DELETES, so unproven keeps) and
+/// [`crate::commands::event::work_branch::checkout_work`] (it CHECKS OUT OVER a
+/// tree, so unproven refuses — and a unit's uncommitted `.claude/spec/…` is its
+/// work, not redirected state). Do not point either of them back here.
 pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
     let Some(out) = git_out(dir, &["status", "--porcelain"]) else {
         return Vec::new();
@@ -1073,6 +1092,206 @@ mod tests {
             matches!(init_submodules(Path::new(&got)), Some(Err(_))),
             "the failure is reported, never swallowed and never fatal"
         );
+    }
+
+    /// [`fixture`] whose `.gitignore` really ignores the environment paths, so
+    /// the premise the whole block rests on is the fixture's own state: these
+    /// are git-IGNORED, hence absent from any fresh cut. `declaration` is the
+    /// `mustard.json` body (loaded from the MAIN checkout, never from the
+    /// worktree).
+    fn fixture_with_environment(declaration: &str) -> (tempfile::TempDir, PathBuf) {
+        let (dir, main) = fixture();
+        // The base fixture parks the local branch one commit BEHIND origin/dev;
+        // realign so the ignore rule fast-forwards onto the pushed tip and the
+        // cut carries it.
+        git(&main, &["reset", "--hard", "origin/dev"]);
+        std::fs::write(main.join(".gitignore"), ".claude/\n.env\nnode_modules/\n").expect("ignore");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "ignore the environment"]);
+        git(&main, &["push", "origin", "dev"]);
+        std::fs::write(main.join("mustard.json"), declaration).expect("cfg");
+        std::fs::write(main.join(".env"), "TOKEN=main").expect(".env");
+        std::fs::create_dir_all(main.join("node_modules").join("pkg")).expect("node_modules");
+        std::fs::write(main.join("node_modules/pkg/index.js"), "one").expect("pkg");
+        (dir, main)
+    }
+
+    /// Every path under `wt`, worktree-root-relative with `/` separators, never
+    /// descending into git's own `.git` entry. The enumeration the two
+    /// assertions below rest on — an empty walk would make either of them pass
+    /// over an unexamined tree, so both check what it found.
+    fn entries_under(wt: &Path, rel: &str, out: &mut Vec<String>) {
+        let Ok(read) = std::fs::read_dir(if rel.is_empty() {
+            wt.to_path_buf()
+        } else {
+            wt.join(rel)
+        }) else {
+            return;
+        };
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if rel.is_empty() && name == ".git" {
+                continue; // git's own bookkeeping, not content the cut received
+            }
+            let child = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            let is_dir = entry
+                .path()
+                .symlink_metadata()
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            out.push(child.clone());
+            if is_dir {
+                entries_under(wt, &child, out);
+            }
+        }
+    }
+
+    /// Create a directory LINK at `dst` pointing at `src`, or `None` when this
+    /// host refuses one (Windows without Developer Mode, no `mklink`). Test
+    /// scaffolding ONLY — the engine plants no link of any kind any more, so
+    /// the positive control below has to make its own.
+    fn try_link_dir(src: &Path, dst: &Path) -> Option<()> {
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(src, dst).is_ok() {
+                return Some(());
+            }
+            let out = Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    dst.to_string_lossy().as_ref(),
+                    src.to_string_lossy().as_ref(),
+                ])
+                .output()
+                .ok()?;
+            out.status.success().then_some(())
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(src, dst).ok()
+        }
+    }
+
+    /// AC-1 — a fresh worktree receives what GIT brings plus what its
+    /// SUBMODULES bring, and nothing the harness invented.
+    ///
+    /// Carrying the project's git-ignored environment into a cut (and LINKING
+    /// the heavy part of it) shipped once and was withdrawn: `git worktree
+    /// remove` descends a Windows junction, so removing the worktree deleted the
+    /// MAIN checkout's directory the link pointed at. What is left is the plain
+    /// cut — which is why the second unit is refused instead of diverted.
+    #[test]
+    fn a_fresh_worktree_receives_only_git_and_submodules() {
+        // --- 1. What git and its submodules bring DOES arrive ---------------
+        let (_subdir, sub_main) = fixture_with_submodule();
+        let sub_wt = PathBuf::from(hook_create("dev_onlygit-sub", &sub_main).expect("creates"));
+        assert!(sub_wt.join("a.txt").is_file(), "the versioned files travel");
+        assert!(sub_wt.join(".gitmodules").is_file(), "the submodule declaration travels");
+        assert!(
+            init_submodules(&sub_wt).is_some(),
+            "a declared submodule is acted on — that is the second (and last) population step",
+        );
+
+        // --- 2. Nothing else does ------------------------------------------
+        // The premise: `.env` and `node_modules/` exist in the main checkout and
+        // are git-IGNORED, so only a harness step could put them in a cut.
+        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        assert!(main.join(".env").is_file() && main.join("node_modules").is_dir());
+        let wt = PathBuf::from(hook_create("dev_onlygit", &main).expect("creates"));
+
+        let tracked: Vec<String> = git_out(&wt, &["ls-files"])
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().trim_matches('"').to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(tracked.contains(&"a.txt".to_string()), "the fixture really tracks files");
+        // A tracked path implies its parent directories — those are git's too.
+        let mut allowed: Vec<String> = Vec::new();
+        for path in &tracked {
+            let mut prefix = String::new();
+            for segment in path.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(segment);
+                if !allowed.contains(&prefix) {
+                    allowed.push(prefix.clone());
+                }
+            }
+        }
+
+        let mut found: Vec<String> = Vec::new();
+        entries_under(&wt, "", &mut found);
+        assert!(found.contains(&"a.txt".to_string()), "the walk really enumerated the worktree");
+        for entry in &found {
+            assert!(
+                allowed.contains(entry),
+                "the harness added '{entry}' to a fresh cut — a worktree receives only what \
+                 git and its submodules bring (git tracks: {allowed:?})",
+            );
+        }
+        assert!(!wt.join(".env").exists(), "a git-ignored file never travels");
+        assert!(!wt.join("node_modules").exists(), "a git-ignored directory never travels");
+    }
+
+    /// AC-2 — nothing inside a fresh worktree points back into the main
+    /// checkout.
+    ///
+    /// This is the withdrawn defect stated as a property. A directory junction
+    /// planted in the worktree is DESCENDED by `git worktree remove`, which
+    /// deleted the main checkout's `node_modules` — with and without `--force`,
+    /// and silently in the plain case. So the invariant is not "the link is
+    /// well-formed", it is that there is NO link.
+    #[test]
+    fn a_fresh_worktree_holds_no_link_into_the_main_checkout() {
+        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        let wt = PathBuf::from(hook_create("dev_nolink", &main).expect("creates"));
+        let wt_real = std::fs::canonicalize(&wt).unwrap_or_else(|_| wt.clone());
+
+        // The probe: a reparse point / symlink anywhere inside the cut, or any
+        // entry that RESOLVES outside it (which a junction does even where the
+        // platform does not report it as a symlink).
+        let escapes = |root: &Path| -> Vec<String> {
+            let mut found: Vec<String> = Vec::new();
+            entries_under(root, "", &mut found);
+            found
+                .into_iter()
+                .filter(|rel| {
+                    let path = root.join(rel);
+                    let linked = path
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    let outside = std::fs::canonicalize(&path)
+                        .map(|real| !real.starts_with(&wt_real))
+                        .unwrap_or(false);
+                    linked || outside
+                })
+                .collect()
+        };
+
+        let mut walked: Vec<String> = Vec::new();
+        entries_under(&wt, "", &mut walked);
+        assert!(walked.contains(&"a.txt".to_string()), "the walk really enumerated the worktree");
+        assert!(
+            escapes(&wt).is_empty(),
+            "a fresh cut holds a link reaching out of it: {:?}",
+            escapes(&wt),
+        );
+
+        // Positive control — the probe can SEE such a link, so the emptiness
+        // above is a measurement and not a blind spot. Skipped only where this
+        // host refuses to create one at all.
+        if try_link_dir(&main.join("node_modules"), &wt.join("node_modules")).is_some() {
+            let seen = escapes(&wt);
+            assert!(
+                seen.iter().any(|rel| rel == "node_modules"),
+                "the probe missed a link planted by hand: {seen:?}",
+            );
+        }
     }
 
     #[test]

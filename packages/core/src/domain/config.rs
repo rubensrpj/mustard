@@ -695,6 +695,28 @@ mod tests {
         assert!(!cfg.injectables()[0].once, "absent once defaults to false");
     }
 
+    /// A `worktree` block is no longer part of the schema — the harness puts
+    /// nothing into a cut worktree beyond what git and its submodules bring, so
+    /// there is nothing left to declare. A config that still carries the block
+    /// must keep LOADING: it lands in the unknown-key catch-all like any custom
+    /// key (preserved on write, read by nobody), and the modelled fields around
+    /// it are unaffected.
+    #[test]
+    fn a_stale_worktree_declaration_is_inert_and_breaks_nothing() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"buildCommand":"make","worktree":{"carry":[".env"],"link":["node_modules"]}}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.build_command.as_deref(), Some("make"), "the rest of the config still loads");
+        assert!(
+            cfg.extra.contains_key("worktree"),
+            "the withdrawn block is an unknown key now — preserved, never interpreted",
+        );
+    }
+
     #[test]
     fn role_patterns_lowercased_and_filtered() {
         let mut cfg = ProjectConfig::default();

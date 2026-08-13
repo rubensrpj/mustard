@@ -186,25 +186,105 @@ fn wave_from_ref_rel(rel: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|w| *w > 0)
 }
 
-/// The wave a returning child was dispatched for, read back from the stamp its
-/// own transcript carries. `None` when the stop names no transcript, the file
-/// cannot be read, or its leading lines carry no stamp (an ad-hoc `Task`, a
+/// The wave a child was dispatched for — the one RETURNING at `SubagentStop`, or
+/// the one WRITING at a `PreToolUse` that fired inside it — read back from the
+/// stamp its own transcript carries. `None` when no candidate path resolves, the
+/// file cannot be read, or its leading lines carry no stamp (an ad-hoc `Task`, a
 /// wave-less render, or a dispatch the hook never expanded).
 ///
-/// The path key is `agent_transcript_path` — the SUBAGENT's transcript, which is
-/// what makes this per-child correct even when a whole round of sibling waves is
-/// in flight at once. `transcript_path` is a secondary read for a harness that
-/// spells it the shorter way; when it resolves to the parent session transcript
-/// instead, the leading lines carry no stamp and this simply yields `None`.
+/// Per-child by construction, which is the whole point: a dispatch round runs
+/// every wave of the lowest incomplete dependency level AT ONCE, so any answer
+/// derived from shared state (the projection's scalar `currentWave`, the
+/// session→spec marker, `MUSTARD_ACTIVE_WAVE`) says the same thing to every
+/// sibling in flight. The transcript stamp is the only signal that differs per
+/// agent.
 ///
-/// Fail-open throughout: this feeds telemetry attribution, never a decision.
-fn wave_from_child_transcript(input: &HookInput) -> Option<u32> {
+/// See [`child_transcript_candidates`] for the paths tried and why.
+///
+/// `pub(crate)`: [`crate::hooks::write::boundary_gate`] asks the same question
+/// on the way IN (which wave is writing) that this module asks on the way out.
+///
+/// Fail-open throughout: this feeds attribution, never a decision — a caller
+/// that gets `None` widens what it accepts, it never blocks.
+pub(crate) fn wave_from_child_transcript(input: &HookInput) -> Option<u32> {
+    child_transcript_candidates(input)
+        .iter()
+        .find_map(|p| wave_from_transcript_head(p))
+}
+
+/// The transcript paths that may belong to the child this hook fired for, in the
+/// order [`wave_from_child_transcript`] tries them:
+///
+/// 1. `agent_transcript_path` — the child's own transcript, handed over on the
+///    `SubagentStop` payload. Most direct; where this started.
+/// 2. The child transcript DERIVED from `transcript_path` + `agent_id`. Both are
+///    DOCUMENTED common hook fields (the hooks reference: `agent_id` is "present
+///    only when the hook fires inside a subagent call"), and Claude Code stores a
+///    child's transcript beside its parent's, at
+///    `<parent-stem>/subagents/agent-{agent_id}.jsonl`. This is the candidate
+///    that makes the wave resolvable on a `PreToolUse` INSIDE the child, where
+///    `agent_transcript_path` is not part of the documented contract.
+/// 3. `transcript_path` itself, for a harness that already points it at the
+///    child. Last on purpose: against a PARENT transcript it simply finds no
+///    stamp in the leading lines (the dispatch prompt lives far below the
+///    [`TRANSCRIPT_STAMP_SCAN_LINES`] window), so it costs one bounded read and
+///    can never misattribute a sibling's wave.
+///
+/// The derivation composes only harness-supplied values — no machine path and no
+/// transcript-root convention is hard-coded here.
+fn child_transcript_candidates(input: &HookInput) -> Vec<PathBuf> {
+    let raw_str = |key: &str| {
+        input
+            .raw
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(child) = raw_str("agent_transcript_path") {
+        out.push(PathBuf::from(child));
+    }
+    let parent = raw_str("transcript_path");
+    if let (Some(parent), Some(agent)) = (parent.as_deref(), agent_id_of(input)) {
+        // `<dir>/<session>.jsonl` → `<dir>/<session>/subagents/agent-<id>.jsonl`
+        out.push(
+            Path::new(parent)
+                .with_extension("")
+                .join("subagents")
+                .join(format!("agent-{agent}.jsonl")),
+        );
+    }
+    if let Some(parent) = parent {
+        out.push(PathBuf::from(parent));
+    }
+    out
+}
+
+/// The child id this hook fired inside — the harness `agent_id`, read from the
+/// typed field first and from the flattened raw payload as a belt. `None` on the
+/// main thread, which is the documented meaning of its absence.
+fn agent_id_of(input: &HookInput) -> Option<String> {
+    input
+        .agent_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            input
+                .raw
+                .get("agent_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+}
+
+/// The wave stamped in the first [`TRANSCRIPT_STAMP_SCAN_LINES`] lines of one
+/// transcript file. `None` for a missing/unreadable file or one with no stamp.
+fn wave_from_transcript_head(path: &Path) -> Option<u32> {
     use std::io::BufRead;
 
-    let path = ["agent_transcript_path", "transcript_path"]
-        .iter()
-        .find_map(|k| input.raw.get(*k).and_then(serde_json::Value::as_str))
-        .filter(|s| !s.is_empty())?;
     let file = std::fs::File::open(path).ok()?;
     std::io::BufReader::new(file)
         .lines()
@@ -588,6 +668,108 @@ fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookI
     let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
 }
 
+/// The event a returning child's own report is recorded as. Deliberately NOT
+/// `agent.stop`: that name is already taken by the dispatcher-side telemetry
+/// [`super::subagent_observer`] emits, whose start/stop pairs the dashboard walks
+/// as a stack ([`apps/dashboard`'s `build_agent_intervals`]) — a second `stop`
+/// per dispatch would close a frame that never opened.
+const EVENT_AGENT_RETURN: &str = "agent.return";
+
+/// How much of one return is kept in the wave's record. Bounded so a verbose
+/// agent cannot bloat the NDJSON log; generous enough that an account given
+/// midway through a report still lands — the 800-char cap the dispatcher-side
+/// telemetry applies would not be.
+const RETURN_REPORT_MAX_CHARS: usize = 8_000;
+
+/// Persist the returning child's OWN report as an `agent.return` event, stamped
+/// with the wave that child was dispatched for.
+///
+/// ## The hole this fills
+///
+/// A wave's record is supposed to contain what the wave said on its way back —
+/// [`crate::commands::pipeline::wave_done`] reads it to see whether a declared
+/// REALITY OBLIGATION was ever accounted for by id. The only channel it had was
+/// `agent.stop`, which [`super::subagent_observer`] emits at `PostToolUse(Task)`
+/// with `tool_response` as its payload. For a BACKGROUND dispatch — the shape the
+/// wave pipeline uses — that response is the launch acknowledgement
+/// (`{"isAsync":true,"status":"async_launched",…}`, echoing the prompt just sent),
+/// delivered the moment the child STARTS. The returning report was never in it,
+/// so a wave that did account for its duty by id was still reported unaccounted.
+///
+/// `SubagentStop` is where the report actually exists: [`final_output_text`]
+/// already reads it (`last_assistant_message`) for the span eval, and
+/// [`wave_from_child_transcript`] already resolves whose wave it is. This records
+/// both, so the account reaches the record of the wave that gave it.
+///
+/// Not narrowed to a `<MEMORY>` block on purpose: the obligation account is
+/// ordinary prose in the body of a report, which is exactly the material the
+/// memory capture is contracted to reject.
+///
+/// ## Why an UNATTRIBUTED return is not recorded
+///
+/// Unlike its memory twin, this records nothing when the child's own wave cannot
+/// be established. A wave-less record would have to be readable by every wave
+/// (nothing else could ever come for it), which is exactly the spec-scoped
+/// reading this fix removes — and here it would run the wrong way: a stray
+/// `Task` that merely quoted `RO-1.1` out of a spec file would DISCHARGE a duty
+/// nobody checked. The opposite failure — an unresolved stamp leaving a real
+/// account unrecorded — costs a printed line saying a duty went unaccounted,
+/// which is noise the operator can correct, not a claim the harness never
+/// verified.
+///
+/// Spec attribution mirrors its [`capture_memory_decision`] twin — the
+/// session-bound `active-spec` marker, then the legacy/env resolution; no spec
+/// resolves ⇒ no-op rather than an orphaned event. Fail-open throughout:
+/// telemetry, never a blocking path.
+fn capture_return_report(project: &Path, cwd: &str, input: &HookInput) {
+    capture_return_report_with_session(project, cwd, input, &crate::shared::context::session_id());
+}
+
+/// Session-explicit worker for [`capture_return_report`] — takes `session_id`
+/// directly so a test can drive it without mutating `MUSTARD_SESSION_ID`
+/// (`unsafe` under Rust 2024, forbidden in this crate), mirroring the
+/// [`capture_memory_decision_with_session`] split.
+fn capture_return_report_with_session(project: &Path, cwd: &str, input: &HookInput, sid: &str) {
+    let report = final_output_text(input);
+    if report.trim().is_empty() {
+        return;
+    }
+    // Same source order, and same reason, as the memory twin: the stamp the
+    // dispatch carried into this child's own transcript is per-child, so it stays
+    // correct while a whole round of sibling waves is in flight. Unlike the twin,
+    // an unresolved wave ends the capture — see the "unattributed" section above.
+    let Some(wave) = wave_from_child_transcript(input)
+        .or_else(|| super::common::current_wave_id().and_then(|w| w.parse::<u32>().ok()))
+        .filter(|w| *w > 0)
+    else {
+        return;
+    };
+    let spec = crate::shared::context::spec_for_session(cwd, sid)
+        .or_else(|| crate::shared::context::current_spec(cwd));
+    let Some(spec) = spec else {
+        return;
+    };
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: sid.to_string(),
+        wave,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: Some("subagent_inject".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_AGENT_RETURN.to_string(),
+        payload: json!({
+            "report": super::common::cap(&report, RETURN_REPORT_MAX_CHARS),
+            "role": role_from_stop_input(input),
+            "agent_id": agent_id_of(input).unwrap_or_default(),
+        }),
+        spec: Some(spec),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+}
+
 /// `true` for the review agent's `subagent_type`. Normalises a namespaced
 /// plugin agent type (`mustard:mustard-review`) to its bare name — mirroring
 /// [`role_is_readonly`] — so the qualified form `dispatch-plan` emits and a bare
@@ -728,11 +910,17 @@ impl Check for SubagentInject {
         // `<VERDICT>` block into a `review.result` event — see
         // `capture_review_verdict`. Also independent + fail-open; a non-review
         // child or an absent/malformed block is a silent no-op.
+        //
+        // The RETURN ITSELF rides it as well — see `capture_return_report`. The
+        // `<MEMORY>` / `<VERDICT>` captures each keep one narrow block; the wave's
+        // record also needs the ordinary prose of the report, because that is
+        // where an agent accounts for a reality obligation by id.
         if ctx.trigger == Some(Trigger::SubagentStop) {
             let cwd = ctx.project_dir_or_cwd(input);
             let project = PathBuf::from(&cwd);
             let _ = span_level_eval_and_append(&project, input, &cwd);
             capture_memory_decision(&project, &cwd, input);
+            capture_return_report(&project, &cwd, input);
             capture_review_verdict(&project, &cwd, input);
             return Ok(Verdict::Allow);
         }
@@ -1500,6 +1688,118 @@ mod tests {
         // `extract_memory_block`/`spec_for_session`/`current_spec` each
         // already having their own None-path unit coverage.
         let _ = input;
+    }
+
+    // --- return capture (SubagentStop → `agent.return` event) ---------------
+
+    /// Every `agent.return` event for `spec` under `cwd`, as `(wave, report)`.
+    fn returned_reports(cwd: &Path, spec: &str) -> Vec<(u32, String)> {
+        let events_dir = ClaudePaths::for_project(cwd)
+            .and_then(|p| p.for_spec(spec))
+            .unwrap()
+            .events_dir();
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+            .iter()
+            .filter(|e| e.event == EVENT_AGENT_RETURN)
+            .map(|e| {
+                (
+                    e.wave,
+                    e.payload
+                        .get("report")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Write a child transcript whose first line carries the wave stamp the real
+    /// dispatch expansion appends, and return a `SubagentStop` input pointing at
+    /// it. The stamp is produced by [`stamp_wave`] itself — never spelled out
+    /// here — so this cannot keep passing after the stamp format moves.
+    fn stop_input_from_wave(dir: &Path, child: &str, wave: u32, output_text: &str) -> HookInput {
+        let stamped = stamp_wave(
+            &format!(".claude/spec/s/.dispatch/wave-{wave}-impl.first.prompt.md"),
+            "## ROLE\nROLE: impl\n".to_string(),
+        );
+        let transcript = dir.join(format!("{child}.jsonl"));
+        std::fs::write(
+            &transcript,
+            format!("{}\n", serde_json::json!({ "message": { "content": stamped } })),
+        )
+        .unwrap();
+        let mut input = stop_input(child, output_text);
+        input.raw["agent_transcript_path"] =
+            serde_json::Value::String(transcript.to_string_lossy().to_string());
+        input
+    }
+
+    /// The return itself reaches the record, stamped with the wave that gave it.
+    ///
+    /// The measured defect: the only channel a wave's finalisation could read
+    /// was `agent.stop`, emitted at `PostToolUse(Task)` — which on a background
+    /// dispatch carries the launch acknowledgement, produced when the child
+    /// STARTS. A wave that accounted for its reality obligation by id was still
+    /// reported unaccounted, because the record had nowhere to keep the account.
+    #[test]
+    fn a_returning_childs_report_lands_stamped_with_its_own_wave() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "returns-reach-the-record";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r1", spec);
+
+        let report = "RO-2.1 — verified on this install, unelevated: the junction needs no privilege.";
+        capture_return_report_with_session(
+            dir.path(),
+            &cwd,
+            &stop_input_from_wave(dir.path(), "impl-w2", 2, report),
+            "sess-r1",
+        );
+
+        let recorded = returned_reports(dir.path(), spec);
+        assert_eq!(recorded.len(), 1, "one return ⇒ one record: {recorded:?}");
+        assert_eq!(recorded[0].0, 2, "the record names the wave that returned");
+        assert!(recorded[0].1.contains("RO-2.1"), "the account itself: {}", recorded[0].1);
+    }
+
+    /// A return whose wave cannot be established records NOTHING.
+    ///
+    /// Both directions on purpose. A wave-less record would have to be readable
+    /// by every wave, since no wave's close could ever claim it — and that runs
+    /// the dangerous way: a stray `Task` that merely quoted `RO-2.1` out of a
+    /// spec file it read would discharge a duty nobody checked. The second half
+    /// pins that the silence is the missing stamp and not a dead capture.
+    #[test]
+    fn a_return_with_no_wave_is_not_recorded_against_any_wave() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let spec = "unstamped-returns";
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
+        crate::shared::context::bind_session_spec(&cwd, "sess-r2", spec);
+
+        // An ad-hoc child: real return text, no dispatch stamp anywhere.
+        capture_return_report_with_session(
+            dir.path(),
+            &cwd,
+            &stop_input("explore-1", "I read wave-2-reap/spec.md, which declares RO-2.1."),
+            "sess-r2",
+        );
+        assert!(
+            returned_reports(dir.path(), spec).is_empty(),
+            "an unattributed return must not become a record every wave reads"
+        );
+
+        // The same call with a stamped transcript does record — so the silence
+        // above is the missing wave, not a capture that never fires.
+        capture_return_report_with_session(
+            dir.path(),
+            &cwd,
+            &stop_input_from_wave(dir.path(), "impl-w2", 2, "RO-2.1 — checked."),
+            "sess-r2",
+        );
+        assert_eq!(returned_reports(dir.path(), spec).len(), 1);
     }
 
     /// Two children in the SAME spec each emit a DIFFERENT `<MEMORY>` — both

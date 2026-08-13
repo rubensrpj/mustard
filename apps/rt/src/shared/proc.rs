@@ -322,17 +322,26 @@ pub fn kill_pid(pid: u32) {
     }
 }
 
-/// `true` if a process with `pid` is currently alive on the host.
+/// Whether a process with `pid` is alive — WHEN that question can be answered
+/// at all. `Some(true)` alive, `Some(false)` measured absent, `None` when the
+/// probe itself could not run (no `kill`/`tasklist` on `PATH`, an unknown
+/// platform).
+///
+/// The third state is not pedantry: collapsing "could not measure" into
+/// "absent" is safe in exactly one direction. A caller that respawns a daemon
+/// pays a wasted spawn for the mistake; a caller that DELETES what an absent
+/// owner left behind pays with the live owner's directory. So the measurement
+/// lives here and the judgement lives in each consumer — see
+/// [`is_process_alive`] for the respawn reading, and
+/// `commands::maint::worktree_gc` for the reading that refuses to remove on an
+/// unmeasured answer.
 ///
 /// Cross-platform without `unsafe`: on Unix, sends signal `0` via `kill -0`
 /// (the POSIX existence probe). On Windows, queries `tasklist /FI` for the
 /// PID — slower than `OpenProcess` but `windows-sys` is not a dep and the
-/// crate forbids `unsafe`. A spawn failure (no `kill`/`tasklist` on PATH)
-/// degrades to `false`, which simply forces a re-spawn — safe per the
-/// idempotence contract: the second collector will fail to bind the port and
-/// exit, leaving the first one running.
+/// crate forbids `unsafe`.
 #[must_use]
-pub fn is_process_alive(pid: u32) -> bool {
+pub fn process_liveness(pid: u32) -> Option<bool> {
     #[cfg(unix)]
     {
         Command::new("kill")
@@ -341,14 +350,16 @@ pub fn is_process_alive(pid: u32) -> bool {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
+            .ok()
             .map(|s| s.success())
-            .unwrap_or(false)
     }
     #[cfg(windows)]
     {
         // `tasklist /NH /FI "PID eq <pid>"` prints either the matching row or
         // the literal "INFO: No tasks are running…" string when absent. Probe
         // stdout for the PID itself, which appears in the matching row only.
+        // A non-zero `tasklist` exit is the tool failing, not an answer about
+        // the process — that is the `None` case, never a `Some(false)`.
         let pid_str = pid.to_string();
         let out = Command::new("tasklist")
             .args(["/NH", "/FI", &format!("PID eq {pid_str}")])
@@ -362,18 +373,28 @@ pub fn is_process_alive(pid: u32) -> bool {
                 // The PID appears as a whitespace-separated column only when a
                 // row matched; the "No tasks" message never contains the
                 // numeric PID.
-                text.split_whitespace().any(|tok| tok == pid_str)
+                Some(text.split_whitespace().any(|tok| tok == pid_str))
             }
-            _ => false,
+            _ => None,
         }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        // Unknown platform — pessimistically report not-alive so the caller
-        // re-spawns; a duplicate collector will fail to bind and exit cleanly.
+        // Unknown platform — the probe cannot answer at all.
         let _ = pid;
-        false
+        None
     }
+}
+
+/// `true` if a process with `pid` is currently alive on the host.
+///
+/// The respawn reading of [`process_liveness`]: a probe that could not answer
+/// degrades to `false`, which simply forces a re-spawn — safe per the
+/// idempotence contract: the second collector will fail to bind the port and
+/// exit, leaving the first one running.
+#[must_use]
+pub fn is_process_alive(pid: u32) -> bool {
+    process_liveness(pid).unwrap_or(false)
 }
 
 #[cfg(test)]

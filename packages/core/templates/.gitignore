@@ -4,6 +4,17 @@
 .metrics/
 .agent-state/
 .pipeline-states/
+.compact-state/
+.session/
+.dispatch/
+.agent-memory/
+agent-memory/
+knowledge/
+memory/
+feature-digest.json
+settings.local.json
+.dashboard.pid
+.dashboard.port
 
 # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
 worktrees/
@@ -11,3 +22,5 @@ worktrees/
 # Per-spec event log + blob spill.
 spec/*/.events/
 spec/*/.blobs/
+spec/*/.dispatch/
+spec/*/.memory-approved

@@ -557,6 +557,138 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     );
 }
 
+/// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
+/// environment declaration.
+///
+/// The environment-carrying design was withdrawn after review: `link` planted a
+/// Windows directory junction inside the worktree, and `git worktree remove`
+/// DESCENDS a junction — so closing a unit deleted the MAIN checkout's
+/// `node_modules`, with and without `--force`. The shipped prose told operators
+/// to declare exactly that, which made following the documentation the way to
+/// lose your dependencies. What remains is a refusal (commit or stash, then open
+/// the second unit) and the orphan collector, which creates nothing and only
+/// reaps the worktrees Claude Code cuts on its own.
+#[test]
+fn worktree_prose_teaches_the_refusal_and_the_reaper() {
+    let flow = read("plugin/refs/git/git-flow.md");
+
+    // --- 1. The refusal is taught where the gate's decision is taught -------
+    let another = line_with(&flow, "ANOTHER unit's branch, with uncommitted work")
+        .expect("the gate prose never says what happens when the checkout holds another unit");
+    assert!(
+        another.contains("REFUSED") || another.contains("denied"),
+        "the row must say the edit is REFUSED: {another}",
+    );
+    // Naming the refusal is not teaching it — the row must name the act that
+    // unblocks it, or the operator is stopped with nowhere to go.
+    assert!(
+        another.contains("commit or stash"),
+        "the row refuses without naming what unblocks it: {another}",
+    );
+    assert!(
+        another.contains("paths"),
+        "the row must promise the paths holding the work are named: {another}",
+    );
+    // The counterweights, deliberately: a rule that only added "refuse more"
+    // would stop on a HEAD nobody measured, and on a clean tree where nothing
+    // can ride along.
+    let unmeasured = line_with(&flow, "detached / unreadable HEAD")
+        .expect("the gate prose no longer says what an unreadable HEAD does");
+    assert!(
+        unmeasured.contains("in-place"),
+        "an unmeasured position must keep today's cut: {unmeasured}",
+    );
+    let clean = line_with(&flow, "ANOTHER unit's branch, tree CLEAN")
+        .expect("the gate prose never says what a CLEAN checkout does");
+    assert!(
+        clean.contains("in-place"),
+        "a clean checkout loses nothing, so it must keep the cut: {clean}",
+    );
+
+    // --- 2. No environment declaration survives anywhere in the ref ---------
+    for withdrawn in ["mustard.json#worktree", "\"carry\"", "\"link\"", "**`carry`**", "**`link`**"]
+    {
+        assert!(
+            !flow.contains(withdrawn),
+            "the ref still teaches `{withdrawn}` — following it plants a junction \
+             whose removal deletes the main checkout's directory",
+        );
+    }
+
+    // --- 3. The reaper, which is NOT withdrawn ------------------------------
+    let reaper = line_with(&flow, "The collector reaps what is ORPHANED")
+        .expect("the contract never says what the collector does");
+    for taught in ["--apply", "uncommitted", "PID"] {
+        assert!(
+            reaper.contains(taught),
+            "the reaper paragraph omits `{taught}` — it acts, it refuses over work, \
+             and it knows an orphan by its owner: {reaper}",
+        );
+    }
+
+    // --- 4. The code really does each of them -------------------------------
+    // Without this half every sentence above outlives its mechanism.
+    let branch = read("apps/rt/src/commands/event/work_branch.rs");
+    assert!(
+        branch.contains("fn holds_other_work") && branch.contains("fn busy_checkout"),
+        "nothing asks whether the checkout holds another unit's uncommitted work",
+    );
+    assert!(
+        branch.contains("CutOutcome::Refused"),
+        "the cut `spec-draft` takes at approval — the door that opens FIRST — no \
+         longer refuses, so the gate's guard is again the only one",
+    );
+    assert!(
+        branch.contains("fn checkout_work") && !branch.contains("dirty_paths(root)"),
+        "the refusal measures with the CUT-blind probe again — the one that drops \
+         the unit's own `.claude/spec/…` and reads a failed measurement as clean, \
+         which is how a second unit took a checkout holding another unit's whole \
+         spec, waves and proof while `git status` named all three",
+    );
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        gate.contains("busy_checkout(Path::new(&local)"),
+        "the gate no longer takes the shared refusal, so the two doors can disagree",
+    );
+    assert!(
+        !gate.contains("hook_create"),
+        "the gate cuts a worktree again — the divert the prose says is withdrawn",
+    );
+    for nudge in ["EnterWorktree path=", "EnterWorktree name="] {
+        assert!(
+            !gate.contains(nudge),
+            "the gate still answers `{nudge}` — it sends the session into a worktree \
+             nobody asked for, or nudges it there on every unit",
+        );
+    }
+
+    let open = read("apps/rt/src/commands/work_unit_open.rs");
+    for gone in ["fn carry_environment", "fn link_dir", "mklink /J", "worktree.linked()"] {
+        assert!(
+            !open.contains(gone),
+            "`{gone}` is back: a fresh cut plants something of the harness's own, \
+             and a link inside a worktree is what `git worktree remove` descends",
+        );
+    }
+
+    let gc = read("apps/rt/src/commands/maint/worktree_gc.rs");
+    assert!(
+        gc.contains("gc(repo, DEFAULT_AGE_DAYS, /* apply = */ true)"),
+        "the SessionStart probe went back to dry-run, so nothing is ever collected",
+    );
+    assert!(
+        gc.contains("process_liveness") && gc.contains("enum Contents"),
+        "the collector lost either the owner probe that makes it prompt or the \
+         work probe that makes it safe",
+    );
+    assert!(
+        !gc.contains("dirty_paths(&wt)"),
+        "the collector decides by the CUT decision's probe again — the one that \
+         reads a failed measurement as clean and drops the candidate's own \
+         `.claude/` contents, which is how an --apply sweep deleted unsaved files",
+    );
+}
+
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
 /// of names for one agent, which is why six names spell five reservations.
 const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];
