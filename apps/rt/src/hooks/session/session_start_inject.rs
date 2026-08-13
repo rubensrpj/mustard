@@ -449,13 +449,15 @@ fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }
-    let bases: Vec<String> = crate::shared::context::project_config_cached(root)
-        .git
-        .integration_bases()
-        .into_iter()
-        .collect();
+    let config = crate::shared::context::project_config_cached(root);
+    // ROOTED: the sweep classifies REAL branches of THIS repository, and a unit
+    // whose base only its own directory recorded (an emergency in a project
+    // declaring several candidates) reads as base-less through the pure
+    // derivation — `BranchEnumerator` then files it under an empty base, which
+    // is a base group `refs_ahead_of_base` never measures.
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
     let git_read = |args: &[&str]| crate::commands::git_settle::git_out(root, args);
-    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &bases);
+    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &flow);
     if pending.is_empty() {
         return None;
     }

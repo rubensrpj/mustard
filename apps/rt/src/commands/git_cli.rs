@@ -49,7 +49,7 @@ pub enum GitCmd {
         root: PathBuf,
     },
     /// The ENTRY RITUAL of a work unit: idempotently create its isolated
-    /// worktree at `.claude/worktrees/{base}_{slug}`, cut from a fresh
+    /// worktree at `.claude/worktrees/{kind}/{slug}`, cut from a fresh
     /// `origin/{base}` (offline degrades to the local base ref), so the
     /// orchestrator can switch the session into it via
     /// `EnterWorktree path=<returned path>`. An explicit `--base` MUST name a
@@ -59,8 +59,9 @@ pub enum GitCmd {
     #[command(name = "work-unit-open")]
     #[command(display_order = 76)]
     WorkUnitOpen {
-        /// Full work-branch name (e.g. `dev_my-spec`); its `{base}_` prefix
-        /// must name a declared integration base. Alternative to --spec/--intent.
+        /// Full work-branch name (e.g. `feature/my-spec`); its prefix must name
+        /// a work kind, or a declared integration base for a unit still in the
+        /// older `{base}_{slug}` shape. Alternative to --spec/--intent.
         #[arg(long)]
         branch: Option<String>,
         /// Spec slug — used verbatim as the branch slug.
@@ -69,8 +70,14 @@ pub enum GitCmd {
         /// Free-form intent, slugified when --spec is absent.
         #[arg(long)]
         intent: Option<String>,
-        /// Integration base; must name a declared `git.flow` base. Omitted →
-        /// the project's primary base.
+        /// What the unit IS: `feature`, `fix` or `hotfix`. Names the branch
+        /// (`{kind}/{slug}`) and, through `git.flow`, its base. Omitted →
+        /// `feature`.
+        #[arg(long = "type")]
+        work_kind: Option<String>,
+        /// Integration base; must name a declared `git.flow` base, and a
+        /// `hotfix` may not name the base ordinary work is cut from. Omitted →
+        /// the base `--type` implies.
         #[arg(long)]
         base: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
@@ -104,8 +111,15 @@ pub fn dispatch(cmd: GitCmd) {
         GitCmd::GitSettle { unit, report, root } => {
             git_settle::run(&root, unit.as_deref(), report);
         }
-        GitCmd::WorkUnitOpen { branch, spec, intent, base, root } => {
-            work_unit_open::run(work_unit_open::WorkUnitOpenOpts { root, branch, spec, intent, base });
+        GitCmd::WorkUnitOpen { branch, spec, intent, work_kind, base, root } => {
+            work_unit_open::run(work_unit_open::WorkUnitOpenOpts {
+                root,
+                branch,
+                spec,
+                intent,
+                work_kind,
+                base,
+            });
         }
         GitCmd::GitDelete { unit, root } => git_delete::run(&root, &unit),
     }

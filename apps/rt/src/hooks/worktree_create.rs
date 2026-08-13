@@ -7,10 +7,12 @@
 //! protocol, exactly like a `Deny` is a gate's.
 //!
 //! The engine lives in [`crate::commands::work_unit_open::hook_create`] (same
-//! motor as `mustard-rt run work-unit-open`): `{base}_{slug}` names cut from a
-//! fresh `origin/{base}`; every other name — the SLUG the event actually hands
-//! over (`recursing-benz-063389`, `feature-auth`, `pr-1234`) — replicates the
-//! native default cut so background isolation never breaks.
+//! motor as `mustard-rt run work-unit-open`): `{kind}/{slug}` names — the shape
+//! this project MINTS, so the ordinary `EnterWorktree name=…` hand-off — and
+//! `{base}_{slug}` names alike cut from a fresh `origin/{base}`; every other
+//! name — the SLUG the event actually hands over (`recursing-benz-063389`,
+//! `feature-auth`, `pr-1234`) — replicates the native default cut so background
+//! isolation never breaks.
 //!
 //! The event carries a NAME, not a path (`{hook_event_name:"WorktreeCreate",
 //! name:"dev_thing"}`) — `worktree_path` belongs to the *Remove* twin. Since a

@@ -19,7 +19,8 @@
 //! a prefix the platform never emits, which made it inert against every real
 //! orphan. It now collects by the ONE criterion the rest of the crate uses —
 //! [`crate::commands::work_unit_open::is_unit_worktree_name`]: a worktree whose
-//! name carries a declared `{base}_` is a WORK UNIT's, and cleanup of those is
+//! name is a unit's — `{kind}/{slug}`, or a declared `{base}_` for one still in
+//! the older shape — is a WORK UNIT's, and cleanup of those is
 //! `git-settle`'s job EXCLUSIVELY. Everything else is collectable.
 //!
 //! Widening what a destructive sweep can see demands the other half of the
@@ -48,6 +49,17 @@
 //! measured is never an authorisation. It asks git only where git can speak for
 //! the candidate ITSELF, walks a plain directory's own contents otherwise, and
 //! keeps whatever it could not settle.
+//!
+//! That probe runs BEFORE the age fallback, never after. Holding work is a
+//! permanent refusal and being young is a temporary one, so the reason the
+//! report states has to be the strongest of the two rather than whichever was
+//! cheapest to compute: a directory full of unsaved files reported as `below
+//! threshold` tells an operator to come back in a week for a deletion that must
+//! never happen. And ordering it the other way made the guarantee itself
+//! conditional — the guard only ran when a BEST-EFFORT mtime happened to read
+//! old, which is a signal that answers differently per platform and filesystem.
+//! What gets REMOVED is unchanged either way: proven empty, plus an owner
+//! measured gone or an age past the threshold.
 //!
 //! ## Where it looks
 //!
@@ -148,8 +160,10 @@ struct KeptEntry {
     /// Whole days since the age signal — `None` when the signal could not be
     /// resolved (treated as "keep" under fail-open).
     age_days: Option<u64>,
-    /// Human-readable reason: `"below threshold"`, `"unknown age"`,
-    /// or `"dry-run"` (when `--apply` is not set).
+    /// Human-readable reason, in the order [`gc`] asks: `"owner alive"`,
+    /// `"holds uncommitted work"`, `"could not be proven empty"`,
+    /// `"unknown age"`, `"below threshold"`, or `"dry-run"` (when `--apply`
+    /// is not set).
     reason: String,
 }
 
@@ -187,8 +201,8 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
     let Ok(paths) = ClaudePaths::for_project(repo) else {
         return Vec::new();
     };
-    let bases: Vec<String> =
-        mustard_core::ProjectConfig::load(repo).git.integration_bases().into_iter().collect();
+    let config = mustard_core::ProjectConfig::load(repo);
+    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
     let root = paths.claude_dir().join("worktrees");
     let Ok(read) = std::fs::read_dir(&root) else {
         return Vec::new();
@@ -197,9 +211,15 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| !is_unit_worktree_name(n, &bases))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                // A unit's worktree is never collected here — that is the exit
+                // ritual's job exclusively. Since a unit is named `{kind}/{slug}`
+                // its worktree sits one level DOWN, and the entry seen at this
+                // level is the bare kind directory holding it: a container, not a
+                // worktree, and collecting it would delete every unit inside.
+                !crate::shared::work_kind::WorkKind::is_container_segment(n)
+                    && !is_unit_worktree_name(n, &flow)
+            })
         })
         .collect()
 }
@@ -512,49 +532,41 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
         // did not come from one.
         let age = age_signal(repo, &wt).and_then(age_days_since);
 
-        match ownership(&wt, &prefix) {
-            // A live owner is working in there. No age can override that.
-            Ownership::Alive => {
-                report.kept.push(KeptEntry {
-                    path,
-                    age_days: age,
-                    reason: "owner alive".into(),
-                });
-                continue;
-            }
-            // The owner is gone and we MEASURED that: eligible immediately.
-            Ownership::Gone => {}
-            // Nothing measured — fall back to age, exactly as before.
-            Ownership::Unknown => {
-                let Some(age) = age else {
-                    report.kept.push(KeptEntry {
-                        path,
-                        age_days: None,
-                        reason: "unknown age".into(),
-                    });
-                    continue;
-                };
-                if age <= threshold {
-                    report.kept.push(KeptEntry {
-                        path,
-                        age_days: Some(age),
-                        reason: "below threshold".into(),
-                    });
-                    continue;
-                }
-            }
+        let owner = ownership(&wt, &prefix);
+
+        // A live owner is working in there. No age and no reading of the
+        // contents can override that, and measuring a tree nobody may touch
+        // would only spawn a `git status` to reach a foregone answer.
+        if matches!(owner, Ownership::Alive) {
+            report.kept.push(KeptEntry {
+                path,
+                age_days: age,
+                reason: "owner alive".into(),
+            });
+            continue;
         }
 
-        // Holds work → never removed, at ANY age and under ANY owner: the
-        // exception the platform's own periodic sweep makes, and what keeps
-        // collecting by "not a work unit" safe rather than merely wider. Asked
-        // ONLY of an entry already judged eligible — over the threshold, or an
-        // orphan — so the probe that runs at every SessionStart never spawns a
-        // `git status` per worktree just to report an age.
+        // What the candidate HOLDS is measured BEFORE the age fallback, and
+        // that order is the point: holding work is a PERMANENT refusal, being
+        // young is a temporary one, and the reason a destructive sweep reports
+        // has to be the strongest one — not whichever probe happened to be
+        // cheapest. Asking age first said `below threshold` about a directory
+        // full of unsaved files, which tells an operator to come back in a week
+        // for a deletion that must never happen; and it made the safety guard
+        // itself reachable only when a BEST-EFFORT mtime happened to read old
+        // ([`age_signal`] is explicitly fail-open), so the one guarantee that
+        // survives a `--apply` sweep hung off a signal that answers differently
+        // per platform and per filesystem.
         //
-        // And a candidate is removed on a POSITIVE observation of emptiness
-        // alone: the same rule ownership takes above, where an unanswered
-        // liveness probe authorises nothing.
+        // It costs what it measures: `contents` spawns git only where git can
+        // speak for the candidate, and only for worktrees that are not a work
+        // unit's — a set that is EMPTY in a healthy repository, and otherwise is
+        // exactly the set this sweep is about to delete.
+        //
+        // What is removed does not change by an inch: a candidate still goes
+        // only when it is proven empty AND (its owner is measured gone OR it is
+        // past the threshold). Only the refusal that gets REPORTED changes,
+        // and only for an entry both gates would have kept.
         match contents(repo, &wt) {
             Contents::ProvenEmpty => {}
             Contents::HoldsWork => {
@@ -570,6 +582,28 @@ fn gc(repo: &Path, age_days: u32, apply: bool) -> GcReport {
                     path,
                     age_days: age,
                     reason: "could not be proven empty".into(),
+                });
+                continue;
+            }
+        }
+
+        // Proven empty. Removing it still needs a reason to act NOW: an owner
+        // MEASURED gone, or an age past the threshold. Nothing measured about
+        // the owner → the age fallback decides, exactly as before.
+        if matches!(owner, Ownership::Unknown) {
+            let Some(age) = age else {
+                report.kept.push(KeptEntry {
+                    path,
+                    age_days: None,
+                    reason: "unknown age".into(),
+                });
+                continue;
+            };
+            if age <= threshold {
+                report.kept.push(KeptEntry {
+                    path,
+                    age_days: Some(age),
+                    reason: "below threshold".into(),
                 });
                 continue;
             }
@@ -995,10 +1029,11 @@ mod tests {
     /// Plant the `.git/worktrees/<name>/HEAD` marker [`age_signal`] reads
     /// first, backdated to `when`.
     ///
-    /// For a candidate that is NOT a worktree this is an AGE SIGNAL and nothing
-    /// else: git honours no registration without the `gitdir` file beside it,
-    /// and [`contents`] settles a directory holding a file by walking it —
-    /// long before anything asks who claims the path.
+    /// BEST-EFFORT, and nothing in a test may hang off it: `set_modified` is a
+    /// filesystem favour, not a guarantee, and the collector's own doc calls the
+    /// whole age signal fail-open. A test that needs a verdict must get it from
+    /// something measured — which is why [`contents`] is asked before this ever
+    /// decides anything.
     fn age_marker(repo: &Path, name: &str, when: SystemTime) {
         let admin = repo.join(".git").join("worktrees").join(name);
         fs::create_dir_all(&admin).unwrap();
@@ -1024,6 +1059,14 @@ mod tests {
     /// `--apply` deleted unsaved files. The first assertion below pins that
     /// blindness in place, so this test fails the day the collector goes back
     /// to asking it.
+    ///
+    /// Both verdicts here are reached WITHOUT consulting a clock, and that is
+    /// deliberate. While the age fallback was asked first, this proof was
+    /// reachable only where a best-effort mtime happened to read old: it passed
+    /// on Windows and reported `below threshold` — "too young to consider" — on
+    /// the Linux and macOS runners, where it proved nothing at all about what
+    /// the collector can establish. The fixture states its own preconditions
+    /// below so no future arrangement can make it quietly vacuous again.
     #[test]
     fn the_collector_refuses_what_it_could_not_prove_empty() {
         let dir = tempdir().unwrap();
@@ -1039,10 +1082,16 @@ mod tests {
         age_marker(&repo, "pasta-antiga", stale);
 
         // (a) A path git's bookkeeping calls a checkout, with no checkout there
-        // to measure: nothing about THIS directory can be established.
+        // to measure: nothing about THIS directory can be established. The
+        // `.git` pointer is what an abandoned worktree really leaves behind, and
+        // it is planted here so the claim lives INSIDE the candidate rather than
+        // only in a `.git/worktrees/` record — which is a registration git is
+        // free to reap, and which a fixture must not depend on for its meaning.
         let ghost = repo.join(".claude").join("worktrees").join("pasta-fantasma");
         fs::create_dir_all(&ghost).unwrap();
         age_marker(&repo, "pasta-fantasma", stale);
+        let admin = repo.join(".git").join("worktrees").join("pasta-fantasma");
+        fs::write(ghost.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
 
         // The mechanism that lost the files: the CUT decision's probe reports
         // both candidates clean, because it answers about the enclosing repo
@@ -1053,7 +1102,25 @@ mod tests {
                 "fixture: the cut probe is blind here — that is the defect ({})",
                 candidate.display(),
             );
+            assert!(
+                list_collectable_worktrees(&repo).contains(candidate),
+                "fixture: the sweep must actually see the candidate ({})",
+                candidate.display(),
+            );
         }
+
+        // The two preconditions (a) rests on, stated rather than assumed: git
+        // cannot speak for the ghost, and something nonetheless claims the path
+        // is a checkout. Together they are what makes "could not be proven
+        // empty" the only honest answer about it.
+        assert!(
+            own_checkout_status(&ghost).is_none(),
+            "fixture: git must not be able to answer for the ghost itself",
+        );
+        assert!(
+            claimed_as_checkout(&repo, &ghost),
+            "fixture: something must claim the ghost is a checkout",
+        );
 
         let report = gc(&repo, DEFAULT_AGE_DAYS, /* apply = */ true);
         let reason_for = |p: &Path| {
@@ -1062,6 +1129,16 @@ mod tests {
                 .iter()
                 .find(|k| k.path == p.display().to_string())
                 .map_or_else(String::new, |k| k.reason.clone())
+        };
+        // The age travels with every reason in the dump: a verdict that turns
+        // out to have come from the clock has to say so in its own failure,
+        // instead of leaving the next reader to guess across three platforms.
+        let dump = || {
+            report
+                .kept
+                .iter()
+                .map(|k| (&k.path, &k.reason, k.age_days))
+                .collect::<Vec<_>>()
         };
 
         assert!(report.removed.is_empty(), "nothing was proven empty: {:?}", report.removed);
@@ -1074,8 +1151,9 @@ mod tests {
         assert_eq!(
             reason_for(&holding),
             "holds uncommitted work",
-            "a directory holding files under `.claude/` holds work: {:?}",
-            report.kept.iter().map(|k| (&k.path, &k.reason)).collect::<Vec<_>>(),
+            "a directory holding files under `.claude/` holds work — and says so \
+             whatever its age reads: {:?}",
+            dump(),
         );
 
         assert!(ghost.exists(), "what could not be measured is never removed");
@@ -1083,8 +1161,45 @@ mod tests {
             reason_for(&ghost),
             "could not be proven empty",
             "and the report says it was never established, not that it was clean: {:?}",
-            report.kept.iter().map(|k| (&k.path, &k.reason)).collect::<Vec<_>>(),
+            dump(),
         );
+    }
+
+    /// The refusal is not a function of the clock: a candidate the age signal
+    /// reads as BRAND NEW, holding an unsaved file, is refused for what it
+    /// HOLDS and says so.
+    ///
+    /// This is the shape AC-12 could not pin on its own. AC-12 ages its fixture,
+    /// so on any machine where the backdating takes it reaches [`contents`]
+    /// whatever the order is — which is how "ask the age first" survived review
+    /// and shipped, green on Windows and reporting `below threshold` on the
+    /// Linux and macOS runners. Here the age is genuinely 0, so the only way to
+    /// reach "holds uncommitted work" is to measure the contents BEFORE falling
+    /// back to age. Put the age check first again and this goes red everywhere.
+    #[test]
+    fn a_young_candidate_holding_work_is_refused_for_what_it_holds() {
+        let dir = tempdir().unwrap();
+        let repo = seeded_repo(dir.path(), "gc-young-dirty");
+        // No age marker at all: created now, so `age_signal` falls back to the
+        // directory's own mtime and the entry is 0 days old.
+        let fresh = repo.join(".claude").join("worktrees").join("pasta-nova");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::write(fresh.join("unsaved.txt"), "trabalho que ninguem salvou").unwrap();
+
+        let report = gc(&repo, DEFAULT_AGE_DAYS, /* apply = */ true);
+        let kept = report
+            .kept
+            .iter()
+            .find(|k| k.path == fresh.display().to_string())
+            .expect("the young candidate is in the report");
+
+        assert_eq!(kept.age_days, Some(0), "fixture: the candidate really is brand new");
+        assert_eq!(
+            kept.reason, "holds uncommitted work",
+            "a young directory holding work is refused for the work, not spared for its age",
+        );
+        assert!(fresh.exists(), "and it survives an --apply sweep");
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
     }
 
     /// AC-6 — the worktree an interrupted removal pass leaves behind lives in

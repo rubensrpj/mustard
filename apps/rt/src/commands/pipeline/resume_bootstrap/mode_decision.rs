@@ -8,12 +8,14 @@
 //!   after the last `pipeline.resume_mode`, plus that resume event's age (used
 //!   by [`super::run`] to debounce re-emission).
 //! - [`inside_own_work_branch`] — whether the checkout ALREADY is this spec's
-//!   own `{base}_{slug}` branch. A FACT, not a routing decision: what to skip
+//!   own `{kind}/{slug}` branch. A FACT, not a routing decision: what to skip
 //!   because of it (the table, the header, the *implement now* confirm) is the
 //!   picker's judgement and stays in the picker.
 
 use super::{AUTO_CONTINUE_TTL_MS, PipelineDispatchFailurePayload, PipelineStateView};
-use crate::commands::event::work_branch::{compute_work_branch, current_branch};
+use crate::commands::event::work_branch::{
+    current_branch, sanitize_git_ref, slug_of_work_branch,
+};
 use mustard_core::domain::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
@@ -125,8 +127,9 @@ pub(super) fn decide_mode(
     }
 }
 
-/// `true` when the checkout IS this spec's own work branch — the
-/// `{base}_{slug}` name for one of the project's `git.flow` integration bases.
+/// `true` when the checkout IS this spec's own work branch — a `{kind}/{slug}`
+/// name, or the older `{base}_{slug}` for one of the project's `git.flow`
+/// integration bases, both read through the crate's one parser.
 ///
 /// The work unit is the branch plus everything the work produced: the spec, its
 /// waves, its ceremony and the code. So a caller standing on that branch is
@@ -137,34 +140,42 @@ pub(super) fn decide_mode(
 ///
 /// What the equality actually rests on — because the docstring that used to
 /// stand here guaranteed something this function does not: it claimed the name
-/// "is not re-derived" since [`compute_work_branch`] is shared with the gate.
-/// The FUNCTION is shared; the ARGUMENT is not, and the argument is what
-/// diverged. The gate was handed the slug the caller invented at dispatch while
+/// "is not re-derived" since `compute_work_branch` is shared with the gate. The
+/// FUNCTION was shared; the ARGUMENT was not, and the argument is what diverged.
+/// The gate was handed the slug the caller invented at dispatch while
 /// `spec-draft` derived its own from its own `--intent`, so a unit carried two
 /// names and this comparison answered `false` from inside its own branch.
 ///
-/// The name IS rebuilt here, from `spec`. What makes that sound is upstream and
-/// nothing in this file enforces it: the unit is named ONCE, at the base gate
-/// ([`crate::commands::event::emit_pipeline::mint_unit_name_at`]), and
-/// `spec-draft` CONSUMES that name instead of minting a second one — `--slug`
-/// when the caller carries the gate's report forward, else the slug half of the
-/// unit's BRANCH ([`crate::commands::event::work_branch::slug_of_work_branch`]),
-/// which is the leg that does not depend on any caller getting an argument
-/// right: the draft writes inside the unit, so the branch under it is already
-/// `{base}_{slug}` and the spec directory is named from that same string.
+/// The name is no longer rebuilt here at all. The branch is READ instead
+/// ([`slug_of_work_branch`]) and its slug compared with `spec`, which is the
+/// same question asked from the side that cannot go wrong: rebuilding needed one
+/// guess per integration base and would need one per work KIND too now that the
+/// name says what the unit is, while reading the branch needs none. It is also
+/// the reading `spec-draft` already consumes to name the spec directory, so the
+/// two agree by construction rather than by both deriving the same string.
 ///
-/// So this equality holds by CONSTRUCTION on the only arrangement in which it
-/// can be asked: a spec drafted inside its unit was named from the branch, and a
-/// draft that met no branch at all (a hand-run on an integration base) built no
-/// `{base}_{slug}` for anyone to stand on — this answers `false` there, as it
-/// should. The invariant lives in those two commands, not here; the test below
-/// is where it is checked end to end.
+/// BOTH SIDES ARE NORMALISED, because they do not arrive by the same road. The
+/// branch is a git ref, so the slug read out of it has already been through
+/// [`sanitize_git_ref`] — spaces mapped, an accent mapped, a `..` run collapsed
+/// because git forbids one. The `spec` string has not been through anything. For
+/// a canonical slug the two are the same string and the difference is invisible;
+/// for a slug that needed sanitising at all they can never be equal, and the
+/// unit then reports itself OUTSIDE its own branch while standing on it. The
+/// comparison this replaced rebuilt the name with `compute_work_branch`, which
+/// put the spec through the sanitiser as a side effect — reading the branch
+/// instead of rebuilding it is the right call (see above) and dropped that
+/// normalisation with it, so it is stated here explicitly. The function is
+/// idempotent, so the ref's own slug is unchanged by it.
+///
+/// A draft that met no branch at all (a hand-run on an integration base) stands
+/// on nothing this can read — that answers `false`, as it should.
 ///
 /// `false` for every uncertainty — an empty spec, a VCS opt-out, a directory
 /// that is not a repository, a detached HEAD. A resume that cannot SHOW it is
 /// inside the unit takes the ceremony, which is what it always did.
 pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
-    if spec.trim().is_empty() {
+    let spec = spec.trim();
+    if spec.is_empty() {
         return false;
     }
     let config = mustard_core::ProjectConfig::load(project);
@@ -175,11 +186,10 @@ pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
     let Some(current) = current_branch(&vcs, &root) else {
         return false;
     };
-    config
-        .git
-        .integration_bases()
-        .iter()
-        .any(|base| compute_work_branch(base, spec, None, "", "", &root) == current)
+    let Some(slug) = slug_of_work_branch(&current, &config) else {
+        return false;
+    };
+    sanitize_git_ref(&slug) == sanitize_git_ref(spec)
 }
 
 #[cfg(test)]
@@ -218,7 +228,7 @@ mod tests {
     /// AC-3 — a resume asked for from inside the unit's own branch is
     /// RECOGNISED as such, which is what lets the picker drop the ceremony.
     ///
-    /// The spec, its waves and its code all live on `{base}_{slug}`, so a caller
+    /// The spec, its waves and its code all live on `{kind}/{slug}`, so a caller
     /// standing there is already inside the unit it is naming: nothing to pick,
     /// nothing to introduce, nothing to confirm. Every other position — the
     /// bare base, another unit's branch, a repo-less directory — keeps the
@@ -266,6 +276,55 @@ mod tests {
         assert!(!inside_own_work_branch(root, "  "), "an empty spec names no branch");
     }
 
+    /// AC-3 — the unit is recognised however its slug had to be SPELLED as a
+    /// git ref.
+    ///
+    /// The two sides of the equality do not arrive by the same road. The branch
+    /// name is a ref, so its slug has already been through the ref sanitiser
+    /// ([`crate::commands::event::work_branch::sanitize_git_ref`]) — spaces
+    /// mapped, an accent mapped, a `..` run collapsed because git forbids it. The
+    /// `spec` string has not. For a canonical slug the two are the same string
+    /// and nothing shows, which is why this had to be stated with a slug that
+    /// really needs sanitising: there the read slug and the spec differ by
+    /// construction, and the unit reported itself OUTSIDE its own branch while
+    /// standing on it — the picker then takes the full ceremony for a unit that
+    /// has none left to take.
+    #[test]
+    fn inside_own_work_branch_holds_for_a_slug_that_needed_sanitising() {
+        use crate::commands::event::work_branch::compute_work_branch;
+        use crate::shared::work_kind::WorkKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "dev", r#"{"*":"dev","dev":"main"}"#);
+
+        // Spaces, an accented character and a `..` run — every one of them is
+        // mapped or collapsed on the way into a ref, so no branch can ever spell
+        // this string back.
+        let raw = "corrigir botão ..parcelas/";
+        let branch =
+            compute_work_branch(WorkKind::Fix, raw, None, "", "", &root.to_string_lossy());
+        assert_ne!(
+            branch,
+            format!("fix/{raw}"),
+            "the fixture only proves something if the ref really had to differ",
+        );
+        git(root, &["checkout", "-b", &branch]);
+
+        assert!(
+            inside_own_work_branch(root, raw),
+            "standing on {branch}, this IS the unit named by {raw:?}",
+        );
+
+        // …and a neighbour that sanitises to something else is still not it, so
+        // the agreement was reached by normalising both sides, not by loosening
+        // the comparison.
+        assert!(
+            !inside_own_work_branch(root, "corrigir botão ..parcelas-two/"),
+            "a neighbouring unit's slug must not answer for this spec",
+        );
+    }
+
     /// AC-3 — the case that FAILED before the unit had one name, driven through
     /// the real minting call rather than a hand-written slug.
     ///
@@ -306,7 +365,14 @@ mod tests {
         // branch is under the tree and there is no marker left for the draft to
         // read. A draft that only looked at what it cut itself found nothing
         // here and derived a second name — on every full run.
-        let branch = compute_work_branch("dev", &minted.slug, Some(intent), "", "", &root.to_string_lossy());
+        let branch = crate::commands::event::work_branch::compute_work_branch(
+            crate::shared::work_kind::WorkKind::Feature,
+            &minted.slug,
+            Some(intent),
+            "",
+            "",
+            &root.to_string_lossy(),
+        );
         git(root, &["checkout", "-b", &branch]);
 
         // ...and the draft really is run, with a DIVERGENT intent, because the

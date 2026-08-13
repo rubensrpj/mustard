@@ -1265,6 +1265,9 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
             lang: Some(mustard_core::normalise_lang(lang)),
             checkpoint: None,
             parent: None,
+            // Only the CUT knows which base the unit came from; a scaffold
+            // never invents it (and `write_parent_meta` preserves it).
+            base: None,
             is_wave_plan: Some(true),
             total_waves: Some(total_waves),
             flags: MetaFlags::default(),
@@ -1290,6 +1293,8 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
                 lang: Some(mustard_core::normalise_lang(lang)),
                 checkpoint: None,
                 parent: Some(parent_name.clone()),
+                // A wave is not a unit — its base is the parent unit's.
+                base: None,
                 is_wave_plan: None,
                 total_waves: None,
                 flags: MetaFlags::default(),

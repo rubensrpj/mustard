@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "o-branch-de-trabalho-passa",
+  "title": "o branch de trabalho passa a ser nomeado pelo tipo (feature, fix, hotfix) e o tipo mais a base sao perguntados numa unica pergunta com padrao pre-marcado, mantendo os nomes antigos funcionando",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
