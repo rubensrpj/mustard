@@ -10,13 +10,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `a_fresh_worktree_receives_only_git_and_submodules`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-10",
@@ -40,17 +40,17 @@
       "command": "cargo test -p mustard-rt the_branch_cut_itself_refuses_a_busy_checkout",
       "expect": "[1-9][0-9]* passed",
       "control_command": null,
-      "verdict": "proven",
+      "verdict": "unproven",
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
-      "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "confirmation_exit": 0,
+      "removal": "survived",
+      "removal_exit": 0,
+      "reason": "the REMOVAL was TAKEN and the command still came back green with the work taken away, so this criterion is satisfied by something the work did not do — a path, a name or a subsystem that outlives the removal entirely. Rewrite the command so it asserts the BEHAVIOUR, then take the proof again",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-12",
@@ -61,13 +61,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `the_collector_refuses_what_it_could_not_prove_empty`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-2",
@@ -78,13 +78,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `a_fresh_worktree_holds_no_link_into_the_main_checkout`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-3",
@@ -95,13 +95,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `the_refusal_names_the_paths_holding_uncommitted_work`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-4",
@@ -112,13 +112,13 @@
       "proof": "red",
       "control": "green",
       "control_exit": 0,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `an_orphan_worktree_is_collected_without_waiting_for_age`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-5",
@@ -129,13 +129,13 @@
       "proof": "red",
       "control": "green",
       "control_exit": 0,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `the_acting_collector_still_refuses_a_worktree_holding_work`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-6",
@@ -146,13 +146,13 @@
       "proof": "red",
       "control": "green",
       "control_exit": 0,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `an_abandoned_removal_worktree_is_within_reach_and_collected`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-7",
@@ -163,13 +163,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `a_second_unit_is_refused_instead_of_taking_the_checkout`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-8",
@@ -180,13 +180,13 @@
       "proof": "red",
       "control": "green",
       "control_exit": 0,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `the_first_units_uncommitted_work_stays_where_it_was`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-9",
@@ -197,13 +197,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `worktree_prose_teaches_the_refusal_and_the_reaper`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     }
   ],
   "amendments": [

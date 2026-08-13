@@ -30,3 +30,4 @@ _Solicitações registradas automaticamente durante o pipeline (mid-spec). O `sp
 - **2026-08-13T12:10:06.697Z** _(QaReview)_ — que demora
 - **2026-08-13T12:57:43.220Z** _(QaReview)_ — sim
 - **2026-08-13T15:03:34.595Z** _(QaReview)_ — ok
+- **2026-08-13T15:39:17.114Z** _(QaReview)_ — resolva tudo e para de ficar me questionando estou desde ontem querendo encerrar isso e acada rodada vc aparece com algo novo

@@ -23,5 +23,11 @@ A second unit is isolated instead of taking over the checkout, and the prose tea
 ## Files
 
 - `apps/rt/src/hooks/write/work_branch_gate.rs`
+- `apps/rt/src/commands/event/work_branch.rs`
 - `plugin/refs/git/git-flow.md`
 - `apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs`
+
+<!-- wikilinks-footer-start -->
+- [spec.worktree-isolation-becomes-usable-it](spec.md)
+- [wave.worktree-isolation-becomes-usable-it.1-carry](spec.md)
+<!-- wikilinks-footer-end -->
