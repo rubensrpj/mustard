@@ -774,6 +774,56 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
              the answer depends on which door opened the unit",
         );
     }
+
+    // --- 5. …and it is written where the DRAFT can still write ------------
+    // The cut runs FIRST, and a `meta.json` in the unit's directory is exactly
+    // what tells `spec-draft` a spec is already drafted there. Recording the
+    // base that way made step one refuse step two: the unit came out cut and
+    // spec-less on the one path this record exists to serve. So the cut writes
+    // harness state and the draft folds it into the sidecar — prose, guard and
+    // fold asserted together, because any one of them alone reopens it.
+    assert!(
+        durable.contains(".cut-base"),
+        "the /git ref teaches the cut writing the sidecar itself — the write that \
+         left the unit cut and spec-less: {durable}",
+    );
+    assert!(
+        kinds.contains("pub(crate) const CUT_BASE_FILE"),
+        "nothing names the cut's own record any more, so the cut is back to \
+         writing the one file the draft reads as somebody's draft",
+    );
+    let draft = read("apps/rt/src/commands/spec/spec_draft.rs");
+    assert!(
+        draft.contains("const HARNESS_STATE_ENTRIES") && draft.contains("work_kind::CUT_BASE_FILE"),
+        "the draft's guard no longer tolerates the cut's own record BY NAME, so \
+         the first step of the sequence blocks the second again",
+    );
+    assert!(
+        scaffold.contains("work_kind::cut_base_in(output)")
+            && scaffold.contains("work_kind::clear_cut_base_in(output)"),
+        "the draft stopped folding the cut's record into `meta.json#base` (or \
+         stopped retiring it), so the answer ends up with two homes or none",
+    );
+
+    // Where NOTHING recorded it, nobody is handed a guess. `base_for` used to
+    // answer the outermost candidate with a `WARN` on stderr — which a
+    // PreToolUse hook says to nobody, since it exits 0.
+    assert!(
+        !branch.contains("Falling back to"),
+        "the base resolver guesses the outermost candidate again, and a guess \
+         nobody can see is a fact",
+    );
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        gate.contains("workbranch.base.unknown"),
+        "the gate stopped SAYING it cannot know which base the emergency came \
+         from, so the unit is cut somewhere nobody chose",
+    );
+    assert!(
+        gate.contains("recorded_base.as_deref()"),
+        "the reconcile drops the operator's recorded base again while it \
+         corrects the branch — the retried cut then has nothing to read",
+    );
 }
 
 /// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no

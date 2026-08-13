@@ -3,7 +3,8 @@
 //!
 //! ONE module for three commands, because they are one ritual over one seam:
 //! the link between a pull request and the work unit behind it. A PR's head
-//! branch is `{base}_{slug}` and that slug IS the spec — `pr-review` records a
+//! branch is `{kind}/{slug}` (or the older `{base}_{slug}`, still recognised)
+//! and that slug IS the spec — `pr-review` records a
 //! verdict under it and `pr-merge` reads that verdict back. Written once here,
 //! the link cannot drift into three spellings across three files.
 //!
@@ -28,7 +29,7 @@
 //!
 //! A review runs from an integration base — that is the door's design — and the
 //! spec no longer lives there: this unit's whole layout (`spec.md`, the waves,
-//! the ceremony) is materialized INSIDE `{base}_{slug}`. Reading
+//! the ceremony) is materialized INSIDE the unit's own `{kind}/{slug}`. Reading
 //! `.claude/spec/{slug}/spec.md` off the checkout therefore finds NOTHING from a
 //! base, and the brief would come back with `spec_path`, `subproject` and
 //! `patterns` all null while `pr.md` promises them. So the text is read from the

@@ -8,7 +8,7 @@
 //!   after the last `pipeline.resume_mode`, plus that resume event's age (used
 //!   by [`super::run`] to debounce re-emission).
 //! - [`inside_own_work_branch`] — whether the checkout ALREADY is this spec's
-//!   own `{base}_{slug}` branch. A FACT, not a routing decision: what to skip
+//!   own `{kind}/{slug}` branch. A FACT, not a routing decision: what to skip
 //!   because of it (the table, the header, the *implement now* confirm) is the
 //!   picker's judgement and stays in the picker.
 
@@ -125,8 +125,9 @@ pub(super) fn decide_mode(
     }
 }
 
-/// `true` when the checkout IS this spec's own work branch — the
-/// `{base}_{slug}` name for one of the project's `git.flow` integration bases.
+/// `true` when the checkout IS this spec's own work branch — a `{kind}/{slug}`
+/// name, or the older `{base}_{slug}` for one of the project's `git.flow`
+/// integration bases, both read through the crate's one parser.
 ///
 /// The work unit is the branch plus everything the work produced: the spec, its
 /// waves, its ceremony and the code. So a caller standing on that branch is
@@ -209,7 +210,7 @@ mod tests {
     /// AC-3 — a resume asked for from inside the unit's own branch is
     /// RECOGNISED as such, which is what lets the picker drop the ceremony.
     ///
-    /// The spec, its waves and its code all live on `{base}_{slug}`, so a caller
+    /// The spec, its waves and its code all live on `{kind}/{slug}`, so a caller
     /// standing there is already inside the unit it is naming: nothing to pick,
     /// nothing to introduce, nothing to confirm. Every other position — the
     /// bare base, another unit's branch, a repo-less directory — keeps the

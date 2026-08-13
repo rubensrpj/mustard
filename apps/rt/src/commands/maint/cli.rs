@@ -38,7 +38,8 @@ pub enum MaintCmd {
     },
     /// Garbage-collect orphan Claude agent worktrees under
     /// `<repo>/.claude/worktrees/` — every entry whose name is NOT a work
-    /// unit's `{base}_…` (unit worktrees belong to `git-settle`). Anything
+    /// unit's `{kind}/…` (nor the older `{base}_…`) — unit worktrees belong to
+    /// `git-settle`. Anything
     /// still holding uncommitted work is kept whatever its age.
     ///
     /// Enumerates the directory, computes each entry's age (via

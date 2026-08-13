@@ -22,6 +22,14 @@
 //! change: its pull request target, its merged-ancestry check and the
 //! second-unit refusal all resolve a unit through its branch name.
 //!
+//! **Where the answer the flow cannot derive is kept.** An emergency in a
+//! project declaring several candidate bases is a CHOICE, and the name no longer
+//! carries it. The cut writes it into the unit's own directory as harness state
+//! ([`CUT_BASE_FILE`]) and the draft folds it into `meta.json#base`; both are
+//! read back here, in that order. It is deliberately NOT written into
+//! `meta.json` by the cut: the cut runs first, and a sidecar in that directory
+//! is exactly what makes the draft refuse it as already drafted.
+//!
 //! **Why this lives in `shared`.** Both faces ask these questions — the hook
 //! gate cutting the branch and the commands settling, deleting, reporting and
 //! resuming it — so per [`super`] the answer lives in the leaf both may depend
@@ -43,14 +51,47 @@ fn branch_of_name(name: &str) -> &str {
     name.strip_prefix(WORKTREE_PREFIX).unwrap_or(name)
 }
 
-/// The unit's own record — `<project>/.claude/spec/{slug}/meta.json`.
+/// The unit's own directory — `<project>/.claude/spec/{slug}/`. `None` when the
+/// project root fails the `ClaudePaths` guard.
+fn unit_dir(project: &Path, slug: &str) -> Option<PathBuf> {
+    Some(ClaudePaths::for_project(project).ok()?.spec_dir().join(slug))
+}
+
+/// The cut's OWN record of the base, inside the unit's directory.
 ///
-/// The sidecar that already holds every machine-parseable fact about a unit
-/// (its stage, its outcome, its checklist, its findings), so the base it was cut
-/// from lives there too rather than in a file invented for one field. `None`
-/// when the project root fails the `ClaudePaths` guard.
-fn unit_record(project: &Path, slug: &str) -> Option<PathBuf> {
-    Some(ClaudePaths::for_project(project).ok()?.spec_dir().join(slug).join("meta.json"))
+/// **Why a file of its own, and why this name.** The answer's durable home is
+/// `meta.json#base` — the sidecar that already holds every machine-parseable
+/// fact about a unit — but the CUT cannot write it there: the cut runs BEFORE
+/// the draft, and `spec-draft` refuses to draft into a directory that already
+/// holds anything but harness state ([`crate::commands::spec::spec_draft`]'s
+/// `holds_only_harness_state`, whose allowlist is dot-prefixed harness state and
+/// whose whole reason for existing is that a `meta.json` there IS a drafted
+/// spec). Writing the base into `meta.json` at cut time therefore made step one
+/// block step two: the unit was cut and got no spec at all.
+///
+/// So the cut writes HERE, and the draft folds it into `meta.json#base` when it
+/// writes the sidecar ([`crate::commands::spec::spec_scaffold::write_meta_json`])
+/// and retires the file. This name is harness state, not authored work, on every
+/// term the rest of the per-spec spill is (`.events`, `.dispatch`, `.blobs`,
+/// `.memory-approved`): nobody authors it, it holds one machine token the
+/// harness wrote to itself, it is derivable again for every unit whose flow can
+/// answer, and it never reaches the merge — the unit's authored work is
+/// `spec.md`, the waves, the proof, the change log and the review verdicts.
+pub(crate) const CUT_BASE_FILE: &str = ".cut-base";
+
+/// The base recorded in `dir`'s cut record, `None` when there is none (or it is
+/// empty/unreadable). Trimmed — the file carries one line and a newline.
+pub(crate) fn cut_base_in(dir: &Path) -> Option<String> {
+    let body = std::fs::read_to_string(dir.join(CUT_BASE_FILE)).ok()?;
+    let base = body.trim();
+    (!base.is_empty()).then(|| base.to_string())
+}
+
+/// Retire `dir`'s cut record — called once its content has been folded into the
+/// sidecar, so the answer has exactly one home again. Best-effort: a file that
+/// could not be removed is still redundant, never wrong.
+pub(crate) fn clear_cut_base_in(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(CUT_BASE_FILE));
 }
 
 /// What a work unit IS — the closed set the branch prefix names.
@@ -234,8 +275,9 @@ impl BaseFlow {
     /// Every consumer that resolves a REAL branch of a REAL repository builds
     /// the model this way, because the derivation is not always enough: the base
     /// a hotfix was cut from is the operator's choice whenever the project
-    /// declares more than one candidate, and `.claude/spec/{slug}/meta.json` is
-    /// where the cut wrote that choice down. A rootless [`of`](Self::of) stays
+    /// declares more than one candidate, and the unit's own directory
+    /// ([`recorded_base_of`](Self::recorded_base_of)) is where that choice was
+    /// written down. A rootless [`of`](Self::of) stays
     /// for the pure question — "what does this flow imply" — which is what the
     /// chooser at cut time asks.
     pub(crate) fn of_at(git: &GitConfig, project: &Path) -> Self {
@@ -361,53 +403,74 @@ impl BaseFlow {
         WorkKind::of_branch(branch) == Some(WorkKind::Hotfix) && self.emergency_is_ambiguous()
     }
 
-    /// The base recorded IN THE UNIT'S OWN RECORD, `None` when nothing was
-    /// recorded, when this model has no project to consult, or when what was
-    /// recorded no longer names a declared base.
+    /// The base recorded FOR THIS UNIT, `None` when nothing was recorded, when
+    /// this model has no project to consult, or when what was recorded no longer
+    /// names a declared base.
     ///
-    /// That last filter matters: `git.flow` may have changed since the cut, and
-    /// answering with a branch the project no longer declares is worse than
-    /// falling back to the derivation — the same posture
+    /// TWO places, one answer, in the order the answer travels: the sidecar
+    /// (`meta.json#base`, its durable home once the draft has folded it) and
+    /// then the cut's own record ([`CUT_BASE_FILE`], where the cut writes it
+    /// because at cut time the draft does not exist yet). A unit that was cut
+    /// and never drafted still answers, and one that was drafted answers from
+    /// the single file every other machine-parseable fact about it lives in.
+    ///
+    /// The declared-base filter matters: `git.flow` may have changed since the
+    /// cut, and answering with a branch the project no longer declares is worse
+    /// than falling back to the derivation — the same posture
     /// [`crate::commands::event::work_branch::recorded_or_derived_base`] takes
     /// with the marker.
     fn recorded_base_of(&self, name: &str) -> Option<String> {
         let project = self.project.as_deref()?;
         let slug = self.slug_of(name)?;
-        let recorded = mustard_core::read_meta(&unit_record(project, &slug)?)?.base?;
+        let dir = unit_dir(project, &slug)?;
+        let recorded = mustard_core::read_meta(&dir.join("meta.json"))
+            .and_then(|meta| meta.base)
+            .or_else(|| cut_base_in(&dir))?;
         let recorded = recorded.trim().to_string();
         self.bases.contains(&recorded).then_some(recorded)
     }
 
-    /// Write down the base a unit was ACTUALLY cut from, in the unit's own
-    /// record — the answer's ONLY durable home.
+    /// Write down the base a unit was ACTUALLY cut from, in the cut's own record
+    /// ([`CUT_BASE_FILE`]) inside the unit's directory.
+    ///
+    /// NOT `meta.json`, and that is the whole point: the cut runs before the
+    /// draft, and a `meta.json` sitting in the directory is precisely what makes
+    /// `spec-draft` refuse the directory as already drafted — so recording the
+    /// base there cut the unit and then denied it a spec. The file this writes is
+    /// harness state the draft's guard tolerates by category, and the draft folds
+    /// it into `meta.json#base` on its way past (see [`CUT_BASE_FILE`]).
     ///
     /// A no-op unless [`base_must_be_recorded`](Self::base_must_be_recorded):
     /// freezing a derivable answer would make the record the thing that goes
-    /// stale when `git.flow` changes, and it would add a key to the sidecar of
-    /// every unit for a question the flow already answers.
+    /// stale when `git.flow` changes, and it would leave a file in the directory
+    /// of every unit for a question the flow already answers. A no-op too once
+    /// the answer is already on disk — the folded sidecar is not resurrected
+    /// into a second copy by a later checkout of the same branch.
     ///
-    /// Fail-open at every step (no project, no slug, an unwritable directory, a
-    /// serialisation failure): this runs inside a HOOK that has already cut the
-    /// branch, and a record that could not be written must never turn a
-    /// successful cut into a blocked session.
+    /// Fail-open at every step (no project, no slug, an unwritable directory):
+    /// this runs inside a HOOK that has already cut the branch, and a record
+    /// that could not be written must never turn a successful cut into a blocked
+    /// session.
     pub(crate) fn record_cut_base(&self, branch: &str, base: &str) {
         if !self.base_must_be_recorded(branch) {
             return;
         }
         let Some(project) = self.project.as_deref() else { return };
         let Some(slug) = self.slug_of(branch) else { return };
-        let Some(path) = unit_record(project, &slug) else { return };
-        if let Some(dir) = path.parent() {
-            if std::fs::create_dir_all(dir).is_err() {
-                return;
-            }
+        let Some(dir) = unit_dir(project, &slug) else { return };
+        let already = mustard_core::read_meta(&dir.join("meta.json"))
+            .and_then(|meta| meta.base)
+            .or_else(|| cut_base_in(&dir));
+        if already.as_deref() == Some(base) {
+            return; // already says exactly this — write nothing
         }
-        let mut meta = mustard_core::read_meta(&path).unwrap_or_default();
-        if meta.base.as_deref() == Some(base) {
-            return; // already says exactly this — do not rewrite the sidecar
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
         }
-        meta.base = Some(base.to_string());
-        let _ = mustard_core::write_meta(&path, &meta);
+        let _ = mustard_core::io::fs::write_atomic(
+            dir.join(CUT_BASE_FILE),
+            format!("{base}\n").as_bytes(),
+        );
     }
 
     /// The `{base}_` half of a name still in the pre-kind shape. Separate from
@@ -596,10 +659,35 @@ mod tests {
             "every later read answers the base the unit was really cut from",
         );
 
-        // The record is written where the unit's own state already lives.
-        let sidecar = project.join(".claude").join("spec").join("my-unit").join("meta.json");
-        assert!(sidecar.is_file(), "the unit's own record carries it: {}", sidecar.display());
-        assert_eq!(mustard_core::read_meta(&sidecar).expect("reads").base.as_deref(), Some("qas"));
+        // The record is HARNESS STATE inside the unit's directory — never the
+        // sidecar, which at this moment does not exist and whose presence is
+        // exactly what makes `spec-draft` refuse the directory as already
+        // drafted. The cut must leave the draft a directory it can still write.
+        let unit = project.join(".claude").join("spec").join("my-unit");
+        assert_eq!(
+            std::fs::read_to_string(unit.join(CUT_BASE_FILE)).expect("the cut's record").trim(),
+            "qas",
+        );
+        assert!(
+            !unit.join("meta.json").exists(),
+            "the cut drafts nothing — a meta.json here is a DRAFT, and writing one \
+             would leave the unit cut and spec-less",
+        );
+
+        // The draft folds it into the sidecar; from then on the sidecar answers
+        // and the cut's record is spent.
+        let sidecar = unit.join("meta.json");
+        let folded = mustard_core::domain::meta::Meta {
+            base: cut_base_in(&unit),
+            ..Default::default()
+        };
+        mustard_core::write_meta(&sidecar, &folded).expect("fold");
+        clear_cut_base_in(&unit);
+        assert_eq!(
+            BaseFlow::of_at(&git, project).base_of("hotfix/my-unit").known(),
+            Some("qas"),
+            "the answer survives the fold — one home at a time, never none",
+        );
 
         // A flow that no longer declares the recorded base ignores it rather
         // than obeying it — the project may have changed since the cut.

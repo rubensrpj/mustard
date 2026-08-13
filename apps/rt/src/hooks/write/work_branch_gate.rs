@@ -37,6 +37,12 @@
 //!    An unmeasured POSITION and unmeasured WORK part ways deliberately: a
 //!    detached HEAD says nobody's unit is here, while a `git status` that cannot
 //!    answer says nothing at all about the work — and the second is refused.
+//!    A cut is also NOT MADE when nothing says which base the unit came from
+//!    and the flow declares several it could have (an emergency in a three-base
+//!    project whose pick nothing recorded): the gate says so — `Warn`, or `Deny`
+//!    where staying would leave the edit on a base — and keeps the marker. It
+//!    used to be handed the outermost candidate with a `WARN` on stderr, which
+//!    a PreToolUse hook says to nobody, so the guess travelled as a fact.
 //!    An in-place cut used to answer `Warn` with a standing `EnterWorktree`
 //!    hint on the first edit of EVERY unit. That nudge is retired: a suggestion
 //!    that fires unconditionally is what teaches operators to stop reading.
@@ -263,12 +269,14 @@ fn nested_work_target_base(
     let sub_base = nested_default_base(vcs, &nested.to_string_lossy())?;
     // Re-prefix the name with the submodule base: strip the superproject base
     // recovered from the marker, re-attach the submodule's. When the marker does
-    // not carry that prefix, keep the name and only swap the cut base.
-    let super_base = base_for(Path::new(state_root), target, config);
-    let effective_target = match target.strip_prefix(&format!("{super_base}_")) {
-        Some(slug) => format!("{sub_base}_{slug}"),
-        None => target.to_string(),
-    };
+    // not carry that prefix — a `{kind}/{slug}` name, or a superproject base
+    // nothing could establish — keep the name and only swap the cut base.
+    let effective_target = base_for(Path::new(state_root), target, config)
+        .ok()
+        .and_then(|super_base| {
+            target.strip_prefix(&format!("{super_base}_")).map(|slug| format!("{sub_base}_{slug}"))
+        })
+        .unwrap_or_else(|| target.to_string());
     Some((effective_target, sub_base))
 }
 
@@ -346,17 +354,20 @@ impl Check for WorkBranchGate {
 
         // Nested-git-root (submodule) base resolution: when the edited file's
         // LOCAL tree sits inside a DISTINCT nested repo below the state root, the
-        // work branch must be based on the submodule's OWN default branch and its
-        // `{base}_{slug}` name must carry that base, never the superproject's.
-        // Fail-open to today's (target, prefix-recovered base) pair otherwise.
+        // work branch must be based on the submodule's OWN default branch, and a
+        // name still in the older `{base}_{slug}` shape must carry that base,
+        // never the superproject's. Fail-open to today's (target, base resolved
+        // below) pair otherwise.
         let nested = nested_work_target_base(&vcs, &project, &local, &target, &config);
         let in_submodule = nested.is_some();
-        let (target, base) = nested.unwrap_or_else(|| {
-            // The SAME base resolution `spec-draft`'s cut takes: the operator's
-            // recorded answer when the derivation cannot reproduce it, else the
-            // base the unit's kind implies. Two doors, one branch.
-            (target.clone(), recorded_or_derived_base(&project, &sid, &target, &config))
-        });
+        // The NAME is resolved here and the BASE is not: the base is only needed
+        // by a cut that actually happens, and asking for it earlier would make a
+        // session ALREADY sitting on its own branch (the fast path below) depend
+        // on an answer that changes nothing for it.
+        let (target, nested_base) = match nested {
+            Some((target, base)) => (target, Some(base)),
+            None => (target.clone(), None),
+        };
 
         // 2. Already on the target branch → clear and allow.
         if current.as_deref() == Some(target.as_str()) {
@@ -405,6 +416,38 @@ impl Check for WorkBranchGate {
                 return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) });
             }
         }
+
+        // 2.9 WHERE from — asked now, because now a cut is really going to
+        //     happen. The SAME base resolution `spec-draft`'s cut takes: the
+        //     operator's recorded answer when the derivation cannot reproduce
+        //     it, else the base the unit's kind implies. Two doors, one branch.
+        //
+        //     When NOTHING says which base this emergency came from and the flow
+        //     declares several it could have, there is no honest cut to make.
+        //     This gate used to be handed the outermost candidate with a `WARN`
+        //     on stderr, which reaches nobody — a PreToolUse hook exits 0 and
+        //     its stderr is not the transcript — so the guess travelled as a
+        //     fact and the unit was cut from a base the operator never chose.
+        //     Say it where it IS read, and cut nothing. The marker is KEPT: the
+        //     unit was never started, so nothing is consumed and the attempt
+        //     that follows an explicit `--base` still has its intent.
+        let base = match nested_base {
+            Some(base) => base,
+            None => match recorded_or_derived_base(&project, &sid, &target, &config) {
+                Ok(base) => base,
+                Err(candidates) => {
+                    let message = translate("workbranch.base.unknown", config.i18n().lang)
+                        .replace("{target}", &target)
+                        .replace("{candidates}", &candidates.join(", "));
+                    return Ok(if on_protected {
+                        // Staying here would land the edit on the base itself.
+                        Verdict::Deny { reason: message }
+                    } else {
+                        Verdict::Warn { message }
+                    });
+                }
+            },
+        };
 
         // 3. Refresh the integration bases from origin FIRST so the branch is
         //    cut from the latest dev/main. Fail-open: offline / no remote /
@@ -466,8 +509,22 @@ impl Check for WorkBranchGate {
                     // BOTH branches in the warning. Clearing the marker here
                     // destroyed the intent: the recorded branch stayed a name
                     // that never existed, and nothing retried or reconciled.
+                    //
+                    // The BASE line survives the rewrite. What this reconcile
+                    // learned is a BRANCH, not a base, and the base line is the
+                    // operator's own answer to the one question they were asked
+                    // — the only carrier of it while the unit has no record of
+                    // its own. Dropping it here left the retried cut of an
+                    // emergency with nothing to read, and a derivation that
+                    // cannot choose between several candidates.
+                    let recorded_base = context::pending_base_for(&project, &sid);
                     match current.as_deref() {
-                        Some(actual) => context::set_pending_branch(&project, &sid, actual, None),
+                        Some(actual) => context::set_pending_branch(
+                            &project,
+                            &sid,
+                            actual,
+                            recorded_base.as_deref(),
+                        ),
                         // No branch to record (detached HEAD / probe failure)
                         // — clearing is the honest residue.
                         None => context::clear_pending_branch(&project, &sid),
@@ -1266,6 +1323,149 @@ mod tests {
         assert!(
             reason.contains("f.txt"),
             "the deny must name the dirty paths the pre-check measured: {reason}"
+        );
+    }
+
+    /// The reconcile corrects the BRANCH and keeps the BASE.
+    ///
+    /// With three declared bases an emergency's base cannot be re-derived, so
+    /// the operator's pick travels in the marker's second line — and a failed
+    /// cut used to rewrite that marker with `None`, dropping it. The next cut of
+    /// that unit then had nothing to read, and the derivation it fell back to
+    /// cannot choose between the candidates: it answered the outermost one, in
+    /// silence, and aimed the emergency somewhere nobody picked.
+    ///
+    /// Both halves are asserted: the line survives the rewrite, and the cut that
+    /// follows still resolves to the chosen base.
+    #[test]
+    fn a_failed_cut_reconciles_the_branch_and_keeps_the_recorded_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        // THREE bases: a hotfix has a real choice here, and only here.
+        seed_flow(root, r#"{"*":"dev","dev":"qas","qas":"main"}"#);
+        // A WORK branch (not protected) with a clean tree, so the failed cut
+        // takes the reconcile path rather than the deny or the refusal.
+        init_repo_on(root, "fix/current");
+
+        let sid = "sess-reconcile-keeps-base";
+        // The marker `emit-pipeline` writes for an emergency whose base was
+        // chosen — and a name git refuses, so the cut fails deterministically.
+        context::set_pending_branch(root_s, sid, "hotfix/bad..name", Some("qas"));
+
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Warn { .. }), "a failed cut warns: {verdict:?}");
+
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("fix/current"),
+            "the branch is reconciled to the one actually active",
+        );
+        assert_eq!(
+            context::pending_base_for(root_s, sid).as_deref(),
+            Some("qas"),
+            "…and the operator's base is NOT dropped along the way",
+        );
+
+        // The consequence, at the seam where it bites: the next cut of that unit
+        // still resolves to the chosen base. Dropped, this answers `Err` — the
+        // derivation cannot choose — and used to answer the outermost `main`.
+        let config = mustard_core::ProjectConfig::load(root);
+        assert_eq!(
+            crate::commands::event::work_branch::recorded_or_derived_base(
+                root_s,
+                sid,
+                "hotfix/bad..name",
+                &config,
+            )
+            .as_deref(),
+            Ok("qas"),
+            "the retried cut lands on the base the operator chose",
+        );
+    }
+
+    /// An emergency whose base NOTHING recorded is not cut, and the operator is
+    /// told — in the transcript, where a hook is actually read.
+    ///
+    /// This gate used to be handed the outermost candidate with a `WARN` on
+    /// stderr. A PreToolUse hook exits 0 and its stderr is not the transcript,
+    /// so that warning reached nobody and the guess travelled as a fact: the
+    /// unit was cut from a base the operator never chose, and its pull request
+    /// aimed there.
+    #[test]
+    fn an_emergency_with_no_recorded_base_is_not_cut_on_a_guess() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"qas","qas":"main"}"#);
+        init_repo_on(root, "fix/current");
+
+        // A marker with NO base line — the pick was never recorded (an older
+        // marker, a reconcile that dropped it, a unit whose record is gone).
+        let sid = "sess-no-recorded-base";
+        context::set_pending_branch(root_s, sid, "hotfix/emergencia", None);
+
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        let Verdict::Warn { message } = verdict else {
+            panic!("the operator has to hear this one: {verdict:?}");
+        };
+        assert!(message.contains("hotfix/emergencia"), "it names the unit: {message}");
+        assert!(
+            message.contains("qas") && message.contains("main"),
+            "…and the candidates it could not choose between: {message}",
+        );
+
+        // Nothing was cut on a guess, and the intent survives for the attempt
+        // that follows an explicit base.
+        assert_eq!(current_branch("git", root_s).as_deref(), Some("fix/current"));
+        assert!(
+            !Command::new("git")
+                .args(["rev-parse", "--verify", "--quiet", "refs/heads/hotfix/emergencia"])
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false),
+            "no branch is created from a base nobody chose",
+        );
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("hotfix/emergencia"),
+            "the marker is kept — nothing was consumed",
+        );
+
+        // A session ALREADY on that branch is NOT held up by it. The base
+        // answers a question only a CUT asks, and there is no cut left to make
+        // here — so the fast path consumes the marker exactly as it does for
+        // any other unit. Asking for the base before this check turned an
+        // unanswerable question into a warning on every edit of a unit that was
+        // already open.
+        git(root, &["checkout", "-b", "hotfix/emergencia"]);
+        let (input2, ctx2) = pre_edit_input(root_s, sid);
+        let verdict2 = WorkBranchGate.evaluate(&input2, &ctx2).expect("no error");
+        assert!(
+            matches!(verdict2, Verdict::Allow),
+            "a unit already on its own branch is not blocked by where it came from: {verdict2:?}",
+        );
+        assert!(
+            context::pending_branch_for(root_s, sid).is_none(),
+            "…and the marker is consumed, so the next edit does not re-fire",
+        );
+
+        // On the BASE itself the same condition denies instead: staying would
+        // leave the edit on the integration branch.
+        let base_dir = tempfile::tempdir().unwrap();
+        let base_root = base_dir.path();
+        let base_s = base_root.to_str().unwrap();
+        seed_flow(base_root, r#"{"*":"dev","dev":"qas","qas":"main"}"#);
+        init_repo_on(base_root, "dev");
+        context::set_pending_branch(base_s, sid, "hotfix/emergencia", None);
+        let (on_base, base_ctx) = pre_edit_input(base_s, sid);
+        let verdict2 = WorkBranchGate.evaluate(&on_base, &base_ctx).expect("no error");
+        assert!(
+            matches!(verdict2, Verdict::Deny { .. }),
+            "on an integration base the edit is refused, not allowed through: {verdict2:?}",
         );
     }
 

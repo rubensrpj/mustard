@@ -620,6 +620,25 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              the second unit."
         }
 
+        // Work-branch BASE UNKNOWN — an emergency unit whose base nothing ever
+        // recorded, in a project declaring several it could have been cut from.
+        // Nothing is cut, and the operator is told: the harness used to take the
+        // outermost candidate and mention it on stderr, which a PreToolUse hook
+        // says to nobody (it exits 0). `{target}`/`{candidates}` are
+        // interpolated by the gate.
+        ("workbranch.base.unknown", Locale::PtBr) => {
+            "Não dá para saber de qual base '{target}' deve sair: este projeto declara várias \
+             candidatas ({candidates}) e nada registrou a escolha, então a branch NÃO foi criada. \
+             Reabra a unidade com a base explícita (--base) — chutar aqui aponta o trabalho para \
+             uma base que ninguém escolheu."
+        }
+        ("workbranch.base.unknown", Locale::EnUs) => {
+            "There is no telling which base '{target}' should be cut from: this project declares \
+             several candidates ({candidates}) and nothing recorded the choice, so the branch was \
+             NOT created. Re-open the unit with an explicit base (--base) — guessing here aims the \
+             work at a base nobody chose."
+        }
+
         // Work-unit SURFACING — the three places the harness says out loud that
         // a work unit is somewhere other than the checkout, or that the exit
         // ritual is still owed. All three are user-facing (a listing legend, a

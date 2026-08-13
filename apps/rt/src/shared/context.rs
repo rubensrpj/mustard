@@ -534,9 +534,15 @@ fn pending_marker_line(
 /// when the marker already records the same thing (mirrors [`bind_session_spec`]).
 ///
 /// `base` is the integration base the branch was resolved for, and is recorded
-/// ONLY when the cut could not re-derive it — see [`pending_base_for`]. A caller
-/// that merely reconciles the marker to the branch a session actually ended up
-/// on knows no base, and says so by passing `None` rather than inventing one.
+/// ONLY when the cut could not re-derive it — see [`pending_base_for`]. `None`
+/// is for a caller that never had one, and it means "record no base" rather than
+/// "invent one".
+///
+/// A caller RECONCILING the marker to the branch a session actually ended up on
+/// therefore reads the base line back and passes it here again: what it learned
+/// is a BRANCH, and the base is the operator's own answer to the one question
+/// they were asked. Passing `None` there dropped it — and a retried emergency
+/// cut then had nothing to read and no way to choose between the candidates.
 pub fn set_pending_branch(
     project_dir_path: &str,
     session_id: &str,

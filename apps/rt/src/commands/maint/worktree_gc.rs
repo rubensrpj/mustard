@@ -19,7 +19,8 @@
 //! a prefix the platform never emits, which made it inert against every real
 //! orphan. It now collects by the ONE criterion the rest of the crate uses —
 //! [`crate::commands::work_unit_open::is_unit_worktree_name`]: a worktree whose
-//! name carries a declared `{base}_` is a WORK UNIT's, and cleanup of those is
+//! name is a unit's — `{kind}/{slug}`, or a declared `{base}_` for one still in
+//! the older shape — is a WORK UNIT's, and cleanup of those is
 //! `git-settle`'s job EXCLUSIVELY. Everything else is collectable.
 //!
 //! Widening what a destructive sweep can see demands the other half of the

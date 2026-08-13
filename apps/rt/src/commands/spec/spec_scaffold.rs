@@ -12,6 +12,7 @@
 //! | `write_meta_json` | Write `meta.json` from a pre-built [`Meta`]. |
 //! | `sync_status` | Atomically rewrite lifecycle headers in both files. |
 
+use crate::shared::work_kind;
 use mustard_core::io::fs as mfs;
 use mustard_core::domain::meta::{write_meta, Meta, MetaFlags};
 use mustard_core::domain::spec::contract::{
@@ -177,21 +178,37 @@ pub fn write_spec_md(
 /// Write a pre-built [`Meta`] document as `meta.json` under `output/`.
 /// Atomic — uses [`write_meta`] which writes to a temp file then renames.
 ///
-/// One field is CARRIED OVER from whatever sidecar is already there: `base`,
-/// the integration base the unit was actually cut from. Every caller here
-/// builds its `Meta` from a spec INPUT, which cannot know that — only the cut
-/// knows it, and the cut runs first (`spec-draft` cuts the branch before it
-/// writes a byte, and the hook gate cuts it earlier still). A plain write would
-/// therefore erase the one answer nothing else can reconstruct, since the
-/// pending marker that carried it is consumed at the cut. An incoming `base` is
-/// never overwritten — a caller that knows is the more recent measurement.
+/// One field is CARRIED OVER rather than taken from the caller: `base`, the
+/// integration base the unit was actually cut from. Every caller here builds its
+/// `Meta` from a spec INPUT, which cannot know that — only the cut knows it, and
+/// the cut runs first (`spec-draft` cuts the branch before it writes a byte, and
+/// the hook gate cuts it earlier still). A plain write would therefore erase the
+/// one answer nothing else can reconstruct, since the pending marker that
+/// carried it is consumed at the cut. An incoming `base` is never overwritten —
+/// a caller that knows is the more recent measurement.
+///
+/// TWO sources, in the order the answer travels. The sidecar already on disk,
+/// for every write after the first. Then the CUT's own record — the
+/// [`work_kind::CUT_BASE_FILE`] the cut dropped in this directory, because at
+/// cut time the sidecar does not exist and writing one there would make
+/// `spec-draft` refuse the directory as already drafted. This is the FOLD: the
+/// answer moves into the sidecar that holds every other machine-parseable fact
+/// about the unit, and the cut's record is retired, so it has one home again.
 pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
     let path = output.join("meta.json");
     let mut meta = meta.clone();
     if meta.base.is_none() {
         meta.base = read_meta(&path).and_then(|existing| existing.base);
     }
-    write_meta(&path, &meta).map_err(|e| e.to_string())
+    if meta.base.is_none() {
+        meta.base = work_kind::cut_base_in(output);
+    }
+    write_meta(&path, &meta).map_err(|e| e.to_string())?;
+    if meta.base.is_some() {
+        // The sidecar carries it now; a second copy could only go stale.
+        work_kind::clear_cut_base_in(output);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

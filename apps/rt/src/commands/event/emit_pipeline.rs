@@ -25,7 +25,7 @@
 //! moment both a base and an intent exist — so it is where the work unit's one
 //! name is minted ([`mint_unit_name_at`]), from the same derivation
 //! `spec-draft` names the spec directory with. That slug then files the
-//! events, the session→spec binding and the `{base}_{slug}` branch alike. A
+//! events, the session→spec binding and the `{kind}/{slug}` branch alike. A
 //! `--spec` that disagrees is superseded, never silently preferred: the report
 //! carries `spec` (the name that won) plus `renamedFrom` (the one that did
 //! not).
@@ -130,7 +130,7 @@ pub struct EmitPipelineOpts {
     pub allow_no_qa: bool,
     /// Free-form natural-language request. Only consulted on
     /// `--kind pipeline.kind`, where it MINTS the unit's canonical name (see
-    /// [`mint_unit_name_at`]): that one slug names the `{base}_{slug}` branch,
+    /// [`mint_unit_name_at`]): that one slug names the `{kind}/{slug}` branch,
     /// the events, and — through `spec-draft --slug` — the spec directory. It
     /// supersedes a disagreeing `--spec`, and the report says so. Ignored for
     /// every other kind.
@@ -435,7 +435,7 @@ fn parse_payload_or_exit(opts: &EmitPipelineOpts) -> Value {
 /// The unit's canonical NAME, decided at the base gate.
 ///
 /// `slug` is what the whole unit is filed under from that moment on — the
-/// events, the session→spec binding, the `{base}_{slug}` branch, and (through
+/// events, the session→spec binding, the `{kind}/{slug}` branch, and (through
 /// `spec-draft`, which consumes it) the spec directory. `renamed_from` carries
 /// the `--spec` the caller asked for when it disagreed, so the rename is
 /// VISIBLE in the report rather than discovered a phase later as two names for
@@ -449,8 +449,8 @@ pub(crate) struct MintedName {
 
 /// Mint the unit's canonical name for `--kind pipeline.kind`.
 ///
-/// The gate is the first moment both a base and an intent exist, and it already
-/// computes `{base}_{slug}` — so it is where the name is DECIDED, once, from
+/// The gate is the first moment both a kind and an intent exist, and it already
+/// computes `{kind}/{slug}` — so it is where the name is DECIDED, once, from
 /// the same derivation `spec-draft` names the spec directory with
 /// ([`crate::commands::spec::spec_slug::canonical_for_project`]). Before this,
 /// the caller invented a `--spec` here and the draft derived its own slug from
@@ -1521,7 +1521,7 @@ mod tests {
     /// AC-1 — the pipeline-opening door NAMES the unit, once.
     ///
     /// The name it mints is the same string `spec-draft` derives from the same
-    /// intent (one derivation, several callers), it is what `{base}_{slug}` is
+    /// intent (one derivation, several callers), it is what `{kind}/{slug}` is
     /// built from, and it supersedes a `--spec` the caller invented — visibly,
     /// through `renamedFrom`. Nothing is minted when there is nothing to mint
     /// FROM, so every other call stays byte-identical.
