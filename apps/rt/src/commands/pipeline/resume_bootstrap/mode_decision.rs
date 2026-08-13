@@ -13,7 +13,9 @@
 //!   picker's judgement and stays in the picker.
 
 use super::{AUTO_CONTINUE_TTL_MS, PipelineDispatchFailurePayload, PipelineStateView};
-use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
+use crate::commands::event::work_branch::{
+    current_branch, sanitize_git_ref, slug_of_work_branch,
+};
 use mustard_core::domain::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
@@ -152,6 +154,19 @@ pub(super) fn decide_mode(
 /// the reading `spec-draft` already consumes to name the spec directory, so the
 /// two agree by construction rather than by both deriving the same string.
 ///
+/// BOTH SIDES ARE NORMALISED, because they do not arrive by the same road. The
+/// branch is a git ref, so the slug read out of it has already been through
+/// [`sanitize_git_ref`] — spaces mapped, an accent mapped, a `..` run collapsed
+/// because git forbids one. The `spec` string has not been through anything. For
+/// a canonical slug the two are the same string and the difference is invisible;
+/// for a slug that needed sanitising at all they can never be equal, and the
+/// unit then reports itself OUTSIDE its own branch while standing on it. The
+/// comparison this replaced rebuilt the name with `compute_work_branch`, which
+/// put the spec through the sanitiser as a side effect — reading the branch
+/// instead of rebuilding it is the right call (see above) and dropped that
+/// normalisation with it, so it is stated here explicitly. The function is
+/// idempotent, so the ref's own slug is unchanged by it.
+///
 /// A draft that met no branch at all (a hand-run on an integration base) stands
 /// on nothing this can read — that answers `false`, as it should.
 ///
@@ -171,7 +186,10 @@ pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
     let Some(current) = current_branch(&vcs, &root) else {
         return false;
     };
-    slug_of_work_branch(&current, &config).as_deref() == Some(spec)
+    let Some(slug) = slug_of_work_branch(&current, &config) else {
+        return false;
+    };
+    sanitize_git_ref(&slug) == sanitize_git_ref(spec)
 }
 
 #[cfg(test)]
@@ -256,6 +274,55 @@ mod tests {
         let bare = tempfile::tempdir().unwrap();
         assert!(!inside_own_work_branch(bare.path(), "my-spec"));
         assert!(!inside_own_work_branch(root, "  "), "an empty spec names no branch");
+    }
+
+    /// AC-3 — the unit is recognised however its slug had to be SPELLED as a
+    /// git ref.
+    ///
+    /// The two sides of the equality do not arrive by the same road. The branch
+    /// name is a ref, so its slug has already been through the ref sanitiser
+    /// ([`crate::commands::event::work_branch::sanitize_git_ref`]) — spaces
+    /// mapped, an accent mapped, a `..` run collapsed because git forbids it. The
+    /// `spec` string has not. For a canonical slug the two are the same string
+    /// and nothing shows, which is why this had to be stated with a slug that
+    /// really needs sanitising: there the read slug and the spec differ by
+    /// construction, and the unit reported itself OUTSIDE its own branch while
+    /// standing on it — the picker then takes the full ceremony for a unit that
+    /// has none left to take.
+    #[test]
+    fn inside_own_work_branch_holds_for_a_slug_that_needed_sanitising() {
+        use crate::commands::event::work_branch::compute_work_branch;
+        use crate::shared::work_kind::WorkKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "dev", r#"{"*":"dev","dev":"main"}"#);
+
+        // Spaces, an accented character and a `..` run — every one of them is
+        // mapped or collapsed on the way into a ref, so no branch can ever spell
+        // this string back.
+        let raw = "corrigir botão ..parcelas/";
+        let branch =
+            compute_work_branch(WorkKind::Fix, raw, None, "", "", &root.to_string_lossy());
+        assert_ne!(
+            branch,
+            format!("fix/{raw}"),
+            "the fixture only proves something if the ref really had to differ",
+        );
+        git(root, &["checkout", "-b", &branch]);
+
+        assert!(
+            inside_own_work_branch(root, raw),
+            "standing on {branch}, this IS the unit named by {raw:?}",
+        );
+
+        // …and a neighbour that sanitises to something else is still not it, so
+        // the agreement was reached by normalising both sides, not by loosening
+        // the comparison.
+        assert!(
+            !inside_own_work_branch(root, "corrigir botão ..parcelas-two/"),
+            "a neighbouring unit's slug must not answer for this spec",
+        );
     }
 
     /// AC-3 — the case that FAILED before the unit had one name, driven through

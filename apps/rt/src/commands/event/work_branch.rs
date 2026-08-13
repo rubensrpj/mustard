@@ -89,7 +89,15 @@ fn short_sid(sid: &str) -> String {
 /// Sanitise `{kind}/{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
 /// map everything else to `-`, collapse `..` runs (git forbids them), and trim
 /// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to `work`.
-fn sanitize_git_ref(raw: &str) -> String {
+///
+/// Idempotent, and that is what makes it usable as a COMPARISON normaliser and
+/// not only as a builder: a name a branch already carries is a fixed point, so
+/// putting both sides of a slug equality through it lets a raw slug meet the ref
+/// it was spelled as ([`crate::commands::pipeline::resume_bootstrap`]'s
+/// `inside_own_work_branch`, which asks whether the checkout IS a spec's own
+/// branch). Comparing a ref's slug against an unsanitised one answers `false`
+/// for every slug that needed sanitising at all.
+pub(crate) fn sanitize_git_ref(raw: &str) -> String {
     let mut out: String = raw
         .chars()
         .map(|ch| match ch {

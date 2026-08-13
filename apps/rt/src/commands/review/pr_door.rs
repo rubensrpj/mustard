@@ -131,9 +131,17 @@ fn project_root(root: &Path) -> PathBuf {
 /// The project's base model (derived from `git.flow`) and the branch the
 /// checkout is standing on. No branch name is ever hardcoded — the core owns
 /// that derivation so this door and the work-branch gate agree.
+///
+/// ROOTED ([`BaseFlow::of_at`]), never the pure derivation: every caller here
+/// hands in [`project_root`], the main checkout where `.claude/` lives, and this
+/// door resolves REAL branches of that repository. A rootless model cannot read
+/// the base a unit's own directory RECORDED, so in a project declaring several
+/// emergency bases an in-flight `hotfix/…` answered
+/// [`crate::shared::work_kind::UnitBase::Ambiguous`] here and the refusal below
+/// fell back to the primary base — naming a base the operator never chose.
 fn bases_and_branch(root: &Path) -> (BaseFlow, String) {
     let cfg = mustard_core::ProjectConfig::load(root);
-    let flow = BaseFlow::of(&cfg.git);
+    let flow = BaseFlow::of_at(&cfg.git, root);
     let branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     (flow, branch)
 }
