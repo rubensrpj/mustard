@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "worktree-isolation-becomes-usable-it",
+  "title": "worktree isolation becomes usable: it carries the environment the project declares, links what is heavy, reports what did not travel, cleans up after itself, and the gate isolates a second unit instead of taking over the checkout",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "carry",
+      "summary": "A worktree receives the environment the project declares: small files copied, heavy directories linked, and whatever could not travel is named.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "reap",
+      "summary": "The collector stops reporting and starts collecting — keyed on whether the owner still exists, not on how many days have passed.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "isolate",
+      "summary": "A second unit is isolated instead of taking over the checkout, and the prose teaches the arrangement that now actually works.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
