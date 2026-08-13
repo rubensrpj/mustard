@@ -147,6 +147,8 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         lang: Some(lang.as_str().to_string()),
         checkpoint: Some(ts.clone()),
         parent: Some(opts.parent.clone()),
+        // A tactical fix rides its parent's branch — no base of its own.
+        base: None,
         is_wave_plan: None,
         total_waves: None,
         // A freshly created tactical-fix spec carries no qualifier flag.

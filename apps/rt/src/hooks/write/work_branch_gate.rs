@@ -4,7 +4,7 @@
 //!
 //! A `PreToolUse(Write|Edit|MultiEdit)` [`Check`] with exactly two behaviors:
 //!
-//! 1. **Pending work-unit marker** → cut `{base}_{slug}` off a freshly
+//! 1. **Pending work-unit marker** → cut `{kind}/{slug}` off a freshly
 //!    fetched base and check it out (fail-open: any git failure warns, never
 //!    blocks — unless staying would leave the edit on a protected branch).
 //!    The dirty tree is pre-checked with the worktree door's probe so a
@@ -76,9 +76,10 @@
 //! [`mustard_core::domain::config::GitConfig`]). The project's **integration
 //! bases** are `git.flow`'s non-`*` keys ∪ values (`{"*":"dev","dev":"main"}` →
 //! `{dev, main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`);
-//! nothing hardcodes `dev`/`main`. A work branch's base is recovered from its
-//! NAME: the LONGEST integration base `B` with `target == "{B}_…"`
-//! ([`base_for`], falling back to `config.git.primary_base()`).
+//! nothing hardcodes `dev`/`main`. A work branch's base follows from what the
+//! unit IS — its `{kind}/` prefix read through the declared flow — and a unit
+//! still in the older `{base}_{slug}` shape is still resolved by its prefix
+//! ([`base_for`], falling back to the base ordinary work is cut from).
 //!
 //! ## Contract (apps/rt/CLAUDE.md)
 //!
@@ -97,7 +98,7 @@ use std::process::Command;
 
 use crate::commands::event::work_branch::{
     base_for, busy_checkout, checkout_work_branch, current_branch, is_protected,
-    name_dirty_paths, refresh_integration_bases,
+    name_dirty_paths, recorded_or_derived_base, refresh_integration_bases,
 };
 use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
@@ -263,7 +264,7 @@ fn nested_work_target_base(
     // Re-prefix the name with the submodule base: strip the superproject base
     // recovered from the marker, re-attach the submodule's. When the marker does
     // not carry that prefix, keep the name and only swap the cut base.
-    let super_base = base_for(target, config);
+    let super_base = base_for(Path::new(state_root), target, config);
     let effective_target = match target.strip_prefix(&format!("{super_base}_")) {
         Some(slug) => format!("{sub_base}_{slug}"),
         None => target.to_string(),
@@ -335,7 +336,7 @@ impl Check for WorkBranchGate {
                     reason: format!(
                         "Você está na branch de integração protegida '{}'. O Mustard não \
                          desenvolve direto aqui — descreva o trabalho para eu criar a branch \
-                         {{base}}_{{slug}}, ou crie uma branch manualmente antes de editar.",
+                         {{tipo}}/{{slug}}, ou crie uma branch manualmente antes de editar.",
                         current.as_deref().unwrap_or("?")
                     ),
                 });
@@ -350,8 +351,12 @@ impl Check for WorkBranchGate {
         // Fail-open to today's (target, prefix-recovered base) pair otherwise.
         let nested = nested_work_target_base(&vcs, &project, &local, &target, &config);
         let in_submodule = nested.is_some();
-        let (target, base) =
-            nested.unwrap_or_else(|| (target.clone(), base_for(&target, &config)));
+        let (target, base) = nested.unwrap_or_else(|| {
+            // The SAME base resolution `spec-draft`'s cut takes: the operator's
+            // recorded answer when the derivation cannot reproduce it, else the
+            // base the unit's kind implies. Two doors, one branch.
+            (target.clone(), recorded_or_derived_base(&project, &sid, &target, &config))
+        });
 
         // 2. Already on the target branch → clear and allow.
         if current.as_deref() == Some(target.as_str()) {
@@ -423,6 +428,15 @@ impl Check for WorkBranchGate {
                 // unit; isolation now HAPPENS at 2.5 where it is needed, and a
                 // suggestion that fires unconditionally is the shape this
                 // project has twice found teaches operators to stop reading.
+                //
+                // The base is a FACT now, and the marker that carried it is
+                // about to be cleared: write it into the unit's own record while
+                // it still exists. Both doors do this, on the same terms, so the
+                // answer does not depend on which one opened first. Fail-open by
+                // construction — a record that cannot be written never turns a
+                // successful cut into a blocked edit.
+                crate::shared::work_kind::BaseFlow::of_at(&config.git, Path::new(&project))
+                    .record_cut_base(&target, &base);
                 context::clear_pending_branch(&project, &sid);
                 Ok(Verdict::Allow)
             }
@@ -453,7 +467,7 @@ impl Check for WorkBranchGate {
                     // destroyed the intent: the recorded branch stayed a name
                     // that never existed, and nothing retried or reconciled.
                     match current.as_deref() {
-                        Some(actual) => context::set_pending_branch(&project, &sid, actual),
+                        Some(actual) => context::set_pending_branch(&project, &sid, actual, None),
                         // No branch to record (detached HEAD / probe failure)
                         // — clearing is the honest residue.
                         None => context::clear_pending_branch(&project, &sid),
@@ -584,7 +598,7 @@ mod tests {
 
         // The router pre-computed this branch for the work unit.
         let sid = "sess-branch-test";
-        context::set_pending_branch(root_s, sid, "dev_my-thing");
+        context::set_pending_branch(root_s, sid, "dev_my-thing", None);
 
         // First Write of the work unit fires the gate. The checkout sits on a
         // bare integration base — nobody's work — so the cut lands in place,
@@ -618,7 +632,7 @@ mod tests {
         git(root, &["checkout", "-b", "dev_manual"]);
 
         let sid = "sess-already";
-        context::set_pending_branch(root_s, sid, "dev_manual");
+        context::set_pending_branch(root_s, sid, "dev_manual", None);
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
@@ -665,7 +679,7 @@ mod tests {
         // The same write, with the work unit signalled, lands INSIDE the unit:
         // the marker is consumed and the branch is cut before the spec exists.
         let sid = "sess-spec-marked";
-        context::set_pending_branch(root_s, sid, "dev_notif");
+        context::set_pending_branch(root_s, sid, "dev_notif", None);
         let (marked, ctx2) = pre_edit_input_for(root_s, sid, spec_s);
         let verdict2 = WorkBranchGate.evaluate(&marked, &ctx2).expect("no error");
         assert!(
@@ -751,7 +765,7 @@ mod tests {
 
         // Marker lives in the STATE root (the main checkout).
         let sid = "sess-nested-marker";
-        context::set_pending_branch(main_s, sid, "dev_other");
+        context::set_pending_branch(main_s, sid, "dev_other", None);
 
         let file_in_wt = wt.join("f.txt");
         let input = HookInput {
@@ -807,7 +821,7 @@ mod tests {
         assert!(!has_origin, "precondition: repo has no origin remote");
 
         let sid = "sess-offline";
-        context::set_pending_branch(root_s, sid, "dev_offline-thing");
+        context::set_pending_branch(root_s, sid, "dev_offline-thing", None);
 
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
@@ -877,7 +891,7 @@ mod tests {
 
         // First edit of the work unit fires the gate; base refresh must ff `dev`.
         let sid = "sess-behind";
-        context::set_pending_branch(proj_s, sid, "dev_new-thing");
+        context::set_pending_branch(proj_s, sid, "dev_new-thing", None);
         let (input, ctx) = pre_edit_input(proj_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "edit proceeds: {verdict:?}");
@@ -912,7 +926,7 @@ mod tests {
         init_repo_on(root, "develop");
 
         let sid = "sess-develop";
-        context::set_pending_branch(root_s, sid, "develop_feature");
+        context::set_pending_branch(root_s, sid, "develop_feature", None);
 
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
@@ -1055,7 +1069,7 @@ mod tests {
 
         // Even with a pending work unit, a plan write must not consume it.
         let sid = "sess-plan-file";
-        context::set_pending_branch(root_s, sid, "dev_planned-thing");
+        context::set_pending_branch(root_s, sid, "dev_planned-thing", None);
 
         let (input, ctx) = pre_edit_input_for(root_s, sid, ".claude/plans/my-plan.md");
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
@@ -1083,7 +1097,7 @@ mod tests {
         init_repo_on(root, "dev");
 
         let sid = "sess-outside-marker";
-        context::set_pending_branch(root_s, sid, "dev_pending-thing");
+        context::set_pending_branch(root_s, sid, "dev_pending-thing", None);
 
         let outside = tempfile::tempdir().unwrap();
         let outside_file = outside.path().join("memo.md");
@@ -1143,7 +1157,7 @@ mod tests {
 
         // The router precomputed the SUPERPROJECT-named branch for the work unit.
         let sid = "sess-submodule";
-        context::set_pending_branch(main_s, sid, "dev_thing");
+        context::set_pending_branch(main_s, sid, "dev_thing", None);
 
         // Edit a file INSIDE the submodule; the state root is the superproject.
         let file_in_sub = sub.join("f.txt");
@@ -1204,7 +1218,7 @@ mod tests {
         init_repo_on(root, "dev_current");
 
         let sid = "sess-reconcile";
-        context::set_pending_branch(root_s, sid, "dev_bad..name");
+        context::set_pending_branch(root_s, sid, "dev_bad..name", None);
 
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
@@ -1243,7 +1257,7 @@ mod tests {
         seed_flow(base_root, r#"{"*":"dev","dev":"main"}"#);
         init_repo_on(base_root, "dev");
         std::fs::write(base_root.join("f.txt"), "dirty").unwrap();
-        context::set_pending_branch(base_s, "sess-reconcile-base", "dev_bad..name");
+        context::set_pending_branch(base_s, "sess-reconcile-base", "dev_bad..name", None);
         let (on_base, base_ctx) = pre_edit_input(base_s, "sess-reconcile-base");
         let verdict3 = WorkBranchGate.evaluate(&on_base, &base_ctx).expect("no error");
         let Verdict::Deny { reason } = verdict3 else {
@@ -1279,7 +1293,7 @@ mod tests {
         a_first_unit_holds_the_checkout(&root);
 
         // A SECOND unit is signalled for this session.
-        context::set_pending_branch(&root_s, sid, "dev_second");
+        context::set_pending_branch(&root_s, sid, "dev_second", None);
         let (input, ctx) = pre_edit_input(&root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         let Verdict::Deny { reason } = verdict else {
@@ -1359,7 +1373,7 @@ mod tests {
         std::fs::write(root.join(brand_new), "# change log\n").unwrap();
 
         let sid = "sess-refusal-names-paths";
-        context::set_pending_branch(&root_s, sid, "dev_second");
+        context::set_pending_branch(&root_s, sid, "dev_second", None);
         let (input, ctx) = pre_edit_input(&root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         let Verdict::Deny { reason } = verdict else {
@@ -1417,7 +1431,7 @@ mod tests {
         git(root, &["commit", "-m", "first unit work"]);
 
         let sid = "sess-clean-second";
-        context::set_pending_branch(root_s, sid, "dev_second");
+        context::set_pending_branch(root_s, sid, "dev_second", None);
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "nothing is at risk: {verdict:?}");
@@ -1448,7 +1462,7 @@ mod tests {
         );
 
         let sid = "sess-detached";
-        context::set_pending_branch(root_s, sid, "dev_detached-thing");
+        context::set_pending_branch(root_s, sid, "dev_detached-thing", None);
         let (input, ctx) = pre_edit_input(root_s, sid);
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");

@@ -187,8 +187,8 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
     let Ok(paths) = ClaudePaths::for_project(repo) else {
         return Vec::new();
     };
-    let bases: Vec<String> =
-        mustard_core::ProjectConfig::load(repo).git.integration_bases().into_iter().collect();
+    let config = mustard_core::ProjectConfig::load(repo);
+    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
     let root = paths.claude_dir().join("worktrees");
     let Ok(read) = std::fs::read_dir(&root) else {
         return Vec::new();
@@ -197,9 +197,15 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| !is_unit_worktree_name(n, &bases))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                // A unit's worktree is never collected here — that is the exit
+                // ritual's job exclusively. Since a unit is named `{kind}/{slug}`
+                // its worktree sits one level DOWN, and the entry seen at this
+                // level is the bare kind directory holding it: a container, not a
+                // worktree, and collecting it would delete every unit inside.
+                !crate::shared::work_kind::WorkKind::is_container_segment(n)
+                    && !is_unit_worktree_name(n, &flow)
+            })
         })
         .collect()
 }

@@ -18,7 +18,7 @@ disable-model-invocation: true
 | Action | Description |
 |--------|-------------|
 | `list` | Every open PR of the base you are standing on: number, title, the provider's mergeable word, whether it is a draft, and the head branch its unit lives on. **Runs only from an integration base** (`git.flow`) — from a work branch it refuses and names the base to switch to, because "which PRs are open" is a question about the base, not about one unit. |
-| `review [<pr>]` | Review ONE pull request against its own spec and the project's molds. Resolves the PR to its work unit (`{base}_{slug}` → the spec slug), prints the brief — spec path, subproject, that subproject's skill shelf — then runs the review and **records the verdict**. The merge step reads exactly this record. |
+| `review [<pr>]` | Review ONE pull request against its own spec and the project's molds. Resolves the PR to its work unit (`{kind}/{slug}`, or an older `{base}_{slug}`, → the spec slug), prints the brief — spec path, subproject, that subproject's skill shelf — then runs the review and **records the verdict**. The merge step reads exactly this record. |
 | `merge [<pr>] [--confirm]` | Cross the verification gate (build + tests, QA, review spans, docs), then merge and prune: back to the base, pull it, remove the worktree, delete the local and remote branch. No `approved` verdict recorded → it **warns and asks**, touches nothing, and waits for your answer. `--confirm` is that answer coming back. |
 
 ## Iron rules
@@ -50,7 +50,7 @@ Read `ok` first.
 mustard-rt run pr-review --pr <n>
 ```
 
-The brief comes back with `spec`, `spec_path`, `subproject` and `patterns` — the skill shelf the implementer was dispatched with, so the review measures the work against the very molds it was written to. `spec: null` means the head branch carries no `{base}_` unit; review it as a plain diff.
+The brief comes back with `spec`, `spec_path`, `subproject` and `patterns` — the skill shelf the implementer was dispatched with, so the review measures the work against the very molds it was written to. `spec: null` means the head branch names no unit of this project — neither a `{kind}/` one nor a declared `{base}_` prefix; review it as a plain diff.
 
 Then fetch the diff and the phase context:
 

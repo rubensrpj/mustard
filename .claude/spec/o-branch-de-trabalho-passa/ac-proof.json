@@ -1,0 +1,144 @@
+{
+  "spec": "o-branch-de-trabalho-passa",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt a_unit_branch_is_named_by_its_kind",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": "cargo test -p mustard-rt compute_work_branch",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Compiling mustard-core v0.1.34 (C:\\Atiz\\mustard\\packages\\core)\n   Compiling mustard-rt v0.1.34 (C:\\A"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt the_base_comes_from_the_declared_flow_not_from_the_branch_name",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": "cargo test -p mustard-rt base_for",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo test -p mustard-rt an_old_shape_branch_is_still_understood",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo test -p mustard-rt a_hotfix_is_cut_from_a_base_that_is_not_the_work_base",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    }
+  ],
+  "amendments": [
+    {
+      "id": "AC-1",
+      "at": "2026-08-13T16:57:53.322Z",
+      "reason": "Criterio de rascunho, com marcador nao preenchido. Substituido pelo comportamento que a unidade entrega: o prefixo passa a dizer o que a unidade E.",
+      "superseded_command": "<comando executável que verifica este critério>",
+      "superseded_expect": null,
+      "superseded_statement": "when <o novo comportamento é acionado>, then <o resultado observável esperado se mantém>",
+      "command": "cargo test -p mustard-rt a_unit_branch_is_named_by_its_kind",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when a work unit is opened, then its branch is named by the unit's kind as feature/, fix/ or hotfix/, never by the base it was cut from",
+      "rewrote": [
+        ".claude/spec/o-branch-de-trabalho-passa/spec.md"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "at": "2026-08-13T16:57:54.863Z",
+      "reason": "Criterio de rascunho, com marcador nao preenchido. Substituido pela consequencia critica da mudanca: base_for hoje recupera a base fazendo longest-match no nome, e e esse consumidor que quebra se o prefixo deixar de nomear a base.",
+      "superseded_command": "<comando executável que verifica este critério>",
+      "superseded_expect": null,
+      "superseded_statement": "when <um caminho de erro ou de borda ocorre>, then <o sistema responde conforme especificado>",
+      "command": "cargo test -p mustard-rt the_base_comes_from_the_declared_flow_not_from_the_branch_name",
+      "expect": "[1-9][0-9]* passed",
+      "statement": "when a branch name no longer carries the base, then the base is still resolved from the flow declared in mustard.json and never from the branch string",
+      "rewrote": [
+        ".claude/spec/o-branch-de-trabalho-passa/spec.md"
+      ]
+    }
+  ],
+  "additions": [
+    {
+      "id": "AC-4",
+      "at": "2026-08-13T16:58:10.997Z",
+      "reason": "Unidades em voo seriam orfanadas: o alvo do pull request, a verificacao de ja-integrado e a recusa da segunda unidade resolvem a unidade pelo nome do branch.",
+      "statement": "when a branch carries the old base-prefixed shape, then it is still recognised as that unit's branch and still resolves to its base",
+      "command": "cargo test -p mustard-rt an_old_shape_branch_is_still_understood",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/o-branch-de-trabalho-passa/spec.md"
+      ]
+    },
+    {
+      "id": "AC-5",
+      "at": "2026-08-13T16:58:12.204Z",
+      "reason": "E a unica diferenca real entre fix e hotfix: o destino. Sem criterio aqui, o prefixo hotfix seria cosmetico.",
+      "statement": "when the unit is a hotfix, then it is cut from an integration base that is not the default work base, and the operator chooses when more than one candidate exists",
+      "command": "cargo test -p mustard-rt a_hotfix_is_cut_from_a_base_that_is_not_the_work_base",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/o-branch-de-trabalho-passa/spec.md"
+      ]
+    }
+  ]
+}

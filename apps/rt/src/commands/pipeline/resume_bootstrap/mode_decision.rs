@@ -13,7 +13,7 @@
 //!   picker's judgement and stays in the picker.
 
 use super::{AUTO_CONTINUE_TTL_MS, PipelineDispatchFailurePayload, PipelineStateView};
-use crate::commands::event::work_branch::{compute_work_branch, current_branch};
+use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
 use mustard_core::domain::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
@@ -137,34 +137,29 @@ pub(super) fn decide_mode(
 ///
 /// What the equality actually rests on — because the docstring that used to
 /// stand here guaranteed something this function does not: it claimed the name
-/// "is not re-derived" since [`compute_work_branch`] is shared with the gate.
-/// The FUNCTION is shared; the ARGUMENT is not, and the argument is what
-/// diverged. The gate was handed the slug the caller invented at dispatch while
+/// "is not re-derived" since `compute_work_branch` is shared with the gate. The
+/// FUNCTION was shared; the ARGUMENT was not, and the argument is what diverged.
+/// The gate was handed the slug the caller invented at dispatch while
 /// `spec-draft` derived its own from its own `--intent`, so a unit carried two
 /// names and this comparison answered `false` from inside its own branch.
 ///
-/// The name IS rebuilt here, from `spec`. What makes that sound is upstream and
-/// nothing in this file enforces it: the unit is named ONCE, at the base gate
-/// ([`crate::commands::event::emit_pipeline::mint_unit_name_at`]), and
-/// `spec-draft` CONSUMES that name instead of minting a second one — `--slug`
-/// when the caller carries the gate's report forward, else the slug half of the
-/// unit's BRANCH ([`crate::commands::event::work_branch::slug_of_work_branch`]),
-/// which is the leg that does not depend on any caller getting an argument
-/// right: the draft writes inside the unit, so the branch under it is already
-/// `{base}_{slug}` and the spec directory is named from that same string.
+/// The name is no longer rebuilt here at all. The branch is READ instead
+/// ([`slug_of_work_branch`]) and its slug compared with `spec`, which is the
+/// same question asked from the side that cannot go wrong: rebuilding needed one
+/// guess per integration base and would need one per work KIND too now that the
+/// name says what the unit is, while reading the branch needs none. It is also
+/// the reading `spec-draft` already consumes to name the spec directory, so the
+/// two agree by construction rather than by both deriving the same string.
 ///
-/// So this equality holds by CONSTRUCTION on the only arrangement in which it
-/// can be asked: a spec drafted inside its unit was named from the branch, and a
-/// draft that met no branch at all (a hand-run on an integration base) built no
-/// `{base}_{slug}` for anyone to stand on — this answers `false` there, as it
-/// should. The invariant lives in those two commands, not here; the test below
-/// is where it is checked end to end.
+/// A draft that met no branch at all (a hand-run on an integration base) stands
+/// on nothing this can read — that answers `false`, as it should.
 ///
 /// `false` for every uncertainty — an empty spec, a VCS opt-out, a directory
 /// that is not a repository, a detached HEAD. A resume that cannot SHOW it is
 /// inside the unit takes the ceremony, which is what it always did.
 pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
-    if spec.trim().is_empty() {
+    let spec = spec.trim();
+    if spec.is_empty() {
         return false;
     }
     let config = mustard_core::ProjectConfig::load(project);
@@ -175,11 +170,7 @@ pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
     let Some(current) = current_branch(&vcs, &root) else {
         return false;
     };
-    config
-        .git
-        .integration_bases()
-        .iter()
-        .any(|base| compute_work_branch(base, spec, None, "", "", &root) == current)
+    slug_of_work_branch(&current, &config).as_deref() == Some(spec)
 }
 
 #[cfg(test)]
@@ -306,7 +297,14 @@ mod tests {
         // branch is under the tree and there is no marker left for the draft to
         // read. A draft that only looked at what it cut itself found nothing
         // here and derived a second name — on every full run.
-        let branch = compute_work_branch("dev", &minted.slug, Some(intent), "", "", &root.to_string_lossy());
+        let branch = crate::commands::event::work_branch::compute_work_branch(
+            crate::shared::work_kind::WorkKind::Feature,
+            &minted.slug,
+            Some(intent),
+            "",
+            "",
+            &root.to_string_lossy(),
+        );
         git(root, &["checkout", "-b", &branch]);
 
         // ...and the draft really is run, with a DIVERGENT intent, because the

@@ -10,7 +10,7 @@
 //!
 //! The record lives beside the unit's own state, under
 //! `.claude/spec/<slug>/notebook.md`, where `<slug>` is what the work branch
-//! names after its `{base}_` prefix. That is the same directory the spec, the
+//! names after its `{kind}/` prefix. That is the same directory the spec, the
 //! waves and the ceremony are materialized into, so the notebook is part of the
 //! unit and disappears with it when the branch does — which is the whole point
 //! of the work unit living on its branch.
@@ -34,7 +34,6 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::commands::git_settle::git_out;
-use crate::shared::branch_state::unit_slug_of_branch;
 
 /// The checkout the notebook belongs to — the CURRENT working tree, not the
 /// main one.
@@ -95,29 +94,25 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
         Some(u) => u.to_string(),
         None => git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default(),
     };
-    // No `{base}_` prefix of a DECLARED base means no unit — an integration
-    // base, a hand-cut `feature/x` and a `feature_x` alike. The notebook is
-    // per-unit by construction, so there is nowhere to put the item and saying
-    // so is the only honest answer.
+    // A name that is nobody's work unit means no notebook — an integration
+    // base, a hand-cut branch, a `feature_x` whose prefix names neither a kind
+    // nor a declared base. The notebook is per-unit by construction, so there is
+    // nowhere to put the item and saying so is the only honest answer.
     //
-    // The bases come from the project's own `git.flow`, through the same
-    // predicate the `/pr` door resolves a head ref with: a loose split on the
-    // first `_` would accept ANY prefix, so `--unit feature_x` would silently
-    // open the notebook of a spec called `x`.
-    let bases: Vec<String> = mustard_core::ProjectConfig::load(&project)
-        .git
-        .integration_bases()
-        .into_iter()
-        .collect();
-    let Some(slug) = unit_slug_of_branch(&branch, &bases) else {
+    // The reading is the crate's one parser, the same the `/pr` door resolves a
+    // head ref with: a loose split on the first `_` would accept ANY prefix, so
+    // `--unit feature_x` would silently open the notebook of a spec called `x`.
+    let config = mustard_core::ProjectConfig::load(&project);
+    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
+    let bases: Vec<String> = flow.bases().to_vec();
+    let Some(slug) = flow.slug_of(&branch) else {
         return json!({
             "ok": false,
             "reason": "no-unit",
             "branch": branch,
             "bases": bases,
-            "hint": "the notebook is per work unit — run it from a `{base}_{slug}` branch \
-                     whose base is one of this project's own (`git.flow`), or name one with \
-                     `--unit {base}_{slug}`",
+            "hint": "the notebook is per work unit — run it from a `{kind}/{slug}` branch \
+                     (feature/, fix/, hotfix/), or name one with `--unit {kind}/{slug}`",
         });
     };
 

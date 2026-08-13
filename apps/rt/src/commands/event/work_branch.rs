@@ -1,10 +1,17 @@
 //! The work unit's branch: its NAME, and the CUT that creates it.
 //!
 //! Two halves, one subject. The naming half is pure: given a spec or intent
-//! plus the project's integration base, compute the `{base}_{slug}` work-branch
-//! name the unit lives on (the only I/O is reading `mustard.json` for the slug
-//! locale). The cutting half runs git: refresh the integration bases from
-//! `origin`, then check the branch out, creating it off its base.
+//! plus what the unit IS, compute the `{kind}/{slug}` work-branch name the unit
+//! lives on (the only I/O is reading `mustard.json` for the slug locale). The
+//! cutting half runs git: refresh the integration bases from `origin`, then
+//! check the branch out, creating it off its base.
+//!
+//! The base is NOT in the name. It used to be — a unit was `dev_my-thing` and
+//! every consumer recovered the base by parsing the prefix back — and the
+//! prefix now records what the unit IS instead, because that is what an
+//! operator reading a branch list needs. The base follows from the kind through
+//! the declared flow ([`crate::shared::work_kind::BaseFlow`]), which is also
+//! the ONE reader of the old shape, so units in flight are never orphaned.
 //!
 //! Both halves live here because three callers must agree about them and a
 //! second spelling is how they stop agreeing:
@@ -18,32 +25,55 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Resolve the effective integration base for the auto-branch prefix.
+use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind};
+
+/// Resolve the integration base a unit of `kind` is cut from.
 ///
-/// - `--base` omitted (or blank) → the project's primary base
-///   (`config.git.primary_base()`), as before.
-/// - `--base` naming one of `config.git.integration_bases()` → used verbatim.
-/// - `--base` naming anything else → `Err` with a didactic message. An
-///   explicit base is caller INTENT — silently coercing it to the primary
-///   base once sent `--base dev` work onto a `main_*` branch in the field.
+/// The base is a CONSEQUENCE of the kind: an ordinary unit is cut from the base
+/// ordinary work is cut from, and an emergency from one that is not
+/// ([`BaseFlow::base_of_kind`]). An explicit `--base` still wins — that is the
+/// operator's answer to the one question they were asked, and a project with
+/// several emergency bases has no other way to say which — but it is validated
+/// on two terms:
 ///
-/// Agnostic — both the accepted set and the fallback come from `git.flow`; no
-/// branch name is hardcoded here. Do NOT re-derive the base set ad hoc: the
-/// core owns that derivation so `work_branch_gate` and this emitter agree.
-pub(crate) fn resolve_base(
+/// A base the project does not declare is a user/config error, refused with a
+/// didactic message. Silently coercing it to the primary base once sent
+/// `--base dev` work onto a `main_*` branch in the field.
+///
+/// A hotfix cut from the base ordinary work is cut from is a CONTRADICTION, not
+/// a preference: it is the whole difference between the two, and honouring it
+/// would deliver an emergency through the queue it was declared to skip. It is
+/// refused loudly, in the same posture an undeclared base already is — never
+/// coerced, because a coercion here is exactly what once sent `--base dev` work
+/// onto a `main_*` branch in the field.
+pub(crate) fn resolve_kind_base(
+    kind: WorkKind,
     requested: Option<&str>,
     config: &mustard_core::ProjectConfig,
 ) -> Result<String, String> {
-    let bases = config.git.integration_bases();
-    match requested.map(str::trim).filter(|b| !b.is_empty()) {
-        None => Ok(config.git.primary_base()),
-        Some(b) if bases.contains(b) => Ok(b.to_string()),
-        Some(b) => Err(format!(
-            "base '{b}' não é uma base de integração deste projeto (bases: {}). \
+    let flow = BaseFlow::of(&config.git);
+    let Some(requested) = requested.map(str::trim).filter(|b| !b.is_empty()) else {
+        return Ok(flow.base_of_kind(kind));
+    };
+    if !flow.bases().iter().any(|b| b == requested) {
+        return Err(format!(
+            "base '{requested}' não é uma base de integração deste projeto (bases: {}). \
              Declare-a em mustard.json#git.flow ou use uma das bases existentes.",
-            bases.iter().cloned().collect::<Vec<_>>().join(", ")
-        )),
+            flow.bases().join(", ")
+        ));
     }
+    if kind == WorkKind::Hotfix && requested == flow.work_base() {
+        return Err(format!(
+            "um hotfix não sai de '{requested}', que é a base do trabalho comum — \
+             é isso que o separa de um fix. Bases de emergência declaradas: {}.",
+            if flow.emergency_bases().is_empty() {
+                "nenhuma".to_string()
+            } else {
+                flow.emergency_bases().join(", ")
+            }
+        ));
+    }
+    Ok(requested.to_string())
 }
 
 /// A short, ref-safe fallback token from the session id. `unknown`/empty →
@@ -56,7 +86,7 @@ fn short_sid(sid: &str) -> String {
     s.chars().take(8).collect()
 }
 
-/// Sanitise `{base}_{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
+/// Sanitise `{kind}/{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
 /// map everything else to `-`, collapse `..` runs (git forbids them), and trim
 /// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to `work`.
 fn sanitize_git_ref(raw: &str) -> String {
@@ -81,9 +111,11 @@ fn sanitize_git_ref(raw: &str) -> String {
 }
 
 /// Compute the auto-branch name for a `pipeline.kind` work-type signal:
-/// `{base}_{slug}`, sanitised to a valid git ref. The `{base}_` prefix records
-/// the integration branch the work is cut from, so the gate (and `/git`) can
-/// recover the PR-target from the name alone. Slug precedence:
+/// `{kind}/{slug}`, sanitised to a valid git ref. The prefix records WHAT the
+/// unit is — a feature, a fix, an emergency — which is what an operator reading
+/// a branch list needs; the integration base is no longer parsed back out of
+/// the name but derived from the kind through `git.flow`
+/// ([`BaseFlow::base_of_kind`]). Slug precedence:
 /// 1. `--spec` when present (already a slug — at the base gate that is the
 ///    name `emit_pipeline` just MINTED, so this leg carries the canonical one);
 /// 2. else `--intent` through the canonical derivation
@@ -94,7 +126,7 @@ fn sanitize_git_ref(raw: &str) -> String {
 ///    with a short session id for uniqueness.
 /// Never fails — every branch degrades to a valid ref.
 pub(crate) fn compute_work_branch(
-    base: &str,
+    kind: WorkKind,
     spec: &str,
     intent: Option<&str>,
     sid: &str,
@@ -115,7 +147,7 @@ pub(crate) fn compute_work_branch(
             format!("{date}-{}", short_sid(sid))
         }
     };
-    sanitize_git_ref(&format!("{base}_{slug}"))
+    sanitize_git_ref(&kind.branch_name(&slug))
 }
 
 // ---------------------------------------------------------------------------
@@ -234,28 +266,53 @@ pub(crate) fn refresh_integration_bases(
     }
 }
 
-/// Recover the integration base a work branch was cut from, from its NAME:
-/// among the project's integration bases (`git.flow`), the LONGEST base `B`
-/// such that `target` starts with `"{B}_"`. When none match, the project's
-/// primary base (`config.git.primary_base()`).
+/// The integration base a work branch belongs to, for the callers that MUST end
+/// up with a name.
 ///
-/// Longest-match disambiguates nested bases (a `dev_release` base wins over
-/// `dev` for `dev_release_x`). Agnostic — the base set and the primary both
-/// come from `git.flow`; no branch name is hardcoded.
-pub(crate) fn base_for(target: &str, config: &mustard_core::ProjectConfig) -> String {
-    let bases = config.git.integration_bases();
-    let mut best: Option<&str> = None;
-    for b in &bases {
-        if target.starts_with(&format!("{b}_")) && best.is_none_or(|cur| b.len() > cur.len()) {
-            best = Some(b.as_str());
+/// The reading is [`BaseFlow::base_of`] — the crate's one parser — asked of a
+/// model rooted at `root`, so the answer the CUT recorded for this unit wins
+/// over any derivation. A `feature/…` or `fix/…` unit integrates into the base
+/// ordinary work is cut from, a `hotfix/…` into one that is not, and a unit
+/// still in the `{base}_{slug}` shape keeps being resolved by its prefix, so
+/// nothing in flight is orphaned.
+///
+/// Two degradations, and both are named rather than silent:
+///
+/// - a name that is nobody's unit answers the base ordinary work is cut from — a
+///   cut has to come from somewhere, and that is the only defensible answer for
+///   a name nothing recognises;
+/// - an emergency whose base nothing established ([`UnitBase::Ambiguous`])
+///   answers the outermost candidate and SAYS SO on stderr. Every caller of this
+///   function has to produce a base; the ones that can refuse ask
+///   [`BaseFlow::base_of`] directly and get the honest three-way answer.
+pub(crate) fn base_for(
+    root: &Path,
+    target: &str,
+    config: &mustard_core::ProjectConfig,
+) -> String {
+    let flow = BaseFlow::of_at(&config.git, root);
+    match flow.base_of(target) {
+        UnitBase::Known(base) => base,
+        UnitBase::NotAUnit => flow.work_base().to_string(),
+        UnitBase::Ambiguous(candidates) => {
+            let fallback = candidates
+                .last()
+                .cloned()
+                .unwrap_or_else(|| flow.work_base().to_string());
+            eprintln!(
+                "work-branch: WARN: nothing recorded which base '{target}' was cut from, and \
+                 this project declares several it could have been ({}). Falling back to \
+                 '{fallback}' — re-open the unit with an explicit --base to fix the record.",
+                candidates.join(", "),
+            );
+            fallback
         }
     }
-    best.map_or_else(|| config.git.primary_base(), str::to_string)
 }
 
-/// The SLUG half of a work branch — `dev_my-unit` → `my-unit` — read against
-/// the project's declared integration bases. The inverse of
-/// [`compute_work_branch`]'s `{base}_{slug}` join.
+/// The SLUG half of a work branch — `feature/my-unit` → `my-unit`, and
+/// `dev_my-unit` → `my-unit` for a unit still in flight. The inverse of
+/// [`compute_work_branch`]'s `{kind}/{slug}` join.
 ///
 /// This is the DURABLE record of a unit's name. The `pending-work-branch`
 /// marker that carried the name from the gate is consumed and deleted by the
@@ -264,19 +321,43 @@ pub(crate) fn base_for(target: &str, config: &mustard_core::ProjectConfig) -> St
 /// called — which is what lets `spec-draft` consume the gate's name instead of
 /// deriving a second one.
 ///
-/// `None` when the name carries no declared `{base}_` prefix: it is then not a
-/// work unit's branch at all, and inventing a slug out of it would mint the
-/// very third name this module exists to prevent. The longest-match rule is
-/// [`crate::commands::work_unit_open::unit_base_of_name`] — the same question
-/// the worktree engine asks, never a second parser.
+/// `None` when the name carries neither a kind prefix nor a declared `{base}_`
+/// one: it is then not a work unit's branch at all, and inventing a slug out of
+/// it would mint the very third name this module exists to prevent. The reading
+/// is [`BaseFlow::slug_of`] — the same question the worktree engine and the
+/// `/pr` door ask, never a second parser.
 pub(crate) fn slug_of_work_branch(
     branch: &str,
     config: &mustard_core::ProjectConfig,
 ) -> Option<String> {
-    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
-    let base = crate::commands::work_unit_open::unit_base_of_name(branch, &bases)?;
-    let slug = branch.strip_prefix(&format!("{base}_"))?.trim();
-    (!slug.is_empty()).then(|| slug.to_string())
+    BaseFlow::of(&config.git).slug_of(branch)
+}
+
+/// The base to cut `target` from: the one RECORDED with the pending marker when
+/// the operator's answer could not be re-derived, else the one the kind implies
+/// ([`base_for`]).
+///
+/// The recorded leg exists for exactly one situation, and only that one: a
+/// project declaring several emergency bases leaves a hotfix a real choice, and
+/// the branch name — which now says what the unit IS, not where it came from —
+/// cannot carry which one was picked. Deriving anyway would cut the emergency
+/// from a base the operator did not choose, silently. A recorded base that no
+/// longer names a declared base is ignored rather than obeyed: the flow may
+/// have changed since the marker was written, and cutting from a branch the
+/// project no longer declares is worse than falling back to the derivation.
+///
+/// Shared by both doors — this cut and [`crate::hooks::write::work_branch_gate`]
+/// — so the branch a session ends up on does not depend on which one opened it.
+pub(crate) fn recorded_or_derived_base(
+    root: &str,
+    session: &str,
+    target: &str,
+    config: &mustard_core::ProjectConfig,
+) -> String {
+    let declared = config.git.integration_bases();
+    crate::shared::context::pending_base_for(root, session)
+        .filter(|b| declared.contains(b))
+        .unwrap_or_else(|| base_for(Path::new(root), target, config))
 }
 
 /// `true` when `branch` is a bare integration branch that must never be
@@ -712,9 +793,14 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
 
     // Refresh from origin FIRST so the unit is cut from the latest base.
     refresh_integration_bases(&vcs, &root, &config, current.as_deref());
-    let base = base_for(&target, &config);
+    let base = recorded_or_derived_base(&root, session, &target, &config);
     match checkout_work_branch(&vcs, &root, &target, &base) {
         Ok(()) => {
+            // The marker that carried the operator's answer is about to be
+            // consumed, so this is the LAST moment the answer exists. Write it
+            // into the unit's own record first — a no-op wherever the flow can
+            // still re-derive it (see `BaseFlow::record_cut_base`).
+            BaseFlow::of_at(&config.git, project).record_cut_base(&target, &base);
             crate::shared::context::clear_pending_branch(&root, session);
             CutOutcome::Cut(target)
         }
@@ -732,81 +818,355 @@ mod tests {
     // Auto-branch name computation (porta-unica)
     // -----------------------------------------------------------------------
 
+    use crate::shared::work_kind::{BaseFlow, WorkKind};
+
+    /// A project declaring the ordinary two-tier flow: `dev` for common work,
+    /// `main` as its outermost base.
+    fn two_tier() -> mustard_core::ProjectConfig {
+        let mut config = mustard_core::ProjectConfig::default();
+        config.git.flow.insert("*".to_string(), "dev".to_string());
+        config.git.flow.insert("dev".to_string(), "main".to_string());
+        config
+    }
+
+    /// A project root that holds no unit records — so the assertion below is
+    /// about the DERIVATION alone, with nothing recorded to prefer over it.
+    fn nowhere() -> &'static std::path::Path {
+        std::path::Path::new("/no/project")
+    }
+
+    /// AC-1 — the branch is named by what the unit IS, never by the base it was
+    /// cut from.
+    ///
+    /// The name an operator reads in `git branch` is the assertion: a feature
+    /// says `feature/`, a fix says `fix/`, an emergency says `hotfix/`, and no
+    /// integration base appears in any of them. The old shape put the base
+    /// there, which is the information the operator did NOT need and the only
+    /// one the program did — that split is what this unit undoes.
     #[test]
-    fn compute_work_branch_prefers_spec_slug_off_primary_base() {
-        // base = the primary/`*` base → `{base}_{slug}`, kind dropped from name.
-        let b = super::compute_work_branch("dev", "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "dev_2026-07-02-my-spec");
-        // Task example.
-        let b2 = super::compute_work_branch("dev", "parcelas-virtuais", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b2, "dev_parcelas-virtuais");
+    fn a_unit_branch_is_named_by_its_kind() {
+        let named = |kind| {
+            super::compute_work_branch(
+                kind,
+                "parcelas-virtuais",
+                None,
+                "sess-abcdef12",
+                "2026-07-02T10:00:00.000Z",
+                "/no/project",
+            )
+        };
+        assert_eq!(named(WorkKind::Feature), "feature/parcelas-virtuais");
+        assert_eq!(named(WorkKind::Fix), "fix/parcelas-virtuais");
+        assert_eq!(named(WorkKind::Hotfix), "hotfix/parcelas-virtuais");
+
+        // No integration base of this project appears in any of the names —
+        // stated against the DECLARED bases, not against the literals, so the
+        // assertion means the same thing in a develop/master project.
+        let config = two_tier();
+        for kind in WorkKind::ALL {
+            let branch = named(kind);
+            for base in config.git.integration_bases() {
+                assert!(
+                    !branch.starts_with(&format!("{base}_")),
+                    "the name records the kind, not the cut: {branch}",
+                );
+            }
+        }
     }
 
     #[test]
-    fn compute_work_branch_off_non_primary_base() {
-        // base = a non-primary integration base (e.g. `main`) → prefix records it.
-        let b = super::compute_work_branch("main", "close-gate-windows", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "main_close-gate-windows");
+    fn compute_work_branch_prefers_spec_slug() {
+        let b = super::compute_work_branch(WorkKind::Feature, "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "feature/2026-07-02-my-spec");
     }
 
     #[test]
     fn compute_work_branch_falls_back_to_intent_slug() {
         // No spec → the intent is slugified (pt-BR strips accents by default).
-        let b = super::compute_work_branch("main", "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "main_corrigir-botao-login");
+        let b = super::compute_work_branch(WorkKind::Fix, "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "fix/corrigir-botao-login");
     }
 
     #[test]
     fn compute_work_branch_date_fallback_when_no_spec_or_intent() {
         // No spec, no intent → date-from-ts + short session id.
-        let b = super::compute_work_branch("dev", "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "dev_2026-07-02-sess-abc");
+        let b = super::compute_work_branch(WorkKind::Feature, "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "feature/2026-07-02-sess-abc");
     }
 
     #[test]
     fn compute_work_branch_sanitizes_unsafe_slug() {
         // A spec with unsafe chars is sanitised into a valid ref.
-        let b = super::compute_work_branch("dev", "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
+        let b = super::compute_work_branch(WorkKind::Feature, "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
         // ".." collapsed, spaces mapped to '-', trailing '/' trimmed.
-        assert_eq!(b, "dev_weird--slug");
+        assert_eq!(b, "feature/weird--slug");
         assert!(!b.contains(".."), "no `..` runs in a git ref");
         assert!(!b.starts_with('-'), "no leading dash");
     }
 
+    /// AC-2 — with the base gone from the name, it is recovered from the
+    /// DECLARED FLOW and from nothing else.
+    ///
+    /// The proof that the branch string is not consulted is the second project:
+    /// the same branch names, a different `git.flow`, and every answer moves
+    /// with the configuration. A reader still parsing the name would answer the
+    /// same thing twice.
     #[test]
-    fn resolve_base_honours_requested_when_in_bases() {
-        // Standard two-tier flow → integration bases {dev, main}, primary = dev.
-        let mut config = mustard_core::ProjectConfig::default();
-        config.git.flow.insert("*".to_string(), "dev".to_string());
-        config.git.flow.insert("dev".to_string(), "main".to_string());
-        // A requested base that IS an integration base is used verbatim.
-        assert_eq!(super::resolve_base(Some("main"), &config), Ok("main".to_string()));
-        assert_eq!(super::resolve_base(Some("dev"), &config), Ok("dev".to_string()));
-        // No request → primary. Blank counts as omitted.
-        assert_eq!(super::resolve_base(None, &config), Ok("dev".to_string()));
-        assert_eq!(super::resolve_base(Some("  "), &config), Ok("dev".to_string()));
+    fn the_base_comes_from_the_declared_flow_not_from_the_branch_name() {
+        let dev_main = two_tier();
+        assert_eq!(super::base_for(nowhere(), "feature/my-unit", &dev_main), "dev");
+        assert_eq!(super::base_for(nowhere(), "fix/my-unit", &dev_main), "dev");
+        assert_eq!(super::base_for(nowhere(), "hotfix/my-unit", &dev_main), "main");
+
+        // The SAME names, a different declared flow — every answer follows the
+        // configuration, so nothing was read out of the string.
+        let mut develop_master = mustard_core::ProjectConfig::default();
+        develop_master.git.flow.insert("*".to_string(), "develop".to_string());
+        develop_master.git.flow.insert("develop".to_string(), "master".to_string());
+        assert_eq!(super::base_for(nowhere(), "feature/my-unit", &develop_master), "develop");
+        assert_eq!(super::base_for(nowhere(), "hotfix/my-unit", &develop_master), "master");
+    }
+
+    /// A name that is nobody's unit still has to be cut from somewhere: the base
+    /// ordinary work is cut from, read from the flow and never a hardcoded
+    /// branch. This is the only leg of `base_for` that answers without
+    /// recognising the name, so it is stated on its own.
+    #[test]
+    fn base_for_falls_back_to_the_work_base_when_nothing_owns_the_name() {
+        assert_eq!(super::base_for(nowhere(), "whatever", &two_tier()), "dev");
+
+        let mut develop_master = mustard_core::ProjectConfig::default();
+        develop_master.git.flow.insert("*".to_string(), "develop".to_string());
+        develop_master.git.flow.insert("develop".to_string(), "master".to_string());
+        assert_eq!(super::base_for(nowhere(), "whatever", &develop_master), "develop");
+    }
+
+    /// AC-4 — a branch in the `{base}_{slug}` shape is still this unit's branch,
+    /// and still resolves to its base.
+    ///
+    /// Units in flight would be orphaned otherwise: the pull-request target, the
+    /// merged-ancestry check and the second-unit refusal all resolve a unit
+    /// through its branch name, so the reading of the old shape has to survive
+    /// the change of the new one.
+    #[test]
+    fn an_old_shape_branch_is_still_understood() {
+        let config = two_tier();
+        assert_eq!(super::base_for(nowhere(), "dev_my-unit", &config), "dev");
+        assert_eq!(super::base_for(nowhere(), "main_my-unit", &config), "main");
+        assert_eq!(super::slug_of_work_branch("dev_my-unit", &config).as_deref(), Some("my-unit"));
+        assert_eq!(super::slug_of_work_branch("main_my-unit", &config).as_deref(), Some("my-unit"));
+
+        // …alongside the new shape, through the same reader.
+        assert_eq!(
+            super::slug_of_work_branch("feature/my-unit", &config).as_deref(),
+            Some("my-unit"),
+        );
+        assert_eq!(
+            super::slug_of_work_branch("hotfix/my-unit", &config).as_deref(),
+            Some("my-unit"),
+        );
+
+        // A bare base is nobody's unit in either shape, and neither is a name
+        // whose prefix names no base and no kind.
+        for other in ["dev", "main", "feature_x", "nounderscore"] {
+            assert_eq!(super::slug_of_work_branch(other, &config), None, "not a unit: {other}");
+        }
+    }
+
+    /// AC-5 — an emergency is cut somewhere the ordinary queue does not reach,
+    /// and where there is a choice it is the operator's.
+    #[test]
+    fn a_hotfix_is_cut_from_a_base_that_is_not_the_work_base() {
+        let config = two_tier();
+        let flow = BaseFlow::of(&config.git);
+        let base = super::resolve_kind_base(WorkKind::Hotfix, None, &config).expect("resolves");
+        assert_ne!(base, flow.work_base(), "an emergency never rides the ordinary queue");
+        assert!(flow.bases().contains(&base), "…and still lands on a declared base");
+        assert!(!flow.emergency_is_ambiguous(), "one candidate — nothing to ask");
+
+        // The ordinary kinds are cut from where ordinary work is cut from.
+        for kind in [WorkKind::Feature, WorkKind::Fix] {
+            assert_eq!(
+                super::resolve_kind_base(kind, None, &config).as_deref(),
+                Ok(flow.work_base()),
+            );
+        }
+
+        // Three bases: several candidates, so the operator picks — and the pick
+        // is honoured verbatim rather than coerced to the pre-marked default.
+        let mut three = mustard_core::ProjectConfig::default();
+        three.git.flow.insert("*".to_string(), "dev".to_string());
+        three.git.flow.insert("dev".to_string(), "qas".to_string());
+        three.git.flow.insert("qas".to_string(), "main".to_string());
+        let three_flow = BaseFlow::of(&three.git);
+        assert!(three_flow.emergency_is_ambiguous(), "several candidates — the operator picks");
+        assert_eq!(
+            super::resolve_kind_base(WorkKind::Hotfix, None, &three).as_deref(),
+            Ok("main"),
+            "the pre-marked answer is the outermost base",
+        );
+        assert_eq!(
+            super::resolve_kind_base(WorkKind::Hotfix, Some("qas"), &three).as_deref(),
+            Ok("qas"),
+            "the operator's choice is taken, not coerced",
+        );
+
+        // A hotfix cut from the work base is a contradiction, refused loudly —
+        // never silently turned into the base it was declared to skip.
+        let err = super::resolve_kind_base(WorkKind::Hotfix, Some("dev"), &three)
+            .expect_err("a hotfix off the work base is refused");
+        assert!(err.contains("dev"), "names the base it refused: {err}");
+        // A fix off the same base is the ordinary case and passes.
+        assert_eq!(super::resolve_kind_base(WorkKind::Fix, Some("dev"), &three).as_deref(), Ok("dev"));
+        // An undeclared base is still an error, kind or no kind.
+        assert!(super::resolve_kind_base(WorkKind::Feature, Some("nope"), &three).is_err());
+    }
+
+    /// AC-5, the half the sibling above could not reach — *"and the operator
+    /// chooses when more than one candidate exists"*.
+    ///
+    /// Choosing is only half of it: the choice has to SURVIVE. With three bases
+    /// the pick rides to the cut in the pending marker, so the branch really is
+    /// cut from `qas` — and then the marker is CONSUMED, and every later reader
+    /// re-derived the base from the kind and answered the outermost candidate
+    /// (`main`). The pull-request target and the merged-ancestry check both read
+    /// through that derivation, so the unit's work was aimed at a base the
+    /// operator never chose. Two bases never diverge, which is why this project's
+    /// own configuration could not expose it.
+    ///
+    /// Driven through the REAL cut in a REAL repository, deliberately: the
+    /// defect lives in the seam between the cut consuming the marker and the
+    /// next read asking the flow, and no test of either half alone meets it.
+    #[test]
+    fn a_hotfix_is_cut_from_a_base_that_is_not_the_work_base_and_the_pick_survives_the_cut() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        seed_three_tier_repo(root);
+        let config = mustard_core::ProjectConfig::load(root);
+        let flow = BaseFlow::of(&config.git);
+        assert!(flow.emergency_is_ambiguous(), "the fixture really does leave a choice");
+        assert_eq!(flow.emergency_bases(), ["qas", "main"], "…with `main` pre-marked");
+
+        // The operator picks the MIDDLE base. That answer reaches the cut the
+        // one way it can — the pending marker `emit-pipeline` writes.
+        let sid = "sess-hotfix-pick";
+        crate::shared::context::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
+
+        let outcome = super::cut_pending_work_branch(root, sid);
+        assert_eq!(outcome, super::CutOutcome::Cut("hotfix/my-unit".to_string()), "{outcome:?}");
+        // The cut itself honoured the pick: the branch sits on `qas`, not `main`.
+        assert_eq!(
+            super::current_branch("git", &root_s).as_deref(),
+            Some("hotfix/my-unit"),
+        );
+        let head = git_rev(root, "HEAD");
+        assert_eq!(head, git_rev(root, "qas"), "cut from the base the operator chose");
+        assert_ne!(head, git_rev(root, "main"), "…and not from the pre-marked one");
+
+        // The marker is GONE — which is why it cannot be the durable answer.
+        assert!(crate::shared::context::pending_base_for(&root_s, sid).is_none());
+
+        // Every LATER read answers the middle base. This is the assertion the
+        // unit shipped without: each of these resolved `hotfix/…` through the
+        // kind and answered `main`.
+        assert_eq!(
+            super::base_for(root, "hotfix/my-unit", &config),
+            "qas",
+            "the pull-request target follows the operator, not the derivation",
+        );
+        assert_eq!(
+            BaseFlow::of_at(&config.git, root).base_of("hotfix/my-unit").known(),
+            Some("qas"),
+            "…and so does the crate's one parser, which every consumer folds through",
+        );
+
+        // The honest case, kept honest: a hotfix nobody cut has no recorded base
+        // and several candidates, so the answer is that there ISN'T one — never
+        // the outermost dressed up as a fact.
+        let never_cut = BaseFlow::of_at(&config.git, root).base_of("hotfix/never-cut");
+        assert!(never_cut.is_unit(), "it is still this project's unit");
+        assert_eq!(never_cut.known(), None, "and its base was never established");
+        assert_eq!(never_cut.candidates(), ["qas", "main"], "naming what it could not choose");
+    }
+
+    /// `git rev-parse <rev>` in `root` — test scaffolding only.
+    fn git_rev(root: &std::path::Path, rev: &str) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", rev])
+            .current_dir(root)
+            .output()
+            .expect("spawn git");
+        assert!(out.status.success(), "git rev-parse {rev} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repo declaring `dev → qas → main`, each base a real local branch at a
+    /// DISTINCT commit, checked out on `dev`. The distinct tips are what make
+    /// "cut from `qas`" a provable claim rather than a coincidence.
+    fn seed_three_tier_repo(root: &std::path::Path) {
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"qas","qas":"main"}}}"#,
+        )
+        .expect("cfg");
+        std::fs::create_dir_all(root.join(".claude")).expect("claude dir");
+        std::fs::write(root.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
+            .expect("ignore");
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "main"]);
+        std::fs::write(root.join("f.txt"), "on main").expect("seed");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "main"]);
+        for (branch, body) in [("qas", "on qas"), ("dev", "on dev")] {
+            git(root, &["checkout", "-b", branch]);
+            std::fs::write(root.join("f.txt"), body).expect("seed");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-m", branch]);
+        }
     }
 
     #[test]
-    fn resolve_base_errors_loudly_on_unknown_explicit_base() {
-        let mut config = mustard_core::ProjectConfig::default();
-        config.git.flow.insert("*".to_string(), "dev".to_string());
-        config.git.flow.insert("dev".to_string(), "main".to_string());
+    fn resolve_kind_base_honours_requested_when_in_bases() {
+        // Standard two-tier flow → integration bases {dev, main}, work = dev.
+        let config = two_tier();
+        // A requested base that IS an integration base is used verbatim — an
+        // ordinary unit may be cut from anywhere the project declares.
+        let asked = |b| super::resolve_kind_base(WorkKind::Fix, b, &config);
+        assert_eq!(asked(Some("main")), Ok("main".to_string()));
+        assert_eq!(asked(Some("dev")), Ok("dev".to_string()));
+        // No request → the base the kind implies. Blank counts as omitted.
+        assert_eq!(asked(None), Ok("dev".to_string()));
+        assert_eq!(asked(Some("  ")), Ok("dev".to_string()));
+    }
+
+    #[test]
+    fn resolve_kind_base_errors_loudly_on_unknown_explicit_base() {
+        let config = two_tier();
         // An EXPLICIT base outside the declared set is an error, never a
-        // silent coercion to the primary.
-        let err = super::resolve_base(Some("feature/x"), &config).unwrap_err();
+        // silent coercion to the base ordinary work is cut from.
+        let err = super::resolve_kind_base(WorkKind::Feature, Some("feature/x"), &config)
+            .expect_err("an undeclared base is refused");
         assert!(err.contains("feature/x"), "names the rejected base: {err}");
         assert!(err.contains("git.flow"), "points at the config: {err}");
         assert!(err.contains("dev") && err.contains("main"), "lists declared bases: {err}");
 
         // Agnostic: a develop/master project resolves against ITS bases —
         // the exact field bug: `--base dev` on an undeclared flow must error,
-        // not silently become the primary base.
+        // not silently become the base ordinary work is cut from.
         let mut dm = mustard_core::ProjectConfig::default();
         dm.git.flow.insert("*".to_string(), "develop".to_string());
         dm.git.flow.insert("develop".to_string(), "master".to_string());
-        assert_eq!(super::resolve_base(Some("master"), &dm), Ok("master".to_string()));
-        assert!(super::resolve_base(Some("dev"), &dm).is_err(), "unknown base → loud error");
+        assert_eq!(
+            super::resolve_kind_base(WorkKind::Fix, Some("master"), &dm),
+            Ok("master".to_string()),
+        );
+        assert!(
+            super::resolve_kind_base(WorkKind::Fix, Some("dev"), &dm).is_err(),
+            "unknown base → loud error",
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -908,7 +1268,7 @@ mod tests {
 
         // A SECOND unit is signalled — this is what `spec-draft` consumes.
         let sid = "sess-cut-refuses";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
 
         let outcome = super::cut_pending_work_branch(root, sid);
         let super::CutOutcome::Refused(busy) = outcome else {
@@ -983,7 +1343,7 @@ mod tests {
         );
 
         let sid = "sess-cut-unmeasured";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = super::cut_pending_work_branch(root, sid);
         let super::CutOutcome::Refused(busy) = outcome else {
             panic!("an unmeasurable checkout must be refused, got {outcome:?}");
@@ -1033,7 +1393,7 @@ mod tests {
         git(root, &["commit", "-m", "first unit work"]);
 
         let sid = "sess-cut-clean";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
         // Precondition: the marker really is on disk and really is invisible to
         // this project's ignore rules — otherwise the assertion below would
         // pass for the reason the field does not have.
@@ -1132,7 +1492,7 @@ mod tests {
         std::fs::write(spec.join("spec.md"), "# first unit\n").expect("spec");
 
         let sid = "sess-cut-spec-counts";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second");
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
 
         let super::CheckoutWork::Holds(dirty) = super::checkout_work(root) else {
             panic!("the unit's own spec is uncommitted work: {:?}", super::checkout_work(root));

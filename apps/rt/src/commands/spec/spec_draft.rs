@@ -1349,6 +1349,10 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
         lang: input.lang.clone(),
         checkpoint: None,
         parent: None,
+        // The base the unit was cut from is not an input to the draft — only
+        // the CUT knows it, and it wrote it down before this call. `None` here
+        // is what `write_meta_json` reads as "carry over what is on disk".
+        base: None,
         is_wave_plan: input.total_waves.map(|n| n > 0),
         total_waves: input.total_waves,
         // A freshly drafted spec carries no qualifier flag (Plan/Active).

@@ -77,7 +77,7 @@ use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
 use crate::commands::work_unit_open::checkout_holding_branch;
-use crate::shared::branch_state::{base_of_branch, unit_slug_of_branch};
+use crate::shared::work_kind::BaseFlow;
 
 // ---------------------------------------------------------------------------
 // Shared plumbing — the provider, the bases, and the PR↔unit link
@@ -127,24 +127,24 @@ fn project_root(root: &Path) -> PathBuf {
     main_checkout_root(root).unwrap_or_else(|| root.to_path_buf())
 }
 
-/// The project's declared integration bases (sorted, from `git.flow`) and the
-/// branch the checkout is standing on. No branch name is ever hardcoded — the
-/// core owns that derivation so this door and the work-branch gate agree.
-fn bases_and_branch(root: &Path) -> (Vec<String>, String) {
+/// The project's base model (derived from `git.flow`) and the branch the
+/// checkout is standing on. No branch name is ever hardcoded — the core owns
+/// that derivation so this door and the work-branch gate agree.
+fn bases_and_branch(root: &Path) -> (BaseFlow, String) {
     let cfg = mustard_core::ProjectConfig::load(root);
-    let bases: Vec<String> = cfg.git.integration_bases().into_iter().collect();
+    let flow = BaseFlow::of(&cfg.git);
     let branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    (bases, branch)
+    (flow, branch)
 }
 
-/// The spec slug a work branch names — [`unit_slug_of_branch`], the crate's ONE
+/// The spec slug a work branch names — [`BaseFlow::slug_of`], the crate's ONE
 /// spelling of the question, shared with the per-branch notebook.
 ///
-/// `None` when the branch carries no declared base prefix — a PR opened by hand
-/// or a base→base promotion has no work unit, and therefore no spec to review
-/// against or verdict to read.
-fn spec_of_branch(branch: &str, bases: &[String]) -> Option<String> {
-    unit_slug_of_branch(branch, bases)
+/// `None` when the branch is nobody's work unit — a PR opened by hand or a
+/// base→base promotion has no unit, and therefore no spec to review against or
+/// verdict to read.
+fn spec_of_branch(branch: &str, flow: &BaseFlow) -> Option<String> {
+    flow.slug_of(branch)
 }
 
 /// Where a unit's spec lives, relative to the repository root.
@@ -289,13 +289,14 @@ fn pr_entry(row: &Value) -> Option<PrEntry> {
 #[must_use]
 pub(crate) fn list_at(root: &Path) -> PrListReport {
     let repo = project_root(root);
-    let (bases, branch) = bases_and_branch(&repo);
+    let (flow, branch) = bases_and_branch(&repo);
+    let bases: Vec<String> = flow.bases().to_vec();
     if !bases.iter().any(|b| b == &branch) {
         // Name the base rather than the rule. The branch's own `{base}_` prefix
         // says which one it belongs to; a branch with no prefix (or none at all)
         // falls back to the project's primary base, so the refusal always ends
         // with something the operator can type.
-        let target = base_of_branch(&branch, &bases)
+        let target = flow.base_of(&branch).into_known()
             .unwrap_or_else(|| mustard_core::ProjectConfig::load(&repo).git.primary_base());
         return PrListReport {
             ok: false,
@@ -374,11 +375,11 @@ pub(crate) struct PrReviewReport {
 fn review_brief(
     root: &Path,
     facts: &PrFacts,
-    bases: &[String],
+    flow: &BaseFlow,
     verdict: Option<&str>,
     critical: i64,
 ) -> PrReviewReport {
-    let spec = spec_of_branch(&facts.head, bases);
+    let spec = spec_of_branch(&facts.head, flow);
     let spec_text = spec
         .as_deref()
         .and_then(|slug| spec_text_of_unit(root, &facts.head, slug));
@@ -548,12 +549,12 @@ pub(crate) struct PrMergeReport {
 fn merge_core(
     root: &Path,
     facts: &PrFacts,
-    bases: &[String],
+    flow: &BaseFlow,
     confirmed: bool,
     merge: &dyn Fn(&Path, u64) -> Result<(), String>,
     settle: &dyn Fn(&Path, &str) -> Value,
 ) -> PrMergeReport {
-    let spec = spec_of_branch(&facts.head, bases);
+    let spec = spec_of_branch(&facts.head, flow);
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
 
     if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), confirmed) {
@@ -650,8 +651,8 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
     let repo = project_root(root);
     match resolve_pr(&repo, pr) {
         Ok(facts) => {
-            let (bases, _) = bases_and_branch(&repo);
-            emit(&review_brief(&repo, &facts, &bases, verdict, critical));
+            let (flow, _) = bases_and_branch(&repo);
+            emit(&review_brief(&repo, &facts, &flow, verdict, critical));
         }
         Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
     }
@@ -662,9 +663,9 @@ pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
     let repo = project_root(root);
     match resolve_pr(&repo, pr) {
         Ok(facts) => {
-            let (bases, _) = bases_and_branch(&repo);
+            let (flow, _) = bases_and_branch(&repo);
             let settle = |r: &Path, branch: &str| settle_at(r, Some(branch));
-            emit(&merge_core(&repo, &facts, &bases, confirm, &gh_merge, &settle));
+            emit(&merge_core(&repo, &facts, &flow, confirm, &gh_merge, &settle));
         }
         Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
     }
@@ -774,7 +775,7 @@ mod tests {
     fn pr_merge_without_verdict_warns_and_asks_instead_of_merging() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
-        let bases = vec!["dev".to_string(), "main".to_string()];
+        let bases = door_flow();
         let facts = PrFacts { number: 42, head: "dev_unreviewed".to_string() };
 
         let merges = Cell::new(0u32);
@@ -849,16 +850,26 @@ mod tests {
         );
     }
 
-    /// The PR↔unit link: a `{base}_{slug}` head names its spec, a bare base or a
-    /// hand-cut branch names none.
+    /// The base model of a project declaring the ordinary two-tier flow.
+    fn door_flow() -> BaseFlow {
+        let mut git = mustard_core::domain::config::GitConfig::default();
+        git.flow.insert("*".to_string(), "dev".to_string());
+        git.flow.insert("dev".to_string(), "main".to_string());
+        BaseFlow::of(&git)
+    }
+
+    /// The PR↔unit link: a head named by its kind names its spec, so does one
+    /// still in the `{base}_{slug}` shape, and a bare base names none.
     #[test]
     fn spec_of_branch_reads_the_unit_out_of_the_head_ref() {
-        let bases = vec!["dev".to_string(), "main".to_string()];
+        let bases = door_flow();
+        assert_eq!(spec_of_branch("feature/my-spec", &bases).as_deref(), Some("my-spec"));
+        assert_eq!(spec_of_branch("hotfix/login", &bases).as_deref(), Some("login"));
         assert_eq!(spec_of_branch("dev_my-spec", &bases).as_deref(), Some("my-spec"));
         assert_eq!(spec_of_branch("worktree-dev_my-spec", &bases).as_deref(), Some("my-spec"));
         assert_eq!(spec_of_branch("main_hotfix", &bases).as_deref(), Some("hotfix"));
         assert_eq!(spec_of_branch("dev", &bases), None, "a bare base carries no unit");
-        assert_eq!(spec_of_branch("feature/x", &bases), None);
+        assert_eq!(spec_of_branch("feature_x", &bases), None, "a name of neither shape");
     }
 
     /// The brief points at the spec and hands back the SAME shelf the
@@ -883,7 +894,7 @@ mod tests {
         )
         .expect("skill");
 
-        let bases = vec!["dev".to_string()];
+        let bases = door_flow();
         let facts = PrFacts { number: 7, head: "dev_my-unit".to_string() };
 
         let brief = review_brief(root, &facts, &bases, None, 0);

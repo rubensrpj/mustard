@@ -449,13 +449,10 @@ fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }
-    let bases: Vec<String> = crate::shared::context::project_config_cached(root)
-        .git
-        .integration_bases()
-        .into_iter()
-        .collect();
+    let config = crate::shared::context::project_config_cached(root);
+    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
     let git_read = |args: &[&str]| crate::commands::git_settle::git_out(root, args);
-    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &bases);
+    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &flow);
     if pending.is_empty() {
         return None;
     }

@@ -176,8 +176,22 @@ pub fn write_spec_md(
 
 /// Write a pre-built [`Meta`] document as `meta.json` under `output/`.
 /// Atomic — uses [`write_meta`] which writes to a temp file then renames.
+///
+/// One field is CARRIED OVER from whatever sidecar is already there: `base`,
+/// the integration base the unit was actually cut from. Every caller here
+/// builds its `Meta` from a spec INPUT, which cannot know that — only the cut
+/// knows it, and the cut runs first (`spec-draft` cuts the branch before it
+/// writes a byte, and the hook gate cuts it earlier still). A plain write would
+/// therefore erase the one answer nothing else can reconstruct, since the
+/// pending marker that carried it is consumed at the cut. An incoming `base` is
+/// never overwritten — a caller that knows is the more recent measurement.
 pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
-    write_meta(&output.join("meta.json"), meta).map_err(|e| e.to_string())
+    let path = output.join("meta.json");
+    let mut meta = meta.clone();
+    if meta.base.is_none() {
+        meta.base = read_meta(&path).and_then(|existing| existing.base);
+    }
+    write_meta(&path, &meta).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +293,7 @@ mod tests {
             lang: None,
             checkpoint: None,
             parent: None,
+            base: None,
             is_wave_plan: None,
             total_waves: None,
             flags: MetaFlags::default(),

@@ -57,6 +57,7 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
         allow_no_qa: false,
         intent: None,
         base: None,
+        work_kind: None,
     });
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());

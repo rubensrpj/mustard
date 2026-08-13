@@ -42,7 +42,6 @@ use serde_json::{json, Value};
 
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees, show};
 use crate::commands::review::pr_door::{gh_json, gh_out};
-use crate::shared::branch_state::base_of_branch;
 
 /// The number of the OPEN pull request whose head is `branch`, if the provider
 /// answers at all.
@@ -92,14 +91,16 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
         });
     };
     let cfg = mustard_core::ProjectConfig::load(&main);
-    let bases: Vec<String> = cfg.git.integration_bases().into_iter().collect();
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &main);
+    let bases: Vec<String> = flow.bases().to_vec();
 
     // The branch of the INVOCATION, not of the main checkout: called from
     // inside the unit's own worktree the two disagree, and it is the caller's
     // floor that decides whether this is a base-side gesture.
     let branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     if !bases.iter().any(|b| b == &branch) {
-        let target = base_of_branch(&branch, &bases).unwrap_or_else(|| cfg.git.primary_base());
+        let target =
+            flow.base_of(&branch).into_known().unwrap_or_else(|| cfg.git.primary_base());
         return json!({
             "ok": false,
             "reason": "not-on-integration-base",
@@ -179,7 +180,7 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
         "action": if local_clear { "deleted" } else { "partial" },
         "branch": branch,
         "unit": unit,
-        "base": base_of_branch(unit, &bases),
+        "base": flow.base_of(unit).into_known(),
         "worktreeRemoved": worktree_removed,
         "branchDeleted": branch_deleted,
         "remoteDeleted": remote_deleted,
