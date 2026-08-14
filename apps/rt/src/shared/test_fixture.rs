@@ -38,15 +38,27 @@ use std::path::Path;
 /// so the naive walk is the right shape. Panics on IO error: this runs only
 /// under `#[cfg(test)]`, where a failed copy must fail the test loudly rather
 /// than degrade into a half-built repository that fails somewhere confusing.
+/// A SYMLINK is copied as its target's CONTENT, not re-linked, and a symlink
+/// whose target is gone is skipped rather than fatal. That asymmetry is not
+/// cosmetic: `entry.file_type()` does NOT follow links (it is `lstat`) while
+/// `fs::copy` DOES, so a dangling link reads as a plain file and then fails to
+/// copy. It cost a red CI on macOS and Linux — `copy template file: NotFound` —
+/// while Windows, which has no such links in a git tree, stayed green. Found by
+/// the three-OS matrix, 2026-08-14.
 pub(crate) fn copy_dir_all(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).expect("create clone dir");
     for entry in std::fs::read_dir(src).expect("read template dir") {
         let entry = entry.expect("template entry");
         let target = dst.join(entry.file_name());
+        let from = entry.path();
         if entry.file_type().expect("entry type").is_dir() {
-            copy_dir_all(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).expect("copy template file");
+            copy_dir_all(&from, &target);
+        } else if from.exists() {
+            // `exists()` FOLLOWS the link, so this is exactly the question
+            // `fs::copy` is about to ask. Naming the path in the message keeps
+            // a future failure diagnosable instead of anonymous.
+            std::fs::copy(&from, &target)
+                .unwrap_or_else(|e| panic!("copy template file {}: {e}", from.display()));
         }
     }
 }

@@ -1162,41 +1162,46 @@ mod tests {
     /// push into one shared origin and share worktree directories — wall clock
     /// traded for intermittent failure. `git worktree repair` does not catch it
     /// either, because while the template exists nothing looks broken.
+    /// Asserted by BEHAVIOUR, never by comparing path strings. The first version
+    /// of this test matched the clone's directory against `worktree list` as
+    /// text, and CI showed why that is the wrong instrument: the runner reports
+    /// the same directory in a different spelling than `TempDir` does, so the
+    /// assertion failed on a clone that was in fact perfectly independent. The
+    /// code was right and the test was wrong.
+    ///
+    /// Writing into one clone and reading the other answers the real question —
+    /// do they share state — in a way no path formatting can distort.
     #[test]
     fn a_cloned_fixture_is_independent_of_its_template() {
-        let (dir_a, main_a) = fixture();
-        let (dir_b, main_b) = fixture();
-        let root_a = dir_a.path().to_string_lossy().replace('\\', "/");
-        let root_b = dir_b.path().to_string_lossy().replace('\\', "/");
+        let (_dir_a, main_a) = fixture();
+        let (_dir_b, main_b) = fixture();
 
-        for (label, main, own, other) in [
-            ("a", &main_a, root_a.as_str(), root_b.as_str()),
-            ("b", &main_b, root_b.as_str(), root_a.as_str()),
-        ] {
-            let remote = git_out(main, &["remote", "get-url", "origin"])
-                .unwrap_or_default()
-                .replace('\\', "/");
-            assert!(
-                remote.contains(own),
-                "clone {label} must own its origin, got {remote}",
-            );
-            assert!(
-                !remote.contains(other),
-                "clone {label} reaches the other clone's origin: {remote}",
-            );
+        // A branch pushed into A's origin must be invisible from B's.
+        git(&main_a, &["branch", "only-in-a"]);
+        git(&main_a, &["push", "origin", "only-in-a"]);
+        let seen_by_a = git_out(&main_a, &["ls-remote", "--heads", "origin", "only-in-a"])
+            .unwrap_or_default();
+        let seen_by_b = git_out(&main_b, &["ls-remote", "--heads", "origin", "only-in-a"])
+            .unwrap_or_default();
+        assert!(
+            seen_by_a.contains("only-in-a"),
+            "clone A must reach its own origin, got {seen_by_a:?}",
+        );
+        assert!(
+            seen_by_b.trim().is_empty(),
+            "clone B sees a branch pushed into A's origin — they SHARE it: {seen_by_b:?}",
+        );
 
-            let worktrees = git_out(main, &["worktree", "list"])
-                .unwrap_or_default()
-                .replace('\\', "/");
-            assert!(
-                worktrees.contains(own),
-                "clone {label} must own its worktrees, got {worktrees}",
-            );
-            assert!(
-                !worktrees.contains(other),
-                "clone {label} reaches the other clone's worktrees: {worktrees}",
-            );
-        }
+        // And a commit made in A's worktree must not appear in B's.
+        let wt_a = main_a.join(".claude").join("worktrees").join("dev_open");
+        std::fs::write(wt_a.join("only-a.txt"), "a").expect("write in A's worktree");
+        git(&wt_a, &["add", "-A"]);
+        git(&wt_a, &["commit", "-m", "only in a"]);
+        let wt_b = main_b.join(".claude").join("worktrees").join("dev_open");
+        assert!(
+            !wt_b.join("only-a.txt").exists(),
+            "clone B's worktree received a file written into A's — same directory",
+        );
     }
 
     /// The monorepo fixture: the same parent as [`fixture`] plus a REAL git
