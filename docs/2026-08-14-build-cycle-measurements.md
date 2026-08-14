@@ -235,6 +235,37 @@ cache, or with the 59 binaries. Four measurements were spent on those before the
 one that ranked the binaries by time — which was cheap, and should have been
 first.
 
+## 9. How to read every local number in this file
+
+Late in the day the same module was timed three times on the SAME build:
+
+| run | duration |
+|---|---|
+| 1 | 48,4s |
+| 2 | 37,3s |
+| 3 | 36,5s |
+
+**25% spread, same code.** That is larger than most of the gains reported here,
+which means any local figure quoted from a SINGLE run — and most of the ones
+above were — carries more uncertainty than its decimal place suggests. A −11%
+measured once is indistinguishable from noise.
+
+This does not undo the findings; the duplicate suite (§8) was a 2× structural
+fact, not a percentage, and it held. But it does set the reading order:
+
+- **Trust the CI numbers.** Clean machine each run, same workflow, recorded
+  baseline: 19m18s → 15m30s → 14m36s → 13m27s across the day's four runs, and
+  the Test step 792s → 738s. Those are comparable.
+- **Treat local percentages as direction, not magnitude** — unless they were
+  repeated, and this file says when they were.
+- **A number measured once is not a number.**
+
+Two other instrument failures are recorded in this file for the same reason: a
+benchmark that invoked `git` through PowerShell and charged both spawns to git
+(§8's outcome section), and a test that compared path strings the CI runner
+spells differently. In both, the idea was right and the ruler was wrong. When the
+arithmetic does not close, suspect the measurement before the hypothesis.
+
 ## What this record rules out, and where the cost actually is
 
 Three explanations were proposed and measured. Two are dead:

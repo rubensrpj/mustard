@@ -41,5 +41,8 @@ pub mod events;
 pub mod gate_mode;
 pub mod proc;
 pub mod prompt;
+// Test-only: cloning git fixture scenery instead of rebuilding it per test.
+#[cfg(test)]
+pub mod test_fixture;
 pub mod translate;
 pub mod work_kind;

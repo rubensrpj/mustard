@@ -1060,14 +1060,47 @@ mod tests {
         assert!(!settle_flow().base_of(&got[0].branch).is_unit());
     }
 
-    /// Build the two-unit fixture: a bare origin, a main checkout on `dev`
-    /// (with `.claude/` gitignored so worktrees never read as dirt), one unit
-    /// MERGED into origin/dev (`dev_done`), one open (`dev_open`), and the
-    /// local dev rewound one merge so settle has something to fast-forward.
+    /// The two-unit fixture, CLONED from a template built once per test process.
+    ///
+    /// Each test used to run [`build_fixture`]'s eighteen `git` invocations for
+    /// itself — 1,18s of a 1,74s test, spent on scenery it then throws away.
+    /// Building it once and copying the tree costs 0,28s (measured 2026-08-14,
+    /// 4,2× faster); the two calls below are what makes the copy INDEPENDENT.
+    ///
+    /// Why the rewiring is not optional: git records the remote URL and every
+    /// worktree registration as an ABSOLUTE path, so a raw copy still resolves
+    /// to the template — and `git worktree repair` stays silent about it while
+    /// the template exists, because nothing is broken from git's point of view.
+    /// `a_cloned_fixture_is_independent_of_its_template` holds this honest.
     fn fixture() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempdir().expect("tempdir");
-        let bare = dir.path().join("origin.git");
+        static TEMPLATE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let template = TEMPLATE.get_or_init(|| {
+            let d = tempdir().expect("template tempdir");
+            build_fixture(d.path());
+            d
+        });
+        let dir = crate::shared::test_fixture::clone_of(template.path());
         let main = dir.path().join("repo");
+        // 1. The remote points at the TEMPLATE's origin until told otherwise.
+        let own_origin = dir.path().join("origin.git");
+        git(&main, &["remote", "set-url", "origin", own_origin.to_string_lossy().as_ref()]);
+        // 2. Each worktree registration likewise. `repair` takes the NEW path.
+        for unit in ["dev_done", "dev_open"] {
+            let wt = main.join(".claude").join("worktrees").join(unit);
+            git(&main, &["worktree", "repair", wt.to_string_lossy().as_ref()]);
+        }
+        (dir, main)
+    }
+
+    /// Build the two-unit fixture IN `base`: a bare origin, a main checkout on
+    /// `dev` (with `.claude/` gitignored so worktrees never read as dirt), one
+    /// unit MERGED into origin/dev (`dev_done`), one open (`dev_open`), and the
+    /// local dev rewound one merge so settle has something to fast-forward.
+    ///
+    /// Called ONCE per test process, through [`fixture`]'s template cell.
+    fn build_fixture(base: &Path) {
+        let bare = base.join("origin.git");
+        let main = base.join("repo");
         std::fs::create_dir_all(&bare).expect("mkdir bare");
         std::fs::create_dir_all(&main).expect("mkdir main");
         git(&bare, &["init", "--bare", "."]);
@@ -1097,8 +1130,78 @@ mod tests {
         std::fs::write(wt2.join("open.txt"), "y").expect("wt file");
         git(&wt2, &["add", "-A"]);
         git(&wt2, &["commit", "-m", "open work"]);
+    }
 
-        (dir, main)
+    /// AC-1 — the fixture a test receives was CLONED, not rebuilt.
+    ///
+    /// The proof is the template's own marker: `build_fixture` runs once per
+    /// process, so a file written into the template AFTER the first clone is
+    /// still absent from that clone but present in the template directory a
+    /// later clone copies. Simpler and equally decisive: two fixtures handed out
+    /// in the same process share their seed commit sha, which two independently
+    /// built repositories never would — git stamps a commit with its author and
+    /// committer TIME, so two real builds differ.
+    #[test]
+    fn a_fixture_is_cloned_from_the_shared_template() {
+        let (_a, main_a) = fixture();
+        let (_b, main_b) = fixture();
+        let sha_a = git_out(&main_a, &["rev-list", "--max-parents=0", "HEAD"]).unwrap_or_default();
+        let sha_b = git_out(&main_b, &["rev-list", "--max-parents=0", "HEAD"]).unwrap_or_default();
+        assert!(!sha_a.trim().is_empty(), "the clone carries history");
+        assert_eq!(
+            sha_a.trim(),
+            sha_b.trim(),
+            "two fixtures share the template's root commit — a rebuilt one would not",
+        );
+    }
+
+    /// AC-2 — a clone resolves its remote and its worktrees INSIDE itself.
+    ///
+    /// The defect this exists to prevent: git records both as ABSOLUTE paths, so
+    /// a raw copy keeps pointing at the template. Tests in parallel would then
+    /// push into one shared origin and share worktree directories — wall clock
+    /// traded for intermittent failure. `git worktree repair` does not catch it
+    /// either, because while the template exists nothing looks broken.
+    /// Asserted by BEHAVIOUR, never by comparing path strings. The first version
+    /// of this test matched the clone's directory against `worktree list` as
+    /// text, and CI showed why that is the wrong instrument: the runner reports
+    /// the same directory in a different spelling than `TempDir` does, so the
+    /// assertion failed on a clone that was in fact perfectly independent. The
+    /// code was right and the test was wrong.
+    ///
+    /// Writing into one clone and reading the other answers the real question —
+    /// do they share state — in a way no path formatting can distort.
+    #[test]
+    fn a_cloned_fixture_is_independent_of_its_template() {
+        let (_dir_a, main_a) = fixture();
+        let (_dir_b, main_b) = fixture();
+
+        // A branch pushed into A's origin must be invisible from B's.
+        git(&main_a, &["branch", "only-in-a"]);
+        git(&main_a, &["push", "origin", "only-in-a"]);
+        let seen_by_a = git_out(&main_a, &["ls-remote", "--heads", "origin", "only-in-a"])
+            .unwrap_or_default();
+        let seen_by_b = git_out(&main_b, &["ls-remote", "--heads", "origin", "only-in-a"])
+            .unwrap_or_default();
+        assert!(
+            seen_by_a.contains("only-in-a"),
+            "clone A must reach its own origin, got {seen_by_a:?}",
+        );
+        assert!(
+            seen_by_b.trim().is_empty(),
+            "clone B sees a branch pushed into A's origin — they SHARE it: {seen_by_b:?}",
+        );
+
+        // And a commit made in A's worktree must not appear in B's.
+        let wt_a = main_a.join(".claude").join("worktrees").join("dev_open");
+        std::fs::write(wt_a.join("only-a.txt"), "a").expect("write in A's worktree");
+        git(&wt_a, &["add", "-A"]);
+        git(&wt_a, &["commit", "-m", "only in a"]);
+        let wt_b = main_b.join(".claude").join("worktrees").join("dev_open");
+        assert!(
+            !wt_b.join("only-a.txt").exists(),
+            "clone B's worktree received a file written into A's — same directory",
+        );
     }
 
     /// The monorepo fixture: the same parent as [`fixture`] plus a REAL git

@@ -1,0 +1,58 @@
+{
+  "spec": "every-git-test-rebuilds-its",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt --lib a_fixture_is_cloned_from_the_shared_template",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt --lib a_cloned_fixture_is_independent_of_its_template",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}
