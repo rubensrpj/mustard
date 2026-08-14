@@ -3,8 +3,8 @@
   "languages": [
     {
       "language": "rust",
-      "files": 459,
-      "loc": 192798
+      "files": 460,
+      "loc": 192984
     },
     {
       "language": "tsx",
@@ -383,7 +383,7 @@
     {
       "dir": "apps/rt",
       "role": "L1",
-      "files": 286
+      "files": 287
     },
     {
       "dir": "apps/dashboard",
@@ -38162,7 +38162,7 @@
     {
       "path": "apps/rt/src/commands/review/analyze_validation.rs",
       "language": "rust",
-      "loc": 1224,
+      "loc": 1348,
       "imports": [
         "crate::commands::review::{ac_negative_check, qa_run}",
         "crate::commands::spec::spec_sections::is_heading",
@@ -38286,140 +38286,158 @@
         },
         {
           "kind": "function",
+          "name": "counts_per_file",
+          "line": 528,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "is_test_shaped_command",
-          "line": 521,
+          "line": 548,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "proven_criteria",
-          "line": 562,
+          "line": 589,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "validate",
-          "line": 595,
+          "line": 622,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run",
-          "line": 841,
+          "line": 912,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_spec_has_no_issues",
-          "line": 866,
+          "line": 937,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "weak_ac_defers_to_the_recorded_proof",
-          "line": 893,
+          "line": 964,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "looks_like_file_path_rejects_a_set_and_keeps_a_file",
-          "line": 931,
+          "line": 1002,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "flags_weak_tautological_ac_command",
-          "line": 951,
+          "line": 1022,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "weak_ac_flags_grep_but_not_filtered_cargo_test",
-          "line": 975,
+          "line": 1046,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "backtick_refs_reject_dotted_prose_keep_real_paths",
-          "line": 994,
+          "line": 1065,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reference_rule_admits_routing_punctuation_and_rejects_prose_shapes",
-          "line": 1008,
+          "line": 1079,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_search_that_cannot_fail_is_never_exempt",
-          "line": 1038,
+          "line": 1109,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "command_parts_split_only_on_top_level_operators",
-          "line": 1062,
+          "line": 1133,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "expect_regex_test_ac_without_expect_warns_and_expect_line_clears_it",
-          "line": 1082,
+          "line": 1153,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "expect_anchored_against_a_per_file_count_warns_and_the_prefix_form_clears_it",
+          "line": 1195,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "counts_per_file_reads_the_count_flag_only",
+          "line": 1234,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "flags_ac_task_gap_when_agent_has_tasks_but_no_parseable_ac",
-          "line": 1117,
+          "line": 1246,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ref_resolves_against_subproject_root",
-          "line": 1131,
+          "line": 1260,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "flags_task_count_out_of_range",
-          "line": 1152,
+          "line": 1281,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ac_format_validation_parseable_section_is_clean",
-          "line": 1164,
+          "line": 1293,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ac_format_validation_malformed_section_warns",
-          "line": 1182,
+          "line": 1311,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "roundtrip_localized_create_marker_suppresses_missing_file",
-          "line": 1205,
+          "line": 1334,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "roundtrip_legacy_duplicated_ac_heading_still_validates",
-          "line": 1241,
+          "line": 1370,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ac_format_validation_absent_section_unchanged",
-          "line": 1258,
+          "line": 1387,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "flags_layer_gap",
-          "line": 1273,
+          "line": 1402,
           "supertypes": []
         }
       ],
@@ -45988,7 +46006,7 @@
     {
       "path": "apps/rt/src/commands/spec/ac_amend.rs",
       "language": "rust",
-      "loc": 1207,
+      "loc": 1238,
       "imports": [
         "crate::commands::review::ac_negative_check::{\r\n    self, AcProof, AcProofLedger, Confirmation, Proof, Verdict, AC_PROOF_JSON,\r\n}",
         "crate::commands::review::qa_run",
@@ -46005,198 +46023,168 @@
         {
           "kind": "struct",
           "name": "AcAmendOpts",
-          "line": 96,
+          "line": 109,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 98,
+          "line": 111,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "ac",
-          "line": 100,
+          "line": 113,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "command",
-          "line": 102,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "expect",
-          "line": 105,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "statement",
-          "line": 107,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 109,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "AcAmendReport",
           "line": 115,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "ok",
-          "line": 117,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "spec",
-          "line": 119,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "ac",
-          "line": 121,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "command",
-          "line": 123,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
           "name": "expect",
-          "line": 125,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "superseded_command",
-          "line": 127,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "superseded_expect",
-          "line": 129,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "proof",
-          "line": 132,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "rewritten",
-          "line": 135,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "ledger",
-          "line": 137,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "error",
-          "line": 141,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "remedy",
-          "line": 143,
-          "supertypes": []
-        },
-        {
-          "kind": "method",
-          "name": "refused",
-          "line": 148,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "Amendment",
-          "line": 169,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "id",
-          "line": 171,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "at",
-          "line": 174,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 176,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "superseded_command",
-          "line": 178,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "superseded_expect",
-          "line": 180,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "superseded_statement",
-          "line": 182,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "command",
-          "line": 184,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "expect",
-          "line": 186,
+          "line": 118,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "statement",
-          "line": 188,
+          "line": 120,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "rewrote",
-          "line": 190,
+          "name": "reason",
+          "line": 122,
           "supertypes": []
         },
         {
           "kind": "struct",
-          "name": "Rewrite",
+          "name": "AcAmendReport",
+          "line": 128,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ok",
+          "line": 130,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec",
+          "line": 132,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ac",
+          "line": 134,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "command",
+          "line": 136,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "expect",
+          "line": 138,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "superseded_command",
+          "line": 140,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "superseded_expect",
+          "line": 142,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "proof",
+          "line": 145,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "rewritten",
+          "line": 148,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ledger",
+          "line": 150,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "error",
+          "line": 154,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "remedy",
+          "line": 156,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "refused",
+          "line": 161,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Amendment",
+          "line": 182,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "id",
+          "line": 184,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "at",
+          "line": 187,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 189,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "superseded_command",
+          "line": 191,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "superseded_expect",
+          "line": 193,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "superseded_statement",
           "line": 195,
           "supertypes": []
         },
@@ -46209,187 +46197,217 @@
         {
           "kind": "field",
           "name": "expect",
-          "line": 200,
+          "line": 199,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "statement",
-          "line": 202,
+          "line": 201,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "rewrote",
+          "line": 203,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Rewrite",
+          "line": 208,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "command",
+          "line": 210,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "expect",
+          "line": 213,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "statement",
+          "line": 215,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "normalise_id",
-          "line": 211,
+          "line": 224,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "marker_end",
-          "line": 234,
+          "line": 247,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "split_cr",
-          "line": 241,
+          "line": 254,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "replace_marker_value",
-          "line": 249,
+          "line": 262,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ensure_expect",
-          "line": 272,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "replace_statement",
           "line": 285,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "replace_statement",
+          "line": 298,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "ends_block",
-          "line": 307,
+          "line": 320,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_statement_continuation",
-          "line": 318,
+          "line": 331,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rewrite_markdown",
-          "line": 360,
+          "line": 373,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "artefacts",
-          "line": 460,
+          "line": 473,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "criteria_of",
-          "line": 489,
+          "line": 502,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "landed",
-          "line": 500,
+          "line": 513,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_ledger",
-          "line": 517,
+          "line": 530,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_ledger",
-          "line": 527,
+          "line": 540,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "amend",
-          "line": 544,
+          "line": 557,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "exit_code",
-          "line": 757,
+          "line": 789,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run",
-          "line": 762,
+          "line": 794,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_body",
-          "line": 788,
+          "line": 820,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed",
-          "line": 800,
+          "line": 832,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "opts",
-          "line": 815,
+          "line": 847,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "amend_refuses_a_vacuous_new_command",
-          "line": 830,
+          "line": 862,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "amend_records_the_previous_version_and_rewrites_every_artifact",
-          "line": 877,
+          "line": 909,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ac_amend_accepts_inexecutable_predecessor",
-          "line": 979,
+          "line": 1011,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "blank_reason_unknown_spec_and_unknown_criterion_are_refused",
-          "line": 1066,
+          "line": 1098,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rewritten_lines_parse_back_as_the_new_command",
-          "line": 1102,
+          "line": 1134,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "only_criterion_lines_inside_the_ac_section_are_rewritten",
-          "line": 1135,
+          "line": 1167,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ac_amend_rewrites_the_whole_statement_block",
-          "line": 1173,
+          "line": 1205,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_criterion_without_a_command_line_still_loses_its_whole_statement_block",
-          "line": 1244,
+          "line": 1276,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "criterion_ids_are_normalised",
-          "line": 1279,
+          "line": 1311,
           "supertypes": []
         }
       ],
@@ -62547,9 +62565,69 @@
       "fan_in": 1
     },
     {
+      "path": "apps/rt/src/hook_output.rs",
+      "language": "rust",
+      "loc": 260,
+      "imports": [
+        "mustard_core::domain::model::contract::{Outcome, Verdict}",
+        "super::*"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "function",
+          "name": "event_accepts_hook_output",
+          "line": 33,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hook_specific_output",
+          "line": 59,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "inject_outcome",
+          "line": 173,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pre_compact_emits_no_hook_output",
+          "line": 183,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "user_prompt_submit_emits_additional_context",
+          "line": 190,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "session_start_emits_additional_context",
+          "line": 199,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "user_prompt_submit_deny_emits_top_level_block_decision",
+          "line": 210,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop_deny_emits_top_level_block_with_additional_context",
+          "line": 242,
+          "supertypes": []
+        }
+      ]
+    },
+    {
       "path": "apps/rt/src/lib.rs",
       "language": "rust",
-      "loc": 37,
+      "loc": 41,
       "imports": [],
       "namespaces": [],
       "declarations": []
@@ -62557,151 +62635,102 @@
     {
       "path": "apps/rt/src/main.rs",
       "language": "rust",
-      "loc": 467,
+      "loc": 234,
       "imports": [
         "clap::{Parser, Subcommand}",
-        "mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict}",
-        "std::io::{Read, Write}",
-        "super::*"
+        "mustard_core::domain::model::contract::{HookInput, Outcome, Trigger}",
+        "std::io::{Read, Write}"
       ],
       "namespaces": [],
       "declarations": [
         {
           "kind": "struct",
           "name": "Cli",
-          "line": 69,
+          "line": 74,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "command",
-          "line": 71,
+          "line": 76,
           "supertypes": []
         },
         {
           "kind": "enum",
           "name": "Command",
-          "line": 79,
+          "line": 84,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "On",
-          "line": 81,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "event",
-          "line": 83,
-          "supertypes": []
-        },
-        {
-          "kind": "enum_member",
-          "name": "Check",
           "line": 86,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "id",
+          "name": "event",
           "line": 88,
           "supertypes": []
         },
         {
           "kind": "enum_member",
-          "name": "Run",
+          "name": "Check",
           "line": 91,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "command",
+          "name": "id",
           "line": 93,
           "supertypes": []
         },
         {
           "kind": "enum_member",
-          "name": "Mcp",
+          "name": "Run",
           "line": 96,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "command",
+          "line": 98,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Mcp",
+          "line": 101,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "main",
-          "line": 99,
+          "line": 104,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rewrite_metrics_wave_status",
-          "line": 172,
+          "line": 177,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rewrite_scan_spec",
-          "line": 194,
+          "line": 199,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_stdin_input",
-          "line": 215,
+          "line": 220,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_outcome",
-          "line": 234,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "event_accepts_hook_output",
-          "line": 252,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "hook_specific_output",
-          "line": 278,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "inject_outcome",
-          "line": 392,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "pre_compact_emits_no_hook_output",
-          "line": 402,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "user_prompt_submit_emits_additional_context",
-          "line": 409,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "session_start_emits_additional_context",
-          "line": 418,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "user_prompt_submit_deny_emits_top_level_block_decision",
-          "line": 429,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stop_deny_emits_top_level_block_with_additional_context",
-          "line": 461,
+          "line": 239,
           "supertypes": []
         }
       ]
@@ -91378,7 +91407,7 @@
     }
   ],
   "graph": {
-    "nodes": 644,
+    "nodes": 645,
     "edges": 506,
     "cyclic": true,
     "top_fan_in": [
@@ -91900,7 +91929,7 @@
     "layers": [
       {
         "name": "L0",
-        "modules": 405
+        "modules": 406
       },
       {
         "name": "L1",
@@ -94498,17 +94527,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Report slice",
       "roles": [
         "(core)",
-        "State"
+        "Report"
       ],
       "optional_roles": [
         "Ac",
         "Function",
         "Kind",
         "Mode",
-        "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -94537,12 +94566,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -94595,6 +94624,12 @@
           "role": "tipo base"
         },
         {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
+        },
+        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -94605,16 +94640,10 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
-        },
-        {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
@@ -95504,7 +95533,7 @@
     "top_dirs": [
       {
         "dir": "apps",
-        "code_files": 552,
+        "code_files": 553,
         "other_files": 240
       },
       {
@@ -95540,7 +95569,7 @@
       {
         "dir": "docs",
         "code_files": 0,
-        "other_files": 3
+        "other_files": 4
       },
       {
         "dir": "packaging",
@@ -95563,7 +95592,7 @@
     "unsupported_exts": [
       {
         "ext": ".md",
-        "count": 196
+        "count": 197
       },
       {
         "ext": ".scm",
@@ -95646,7 +95675,7 @@
         "count": 1
       }
     ],
-    "code_files_read": 644,
+    "code_files_read": 645,
     "non_utf8_skipped": 0
   },
   "projects": [
@@ -95654,7 +95683,7 @@
       "name": "rt",
       "dir": "apps/rt",
       "kind": "cargo",
-      "code_files": 286,
+      "code_files": 287,
       "frameworks": [
         "mustard-core",
         "serde",
