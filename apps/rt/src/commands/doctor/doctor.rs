@@ -599,7 +599,8 @@ fn lsp_check(project_dir: &Path) -> CheckResult {
 
 /// Warn when `mustard.json#git.flow` is empty. The flow is the single source
 /// every base-derived behavior reads: `work_branch_gate` protection, the
-/// auto-branch `{base}_{slug}` base, `/git` PR targets. An empty flow silently
+/// base the auto-branch `{kind}/{slug}` is cut from, `/git` PR targets. An
+/// empty flow silently
 /// degrades all of them to the `{main, master}` fallback — a project whose
 /// integration branch is anything else (`dev`, `develop`) gets no protection
 /// there and no auto-branching. Skip when there is no `mustard.json` at the

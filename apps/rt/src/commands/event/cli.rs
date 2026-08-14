@@ -72,18 +72,24 @@ pub enum EventCmd {
         #[arg(long = "allow-no-qa")]
         allow_no_qa: bool,
         /// Free-form natural-language request. On `--kind pipeline.kind` it
-        /// MINTS the unit's canonical name: one slug for the `{base}_{slug}`
+        /// MINTS the unit's canonical name: one slug for the `{kind}/{slug}`
         /// branch, the events and the spec directory (hand it to `spec-draft
         /// --slug`). It supersedes a disagreeing `--spec`, and the report says
         /// so via `renamedFrom`.
         #[arg(long)]
         intent: Option<String>,
-        /// Integration base the work branch is cut from. On
-        /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}`.
-        /// When set, it MUST name one of the project's `git.flow` integration
-        /// bases (unknown → error telling you to declare it); when omitted,
-        /// the project's primary base is used. Agnostic — derived from
-        /// `git.flow`, never hardcoded.
+        /// What the unit IS: `feature`, `fix` or `hotfix`. On
+        /// `--kind pipeline.kind` it names the auto-branch (`{kind}/{slug}`)
+        /// and, through `git.flow`, the base the unit is cut from. Omitted →
+        /// `feature`. Never inferred from the request: a fix that waits for the
+        /// next release and one that goes to production are the same change.
+        #[arg(long = "type")]
+        work_kind: Option<String>,
+        /// Integration base the work branch is cut from. When set, it MUST name
+        /// one of the project's `git.flow` integration bases (unknown → error
+        /// telling you to declare it), and a `hotfix` may not name the base
+        /// ordinary work is cut from; when omitted, the base follows from
+        /// `--type`. Agnostic — derived from `git.flow`, never hardcoded.
         #[arg(long)]
         base: Option<String>,
     },
@@ -140,7 +146,7 @@ pub fn dispatch(cmd: EventCmd) {
         EventCmd::EmitPhase { spec, to, from } => {
             event::emit_phase::run(&spec, &to, from.as_deref());
         }
-        EventCmd::EmitPipeline { kind, spec, payload, allow_no_qa, intent, base } => {
+        EventCmd::EmitPipeline { kind, spec, payload, allow_no_qa, intent, work_kind, base } => {
             event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
                 spec,
@@ -148,6 +154,7 @@ pub fn dispatch(cmd: EventCmd) {
                 allow_no_qa,
                 intent,
                 base,
+                work_kind,
             });
         }
         EventCmd::EventProjections {

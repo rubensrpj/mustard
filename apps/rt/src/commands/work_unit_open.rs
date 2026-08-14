@@ -4,7 +4,7 @@
 //! mutating the main checkout with an in-place `checkout -b`.
 //!
 //! Counterpart of [`crate::commands::git_settle`] (the exit ritual): open cuts
-//! `.claude/worktrees/{base}_{slug}` from a fresh `origin/{base}`; settle
+//! `.claude/worktrees/{kind}/{slug}` from a fresh `origin/{base}`; settle
 //! verifies the merge and prunes the same worktree. Cleanup of these worktrees
 //! is git-settle's job EXCLUSIVELY — `worktree-gc` collects only worktrees
 //! that are NOT work units ([`is_unit_worktree_name`]) and never touches one.
@@ -19,6 +19,16 @@
 //! inside any worktree — a per-worktree copy would only shadow it (undocumented
 //! precedence) and freeze arrangements at open time.
 //!
+//! Nothing ELSE is planted either: a cut receives what git tracks plus what
+//! [`init_submodules`] populates, and nothing the harness invented. Carrying or
+//! LINKING the project's git-ignored environment (`.env`, `node_modules`) was
+//! tried and withdrawn: a directory junction inside the worktree is DESCENDED by
+//! `git worktree remove`, which deleted the main checkout's own directory (with
+//! and without `--force`), so the removal of a worktree destroyed the tree it
+//! pointed at. A worktree therefore lacks whatever git ignores, by design; the
+//! second unit that would need one is REFUSED instead
+//! ([`crate::hooks::write::work_branch_gate`]).
+//!
 //! Error posture: config/user/state errors are LOUD (`ok:false` + exit 1) —
 //! an unknown `--base` here is the same disease `resolve_base` now rejects at
 //! emit time. Only the network is forgiving: a failed `git fetch origin` never
@@ -29,6 +39,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees};
+use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind};
 
 /// Where Claude Code itself puts worktrees, relative to the main checkout.
 /// Mirrored so a hook-managed worktree lands exactly where the native one would
@@ -36,8 +47,7 @@ use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_wor
 /// it, leaving the layout to whoever replaces the native `git worktree add`.
 const WORKTREES_RELDIR: &str = ".claude/worktrees";
 
-/// The declared integration base a worktree NAME belongs to, read from its
-/// longest `{base}_` prefix — `None` when the name is not a work unit's.
+/// Whether a worktree NAME is a work unit's of THIS project.
 ///
 /// This is the ONE criterion that separates a work unit's worktree from every
 /// other worktree the harness may cut, and it is derived from the project's own
@@ -48,19 +58,18 @@ const WORKTREES_RELDIR: &str = ".claude/worktrees";
 /// `.claude/worktrees/recursing-benz-063389`. Keying on a prefix that never
 /// appears made `worktree-gc` match nothing at all, so the collector and this
 /// engine now ask the one same question, of the same declared bases.
-pub(crate) fn unit_base_of_name(name: &str, bases: &[String]) -> Option<String> {
-    bases
-        .iter()
-        .filter(|b| name.starts_with(&format!("{b}_")))
-        .max_by_key(|b| b.len())
-        .cloned()
-}
-
-/// Whether a worktree NAME is a work unit's — see [`unit_base_of_name`].
-/// Everything else (a subagent's isolated checkout, a background session's, a
-/// desktop one) is not a unit, and is what `worktree-gc` may collect.
-pub(crate) fn is_unit_worktree_name(name: &str, bases: &[String]) -> bool {
-    unit_base_of_name(name, bases).is_some()
+///
+/// The reading itself is [`BaseFlow::base_of`], the crate's ONE parser: a unit
+/// named by its kind (`feature/…`), and one still in the `{base}_{slug}` shape,
+/// are both recognised.
+///
+/// Asked of [`UnitBase::is_unit`] and NOT of the base, deliberately: a
+/// `hotfix/…` whose base was never recorded IS a unit, and reading "no base" as
+/// "not a unit" would hand its worktree to the collector. Everything else (a
+/// subagent's isolated checkout, a background session's, a desktop one) is not a
+/// unit, and is what `worktree-gc` may collect.
+pub(crate) fn is_unit_worktree_name(name: &str, flow: &BaseFlow) -> bool {
+    flow.base_of(name).is_unit()
 }
 
 /// How many dirty paths the refusal message spells out before summarising.
@@ -71,15 +80,20 @@ pub struct WorkUnitOpenOpts {
     /// Any directory inside the repo (worktrees welcome — the command resolves
     /// the main checkout itself). Defaults to the current dir.
     pub root: PathBuf,
-    /// Full work-branch name override (e.g. `dev_my-spec`). Its `{base}_`
-    /// prefix MUST name a declared integration base.
+    /// Full work-branch name override (e.g. `feature/my-spec`). Its prefix MUST
+    /// name a work kind, or a declared integration base for a unit still in the
+    /// `{base}_{slug}` shape.
     pub branch: Option<String>,
     /// Spec slug — used verbatim as the branch slug (parity with emit-pipeline).
     pub spec: Option<String>,
     /// Free-form intent, slugified when `--spec` is absent (parity with
     /// emit-pipeline).
     pub intent: Option<String>,
-    /// Integration base; STRICT — must name a declared base. Omitted → primary.
+    /// What the unit IS (`feature`/`fix`/`hotfix`) — names the branch and, via
+    /// `git.flow`, its base. Omitted → the ordinary unit, never the emergency.
+    pub work_kind: Option<String>,
+    /// Integration base; STRICT — must name a declared base, and must not be
+    /// the work base for a hotfix. Omitted → the base the kind implies.
     pub base: Option<String>,
 }
 
@@ -133,22 +147,18 @@ pub(crate) fn checkout_holding_branch(main: &Path, branch: &str) -> Option<Strin
 /// anything else (an integration base, a detached HEAD, an unreadable repo).
 ///
 /// Read from the TREE, never from the requested worktree name: a non-unit name
-/// (a slug such as `recursing-benz-063389`) carries no base and no slug, so the
-/// unit can only come from where the hook was invoked. The shape and the
-/// longest-match rule mirror
-/// `work_branch_gate::base_for` — the parser of what
+/// (a slug such as `recursing-benz-063389`) carries no kind and no slug, so the
+/// unit can only come from where the hook was invoked. The reading is
+/// [`unit_base_of_name`] — the crate's one parser of what
 /// [`super::event::work_branch`] produces.
-fn current_unit_branch(cwd: &Path, bases: &[String]) -> Option<String> {
+fn current_unit_branch(cwd: &Path, flow: &BaseFlow) -> Option<String> {
     let branch = git_out(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = branch.trim();
     // `HEAD` is git's answer for a detached checkout — not a branch name.
     if branch.is_empty() || branch == "HEAD" {
         return None;
     }
-    bases
-        .iter()
-        .any(|b| branch.starts_with(&format!("{b}_")))
-        .then(|| branch.to_string())
+    flow.base_of(branch).is_unit().then(|| branch.to_string())
 }
 
 /// Start ref for a NON-UNIT worktree name (a subagent's or a desktop session's
@@ -174,9 +184,9 @@ fn non_unit_start(
     main: &Path,
     cwd: &Path,
     config: &mustard_core::ProjectConfig,
-    bases: &[String],
+    flow: &BaseFlow,
 ) -> String {
-    if let Some(unit) = current_unit_branch(cwd, bases) {
+    if let Some(unit) = current_unit_branch(cwd, flow) {
         return unit;
     }
     // An ABSENT `git.flow` has no declared primary — `primary_base()` would
@@ -208,6 +218,15 @@ fn non_unit_start(
 ///
 /// Fail-open: no git, not a repository, or a failed probe yields an EMPTY list
 /// (read as "clean"). The refusal only ever stands on a positive observation.
+///
+/// Both properties are right ONLY for callers that REFUSE on what they measure
+/// — this probe's own `hook_create`, the gate's checkout-failure note,
+/// `work_removed` — so an unmeasured tree merely lets the ordinary path
+/// through. Two callers need the opposite posture and have their own probes,
+/// deliberately: `worktree_gc`'s `Contents` (it DELETES, so unproven keeps) and
+/// [`crate::commands::event::work_branch::checkout_work`] (it CHECKS OUT OVER a
+/// tree, so unproven refuses — and a unit's uncommitted `.claude/spec/…` is its
+/// work, not redirected state). Do not point either of them back here.
 pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
     let Some(out) = git_out(dir, &["status", "--porcelain"]) else {
         return Vec::new();
@@ -233,40 +252,91 @@ pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
     paths
 }
 
+/// What the caller said the unit IS, or the ordinary unit when they said
+/// nothing. `None` only for a value that names no kind — refused rather than
+/// defaulted, so a mistyped `--type hotifx` never cuts into the ordinary queue.
+fn resolve_work_kind(requested: Option<&str>) -> Option<WorkKind> {
+    match requested.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(value) => WorkKind::parse(value),
+        None => Some(WorkKind::Feature),
+    }
+}
+
 /// The open pass — the testable core of [`run`]. Never panics.
 pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
     let Some(main) = main_checkout_root(&opts.root) else {
         return json!({ "ok": false, "reason": "not-a-git-repo" });
     };
     let config = mustard_core::ProjectConfig::load(&main);
-    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
+    let flow = BaseFlow::of_at(&config.git, &main);
 
     // Resolve the target branch + its base — every mismatch is loud, never a
     // silent fallback (an explicit input is caller intent).
     let (target, base) = match opts.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
         Some(b) => {
-            // Longest declared `{B}_` prefix — the gate's rule, minus its
-            // primary-base fallback: a branch without a base prefix is not a
-            // work unit and is refused (mirrors git-settle's `no-base-prefix`).
-            let Some(prefix) = unit_base_of_name(b, &bases) else {
-                return json!({ "ok": false, "reason": "no-base-prefix", "branch": b });
-            };
-            if let Some(req) = opts.base.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                if req != prefix {
-                    return json!({
-                        "ok": false,
-                        "reason": "base-mismatch",
-                        "branch": b,
-                        "prefix": prefix,
-                        "base": req,
-                    });
+            let requested = opts.base.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            // The crate's one reading of a work-branch name — minus the gate's
+            // work-base fallback: a name that is nobody's unit is refused
+            // (mirrors git-settle's `no-base-prefix`).
+            match flow.base_of(b) {
+                UnitBase::NotAUnit => {
+                    return json!({ "ok": false, "reason": "no-base-prefix", "branch": b })
+                }
+                UnitBase::Known(prefix) => {
+                    if let Some(req) = requested {
+                        if req != prefix {
+                            return json!({
+                                "ok": false,
+                                "reason": "base-mismatch",
+                                "branch": b,
+                                "prefix": prefix,
+                                "base": req,
+                            });
+                        }
+                    }
+                    (b.to_string(), prefix)
+                }
+                // The name IS a unit's, but nothing ever established which base
+                // it came from — an emergency in a project with several
+                // candidates, cut by a door that did not record it. `--base` is
+                // the operator saying it; without one there is no honest answer,
+                // and picking the outermost would cut the emergency somewhere
+                // they did not choose.
+                UnitBase::Ambiguous(candidates) => {
+                    match requested.filter(|req| candidates.iter().any(|c| c == req)) {
+                        Some(req) => (b.to_string(), req.to_string()),
+                        None => {
+                            return json!({
+                                "ok": false,
+                                "reason": "ambiguous-base",
+                                "branch": b,
+                                "candidates": candidates,
+                                "hint": format!(
+                                    "'{b}' is an emergency unit and this project declares \
+                                     several bases it could have been cut from ({}) — pass \
+                                     --base with the one you mean",
+                                    candidates.join(", "),
+                                ),
+                            })
+                        }
+                    }
                 }
             }
-            (b.to_string(), prefix)
         }
         None => {
-            let base = match super::event::work_branch::resolve_base(opts.base.as_deref(), &config)
-            {
+            let Some(kind) = resolve_work_kind(opts.work_kind.as_deref()) else {
+                return json!({
+                    "ok": false,
+                    "reason": "unknown-type",
+                    "type": opts.work_kind.clone(),
+                    "hint": WorkKind::ALL.map(WorkKind::token).join(", "),
+                });
+            };
+            let base = match super::event::work_branch::resolve_kind_base(
+                kind,
+                opts.base.as_deref(),
+                &config,
+            ) {
                 Ok(b) => b,
                 Err(msg) => return json!({ "ok": false, "reason": "unknown-base", "error": msg }),
             };
@@ -284,7 +354,7 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
             }
             let main_str = main.to_string_lossy().to_string();
             let target = super::event::work_branch::compute_work_branch(
-                &base,
+                kind,
                 spec,
                 intent,
                 &crate::shared::context::session_id(),
@@ -372,6 +442,11 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         });
     }
 
+    // The cut happened HERE, so this is where its base becomes a fact — and the
+    // only door that can still write it down. A no-op unless the flow cannot
+    // re-derive the answer (see `record_cut_base`).
+    flow.record_cut_base(&target, &base);
+
     json!({
         "ok": true,
         "path": wt_str,
@@ -382,11 +457,64 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
     })
 }
 
+/// Why a NAME cannot be placed under `.claude/worktrees/`, `None` when it can.
+///
+/// The refusal this replaces was "no path separator at all", and it was right
+/// about the danger and wrong about the shape: `name` is joined onto the
+/// worktrees directory, so a separator can walk out of it — but every unit this
+/// project mints is now `{kind}/{slug}`, and refusing the separator refused
+/// EVERY unit, before the `checkout_holding_branch` degrade could answer. A
+/// non-zero exit here aborts the whole `EnterWorktree`, so that refusal did not
+/// merely decline the cut: it ended the isolation step for every unit named the
+/// current way.
+///
+/// What is allowed is exactly the shape the project mints, and nothing wider:
+/// one separator, whose head is a KIND's own token — asked of [`WorkKind`], so a
+/// fourth kind never has to be spelled here — and whose tail is a slug carrying
+/// no separator of its own. Everything else is refused: a backslash, an absolute
+/// path, any `..`, a second `/`, an unknown leading token.
+///
+/// The message says the rule once, with the offending name, for every refusal —
+/// a hook's stderr is one line in a transcript, and the operator needs the shape
+/// that WOULD work more than they need the taxonomy of what did not.
+fn unusable_worktree_name(name: &str) -> Option<String> {
+    let refuse = |why: &str| {
+        Some(format!(
+            "WorktreeCreate: `name` must be a plain name or a `{{kind}}/{{slug}}` work branch \
+             (kinds: {kinds}) — a path separator anywhere else escapes the worktrees \
+             directory. Refusing '{name}': {why}.",
+            kinds = WorkKind::ALL.map(WorkKind::token).join(", "),
+        ))
+    };
+    if name.contains('\\') {
+        return refuse("a backslash is a path separator too");
+    }
+    if name.contains("..") {
+        return refuse("`..` walks out of the worktrees directory");
+    }
+    if name.starts_with('/') || name.chars().nth(1) == Some(':') {
+        return refuse("it is an absolute path, not a name");
+    }
+    let Some((head, tail)) = name.split_once('/') else {
+        return None; // a plain name — the slugs the platform generates
+    };
+    if !WorkKind::is_container_segment(head) {
+        return refuse("its first segment names no work kind");
+    }
+    if tail.is_empty() || tail.contains('/') {
+        return refuse("a kind's slug carries no separator of its own");
+    }
+    None
+}
+
 /// The `WorktreeCreate` hook engine: create the worktree the harness NAMED and
 /// return the path to echo. Naming decides the cut:
 ///
-/// - `{base}_…` with a DECLARED base → work unit: fetch + cut from a fresh
-///   `origin/{base}` (attach the branch if it already exists).
+/// - `{kind}/{slug}` (`feature/…`, `fix/…`, `hotfix/…`) or `{base}_…` with a
+///   DECLARED base → work unit: fetch + cut from a fresh `origin/{base}`
+///   (attach the branch if it already exists). The kind-named shape is the one
+///   this project MINTS, so it is the ordinary hand-off — `EnterWorktree
+///   name={kind}/{slug}` reaches exactly here.
 /// - `prefix_…` with an UNDECLARED prefix → `Err` (didactic — almost certainly
 ///   a mistyped base; silent coercion is the disease this crate just cured).
 /// - anything else — the slug the harness actually hands over
@@ -421,8 +549,8 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     if name.is_empty() {
         return Err("WorktreeCreate: `name` empty in hook input".to_string());
     }
-    if name.contains('/') || name.contains('\\') {
-        return Err(format!("WorktreeCreate: `name` must not contain a path separator: {name}"));
+    if let Some(reason) = unusable_worktree_name(&name) {
+        return Err(reason);
     }
     let Some(main) = main_checkout_root(cwd) else {
         return Err("WorktreeCreate: not a git repository".to_string());
@@ -452,19 +580,34 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
 
     let wt_str = requested.replace('\\', "/");
     let config = mustard_core::ProjectConfig::load(&main);
-    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
-    let unit_base = unit_base_of_name(&name, &bases);
+    let flow = BaseFlow::of_at(&config.git, &main);
+    let answer = flow.base_of(&name);
+    let is_unit = answer.is_unit();
+    // An emergency whose base nothing recorded: the branch has to be cut from
+    // SOMEWHERE, and there is no honest somewhere. Refuse and name the door that
+    // takes the answer — silently taking the outermost candidate is the
+    // coercion this engine's own `--base` refusal exists to prevent.
+    if is_unit && answer.known().is_none() {
+        return Err(format!(
+            "WorktreeCreate: '{name}' is an emergency unit and nothing recorded which base it \
+             was cut from; this project declares several ({}). Open it through the run face, \
+             which takes the answer: `mustard-rt run work-unit-open --branch {name} --base \
+             <one of them>`.",
+            answer.candidates().join(", "),
+        ));
+    }
+    let unit_base = answer.into_known();
 
     // Not a work unit → a mistyped base is refused BEFORE anything else looks
     // at the tree: it is a naming error, and blaming a dirty tree for it would
     // be misleading. (Such a name never becomes a worktree at all.)
-    if unit_base.is_none() {
+    if !is_unit {
         if let Some((prefix, _)) = name.split_once('_') {
             return Err(format!(
                 "WorktreeCreate: '{prefix}' (from '{name}') is not an integration base of this \
                  project (bases: {}). Declare it in mustard.json#git.flow or use a name without \
                  '_'.",
-                bases.join(", ")
+                flow.bases().join(", ")
             ));
         }
         // Clean-tree precondition — NON-UNIT worktrees only, and the one
@@ -501,7 +644,7 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
             return Err(format!("WorktreeCreate: base '{base}' not found in the repository"));
         }
     } else {
-        non_unit_start(&main, cwd, &config, &bases)
+        non_unit_start(&main, cwd, &config, &flow)
     };
 
     let add = if ref_exists(&main, &format!("refs/heads/{name}")) {
@@ -593,6 +736,7 @@ mod tests {
             branch: None,
             spec: None,
             intent: None,
+            work_kind: None,
             base: None,
         }
     }
@@ -646,11 +790,13 @@ mod tests {
         let head_before = git_out(&main, &["rev-parse", "HEAD"]).expect("head");
         let v = open_at(&WorkUnitOpenOpts { spec: Some("my-unit".into()), ..opts(&main) });
         assert_eq!(v["ok"], json!(true), "{v}");
-        assert_eq!(v["branch"], json!("dev_my-unit"));
+        // Named by what the unit IS; the base follows from that through the
+        // declared flow, and is reported separately.
+        assert_eq!(v["branch"], json!("feature/my-unit"));
         assert_eq!(v["base"], json!("dev"));
         assert_eq!(v["created"], json!(true));
         let path = v["path"].as_str().expect("path");
-        assert!(path.ends_with(".claude/worktrees/dev_my-unit"), "{path}");
+        assert!(path.ends_with(".claude/worktrees/feature/my-unit"), "{path}");
         // Cut from origin/dev (the AHEAD commit), not the stale local dev.
         let wt_head = git_out(Path::new(path), &["rev-parse", "HEAD"]).expect("wt head");
         let origin = git_out(&main, &["rev-parse", "origin/dev"]).expect("origin");
@@ -674,7 +820,8 @@ mod tests {
         assert_eq!(second["created"], json!(false));
         assert_eq!(second["path"], first["path"], "same registered path");
         let porcelain = git_out(&main, &["worktree", "list", "--porcelain"]).expect("list");
-        let count = parse_worktrees(&porcelain).iter().filter(|e| e.branch == "dev_twice").count();
+        let count =
+            parse_worktrees(&porcelain).iter().filter(|e| e.branch == "feature/twice").count();
         assert_eq!(count, 1, "exactly one registration");
     }
 
@@ -768,25 +915,40 @@ mod tests {
         assert_eq!(again.replace('\\', "/"), got.replace('\\', "/"));
     }
 
+    /// The base model of a project declaring the ordinary two-tier flow.
+    fn two_tier_flow() -> BaseFlow {
+        let mut git = mustard_core::domain::config::GitConfig::default();
+        git.flow.insert("*".to_string(), "dev".to_string());
+        git.flow.insert("dev".to_string(), "main".to_string());
+        BaseFlow::of(&git)
+    }
+
     #[test]
     fn unit_name_is_decided_by_the_declared_bases_not_by_a_prefix_shape() {
-        // The criterion, stated on its own: `{base}_` and nothing else. The
-        // slug shapes the platform really emits (`WorktreeCreate#name`:
-        // user-given, `pr-<n>`, or auto-generated) are all NON-units — there is
-        // no `agent-` prefix anywhere in the documented contract, and this
-        // repository's own harness worktree is `recursing-benz-063389`.
-        let bases = vec!["dev".to_string(), "main".to_string()];
-        assert!(is_unit_worktree_name("dev_my-spec", &bases));
-        assert!(is_unit_worktree_name("main_hotfix", &bases));
-        assert!(!is_unit_worktree_name("recursing-benz-063389", &bases));
-        assert!(!is_unit_worktree_name("bright-running-fox", &bases));
-        assert!(!is_unit_worktree_name("feature-auth", &bases));
-        assert!(!is_unit_worktree_name("pr-1234", &bases));
-        assert!(!is_unit_worktree_name("agent-w1", &bases), "no special shape survives");
-        assert!(!is_unit_worktree_name("hml_x", &bases), "an UNDECLARED prefix is not a base");
+        // The criterion, stated on its own: a name the project's own flow
+        // recognises as a unit's, and nothing else. The slug shapes the
+        // platform really emits (`WorktreeCreate#name`: user-given, `pr-<n>`,
+        // or auto-generated) are all NON-units — there is no `agent-` prefix
+        // anywhere in the documented contract, and this repository's own
+        // harness worktree is `recursing-benz-063389`.
+        let flow = two_tier_flow();
+        assert!(is_unit_worktree_name("feature/my-spec", &flow));
+        assert!(is_unit_worktree_name("hotfix/login", &flow));
+        // …and a unit still in the older shape stays a unit.
+        assert!(is_unit_worktree_name("dev_my-spec", &flow));
+        assert!(is_unit_worktree_name("main_hotfix", &flow));
+        assert!(!is_unit_worktree_name("recursing-benz-063389", &flow));
+        assert!(!is_unit_worktree_name("bright-running-fox", &flow));
+        assert!(!is_unit_worktree_name("feature-auth", &flow));
+        assert!(!is_unit_worktree_name("pr-1234", &flow));
+        assert!(!is_unit_worktree_name("agent-w1", &flow), "no special shape survives");
+        assert!(!is_unit_worktree_name("hml_x", &flow), "an UNDECLARED prefix is not a base");
         // Longest declared prefix wins, exactly like the branch gate.
-        let nested = vec!["dev".to_string(), "dev_rc".to_string()];
-        assert_eq!(unit_base_of_name("dev_rc_thing", &nested).as_deref(), Some("dev_rc"));
+        let mut nested_git = mustard_core::domain::config::GitConfig::default();
+        nested_git.flow.insert("*".to_string(), "dev".to_string());
+        nested_git.flow.insert("dev".to_string(), "dev_rc".to_string());
+        let nested = BaseFlow::of(&nested_git);
+        assert_eq!(nested.base_of("dev_rc_thing").known(), Some("dev_rc"));
     }
 
     #[test]
@@ -997,6 +1159,72 @@ mod tests {
         assert!(err.contains("separator"), "refused: {err}");
     }
 
+    /// The hook face accepts the shape this project MINTS, and still refuses
+    /// everything that could walk out of the worktrees directory.
+    ///
+    /// The refusal this pins used to be "no `/` at all", which was right about
+    /// the danger and wrong about the shape: every unit is now named
+    /// `{kind}/{slug}`, so it refused EVERY unit — and it refused BEFORE the
+    /// `checkout_holding_branch` degrade, so the `EnterWorktree name=…` hand-off
+    /// died with exit 1 instead of entering the checkout that already held the
+    /// branch. The run face never had the defect (`creates_worktree_from_origin_base`
+    /// proves `.claude/worktrees/feature/my-unit`), which is exactly why only
+    /// the hook face needs stating.
+    #[test]
+    fn hook_create_takes_a_kind_named_branch_and_still_refuses_a_traversal() {
+        let (_dir, main) = fixture();
+
+        // The shape the project mints: accepted, and placed where the run face
+        // places it.
+        let got = hook_create("feature/my-unit", &main).expect("a kind-named unit is creatable");
+        assert!(
+            got.replace('\\', "/").ends_with(".claude/worktrees/feature/my-unit"),
+            "the kind is a directory, exactly as the run face lays it out: {got}",
+        );
+        assert_eq!(
+            git_out(Path::new(&got), &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
+            "feature/my-unit",
+        );
+        // …cut from the fresh origin base its kind implies, like any unit.
+        assert_eq!(
+            git_out(Path::new(&got), &["rev-parse", "HEAD"]).expect("wt head"),
+            git_out(&main, &["rev-parse", "origin/dev"]).expect("origin/dev"),
+        );
+
+        // Every kind the project knows, asked of WorkKind rather than spelled
+        // here — a fourth kind must not need this file edited.
+        for kind in WorkKind::ALL {
+            let name = kind.branch_name("another-unit");
+            assert!(
+                unusable_worktree_name(&name).is_none(),
+                "'{name}' is a unit of this project and must pass",
+            );
+        }
+
+        // And the danger the old refusal existed for is still refused — each
+        // for its own reason, none of them reaching git.
+        for hostile in [
+            "../x",                 // walks up
+            "a/b/c",                // a second separator
+            "chore/x",              // an unknown leading token
+            "feature/a/b",          // a slug carrying a separator of its own
+            "feature/",             // no slug at all
+            "feature\\x",           // the other platform's separator
+            "/etc/passwd",          // an absolute path
+            "C:/Windows/system32",  // …and its Windows spelling
+        ] {
+            let Err(err) = hook_create(hostile, &main) else {
+                panic!("'{hostile}' must be refused");
+            };
+            assert!(err.contains(hostile), "the refusal names what it refused: {err}");
+            assert!(err.contains("separator"), "…and states the rule once: {err}");
+            assert!(
+                !main.join(".claude").join("worktrees").join("a").exists(),
+                "nothing is created on a refusal",
+            );
+        }
+    }
+
     /// [`fixture`] + a REAL git submodule at `vendor/lib`, committed on `dev`
     /// and pushed, so a cut from `origin/dev` carries the gitlink.
     ///
@@ -1073,6 +1301,206 @@ mod tests {
             matches!(init_submodules(Path::new(&got)), Some(Err(_))),
             "the failure is reported, never swallowed and never fatal"
         );
+    }
+
+    /// [`fixture`] whose `.gitignore` really ignores the environment paths, so
+    /// the premise the whole block rests on is the fixture's own state: these
+    /// are git-IGNORED, hence absent from any fresh cut. `declaration` is the
+    /// `mustard.json` body (loaded from the MAIN checkout, never from the
+    /// worktree).
+    fn fixture_with_environment(declaration: &str) -> (tempfile::TempDir, PathBuf) {
+        let (dir, main) = fixture();
+        // The base fixture parks the local branch one commit BEHIND origin/dev;
+        // realign so the ignore rule fast-forwards onto the pushed tip and the
+        // cut carries it.
+        git(&main, &["reset", "--hard", "origin/dev"]);
+        std::fs::write(main.join(".gitignore"), ".claude/\n.env\nnode_modules/\n").expect("ignore");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "ignore the environment"]);
+        git(&main, &["push", "origin", "dev"]);
+        std::fs::write(main.join("mustard.json"), declaration).expect("cfg");
+        std::fs::write(main.join(".env"), "TOKEN=main").expect(".env");
+        std::fs::create_dir_all(main.join("node_modules").join("pkg")).expect("node_modules");
+        std::fs::write(main.join("node_modules/pkg/index.js"), "one").expect("pkg");
+        (dir, main)
+    }
+
+    /// Every path under `wt`, worktree-root-relative with `/` separators, never
+    /// descending into git's own `.git` entry. The enumeration the two
+    /// assertions below rest on — an empty walk would make either of them pass
+    /// over an unexamined tree, so both check what it found.
+    fn entries_under(wt: &Path, rel: &str, out: &mut Vec<String>) {
+        let Ok(read) = std::fs::read_dir(if rel.is_empty() {
+            wt.to_path_buf()
+        } else {
+            wt.join(rel)
+        }) else {
+            return;
+        };
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if rel.is_empty() && name == ".git" {
+                continue; // git's own bookkeeping, not content the cut received
+            }
+            let child = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            let is_dir = entry
+                .path()
+                .symlink_metadata()
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            out.push(child.clone());
+            if is_dir {
+                entries_under(wt, &child, out);
+            }
+        }
+    }
+
+    /// Create a directory LINK at `dst` pointing at `src`, or `None` when this
+    /// host refuses one (Windows without Developer Mode, no `mklink`). Test
+    /// scaffolding ONLY — the engine plants no link of any kind any more, so
+    /// the positive control below has to make its own.
+    fn try_link_dir(src: &Path, dst: &Path) -> Option<()> {
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(src, dst).is_ok() {
+                return Some(());
+            }
+            let out = Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    dst.to_string_lossy().as_ref(),
+                    src.to_string_lossy().as_ref(),
+                ])
+                .output()
+                .ok()?;
+            out.status.success().then_some(())
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(src, dst).ok()
+        }
+    }
+
+    /// AC-1 — a fresh worktree receives what GIT brings plus what its
+    /// SUBMODULES bring, and nothing the harness invented.
+    ///
+    /// Carrying the project's git-ignored environment into a cut (and LINKING
+    /// the heavy part of it) shipped once and was withdrawn: `git worktree
+    /// remove` descends a Windows junction, so removing the worktree deleted the
+    /// MAIN checkout's directory the link pointed at. What is left is the plain
+    /// cut — which is why the second unit is refused instead of diverted.
+    #[test]
+    fn a_fresh_worktree_receives_only_git_and_submodules() {
+        // --- 1. What git and its submodules bring DOES arrive ---------------
+        let (_subdir, sub_main) = fixture_with_submodule();
+        let sub_wt = PathBuf::from(hook_create("dev_onlygit-sub", &sub_main).expect("creates"));
+        assert!(sub_wt.join("a.txt").is_file(), "the versioned files travel");
+        assert!(sub_wt.join(".gitmodules").is_file(), "the submodule declaration travels");
+        assert!(
+            init_submodules(&sub_wt).is_some(),
+            "a declared submodule is acted on — that is the second (and last) population step",
+        );
+
+        // --- 2. Nothing else does ------------------------------------------
+        // The premise: `.env` and `node_modules/` exist in the main checkout and
+        // are git-IGNORED, so only a harness step could put them in a cut.
+        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        assert!(main.join(".env").is_file() && main.join("node_modules").is_dir());
+        let wt = PathBuf::from(hook_create("dev_onlygit", &main).expect("creates"));
+
+        let tracked: Vec<String> = git_out(&wt, &["ls-files"])
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().trim_matches('"').to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(tracked.contains(&"a.txt".to_string()), "the fixture really tracks files");
+        // A tracked path implies its parent directories — those are git's too.
+        let mut allowed: Vec<String> = Vec::new();
+        for path in &tracked {
+            let mut prefix = String::new();
+            for segment in path.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(segment);
+                if !allowed.contains(&prefix) {
+                    allowed.push(prefix.clone());
+                }
+            }
+        }
+
+        let mut found: Vec<String> = Vec::new();
+        entries_under(&wt, "", &mut found);
+        assert!(found.contains(&"a.txt".to_string()), "the walk really enumerated the worktree");
+        for entry in &found {
+            assert!(
+                allowed.contains(entry),
+                "the harness added '{entry}' to a fresh cut — a worktree receives only what \
+                 git and its submodules bring (git tracks: {allowed:?})",
+            );
+        }
+        assert!(!wt.join(".env").exists(), "a git-ignored file never travels");
+        assert!(!wt.join("node_modules").exists(), "a git-ignored directory never travels");
+    }
+
+    /// AC-2 — nothing inside a fresh worktree points back into the main
+    /// checkout.
+    ///
+    /// This is the withdrawn defect stated as a property. A directory junction
+    /// planted in the worktree is DESCENDED by `git worktree remove`, which
+    /// deleted the main checkout's `node_modules` — with and without `--force`,
+    /// and silently in the plain case. So the invariant is not "the link is
+    /// well-formed", it is that there is NO link.
+    #[test]
+    fn a_fresh_worktree_holds_no_link_into_the_main_checkout() {
+        let (_dir, main) = fixture_with_environment(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+        let wt = PathBuf::from(hook_create("dev_nolink", &main).expect("creates"));
+        let wt_real = std::fs::canonicalize(&wt).unwrap_or_else(|_| wt.clone());
+
+        // The probe: a reparse point / symlink anywhere inside the cut, or any
+        // entry that RESOLVES outside it (which a junction does even where the
+        // platform does not report it as a symlink).
+        let escapes = |root: &Path| -> Vec<String> {
+            let mut found: Vec<String> = Vec::new();
+            entries_under(root, "", &mut found);
+            found
+                .into_iter()
+                .filter(|rel| {
+                    let path = root.join(rel);
+                    let linked = path
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    let outside = std::fs::canonicalize(&path)
+                        .map(|real| !real.starts_with(&wt_real))
+                        .unwrap_or(false);
+                    linked || outside
+                })
+                .collect()
+        };
+
+        let mut walked: Vec<String> = Vec::new();
+        entries_under(&wt, "", &mut walked);
+        assert!(walked.contains(&"a.txt".to_string()), "the walk really enumerated the worktree");
+        assert!(
+            escapes(&wt).is_empty(),
+            "a fresh cut holds a link reaching out of it: {:?}",
+            escapes(&wt),
+        );
+
+        // Positive control — the probe can SEE such a link, so the emptiness
+        // above is a measurement and not a blind spot. Skipped only where this
+        // host refuses to create one at all.
+        if try_link_dir(&main.join("node_modules"), &wt.join("node_modules")).is_some() {
+            let seen = escapes(&wt);
+            assert!(
+                seen.iter().any(|rel| rel == "node_modules"),
+                "the probe missed a link planted by hand: {seen:?}",
+            );
+        }
     }
 
     #[test]

@@ -99,7 +99,8 @@ fn build_segments(data: &Value) -> Vec<Segment> {
 /// each row answers one question, so the eye learns where to look and the
 /// layout does not reshuffle when a number appears or disappears. The branch
 /// name — the widest element by far, and variable, since a work-unit branch is
-/// `{base}_{slug}` — gets the first row nearly to itself.
+/// `{kind}/{slug}` (or the older `{base}_{slug}`) — gets the first row nearly
+/// to itself.
 ///
 /// Claude Code renders one row per printed line (documented), so this is two
 /// `println!`s, not a rendering trick.

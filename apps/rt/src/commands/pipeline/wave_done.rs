@@ -57,13 +57,14 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
         allow_no_qa: false,
         intent: None,
         base: None,
+        work_kind: None,
     });
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
     // 2. Materialize this wave's qualifying lessons as spec-memory files, so
     //    the NEXT round's render can pick them up — fail-open.
-    let memories = materialize_wave_memory(&cwd, spec);
+    let memories = materialize_wave_memory(&cwd, spec, wave);
 
     // 3. Cache the wave diff for the next round's render — fail-open.
     let diff_cached = cache_wave_diff(&cwd, spec, wave);
@@ -102,13 +103,14 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
 ///
 /// ## Where an account comes from
 ///
-/// The wave's own recorded return: the `agent.stop` telemetry (whose payload
-/// carries the returning agent's report) and the `decision` events harvested
-/// from its `<MEMORY>` blocks, both on the spec's OWN NDJSON log. No new channel
-/// and no new flag — the dispatch prompt instructs the agent to account for each
-/// duty by its id, and the ids carry the wave number
+/// The wave's own recorded return, on the spec's OWN NDJSON log — see
+/// [`recorded_return_text`] for the three event kinds that carry an agent's own
+/// words and the wave scoping applied to them. The dispatch prompt instructs the
+/// agent to account for each duty by its id, and the ids carry the wave number
 /// ([`wave_scaffold::parse_reality_obligations`]'s writer twin), so one wave's
 /// report can never clear another wave's duty even though the log is per-spec.
+/// The wave scoping is the second lock on the same door: an id match inside a
+/// SIBLING's return is not even looked at.
 ///
 /// Fail-open at every step: an unresolvable spec or wave, an unreadable wave
 /// `spec.md`, or a wave that declared no duty all yield an empty list.
@@ -124,7 +126,7 @@ fn unaccounted_reality_obligations(cwd: &Path, spec: &str, wave: u64) -> Vec<Str
     let Ok(spec_paths) = ClaudePaths::for_project(cwd).and_then(|p| p.for_spec(spec)) else {
         return Vec::new();
     };
-    let recorded = recorded_return_text(&spec_paths.events_dir());
+    let recorded = recorded_return_text(&spec_paths.events_dir(), wave);
     duties
         .into_iter()
         .filter(|(id, _)| !accounts_for(&recorded, id))
@@ -167,18 +169,48 @@ fn accounts_for(recorded: &str, id: &str) -> bool {
     })
 }
 
-/// Everything the waves of this spec recorded on their way back, concatenated —
-/// the substrate an obligation id is looked for in.
+/// What WAVE `wave` recorded on its way back, concatenated — the substrate an
+/// obligation id is looked for in.
 ///
-/// Only the two event kinds that carry an agent's OWN words are read: `agent.stop`
-/// (the returning report) and `decision` (a harvested `<MEMORY>` block). The
-/// whole payload is serialised rather than one named field, because the report
-/// key has moved before and a missed rename would silently turn every duty into
-/// an unaccounted one. Fail-open: an unreadable log yields "".
-fn recorded_return_text(events_dir: &Path) -> String {
+/// ## The three kinds read
+///
+/// Only event kinds that carry an agent's OWN words:
+///
+/// - `agent.return` — the returning report, captured at `SubagentStop` by
+///   [`crate::hooks::task::subagent_inject`]. This is where an account of a duty
+///   actually lives: ordinary prose in the body of a report. It always names the
+///   wave that produced it (the capture records nothing when it cannot), so it
+///   never reaches a sibling under the "no wave" allowance below.
+/// - `decision` — a harvested `<MEMORY>` block.
+/// - `agent.stop` — the dispatcher-side telemetry. Kept for the record it can
+///   carry on a SYNCHRONOUS dispatch, but it is not the load-bearing channel: on
+///   the background dispatch the wave pipeline uses, its payload is the launch
+///   acknowledgement, produced when the child starts and containing no part of
+///   the return. Reading only this one was the measured defect — see
+///   `capture_return_report`'s own docs.
+///
+/// The whole payload is serialised rather than one named field, because the
+/// report key has moved before and a missed rename would silently turn every
+/// duty into an unaccounted one.
+///
+/// ## The wave scoping
+///
+/// A round's waves all write to one per-SPEC log, so "what this wave recorded"
+/// has to be selected, not assumed. An event is this wave's when it names this
+/// wave; an event that names NO wave (`0` — the schema's "outside a wave plan",
+/// and the shape every pre-stamp record has) belongs to nobody and stays
+/// readable by every wave, since excluding it would silently stop clearing
+/// duties that are in fact accounted for. An event naming a DIFFERENT wave is a
+/// sibling's record and is never read here.
+///
+/// Fail-open: an unreadable log yields "".
+fn recorded_return_text(events_dir: &Path, wave: u64) -> String {
     mustard_core::view::projection::read_harness_events_from_ndjson_dir(events_dir)
         .iter()
-        .filter(|e| e.event == "agent.stop" || e.event == "decision")
+        .filter(|e| {
+            e.event == "agent.return" || e.event == "agent.stop" || e.event == "decision"
+        })
+        .filter(|e| e.wave == 0 || u64::from(e.wave) == wave)
         .map(|e| e.payload.to_string())
         .collect::<Vec<_>>()
         .join("\n")
@@ -220,12 +252,21 @@ fn recorded_return_text(events_dir: &Path) -> String {
 /// on the run that produced this spec: two rounds, four memory files, two of
 /// them attributed to a wave that did not write them.
 ///
-/// So the sweep stays — whichever `wave-done` gets there first materializes
-/// everything pending, which is what keeps a lesson from being lost when its own
-/// wave's close already ran — but the WAVE in the file comes from the event.
-/// When the event carries none, the file says `unknown` rather than borrowing
-/// the closing wave's number: the harness must not assert an attribution it
-/// never established.
+/// The file's `wave:` field was fixed first, by reading the EVENT. But the sweep
+/// itself outlived that fix and kept the same conflation one level up, in the
+/// RECORD of the close: closing wave 1 harvested wave 2's lesson and reported
+/// the path it wrote under wave 1's `memoriesWritten`. Measured on the run this
+/// fix comes from — `wave-done --wave 1` returned
+/// `…/memory/shared-proc-…-wave2.md`. A close now takes only what belongs to it:
+///
+/// - a lesson whose event names THIS wave — its own;
+/// - a lesson whose event names NO wave (`0`, the schema's "outside a wave
+///   plan") — it belongs to nobody, so no other close will ever come for it, and
+///   dropping it here would lose it outright. Its file still says `unknown`; the
+///   close reports having written it, not having produced it.
+///
+/// A lesson naming a DIFFERENT wave is left for that wave's own close, which is
+/// the call that gets to report it.
 ///
 /// A lesson already materialized is skipped by body comparison, so re-running
 /// `wave-done`, or closing a later wave, never re-attributes or duplicates an
@@ -245,8 +286,9 @@ fn recorded_return_text(events_dir: &Path) -> String {
 ///
 /// Returns the repo-relative paths written, for the composite's JSON report.
 ///
-/// Takes no wave: the closing wave is exactly the number this must NOT use.
-fn materialize_wave_memory(cwd: &Path, spec: &str) -> Vec<String> {
+/// `wave` SELECTS which lessons this close takes; it is never STAMPED onto one —
+/// the number in a file always comes from the event that carried the lesson.
+fn materialize_wave_memory(cwd: &Path, spec: &str, wave: u64) -> Vec<String> {
     let Ok(spec_paths) = ClaudePaths::for_project(cwd).and_then(|p| p.for_spec(spec)) else {
         return Vec::new();
     };
@@ -260,6 +302,10 @@ fn materialize_wave_memory(cwd: &Path, spec: &str) -> Vec<String> {
     let candidates: Vec<Lesson> = events
         .iter()
         .filter(|e| e.event == "decision")
+        // This close's own harvest: the lessons this wave emitted, plus the ones
+        // no wave claims (see the attribution section above). A sibling's lesson
+        // stays for the sibling's close.
+        .filter(|e| e.wave == 0 || u64::from(e.wave) == wave)
         .filter_map(|e| {
             let text = context_inject::normalize_lesson(
                 e.payload.get("title").and_then(Value::as_str).unwrap_or_default(),
@@ -675,7 +721,7 @@ mod tests {
                       because the shared git helper trims the whole output";
         seed_decision(root, spec, 1, lesson, "run-42");
 
-        let written = materialize_wave_memory(root, spec);
+        let written = materialize_wave_memory(root, spec, 1);
         assert_eq!(written.len(), 1, "one qualifying lesson → one memory file: {written:?}");
 
         // The file NAMES its wave, and its frontmatter names the run it belongs
@@ -714,14 +760,14 @@ mod tests {
 
         // Closing a later wave neither duplicates the file nor re-attributes it
         // to that later wave — the lesson stays owned by the wave that had it.
-        let again = materialize_wave_memory(root, spec);
+        let again = materialize_wave_memory(root, spec, 2);
         assert!(again.is_empty(), "already materialized: {again:?}");
         assert_eq!(memory_files(root, spec), names, "no duplicate, no re-attribution");
     }
 
     /// AC-1: a ROUND closes several waves, and each one's memory is written
     /// under the wave that emitted it — none stamped with a sibling's number,
-    /// and none dropped.
+    /// none reported by a sibling's close, and none dropped.
     ///
     /// The measured defect this locks: `wave-done` attributed every pending
     /// lesson to the wave closing NOW. Because a round's waves all close in
@@ -730,8 +776,12 @@ mod tests {
     /// this spec left four memory files, two of them naming a wave that had not
     /// written them.
     ///
-    /// So the test drives ONE close over a log that already carries three waves'
-    /// decisions — exactly the state the first close of a round sees.
+    /// So the test drives the closes of a round over a log that already carries
+    /// three waves' decisions — exactly the state the first close of a round
+    /// sees — and pins BOTH halves: the first close takes only its own (the
+    /// half a later fix had to add: the file's `wave:` field was already right
+    /// while the close still REPORTED writing a sibling's file), and every
+    /// close together loses nothing.
     #[test]
     fn every_wave_keeps_its_own_memory() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -764,9 +814,17 @@ mod tests {
             "run-1",
         );
 
-        // The first close of the round. It sees all three, and it must not keep
-        // any of them for itself.
-        let written = materialize_wave_memory(root, spec);
+        // The first close of the round. It SEES all three, and it must take only
+        // the one wave 3 emitted — a sibling's lesson is the sibling's close to
+        // report.
+        let first = materialize_wave_memory(root, spec, 3);
+        assert_eq!(first.len(), 1, "the first close took a sibling's lesson: {first:?}");
+        assert!(first[0].ends_with("-wave3.md"), "and it must be its own: {first:?}");
+
+        // The rest of the round. Together the closes lose nothing.
+        let mut written = first;
+        written.extend(materialize_wave_memory(root, spec, 4));
+        written.extend(materialize_wave_memory(root, spec, 5));
         assert_eq!(written.len(), 3, "none dropped: {written:?}");
 
         let names = memory_files(root, spec);
@@ -787,8 +845,10 @@ mod tests {
             );
         }
 
-        // The closes of the round's other waves add nothing and re-file nothing.
-        assert!(materialize_wave_memory(root, spec).is_empty(), "idempotent");
+        // Re-running any close adds nothing and re-files nothing.
+        for wave in [3u64, 4, 5] {
+            assert!(materialize_wave_memory(root, spec, wave).is_empty(), "idempotent");
+        }
         assert_eq!(memory_files(root, spec), names, "no re-attribution");
     }
 
@@ -830,7 +890,7 @@ mod tests {
 
         seed_decision(root, spec, 4, lost, "run-measured");
         assert!(
-            materialize_wave_memory(root, spec).is_empty(),
+            materialize_wave_memory(root, spec, 4).is_empty(),
             "a lesson the filter rejects must not reach the writer at all"
         );
 
@@ -843,7 +903,7 @@ mod tests {
         );
         seed_decision(root, spec, 4, &with_consequence, "run-measured");
         assert_eq!(
-            materialize_wave_memory(root, spec).len(),
+            materialize_wave_memory(root, spec, 4).len(),
             1,
             "the writer drops nothing that clears the filter"
         );
@@ -991,10 +1051,19 @@ mod tests {
                 .expect("hook must not error");
         }
 
-        // (5) ONE close sees all three returns — the state the first close of a
+        // (5) each close sees all three returns — the state the first close of a
         //     round sees, and the one that used to stamp its siblings' lessons
-        //     with its own number.
-        let written = materialize_wave_memory(root, spec);
+        //     with its own number — and takes only its own.
+        let mut written = Vec::new();
+        for (wave, _) in lessons {
+            let mine = materialize_wave_memory(root, spec, u64::from(wave));
+            assert_eq!(mine.len(), 1, "wave {wave}'s close took {mine:?}");
+            assert!(
+                mine[0].ends_with(&format!("-wave{wave}.md")),
+                "wave {wave}'s close reported a sibling's file: {mine:?}"
+            );
+            written.extend(mine);
+        }
         assert_eq!(written.len(), 3, "none dropped: {written:?}");
 
         let names = memory_files(root, spec);
@@ -1024,6 +1093,9 @@ mod tests {
     /// materialized — never dropped — and the file says `unknown` instead of
     /// borrowing the closing wave's number. Asserting the drop alone would pass
     /// on a writer that simply refused every unattributed lesson.
+    ///
+    /// It is also the one lesson a wave-scoped close must still take: no wave
+    /// claims it, so no other close will ever come for it.
     #[test]
     fn a_memory_with_no_recorded_wave_says_so() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1040,7 +1112,7 @@ mod tests {
             "run-1",
         );
 
-        let written = materialize_wave_memory(root, spec);
+        let written = materialize_wave_memory(root, spec, 1);
         assert_eq!(written.len(), 1, "not dropped: {written:?}");
         let names = memory_files(root, spec);
         assert_eq!(names.len(), 1, "got {names:?}");
@@ -1085,7 +1157,7 @@ mod tests {
         seed_decision(root, spec, 1, "src/a.rs src/b.rs tests/c.rs tests/d.rs", "run-1");
 
         assert!(
-            materialize_wave_memory(root, spec).is_empty(),
+            materialize_wave_memory(root, spec, 1).is_empty(),
             "process residue must not become durable memory"
         );
         assert!(
@@ -1104,7 +1176,7 @@ mod tests {
              every later wave has already run without them",
             "run-1",
         );
-        let written = materialize_wave_memory(root, spec);
+        let written = materialize_wave_memory(root, spec, 1);
         assert_eq!(written.len(), 1, "the qualifying lesson survives: {written:?}");
         assert_eq!(memory_files(root, spec).len(), 1);
     }
@@ -1215,6 +1287,186 @@ mod tests {
         let sibling = unaccounted_reality_obligations(root, spec, 4);
         assert_eq!(sibling.len(), 1, "wave 4's duty stays open: {sibling:?}");
         assert!(sibling[0].starts_with("RO-4.1"), "{sibling:?}");
+    }
+
+    /// Drive one wave's agent all the way back through the REAL return path: the
+    /// PreToolUse expansion stamps the wave into the dispatch prompt, Claude Code
+    /// persists that prompt as the first line of the child's own transcript, and
+    /// the `SubagentStop` hook harvests the return off it. Returns nothing — what
+    /// it leaves behind is on the spec's event log, which is the point.
+    ///
+    /// Deliberately not a hand-written event: the defect this exercises was that
+    /// the channel `wave-done` read could not carry a return at all, and a
+    /// fixture-shaped `agent.stop` is exactly what hid it.
+    fn child_returns(root: &Path, spec: &str, wave: u32, report: &str) {
+        use crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER;
+        use crate::hooks::task::subagent_inject::SubagentInject;
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+
+        let cwd = root.to_string_lossy().to_string();
+        let dispatch_dir = root.join(".claude/spec").join(spec).join(".dispatch");
+        std::fs::create_dir_all(&dispatch_dir).expect("dispatch dir");
+        let rel = format!(".claude/spec/{spec}/.dispatch/wave-{wave}-impl.first.prompt.md");
+        std::fs::write(root.join(&rel), "<!-- PREFIX-STABLE -->\n## ROLE\nROLE: impl\n")
+            .expect("rendered prompt");
+
+        let pre = HookInput {
+            tool_name: Some("Task".to_string()),
+            tool_input: json!({
+                "prompt": format!("{PROMPT_REF_MARKER} {rel}\nDispatch stub — pass verbatim.\n"),
+                "subagent_type": "impl",
+            }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            ..HookInput::default()
+        };
+        let ctx = |trigger| Ctx {
+            project_dir: cwd.clone(),
+            trigger: Some(trigger),
+            workspace_root: None,
+        };
+        let verdict = SubagentInject
+            .evaluate(&pre, &ctx(Trigger::PreToolUse))
+            .expect("hook must not error");
+        let Verdict::Rewrite { tool_input } = verdict else {
+            panic!("a ref stub must be rewritten, got {verdict:?}");
+        };
+        let expanded = tool_input
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .expect("rewritten prompt")
+            .to_string();
+
+        let transcripts = root.join("transcripts");
+        std::fs::create_dir_all(&transcripts).expect("transcripts dir");
+        let transcript = transcripts.join(format!("agent-wave{wave}.jsonl"));
+        let line = json!({
+            "type": "user",
+            "isSidechain": true,
+            "agentId": format!("agent-wave{wave}"),
+            "message": { "role": "user", "content": expanded },
+        });
+        std::fs::write(&transcript, format!("{line}\n")).expect("transcript");
+
+        let stop = HookInput {
+            hook_event_name: Some("SubagentStop".to_string()),
+            agent_type: Some("impl".to_string()),
+            agent_id: Some(format!("agent-wave{wave}")),
+            raw: json!({
+                "agent_id": format!("agent-wave{wave}"),
+                "agent_transcript_path": transcript.to_string_lossy(),
+                "last_assistant_message": report,
+            }),
+            ..HookInput::default()
+        };
+        SubagentInject
+            .evaluate(&stop, &ctx(Trigger::SubagentStop))
+            .expect("hook must not error");
+    }
+
+    /// The record of a wave is the record OF THAT WAVE — on both of its sides.
+    ///
+    /// Measured on the run this fix comes from, a round that dispatched waves 1
+    /// and 2 in parallel:
+    ///
+    /// 1. `wave-done --wave 1` reported `RO-1.1` unaccounted while the wave-1
+    ///    agent's return opened with `RO-1.1 — verified on this install …`. The
+    ///    only channel `wave-done` read was `agent.stop`, emitted at
+    ///    `PostToolUse(Task)` — which on a background dispatch carries the launch
+    ///    acknowledgement, not the return. The account existed and the record
+    ///    could not hold it.
+    /// 2. The SAME call reported `memoriesWritten:
+    ///    [".../memory/shared-proc-…-wave2.md"]` — the WAVE 2 agent's `<MEMORY>`
+    ///    block, harvested by wave 1's close because the harvest was spec-scoped.
+    ///
+    /// So the test runs a parallel round — the exact situation neither defect
+    /// survives — and pins both sides. Two-sided on each: a duty the wave did NOT
+    /// account for must still be named (or a check that clears everything would
+    /// pass), and a duty of THIS wave that only a SIBLING's report mentions must
+    /// stay open (or a per-spec read would pass, since ids match across the log).
+    #[test]
+    fn each_waves_finalisation_reads_only_its_own_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec = "parallel-round-record";
+        anchored_spec(root, spec);
+        let cwd = root.to_string_lossy().to_string();
+        // Bind the AMBIENT session id, the value a live hook process carries —
+        // the capture's own spec lookup keys on it, and an invented id would
+        // leave every capture spec-less and silently no-op.
+        let sid = crate::shared::context::session_id();
+        crate::shared::context::bind_session_spec(&cwd, &sid, spec);
+        let states = root.join(".claude/.pipeline-states");
+        std::fs::create_dir_all(&states).expect("states dir");
+        std::fs::write(states.join(format!("{spec}.json")), b"{}").expect("state file");
+        assert_eq!(
+            crate::shared::context::spec_for_session(&cwd, &sid)
+                .or_else(|| crate::shared::context::current_spec(&cwd))
+                .as_deref(),
+            Some(spec),
+            "the capture's own spec lookup must land on this spec"
+        );
+
+        for (wave, duties) in [
+            (1u32, "- **RO-1.1** — confirm on this install how a junction is created unelevated\n\
+                    - **RO-1.2** — read one existing worktree and confirm its owner pid\n"),
+            (2, "- **RO-2.1** — run the collector against a worktree whose owner is gone\n"),
+        ] {
+            let wave_dir = root.join(".claude/spec").join(spec).join(format!("wave-{wave}-impl"));
+            std::fs::create_dir_all(&wave_dir).expect("wave dir");
+            std::fs::write(
+                wave_dir.join("spec.md"),
+                format!("# W{wave}\n\n## Reality Obligations\n\n{duties}"),
+            )
+            .expect("wave spec");
+        }
+
+        // Wave 1 accounts for RO-1.1 only, and leaves its own lesson.
+        child_returns(
+            root,
+            spec,
+            1,
+            "RO-1.1 — verified on this install, unelevated (IsInRole(Administrator) = False): \
+             a directory junction needs no privilege.\n\
+             <MEMORY>Chose a directory junction over a symlink on Windows because symlink_dir \
+             needs Developer Mode while a junction needs no privilege at all</MEMORY>",
+        );
+        // Wave 2 accounts for its own duty, leaves its own lesson — and MENTIONS
+        // a duty of wave 1's that wave 1 never accounted for. A sibling saying so
+        // is not wave 1 checking the world.
+        child_returns(
+            root,
+            spec,
+            2,
+            "RO-2.1 — ran the collector against an orphan and it removed it. \
+             RO-1.2 was handled over in wave 1 as far as I could tell.\n\
+             <MEMORY>Chose the owner-pid probe over an age threshold because a degraded probe \
+             answers false and must never authorise a removal</MEMORY>",
+        );
+
+        // Side one: the account the wave itself gave reaches the wave's record.
+        let w1 = unaccounted_reality_obligations(root, spec, 1);
+        assert!(
+            !w1.iter().any(|f| f.starts_with("RO-1.1")),
+            "the wave's own return accounts for RO-1.1: {w1:?}"
+        );
+        assert_eq!(w1.len(), 1, "exactly the unaccounted duty stays open: {w1:?}");
+        assert!(
+            w1[0].starts_with("RO-1.2"),
+            "a SIBLING's mention of RO-1.2 must not discharge wave 1's duty: {w1:?}"
+        );
+        assert!(
+            unaccounted_reality_obligations(root, spec, 2).is_empty(),
+            "wave 2's own return accounts for wave 2's duty"
+        );
+
+        // Side two: the harvest. Each close takes only the lesson its own wave
+        // emitted — the reported path is the wave's own record, not the round's.
+        let m1 = materialize_wave_memory(root, spec, 1);
+        assert_eq!(m1.len(), 1, "wave 1's close harvested a sibling's memory: {m1:?}");
+        assert!(m1[0].ends_with("-wave1.md"), "and it must be its own: {m1:?}");
+        let m2 = materialize_wave_memory(root, spec, 2);
+        assert_eq!(m2.len(), 1, "wave 2's own lesson was taken by wave 1: {m2:?}");
+        assert!(m2[0].ends_with("-wave2.md"), "and it must be its own: {m2:?}");
     }
 
     /// AC-2: an account of `RO-3.10` leaves `RO-3.1` unaccounted.

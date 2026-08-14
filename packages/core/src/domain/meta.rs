@@ -90,6 +90,22 @@ pub struct Meta {
     /// directory. `None` for top-level specs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// The integration base this unit was ACTUALLY cut from — written by the
+    /// cut itself, and only when nothing else can still answer the question.
+    ///
+    /// The branch name records what the unit IS (`hotfix/…`), not where it came
+    /// from, so a project declaring several emergency bases leaves a hotfix a
+    /// real choice that no later reader can re-derive: the operator's pick would
+    /// otherwise be replaced by the outermost candidate on every read after the
+    /// cut. The pending marker that carried the pick is CONSUMED at the cut, so
+    /// the unit's own record is where the answer has to survive.
+    ///
+    /// Absent for every unit whose base IS derivable (which is every unit in a
+    /// project declaring two bases), so no sidecar already on disk gains a key:
+    /// `skip_serializing_if` keeps their bytes untouched, exactly as `checklist`
+    /// and `findings` did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// `true` when this `meta.json` corresponds to the top-level `wave-plan.md`
     /// of a multi-wave epic. Drives dashboard rendering.
     #[serde(rename = "isWavePlan", skip_serializing_if = "Option::is_none")]
@@ -160,6 +176,9 @@ impl Meta {
             lang: lang.map(normalise_lang_string),
             checkpoint: checkpoint.map(str::to_string),
             parent: parent.map(str::to_string),
+            // Never invented here: only the CUT knows which base a unit came
+            // from, and only it may write that down.
+            base: None,
             is_wave_plan: None,
             total_waves: None,
             flags: MetaFlags::default(),
@@ -388,6 +407,7 @@ mod tests {
             lang: Some("pt-BR".into()),
             checkpoint: Some("2026-05-24T19:30:00Z".into()),
             parent: None,
+            base: None,
             is_wave_plan: Some(false),
             total_waves: None,
             flags: MetaFlags::default(),
@@ -631,6 +651,31 @@ mod tests {
     }
 
     #[test]
+    fn the_cut_base_round_trips_and_a_sidecar_without_it_gains_no_key() {
+        // The additive contract, on the same terms `checklist` and `findings`
+        // set: a sidecar written before this field reads as "nothing recorded",
+        // and writing it back does not invent the key — so every meta.json
+        // already on disk comes out byte-identical.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(&path, br#"{"stage":"Execute","outcome":"Active"}"#).unwrap();
+        let meta = read_meta(&path).expect("reads");
+        assert!(meta.base.is_none(), "nothing was recorded, and nothing is invented");
+        write_meta(&path, &meta).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("\"base\""));
+
+        // Recorded, it survives the sidecar — which is the whole point: the
+        // pending marker that carried the operator's pick is consumed at the
+        // cut, so this file is the only thing that still remembers.
+        let mut recorded = meta;
+        recorded.base = Some("qas".into());
+        write_meta(&path, &recorded).unwrap();
+        assert_eq!(read_meta(&path).expect("reads").base.as_deref(), Some("qas"));
+        // The typed field owns the key — it must not leak into `raw`.
+        assert!(read_meta(&path).expect("reads").raw.get("base").is_none());
+    }
+
+    #[test]
     fn missing_file_is_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("does-not-exist.json");
@@ -706,6 +751,7 @@ mod tests {
             assert!(text.contains(&format!("\"{k}\":null")), "{k} missing in {text}");
         }
         assert!(!text.contains("\"parent\""));
+        assert!(!text.contains("\"base\""));
         assert!(!text.contains("\"isWavePlan\""));
         assert!(!text.contains("\"totalWaves\""));
         assert!(!text.contains("\"flags\""));

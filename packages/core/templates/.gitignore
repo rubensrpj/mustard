@@ -5,6 +5,17 @@
 .agent-state/
 .agent-memory/
 .pipeline-states/
+.compact-state/
+.session/
+.dispatch/
+.agent-memory/
+agent-memory/
+knowledge/
+memory/
+feature-digest.json
+settings.local.json
+.dashboard.pid
+.dashboard.port
 
 # Compaction memory (session-scoped, pruned after 24h by the session cleanup
 # observer, which is also the only thing that ever reads it).
@@ -28,21 +39,8 @@ spec/*/.dispatch/
 spec/*/.events/
 spec/*/.blobs/
 
-# Per-machine settings the installer writes over the seeded ones (statusLine
-# binary path and friends) — a real path on one machine, wrong on every other.
-settings.local.json
-
-# Local session/editor state and the runtime knowledge + memory stores. Written
-# per project, regenerable, and none of it is code.
-knowledge/
-memory/
-agent-memory/
-.session/
+# Local editor state — written per project, regenerable, and none of it is code.
 .obsidian/
-
-# Dashboard runtime handles (the port file and the pid of the live server).
-.dashboard.pid
-.dashboard.port
 
 # Runtime output the harness writes into `.claude/` while working. A spec's own
 # content stays VERSIONED — it belongs to its unit — but these sidecars are
@@ -52,10 +50,10 @@ agent-memory/
 # `spec/*/qa/report.md` is deliberately NOT here: the QA transcript is the
 # unit's own record of which criteria passed, the peer of `review/verdict.md`,
 # and the close commits it. Only the machine renders of it are regenerable.
-feature-digest.json
+spec/*/.memory-approved
+spec/*/.cut-base
 spec/*/qa-report.json
 spec/*/qa-report.html
-spec/*/.memory-approved
 spec/*/economy-baselines.json
 spec/*/wave-*/diff.md
 spec/*/wave-*/prompt.md

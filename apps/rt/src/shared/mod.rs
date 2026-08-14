@@ -27,6 +27,13 @@
 //! - [`translate`] — fail-open client for the optional `mustard-translate`
 //!   sidecar (local MT), shared by the `feature` auto-gloss and the
 //!   `scan-equivalences` artifact generation.
+//! - [`work_kind`] — WHAT a work unit is (`feature`/`fix`/`hotfix`), the
+//!   `{kind}/{slug}` name built from it, and the project's base model derived
+//!   from `git.flow`. The crate's ONE parser of a work-branch name, in both the
+//!   current shape and the `{base}_{slug}` shape units in flight still carry —
+//!   and the one reader/writer of the base a unit was actually CUT from, which
+//!   only the unit's own record can remember once the pending marker is
+//!   consumed.
 
 pub mod branch_state;
 pub mod context;
@@ -35,3 +42,4 @@ pub mod gate_mode;
 pub mod proc;
 pub mod prompt;
 pub mod translate;
+pub mod work_kind;

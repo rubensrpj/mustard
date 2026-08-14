@@ -375,13 +375,10 @@ fn store_count(path: &Path, count: usize) {
 
 /// Measure the count from git — the uncached path.
 fn measure_pending_prune(cwd: &Path) -> usize {
-    let bases: Vec<String> = mustard_core::ProjectConfig::load(cwd)
-        .git
-        .integration_bases()
-        .into_iter()
-        .collect();
+    let config = mustard_core::ProjectConfig::load(cwd);
+    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
     let git_read = |args: &[&str]| git(cwd, args);
-    awaiting_prune(&git_read, &LocalOnlyPr, &bases).len()
+    awaiting_prune(&git_read, &LocalOnlyPr, &flow).len()
 }
 
 // ---------------------------------------------------------------------------
@@ -599,8 +596,9 @@ mod tests {
         let production = src.split("#[cfg(test)]").next().unwrap_or_default();
         assert!(!production.is_empty(), "the production region must still be readable here");
         assert!(
-            production.contains("integration_bases"),
-            "the bases must come from the project's own config",
+            production.contains("BaseFlow::of"),
+            "the bases must come from the project's own config — `BaseFlow` derives \
+             every one of them from `git.flow` and spells none",
         );
         for spelling in
             [["\"de", "v\""].concat(), ["\"mai", "n\""].concat(), ["\"mast", "er\""].concat()]

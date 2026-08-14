@@ -417,7 +417,7 @@ Lê o *git flow* do `mustard.json`. **PR é o único caminho de integração** �
 
 | Ação | Descrição |
 |---|---|
-| `sync` | Rebase da branch atual sobre `origin/<base>` (base derivada do prefixo `{base}_`) |
+| `sync` | Rebase da branch atual sobre `origin/<base>` (base derivada do TIPO da branch via `git.flow`; nome antigo `{base}_` ainda resolve pelo prefixo) |
 | `commit` | Commit sem push; `--scope` default `all` (`add -A` — nunca escopo parcial silencioso) |
 | `push` | Sync → commit + push SÓ da branch atual (com upstream) |
 | `pr [<target>]` | Abre/atualiza PR (idempotente) — um por repo, submódulo antes do pai; cada `push`/`pr` atualiza o MESMO PR até o `pr close`. Base pura `B` → promove/backporta via `flow[B]` |
@@ -428,11 +428,11 @@ Não existe ação `merge` — a integração acontece no provedor, via PR.
 | | |
 |---|---|
 | **Backend** | `git-settle` (+ `git-settle --unit <branch>`) no `pr close`; todo git/gh cru via `rtk git` / `rtk gh` |
-| **Regras de ferro** | Sobe TUDO (`add -A`); nunca operar numa base pura (exceto `pr`); `rtk` prefixa todo `git` (até em `&&` e `$(…)`); submódulos antes do pai, cada um na sua branch `{base}_{slug}` com PR próprio |
+| **Regras de ferro** | Sobe TUDO (`add -A`); nunca operar numa base pura (exceto `pr`); `rtk` prefixa todo `git` (até em `&&` e `$(…)`); submódulos antes do pai, cada um carregando a unidade na branch `{kind}/{slug}` (cortada da base do PRÓPRIO repo) com PR próprio |
 
 ```mermaid
 flowchart TD
-    start(["/mustard:git &lt;ação&gt;"]) --> s0["Step 0: resolve $BASE do<br/>prefixo {base}_ da branch"]
+    start(["/mustard:git &lt;ação&gt;"]) --> s0["Step 0: resolve $BASE pelo TIPO<br/>da branch via git.flow<br/>(nome antigo {base}_ : pelo prefixo)"]
     s0 --> prot{"base pura (ex.: dev, main)?"}
     prot -->|"sim, ação de escrita"| refuse(["recusa — na base pura<br/>só /git pr é permitido"])
     prot -->|ok| sub["Step 0c: checa HEAD de submódulos"]
@@ -440,8 +440,8 @@ flowchart TD
     sub --> action{"ação?"}
     action -->|sync| sync["auto-stash → fetch +<br/>rebase origin/$BASE → stash pop<br/>(aborta em conflito)"]
     action -->|commit| commit["analisa → exclui efêmeros → add -A<br/>→ commit submódulos (paralelo) → commit pai"]
-    action -->|push| push["sync (para em conflito) →<br/>commit + push só a branch atual<br/>(submódulo na base corta {base}_{slug} ANTES)"]
-    action -->|pr| pr["push → 1 PR por repo<br/>(submódulo antes do pai) na base do prefixo<br/>PR existente → imprime a URL do MESMO"]
+    action -->|push| push["sync (para em conflito) →<br/>commit + push só a branch atual<br/>(submódulo na base corta {kind}/{slug} ANTES)"]
+    action -->|pr| pr["push → 1 PR por repo<br/>(submódulo antes do pai) na base do tipo<br/>PR existente → imprime a URL do MESMO"]
     action -->|"pr close"| settle["submódulo primeiro, depois o pai<br/>git-settle (confirma merge, avança a base)<br/>→ ExitWorktree → git-settle --unit &lt;branch&gt;<br/>(pull, remove worktree, apaga branch local+remota)<br/>repos[] + complete:false → ainda falta repo"]
 
     sync --> reportx["Final Status Report"]

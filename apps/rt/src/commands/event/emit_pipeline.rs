@@ -25,12 +25,13 @@
 //! moment both a base and an intent exist — so it is where the work unit's one
 //! name is minted ([`mint_unit_name_at`]), from the same derivation
 //! `spec-draft` names the spec directory with. That slug then files the
-//! events, the session→spec binding and the `{base}_{slug}` branch alike. A
+//! events, the session→spec binding and the `{kind}/{slug}` branch alike. A
 //! `--spec` that disagrees is superseded, never silently preferred: the report
 //! carries `spec` (the name that won) plus `renamedFrom` (the one that did
 //! not).
 
 use crate::shared::context::{project_dir, session_id};
+use crate::shared::work_kind::{BaseFlow, WorkKind};
 use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
@@ -129,19 +130,37 @@ pub struct EmitPipelineOpts {
     pub allow_no_qa: bool,
     /// Free-form natural-language request. Only consulted on
     /// `--kind pipeline.kind`, where it MINTS the unit's canonical name (see
-    /// [`mint_unit_name_at`]): that one slug names the `{base}_{slug}` branch,
+    /// [`mint_unit_name_at`]): that one slug names the `{kind}/{slug}` branch,
     /// the events, and — through `spec-draft --slug` — the spec directory. It
     /// supersedes a disagreeing `--spec`, and the report says so. Ignored for
     /// every other kind.
     pub intent: Option<String>,
-    /// Integration base branch the work branch is cut from. On
-    /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}`. When
-    /// explicitly set, it MUST name one of the project's `git.flow`
-    /// integration bases (unknown → error, exit 1, before any emit); when
-    /// omitted, the project's primary base is used. Agnostic — the base set is
+    /// Integration base branch the work branch is cut from. When explicitly
+    /// set, it MUST name one of the project's `git.flow` integration bases
+    /// (unknown → error, exit 1, before any emit); when omitted, the base
+    /// follows from [`work_kind`](Self::work_kind). Agnostic — the base set is
     /// derived from `git.flow`, never hardcoded. Ignored for other kinds.
     pub base: Option<String>,
+    /// What the unit IS — `feature`, `fix` or `hotfix`. On
+    /// `--kind pipeline.kind` it names the auto-branch (`{kind}/{slug}`) and,
+    /// through the declared flow, decides the base the unit is cut from.
+    ///
+    /// This is ASKED, never inferred: a fix that waits for the next release and
+    /// one that goes straight to production are the same code change, and the
+    /// difference lives in the request nobody wrote down. An absent value is a
+    /// caller that did not ask, and takes the ordinary unit
+    /// ([`DEFAULT_WORK_KIND`]) rather than guessing an emergency.
+    pub work_kind: Option<String>,
 }
+
+/// The kind a caller that named none gets.
+///
+/// Ordinary work is the overwhelming case, and it is the one whose base — the
+/// base ordinary work is cut from — is also what the old base-less behaviour
+/// resolved to, so a caller that never learned the flag keeps its branch cut
+/// exactly where it was cut before. The one kind that must never be reached by
+/// default is the emergency: taking it by accident delivers to production.
+const DEFAULT_WORK_KIND: WorkKind = WorkKind::Feature;
 
 /// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.
 ///
@@ -182,7 +201,8 @@ fn parse_payload_tolerant(raw: &str) -> Result<Value, serde_json::Error> {
 pub fn run(opts: EmitPipelineOpts) {
     // --- VALIDATE — each check exits BEFORE any event is written --------------
     validate_kind_or_exit(&opts.kind);
-    let kind_base = resolve_kind_base_or_exit(&opts);
+    let work_kind = resolve_work_kind_or_exit(&opts);
+    let kind_base = resolve_kind_base_or_exit(&opts, work_kind);
     enforce_base_gate_or_exit(&opts);
     enforce_qa_gate_or_exit(&opts);
     let payload = parse_payload_or_exit(&opts);
@@ -234,9 +254,14 @@ pub fn run(opts: EmitPipelineOpts) {
             }
             None
         }
-        EVENT_PIPELINE_KIND => {
-            mark_pending_work_branch(&spec, kind_base.as_deref(), opts.intent.as_deref(), &sid, &ts)
-        }
+        EVENT_PIPELINE_KIND => mark_pending_work_branch(
+            &spec,
+            work_kind,
+            kind_base.as_deref(),
+            opts.intent.as_deref(),
+            &sid,
+            &ts,
+        ),
         EVENT_PIPELINE_STAGE | EVENT_PIPELINE_OUTCOME => {
             patch_meta_for_transition(&effect_cwd(), &spec, &kind, &payload, &ts);
             None
@@ -293,18 +318,42 @@ fn validate_kind_or_exit(kind: &str) {
     }
 }
 
-/// Resolve the integration base for `pipeline.kind` (the only kind that cuts a
-/// work branch). An EXPLICIT `--base` naming no integration base is a
-/// user/config error — fail loudly (exit 1) BEFORE anything is emitted, never
-/// silently coerced (silent coercion once sent `--base dev` work onto a `main_*`
-/// branch in the field). `None` for every other kind.
-fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts) -> Option<String> {
+/// What the unit IS, for `pipeline.kind` (the only kind that cuts a work
+/// branch). An EXPLICIT `--type` naming no known kind is a caller error — fail
+/// loudly BEFORE anything is emitted, rather than falling back to the ordinary
+/// unit and cutting an emergency into the ordinary queue. `None` for every
+/// other kind, which cuts nothing.
+fn resolve_work_kind_or_exit(opts: &EmitPipelineOpts) -> Option<WorkKind> {
     if opts.kind != EVENT_PIPELINE_KIND {
         return None;
     }
+    let Some(requested) = opts.work_kind.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    else {
+        return Some(DEFAULT_WORK_KIND);
+    };
+    match WorkKind::parse(requested) {
+        Some(kind) => Some(kind),
+        None => {
+            eprintln!(
+                "emit-pipeline: unknown --type {requested:?}. Valid types: {}",
+                WorkKind::ALL.map(WorkKind::token).join(", ")
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Resolve the integration base a `pipeline.kind` unit is cut from — a
+/// CONSEQUENCE of its kind, read from `git.flow`. An EXPLICIT `--base` naming no
+/// integration base (or contradicting the kind) is a user/config error — fail
+/// loudly (exit 1) BEFORE anything is emitted, never silently coerced (silent
+/// coercion once sent `--base dev` work onto a `main_*` branch in the field).
+/// `None` for every other kind.
+fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<WorkKind>) -> Option<String> {
+    let kind = kind?;
     let project = project_dir();
     let config = mustard_core::ProjectConfig::load(Path::new(&project));
-    match super::work_branch::resolve_base(opts.base.as_deref(), &config) {
+    match super::work_branch::resolve_kind_base(kind, opts.base.as_deref(), &config) {
         Ok(b) => Some(b),
         Err(msg) => {
             eprintln!("emit-pipeline: {msg}");
@@ -386,7 +435,7 @@ fn parse_payload_or_exit(opts: &EmitPipelineOpts) -> Value {
 /// The unit's canonical NAME, decided at the base gate.
 ///
 /// `slug` is what the whole unit is filed under from that moment on — the
-/// events, the session→spec binding, the `{base}_{slug}` branch, and (through
+/// events, the session→spec binding, the `{kind}/{slug}` branch, and (through
 /// `spec-draft`, which consumes it) the spec directory. `renamed_from` carries
 /// the `--spec` the caller asked for when it disagreed, so the rename is
 /// VISIBLE in the report rather than discovered a phase later as two names for
@@ -400,8 +449,8 @@ pub(crate) struct MintedName {
 
 /// Mint the unit's canonical name for `--kind pipeline.kind`.
 ///
-/// The gate is the first moment both a base and an intent exist, and it already
-/// computes `{base}_{slug}` — so it is where the name is DECIDED, once, from
+/// The gate is the first moment both a kind and an intent exist, and it already
+/// computes `{kind}/{slug}` — so it is where the name is DECIDED, once, from
 /// the same derivation `spec-draft` names the spec directory with
 /// ([`crate::commands::spec::spec_slug::canonical_for_project`]). Before this,
 /// the caller invented a `--spec` here and the draft derived its own slug from
@@ -569,15 +618,25 @@ fn apply_wave_complete(cwd: &Path, spec: &str, payload: &Value, ts: &str) {
 /// Fail-open — the emit already succeeded.
 fn mark_pending_work_branch(
     spec: &str,
+    work_kind: Option<WorkKind>,
     kind_base: Option<&str>,
     intent: Option<&str>,
     sid: &str,
     ts: &str,
 ) -> Option<String> {
-    let base = kind_base?;
+    let kind = work_kind?;
     let project = project_dir();
-    let branch = super::work_branch::compute_work_branch(base, spec, intent, sid, ts, &project);
-    crate::shared::context::set_pending_branch(&project, sid, &branch);
+    let branch = super::work_branch::compute_work_branch(kind, spec, intent, sid, ts, &project);
+    // The base rides along ONLY where the cut could not re-derive it: an
+    // emergency in a project that declares several candidates is a choice the
+    // branch name — which now says what the unit IS — cannot carry. Recording it
+    // everywhere would instead freeze a derivable answer into a marker that can
+    // go stale between the emit and the first edit.
+    let config = mustard_core::ProjectConfig::load(Path::new(&project));
+    // ONE spelling of "the flow cannot re-derive this" — the same predicate the
+    // cut asks before writing the answer into the unit's record.
+    let recorded = kind_base.filter(|_| BaseFlow::of(&config.git).base_must_be_recorded(&branch));
+    crate::shared::context::set_pending_branch(&project, sid, &branch, recorded);
     Some(branch)
 }
 
@@ -1462,7 +1521,7 @@ mod tests {
     /// AC-1 — the pipeline-opening door NAMES the unit, once.
     ///
     /// The name it mints is the same string `spec-draft` derives from the same
-    /// intent (one derivation, several callers), it is what `{base}_{slug}` is
+    /// intent (one derivation, several callers), it is what `{kind}/{slug}` is
     /// built from, and it supersedes a `--spec` the caller invented — visibly,
     /// through `renamedFrom`. Nothing is minted when there is nothing to mint
     /// FROM, so every other call stays byte-identical.
@@ -1494,14 +1553,14 @@ mod tests {
         // ...and it is the name the branch carries.
         assert_eq!(
             compute_work_branch(
-                "dev",
+                WorkKind::Feature,
                 &minted.slug,
                 Some(intent),
                 "sess-abcdef12",
                 "2026-08-03T10:00:00.000Z",
                 &project.to_string_lossy(),
             ),
-            format!("dev_{}", minted.slug),
+            format!("feature/{}", minted.slug),
         );
         // The disagreement is REPORTED, never silently resolved either way.
         assert_eq!(minted.renamed_from.as_deref(), Some("invented-at-dispatch"));

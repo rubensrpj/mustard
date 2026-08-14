@@ -71,7 +71,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 use crate::shared::branch_state::{
-    self, base_of_branch, BranchEnumerator, GitReachability, PrEvidence, PrLookup, ProviderPrCli,
+    self, BranchEnumerator, GitReachability, PrEvidence, PrLookup, ProviderPrCli,
     StateClassifier,
 };
 
@@ -170,7 +170,7 @@ pub(crate) struct WorktreeEntry {
 /// over work it had never looked at.
 ///
 /// Callers keyed on a branch NAME are unaffected by construction: an empty
-/// branch equals no work-unit branch, and [`base_of_branch`] refuses it.
+/// branch equals no work-unit branch, and [`BaseFlow::base_of`] refuses it.
 pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     let mut out = Vec::new();
     let mut path: Option<String> = None;
@@ -358,10 +358,19 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
 ///
 /// This is the 100% gate — no evidence means NOT merged (conservative, never
 /// fail-open).
-fn is_merged(main: &Path, branch: &str, base: &str, provider: &str) -> bool {
+fn is_merged(
+    main: &Path,
+    branch: &str,
+    base: &str,
+    provider: &str,
+    flow: &crate::shared::work_kind::BaseFlow,
+) -> bool {
     let git_read = |args: &[&str]| git_out(main, args);
-    let bases = [base.to_string()];
-    let swept = BranchEnumerator::sweep(&git_read, &bases);
+    // The sweep enumerates every unit of the project; the `find` below is what
+    // narrows it to this one. Restricting the sweep to `base` was a second,
+    // redundant filter — and one that could not survive a name that no longer
+    // carries its base, since the unit is recognised by the flow now.
+    let swept = BranchEnumerator::sweep(&git_read, flow);
     let Some(unit) = swept.units().iter().find(|u| u.branch == branch) else {
         // No ref carries it: nothing to prove and nothing to prune.
         return false;
@@ -555,7 +564,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     };
     let (cfg_root, superproject) = config_root(&main);
     let cfg = mustard_core::ProjectConfig::load(&cfg_root);
-    let bases: Vec<String> = cfg.git.integration_bases().into_iter().collect();
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
+    let bases: Vec<String> = flow.bases().to_vec();
     // The merge gate asks the provider the project DECLARES — this command names
     // no CLI of its own, exactly like the reading face below.
     let provider = cfg.git.provider.clone();
@@ -577,7 +587,25 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             inv_branch.clone()
         }
     };
-    let Some(base) = base_of_branch(&unit_branch, &bases) else {
+    let answer = flow.base_of(&unit_branch);
+    // The unit is REAL and its base was never established — a different refusal
+    // from "this name is nobody's unit", and the operator's next move is
+    // different too. Telling them the prefix does not match a known base would
+    // send them to `git.flow`, where the answer was never missing.
+    if answer.is_unit() && answer.known().is_none() {
+        return json!({
+            "ok": false,
+            "reason": "ambiguous-base",
+            "branch": unit_branch,
+            "root": show(&main),
+            "configRoot": show(&cfg_root),
+            "candidates": answer.candidates(),
+            "hint": "unidade de emergência sem base registrada: nada gravou de qual das bases \
+                     candidatas ela saiu. Reabra com `mustard-rt run work-unit-open --branch \
+                     <unit> --base <uma delas>` e repita — o ritual de saída não escolhe por você",
+        });
+    }
+    let Some(base) = answer.into_known() else {
         // Name WHAT was resolved, not just the branch: the prefix only looks
         // wrong from a root whose config was never read (a submodule reads its
         // superproject's `git.flow` — say where that is).
@@ -613,7 +641,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let fetched = git_ok(&main, &fetch_args);
 
     // THE gate: 100% merged or nothing happens.
-    if !is_merged(&main, &unit_branch, &base, &provider) {
+    if !is_merged(&main, &unit_branch, &base, &provider, &flow) {
         return json!({
             "ok": false,
             "reason": "not-merged",
@@ -797,8 +825,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // alike, so an in-place unit and one that lives only on the server are both
     // reported.
     let git_read = |args: &[&str]| git_out(&main, args);
-    let enumerated = BranchEnumerator::sweep(&git_read, &bases);
-    let ahead = branch_state::refs_ahead_of_base(&git_read, enumerated.units(), &bases);
+    let enumerated = BranchEnumerator::sweep(&git_read, &flow);
+    let ahead = branch_state::refs_ahead_of_base(&git_read, enumerated.units(), &flow);
     let also_mergeable: Vec<String> = enumerated
         .units()
         .iter()
@@ -808,7 +836,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         // cannot see that difference. Listing it here would tell the user their
         // live work is ready to be pruned.
         .filter(|u| ahead.contains(&u.branch))
-        .filter(|u| is_merged(&main, &u.branch, &u.base, &provider))
+        .filter(|u| is_merged(&main, &u.branch, &u.base, &provider, &flow))
         .map(|u| u.branch.clone())
         .collect();
 
@@ -890,15 +918,16 @@ pub(crate) fn report_at(start: &Path) -> Value {
     };
     let (cfg_root, _superproject) = config_root(&main);
     let cfg = mustard_core::ProjectConfig::load(&cfg_root);
-    let bases: Vec<String> = cfg.git.integration_bases().into_iter().collect();
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
+    let bases: Vec<String> = flow.bases().to_vec();
     let provider = cfg.git.provider.clone();
 
-    let mut repos = vec![repo_inventory(&main, ".", &bases, &provider)];
+    let mut repos = vec![repo_inventory(&main, ".", &flow, &provider)];
     let submodules = git_out(&main, &["submodule", "status"])
         .map(|s| parse_submodule_paths(&s))
         .unwrap_or_default();
     for rel in submodules {
-        repos.push(repo_inventory(&main.join(&rel), &rel, &bases, &provider));
+        repos.push(repo_inventory(&main.join(&rel), &rel, &flow, &provider));
     }
     json!({ "ok": true, "bases": bases, "repos": repos })
 }
@@ -911,9 +940,14 @@ pub(crate) fn report_at(start: &Path) -> Value {
 /// consumer: a sweep git never answered, printed as an empty inventory, is the
 /// same lie as an unmeasured PR printed as "no PR" — and refusing that lie is
 /// why this module exists. A repository whose refs would not read says so.
-fn repo_inventory(repo: &Path, label: &str, bases: &[String], provider: &str) -> Value {
+fn repo_inventory(
+    repo: &Path,
+    label: &str,
+    flow: &crate::shared::work_kind::BaseFlow,
+    provider: &str,
+) -> Value {
     let git_read = |args: &[&str]| git_out(repo, args);
-    let Some(units) = BranchEnumerator::try_sweep(&git_read, bases) else {
+    let Some(units) = BranchEnumerator::try_sweep(&git_read, flow) else {
         return json!({
             "repo": label,
             "ok": false,
@@ -922,8 +956,8 @@ fn repo_inventory(repo: &Path, label: &str, bases: &[String], provider: &str) ->
             "awaitingPrune": [],
         });
     };
-    let (merged, measured) = branch_state::try_merged_refs(&git_read, bases);
-    let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), bases);
+    let (merged, measured) = branch_state::try_merged_refs(&git_read, flow);
+    let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), flow);
     let lookup = ProviderPrCli::new(repo, provider);
     let reach = GitReachability::new(&git_read);
     let states = StateClassifier::new(&lookup, &reach)
@@ -949,14 +983,26 @@ mod tests {
         assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
     }
 
+    /// The base model of a project declaring the ordinary two-tier flow.
+    fn settle_flow() -> crate::shared::work_kind::BaseFlow {
+        let mut git = mustard_core::domain::config::GitConfig::default();
+        git.flow.insert("*".to_string(), "dev".to_string());
+        git.flow.insert("dev".to_string(), "main".to_string());
+        crate::shared::work_kind::BaseFlow::of(&git)
+    }
+
     #[test]
     fn base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix() {
-        let bases = vec!["dev".to_string(), "main".to_string()];
-        assert_eq!(base_of_branch("dev_fix-thing", &bases).as_deref(), Some("dev"));
-        assert_eq!(base_of_branch("worktree-dev_fix-thing", &bases).as_deref(), Some("dev"));
-        assert_eq!(base_of_branch("main_hotfix", &bases).as_deref(), Some("main"));
-        assert_eq!(base_of_branch("feature_x", &bases), None, "unknown prefix never settles");
-        assert_eq!(base_of_branch("nounderscore", &bases), None);
+        let flow = settle_flow();
+        // The current shape: the base follows from the unit's KIND.
+        assert_eq!(flow.base_of("fix/fix-thing").known(), Some("dev"));
+        assert_eq!(flow.base_of("hotfix/login").known(), Some("main"));
+        // …and a unit still in flight keeps being read by its prefix.
+        assert_eq!(flow.base_of("dev_fix-thing").known(), Some("dev"));
+        assert_eq!(flow.base_of("worktree-dev_fix-thing").known(), Some("dev"));
+        assert_eq!(flow.base_of("main_hotfix").known(), Some("main"));
+        assert!(!flow.base_of("feature_x").is_unit(), "unknown prefix never settles");
+        assert!(!flow.base_of("nounderscore").is_unit());
     }
 
     #[test]
@@ -1011,7 +1057,7 @@ mod tests {
         );
         // And it can never be mistaken for a work unit: no branch name, so the
         // base parser refuses it.
-        assert_eq!(base_of_branch(&got[0].branch, &["dev".to_string()]), None);
+        assert!(!settle_flow().base_of(&got[0].branch).is_unit());
     }
 
     /// Build the two-unit fixture: a bare origin, a main checkout on `dev`

@@ -208,7 +208,7 @@ fn dispatch_prose_teaches_the_precheck_skip() {
 /// AC-3 — the resume prose reads `insideWorkBranch`, and the engine emits it.
 ///
 /// The work unit is the branch plus everything the work produced, so a caller
-/// standing on `{base}_{slug}` is inside the work already. The picker still
+/// standing on the unit's own branch is inside the work already. The picker still
 /// printed a header and asked *"Implementar agora?"* there — a question about
 /// entering a place the caller cannot leave without checking out. Both surfaces
 /// a reader arrives at must name the field, and `resume-bootstrap` must really
@@ -262,13 +262,14 @@ fn resume_inside_own_branch_prose_and_engine_agree() {
         classifier.contains("fn inside_own_work_branch"),
         "the field has no classifier behind it — it would report `false` forever",
     );
-    // The branch NAME is not re-derived here: the same function that minted the
-    // pending marker computes it, or the two spellings drift and the shortcut
-    // stops firing on exactly the branch it was built for.
+    // The branch NAME is not rebuilt here — it is READ, which is what the prose
+    // now promises. Rebuilding would need one guess per declared base and one
+    // per work KIND, and the two spellings drifting is what made this shortcut
+    // answer `false` from inside the very branch it was built for.
     assert!(
-        classifier.contains("compute_work_branch"),
-        "the classifier re-derives the `{{base}}_{{slug}}` name instead of reusing \
-         the one the work-branch marker was minted with",
+        classifier.contains("slug_of_work_branch"),
+        "the classifier rebuilds the branch name instead of reading the slug off \
+         the branch the checkout is actually on",
     );
 }
 
@@ -469,7 +470,7 @@ fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
 ///
 /// This one is here because its absence had a cost, and the cost was paid every
 /// turn. Wave 2 removed the `.claude/spec/` carve-out from `work_branch_gate`
-/// and `spec-draft` began cutting `{base}_{slug}` in the MAIN checkout at
+/// and `spec-draft` began cutting the unit's branch in the MAIN checkout at
 /// approval — the branch became the isolation. The orchestrator's own paragraph
 /// kept teaching the opposite ("writes IN-PLACE … on the base branch with NO
 /// worktree"), and that file is injected on EVERY user prompt: the router was
@@ -491,7 +492,9 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
 
     // Anchored: the paragraph a reader arrives at is the one that computes the
     // unit's branch, not some later section that happens to mention isolation.
-    let branch_line = line_with(seed, "compute the unit's `{base}_{slug}` branch")
+    // The needle carries the SHAPE, so a return to the base-prefixed name — or
+    // any other spelling of the join — moves this anchor off the paragraph.
+    let branch_line = line_with(seed, "compute the unit's `{kind}/{slug}` branch")
         .expect("the orchestrator seed no longer says where the unit's branch comes from");
     assert!(
         branch_line.contains("cut at APPROVAL"),
@@ -526,7 +529,7 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
     let delivered = read(".claude/mustard/orchestrator.md");
-    let delivered_line = line_with(&delivered, "compute the unit's `{base}_{slug}` branch")
+    let delivered_line = line_with(&delivered, "compute the unit's `{kind}/{slug}` branch")
         .expect("the delivered injectable no longer says where the unit's branch comes from");
     assert_eq!(
         delivered_line, branch_line,
@@ -554,6 +557,404 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
         open.contains("checkout_holding_branch") && open.contains("\"inPlace\""),
         "the isolation step no longer reports a branch already checked out — \
          it would fail with exit 128 on the arrangement that is now the default",
+    );
+
+    // --- 5. `EnterWorktree name=` really reaches a hook that TAKES the name --
+    // The prose teaches the `name=` hand-off as the route, so the hook face has
+    // to accept the shape this project mints. It once refused every `/`, which
+    // refused every unit — and it refused BEFORE the degrade above could answer,
+    // so a non-zero exit ended the whole `EnterWorktree` instead of entering the
+    // checkout that already held the branch.
+    let cli = line_with(&flow, "**Foreground CLI**")
+        .expect("git-flow.md no longer says how a foreground unit is isolated");
+    assert!(
+        cli.contains("EnterWorktree name={kind}/{slug}"),
+        "the ref teaches a route around the `name=` hand-off instead of the \
+         hand-off itself — prose that documents a defect: {cli}",
+    );
+    assert!(
+        open.contains("fn unusable_worktree_name")
+            && open.contains("WorkKind::is_container_segment(head)"),
+        "the hook face judges the name by a hand-spelled rule again (or refuses \
+         every separator), so `EnterWorktree name={{kind}}/{{slug}}` dies with \
+         exit 1 and takes the isolation step with it",
+    );
+    assert!(
+        !open.contains("`name` must not contain a path separator"),
+        "the blanket separator refusal is back — it refuses every unit this \
+         project mints, before the in-place degrade can answer",
+    );
+}
+
+/// The router prose teaches the branch named by the KIND, and the ONE question
+/// that decides it.
+///
+/// The code half of this shipped first and could not reach a user on its own:
+/// `compute_work_branch` emits `{kind}/{slug}` and `resolve_kind_base` derives
+/// the base from the declared flow instead of parsing it back out of the name —
+/// but `--type` is passed by NOBODY unless the router asks for it, so every unit
+/// silently takes the default and the question the operator asked for never
+/// happens. The prose IS the feature here; without it the change is a prefix
+/// that altered its spelling and nothing else.
+///
+/// So both halves are read together: the question a reader arrives at in the
+/// router's own § Dispatch, and the mechanism each of its promises rests on.
+#[test]
+fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
+    // --- 1. The shipped seed asks ONE pre-marked question ------------------
+    // The compiled-in seed is what `upsert` lays down in every project.
+    let seed = mustard_core::ORCHESTRATOR_MD;
+
+    let kind_row = line_with(seed, "  tipo:")
+        .expect("the router seed shows no `tipo` row — the kind is never asked");
+    for kind in ["feature", "fix", "hotfix"] {
+        assert!(kind_row.contains(kind), "the kind row omits `{kind}`: {kind_row}");
+    }
+    assert!(
+        kind_row.contains("[fix]"),
+        "the kind row lists the options without PRE-MARKING one, so the question \
+         costs a decision instead of an Enter: {kind_row}",
+    );
+    assert!(
+        line_with(seed, "  sai de:").is_some(),
+        "the question never offers the base, so a hotfix cannot be aimed at one",
+    );
+    let name_row = line_with(seed, "  branch:")
+        .expect("the question never shows the name the branch is about to get");
+    assert!(
+        name_row.contains("fix/"),
+        "the name shown to the operator does not carry the `{{kind}}/` prefix the \
+         branch is actually cut with: {name_row}",
+    );
+
+    // The three rules that make it one question instead of a form.
+    let rules = line_with(seed, "DESTINATION")
+        .expect("the router never says a hotfix is a destination rather than a kind of work");
+    assert!(
+        rules.contains("never inferred") || rules.contains("never pre-marked"),
+        "hotfix is named a destination without saying it is therefore never \
+         guessed from the request: {rules}",
+    );
+    assert!(
+        rules.contains("ONE candidate base"),
+        "the router asks a question that may have a single possible answer — \
+         with one candidate the base is not asked at all: {rules}",
+    );
+    assert!(
+        rules.contains("ONCE per unit"),
+        "the router never says the question is asked once and never again: {rules}",
+    );
+
+    // The answer has to REACH the gate, or the question decides nothing.
+    let emit = line_with(seed, "run emit-pipeline --kind pipeline.kind")
+        .expect("the router no longer shows the base-gate emit");
+    assert!(
+        emit.contains("--type"),
+        "the dispatch call drops the answer to the question it just asked, so \
+         every unit takes the default kind: {emit}",
+    );
+
+    // --- 2. This repository's delivered copy has not drifted ---------------
+    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
+    // the template does not update an already-seeded project.
+    let delivered = read(".claude/mustard/orchestrator.md");
+    for row in ["  tipo:", "  branch:", "run emit-pipeline --kind pipeline.kind"] {
+        assert_eq!(
+            line_with(&delivered, row),
+            line_with(seed, row),
+            "the delivered .claude/mustard/orchestrator.md drifted from the seed \
+             at `{row}` — re-seed it, or this project asks the old question",
+        );
+    }
+
+    // --- 3. The code really behaves the way the question promises ----------
+    // Without this half the block above outlives its mechanism: it would keep
+    // showing `fix/…` after the join, the flow-derived base or the refusals
+    // went away.
+    let kinds = read("apps/rt/src/shared/work_kind.rs");
+    assert!(
+        kinds.contains("enum WorkKind") && kinds.contains("format!(\"{}/{slug}\", self.token())"),
+        "nothing builds `{{kind}}/{{slug}}` any more, so the name the question \
+         showed is not the name the branch gets",
+    );
+    let branch = read("apps/rt/src/commands/event/work_branch.rs");
+    assert!(
+        branch.contains("kind.branch_name(&slug)"),
+        "compute_work_branch spells the join itself instead of taking WorkKind's \
+         — two spellings of one name is what this module exists to prevent",
+    );
+    // The base is a CONSEQUENCE of the kind, read from the flow.
+    assert!(
+        kinds.contains("WorkKind::Feature | WorkKind::Fix => self.work"),
+        "an ordinary unit no longer answers the base ordinary work is cut from",
+    );
+    assert!(
+        kinds.contains("fn emergency_bases") && kinds.contains("fn emergency_is_ambiguous"),
+        "nothing answers WHICH bases a hotfix may take, so `sai de` cannot know \
+         whether it has one candidate or several",
+    );
+    // Both refusals the prose promises, read through the messages that carry
+    // them: delete either and the operator is silently coerced instead.
+    assert!(
+        branch.contains("fn resolve_kind_base"),
+        "the gate has no resolver validating the kind/base pair the router sends",
+    );
+    assert!(
+        branch.contains("não é uma base de integração deste projeto"),
+        "an undeclared --base is no longer refused, so the router's promise that \
+         it is becomes a lie the operator only meets on a wrong branch",
+    );
+    assert!(
+        branch.contains("um hotfix não sai de"),
+        "a hotfix cut from the WORK base is no longer refused — that contradiction \
+         IS the difference between a fix and a hotfix",
+    );
+    let emit_src = read("apps/rt/src/commands/event/emit_pipeline.rs");
+    assert!(
+        emit_src.contains("work_branch::resolve_kind_base"),
+        "emit-pipeline stopped calling the resolver, so nothing validates the pair",
+    );
+    let cli = read("apps/rt/src/commands/event/cli.rs");
+    assert!(
+        cli.contains("#[arg(long = \"type\")]"),
+        "`--type` is not a flag of emit-pipeline, so the router's call fails",
+    );
+    // Old names keep working — a unit in flight must not be orphaned.
+    assert!(
+        kinds.contains("fn legacy_base_of"),
+        "the `{{base}}_{{slug}}` shape no longer resolves, so every unit in flight \
+         loses its base, its PR target and its second-unit refusal",
+    );
+
+    // --- 4. The operator's PICK survives the cut ---------------------------
+    // The question above is worth asking only if its answer outlives the marker
+    // that carried it. With three bases the branch name cannot say which one was
+    // chosen, and the marker is consumed at the cut — so the cut writes the
+    // answer into the unit's own record, and every later read prefers it.
+    let git_flow = read("plugin/refs/git/git-flow.md");
+    let durable = line_with(&git_flow, "The operator's pick is DURABLE")
+        .expect("the /git ref never says the chosen base outlives the cut");
+    for taught in ["meta.json#base", "consumed", "ambiguous-base"] {
+        assert!(
+            durable.contains(taught),
+            "the paragraph omits `{taught}` — it must say WHERE the answer is \
+             kept, WHY the marker cannot keep it, and what happens when nothing \
+             was recorded: {durable}",
+        );
+    }
+    assert!(
+        kinds.contains("enum UnitBase") && kinds.contains("Ambiguous(Vec<String>)"),
+        "nothing can answer `I cannot know which base this unit came from`, so \
+         the outermost candidate is served as a fact again",
+    );
+    assert!(
+        kinds.contains("fn record_cut_base") && kinds.contains("fn recorded_base_of"),
+        "the cut no longer writes the chosen base down (or nothing reads it \
+         back), so the pick dies with the pending marker",
+    );
+    let meta = read("packages/core/src/domain/meta.rs");
+    assert!(
+        meta.contains("pub base: Option<String>"),
+        "the unit's own record has no home for the base it was cut from — a \
+         second file would then have to be invented for one field",
+    );
+    let scaffold = read("apps/rt/src/commands/spec/spec_scaffold.rs");
+    assert!(
+        scaffold.contains("meta.base = read_meta(&path).and_then(|existing| existing.base)"),
+        "the spec scaffold overwrites the sidecar wholesale again, which erases \
+         the one answer nothing else can reconstruct",
+    );
+    for door in [
+        "apps/rt/src/hooks/write/work_branch_gate.rs",
+        "apps/rt/src/commands/event/work_branch.rs",
+    ] {
+        assert!(
+            read(door).contains("record_cut_base"),
+            "{door} cuts the branch without recording the base it cut from, so \
+             the answer depends on which door opened the unit",
+        );
+    }
+
+    // --- 5. …and it is written where the DRAFT can still write ------------
+    // The cut runs FIRST, and a `meta.json` in the unit's directory is exactly
+    // what tells `spec-draft` a spec is already drafted there. Recording the
+    // base that way made step one refuse step two: the unit came out cut and
+    // spec-less on the one path this record exists to serve. So the cut writes
+    // harness state and the draft folds it into the sidecar — prose, guard and
+    // fold asserted together, because any one of them alone reopens it.
+    assert!(
+        durable.contains(".cut-base"),
+        "the /git ref teaches the cut writing the sidecar itself — the write that \
+         left the unit cut and spec-less: {durable}",
+    );
+    assert!(
+        kinds.contains("pub(crate) const CUT_BASE_FILE"),
+        "nothing names the cut's own record any more, so the cut is back to \
+         writing the one file the draft reads as somebody's draft",
+    );
+    let draft = read("apps/rt/src/commands/spec/spec_draft.rs");
+    assert!(
+        draft.contains("const HARNESS_STATE_ENTRIES") && draft.contains("work_kind::CUT_BASE_FILE"),
+        "the draft's guard no longer tolerates the cut's own record BY NAME, so \
+         the first step of the sequence blocks the second again",
+    );
+    assert!(
+        scaffold.contains("work_kind::cut_base_in(output)")
+            && scaffold.contains("work_kind::clear_cut_base_in(output)"),
+        "the draft stopped folding the cut's record into `meta.json#base` (or \
+         stopped retiring it), so the answer ends up with two homes or none",
+    );
+
+    // Where NOTHING recorded it, nobody is handed a guess. `base_for` used to
+    // answer the outermost candidate with a `WARN` on stderr — which a
+    // PreToolUse hook says to nobody, since it exits 0.
+    assert!(
+        !branch.contains("Falling back to"),
+        "the base resolver guesses the outermost candidate again, and a guess \
+         nobody can see is a fact",
+    );
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        gate.contains("workbranch.base.unknown"),
+        "the gate stopped SAYING it cannot know which base the emergency came \
+         from, so the unit is cut somewhere nobody chose",
+    );
+    assert!(
+        gate.contains("recorded_base.as_deref()"),
+        "the reconcile drops the operator's recorded base again while it \
+         corrects the branch — the retried cut then has nothing to read",
+    );
+}
+
+/// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
+/// environment declaration.
+///
+/// The environment-carrying design was withdrawn after review: `link` planted a
+/// Windows directory junction inside the worktree, and `git worktree remove`
+/// DESCENDS a junction — so closing a unit deleted the MAIN checkout's
+/// `node_modules`, with and without `--force`. The shipped prose told operators
+/// to declare exactly that, which made following the documentation the way to
+/// lose your dependencies. What remains is a refusal (commit or stash, then open
+/// the second unit) and the orphan collector, which creates nothing and only
+/// reaps the worktrees Claude Code cuts on its own.
+#[test]
+fn worktree_prose_teaches_the_refusal_and_the_reaper() {
+    let flow = read("plugin/refs/git/git-flow.md");
+
+    // --- 1. The refusal is taught where the gate's decision is taught -------
+    let another = line_with(&flow, "ANOTHER unit's branch, with uncommitted work")
+        .expect("the gate prose never says what happens when the checkout holds another unit");
+    assert!(
+        another.contains("REFUSED") || another.contains("denied"),
+        "the row must say the edit is REFUSED: {another}",
+    );
+    // Naming the refusal is not teaching it — the row must name the act that
+    // unblocks it, or the operator is stopped with nowhere to go.
+    assert!(
+        another.contains("commit or stash"),
+        "the row refuses without naming what unblocks it: {another}",
+    );
+    assert!(
+        another.contains("paths"),
+        "the row must promise the paths holding the work are named: {another}",
+    );
+    // The counterweights, deliberately: a rule that only added "refuse more"
+    // would stop on a HEAD nobody measured, and on a clean tree where nothing
+    // can ride along.
+    let unmeasured = line_with(&flow, "detached / unreadable HEAD")
+        .expect("the gate prose no longer says what an unreadable HEAD does");
+    assert!(
+        unmeasured.contains("in-place"),
+        "an unmeasured position must keep today's cut: {unmeasured}",
+    );
+    let clean = line_with(&flow, "ANOTHER unit's branch, tree CLEAN")
+        .expect("the gate prose never says what a CLEAN checkout does");
+    assert!(
+        clean.contains("in-place"),
+        "a clean checkout loses nothing, so it must keep the cut: {clean}",
+    );
+
+    // --- 2. No environment declaration survives anywhere in the ref ---------
+    for withdrawn in ["mustard.json#worktree", "\"carry\"", "\"link\"", "**`carry`**", "**`link`**"]
+    {
+        assert!(
+            !flow.contains(withdrawn),
+            "the ref still teaches `{withdrawn}` — following it plants a junction \
+             whose removal deletes the main checkout's directory",
+        );
+    }
+
+    // --- 3. The reaper, which is NOT withdrawn ------------------------------
+    let reaper = line_with(&flow, "The collector reaps what is ORPHANED")
+        .expect("the contract never says what the collector does");
+    for taught in ["--apply", "uncommitted", "PID"] {
+        assert!(
+            reaper.contains(taught),
+            "the reaper paragraph omits `{taught}` — it acts, it refuses over work, \
+             and it knows an orphan by its owner: {reaper}",
+        );
+    }
+
+    // --- 4. The code really does each of them -------------------------------
+    // Without this half every sentence above outlives its mechanism.
+    let branch = read("apps/rt/src/commands/event/work_branch.rs");
+    assert!(
+        branch.contains("fn holds_other_work") && branch.contains("fn busy_checkout"),
+        "nothing asks whether the checkout holds another unit's uncommitted work",
+    );
+    assert!(
+        branch.contains("CutOutcome::Refused"),
+        "the cut `spec-draft` takes at approval — the door that opens FIRST — no \
+         longer refuses, so the gate's guard is again the only one",
+    );
+    assert!(
+        branch.contains("fn checkout_work") && !branch.contains("dirty_paths(root)"),
+        "the refusal measures with the CUT-blind probe again — the one that drops \
+         the unit's own `.claude/spec/…` and reads a failed measurement as clean, \
+         which is how a second unit took a checkout holding another unit's whole \
+         spec, waves and proof while `git status` named all three",
+    );
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        gate.contains("busy_checkout(Path::new(&local)"),
+        "the gate no longer takes the shared refusal, so the two doors can disagree",
+    );
+    assert!(
+        !gate.contains("hook_create"),
+        "the gate cuts a worktree again — the divert the prose says is withdrawn",
+    );
+    for nudge in ["EnterWorktree path=", "EnterWorktree name="] {
+        assert!(
+            !gate.contains(nudge),
+            "the gate still answers `{nudge}` — it sends the session into a worktree \
+             nobody asked for, or nudges it there on every unit",
+        );
+    }
+
+    let open = read("apps/rt/src/commands/work_unit_open.rs");
+    for gone in ["fn carry_environment", "fn link_dir", "mklink /J", "worktree.linked()"] {
+        assert!(
+            !open.contains(gone),
+            "`{gone}` is back: a fresh cut plants something of the harness's own, \
+             and a link inside a worktree is what `git worktree remove` descends",
+        );
+    }
+
+    let gc = read("apps/rt/src/commands/maint/worktree_gc.rs");
+    assert!(
+        gc.contains("gc(repo, DEFAULT_AGE_DAYS, /* apply = */ true)"),
+        "the SessionStart probe went back to dry-run, so nothing is ever collected",
+    );
+    assert!(
+        gc.contains("process_liveness") && gc.contains("enum Contents"),
+        "the collector lost either the owner probe that makes it prompt or the \
+         work probe that makes it safe",
+    );
+    assert!(
+        !gc.contains("dirty_paths(&wt)"),
+        "the collector decides by the CUT decision's probe again — the one that \
+         reads a failed measurement as clean and drops the candidate's own \
+         `.claude/` contents, which is how an --apply sweep deleted unsaved files",
     );
 }
 
