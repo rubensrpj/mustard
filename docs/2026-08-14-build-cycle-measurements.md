@@ -206,9 +206,29 @@ module the library declares too, so they still run, once.
 | **execution** | 397,7s | **214,7s** |
 
 **183s saved locally, 46% of execution time**, with no test lost — the drop from
-4033 to 2065 is exactly the duplicate. On the Windows CI runner, where the Test
-step costs 729s and every test is 6,4× more expensive, this is the largest single
-piece of it.
+4033 to 2065 is exactly the duplicate.
+
+### What it was actually worth in CI — the fifth correction
+
+Measured on run `31816628632` (PR #156), against `31796118965` (PR #155):
+
+| Runner | before | after | gain |
+|---|---|---|---|
+| ubuntu | 5m46s | 5m0s | −13% |
+| macos | 6m29s | 5m49s | −10% |
+| **windows** | **19m18s** | **15m30s** | **−20%** |
+
+Per step on Windows: `Build` 306s + `Test` 729s = 1035s became a single `Test` of
+792s — 243s off the pair. (The Test step alone rose, 729s → 792s, because it now
+absorbs the compilation the removed Build step was doing. The pair is the number.)
+
+**The local figure did not transfer, and the reason matters.** 46% was measured
+WARM, where execution dominates. A CI runner is always COLD, so its Test step is
+dominated by COMPILING, and the duplicate removed here was execution. Predicting
+CI from a warm local measurement overstated the gain by roughly half.
+
+Real, and worth having: 3m48s off every Windows CI round. But the honest headline
+is 20%, not 46%, and the two numbers measure different things.
 
 Worth naming: this had nothing to do with Windows, with the antivirus, with the
 cache, or with the 59 binaries. Four measurements were spent on those before the
