@@ -1,0 +1,16 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "build-test-cycle-is-too",
+  "checklist": [
+    {
+      "label": ".github/workflows/ci.yml",
+      "path": ".github/workflows/ci.yml",
+      "done": true
+    }
+  ]
+}
