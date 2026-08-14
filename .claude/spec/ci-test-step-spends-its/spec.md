@@ -47,4 +47,19 @@ The CI declares its test thread count explicitly, with the measurement that chos
 ## Checklist
 
 - [x] T1 — declare the test thread count in `.github/workflows/ci.yml`, with the measured curve (4 → 65,4s, 8 → 38,4s, 12 → 46,0s) in the comment beside it.
-- [ ] T2 — read the PR's own Windows check against the 15m30s baseline of PR #156 and record the real gain — including a null result.
+- [x] T2 — read the PR's own Windows check against the 15m30s baseline of PR #156 and record the real gain — including a null result.
+
+## Outcome — the prediction was wrong by a factor of six
+
+Run `31821203556` (PR #157) against `31816628632` (PR #156), both first-run-of-a-branch on a cold cache:
+
+| Windows | 4 threads (#156) | 8 threads (#157) | gain |
+|---|---|---|---|
+| Test step | 792s | **738s** | **−54s (−6,8%)** |
+| job total | 15m30s | 14m36s | −54s |
+
+**Predicted 41%, got 6,8%.** The local measurement forced the runner's THREAD COUNT but not its MACHINE: here the spawned `git` processes had 22 cores to spread over while only the test threads were capped at 4. On a real 4-core runner those `git` processes contend for the same 4 cores, so doubling the test threads mostly buys contention rather than overlap. The simulation measured one thing and the runner does another.
+
+**Kept, not reverted.** 54s per Windows round is real, measured, and costs nothing — but the honest headline is 6,8%, and the 41% figure in the comment above is the LOCAL curve, which does not transfer. The comment says so.
+
+What this leaves standing: the expensive repair — cutting the number of `git` invocations across the 155 tests — is now the only one left with room in it, and it no longer has a cheap alternative competing for the slot. That is a unit of its own, and it should be opened knowing that two shortcuts were already measured and spent.

@@ -78,6 +78,14 @@ jobs:
       #
       # Doubling past the core count buys 41%; going further costs it back to
       # contention. 8 is the measured knee, not a round number.
+      #
+      # THAT CURVE IS LOCAL AND DOES NOT TRANSFER. Measured on the runner
+      # itself (run 31821203556 against 31816628632, both cold-cache first runs):
+      # the Test step went 792s → 738s, a real but modest −6,8%, not −41%. The
+      # local run capped the TEST THREADS at 4 while the spawned `git` processes
+      # still had 22 cores; on a 4-core runner they contend for the same 4, so
+      # extra test threads mostly buy contention. Kept because 54s per Windows
+      # round is free — but read 6,8% as the number, not 41%.
       # Full figures: docs/2026-08-14-build-cycle-measurements.md.
       - name: Test
         run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
