@@ -10,13 +10,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-2",
@@ -27,13 +27,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: warning: unused variable: `intent`\n   --> apps\\rt\\src\\commands\\feature.rs:488:27\n    |\n488 | fn keep"
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-3",

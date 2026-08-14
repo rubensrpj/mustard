@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "ci-test-step-spends-its",
+  "title": "the CI test step spends its time waiting on spawned git processes, so the runner runs fewer tests at once than it could",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
