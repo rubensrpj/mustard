@@ -105,6 +105,10 @@ packages/cli/templates/.claude/.metrics/
 # Relevance-gate output: approved spec-memory names (regenerable per spec)
 **/.claude/spec/*/.memory-approved
 
+# The cut's own record of the base a unit came from (harness state; the draft
+# folds it into meta.json#base and retires it — it never reaches the merge)
+**/.claude/spec/*/.cut-base
+
 # Python bytecode (skill-creator scripts)
 **/__pycache__/
 

@@ -5,14 +5,14 @@
 //! other's:
 //!
 //! - [`BranchEnumerator`] answers **which refs exist**. It sweeps `refs/heads/`
-//!   AND `refs/remotes/`, keeping only names whose `{base}_` prefix names a base
-//!   the project itself declares (`mustard.json#git.flow`). It knows nothing
+//!   AND `refs/remotes/`, keeping only names [`BaseFlow`] recognises as a work
+//!   unit's of this project (`mustard.json#git.flow`). It knows nothing
 //!   about state. Sweeping BOTH namespaces is the whole point: the two sweeps
 //!   this module replaces each looked at one half — a branch that lives only on
 //!   the server was invisible to one, and an IN-PLACE unit (cut on the main
 //!   checkout, no worktree — the default shape) was invisible to the other.
 //! - [`StateClassifier`] answers **what state each branch is in**, crossing the
-//!   enumerator with TWO local measurements — ancestry ([`merged_refs`]) and
+//!   enumerator with TWO local measurements — ancestry ([`try_merged_refs`]) and
 //!   commits of the branch's own ([`refs_ahead_of_base`]) — and the [`PrLookup`]
 //!   port. It never enumerates and it never acts.
 //!
@@ -65,6 +65,8 @@ use std::process::Command;
 
 use serde_json::{json, Value};
 
+use crate::shared::work_kind::BaseFlow;
+
 /// The `refs/heads/` namespace, as `for-each-ref` prints it with `%(refname)`.
 const HEADS: &str = "refs/heads/";
 /// The `refs/remotes/` namespace. The remote NAME is read out of the ref itself
@@ -79,38 +81,6 @@ const REMOTES: &str = "refs/remotes/";
 /// `commands` face that owns the git primitive — and so every sweep here is
 /// testable against a fixed listing.
 pub(crate) type GitOut<'a> = &'a dyn Fn(&[&str]) -> Option<String>;
-
-/// The base a work branch integrates into, read from its `{base}_` prefix
-/// (tolerating the harness's `worktree-` prefix). `None` when the prefix names
-/// no known base — such a branch is never a work unit, and the `None` propagates
-/// out of `split_once`, so a name with no `_` at all (an integration base, a
-/// stray ref, `HEAD`) is refused by construction.
-///
-/// The ONE predicate for this question in the crate: the exit ritual, the
-/// enumerator and the spec inventory all ask it here. A second copy is how the
-/// two sweeps this module replaces drifted apart in the first place.
-pub(crate) fn base_of_branch(branch: &str, bases: &[String]) -> Option<String> {
-    let name = branch.strip_prefix("worktree-").unwrap_or(branch);
-    let (prefix, _) = name.split_once('_')?;
-    bases.iter().find(|b| b.as_str() == prefix).cloned()
-}
-
-/// The spec slug a work branch names: everything after the `{base}_` prefix
-/// [`base_of_branch`] recognised. `None` for anything that is not a work unit of
-/// THIS project — a bare base, a hand-cut `feature/x`, or a `feature_x` whose
-/// prefix names no declared base.
-///
-/// The ONE spelling of "which unit is this" for every consumer that has to NAME
-/// the unit's directory: the `/pr` door resolving a head ref to its spec, and
-/// the per-branch notebook resolving a branch to `.claude/spec/{slug}/`. It is
-/// deliberately built on [`base_of_branch`] rather than on a bare
-/// `split_once('_')`: the loose split accepted ANY prefix, so `--unit feature_x`
-/// silently opened the notebook of a spec called `x`.
-pub(crate) fn unit_slug_of_branch(branch: &str, bases: &[String]) -> Option<String> {
-    let base = base_of_branch(branch, bases)?;
-    let name = branch.strip_prefix("worktree-").unwrap_or(branch);
-    name.strip_prefix(&format!("{base}_")).filter(|s| !s.is_empty()).map(str::to_string)
-}
 
 /// Split a full ref name into `(remote, branch)` — `remote` is `None` for a
 /// local head. Any other namespace (tags, notes, stash) answers `None`.
@@ -202,8 +172,8 @@ impl BranchEnumerator {
     /// ONE `for-each-ref` covers both patterns, so the answer is a single
     /// consistent snapshot rather than two reads that can disagree. Fail-open:
     /// a git that cannot answer yields an empty sweep, never a panic.
-    pub(crate) fn sweep(git: GitOut<'_>, bases: &[String]) -> Self {
-        Self::try_sweep(git, bases).unwrap_or_else(|| Self::from_refs("", bases))
+    pub(crate) fn sweep(git: GitOut<'_>, flow: &BaseFlow) -> Self {
+        Self::try_sweep(git, flow).unwrap_or_else(|| Self::from_refs("", flow))
     }
 
     /// [`sweep`](Self::sweep), keeping apart "git could not answer" (`None`)
@@ -213,14 +183,14 @@ impl BranchEnumerator {
     /// read printed as a verified "nothing in flight" is the same lie as an
     /// unmeasured PR printed as "no PR". A consumer that merely counts degrades
     /// through [`sweep`] and shows one fewer nudge.
-    pub(crate) fn try_sweep(git: GitOut<'_>, bases: &[String]) -> Option<Self> {
+    pub(crate) fn try_sweep(git: GitOut<'_>, flow: &BaseFlow) -> Option<Self> {
         let listing =
             git(&["for-each-ref", "--format=%(refname) %(objectname)", HEADS, REMOTES])?;
-        Some(Self::from_refs(&listing, bases))
+        Some(Self::from_refs(&listing, flow))
     }
 
     /// The pure half of [`sweep`](Self::sweep): parse a `for-each-ref` listing.
-    pub(crate) fn from_refs(listing: &str, bases: &[String]) -> Self {
+    pub(crate) fn from_refs(listing: &str, flow: &BaseFlow) -> Self {
         // Keyed by branch name so a unit with both a local head and one or more
         // remote-tracking refs is ONE entry, and so the output order is the
         // name order (the crate's determinism Guard admits no arbitrary order).
@@ -231,7 +201,17 @@ impl BranchEnumerator {
             let line = line.trim();
             let (refname, tip) = line.split_once(' ').unwrap_or((line, ""));
             let Some((remote, name)) = split_ref(refname) else { continue };
-            let Some(base) = base_of_branch(name, bases) else { continue };
+            // Enumerated by IDENTITY, not by the base: a unit whose base nothing
+            // established is still this project's unit, and dropping it here
+            // would make the sweep blind to exactly the branches whose base a
+            // reader most needs told. `base` is then the empty string — a unit
+            // that belongs to no base group can never reach a pruning verdict,
+            // which is the safe direction for every consumer of this sweep.
+            let answer = flow.base_of(name);
+            if !answer.is_unit() {
+                continue;
+            }
+            let base = answer.into_known().unwrap_or_default();
             let entry = by_branch.entry(name.to_string()).or_insert_with(|| BranchRefs {
                 branch: name.to_string(),
                 base,
@@ -273,7 +253,7 @@ impl BranchEnumerator {
 /// reachability read of this module.
 ///
 /// Two questions fold through it, and they must never drift apart: "is this ref
-/// on its base now" ([`merged_refs`], asked of a base) and "does this merge
+/// on its base now" ([`try_merged_refs`], asked of a base) and "does this merge
 /// account for that ref" ([`GitReachability`], asked of a merged pull request's
 /// frozen head). One `for-each-ref` covers both ref namespaces, so a branch that
 /// exists only on the server is measured by the same call as a local one.
@@ -294,7 +274,7 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 }
 
 /// The work-unit REFS already reachable from their base — measured LOCALLY, with
-/// no network at all.
+/// no network at all — plus whether git ANSWERED at all.
 ///
 /// Keyed on the full refname, not on the branch name. The name-keyed set this
 /// replaces inserted `dev_x` as soon as ANY of its refs was contained, so a
@@ -305,13 +285,10 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 /// The network only ever CONFIRMS this (via [`PrLookup`]); it is never required
 /// to reach an answer, which is what keeps the sweep honest offline. Fail-open
 /// per base: a base with no local ref simply contributes nothing.
-pub(crate) fn merged_refs(git: GitOut<'_>, bases: &[String]) -> BTreeSet<String> {
-    try_merged_refs(git, bases).0
-}
-
-/// [`merged_refs`], keeping apart "git ANSWERED, nothing is contained" from
-/// "git never answered" — the same split [`BranchEnumerator::try_sweep`] draws,
-/// and for the same reason.
+///
+/// The second half of the pair keeps apart "git ANSWERED, nothing is contained"
+/// from "git never answered" — the same split [`BranchEnumerator::try_sweep`]
+/// draws, and for the same reason.
 ///
 /// The two are indistinguishable in the set alone, and they ask for opposite
 /// verdicts: the first says a merged branch really moved past its merge, the
@@ -325,10 +302,10 @@ pub(crate) fn merged_refs(git: GitOut<'_>, bases: &[String]) -> BTreeSet<String>
 /// repository), never a repository in which nothing is contained. One base
 /// answering is enough: a base with no local ref legitimately contributes
 /// nothing, so demanding all of them would report a healthy read as unmeasured.
-pub(crate) fn try_merged_refs(git: GitOut<'_>, bases: &[String]) -> (BTreeSet<String>, bool) {
+pub(crate) fn try_merged_refs(git: GitOut<'_>, flow: &BaseFlow) -> (BTreeSet<String>, bool) {
     let mut merged: BTreeSet<String> = BTreeSet::new();
     let mut measured = false;
-    for base in bases {
+    for base in flow.bases() {
         let listing = refs_merged_into(git, base);
         if listing.is_empty() {
             continue;
@@ -336,7 +313,7 @@ pub(crate) fn try_merged_refs(git: GitOut<'_>, bases: &[String]) -> (BTreeSet<St
         measured = true;
         for refname in listing {
             let is_unit =
-                split_ref(&refname).and_then(|(_, name)| base_of_branch(name, bases)).is_some();
+                split_ref(&refname).is_some_and(|(_, name)| flow.base_of(name).is_unit());
             if is_unit {
                 merged.insert(refname);
             }
@@ -368,10 +345,10 @@ pub(crate) fn try_merged_refs(git: GitOut<'_>, bases: &[String]) -> (BTreeSet<St
 pub(crate) fn refs_ahead_of_base(
     git: GitOut<'_>,
     units: &[BranchRefs],
-    bases: &[String],
+    flow: &BaseFlow,
 ) -> BTreeSet<String> {
     let mut ahead: BTreeSet<String> = BTreeSet::new();
-    for base in bases {
+    for base in flow.bases() {
         let mine: Vec<&BranchRefs> = units.iter().filter(|u| &u.base == base).collect();
         if mine.is_empty() {
             continue;
@@ -781,7 +758,7 @@ pub(crate) struct StateClassifier<'a> {
     reach: &'a dyn Reachability,
     /// Whether the containment read behind `merged` actually ANSWERED.
     ///
-    /// [`merged_refs`] is fail-open: a git that will not answer yields an empty
+    /// [`try_merged_refs`] is fail-open: a git that will not answer yields an empty
     /// set, which is indistinguishable from "nothing is contained". Told apart,
     /// the two ask for opposite verdicts — the second means the branch really
     /// moved past its merge, the first means nobody looked — and printing the
@@ -811,7 +788,7 @@ impl<'a> StateClassifier<'a> {
 
     /// One verdict per enumerated branch, in the enumerator's order.
     ///
-    /// `merged` is the locally measured ancestry set ([`merged_refs`]) and
+    /// `merged` is the locally measured ancestry set ([`try_merged_refs`]) and
     /// `ahead` the locally measured set of units carrying commits of their own
     /// ([`refs_ahead_of_base`]); the PR port only ever CONFIRMS a merge the
     /// local measurement missed (a portal that squashes produces no ancestry),
@@ -938,11 +915,11 @@ fn verdict(
 pub(crate) fn awaiting_prune(
     git: GitOut<'_>,
     pr: &dyn PrLookup,
-    bases: &[String],
+    flow: &BaseFlow,
 ) -> Vec<BranchState> {
-    let units = BranchEnumerator::sweep(git, bases);
-    let (merged, measured) = try_merged_refs(git, bases);
-    let ahead = refs_ahead_of_base(git, units.units(), bases);
+    let units = BranchEnumerator::sweep(git, flow);
+    let (merged, measured) = try_merged_refs(git, flow);
+    let ahead = refs_ahead_of_base(git, units.units(), flow);
     let reach = GitReachability::new(git);
     StateClassifier::new(pr, &reach)
         .measured(measured)
@@ -1095,8 +1072,14 @@ mod tests {
         }
     }
 
-    fn bases() -> Vec<String> {
-        vec!["dev".to_string(), "main".to_string()]
+    /// The base model of a project declaring the ordinary two-tier flow — the
+    /// model every sweep here is read against. Named for what the callers ask
+    /// of it: which bases exist, and which unit belongs to which.
+    fn bases() -> BaseFlow {
+        let mut git = mustard_core::domain::config::GitConfig::default();
+        git.flow.insert("*".to_string(), "dev".to_string());
+        git.flow.insert("dev".to_string(), "main".to_string());
+        BaseFlow::of(&git)
     }
 
     /// Run git in `root`, failing the test with git's own words.
@@ -1189,9 +1172,9 @@ refs/tags/v1.0_dev aaa7
         assert_eq!(remote_only.tip, "bbb6", "with no local head, the remote ref gives the tip");
 
         // The base itself is excluded by the same predicate the exit ritual uses
-        // — `split_once('_')` propagating `None` — so the sweep can never offer
-        // an integration base for anything.
-        assert_eq!(base_of_branch("dev", &bases()), None);
+        // — a bare base carries neither a kind nor a `{base}_` prefix — so the
+        // sweep can never offer an integration base for anything.
+        assert!(!bases().base_of("dev").is_unit());
         assert!(
             !found.units().iter().any(|u| u.branch == "dev"),
             "an integration base is never a work unit",
@@ -1568,7 +1551,7 @@ refs/tags/v1.0_dev aaa7
 
         // Ancestry answers YES — the branch IS its base — and that used to be
         // the whole verdict.
-        let merged = merged_refs(&git_read, &bases());
+        let merged = try_merged_refs(&git_read, &bases()).0;
         assert!(
             merged.contains("refs/heads/dev_fresh"),
             "git reports a freshly cut branch as merged into its base — per REF",
@@ -1635,7 +1618,7 @@ refs/tags/v1.0_dev aaa7
         assert_eq!(names, vec!["dev_landed"], "the remote of a merged unit is owed its prune");
         assert_eq!(pending[0].state, UnitState::AwaitingPrune);
 
-        let merged = merged_refs(&git_read, &bases());
+        let merged = try_merged_refs(&git_read, &bases()).0;
         let ahead = refs_ahead_of_base(&git_read, swept.units(), &bases());
         let reach = GitReachability::new(&git_read);
         let states =

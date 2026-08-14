@@ -11,6 +11,18 @@ build = "build.rs"
 [[bin]]
 name = "mustard-rt"
 path = "src/main.rs"
+# The binary does NOT run the unit tests. `main.rs` declares the same seven
+# modules `lib.rs` does (it consumes none of the library), so without this every
+# `#[cfg(test)]` block under `src/` was compiled and executed TWICE — once per
+# target. Measured 2026-08-14: `unittests src/lib.rs` ran 1968 tests in 150,8s
+# and `unittests src/main.rs` ran 1973 of the same ones in 187,6s, out of 397,7s
+# of total execution. The duplicate alone was 47% of local test time and the
+# largest single piece of the CI's 729s Windows test step.
+#
+# The five tests that were genuinely the binary's own moved to `src/hook_output.rs`,
+# a module the library declares too, so they still run — once, on the lib target.
+# Figures: docs/2026-08-14-build-cycle-measurements.md.
+test = false
 
 [lib]
 name = "mustard_rt"

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "build-test-cycle-is-too",
+  "title": "the build and test cycle is too slow and the target directory grows without bound: measure where the time actually goes in the local loop and in CI, then fix what the measurement names",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "measure",
+      "summary": "Measure where the cycle's time actually goes — locally on Windows and in CI — and write the numbers into the tree, so every later change is decided by a datum instead of a plausible story.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "ci",
+      "summary": "Stop CI from compiling the whole workspace three times per operating system, and make its incremental policy explicit instead of inherited.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "profile",
+      "summary": "Bound the incremental cache by a policy declared in the repository, so 52 GB cannot accumulate again while everyone waits for someone to remember a command.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

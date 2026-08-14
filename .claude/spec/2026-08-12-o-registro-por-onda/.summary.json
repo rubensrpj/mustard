@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "2026-08-12-o-registro-por-onda",
+  "title": "Tactical Fix: o registro por onda distingue as ondas: o portao de fronteira resolve a onda pelo papel do agente que escreve e o retorno do agente chega ao registro da propria onda",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

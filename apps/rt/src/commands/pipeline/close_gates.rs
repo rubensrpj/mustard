@@ -8,9 +8,11 @@
 //!    `TODO`/`FIXME`/`future hook`/… markers in its actionable sections.
 //! 2. **Checklist gate** — denies if the spec's `## Checklist` has unmarked
 //!    items.
-//! 3. **QA gate** — denies if no `qa.result` with `overall=pass`
+//! 3. **Findings gate** — collects the work unit's findings in-process and
+//!    denies while any of them still owes a destination.
+//! 4. **QA gate** — denies if no `qa.result` with `overall=pass`
 //!    exists in the harness event log.
-//! 4. **Build/test gate (Wave 9)** — runs `build → type → lint → test` from
+//! 5. **Build/test gate (Wave 9)** — runs `build → type → lint → test` from
 //!    `mustard.json` and denies on the first real (non-env) failure.
 //!
 //! Each sub-gate has its own `MUSTARD_*_MODE` env var; the dominant default is
@@ -64,11 +66,16 @@ use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::Verdict;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::spec::contract::{FindingItem, FindingSource};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::commands::review::finding_collect;
+// The destination words come from the door itself, so the remediation this gate
+// prints can never name a set `mark-finding` does not accept.
+use crate::commands::spec::mark_finding::DESTINATIONS;
 use crate::shared::gate_mode::{resolve_mode, GateMode};
 use crate::util::format_gate_message;
 use mustard_core::time::now_iso8601;
@@ -544,6 +551,81 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Findings gate
+// ---------------------------------------------------------------------------
+
+/// The findings of `spec` that still owe a destination.
+///
+/// The collector is run IN-PROCESS rather than read out of the sidecar: a
+/// reviewer file or a `removal` column written after the last collection would
+/// otherwise be invisible to the gate, which is the pipe-with-no-outlet this
+/// sub-gate exists to close. The collection is idempotent and carries every
+/// already-declared destination forward verbatim, so re-taking it at CLOSE
+/// costs a directory read and settles nothing on its own.
+///
+/// [`FindingItem::is_open`] and never a plain `routed.is_none()`: a finding
+/// deliberately DROPPED, with its reason on the record, is a decision — counting
+/// it as forgotten work is the trap the predicate documents.
+///
+/// Fail-quiet on an unnamed spec: with no spec there is no work unit whose
+/// findings could be owed, and this gate must not answer for one it cannot name.
+///
+/// Fail-quiet on a collection that could not be RECORDED, for a harder reason:
+/// the remedy this gate prints would not work. `report.ok` is false exactly when
+/// the findings had nowhere to be written — an unresolved spec, a missing or
+/// unreadable `meta.json`, a failed write — and `mark-finding` writes to that
+/// same sidecar, so refusing here would name a command that answers
+/// `meta-not-found` and send the operator in a circle with only
+/// `MUSTARD_FINDINGS_GATE_MODE=warn` as a way out. A gate whose remediation
+/// cannot succeed is worse than one that stays silent: it teaches the reader
+/// that the escape hatch is the normal path. The broken state itself is not
+/// invisible — a spec with no readable sidecar is what the surrounding gates and
+/// `doctor` already speak about.
+fn open_findings(cwd: &str, spec: Option<&str>) -> Vec<FindingItem> {
+    let Some(spec) = spec.filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let report = finding_collect::collect(Path::new(cwd), spec);
+    if !report.ok {
+        return Vec::new();
+    }
+    report
+        .findings
+        .into_iter()
+        .filter(FindingItem::is_open)
+        .collect()
+}
+
+/// The producer's name as the record spells it — the serde words of
+/// [`FindingSource`], so the refusal and the sidecar name the producer
+/// identically and a reader can grep one from the other.
+const fn source_word(source: FindingSource) -> &'static str {
+    match source {
+        FindingSource::Review => "review",
+        FindingSource::ProofLedger => "proof_ledger",
+    }
+}
+
+/// The refusal block for ONE open finding: who found it, what it says, and the
+/// exact command that settles it.
+///
+/// The command is printed per finding rather than once at the bottom because a
+/// gate that refuses without naming the action teaches the reader to route
+/// around it — and the id is the one argument they cannot guess. `--to` and
+/// `--reason` stay placeholders on purpose: the destination is the decision this
+/// gate is asking for, and pre-filling it would be the gate answering its own
+/// question.
+fn finding_refusal(spec: &str, finding: &FindingItem) -> String {
+    format!(
+        "  - [{source}] {id}: {statement}\n    mustard-rt run mark-finding --spec {spec} \
+         --id {id} --to <{DESTINATIONS}> --reason \"<why>\"",
+        source = source_word(finding.source),
+        id = finding.id,
+        statement = finding.statement,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // QA gate
 // ---------------------------------------------------------------------------
 
@@ -847,7 +929,7 @@ fn truncate(s: &str, max: usize) -> &str {
 
 /// The resolved mode of every close-gate sub-gate.
 ///
-/// Resolving the four `MUSTARD_*_MODE` env vars once, up front, keeps
+/// Resolving the five `MUSTARD_*_MODE` env vars once, up front, keeps
 /// [`run_close_gates`] a pure function — testable without mutating
 /// process-global environment (which the crate's `#![forbid(unsafe_code)]`
 /// would otherwise force into an `unsafe` block).
@@ -856,6 +938,11 @@ pub(crate) struct CloseGateModes {
     pub(crate) close: GateMode,
     pub(crate) debt: GateMode,
     pub(crate) checklist: GateMode,
+    /// `MUSTARD_FINDINGS_GATE_MODE`. Strict like its siblings, by design: a
+    /// findings gate born advisory would repeat, in another shape, the very
+    /// defect it exists to close — a discovery recorded where nobody has to
+    /// answer for it.
+    pub(crate) findings: GateMode,
     pub(crate) qa: GateMode,
 }
 
@@ -864,7 +951,7 @@ impl CloseGateModes {
     /// `gates.<field>` → built-in `strict`) — the production path.
     ///
     /// The project config is loaded once here; only `checklist` carries a
-    /// `gates.*` override field today, so the other three resolve env-only.
+    /// `gates.*` override field today, so the other four resolve env-only.
     pub(crate) fn resolve(cwd: &str) -> Self {
         let gates = crate::shared::context::project_config_cached(Path::new(cwd)).gates;
         Self {
@@ -875,6 +962,7 @@ impl CloseGateModes {
                 gates.checklist.as_deref(),
                 GateMode::Strict,
             ),
+            findings: resolve_mode("MUSTARD_FINDINGS_GATE_MODE", None, GateMode::Strict),
             qa: resolve_mode("MUSTARD_QA_GATE_MODE", None, GateMode::Strict),
         }
     }
@@ -991,6 +1079,56 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                         "checklistMode": mode_str(checklist_mode),
                         "spec": spec_ref,
                         "unmarkedCount": unmarked.len(),
+                    }),
+                );
+                return Verdict::Deny { reason };
+            }
+            // warn → fall through.
+        }
+    }
+
+    // ── Findings gate ─────────────────────────────────────────────────────
+    let findings_mode = modes.findings;
+    if findings_mode != GateMode::Off {
+        let open = open_findings(cwd, spec_ref);
+        if !open.is_empty() {
+            let spec = spec_ref.unwrap_or("");
+            let preview = open
+                .iter()
+                .take(5)
+                .map(|finding| finding_refusal(spec, finding))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let extra_findings = if open.len() > 5 {
+                format!("\n  …and {} more", open.len() - 5)
+            } else {
+                String::new()
+            };
+            let reason = format!(
+                "{}\n{preview}{extra_findings}",
+                format_gate_message(
+                    "Close Gate",
+                    &format!(
+                        "{} finding(s) of spec \"{spec}\" still have no destination",
+                        open.len()
+                    ),
+                    "a finding nobody decided about is not a recorded finding, it is \
+                     forgotten work",
+                    "declare each one with the `mustard-rt run mark-finding` command printed \
+                     under it; a finding you deliberately let go IS settled, by `--to dropped \
+                     --reason \"<why>\"`. Or set MUSTARD_FINDINGS_GATE_MODE=warn",
+                )
+            );
+            if findings_mode == GateMode::Strict {
+                emit_close_gate_event(
+                    cwd,
+                    spec_ref,
+                    json!({
+                        "result": "deny-findings-open",
+                        "mode": mode_str(mode),
+                        "findingsMode": mode_str(findings_mode),
+                        "spec": spec_ref,
+                        "openCount": open.len(),
                     }),
                 );
                 return Verdict::Deny { reason };
@@ -1431,6 +1569,7 @@ mod tests {
             close: GateMode::Strict,
             debt: GateMode::Strict,
             checklist: GateMode::Strict,
+            findings: GateMode::Strict,
             qa: GateMode::Strict,
         }
     }
@@ -1594,6 +1733,151 @@ mod tests {
         assert_ne!(
             empty, with_acs,
             "one message for two opposite situations is the failure this guards"
+        );
+    }
+
+    // --- findings gate ------------------------------------------------------
+
+    /// Only the findings sub-gate active, so the assertions below are about it
+    /// and not about a QA pass nobody recorded. No `mustard.json` is written in
+    /// these tests, so the build/test stage fail-open skips.
+    fn only_findings() -> CloseGateModes {
+        CloseGateModes {
+            debt: GateMode::Off,
+            checklist: GateMode::Off,
+            qa: GateMode::Off,
+            ..all_strict()
+        }
+    }
+
+    /// Seed a spec whose reviewer left one findings file behind — a discovery
+    /// on disk that nobody has decided anything about.
+    fn seed_reviewed_spec(cwd: &Path, spec: &str) -> std::path::PathBuf {
+        write_spec(cwd, spec, "# Spec\n");
+        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec(spec).unwrap();
+        let spec_dir = sp.dir().to_path_buf();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(spec_dir.join("review")).unwrap();
+        std::fs::write(
+            spec_dir.join("review").join("findings.md"),
+            "# Findings\n\n- the close gate never reads this file\n",
+        )
+        .unwrap();
+        spec_dir
+    }
+
+    /// A finding with no destination refuses CLOSE, and the refusal names the
+    /// producer, the statement AND the exact command that settles it — a gate
+    /// that refuses without naming the action teaches the reader to route
+    /// around it.
+    #[test]
+    fn findings_gate_denies_open_finding_and_names_the_command() {
+        let dir = make_project();
+        seed_reviewed_spec(dir.path(), "found");
+
+        let verdict = run_close_gates(dir.path().to_str().unwrap(), Some("found"), only_findings());
+        let Verdict::Deny { reason } = verdict else {
+            panic!("an undecided finding must refuse CLOSE, got {verdict:?}");
+        };
+        assert!(reason.contains("[review] F-findings"), "{reason}");
+        assert!(reason.contains("the close gate never reads this file"), "{reason}");
+        assert!(
+            reason.contains("mustard-rt run mark-finding --spec found --id F-findings"),
+            "the refusal must carry the exact command that resolves it: {reason}"
+        );
+        assert!(reason.contains("MUSTARD_FINDINGS_GATE_MODE=warn"), "{reason}");
+    }
+
+    /// The same tree, once the destination is declared through the `mark-finding`
+    /// door: the gate has nothing left to hold. A finding deliberately DROPPED
+    /// counts as settled — that is the whole difference between a decision and a
+    /// forgotten discovery.
+    #[test]
+    fn findings_gate_allows_when_every_finding_routed_including_dropped() {
+        let dir = make_project();
+        let spec_dir = seed_reviewed_spec(dir.path(), "found");
+        let cwd = dir.path().to_str().unwrap();
+
+        // The first run seeds `meta.json#findings` (the collector runs in-process).
+        assert!(
+            run_close_gates(cwd, Some("found"), only_findings()).is_blocking(),
+            "precondition: the finding starts open"
+        );
+
+        // The id is asked of the collection rather than spelled here: a finding
+        // is identified by its discovery, so its id carries a fingerprint of
+        // what was found.
+        let open = open_findings(cwd, Some("found"));
+        let [finding] = open.as_slice() else {
+            panic!("exactly one open finding was seeded, got {open:?}");
+        };
+        assert_eq!(
+            crate::commands::spec::mark_finding::mark(
+                dir.path(),
+                spec_dir.to_str().unwrap(),
+                &finding.id,
+                mustard_core::domain::spec::contract::FindingRoute::Dropped(
+                    "already covered by AC-2".to_string()
+                ),
+            ),
+            Ok(crate::commands::spec::mark_finding::MarkFindingOutcome::Routed)
+        );
+
+        let verdict = run_close_gates(cwd, Some("found"), only_findings());
+        assert!(!verdict.is_blocking(), "a decided finding holds nothing: {verdict:?}");
+    }
+
+    /// A spec whose producers wrote nothing collects nothing, and the gate has
+    /// no opinion — a work unit that made no discoveries is not a defect.
+    #[test]
+    fn findings_gate_is_silent_without_producers() {
+        let dir = make_project();
+        write_spec(dir.path(), "quiet", "# Spec\n");
+        assert!(open_findings(dir.path().to_str().unwrap(), Some("quiet")).is_empty());
+        assert!(open_findings(dir.path().to_str().unwrap(), None).is_empty());
+        let verdict = run_close_gates(dir.path().to_str().unwrap(), Some("quiet"), only_findings());
+        assert!(!verdict.is_blocking(), "{verdict:?}");
+    }
+
+    /// A collection that could not be RECORDED never refuses CLOSE — because the
+    /// refusal would name a command that cannot succeed.
+    ///
+    /// The shape: a spec directory carrying a reviewer's findings file but no
+    /// readable `meta.json`. The findings are real, but they have nowhere to be
+    /// written, so `mark-finding` — the one remedy the refusal prints — answers
+    /// `meta-not-found` too. Refusing here left the operator circling between two
+    /// commands that both fail, with `MUSTARD_FINDINGS_GATE_MODE=warn` as the
+    /// only exit; three consecutive reviews reported it before it was settled.
+    #[test]
+    fn findings_gate_stays_quiet_when_the_collection_could_not_be_recorded() {
+        let dir = make_project();
+        let cwd = dir.path().to_str().unwrap();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("orphan").unwrap();
+        std::fs::create_dir_all(sp.dir().join("review")).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Spec\n").unwrap();
+        std::fs::write(
+            sp.dir().join("review").join("findings.md"),
+            "## MAJOR — something real was found here\n",
+        )
+        .unwrap();
+        // No `meta.json` is written: the collection has nowhere to land.
+        assert!(
+            !std::fs::exists(sp.dir().join("meta.json")).unwrap_or(false),
+            "the shape under test is a spec dir with no readable sidecar"
+        );
+
+        assert!(
+            open_findings(cwd, Some("orphan")).is_empty(),
+            "an unrecordable collection must not be read as owed work"
+        );
+        let verdict = run_close_gates(cwd, Some("orphan"), only_findings());
+        assert!(
+            !verdict.is_blocking(),
+            "a gate whose remedy cannot succeed must not refuse: {verdict:?}"
         );
     }
 

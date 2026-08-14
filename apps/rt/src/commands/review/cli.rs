@@ -228,6 +228,26 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Seed a spec's `meta.json#findings` from the two producers that already
+    /// wrote their discoveries to disk: the reviewer's `review/findings*.md`
+    /// (one finding per file) and the `removal` column of `ac-proof.json` (one
+    /// per criterion that SURVIVED the removal or whose own evidence the strip
+    /// took away, carrying the reason the ledger already wrote in full).
+    ///
+    /// Reconciles rather than overwrites: a finding whose destination was
+    /// already declared keeps it, one whose source is gone is dropped, and a new
+    /// one enters with no destination — the OPEN position a close gate reads.
+    /// A spec with neither producer collects zero and leaves the sidecar
+    /// untouched. Output is one byte-stable JSON document; this command decides
+    /// nothing.
+    #[command(name = "finding-collect")]
+    #[command(display_order = 91)]
+    FindingCollect {
+        /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
+        /// its directory.
+        #[arg(long, alias = "from-spec")]
+        spec: Option<String>,
+    },
     /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
     #[command(display_order = 66)]
@@ -329,6 +349,7 @@ pub fn dispatch(cmd: ReviewCmd) {
         ReviewCmd::PrMerge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }
+        ReviewCmd::FindingCollect { spec } => review::finding_collect::run(spec.as_deref()),
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
         }

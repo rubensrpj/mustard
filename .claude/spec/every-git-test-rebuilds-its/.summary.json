@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "every-git-test-rebuilds-its",
+  "title": "every git test rebuilds its repository from scratch with eighteen git calls, when it could clone a template built once",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

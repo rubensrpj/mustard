@@ -457,11 +457,11 @@ fn scan_work_branches(
 
     let current = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
-    let bases: Vec<String> =
-        mustard_core::ProjectConfig::load(root).git.integration_bases().into_iter().collect();
+    let config = mustard_core::ProjectConfig::load(root);
+    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
 
     let git_read = |args: &[&str]| git_out(root, args);
-    let Some(enumerated) = BranchEnumerator::try_sweep(&git_read, &bases) else {
+    let Some(enumerated) = BranchEnumerator::try_sweep(&git_read, &flow) else {
         scan.reason =
             Some("git não enumerou as refs — branches de trabalho não inspecionados".to_string());
         return (Vec::new(), scan);

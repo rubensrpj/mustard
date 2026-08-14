@@ -325,11 +325,12 @@ impl Check for SessionStartInject {
         // remove the PID file on `SessionEnd`.
         spawn_otel_collector(&cwd);
         run_spec_hygiene(&cwd);
-        // Wave 1 (mustard-unification): advisory probe for orphan agent
-        // worktrees under `<repo>/.claude/worktrees/` (every name that is not
-        // a work unit's `{base}_…` — there is no `agent-` prefix). Read-only;
-        // emits a single stderr warning when the orphan count exceeds the
-        // module's threshold. Fail-open at every step.
+        // Collect orphan worktrees — those under `<repo>/.claude/worktrees/`
+        // whose name is not a work unit's `{base}_…`, plus the removal-proof
+        // scratch trees an interrupted review left in the OS temp directory. It
+        // REMOVES what is orphaned (owner gone) or stale, and never touches a
+        // work unit's worktree or one holding uncommitted work. Fail-open at
+        // every step.
         crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
         // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
         // advisory probe for drift in the project's `.claude/` directory.
@@ -448,13 +449,15 @@ fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }
-    let bases: Vec<String> = crate::shared::context::project_config_cached(root)
-        .git
-        .integration_bases()
-        .into_iter()
-        .collect();
+    let config = crate::shared::context::project_config_cached(root);
+    // ROOTED: the sweep classifies REAL branches of THIS repository, and a unit
+    // whose base only its own directory recorded (an emergency in a project
+    // declaring several candidates) reads as base-less through the pure
+    // derivation — `BranchEnumerator` then files it under an empty base, which
+    // is a base group `refs_ahead_of_base` never measures.
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
     let git_read = |args: &[&str]| crate::commands::git_settle::git_out(root, args);
-    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &bases);
+    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &flow);
     if pending.is_empty() {
         return None;
     }

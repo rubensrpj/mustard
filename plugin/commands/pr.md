@@ -18,7 +18,7 @@ disable-model-invocation: true
 | Action | Description |
 |--------|-------------|
 | `list` | Every open PR of the base you are standing on: number, title, the provider's mergeable word, whether it is a draft, and the head branch its unit lives on. **Runs only from an integration base** (`git.flow`) — from a work branch it refuses and names the base to switch to, because "which PRs are open" is a question about the base, not about one unit. |
-| `review [<pr>]` | Review ONE pull request against its own spec and the project's molds. Resolves the PR to its work unit (`{base}_{slug}` → the spec slug), prints the brief — spec path, subproject, that subproject's skill shelf — then runs the review and **records the verdict**. The merge step reads exactly this record. |
+| `review [<pr>]` | Review ONE pull request against its own spec and the project's molds. Resolves the PR to its work unit (`{kind}/{slug}`, or an older `{base}_{slug}`, → the spec slug), prints the brief — spec path, subproject, that subproject's skill shelf — then runs the review and **records the verdict**. The merge step reads exactly this record. |
 | `merge [<pr>] [--confirm]` | Cross the verification gate (build + tests, QA, review spans, docs), then merge and prune: back to the base, pull it, remove the worktree, delete the local and remote branch. No `approved` verdict recorded → it **warns and asks**, touches nothing, and waits for your answer. `--confirm` is that answer coming back. |
 
 ## Iron rules
@@ -50,7 +50,7 @@ Read `ok` first.
 mustard-rt run pr-review --pr <n>
 ```
 
-The brief comes back with `spec`, `spec_path`, `subproject` and `patterns` — the skill shelf the implementer was dispatched with, so the review measures the work against the very molds it was written to. `spec: null` means the head branch carries no `{base}_` unit; review it as a plain diff.
+The brief comes back with `spec`, `spec_path`, `subproject` and `patterns` — the skill shelf the implementer was dispatched with, so the review measures the work against the very molds it was written to. `spec: null` means the head branch names no unit of this project — neither a `{kind}/` one nor a declared `{base}_` prefix; review it as a plain diff.
 
 Then fetch the diff and the phase context:
 
@@ -91,11 +91,11 @@ mustard-rt run pr-review --pr <n> --verdict <approved|rejected> --critical <N>
 mustard-rt run close-orchestrate --spec {spec}
 ```
 
-One command runs every gate and, on pass, finalizes in-process. Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` — only a recorded `overall=pass` opens the close; (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for a non-architectural spec); (5) **pipeline-summary** (advisory). It derives `overall`.
+One command runs every gate and, on pass, finalizes in-process. Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` — only a recorded `overall=pass` opens the close; (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for a non-architectural spec); (5) **close gates** — the same sub-gates `emit-phase --to CLOSE` runs (debt markers, checklist, **findings**, QA, build), so this door and that one refuse the same trees; the refusal text arrives in the gate's `summary`; (6) **pipeline-summary** (advisory). It derives `overall`.
 
 **The finalize is automatic — you never decide whether to call `complete-spec`.** On `overall == "pass"` the spec flips to `completed`, `pipeline.complete` is emitted and auto-verified, and `meta.json` is stamped (`"chained": true`, `"verified": true|false`). On `overall == "fail"` it is report-only (`"chained": false`) — fix the failing gate and re-run. NEVER hand-call `complete-spec` to bypass a red gate: when the red gate is QA it refuses on its own with exit 2, reading the same `qa.result overall=pass` the close gate requires, and no environment switch relaxes that. A red `review-spans` or `docs-stale-check` is NOT read by that refusal — those block through `close-orchestrate`'s own gate vector, so hand-calling past them is on you.
 
-Preconditions this chain does not cover, checked before it runs: an unresolved `BLOCKED` blocks; `CONCERN`/`DEFERRED` surface and proceed; any unchecked `- [ ]` in the Checklist ABORTS with the unmarked items listed. Epic auto-fold is handled in-process (children all closed → folded) — nothing to run by hand.
+Preconditions checked before it runs: an unresolved `BLOCKED` blocks; `CONCERN`/`DEFERRED` surface and proceed; any unchecked `- [ ]` in the Checklist ABORTS with the unmarked items listed — that one is now ALSO a gate inside (5), so a checklist item you meant to let go is settled with `mark-checklist-item --drop --reason`, not left unmarked. Epic auto-fold is handled in-process (children all closed → folded) — nothing to run by hand.
 
 **Reading the QA half of that report.** `qa-run` executes each `AC-N` carrying a `Command:` in the operative AC file (`spec.md`, or `wave-plan.md` after a decompose) and emits `qa.result`; the close gate reads the record, never a summary.
 

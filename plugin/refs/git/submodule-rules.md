@@ -17,16 +17,18 @@
 
 ## Work branch per repo — a submodule never commits onto its base
 
-The unit `{slug}` materialises as `{base}_{slug}` in EVERY repo it touches: the parent (cut by `work_branch_gate` on the first edit) and each dirty submodule (cut by `/git` at commit time). Each repo's `{base}_` prefix records THAT repo's own base — the parent's from `mustard.json#git.flow`, a submodule's its OWN default branch (a submodule is an independent repo, need not share the parent's flow).
+The unit materialises in EVERY repo it touches: the parent (cut by `work_branch_gate` on the first edit) and each dirty submodule (cut by `/git` at commit time). The NAME travels unchanged — a unit is `{kind}/{slug}` everywhere — while the BASE is per repo: the parent's comes from its kind through `mustard.json#git.flow`, a submodule's is its OWN default branch (a submodule is an independent repo, need not share the parent's flow). A unit still in the older `{base}_{slug}` shape is the one case where the name differs per repo: its prefix records THAT repo's base, so it is re-prefixed on the way in.
 
 Resolve a submodule's base + work branch (`<SUB_ABS>` absolute, via `git -C`, never `cd`):
 
 ```bash
-PARENT_BRANCH=$(rtk git rev-parse --abbrev-ref HEAD)   # in the parent root; it is {base}_{slug}
-SLUG=${PARENT_BRANCH#*_}                                # everything after the first `_`
+PARENT_BRANCH=$(rtk git rev-parse --abbrev-ref HEAD)   # in the parent root
 SUB_BASE=$(rtk git -C "<SUB_ABS>" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
 [ -z "$SUB_BASE" ] && SUB_BASE=$(rtk git -C "<SUB_ABS>" rev-parse --abbrev-ref HEAD)
-SUB_WORK="${SUB_BASE}_${SLUG}"                          # same slug, the submodule's own base prefix
+case "$PARENT_BRANCH" in
+  */*) SUB_WORK="$PARENT_BRANCH" ;;                    # {kind}/{slug} — the SAME name in every repo
+  *)   SUB_WORK="${SUB_BASE}_${PARENT_BRANCH#*_}" ;;   # older {base}_{slug} — this repo's base prefix
+esac
 ```
 
 **Cut it at commit time, only when the submodule sits on its base with changes.** If the submodule's current branch equals `$SUB_BASE`, `rtk git -C <SUB_ABS> checkout -b "$SUB_WORK"` carries the edits over before staging. Already on `$SUB_WORK` (a later edit) → skip the checkout. **Never add/commit/push while a submodule is on its bare base** — the parent's branch-protection rule extended to every repo.
@@ -208,7 +210,7 @@ A base→base `pr` opens its single PR only — no push, no submodule branches, 
 
 `pr close` is the exit ritual of ONE unit, and the unit lives in every repo it touched. It closes the same way it opened: **submodules FIRST**, then the parent — merging the submodule PR first is what keeps the parent's gitlink pointing at a commit that exists on the submodule's base.
 
-1. **Each submodule whose own PR already merged** — from `<SUB_ABS>`: `mustard-rt run git-settle --unit "$SUB_WORK"` (confirm merged, advance `$SUB_BASE`, delete the local + remote branch). Not merged → it refuses and touches NOTHING; merge that PR first. A submodule carries no `mustard.json`, so settle reads the bases from the superproject's `git.flow` — a `$SUB_BASE` that flow never names is refused with `no-base-prefix`, and the refusal prints the root, the config root and the bases it knows.
+1. **Each submodule whose own PR already merged** — from `<SUB_ABS>`: `mustard-rt run git-settle --unit "$SUB_WORK"` (confirm merged, advance `$SUB_BASE`, delete the local + remote branch). Not merged → it refuses and touches NOTHING; merge that PR first. Merged but the base did not advance → it refuses the same way (`ok:false`, `reason:"base-behind"`, both branches alive): clear what `baseAdvance.reason` names and rerun the command in `nextAction` — see the refusal shape in `${CLAUDE_PLUGIN_ROOT}/commands/git.md` § `pr close`. A submodule carries no `mustard.json`, so settle reads the bases from the superproject's `git.flow` — a `$SUB_BASE` that flow never names is refused with `no-base-prefix`, and the refusal prints the root, the config root and the bases it knows.
 2. **Then the bump + ready, in the parent — before the parent settles.** The submodule commit now
    lives on its base, so the pointer the commit step left as `[pending-bump]` finally has a
    reachable target. Run the bump step above (re-sample, commit the pointer ALONE, push), then
@@ -264,6 +266,6 @@ The destructive-ops ban has ONE home — `${CLAUDE_PLUGIN_ROOT}/pipeline-config.
 
 - Max 1 Task agent per dirty submodule; max 1 Bash per agent (chained); max 3 checkout retries per repo, then abort.
 - Submodules BEFORE parent in every action (sync, push, commit, pr).
-- Every repo carries the unit on its own `{base}_{slug}` branch, cut from THAT repo's base — never commit/push onto a bare base, in any repo.
+- Every repo carries the unit on its own work branch (`{kind}/{slug}`; an older unit re-prefixed as `{base}_{slug}`), cut from THAT repo's base — never commit/push onto a bare base, in any repo.
 - Prefix every git invocation with `rtk` (inside `&&`/`;` chains and `$(...)` too).
 - Single repo → skip all submodule steps.

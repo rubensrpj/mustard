@@ -166,10 +166,21 @@ pub struct SpecDraftOpts {
 }
 
 /// Directory entries the harness writes into a spec directory BEFORE the spec
-/// itself is drafted: the per-spec NDJSON event log and the dispatch sidecar.
-/// Opening a work unit emits the first event, which creates `<spec>/.events/`;
-/// the draft then arrives to find "its own" directory already there.
-const HARNESS_STATE_ENTRIES: &[&str] = &[".events", ".dispatch"];
+/// itself is drafted: the per-spec NDJSON event log, the dispatch sidecar and
+/// the cut's own record of the base it cut from. Opening a work unit emits the
+/// first event, which creates `<spec>/.events/`; the draft then arrives to find
+/// "its own" directory already there.
+///
+/// [`CUT_BASE_FILE`] earns its place on the SAME terms as the other two, and it
+/// is named here rather than spelled a second time: it is written by the CUT,
+/// which runs before this command exists to be blocked by it, it holds one
+/// machine token the harness wrote to itself (an integration base name), and
+/// this command RETIRES it — [`spec_scaffold::write_meta_json`] folds it into
+/// `meta.json#base` and removes it. Nobody authors it and it never reaches the
+/// merge; the authored work of a unit is `spec.md`, its waves, its proof, its
+/// change log and its review verdicts, and every one of those still refuses.
+const HARNESS_STATE_ENTRIES: &[&str] =
+    &[".events", ".dispatch", crate::shared::work_kind::CUT_BASE_FILE];
 
 /// `true` when `dir` exists but holds NOTHING except the harness state listed in
 /// [`HARNESS_STATE_ENTRIES`] — i.e. no spec has been drafted into it yet.
@@ -180,6 +191,10 @@ const HARNESS_STATE_ENTRIES: &[&str] = &[".events", ".dispatch"];
 /// `--force` to overwrite" — an overwrite flag demanded for a directory holding
 /// nothing to overwrite. Anything else present (a `spec.md`, a `meta.json`, a
 /// wave dir, a stray file) is a REAL draft the guard must still protect.
+///
+/// That is why the cut records its base as [`HARNESS_STATE_ENTRIES`]' third
+/// entry and NOT as a `meta.json`: a sidecar written by step one is read here as
+/// step two's own output, and the unit came out cut and spec-less.
 fn holds_only_harness_state(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         // Unreadable: treat as occupied — refusing is the safe direction when
@@ -723,20 +738,55 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 /// there). `Ok(None)` — no work unit was signalled at all (a hand-run draft, a
 /// test): nothing was promised, so nothing is enforced.
 ///
-/// `Err(detail)` is reserved for the ONE outcome the draft must not survive:
-/// git refused the checkout *while the tree sits on a protected integration
-/// base*, so writing here would put the unit's artefacts on the base — the
-/// exact arrangement this reorder removes. A refusal anywhere else (another
-/// work branch, a linked worktree, a detached HEAD) warns on stderr and
-/// proceeds: nothing is landing on a base, so there is nothing to refuse. This
-/// mirrors the hook gate's own split, which denies only when staying would
-/// leave the edit on a protected branch.
+/// `Err(detail)` covers the two outcomes the draft must not survive:
+///
+/// 1. the checkout holds ANOTHER unit's branch with uncommitted work, so the
+///    cut was REFUSED ([`crate::commands::event::work_branch::busy_checkout`]).
+///    Proceeding would write this unit's spec, waves and proof onto the other
+///    unit's branch — and drafting is the moment that arrangement is decided,
+///    because this door opens before any `Write` reaches the hook gate. The
+///    refusal is surfaced verbatim: it already names the branch, the paths and
+///    the act that unblocks it.
+/// 2. git refused the checkout *while the tree sits on a protected integration
+///    base*, so writing here would put the unit's artefacts on the base — the
+///    exact arrangement this reorder removes. A git refusal anywhere else
+///    (another work branch, a linked worktree, a detached HEAD) warns on stderr
+///    and proceeds: nothing is landing on a base, so there is nothing to refuse.
+///    This mirrors the hook gate's own split, which denies only when staying
+///    would leave the edit on a protected branch.
+///
+/// The same split covers [`CutOutcome::BaseUnknown`] — an emergency whose base
+/// nothing recorded, in a project declaring several. No cut was attempted there
+/// (guessing which base an emergency came from is the thing that refuses to
+/// happen), so the tree is wherever it was, and the same question decides:
+/// on a base, refuse; anywhere else, say so and draft.
 fn cut_work_branch(project_root: &Path) -> Result<Option<String>, String> {
     use crate::commands::event::work_branch::{cut_pending_work_branch, is_protected, CutOutcome};
 
     match cut_pending_work_branch(project_root, &session_id()) {
         CutOutcome::NoPending => Ok(None),
         CutOutcome::AlreadyThere(branch) | CutOutcome::Cut(branch) => Ok(Some(branch)),
+        CutOutcome::Refused(busy) => {
+            let lang = mustard_core::ProjectConfig::load(project_root).i18n().lang;
+            Err(busy.reason(lang))
+        }
+        CutOutcome::BaseUnknown { target, current, candidates } => {
+            let config = mustard_core::ProjectConfig::load(project_root);
+            let said = translate("workbranch.base.unknown", config.i18n().lang)
+                .replace("{target}", &target)
+                .replace("{candidates}", &candidates.join(", "));
+            if current.as_deref().is_some_and(|b| is_protected(b, &config)) {
+                // Same split as a failed checkout, for the same reason: the tree
+                // sits on an integration base, so drafting here would leave the
+                // spec, its waves and its proof on the base instead of in the
+                // unit. The other positions are somebody's work branch — the
+                // draft lands there and the operator is told on stderr.
+                Err(said)
+            } else {
+                eprintln!("spec-draft: WARN: {said}");
+                Ok(None)
+            }
+        }
         CutOutcome::Failed { target, current, error } => {
             let config = mustard_core::ProjectConfig::load(project_root);
             let at = current.as_deref().unwrap_or("?");
@@ -1337,6 +1387,10 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
         lang: input.lang.clone(),
         checkpoint: None,
         parent: None,
+        // The base the unit was cut from is not an input to the draft — only
+        // the CUT knows it, and it wrote it down before this call. `None` here
+        // is what `write_meta_json` reads as "carry over what is on disk".
+        base: None,
         is_wave_plan: input.total_waves.map(|n| n > 0),
         total_waves: input.total_waves,
         // A freshly drafted spec carries no qualifier flag (Plan/Active).
@@ -1345,6 +1399,9 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
         // in each WAVE's sidecar after the scaffold — never in the root meta
         // (explicit OUT of the checklist-progresso spec).
         checklist: Vec::new(),
+        // Findings are seeded by the collector from what the review and the
+        // proof ledger actually recorded — never invented at draft time.
+        findings: Vec::new(),
         raw: serde_json::Value::Null,
     }
 }

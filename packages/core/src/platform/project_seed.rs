@@ -6,7 +6,9 @@
 //! down in a project — `.claude/settings.json`, the injectable instruction
 //! files under `.claude/mustard/`, `.claude/.gitignore`, and the single
 //! project-root `mustard.json` — **idempotently and merge-first** (an existing
-//! user file is preserved; only what is missing is created). Consumers:
+//! user file is preserved; only what is missing is created — for
+//! `.claude/.gitignore`, which is a rule list rather than a document, "what is
+//! missing" is read line by line). Consumers:
 //!
 //! - `mustard init` (the CLI): calls the granular seeders with its own
 //!   overwrite/merge decision, keeping its exclusive concerns (location guard,
@@ -111,7 +113,10 @@ impl UpsertReport {
 ///    [`retire_planted_plugin_enablement`];
 /// 3. `.claude/mustard/orchestrator.md` — created when
 ///    absent, a user-customised copy survives;
-/// 4. `.claude/.gitignore` — created when absent;
+/// 4. `.claude/.gitignore` — created when absent, and when present the pattern
+///    lines it lacks are appended, so a project installed before a rule existed
+///    still receives it (the one seed that merges by LINE — see
+///    [`seed_gitignore`]);
 /// 5. `mustard.json` (via [`ProjectConfig`], the single owner) — created with
 ///    defaults (empty `git.flow`, detected commands, default `inject`,
 ///    `runtime`, `version`) when absent; when present only `version` is
@@ -307,14 +312,78 @@ pub fn seed_injectable_files(
     Ok(out)
 }
 
-/// Seed `.claude/.gitignore` (the ephemeral harness state cover). Merge
-/// preserves an existing file; overwrite re-lays the seed.
+/// Seed `.claude/.gitignore` (the ephemeral harness state cover).
+///
+/// The ONE seed that merges by LINE instead of by file. Every other seed is a
+/// document whose owner is either the user or Mustard, so "preserve what
+/// exists" is the whole answer. This one is a rule list, and preserving it
+/// whole meant that a project installed before a rule existed never received
+/// it: the entry landed in the template, `mustard init` reported
+/// [`SeedOutcome::Preserved`], and the rule reached fresh projects only —
+/// exactly the state review found for `scratch/`, where the write gate had
+/// already been taught to allow a path nothing ignored.
+///
+/// Merge therefore APPENDS the pattern lines the file lacks, under a header
+/// that says who wrote them. The user's own lines, order and comments are
+/// untouched, and a file that already carries every pattern is
+/// [`SeedOutcome::Preserved`] — so the operation converges after one run.
+/// Overwrite re-lays the seed whole, as before.
 ///
 /// # Errors
 ///
 /// An IO error writing the file.
 pub fn seed_gitignore(claude_dir: &Path, overwrite: bool) -> Result<SeedOutcome> {
-    seed_static_file(&claude_dir.join(".gitignore"), CLAUDE_GITIGNORE, overwrite)
+    let dest = claude_dir.join(".gitignore");
+    if overwrite {
+        return seed_static_file(&dest, CLAUDE_GITIGNORE, true);
+    }
+    let Ok(existing) = fs::read_to_string(&dest) else {
+        // Absent → the seed IS the file. Unreadable-but-present degrades to
+        // preserved inside `seed_static_file` — never stomp what we could not
+        // inspect.
+        return seed_static_file(&dest, CLAUDE_GITIGNORE, false);
+    };
+    let missing = missing_ignore_patterns(&existing, CLAUDE_GITIGNORE);
+    if missing.is_empty() {
+        return Ok(SeedOutcome::Preserved);
+    }
+    let mut merged = existing;
+    if !merged.ends_with('\n') {
+        merged.push('\n');
+    }
+    merged.push_str(GITIGNORE_BACKFILL_HEADER);
+    for pattern in missing {
+        merged.push_str(pattern);
+        merged.push('\n');
+    }
+    fs::write_atomic(&dest, merged.as_bytes())?;
+    Ok(SeedOutcome::Updated)
+}
+
+/// The header the line-merge writes above the patterns it appends, so the
+/// addition is attributable rather than mysterious.
+const GITIGNORE_BACKFILL_HEADER: &str =
+    "\n# Added by Mustard: patterns the seed gained after this file was written.\n";
+
+/// The seed's pattern lines that `existing` does not already carry, in seed
+/// order and without repeats.
+///
+/// Compared on the TRIMMED pattern only: comments and blank lines are layout,
+/// and re-appending a comment whose pattern is already present would grow the
+/// file on every install. Deliberately literal — two patterns that match the
+/// same paths by different spellings read as different rules here, which is the
+/// conservative direction (a redundant line costs a line; a missing one costs
+/// the rule).
+fn missing_ignore_patterns<'a>(existing: &str, seed: &'a str) -> Vec<&'a str> {
+    let is_pattern = |line: &&str| !line.is_empty() && !line.starts_with('#');
+    let present: Vec<&str> = existing.lines().map(str::trim).filter(is_pattern).collect();
+    let mut missing: Vec<&str> = Vec::new();
+    for pattern in seed.lines().map(str::trim).filter(is_pattern) {
+        if !present.contains(&pattern) && !missing.contains(&pattern) {
+            missing.push(pattern);
+        }
+    }
+    missing
 }
 
 /// Write one static seed to `dest` honouring merge/overwrite, reporting what
@@ -715,6 +784,82 @@ mod tests {
         assert_eq!(config.inject, default_inject_entries(), "empty inject backfilled");
         assert_eq!(config.build_command.as_deref(), Some("make"), "rest preserved");
         assert!(report.updated.contains(&"mustard.json".to_string()));
+    }
+
+    // --- .gitignore line-merge ------------------------------------------------
+
+    /// AC-13 — seeding over an EXISTING ignore file appends the patterns it
+    /// lacks instead of preserving the file whole.
+    ///
+    /// The defect this closes shipped in this very repository: the write gate
+    /// was taught to allow `.claude/scratch/`, the `scratch/` line landed in the
+    /// template, and every already-initialised project — Mustard included — kept
+    /// an ignore file without it, because `Preserved` skipped the whole file. A
+    /// gate that allows a path nothing ignores, under a `/git` law that stages
+    /// everything, commits throwaway evidence into the unit.
+    ///
+    /// Both halves, so "append" cannot become "overwrite": the user's own lines
+    /// survive, nothing already present is duplicated, and the second run is
+    /// `Preserved` — the merge converges.
+    #[test]
+    fn seeding_over_an_existing_ignore_adds_the_missing_lines() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        // An ignore file from an older install: two of the seed's patterns, plus
+        // a line only this project's user knows about.
+        std_fs::write(
+            claude.join(".gitignore"),
+            "# Mustard harness scratch\n.cache/\nworktrees/\n\n# mine\nmy-notes/\n",
+        )
+        .unwrap();
+
+        let outcome = seed_gitignore(&claude, false).unwrap();
+
+        assert_eq!(outcome, SeedOutcome::Updated, "a file missing patterns is not preserved");
+        let merged = std_fs::read_to_string(claude.join(".gitignore")).unwrap();
+        assert!(merged.contains("my-notes/"), "the user's own rule survives: {merged}");
+        assert!(merged.contains("# mine"), "…and so do their comments: {merged}");
+        // EVERY pattern of the seed is now in force — the point of the change.
+        for pattern in CLAUDE_GITIGNORE.lines().map(str::trim) {
+            if pattern.is_empty() || pattern.starts_with('#') {
+                continue;
+            }
+            assert!(
+                merged.lines().any(|l| l.trim() == pattern),
+                "seed pattern {pattern:?} missing after the merge: {merged}",
+            );
+        }
+        assert_eq!(
+            merged.lines().filter(|l| l.trim() == ".cache/").count(),
+            1,
+            "a pattern already present is not appended twice: {merged}",
+        );
+
+        // Convergence: the same call over the merged file changes nothing.
+        let second = seed_gitignore(&claude, false).unwrap();
+        assert_eq!(second, SeedOutcome::Preserved, "the merge is idempotent");
+        assert_eq!(
+            std_fs::read_to_string(claude.join(".gitignore")).unwrap(),
+            merged,
+            "…byte for byte",
+        );
+    }
+
+    #[test]
+    fn a_fresh_ignore_is_the_seed_verbatim() {
+        // The absent case must stay a plain copy: no backfill header, no
+        // reordering — a fresh project's file IS the template.
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+
+        assert_eq!(seed_gitignore(&claude, false).unwrap(), SeedOutcome::Created);
+
+        assert_eq!(
+            std_fs::read_to_string(claude.join(".gitignore")).unwrap(),
+            CLAUDE_GITIGNORE,
+        );
     }
 
     // --- migration -----------------------------------------------------------

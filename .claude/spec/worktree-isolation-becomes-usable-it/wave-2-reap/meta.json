@@ -1,0 +1,21 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-12T07:32:20.763Z",
+  "parent": "worktree-isolation-becomes-usable-it",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/maint/worktree_gc.rs",
+      "path": "apps/rt/src/commands/maint/worktree_gc.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/work_removed.rs",
+      "path": "apps/rt/src/commands/review/work_removed.rs",
+      "done": true
+    }
+  ]
+}

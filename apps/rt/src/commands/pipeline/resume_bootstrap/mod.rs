@@ -150,9 +150,9 @@ pub struct ResumeBootstrap {
     /// [`crate::commands::spec::approve_spec::clarify_state`].
     #[serde(rename = "clarifyRecordsNothing")]
     pub clarify_records_nothing: bool,
-    /// `true` when the checkout ALREADY is this spec's own `{base}_{slug}` work
-    /// branch — the unit's home, where its spec, its waves, its ceremony and its
-    /// code all live.
+    /// `true` when the checkout ALREADY is this spec's own `{kind}/{slug}` work
+    /// branch (or the older `{base}_{slug}`, still recognised) — the unit's
+    /// home, where its spec, its waves, its ceremony and its code all live.
     ///
     /// The picker reads it to resume with NO ceremony: a caller standing inside
     /// the unit has nothing to pick from a table, nothing to be introduced to
@@ -371,7 +371,7 @@ pub fn run(spec: &str, json_flag: bool) {
 
     // --- Where the caller is standing. ---
     //
-    // Inside the unit's own `{base}_{slug}` branch there is no spec to pick, no
+    // Inside the unit's own `{kind}/{slug}` branch there is no spec to pick, no
     // stage to introduce and no *implement now* to answer — the caller is
     // already in the work. Reported as a position, never as a route: the picker
     // owns what it drops because of it.

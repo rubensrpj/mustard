@@ -163,6 +163,7 @@ impl Observer for WaveCompleteObserver {
                 allow_no_qa: false,
                 intent: None,
                 base: None,
+                work_kind: None,
             },
         );
         economy::emit(

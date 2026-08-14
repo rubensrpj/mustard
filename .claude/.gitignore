@@ -3,11 +3,58 @@
 .harness/
 .metrics/
 .agent-state/
+.agent-memory/
 .pipeline-states/
+.compact-state/
+.session/
+.dispatch/
+.agent-memory/
+agent-memory/
+knowledge/
+memory/
+feature-digest.json
+settings.local.json
+.dashboard.pid
+.dashboard.port
+
+# Compaction memory (session-scoped, pruned after 24h by the session cleanup
+# observer, which is also the only thing that ever reads it).
+.compact-state/
 
 # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
 worktrees/
 
+# Sanctioned throwaway evidence: the write gate lets a diagnosis write here on a
+# protected integration base (`work_branch_gate`), so it must be ignored by
+# construction — scratch decides between hypotheses, it never joins the unit.
+scratch/
+
+# Rendered dispatch prompts (`agent-prompt-render --emit ref` writes the full
+# text to a file and prints only the reference). Regenerable from the same
+# render — one directory per spec, plus the spec-less one.
+.dispatch/
+spec/*/.dispatch/
+
 # Per-spec event log + blob spill.
 spec/*/.events/
 spec/*/.blobs/
+
+# Local editor state — written per project, regenerable, and none of it is code.
+.obsidian/
+
+# Runtime output the harness writes into `.claude/` while working. A spec's own
+# content stays VERSIONED — it belongs to its unit — but these sidecars are
+# regenerable, and untracked they are what blocks the exit ritual: the harness
+# competing with itself for a clean tree.
+#
+# `spec/*/qa/report.md` is deliberately NOT here: the QA transcript is the
+# unit's own record of which criteria passed, the peer of `review/verdict.md`,
+# and the close commits it. Only the machine renders of it are regenerable.
+spec/*/.memory-approved
+spec/*/.cut-base
+spec/*/qa-report.json
+spec/*/qa-report.html
+spec/*/economy-baselines.json
+spec/*/wave-*/diff.md
+spec/*/wave-*/prompt.md
+spec/*/wave-*/warnings.txt

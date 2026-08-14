@@ -1,0 +1,9 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "light",
+  "lang": "en-US",
+  "checkpoint": "2026-08-13T23:49:49.985Z",
+  "parent": "worktree-isolation-becomes-usable-it"
+}

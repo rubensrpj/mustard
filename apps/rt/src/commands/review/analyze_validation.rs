@@ -508,6 +508,33 @@ fn cargo_test_has_filter(tokens: &[&str]) -> bool {
     false
 }
 
+/// Whether an AC `command` COUNTS PER FILE, and therefore prints `file:count`
+/// rather than a bare number: `grep -c` / `git grep -c` and their combined
+/// short flags (`-ci`, `-cn`), plus the long `--count`.
+///
+/// Keyed off the count FLAG, never off any output, so it stays language- and
+/// platform-agnostic like every other check here. Pure, total, never panics.
+///
+/// Used by the V6c lint: an `Expect:` regex anchored at `^` against one of these
+/// can never match, so the criterion is red in both directions and says nothing
+/// about whether the work was done.
+///
+/// `pub(crate)` because the AMENDMENT door needs the same predicate: once such a
+/// criterion has shipped, the lint can no longer help it, and `ac-amend` has to
+/// recognise the impossible pair to let the repair through
+/// ([`crate::commands::spec::ac_amend`]). One rule, two readers — a second copy
+/// is how the drafting lint and the amendment door would drift into disagreeing
+/// about the same criterion.
+pub(crate) fn counts_per_file(command: &str) -> bool {
+    if !command.contains("grep") {
+        return false;
+    }
+    command.split_whitespace().any(|tok| {
+        tok == "--count"
+            || (tok.starts_with('-') && !tok.starts_with("--") && tok.contains('c'))
+    })
+}
+
 /// Whether an AC `command` invokes a TEST RUNNER — the subset of the weak-AC
 /// vocabulary that runs a suite: `cargo test|t|nextest`, or
 /// `npm|pnpm|yarn|bun test|t` / `… run test`. A leading `rtk ` wrapper is
@@ -777,6 +804,50 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                      holds — add an `Expect: `<regex>`` line so qa-run matches the expected \
                      evidence in the command's output.",
                     no_expect.join(", ")
+                ),
+            }));
+        }
+
+        // Validation 6c: an `Expect:` regex anchored at `^` against a command
+        // whose output carries a `path:` prefix on every line. `grep -c` and
+        // `git grep -c` count PER FILE and print `file:count`, never a bare
+        // count — so `^[0-9]+$` cannot match its own command's output in EITHER
+        // direction. Such a criterion is red before the work and red after it,
+        // which reads as "still not done" forever and is indistinguishable from
+        // one nobody satisfied.
+        //
+        // Why it must be caught HERE. The negative proof clears it happily — it
+        // IS red — and that is exactly the trap: the red is real, only its cause
+        // is the regex rather than the missing work. By the time the wave has
+        // delivered, `ac-amend` refuses the repair, because the corrected regex
+        // now passes and a replacement that passes is refused by design. So the
+        // defect has no door left once the spec is frozen, and drafting time is
+        // the only cheap moment to name it. Found in the field, 2026-08-14.
+        let prefixed: Vec<String> = ac_items
+            .iter()
+            .enumerate()
+            .filter(|(i, item)| {
+                *i != last
+                    && !qa_run::is_skeleton(&item.command)
+                    && counts_per_file(&item.command)
+                    && item
+                        .expect
+                        .as_deref()
+                        .is_some_and(|e| e.starts_with('^') && !e.contains(':'))
+            })
+            .map(|(_, item)| item.id.clone())
+            .collect();
+        if !prefixed.is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "expect-anchored-against-prefixed-output",
+                "message": format!(
+                    "Acceptance criteria whose `Expect:` regex is anchored at `^` against a \
+                     per-file counting command: {}. `grep -c` / `git grep -c` print \
+                     `file:count`, not a bare count, so the regex can never match its own \
+                     output — the criterion stays red whether or not the work is done. Anchor \
+                     it after the prefix instead (`:[0-9]+$`).",
+                    prefixed.join(", ")
                 ),
             }));
         }
@@ -1108,6 +1179,64 @@ mod tests {
             !issues2.iter().any(|i| i["type"] == json!("test-ac-no-expect")),
             "a declared Expect line clears the warn: {issues2:?}"
         );
+    }
+
+    /// V6c: an `Expect:` anchored at `^` against a per-file counting command can
+    /// never match its own output, so the criterion is red whether or not the
+    /// work is done — and by the time anyone notices, `ac-amend` refuses the
+    /// repair (the corrected regex passes). Drafting time is the only door, so
+    /// the lint must fire here.
+    ///
+    /// Reproduces the field case verbatim: `git grep -c … -- <path>` prints
+    /// `path:3`, which `^[0-2]$` cannot match in either direction. Anchoring
+    /// after the prefix (`:[0-2]$`) clears the warn — that is the repair the
+    /// message names, so the test holds the message to it.
+    #[test]
+    fn expect_anchored_against_a_per_file_count_warns_and_the_prefix_form_clears_it() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        // AC-1: anchored at `^` against `git grep -c` ⇒ warns. AC-2: the same
+        // count anchored AFTER the prefix ⇒ silent. AC-3: trailing safety.
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — CI stops compiling three times.\n  Command: `git grep -c \"run: cargo\" -- ci.yml`\n  Expect: `^[0-2]$`\n\
+                    - **AC-2** — the record names windows.\n  Command: `git grep -ci windows -- notes.md`\n  Expect: `:[1-9][0-9]*$`\n\
+                    - **AC-3** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(dir.path(), &path, body);
+        let warn = issues
+            .iter()
+            .find(|i| i["type"] == json!("expect-anchored-against-prefixed-output"))
+            .unwrap_or_else(|| panic!("expected the anchored-Expect WARN: {issues:?}"));
+        assert_eq!(warn["severity"], json!("WARN"));
+        let msg = warn["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("AC-1"), "the impossible regex is named: {msg}");
+        assert!(!msg.contains("AC-2"), "anchoring after the prefix is fine: {msg}");
+
+        // A count command whose Expect already accounts for the prefix, and a
+        // non-counting command anchored at `^`, both stay silent: the lint keys
+        // off the PAIR, never off either half alone.
+        let body2 = "# Spec\n\n## Acceptance Criteria\n\
+                     - **AC-1** — CI stops compiling three times.\n  Command: `git grep -c \"run: cargo\" -- ci.yml`\n  Expect: `:[0-2]$`\n\
+                     - **AC-2** — the version line is exact.\n  Command: `cargo pkgid -p mustard-rt`\n  Expect: `^mustard-rt`\n\
+                     - **AC-3** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body2).unwrap();
+        let issues2 = validate(dir.path(), &path, body2);
+        assert!(
+            !issues2.iter().any(|i| i["type"] == json!("expect-anchored-against-prefixed-output")),
+            "neither half alone is a defect: {issues2:?}"
+        );
+    }
+
+    /// The per-file-count probe keys off the count FLAG, not off any output —
+    /// combined short flags count, `--count` counts, and a grep without a count
+    /// flag does not (its output carries no `file:` prefix to trip over).
+    #[test]
+    fn counts_per_file_reads_the_count_flag_only() {
+        assert!(counts_per_file("git grep -c foo -- a.md"));
+        assert!(counts_per_file("git grep -ci foo -- a.md"), "combined short flags");
+        assert!(counts_per_file("grep --count foo a.md"));
+        assert!(!counts_per_file("git grep -q foo -- a.md"), "no count, no prefix");
+        assert!(!counts_per_file("cargo test -p mustard-rt my_case"), "not a grep at all");
     }
 
     /// V7: a PRESENT-but-unparseable AC section with agent task blocks →

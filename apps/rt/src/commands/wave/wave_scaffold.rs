@@ -1265,6 +1265,9 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
             lang: Some(mustard_core::normalise_lang(lang)),
             checkpoint: None,
             parent: None,
+            // Only the CUT knows which base the unit came from; a scaffold
+            // never invents it (and `write_parent_meta` preserves it).
+            base: None,
             is_wave_plan: Some(true),
             total_waves: Some(total_waves),
             flags: MetaFlags::default(),
@@ -1272,6 +1275,9 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
             // lives in each wave's sidecar (seeded below), never in the root
             // meta (explicit OUT of the checklist-progresso spec).
             checklist: Vec::new(),
+            // Findings are seeded by the collector from what the review and the
+            // proof ledger actually recorded — never invented at scaffold time.
+            findings: Vec::new(),
             raw: Value::Null,
         },
     );
@@ -1287,6 +1293,8 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
                 lang: Some(mustard_core::normalise_lang(lang)),
                 checkpoint: None,
                 parent: Some(parent_name.clone()),
+                // A wave is not a unit — its base is the parent unit's.
+                base: None,
                 is_wave_plan: None,
                 total_waves: None,
                 flags: MetaFlags::default(),
@@ -1297,6 +1305,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
                 // is reconciled back onto the plan's census (EXECUTE cannot have
                 // started, so there is no progress to lose).
                 checklist: checklist_from_files(&w.files),
+                findings: Vec::new(),
                 raw: Value::Null,
             },
         );

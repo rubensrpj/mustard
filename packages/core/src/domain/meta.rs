@@ -41,7 +41,7 @@
 //!   `eprintln!` warning, but writers produced after Wave 3 only emit BCP-47.
 
 use crate::domain::model::view::Flags;
-use crate::domain::spec::contract::ChecklistItem;
+use crate::domain::spec::contract::{ChecklistItem, FindingItem};
 use crate::io::fs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -90,6 +90,22 @@ pub struct Meta {
     /// directory. `None` for top-level specs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// The integration base this unit was ACTUALLY cut from — written by the
+    /// cut itself, and only when nothing else can still answer the question.
+    ///
+    /// The branch name records what the unit IS (`hotfix/…`), not where it came
+    /// from, so a project declaring several emergency bases leaves a hotfix a
+    /// real choice that no later reader can re-derive: the operator's pick would
+    /// otherwise be replaced by the outermost candidate on every read after the
+    /// cut. The pending marker that carried the pick is CONSUMED at the cut, so
+    /// the unit's own record is where the answer has to survive.
+    ///
+    /// Absent for every unit whose base IS derivable (which is every unit in a
+    /// project declaring two bases), so no sidecar already on disk gains a key:
+    /// `skip_serializing_if` keeps their bytes untouched, exactly as `checklist`
+    /// and `findings` did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// `true` when this `meta.json` corresponds to the top-level `wave-plan.md`
     /// of a multi-wave epic. Drives dashboard rendering.
     #[serde(rename = "isWavePlan", skip_serializing_if = "Option::is_none")]
@@ -121,6 +137,17 @@ pub struct Meta {
     /// checklist-less sidecars is preserved on round-trip.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checklist: Vec<ChecklistItem>,
+    /// Findings raised inside this spec / wave, each with the destination that
+    /// was decided for it — the events-first home of what the reviewer and the
+    /// acceptance-criteria proof ledger discovered, so a close gate can ask
+    /// [`FindingItem::is_open`] instead of reading prose.
+    /// Additive + serde-compatible on the exact terms the `checklist` field
+    /// set: a `meta.json` written before this field deserialises to an empty
+    /// list, and an empty list elides the key entirely
+    /// (`skip_serializing_if`), so the byte shape of every sidecar written so
+    /// far survives a round-trip untouched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<FindingItem>,
     /// Forward-compatible catch-all. Any field a future Mustard adds lands here
     /// and is preserved on round-trip writes. Per the
     /// [`core-lenient-serde-model`] skill, this is the boundary type's contract.
@@ -149,10 +176,14 @@ impl Meta {
             lang: lang.map(normalise_lang_string),
             checkpoint: checkpoint.map(str::to_string),
             parent: parent.map(str::to_string),
+            // Never invented here: only the CUT knows which base a unit came
+            // from, and only it may write that down.
+            base: None,
             is_wave_plan: None,
             total_waves: None,
             flags: MetaFlags::default(),
             checklist: Vec::new(),
+            findings: Vec::new(),
             raw: Value::Null,
         }
     }
@@ -361,6 +392,7 @@ pub fn write_meta(path: &Path, meta: &Meta) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::spec::contract::{FindingRoute, FindingSource};
     use tempfile::tempdir;
 
     #[test]
@@ -375,10 +407,12 @@ mod tests {
             lang: Some("pt-BR".into()),
             checkpoint: Some("2026-05-24T19:30:00Z".into()),
             parent: None,
+            base: None,
             is_wave_plan: Some(false),
             total_waves: None,
             flags: MetaFlags::default(),
             checklist: Vec::new(),
+            findings: Vec::new(),
             raw: Value::Null,
         };
         write_meta(&path, &meta).unwrap();
@@ -555,6 +589,93 @@ mod tests {
     }
 
     #[test]
+    fn finding_item_absent_key_reads_empty_and_write_does_not_invent_it() {
+        // The additive contract, on the same terms as `checklist`: a
+        // `meta.json` written before the `findings` field existed reads as an
+        // empty list, and writing it back does not add the key — the sidecar
+        // comes out byte-identical for every spec already on disk.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(&path, br#"{"stage":"Execute","outcome":"Active"}"#).unwrap();
+        let meta = read_meta(&path).expect("reads");
+        assert!(meta.findings.is_empty());
+        write_meta(&path, &meta).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"findings\""), "{text}");
+    }
+
+    #[test]
+    fn finding_item_round_trips_through_the_sidecar_with_its_destination() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        let mut meta = Meta::new(
+            Some("QaReview"),
+            Some("Active"),
+            Some("QA"),
+            Some("full"),
+            Some("pt-BR"),
+            None,
+            None,
+        );
+        meta.findings = vec![
+            FindingItem {
+                id: "F-1".into(),
+                source: FindingSource::Review,
+                statement: "the gate never reads the reviewer's file".into(),
+                routed: Some(FindingRoute::ChangeRequest(
+                    "the close gate must consult both producers".into(),
+                )),
+            },
+            FindingItem {
+                id: "AC-3".into(),
+                source: FindingSource::ProofLedger,
+                statement: "removal took the criterion's own evidence with it".into(),
+                routed: None,
+            },
+        ];
+        write_meta(&path, &meta).unwrap();
+        let back = read_meta(&path).expect("reads");
+        assert_eq!(back.findings.len(), 2);
+        // The destination and its reason survive the sidecar intact.
+        assert_eq!(
+            back.findings[0].route().and_then(FindingRoute::reason),
+            Some("the close gate must consult both producers")
+        );
+        assert!(!back.findings[0].is_open());
+        // The ledger-side finding is still owed a decision.
+        assert_eq!(back.findings[1].source, FindingSource::ProofLedger);
+        assert!(back.findings[1].is_open(), "an unrouted finding still owes a destination");
+        // The typed field owns the key — it must not leak into the `raw`
+        // flatten catch-all.
+        assert!(back.raw.get("findings").is_none());
+    }
+
+    #[test]
+    fn the_cut_base_round_trips_and_a_sidecar_without_it_gains_no_key() {
+        // The additive contract, on the same terms `checklist` and `findings`
+        // set: a sidecar written before this field reads as "nothing recorded",
+        // and writing it back does not invent the key — so every meta.json
+        // already on disk comes out byte-identical.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(&path, br#"{"stage":"Execute","outcome":"Active"}"#).unwrap();
+        let meta = read_meta(&path).expect("reads");
+        assert!(meta.base.is_none(), "nothing was recorded, and nothing is invented");
+        write_meta(&path, &meta).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("\"base\""));
+
+        // Recorded, it survives the sidecar — which is the whole point: the
+        // pending marker that carried the operator's pick is consumed at the
+        // cut, so this file is the only thing that still remembers.
+        let mut recorded = meta;
+        recorded.base = Some("qas".into());
+        write_meta(&path, &recorded).unwrap();
+        assert_eq!(read_meta(&path).expect("reads").base.as_deref(), Some("qas"));
+        // The typed field owns the key — it must not leak into `raw`.
+        assert!(read_meta(&path).expect("reads").raw.get("base").is_none());
+    }
+
+    #[test]
     fn missing_file_is_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("does-not-exist.json");
@@ -630,6 +751,7 @@ mod tests {
             assert!(text.contains(&format!("\"{k}\":null")), "{k} missing in {text}");
         }
         assert!(!text.contains("\"parent\""));
+        assert!(!text.contains("\"base\""));
         assert!(!text.contains("\"isWavePlan\""));
         assert!(!text.contains("\"totalWaves\""));
         assert!(!text.contains("\"flags\""));

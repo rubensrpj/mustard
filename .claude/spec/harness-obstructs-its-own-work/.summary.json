@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "harness-obstructs-its-own-work",
+  "title": "the harness obstructs its own work at both ends of the unit: the write gate blocks diagnosis evidence before a unit exists, and git-settle prunes the branch before the base advances",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "settle",
+      "summary": "The exit ritual verifies before it prunes, and git — not a stricter pre-check — decides whether the base can advance.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "gate",
+      "summary": "Diagnosis may produce runnable evidence without leaving the protected base, and the harness stops dirtying its own tree.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "prose",
+      "summary": "The diagnosis rides into the spec instead of being retyped, and the hygiene question fires on a real collision instead of always.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

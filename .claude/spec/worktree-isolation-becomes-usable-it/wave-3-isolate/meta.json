@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-13T15:47:13.647Z",
+  "parent": "worktree-isolation-becomes-usable-it",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "path": "apps/rt/src/hooks/write/work_branch_gate.rs",
+      "done": true
+    },
+    {
+      "label": "plugin/refs/git/git-flow.md",
+      "path": "plugin/refs/git/git-flow.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "done": true
+    }
+  ]
+}

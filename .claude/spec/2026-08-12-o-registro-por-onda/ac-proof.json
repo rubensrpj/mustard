@@ -1,0 +1,58 @@
+{
+  "spec": "2026-08-12-o-registro-por-onda",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt a_parallel_siblings_declared_file_is_not_accused",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "unproven",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt each_waves_finalisation_reads_only_its_own_record",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "unproven",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}
