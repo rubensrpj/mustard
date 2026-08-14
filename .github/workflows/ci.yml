@@ -66,8 +66,21 @@ jobs:
       # four crates this line compiles, and the per-step attribution of run
       # 31796118965 priced that duplication at 306s on Windows alone
       # (docs/2026-08-14-build-cycle-measurements.md §7).
+      #
+      # `--test-threads=8` is DECLARED, not inherited. `cargo test` defaults to
+      # one thread per core, which is right for work that computes and wrong for
+      # work that WAITS: 155 of this suite's tests spend their time on spawned
+      # `git` processes (`git_settle` alone is 28 tests at 1,74s each), so a
+      # runner with 4 cores sits idle while git answers. Forcing the runner's own
+      # shape on a 22-core machine and varying only the thread count:
+      #
+      #     4 threads → 65,4s     8 threads → 38,4s     12 → 46,0s     16 → 44,2s
+      #
+      # Doubling past the core count buys 41%; going further costs it back to
+      # contention. 8 is the measured knee, not a round number.
+      # Full figures: docs/2026-08-14-build-cycle-measurements.md.
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
+        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
 
       # Plain clippy: the workspace lint table makes `unwrap_used` (and other
       # correctness lints) deny-level while keeping pedantic lints at warn, so
