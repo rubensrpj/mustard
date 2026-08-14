@@ -80,16 +80,32 @@ not been built in debug since the incremental cache was deleted that morning
 before it were release-profile). Once each target has been built once, every
 selection is sub-second, including the CI's exact four-crate one (E/F).
 
-## 5. Incremental cache on/off — NOT MEASURED YET
+## 5. Incremental cache on/off — the third refutation
 
-The datum that decides wave 3's policy: a one-line-change rebuild with
-`CARGO_INCREMENTAL=1` against `CARGO_INCREMENTAL=0`, recording both wall clock and
-the bytes `target/debug/incremental` gains each way.
+One line appended to `apps/rt/src/shared/branch_state.rs`, rebuilt with
+`cargo build -p mustard-rt`, each configuration warmed with its own full build
+first so neither pays the other's cold start. The file was restored byte-identical
+afterwards (verified).
 
-Context for it: `target/` measured 85,16 GB on this machine, of which 52,28 GB were
-`target/debug/incremental` and 24,99 GB `target/debug/deps`. The whole checkout was
-102,75 GB. The 52,28 GB were deleted by hand on 2026-08-14; nothing in the
-repository prevents them from accumulating again.
+| Configuration | One-line rebuild |
+|---|---|
+| `CARGO_INCREMENTAL=1` | **8,6s** |
+| `CARGO_INCREMENTAL=0` | **29,7s** |
+
+**The cache pays for itself, 3,5× over.** The proposal to turn it off — mine, and
+the one the unit was half-expecting to adopt — is refuted. Turning it off would
+have made the edit-rebuild loop three and a half times slower while everyone
+congratulated themselves on the reclaimed disk.
+
+The price is real and now quantified: after these two runs alone,
+`target/debug/incremental` held **4,53 GB across 15 165 files**. For context, it had
+reached 52,28 GB before being deleted by hand that morning — out of a `target/` of
+85,16 GB and a checkout of 102,75 GB.
+
+**So the policy wave 3 must declare is NOT "off".** It is "on, and pruned": keep the
+3,5× on every rebuild, and bound the directory so it cannot silently reach 52 GB
+again. Note this cuts against the shape the spec's own Files table anticipated —
+follow the number, not the anticipation.
 
 ## 6. Link cost of the 59 test binaries — NOT MEASURED YET
 
