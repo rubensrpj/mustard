@@ -56,6 +56,31 @@
 //!    `.claude/spec/…` is NOT exempt from this (it was, once): the spec belongs
 //!    to the unit, so it is written after the branch exists, never on the base.
 //!
+//! ## The two harness carve-outs ([`is_harness_carve_out`])
+//!
+//! Branch protection guards the REPO's tree. Two paths under `.claude/` are
+//! carved out of it because both are written BEFORE a unit exists and neither
+//! is repo work — they are allowed on a bare base, cut NO branch, and leave a
+//! pending marker intact for the first real edit:
+//!
+//! - `.claude/plans/…` — native plan-mode artifacts. Planning precedes the
+//!   work unit, so blocking them deadlocks plan mode on a protected branch:
+//!   the session cannot even write the plan it needs approved.
+//! - `.claude/scratch/…` — sanctioned SCRATCH EVIDENCE: the throwaway code a
+//!   diagnosis runs to decide between two hypotheses by executing them, before
+//!   there is any unit to open. Refusing it did not prevent the work, it only
+//!   made the agent deduce over several rounds what one run would have shown.
+//!   The seeded `.claude/.gitignore` ignores `scratch/`, so it never reaches a
+//!   diff either.
+//!
+//! **The limit of the scratch carve-out.** It serves evidence a runner can
+//! execute IN PLACE — shell scripts, data fixtures, `mustard-rt run …` probes.
+//! Evidence that must COMPILE inside a crate cannot live there: cargo does not
+//! compile files under `.claude/`, so no carve-out here can make a throwaway
+//! Rust integration test work. For that case the honest path is opening the
+//! unit early — cheap once the diagnosis rides into the spec through
+//! `spec-draft --material` instead of being retyped by hand.
+//!
 //! The git primitives this gate performs the cut with — the base refresh, the
 //! checkout, the `{base}_` base recovery, the protected-branch predicate — live
 //! in [`crate::commands::event::work_branch`], because `spec-draft` performs the
@@ -128,6 +153,19 @@ fn dirty_note(dirty: &[String], lang: Locale) -> String {
 /// The auto-branch gate. Stateless — every invocation rebuilds from the hook
 /// input and the on-disk marker.
 pub struct WorkBranchGate;
+
+/// `true` when `rel` is one of the two harness paths carved out of branch
+/// protection: native plan-mode artifacts and sanctioned scratch evidence.
+/// Both are harness state written BEFORE a unit exists, so both are allowed on
+/// a bare integration base, cut no branch and keep the pending marker — see the
+/// module doc for why each is carved out and where the scratch carve-out stops.
+///
+/// `rel` is the project-relative, forward-slash path
+/// [`super::boundary_gate::relative_to_cwd`] produces, so the same prefixes
+/// match on every platform.
+fn is_harness_carve_out(rel: &str) -> bool {
+    rel.starts_with(".claude/plans/") || rel.starts_with(".claude/scratch/")
+}
 
 /// Resolve the session id for this invocation: the harness-provided
 /// [`HookInput::session_id`] when present, else the env/filesystem fallback in
@@ -297,13 +335,12 @@ impl Check for WorkBranchGate {
         if let Some(fp) = input.file_path() {
             match super::boundary_gate::relative_to_cwd(&project, &fp) {
                 None => return Ok(Verdict::Allow),
-                // Plan-mode artifacts (`.claude/plans/…`) are harness state,
-                // not repo work — planning happens BEFORE the work unit, so
-                // blocking them deadlocks native plan mode on a protected
-                // branch (the session cannot even write the plan it needs
-                // approved). Same contract as out-of-repo: allow, cut
-                // nothing, keep the marker.
-                Some(rel) if rel.starts_with(".claude/plans/") => return Ok(Verdict::Allow),
+                // The harness carve-outs (`.claude/plans/…` plan-mode
+                // artifacts, `.claude/scratch/…` scratch evidence) are harness
+                // state, not repo work — both are written BEFORE the work unit
+                // exists. Same contract as out-of-repo: allow, cut nothing,
+                // keep the marker. See [`is_harness_carve_out`].
+                Some(rel) if is_harness_carve_out(&rel) => return Ok(Verdict::Allow),
                 // `.claude/spec/…` used to be carved out here too, so a spec
                 // could be authored on the protected base before any branch
                 // existed. It is NOT carved out any more: the spec is the first
@@ -1140,6 +1177,64 @@ mod tests {
             context::pending_branch_for(root_s, sid).as_deref(),
             Some("dev_planned-thing"),
             "the marker survives for the first code edit",
+        );
+    }
+
+    /// AC-6 — sanctioned scratch evidence (`.claude/scratch/…`) is writable on
+    /// a bare integration base: the diagnosis that decides whether there is any
+    /// work at all happens BEFORE a unit exists, and the cheapest way to choose
+    /// between two hypotheses is to RUN them. The carve-out has the same
+    /// contract as the plan file — Allow, no branch cut, marker kept for the
+    /// first real edit — because scratch is never part of the unit (the seeded
+    /// `.claude/.gitignore` ignores it).
+    #[test]
+    fn scratch_evidence_is_writable_on_a_protected_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        // With NO pending unit — the diagnosis precedes the unit entirely.
+        let (bare, bare_ctx) =
+            pre_edit_input_for(root_s, "sess-scratch-bare", ".claude/scratch/probe.sh");
+        let verdict = WorkBranchGate.evaluate(&bare, &bare_ctx).expect("no error");
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "scratch evidence writes freely on the bare integration base: {verdict:?}",
+        );
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev"),
+            "no branch is cut for a scratch mutation",
+        );
+
+        // …and WITH a pending unit the marker is NOT consumed: the first real
+        // edit still gets its branch.
+        let sid = "sess-scratch-marked";
+        context::set_pending_branch(root_s, sid, "dev_diagnosed-thing", None);
+        let (marked, ctx) = pre_edit_input_for(root_s, sid, ".claude/scratch/data/case.json");
+        let verdict2 = WorkBranchGate.evaluate(&marked, &ctx).expect("no error");
+        assert!(matches!(verdict2, Verdict::Allow), "got {verdict2:?}");
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev"),
+            "a pending marker is not consumed by scratch evidence",
+        );
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("dev_diagnosed-thing"),
+            "the marker survives for the first real edit",
+        );
+
+        // The carve-out is a PREFIX, not a substring: a real repo file whose
+        // name merely mentions scratch is judged like any other repo write.
+        let (decoy, decoy_ctx) =
+            pre_edit_input_for(root_s, "sess-scratch-decoy", "src/scratch_notes.rs");
+        let verdict3 = WorkBranchGate.evaluate(&decoy, &decoy_ctx).expect("no error");
+        assert!(
+            matches!(verdict3, Verdict::Deny { .. }),
+            "only `.claude/scratch/` is carved out, never a lookalike path: {verdict3:?}",
         );
     }
 

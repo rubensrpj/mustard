@@ -958,6 +958,293 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
     );
 }
 
+/// AC-8 — the bugfix prose carries the diagnosis INTO the spec through the
+/// material channel, instead of leaving it to be retyped.
+///
+/// `spec-draft --material` shipped for `/feature` and `/bugfix` never used it,
+/// so every DIAGNOSE ended the same way: a located root cause, with its file and
+/// line, summarised by hand into prose that dropped both. The channel was not
+/// missing — it was undocumented on the one flow whose whole output is a
+/// verified finding.
+///
+/// The same paragraph also names the sanctioned scratch path and the limit that
+/// makes it honest, because that carve-out has the identical failure mode: a
+/// mechanism nobody is told about is a mechanism nobody takes.
+#[test]
+fn bugfix_prose_teaches_the_material_channel() {
+    let bugfix = read("plugin/commands/bugfix.md");
+
+    // --- 1. The draft call the reader copies passes the channel ------------
+    let draft_call = line_with(&bugfix, "run spec-draft")
+        .expect("the bugfix prose no longer shows the spec-draft call it makes");
+    assert!(
+        draft_call.contains("--material"),
+        "the spec-draft call omits the channel the diagnosis rides in on: {draft_call}",
+    );
+    assert!(
+        draft_call.contains(".claude/.cache/spec-material.json"),
+        "the call names the flag without the file it takes: {draft_call}",
+    );
+
+    // --- 2. Assembling comes BEFORE drafting, and names the three kinds ----
+    // Order is the whole point: a flow that drafts first invites the retype the
+    // channel exists to remove.
+    let assemble_at = bugfix
+        .find("Assemble the material FIRST")
+        .expect("the bugfix prose never tells the flow to assemble before it drafts");
+    let draft_at = bugfix.find("run spec-draft").expect("checked above");
+    assert!(
+        assemble_at < draft_at,
+        "the assembly must be taught BEFORE the draft call, or the material is \
+         written after the spec it was meant to fill (assemble at {assemble_at}, \
+         draft at {draft_at})",
+    );
+    // …and the ordering warning must describe the mechanism the way `/feature`
+    // §2.2 does. "Refused, the flow dead-ends" alone warns of a wall the common
+    // path never hits: once the base gate has NAMED the unit, the pending marker
+    // makes the auto-branch hook cut the branch on this very write and it lands.
+    // Two flows describing one mechanism differently is how a reader learns to
+    // trust neither (found in review, 2026-08-11).
+    let order = line_with(&bugfix, "Order, said out loud")
+        .expect("the bugfix prose no longer states when the unit's branch is cut");
+    assert!(
+        order.contains("pending marker"),
+        "the ordering warning omits the case that actually happens — the marker \
+         cutting the branch on this write: {order}",
+    );
+    assert!(
+        order.contains("REFUSED"),
+        "…and it must still name the case that IS a dead end: {order}",
+    );
+    let kinds = line_with(&bugfix, ".claude/.cache/spec-material.json")
+        .expect("checked above");
+    for kind in ["definitions", "decisions", "findings"] {
+        assert!(
+            kinds.contains(&format!("`{kind}`")),
+            "the material paragraph never says what `{kind}` carries: {kinds}",
+        );
+    }
+    // The root cause is the ONE thing this flow must not lose, so the prose has
+    // to say which kind it lands in — otherwise it arrives as loose prose again.
+    assert!(
+        kinds.contains("root cause"),
+        "the paragraph lists the kinds without saying where the located root \
+         cause goes: {kinds}",
+    );
+    assert!(
+        bugfix.contains("FAIL-CLOSED"),
+        "the prose never warns that the channel aborts the draft instead of \
+         degrading to an empty one",
+    );
+
+    // --- 3. The weight rule: a demonstrated cause drafts the minimal spec ---
+    let weight = line_with(&bugfix, "MINIMAL spec")
+        .expect("the bugfix prose states no weight rule for an already-demonstrated cause");
+    for kept in ["## Contexto", "## Acceptance Criteria", "## Limites"] {
+        assert!(
+            weight.contains(&format!("`{kept}`")),
+            "the minimal spec must still name `{kept}`: {weight}",
+        );
+    }
+    for dropped in ["## Causa raiz", "## Plano"] {
+        assert!(
+            weight.contains(&format!("`{dropped}`")),
+            "the rule drops sections without naming `{dropped}`, so a reader \
+             cannot tell what is being dropped: {weight}",
+        );
+    }
+    // Naming the sections is not the rule — WHEN it applies is, and the
+    // argued-cause case has to survive or the rule reads as "always minimal".
+    assert!(
+        weight.contains("ARGUED"),
+        "the rule never says which diagnoses still keep the discovery \
+         sections: {weight}",
+    );
+
+    // --- 4. The scratch carve-out and the limit that bounds it -------------
+    let scratch = line_with(&bugfix, ".claude/scratch/")
+        .expect("DIAGNOSE is never told where runnable evidence may be written");
+    assert!(
+        scratch.contains("cargo does not compile"),
+        "the scratch paragraph sells the carve-out without its limit — evidence \
+         that must COMPILE cannot live under `.claude/`: {scratch}",
+    );
+
+    // --- 5. The mechanisms the prose promises really exist -----------------
+    // Without this half every assertion above passes over a deleted channel.
+    let cli = read("apps/rt/src/commands/spec/cli.rs");
+    assert!(
+        cli.contains("material: Option<PathBuf>"),
+        "`spec-draft` no longer accepts the `--material` flag the prose passes",
+    );
+    let draft = read("apps/rt/src/commands/spec/spec_draft.rs");
+    assert!(
+        draft.contains("fn load_material") && draft.contains("fn append_material_sections"),
+        "the draft neither reads the material file nor writes its sections, so \
+         the flow would hand over a payload nothing consumes",
+    );
+    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    assert!(
+        gate.contains("rel.starts_with(\".claude/scratch/\")"),
+        "the write gate no longer carves out `.claude/scratch/`, so the prose \
+         sends a diagnosis at a path the gate denies",
+    );
+    assert!(
+        gate.contains("context::pending_branch_for"),
+        "the gate no longer reads a pending marker, so §3's ordering warning \
+         describes a landing nothing performs",
+    );
+    let ignore = read("packages/core/templates/.gitignore");
+    assert!(
+        ignore.contains("scratch/"),
+        "the seeded ignore no longer hides scratch, so throwaway evidence would \
+         reach the diff the prose promises it never reaches",
+    );
+}
+
+/// AC-9 — the hygiene question fires on a collision, not on every run.
+///
+/// Step 3 asked whether to continue an in-progress spec unconditionally,
+/// including in the case that is by far the most common: the user just asked for
+/// the new work, in the same message, and it touches something else entirely.
+/// There the answer was already given, the question was answered "no" every
+/// time, and a step routinely skipped without consequence teaches the reader to
+/// judge every OTHER step of the protocol case by case too.
+#[test]
+fn hygiene_prose_teaches_the_collision_condition() {
+    let hygiene = read("plugin/refs/feature/spec-hygiene.md");
+
+    // --- 1. The condition is stated where step 3 is stated -----------------
+    let step_at = hygiene
+        .find("3. In-progress specs")
+        .expect("the hygiene ref no longer has a step 3 for in-progress specs");
+    let ask_at = hygiene
+        .find("AskUserQuestion")
+        .expect("the hygiene ref no longer describes the question at all");
+    assert!(
+        ask_at > step_at,
+        "the question must be described inside step 3 (step at {step_at}, \
+         question at {ask_at})",
+    );
+    let condition_at = hygiene.find("ask ONLY when").unwrap_or_else(|| {
+        panic!("step 3 still asks unconditionally — no condition gates the question")
+    });
+    assert!(
+        condition_at > step_at && condition_at < ask_at,
+        "the condition must be read BEFORE the question, not appended after it \
+         (condition at {condition_at}, question at {ask_at})",
+    );
+
+    // Both triggers must be named. Either one alone is enough to ask, and
+    // dropping either turns the step back into something a reader guesses at.
+    let step_3 = &hygiene[step_at..];
+    assert!(
+        step_3.contains("overlap") || step_3.contains("OVERLAP"),
+        "the condition never names the collision with the active spec",
+    );
+    assert!(
+        step_3.contains("explicitly requested"),
+        "the condition never covers work the pipeline inferred rather than the \
+         user asking for it in the same message",
+    );
+
+    // --- 2. The silent path is a RECORD, not a silence ---------------------
+    // "Proceed quietly" would leave the operator wondering whether the audit ran
+    // at all; the one line is what makes the skip auditable.
+    assert!(
+        step_3.contains("[HYGIENE] spec {name} remains parked"),
+        "the no-ask path never records the line that says the spec was left alone",
+    );
+
+    // --- 3. The reason is stated, because that is what makes it a rule -----
+    assert!(
+        step_3.contains("case by case"),
+        "the ref makes the step conditional without saying WHY — that a protocol \
+         whose steps are routinely skipped teaches the reader to judge every \
+         step case by case",
+    );
+
+    // --- 4. The ref really reaches both flows, and the parked spec is real --
+    // A conditional nobody opens never fires; and "remains parked" is a promise
+    // only the harness can keep — it has to tolerate a second active unit.
+    for flow in ["plugin/commands/feature.md", "plugin/commands/bugfix.md"] {
+        let body = read(flow);
+        assert!(
+            body.contains("refs/feature/spec-hygiene.md"),
+            "{flow} no longer loads the hygiene ref, so its condition reaches no reader",
+        );
+    }
+    let active = read("apps/rt/src/commands/spec/active_specs.rs");
+    assert!(
+        active.contains("pub specs: Vec<ActiveSpec>"),
+        "the harness no longer reports a LIST of active specs, so a spec left \
+         parked beside new work would have nowhere to be listed",
+    );
+}
+
+/// The exit ritual's REFUSAL reaches the operator who has to act on it.
+///
+/// This unit turned the settle's verdict from a certificate into a gate: a pass
+/// that cannot advance the base now prunes nothing, restores an in-place unit to
+/// its work branch and names the command to rerun. Every one of those is a
+/// mechanism the operator only meets through `pr close` — and the procedure
+/// still said "(pull, remove the worktree, delete local + remote branch)",
+/// which describes the happy path only. A field emitted for a reader who is
+/// never told to read it is the inert half this ratchet file exists to catch
+/// (found in review, 2026-08-11, by both reviewers independently).
+#[test]
+fn settle_refusal_prose_teaches_the_fields_the_gate_now_emits() {
+    let git_md = read("plugin/commands/git.md");
+    let close = line_with(&git_md, "pr close** — one close per repo")
+        .expect("`/git` no longer documents the `pr close` procedure at all");
+
+    // --- 1. The shape of a refusal, and that it touched nothing -------------
+    assert!(
+        close.contains("base-behind"),
+        "the procedure never names the refusal this unit introduces: {close}",
+    );
+    for promise in ["PRUNES NOTHING", "nextAction", "restoredToUnit"] {
+        assert!(
+            close.contains(promise),
+            "the refusal is described without `{promise}`, so the operator meets \
+             it first in raw JSON: {close}",
+        );
+    }
+    // The obstacle names are the whole reason `baseAdvance` exists: without them
+    // "base-behind" reads as one situation when it is three, and two of the
+    // three are not fixed by cleaning the tree.
+    for reason in ["baseAdvance", "dirty-tree", "ahead-of-origin"] {
+        assert!(
+            close.contains(reason),
+            "the prose sends the reader to a verdict without `{reason}`: {close}",
+        );
+    }
+    // The move the operator would otherwise invent is exactly the one the
+    // refusal declined to make.
+    assert!(
+        close.contains("never finish a refused settle by hand"),
+        "nothing warns against finishing the ritual manually, which is the \
+         improvisation the refusal exists to prevent: {close}",
+    );
+
+    // --- 2. The engine really emits every field the prose promises ----------
+    // Without this half the paragraph could outlive the mechanism it describes.
+    let settle = read("apps/rt/src/commands/git_settle.rs");
+    for field in ["\"restoredToUnit\"", "report[\"nextAction\"]", "report[\"baseAdvance\"]"] {
+        assert!(
+            settle.contains(field),
+            "git-settle no longer emits {field}, so `/git` documents a field \
+             nobody prints",
+        );
+    }
+    for reason in ["\"base-behind\"", "\"dirty-tree\"", "\"ahead-of-origin\""] {
+        assert!(
+            settle.contains(reason),
+            "git-settle no longer produces the reason {reason} the prose teaches",
+        );
+    }
+}
+
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
 /// of names for one agent, which is why six names spell five reservations.
 const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];
