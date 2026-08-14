@@ -107,13 +107,35 @@ reached 52,28 GB before being deleted by hand that morning — out of a `target/
 again. Note this cuts against the shape the spec's own Files table anticipated —
 follow the number, not the anticipation.
 
-## 6. Link cost of the 59 test binaries — NOT MEASURED YET
+## 6. Link cost of the 59 test binaries — measured, and it exonerates them
 
-`cargo test --no-run` per crate, to separate compiling the crates from linking the
-integration-test binaries: `mustard-core` has 5 test files, `apps/cli` 1,
-`apps/scan` 21 and `apps/rt` 32 — 59 executables, each linked in full.
+Method: one line appended to a source file of the crate, then the SAME edit rebuilt
+twice — once as the library alone, once as the library plus its test binaries. The
+difference is the binaries' own cost, with the library's recompilation cancelled out.
 
-The §1 figure (55,9s warm) bounds the total but does not attribute it.
+(A first attempt measured warm `--no-run` no-ops and produced 0,3–0,5s across every
+crate. That measured nothing: a no-op neither compiles nor links. Recorded here
+because the numbers looked plausible and were meaningless.)
+
+| Crate | test binaries | library alone | library + tests | difference | per binary |
+|---|---|---|---|---|---|
+| `mustard-rt` | 32 | 12,5s | 24,9s | **+12,4s** | 0,39s |
+| `mustard-core` | 5 | 3,3s | 5,0s | **+1,7s** | 0,34s |
+
+The per-binary cost is consistent across a crate with 32 and one with 5, so it
+scales linearly: about **0,37s per test binary**. For all 59, roughly **22s** of link
+on any local rebuild that touches a shared library.
+
+**And that exonerates them for CI.** The Windows Test step costs 729s. Even
+multiplying this link figure several times over for a cold runner, linking accounts
+for well under a fifth of it. The remainder is the tests RUNNING: 3051 of them, many
+spawning `git` into temporary repositories. Process creation is the expensive
+operation on Windows, and it is what the 6,4× is made of.
+
+So merging the 59 files into fewer — the repair the Non-Goals set aside and that §7's
+attribution seemed to reopen — would **not** fix CI. It would buy back part of a
+22s local cost and leave the 729s almost untouched. The Non-Goal stands, now for a
+measured reason rather than a cautious one.
 
 ## 7. CI — measured, from the run itself
 
@@ -126,13 +148,32 @@ all three runners:
 | macos-latest | 6m29s |
 | **windows-latest** | **19m18s** |
 
-Windows costs **3,3×** Linux for identical work. Per-step attribution is still to be
-pulled; the job totals above are what the run reports.
+Windows costs **3,3×** Linux for identical work. Per-step attribution, from the
+run's own job API:
 
-The workflow invokes cargo three times per runner — `build`, then `test`, then
-`clippy` (`.github/workflows/ci.yml:48,56,62`). Clippy drives compilation through
-`clippy-driver` rather than `rustc`, so it cannot reuse the earlier artefacts. The
-§1 warm figures put a floor under what that costs, but the CI runs cold.
+| Step | ubuntu | macos | **windows** | win ÷ ubuntu |
+|---|---|---|---|---|
+| Build | 161s | 138s | **306s** | 1,9× |
+| **Test** | 114s | 181s | **729s** | **6,4×** |
+| Clippy | 57s | 45s | **89s** | 1,6× |
+| cache restore + post | 8s | 12s | 17s | — |
+
+**This refutes the premise wave 2 was built on.** The unit was planned around "CI
+compiles the workspace three times, so collapse the invocations". The attribution
+says the redundant third compilation — Clippy, the one that cannot reuse artefacts
+because it drives through `clippy-driver` — costs **89s of 1124s: 8%**. Collapsing
+it is worth having and is nowhere near the money.
+
+The money is the **Test step: 729s of 1124s, 65% of the Windows job**, and it is the
+only step whose platform penalty is extreme (6,4× against Linux, where Build and
+Clippy sit near 2×). Two things happen in that step and the totals cannot separate
+them: compiling and linking 59 test binaries, and then RUNNING 3051 tests, many of
+which spawn `git` into temporary repositories. Process creation is the classic
+Windows penalty, and 6,4× is the shape of it.
+
+Note what this does to the unit's own Non-Goals: restructuring the test files was
+excluded on the grounds that the trade needed a measurement first. This is that
+measurement, and it points straight at the excluded ground.
 
 ## What this record rules out, and where the cost actually is
 
