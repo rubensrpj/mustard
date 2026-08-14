@@ -518,7 +518,14 @@ fn cargo_test_has_filter(tokens: &[&str]) -> bool {
 /// Used by the V6c lint: an `Expect:` regex anchored at `^` against one of these
 /// can never match, so the criterion is red in both directions and says nothing
 /// about whether the work was done.
-fn counts_per_file(command: &str) -> bool {
+///
+/// `pub(crate)` because the AMENDMENT door needs the same predicate: once such a
+/// criterion has shipped, the lint can no longer help it, and `ac-amend` has to
+/// recognise the impossible pair to let the repair through
+/// ([`crate::commands::spec::ac_amend`]). One rule, two readers — a second copy
+/// is how the drafting lint and the amendment door would drift into disagreeing
+/// about the same criterion.
+pub(crate) fn counts_per_file(command: &str) -> bool {
     if !command.contains("grep") {
         return false;
     }

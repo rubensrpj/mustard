@@ -175,6 +175,46 @@ Note what this does to the unit's own Non-Goals: restructuring the test files wa
 excluded on the grounds that the trade needed a measurement first. This is that
 measurement, and it points straight at the excluded ground.
 
+## 8. The Test step's real cost: the suite ran TWICE
+
+Ranking the 35 test binaries of a full `cargo test -p mustard-rt` by execution
+time made the answer obvious:
+
+| Target | Tests | Execution |
+|---|---|---|
+| `unittests src/main.rs` | 1973 | **187,6s** |
+| `unittests src/lib.rs` | 1968 | 150,8s |
+| `tests/spec_invariants.rs` | 1 | 19,8s |
+| everything else (32 binaries) | ~90 | ~39s |
+| **total** | | **397,7s** |
+
+The top two are the SAME assertions. `apps/rt` declares both a `[lib]` and a
+`[[bin]]`, and `main.rs` declares the same seven modules `lib.rs` does instead of
+consuming the library — so every `#[cfg(test)]` block under `src/` was compiled
+and executed once per target. The 5-test difference (1973 against 1968) was the
+binary's own: the harness-response shape for each hook event.
+
+**Repair.** `test = false` on the `[[bin]]`, with those five tests and the pure
+function they exercise (`hook_specific_output`) moved to `src/hook_output.rs` — a
+module the library declares too, so they still run, once.
+
+| | before | after |
+|---|---|---|
+| test binaries | 35 | 34 |
+| tests counted | 4033 | 2065 |
+| **unique tests** | 2065 | **2065** |
+| **execution** | 397,7s | **214,7s** |
+
+**183s saved locally, 46% of execution time**, with no test lost — the drop from
+4033 to 2065 is exactly the duplicate. On the Windows CI runner, where the Test
+step costs 729s and every test is 6,4× more expensive, this is the largest single
+piece of it.
+
+Worth naming: this had nothing to do with Windows, with the antivirus, with the
+cache, or with the 59 binaries. Four measurements were spent on those before the
+one that ranked the binaries by time — which was cheap, and should have been
+first.
+
 ## What this record rules out, and where the cost actually is
 
 Three explanations were proposed and measured. Two are dead:

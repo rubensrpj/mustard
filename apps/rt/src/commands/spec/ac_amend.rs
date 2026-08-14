@@ -15,22 +15,35 @@
 //!    anything but a red. A replacement that already passes proves exactly as
 //!    little as the original did.
 //!
-//! ## The one exception: an INEXECUTABLE predecessor
+//! ## The exceptions: a predecessor whose red was never evidence
 //!
-//! There is exactly one criterion the red rule cannot repair. When the
-//! confirmation pass finds a criterion the executor could not attempt AT ALL
-//! after its work landed
-//! ([`ac_negative_check::Confirmation::Inexecutable`]), the command is broken
-//! whatever the work does — and by then the work IS done, so the corrected
-//! command legitimately PASSES. Demanding a red there is demanding a criterion
-//! that lies about a feature that exists.
+//! Two criteria the red rule cannot repair, and they share one shape: the
+//! predecessor's red says nothing about the work, so demanding a red from its
+//! replacement demands a criterion that lies about a feature that exists.
 //!
-//! So for that ONE recorded state, and only it, a replacement that comes back
-//! GREEN is accepted, and its record carries a green CONFIRMATION — the
-//! evidence the approval gate reads. Everything else keeps refusing a
-//! replacement that is not red. The exception is not a knob and cannot be
-//! asked for: it is unlocked by a finding the engine itself recorded, which is
-//! why it cannot be used to smuggle a vacuous criterion past the door.
+//! 1. **INEXECUTABLE.** The confirmation pass found a criterion the executor
+//!    could not attempt AT ALL after its work landed
+//!    ([`ac_negative_check::Confirmation::Inexecutable`]). The command is broken
+//!    whatever the work does — and by then the work IS done, so the corrected
+//!    command legitimately PASSES.
+//!
+//! 2. **UNSATISFIABLE.** The command runs fine, but the predecessor's own
+//!    `Expect:` regex cannot match the output that command produces: a count
+//!    anchored at `^` against `grep -c`, which prints `file:count` and never a
+//!    bare number. Such a criterion is red before the work and red after it, so
+//!    its red is a property of the regex rather than a finding about the tree.
+//!    Caught at drafting time by the `expect-anchored-against-prefixed-output`
+//!    lint; this door is for one that shipped before that lint existed. Found in
+//!    the field, 2026-08-14, on a criterion that failed QA over a record it had
+//!    itself asked for and received.
+//!
+//! For those recorded states, and only them, a replacement that comes back GREEN
+//! is accepted, and its record carries a green CONFIRMATION — the evidence the
+//! approval gate reads. Everything else keeps refusing a replacement that is not
+//! red. Neither exception is a knob and neither can be asked for: each is
+//! unlocked by a fact about the SUPERSEDED criterion — one recorded by the
+//! engine, one read off the criterion's own command and regex — which is why
+//! they cannot be used to smuggle a vacuous criterion past the door.
 //! 2. **Only the root is edited.** `wave-plan.md` and each `wave-*/spec.md`
 //!    carry the criterion lines too, and the scaffold is frozen after approval
 //!    (`wave_scaffold.rs`). A criterion amended only at the root leaves the
@@ -632,7 +645,26 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     )
     .is_some_and(|p| p.confirmation == Confirmation::Inexecutable);
 
-    if predecessor_inexecutable && proof.proof == Proof::Green {
+    // The SECOND state the red rule cannot repair, and the same shape as the
+    // first: the predecessor's own `Expect:` regex cannot match the output its
+    // own command produces, so its red was never evidence about the work. A
+    // count anchored at `^` against `grep -c` is the case — the command prints
+    // `file:count`, so a bare-number regex misses whatever the work does.
+    //
+    // Read off the SUPERSEDED pair itself, through the same predicate the
+    // drafting lint uses, so it is a fact about the criterion rather than
+    // something the caller can ask for — exactly what keeps the first exception
+    // from smuggling a vacuous criterion through. The drafting lint
+    // (`expect-anchored-against-prefixed-output`) is the cheap door and catches
+    // this before approval; this is the late door, for a criterion that shipped
+    // before that lint existed.
+    let predecessor_unsatisfiable = superseded
+        .expect
+        .as_deref()
+        .is_some_and(|e| e.starts_with('^') && !e.contains(':'))
+        && crate::commands::review::analyze_validation::counts_per_file(&superseded.command);
+
+    if (predecessor_inexecutable || predecessor_unsatisfiable) && proof.proof == Proof::Green {
         // The replacement PASSES against a tree in which the work already
         // exists — which is precisely a green CONFIRMATION, and is recorded as
         // one. The red column keeps saying green, because green is what

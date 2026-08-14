@@ -37,3 +37,7 @@ mod dispatch;
 mod hooks;
 mod registry;
 mod report;
+// Declared here so the harness-response tests run on the LIB target. The binary
+// declares it too but no longer runs any test (`test = false`), which is what
+// stops every `#[cfg(test)]` block under `src/` from executing twice.
+mod hook_output;

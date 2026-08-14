@@ -10,7 +10,7 @@
     {
       "label": ".github/workflows/ci.yml",
       "path": ".github/workflows/ci.yml",
-      "done": false
+      "done": true
     }
   ]
 }

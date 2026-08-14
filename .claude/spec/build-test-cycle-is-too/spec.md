@@ -39,7 +39,7 @@ The cycle's cost is KNOWN before it is changed: a versioned record names each ph
   Command: `git ls-files --error-unmatch docs/2026-08-14-build-cycle-measurements.md`
 - **AC-2** — when that record is read, then it states the Windows and Linux costs of the same work, so the platform gap is a measured number and not a suspicion
   Command: `git grep -ci "windows" -- docs/2026-08-14-build-cycle-measurements.md`
-  Expect: `^[1-9][0-9]*$`
+  Expect: `:[1-9][0-9]*$`
 - **AC-3** — when CI runs, then it no longer compiles the workspace three separate times per operating system
   Command: `git grep -c "run: cargo" -- .github/workflows/ci.yml`
   Expect: `:[0-2]$`
@@ -60,6 +60,8 @@ The cycle's cost is KNOWN before it is changed: a versioned record names each ph
 | `.github/workflows/ci.yml` | The three cargo invocations collapse so the workspace is not compiled from scratch three times per runner, and the incremental policy is declared rather than inherited | 2 |
 | `Cargo.toml` | The dev profile declares its incremental policy, so the cache is bounded by the repository instead of by memory. Whether the existing `[profile.dev.package."*"] opt-level = 1` survives is decided by wave 1's numbers, not here | 3 |
 | `apps/rt/src/commands/review/analyze_validation.rs` | Declared cascade, found while writing THIS spec's own criteria: an `Expect:` regex anchored at `^` against a per-file counting command (`grep -c` prints `file:count`) can never match its own output, so the criterion is red before the work and red after it. The negative proof clears it — the red is real, only its cause is the regex — and `ac-amend` then refuses the repair once the wave has delivered, because the corrected regex passes. The defect therefore has no door left after the spec freezes, so a new `expect-anchored-against-prefixed-output` WARN catches it at drafting time, which is the only cheap moment | 1 (cascade) |
+| `apps/rt/src/commands/spec/ac_amend.rs` | Declared cascade of the same finding, and the half the lint cannot reach: a criterion that ALREADY shipped with the impossible pair has no door, because the amendment refuses a replacement that comes back green and the corrected regex necessarily does. The door already carried one exception for a predecessor whose red was never evidence (`Confirmation::Inexecutable`); this adds the second of the same shape — an UNSATISFIABLE predecessor, recognised by reading the superseded command and regex through the very predicate the drafting lint uses, so it stays a fact about the criterion and never something a caller can ask for | 1 (cascade) |
+| `apps/rt/Cargo.toml`, `apps/rt/src/main.rs`, `apps/rt/src/lib.rs`, `apps/rt/src/hook_output.rs` (new) | Declared cascade, and the unit's largest single win: ranking the test binaries by execution time showed `unittests src/main.rs` (1973 tests, 187,6s) and `unittests src/lib.rs` (1968, 150,8s) running the SAME assertions, because `main.rs` redeclares the library's seven modules instead of consuming it. `test = false` on the `[[bin]]` stops it; the five tests that were genuinely the binary's own move to `src/hook_output.rs`, a module the library also declares, so nothing is lost. Result: 397,7s → 214,7s of execution, 2065 unique tests before and after | 2 (cascade) |
 
 ## Boundaries
 
@@ -97,3 +99,7 @@ OUT: merging or restructuring the test files; the release profile's `lto` / `cod
   Evidence: `Cargo.toml`
 - the release profile sets lto = "thin" and codegen-units = 1, which is correct for a shipped binary but makes any release build markedly slower — and installing the harness locally goes through a release build, measured today at 6m38s for mustard-rt alone
   Evidence: `Cargo.toml`
+
+<!-- wikilinks-footer-start -->
+- [bin](?) ⚠ unresolved
+<!-- wikilinks-footer-end -->

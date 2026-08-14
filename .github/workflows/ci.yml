@@ -18,6 +18,15 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      # A runner is discarded after every job, so incremental state is WRITTEN
+      # and never read back — pure cost here. Declared rather than inherited,
+      # because the default has no opinion and this one is measured: locally the
+      # cache is worth keeping (a one-line rebuild is 8,6s with it against 29,7s
+      # without), and that argument does not survive a machine that never gets a
+      # second build. Same setting, opposite verdicts, for a stated reason —
+      # see docs/2026-08-14-build-cycle-measurements.md §5.
+      CARGO_INCREMENTAL: 0
     strategy:
       # One OS failing should not cancel the others — we want the full
       # cross-platform picture on every run.
@@ -35,23 +44,28 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
 
+      - name: Expose the scan binary to core's spawn-based tests
+        shell: bash
+        run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
+
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       # The Tauri dashboard (apps/dashboard/src-tauri) is intentionally
       # excluded: it needs per-OS system libraries (webkit2gtk on Linux, etc.)
       # that would make this matrix slow and brittle, and it is not part of the
       # CLI/runtime surface this workflow guards.
       #
-      # `-p scan` builds the grain binary because mustard-core's stack-registry
-      # tests exercise `Scan::locate()` at runtime (spawn, fail-open): without
-      # `scan` reachable the test degrades to an empty project list and fails —
-      # green on any dev machine (installed scan on PATH), red on a bare runner.
-      - name: Build
-        run: cargo build --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
-
-      - name: Expose the scan binary to core's spawn-based tests
-        shell: bash
-        run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
-
+      # `-p scan` is here because mustard-core's stack-registry tests exercise
+      # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
+      # the test degrades to an empty project list and fails — green on any dev
+      # machine (installed scan on PATH), red on a bare runner. `cargo test`
+      # builds a package's BIN targets alongside its tests, so `scan.exe` lands
+      # in target/debug before any test runs; the PATH step above only has to
+      # name the directory, not wait for the file.
+      #
+      # There is no separate `cargo build` step any more. It compiled the same
+      # four crates this line compiles, and the per-step attribution of run
+      # 31796118965 priced that duplication at 306s on Windows alone
+      # (docs/2026-08-14-build-cycle-measurements.md §7).
       - name: Test
         run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
 

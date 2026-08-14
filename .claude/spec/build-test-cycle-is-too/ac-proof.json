@@ -21,15 +21,15 @@
     {
       "id": "AC-2",
       "command": "git grep -ci \"windows\" -- docs/2026-08-14-build-cycle-measurements.md",
-      "expect": "^[1-9][0-9]*$",
+      "expect": ":[1-9][0-9]*$",
       "control_command": null,
       "verdict": "proven",
-      "proof": "red",
+      "proof": "green",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
-      "exit": 1,
-      "confirmation_exit": null,
+      "confirmation": "green",
+      "exit": 0,
+      "confirmation_exit": 0,
       "removal": "not-taken",
       "removal_exit": null,
       "reason": null,
@@ -114,6 +114,21 @@
       "superseded_statement": null,
       "command": "git grep -c \"run: cargo\" -- .github/workflows/ci.yml",
       "expect": ":[0-2]$",
+      "statement": null,
+      "rewrote": [
+        ".claude/spec/build-test-cycle-is-too/spec.md",
+        ".claude/spec/build-test-cycle-is-too/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "at": "2026-08-14T14:13:27.828Z",
+      "reason": "the superseded Expect was anchored at ^ against a per-file count, which prints file:count — it could never match its own output, so its red was a property of the regex and never a finding about the tree. QA failed it over a record it had itself asked for and received",
+      "superseded_command": "git grep -ci \"windows\" -- docs/2026-08-14-build-cycle-measurements.md",
+      "superseded_expect": "^[1-9][0-9]*$",
+      "superseded_statement": null,
+      "command": "git grep -ci \"windows\" -- docs/2026-08-14-build-cycle-measurements.md",
+      "expect": ":[1-9][0-9]*$",
       "statement": null,
       "rewrote": [
         ".claude/spec/build-test-cycle-is-too/spec.md",

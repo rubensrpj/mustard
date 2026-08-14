@@ -178,6 +178,23 @@ codegen-units = 1
 # cold-build tail without slowing our own recompiles.
 [profile.dev]
 debug = 1
+# Incremental compilation is KEPT, and stated here rather than inherited, because
+# the default carries no opinion about a directory that reached 52 GB on a real
+# checkout. Measured before deciding (2026-08-14, Windows): a one-line rebuild of
+# mustard-rt costs 8,6s with the cache and 29,7s without — it pays for itself 3,5×,
+# so turning it off to reclaim disk would have made every edit three and a half
+# times slower. The proposal to disable it was refuted by its own measurement.
+#
+# The price is real and bounded by nothing the toolchain offers: two rebuilds alone
+# left 4,53 GB across 15 165 files in target/debug/incremental. There is no cargo
+# knob that caps it, so the bound is operational — `cargo clean -p <crate>` for one
+# crate, or deleting target/debug/incremental outright, which costs exactly one cold
+# rebuild and nothing else. Full figures: docs/2026-08-14-build-cycle-measurements.md.
+#
+# CI declares the OPPOSITE (CARGO_INCREMENTAL: 0 in .github/workflows/ci.yml) and
+# that is not a contradiction: a runner is discarded after one build, so it only
+# ever pays the write.
+incremental = true
 
 [profile.dev.package."*"]
 opt-level = 1
