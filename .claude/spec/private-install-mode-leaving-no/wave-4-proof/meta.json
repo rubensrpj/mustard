@@ -1,0 +1,16 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "private-install-mode-leaving-no",
+  "checklist": [
+    {
+      "label": "packages/core/tests/private_install_leaves_no_trace.rs",
+      "path": "packages/core/tests/private_install_leaves_no_trace.rs",
+      "done": false
+    }
+  ]
+}

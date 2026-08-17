@@ -20,6 +20,17 @@
 //! The seed *content* comes from [`crate::platform::seeds`] (compiled-in
 //! constants) — no `templates/` directory lookup is involved.
 //!
+//! ## The two modes
+//!
+//! [`InstallMode`] decides which footprint the install lays down.
+//! [`InstallMode::Shared`] is everything above, unchanged. Under
+//! [`InstallMode::Private`] the same files still land on disk — the harness
+//! reads them from fixed locations — but none of them is visible to the host
+//! repository's git: the settings go to the untracked local layer
+//! (`.claude/settings.local.json`), and [`footprint_paths`] is written into the
+//! clone-local exclude file through [`crate::platform::git_exclude`]. Whatever
+//! that repository ALREADY tracks is reported as residue, never unlinked.
+//!
 //! ## Contracts honoured
 //!
 //! - Writes go through [`fs::write_atomic`] only; nothing here panics
@@ -30,16 +41,104 @@
 //! - No `println!`: this is a library engine. Callers render the outcomes
 //!   (the CLI prints didactic lines, the runtime prints the JSON report).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::domain::command_detect::detect_commands;
 use crate::domain::config::{Injectable, ProjectConfig, Runtime};
+use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
 use crate::platform::error::Result;
+use crate::platform::git_exclude;
 use crate::platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
+
+// ---------------------------------------------------------------------------
+// Install mode + the footprint it hides
+// ---------------------------------------------------------------------------
+
+/// Which footprint an install lays down in the project.
+///
+/// The mode is a CALLER argument and lives in no versioned file: a knob in
+/// `mustard.json` would itself be the trace the private mode exists to
+/// remove — the setting would announce the tool it hides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InstallMode {
+    /// Today's behaviour, unchanged: the footprint is an ordinary part of the
+    /// project and travels in its git like any other file.
+    #[default]
+    Shared,
+    /// The footprint exists on disk — the harness needs it there — but is
+    /// invisible to this clone's git: nothing to stage, nothing to diff,
+    /// nothing to push.
+    Private,
+}
+
+impl InstallMode {
+    /// `true` for [`Self::Private`]. Spelled once here so the two call sites
+    /// that branch on the mode read the same way.
+    #[must_use]
+    pub fn is_private(self) -> bool {
+        matches!(self, Self::Private)
+    }
+}
+
+/// `.claude/settings.json` — the shared-mode settings seed.
+const SETTINGS_JSON: &str = ".claude/settings.json";
+/// `.claude/settings.local.json` — its untracked local-layer twin.
+const SETTINGS_LOCAL_JSON: &str = ".claude/settings.local.json";
+/// `.claude/.gitignore` — the ephemeral-state cover.
+const CLAUDE_GITIGNORE_PATH: &str = ".claude/.gitignore";
+/// `mustard.json` — the single project-root config.
+const MUSTARD_JSON: &str = "mustard.json";
+/// The shared per-directory instruction file a full scan writes Guards into.
+const CLAUDE_MD: &str = "CLAUDE.md";
+/// Its untracked local-layer twin, which a private scan writes instead.
+const CLAUDE_LOCAL_MD: &str = "CLAUDE.local.md";
+/// The pull-request template the CLI seeds when it finds a GitHub remote.
+const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
+
+/// Every project-root-relative path a Mustard install can put in the project —
+/// the FOOTPRINT, declared in exactly one place.
+///
+/// Two consumers read it and must never drift: [`InstallMode::Private`]
+/// excludes this list from the host repository's git and reports the entries
+/// that repository already tracks, and the field proof reads it back to know
+/// what to look for.
+///
+/// Derived rather than re-typed: the seed entries are the same constants
+/// [`upsert_project`] records, and the injectable instruction files come
+/// straight from [`INJECTABLE_SEEDS`], so a new injectable is covered the day
+/// it is added. Three entries are not seeds and are here on purpose:
+///
+/// - `settings.local.json` — so switching modes never leaves the other twin
+///   visible.
+/// - `CLAUDE.md` — an exclude rule cannot hide a path the host repository
+///   already tracks, and that is exactly the case this entry exists to
+///   REPORT. Its `CLAUDE.local.md` twin, which a private scan writes instead,
+///   is the one the rule really hides.
+/// - the pull-request template — a fifth versioned path the CLI seeds, outside
+///   `.claude/` entirely.
+///
+/// The two bare file names carry no slash, so as git ignore rules they match at
+/// every depth — a subproject's instruction file is covered by the same line as
+/// the root's.
+#[must_use]
+pub fn footprint_paths() -> Vec<String> {
+    let mut paths = vec![SETTINGS_JSON.to_string(), SETTINGS_LOCAL_JSON.to_string()];
+    paths.extend(
+        INJECTABLE_SEEDS
+            .iter()
+            .map(|(name, _)| format!(".claude/mustard/{name}")),
+    );
+    paths.push(CLAUDE_GITIGNORE_PATH.to_string());
+    paths.push(MUSTARD_JSON.to_string());
+    paths.push(CLAUDE_MD.to_string());
+    paths.push(CLAUDE_LOCAL_MD.to_string());
+    paths.push(GITHUB_PR_TEMPLATE.to_string());
+    paths
+}
 
 // ---------------------------------------------------------------------------
 // Report types
@@ -82,6 +181,33 @@ pub struct UpsertReport {
     /// Legacy-footprint migrations performed (see
     /// [`migrate_orchestrator_footprint`]).
     pub migrated: Vec<String>,
+    /// Whether this run installed in [`InstallMode::Private`].
+    ///
+    /// This and the three fields below skip serialization when empty, so a
+    /// shared install's JSON is byte-identical to what it was before the mode
+    /// existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub private: bool,
+    /// The clone-local exclude rules this run appended. Empty on a converged
+    /// second run — the append is idempotent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded: Vec<String>,
+    /// [`footprint_paths`] entries the host repository ALREADY tracks. An
+    /// ignore rule cannot hide a tracked path, so these are residue: the
+    /// install names them and unlinks nothing — `git rm --cached` rewrites the
+    /// host's index, which is the operator's decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub already_tracked: Vec<String>,
+    /// Why no rule could be written at all (no git, no repository, an
+    /// unreadable or unwritable exclude file). Reported, never an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_unavailable: Option<String>,
+}
+
+/// `skip_serializing_if` predicate for the additive booleans above — a `false`
+/// flag is simply absent, keeping the shared-install shape unchanged.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl UpsertReport {
@@ -129,11 +255,22 @@ impl UpsertReport {
 /// `mustard.json` line), a caller with no authoritative version passes
 /// `None` and the stamp is withheld.
 ///
+/// Under [`InstallMode::Private`] a step 0 runs first — [`footprint_paths`] is
+/// written into the clone-local exclude file, and whatever the host repository
+/// already tracks is recorded as residue — so no seed is ever momentarily
+/// visible to that repository's git. Step 2 then targets the local settings
+/// layer. [`InstallMode::Shared`] does neither and is byte-for-byte what it was
+/// before the mode existed.
+///
 /// # Errors
 ///
-/// An IO or serialization failure from any seeding step. The migration step
-/// is fail-open and never errors.
-pub fn upsert_project(root: &Path, version: Option<&str>) -> Result<UpsertReport> {
+/// An IO or serialization failure from any seeding step. The migration and the
+/// private step are both fail-open and never error.
+pub fn upsert_project(
+    root: &Path,
+    version: Option<&str>,
+    mode: InstallMode,
+) -> Result<UpsertReport> {
     let installed_before = ProjectConfig::exists(root);
     let claude_dir = root.join(".claude");
     fs::create_dir_all(&claude_dir)?;
@@ -144,19 +281,29 @@ pub fn upsert_project(root: &Path, version: Option<&str>) -> Result<UpsertReport
         ..UpsertReport::default()
     };
 
+    // 0. Private mode: hide the footprint BEFORE any of it is written.
+    if mode.is_private() {
+        let footprint = footprint_paths();
+        let outcome = git_exclude::ensure_excluded(root, &footprint);
+        report.private = true;
+        report.excluded = outcome.appended;
+        report.exclude_unavailable = outcome.unavailable;
+        report.already_tracked = git_exclude::tracked_paths(root, &footprint);
+    }
+
     // 1. Migration away from the planted-orchestrator layout (fail-open).
     report.migrated = migrate_orchestrator_footprint(root, &claude_dir).migrated;
 
     // 2..4. The `.claude/` seeds, merge-mode.
-    report.record(".claude/settings.json", seed_settings(&claude_dir, false)?);
+    report.record(settings_footprint(mode), seed_settings(&claude_dir, false, mode)?);
     for (name, outcome) in seed_injectable_files(&claude_dir, false)? {
         report.record(&format!(".claude/mustard/{name}"), outcome);
     }
-    report.record(".claude/.gitignore", seed_gitignore(&claude_dir, false)?);
+    report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
 
     // 5. The single project-root mustard.json.
     let outcome = upsert_mustard_json(root, version)?;
-    report.record("mustard.json", outcome);
+    report.record(MUSTARD_JSON, outcome);
 
     Ok(report)
 }
@@ -180,7 +327,12 @@ const PLUGIN_ID: &str = "mustard@mustard";
 /// user scope (`~/.claude/settings.json`) — the project seed never writes it.
 const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
 
-/// Seed `.claude/settings.json` from the compiled-in [`SETTINGS_SEED`].
+/// Seed the harness settings from the compiled-in [`SETTINGS_SEED`].
+///
+/// The destination follows `mode`: `.claude/settings.json` when shared,
+/// `.claude/settings.local.json` when private (see [`settings_dest`]). The
+/// merge semantics are the same either way, applied to whichever file is the
+/// target — the other one is never read and never written.
 ///
 /// - Absent (or `overwrite == true`): the seed is the base.
 /// - Present under merge: the user's file is the base and any top-level seed
@@ -193,8 +345,8 @@ const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_
 /// # Errors
 ///
 /// An IO error writing the file, or a serialization failure.
-pub fn seed_settings(claude_dir: &Path, overwrite: bool) -> Result<SeedOutcome> {
-    let dest = claude_dir.join("settings.json");
+pub fn seed_settings(claude_dir: &Path, overwrite: bool, mode: InstallMode) -> Result<SeedOutcome> {
+    let dest = settings_dest(claude_dir, mode);
     let existing_raw = fs::read_to_string(&dest).ok();
     let existed = existing_raw.is_some();
 
@@ -223,6 +375,35 @@ pub fn seed_settings(claude_dir: &Path, overwrite: bool) -> Result<SeedOutcome> 
     }
     fs::write_atomic(&dest, serialized.as_bytes())?;
     Ok(if existed { SeedOutcome::Updated } else { SeedOutcome::Created })
+}
+
+/// The settings file `mode` seeds, composed through [`ClaudePaths`] — the
+/// single owner of `.claude/` path composition, so no call site joins the name
+/// by hand.
+///
+/// `claude_dir` is already `<root>/.claude`, so the project root is recovered
+/// from it rather than re-resolved. [`ClaudePaths::compose_unchecked`] is the
+/// right constructor for that: the I1 guard exists to catch a caller passing
+/// `.claude` AS the root, which is precisely the mistake being undone here —
+/// there is no untrusted input left for it to reject.
+fn settings_dest(claude_dir: &Path, mode: InstallMode) -> PathBuf {
+    let paths = ClaudePaths::compose_unchecked(claude_dir.parent().unwrap_or(claude_dir));
+    if mode.is_private() {
+        paths.settings_local_json_path()
+    } else {
+        paths.settings_json_path()
+    }
+}
+
+/// The project-root-relative name [`upsert_project`] reports for the file
+/// [`settings_dest`] wrote — the report half of the same decision, and one of
+/// the [`footprint_paths`] entries.
+fn settings_footprint(mode: InstallMode) -> &'static str {
+    if mode.is_private() {
+        SETTINGS_LOCAL_JSON
+    } else {
+        SETTINGS_JSON
+    }
 }
 
 /// Remove the plugin-enablement pair older `init` builds planted in the
@@ -632,7 +813,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
 
-        let report = upsert_project(root, Some("9.9.9")).unwrap();
+        let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
 
         assert!(!report.installed_before, "no mustard.json existed before");
         assert_eq!(report.version.as_deref(), Some("9.9.9"));
@@ -678,7 +859,7 @@ mod tests {
     #[test]
     fn fresh_upsert_without_version_stamps_none() {
         let dir = tempdir().unwrap();
-        let report = upsert_project(dir.path(), None).unwrap();
+        let report = upsert_project(dir.path(), None, InstallMode::Shared).unwrap();
         assert_eq!(report.version, None);
         let config = ProjectConfig::load(dir.path());
         assert_eq!(config.version, None, "no stamp when the caller withheld a version");
@@ -688,9 +869,9 @@ mod tests {
     fn upsert_is_idempotent_second_run_preserves_all() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        upsert_project(root, Some("9.9.9")).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
 
-        let second = upsert_project(root, Some("9.9.9")).unwrap();
+        let second = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
 
         assert!(second.installed_before);
         assert!(second.created.is_empty(), "nothing to create: {:?}", second.created);
@@ -727,7 +908,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = upsert_project(root, Some("9.9.9")).unwrap();
+        let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
 
         assert!(report.installed_before);
         // The customised injectable survives; only the missing seed is created.
@@ -761,7 +942,7 @@ mod tests {
         std_fs::create_dir_all(root.join(".claude")).unwrap();
         std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
 
-        upsert_project(root, None).unwrap();
+        upsert_project(root, None, InstallMode::Shared).unwrap();
 
         let config = ProjectConfig::load(root);
         assert_eq!(
@@ -778,7 +959,7 @@ mod tests {
         std_fs::create_dir_all(root.join(".claude")).unwrap();
         std_fs::write(root.join("mustard.json"), r#"{"buildCommand":"make"}"#).unwrap();
 
-        let report = upsert_project(root, None).unwrap();
+        let report = upsert_project(root, None, InstallMode::Shared).unwrap();
 
         let config = ProjectConfig::load(root);
         assert_eq!(config.inject, default_inject_entries(), "empty inject backfilled");
@@ -877,7 +1058,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = upsert_project(root, None).unwrap();
+        let report = upsert_project(root, None, InstallMode::Shared).unwrap();
 
         assert!(!claude.join("CLAUDE.md").exists(), "planted orchestrator deleted");
         let root_md = std_fs::read_to_string(root.join("CLAUDE.md")).unwrap();
@@ -903,7 +1084,7 @@ mod tests {
         .unwrap();
         std_fs::write(claude.join("mustard/response-style.md"), "# Response Style\n").unwrap();
 
-        let report = upsert_project(root, None).unwrap();
+        let report = upsert_project(root, None, InstallMode::Shared).unwrap();
 
         // The stale inject entry is gone; only the orchestrator entry remains.
         let config = ProjectConfig::load(root);
@@ -1017,7 +1198,7 @@ mod tests {
     #[test]
     fn report_serializes_deterministically_without_volatile_fields() {
         let dir = tempdir().unwrap();
-        let report = upsert_project(dir.path(), Some("9.9.9")).unwrap();
+        let report = upsert_project(dir.path(), Some("9.9.9"), InstallMode::Shared).unwrap();
         let json = serde_json::to_string_pretty(&report).unwrap();
         assert!(json.contains("\"installedBefore\": false"));
         assert!(json.contains("\"version\": \"9.9.9\""));
@@ -1027,5 +1208,72 @@ mod tests {
             !json.contains(&root_str.replace('\\', "\\\\")),
             "no absolute paths in the report: {json}"
         );
+        // The private half is ABSENT, not false/empty: a shared install's JSON
+        // is byte-identical to what it was before the mode existed.
+        for key in ["private", "excluded", "alreadyTracked", "excludeUnavailable"] {
+            assert!(!json.contains(key), "{key} leaked into a shared report: {json}");
+        }
+    }
+
+    // --- install mode ---------------------------------------------------------
+
+    /// The path `seed_settings` writes and the name `upsert_project` reports for
+    /// it are two halves of one decision. They are computed by two functions, so
+    /// pin them together — a drift here would report a file nobody wrote.
+    #[test]
+    fn the_settings_destination_and_its_reported_name_agree() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        for mode in [InstallMode::Shared, InstallMode::Private] {
+            let dest = settings_dest(&claude, mode);
+            let name = settings_footprint(mode);
+            assert!(
+                dest.ends_with(name.trim_start_matches(".claude/")),
+                "{mode:?}: reported {name} but wrote {dest:?}",
+            );
+            assert!(
+                footprint_paths().iter().any(|p| p == name),
+                "{mode:?}: {name} is not in the footprint the private mode hides",
+            );
+        }
+        assert_ne!(
+            settings_dest(&claude, InstallMode::Shared),
+            settings_dest(&claude, InstallMode::Private),
+            "the two modes must not share a destination",
+        );
+    }
+
+    /// The footprint is derived, so adding an injectable seed grows it without
+    /// anyone editing a second list.
+    #[test]
+    fn the_footprint_is_derived_from_the_seeds_it_hides() {
+        let footprint = footprint_paths();
+        for (name, _) in INJECTABLE_SEEDS {
+            let expected = format!(".claude/mustard/{name}");
+            assert!(footprint.contains(&expected), "{expected} missing: {footprint:?}");
+        }
+        for expected in [
+            SETTINGS_JSON,
+            SETTINGS_LOCAL_JSON,
+            CLAUDE_GITIGNORE_PATH,
+            MUSTARD_JSON,
+            CLAUDE_MD,
+            CLAUDE_LOCAL_MD,
+            GITHUB_PR_TEMPLATE,
+        ] {
+            assert!(
+                footprint.iter().any(|p| p == expected),
+                "{expected} missing: {footprint:?}",
+            );
+        }
+        // Project-root-relative, forward slashes, no duplicates — the list is
+        // written verbatim into a git exclude file and read back by the proof.
+        let mut seen = footprint.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), footprint.len(), "duplicate rule: {footprint:?}");
+        for rule in &footprint {
+            assert!(!rule.contains('\\') && !rule.starts_with('/'), "not relative: {rule}");
+        }
     }
 }

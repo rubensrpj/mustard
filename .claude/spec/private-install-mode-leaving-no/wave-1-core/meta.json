@@ -1,0 +1,41 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-17T20:28:18.805Z",
+  "parent": "private-install-mode-leaving-no",
+  "checklist": [
+    {
+      "label": "packages/core/src/platform/git_exclude.rs",
+      "path": "packages/core/src/platform/git_exclude.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/platform/project_seed.rs",
+      "path": "packages/core/src/platform/project_seed.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/platform/mod.rs",
+      "path": "packages/core/src/platform/mod.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/io/claude_paths.rs",
+      "path": "packages/core/src/io/claude_paths.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/lib.rs",
+      "path": "packages/core/src/lib.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/tests/private_install.rs",
+      "path": "packages/core/tests/private_install.rs",
+      "done": true
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "private-install-mode-leaving-no",
+  "checklist": [
+    {
+      "label": "apps/cli/src/cli.rs",
+      "path": "apps/cli/src/cli.rs",
+      "done": false
+    },
+    {
+      "label": "apps/cli/src/commands/init.rs",
+      "path": "apps/cli/src/commands/init.rs",
+      "done": false
+    },
+    {
+      "label": "apps/cli/tests/private_init.rs",
+      "path": "apps/cli/tests/private_init.rs",
+      "done": false
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "private-install-mode-leaving-no",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/scan_claude.rs",
+      "path": "apps/rt/src/commands/scan_claude.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/maint/cli.rs",
+      "path": "apps/rt/src/commands/maint/cli.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/maint/upsert.rs",
+      "path": "apps/rt/src/commands/maint/upsert.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/private_scan.rs",
+      "path": "apps/rt/tests/private_scan.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/private_surface.rs",
+      "path": "apps/rt/tests/private_surface.rs",
+      "done": false
+    }
+  ]
+}
