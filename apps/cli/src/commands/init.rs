@@ -773,13 +773,20 @@ fn install_ripgrep() -> bool {
 }
 
 /// Print the closing "next steps" block.
+///
+/// The installer runs `mustard init --yes` at the end of a `curl … | sh`, so for
+/// a one-liner user this block is the LAST thing on screen and no document is
+/// ever opened. It therefore prints the two commands verbatim: the placeholder
+/// this replaced (`add <mustard repo or local directory>` → `install mustard`)
+/// typed as written answers `Plugin "mustard" not found in any marketplace`.
 fn print_next_steps() {
     println!("\nDone!\n");
     println!("Next:");
-    println!("  1. Make sure the `mustard` plugin is enabled in Claude Code (user scope):");
-    println!("     /plugin marketplace add <mustard repo or local directory>  →  /plugin install mustard");
-    println!("     (already installed? nothing to do — enablement lives in ~/.claude/settings.json)");
-    println!("  2. Open Claude Code and run /scan to analyze your codebase.\n");
+    println!("  1. Install the plugin INSIDE Claude Code — type these two lines there,");
+    println!("     not in this terminal (already installed? nothing to do):");
+    println!("     /plugin marketplace add rubensrpj/mustard");
+    println!("     /plugin install mustard@mustard-local");
+    println!("  2. Reload Claude Code, then run /scan to analyze your codebase.\n");
 }
 
 #[cfg(test)]

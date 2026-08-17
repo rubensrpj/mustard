@@ -138,9 +138,10 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso cria a pasta `.claude/` (hooks, skills e configuração) e o
-`mustard.json` na raiz — os hooks do Mustard já ficam ligados via
-`.claude/settings.json`. Falta **um** passo, o do item 6.
+Isso escreve a pasta `.claude/` (a configuração do projeto) e o `mustard.json` na
+raiz. Só isso: os **hooks** do Mustard **não** vêm daqui — o
+`.claude/settings.json` que o `init` grava não tem nenhum. Eles chegam junto com
+o plugin, que é o passo do item 6, e é por isso que ele não é opcional.
 
 ---
 

@@ -18,6 +18,7 @@
 #   ./install.sh                  # instala tudo
 #   ./install.sh /caminho/projeto # também roda `mustard init` nesse projeto
 #   ./install.sh --dry-run        # só mostra o que seria instalado; não instala
+#                                 # (sai != 0 se não conseguir descobrir o pacote)
 #   MUSTARD_VERSION=<versao> ./install.sh # fixa a versão em vez do último Release
 #
 # O .deb ao lado deste script é a fonte preferida; quando não há nenhum (é o caso
@@ -25,6 +26,16 @@
 # pacote do Release do GitHub.
 # ============================================================================
 set -eu
+
+# POSIX decides bracket-range membership ([A-Za-z0-9], [0-9]*) by the CURRENT
+# locale's collating sequence, not by ASCII — under some UTF-8 locales a
+# character valid_version() promises to reject collates inside the range and
+# passes, and $VERSION lands in a filesystem path and in a URL. The C locale
+# collates by byte, which makes every `case` and every `sort` below mean exactly
+# what it reads like. Side effect, and it is the right trade: apt's own messages
+# come out in English instead of the user's language.
+LC_ALL=C
+export LC_ALL
 
 GITHUB_REPO="rubensrpj/mustard"
 LATEST_URL="https://github.com/$GITHUB_REPO/releases/latest"
@@ -35,6 +46,7 @@ SUDO=""
 DEB=""
 DEB_URL=""
 TMP_DIR=""
+HDR_FILE=""
 VERSION="${MUSTARD_VERSION:-}"
 VERSION="${VERSION#v}"
 
@@ -61,10 +73,14 @@ if [ -n "$VERSION" ] && ! valid_version "$VERSION"; then
   exit 1
 fi
 
-# Drop the download directory on every exit path, failures and signals included.
+# Drop the download directory AND the captured header file on every exit path,
+# failures and signals included.
 cleanup() {
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
     rm -rf "$TMP_DIR"
+  fi
+  if [ -n "$HDR_FILE" ] && [ -f "$HDR_FILE" ]; then
+    rm -f "$HDR_FILE"
   fi
 }
 trap cleanup EXIT
@@ -143,15 +159,42 @@ resolve_latest_tag() {
     curl)
       # -I (HEAD) yields the same %{url_effective} as a GET for a few hundred
       # bytes; a GET here downloads the whole /releases/tag/vX page only to throw
-      # it away — real waste on the slow links this path exists to serve.
+      # it away — real waste on the slow links this path exists to serve. But a
+      # corporate proxy that answers 405/403 to HEAD would then kill the whole
+      # one-liner, blaming the network for something a plain GET resolves fine —
+      # so the GET is the second attempt, not the absent one.
       _url=$(curl -fsSLI --connect-timeout 10 --max-time 60 \
-               -o /dev/null -w '%{url_effective}' "$LATEST_URL" 2>/dev/null) || return 1
+               -o /dev/null -w '%{url_effective}' "$LATEST_URL" 2>/dev/null) \
+        || _url=$(curl -fsSL --connect-timeout 10 --max-time 60 \
+               -o /dev/null -w '%{url_effective}' "$LATEST_URL" 2>/dev/null) \
+        || return 1
       ;;
     wget)
+      # `wget … | sed | head` took its status from head, which is always 0: DNS
+      # failure, TLS rejection, 404 and "answered, but no Location" all collapsed
+      # into an empty $_url and one generic message about the network. POSIX sh
+      # has no `pipefail`, so the output is parked in a file and read twice —
+      # once for the Location, once to tell "never reached GitHub" from "reached
+      # it and it answered no tag". wget's own status cannot be that verdict:
+      # --max-redirect=0 makes it exit non-zero on the SUCCESS path too, since
+      # the redirect it is told not to follow IS the answer being asked for.
+      HDR_FILE=$(mktemp 2>/dev/null || mktemp -t mustard.XXXXXX) || return 1
       # -q would also silence -S, so the headers are read from the captured stderr.
-      _url=$(wget -S --max-redirect=0 --tries=1 --timeout=20 -O /dev/null "$LATEST_URL" 2>&1 \
-               | sed -n 's/^[[:space:]]*Location:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-               | head -1)
+      wget -S --max-redirect=0 --tries=1 --timeout=20 -O /dev/null "$LATEST_URL" \
+        >"$HDR_FILE" 2>&1 || :
+      _url=$(sed -n 's/^[[:space:]]*Location:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+               "$HDR_FILE" | head -1)
+      if [ -z "$_url" ]; then
+        if grep -q '^[[:space:]]*HTTP/' "$HDR_FILE" 2>/dev/null; then
+          echo "aviso: o GitHub respondeu, mas não apontou nenhuma versão em" >&2
+          echo "       $LATEST_URL — nenhum Release publicado, ou todos em rascunho." >&2
+        else
+          echo "aviso: não consegui falar com o GitHub ($LATEST_URL)." >&2
+          echo "       a resposta não chegou: DNS, proxy ou TLS — não é 'sem versão'." >&2
+        fi
+      fi
+      rm -f "$HDR_FILE"
+      HDR_FILE=""
       ;;
     *)
       return 1
@@ -211,7 +254,9 @@ fi
 
 # --- 2) sem .deb local: o Release do GitHub ---------------------------------
 if [ -z "$DEB" ]; then
-  # --dry-run só imprime, então sobrevive sem curl/wget (nomeia a URL mesmo assim).
+  # --dry-run não baixa nada, então não exige curl/wget: com MUSTARD_VERSION
+  # fixada ele ainda sabe qual pacote nomearia. Sem downloader E sem versão
+  # fixada ele não sabe, e é o bloco 3 que recusa — aqui não.
   if [ -z "$DOWNLOADER" ] && [ "$DRY_RUN" -eq 0 ]; then
     echo "erro: não achei um mustard_*_amd64.deb ao lado do install.sh e não há" >&2
     echo "      curl nem wget para baixar o pacote do Release." >&2
@@ -242,19 +287,29 @@ if [ -z "$DEB" ]; then
 fi
 
 # --- 3) --dry-run: mostra o que seria feito e sai ---------------------------
-# Resolution already happened above; nothing here touches apt or the network, so
-# this path exits 0 offline as well, naming the URL it would have used.
+# Resolution already happened above; nothing here touches apt or the network.
+# The exit status is the whole point of this mode: 0 means "I know what I would
+# install" — a local .deb (knowable offline, the package is right there) or a
+# resolved/pinned tag — and NON-ZERO means the resolution failed. It used to
+# exit 0 either way, "naming the URL it would have used", which turned a check
+# on a runner with no egress into a green that proved nothing at all.
 if [ "$DRY_RUN" -eq 1 ]; then
+  if [ -z "$DEB" ] && [ -z "$DEB_URL" ]; then
+    echo "erro: --dry-run não conseguiu determinar o que seria instalado." >&2
+    echo "      não há mustard_*_amd64.deb ao lado do install.sh e a versão não" >&2
+    echo "      pôde ser resolvida em $LATEST_URL (sem rede? sem curl nem wget?)." >&2
+    echo "      fixe a versão que quer instalar (a lista está em" >&2
+    echo "      https://github.com/$GITHUB_REPO/releases):" >&2
+    echo "      MUSTARD_VERSION=<versao> ./install.sh --dry-run" >&2
+    exit 1
+  fi
   echo "==> --dry-run: nada será instalado."
   if [ -n "$DEB" ]; then
     echo "    Pacote:  $DEB"
     echo "    Origem:  arquivo local (ao lado do install.sh)"
-  elif [ -n "$DEB_URL" ]; then
+  else
     echo "    Pacote:  mustard_${VERSION}_amd64.deb"
     echo "    Origem:  $DEB_URL"
-  else
-    echo "    Pacote:  mustard_<versao>_amd64.deb"
-    echo "    Origem:  $LATEST_URL  (a versão não pôde ser resolvida agora — sem rede?)"
   fi
   echo "    Comando: apt-get install -y <pacote>"
   if [ -n "$TARGET" ]; then
@@ -311,10 +366,22 @@ if [ -n "$TARGET" ]; then
 fi
 
 echo
-echo "==> Pronto."
+echo "==> Pronto — falta UM passo, e ele não é aqui no terminal."
 echo "    CLI:        mustard --version   (e mustard-rt, scan, rtk)"
 echo "    Dashboard:  procure \"Mustard Dashboard\" no menu de aplicativos,"
 echo "                ou rode  mustard-dashboard  no terminal."
+echo
+# Quem instalou pelo `curl … | sh` não baixou documento nenhum: este bloco é a
+# única superfície que ele lê. Sem o passo do plugin, os comandos /mustard:*, os
+# hooks e o MCP de memória simplesmente não existem — o .deb traz só binários e
+# templates, e nunca toca no ~/.claude.
+echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
+echo "    os hooks e o MCP de memória. Abra o Claude Code no projeto (claude) e"
+echo "    digite estas duas linhas DENTRO dele (não são comandos de terminal):"
+echo "        /plugin marketplace add rubensrpj/mustard"
+echo "        /plugin install mustard@mustard-local"
+echo "    O \"@mustard-local\" é o NOME do marketplace, não um caminho. Depois"
+echo "    feche e abra o Claude Code para os hooks entrarem."
 echo
 echo "    Preparar um projeto:  cd /caminho/do/projeto && mustard init"
 echo "    Desinstalar tudo:     $SUDO apt remove mustard"

@@ -84,9 +84,15 @@ body's Linux line, and the Linux row plus plugin step of both READMEs.
 A `--dry-run` flag is IN, and it is not decoration: it is the only way a
 criterion can prove the installer resolves a package without invoking `apt` as
 root on the machine running the check. It resolves the package (local file or
-release URL), prints what it would install, and exits 0 without touching the
-system. Offline it still exits 0, naming the URL it would have used — otherwise
-the criterion would depend on the network.
+release URL), prints what it would install, and touches nothing on the system.
+
+Its exit status is the verdict, and it is NOT always 0. It exits 0 only when it
+knows what it would install: a `.deb` sitting beside the script (knowable
+offline — the package is right there), or a release tag it resolved or was
+handed in `MUSTARD_VERSION`. When it has neither, it exits NON-ZERO. Exiting 0
+while naming a URL it never resolved is what let a criterion whose whole verdict
+is the exit status go green on a runner with no egress, without the feature
+being exercised once.
 
 OUT: the `.deb` layout and `build-deb.sh`; the Windows and macOS tutorials;
 `mustard init` and its closing message; signing, apt repositories and a public

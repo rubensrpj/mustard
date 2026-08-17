@@ -8,7 +8,7 @@
 
 | ID | Status | Exit | Duration | Detail |
 |----|--------|------|----------|--------|
-| AC-1 | PASS | 0 | 0.4s |  |
-| AC-2 | PASS | 0 | 0.2s |  |
-| AC-3 | PASS | 0 | 8.2s |  |
+| AC-1 | PASS | 0 | 1.0s |  |
+| AC-2 | PASS | 0 | 0.3s |  |
+| AC-3 | PASS | 0 | 0.5s |  |
 

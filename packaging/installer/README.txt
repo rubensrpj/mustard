@@ -80,8 +80,9 @@ Como usar depois
   Se aparecer  Plugin "mustard" not found in any marketplace , faltou o primeiro
   comando; se o add falhar ao clonar, use a URL completa do repositório:
       /plugin marketplace add https://github.com/rubensrpj/mustard.git
-- Rode o Claude Code normalmente — os hooks do Mustard já ficam ligados via
-  .claude/settings.json.
+- Rode o Claude Code normalmente. Os hooks do Mustard vêm do plugin instalado no
+  passo acima, não do `mustard init`: o init só escreve o .claude/ e o
+  mustard.json, e o .claude/settings.json que ele grava não traz hook nenhum.
 - Versão instalada:  mustard --version   /   mustard-rt --version
 - Dashboard: "Mustard Dashboard" no menu (Linux) / Launchpad (macOS) / Menu
   Iniciar (Windows).
