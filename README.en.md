@@ -35,13 +35,13 @@ Single prerequisite on every OS: **[Claude Code](https://docs.claude.com/claude-
 
 ### Step 1 — your OS installer
 
-Download **one** file from the [**Releases**](https://github.com/rubensrpj/mustard/releases) page (*Assets* section). Each installer carries the full CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **and** the **Mustard Dashboard**:
+On Windows and macOS, download **one** file from the [**Releases**](https://github.com/rubensrpj/mustard/releases) page (*Assets* section); on **Linux**, a single terminal line does it. Each installer carries the full CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **and** the **Mustard Dashboard**:
 
-| OS | File | After downloading |
+| OS | What to download | What to do |
 |---|---|---|
 | 🪟 **Windows** 10/11 | `Mustard Dashboard_<version>_x64-setup.exe` | Double-click. On the SmartScreen warning (the installer is unsigned): **"More info" → "Run anyway"**. When done, **open a new terminal** — PATH only applies to terminals opened after the install. |
 | 🍎 **macOS** 11+ (Intel + Apple Silicon) | `Mustard-<version>-universal.pkg` | The package is unsigned: **right-click → Open** (Gatekeeper). Follow the wizard, then open a new terminal. |
-| 🐧 **Linux** (Ubuntu 22.04+) | `mustard_<version>_amd64.deb` + `install.sh` | Put both in the same folder and run `./install.sh` (uses `apt` to resolve dependencies). |
+| 🐧 **Linux** (Ubuntu 22.04+) | none — install in one line:<br>`curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh \| sh` | The script downloads the `.deb` from the latest Release and hands it to `apt` (which resolves the dependencies). Manual route, for whoever wants to check the `sha256` first: download `mustard_<version>_amd64.deb` + `install.sh` into the same folder and run `./install.sh`. |
 
 Verify in a fresh terminal:
 
@@ -57,11 +57,11 @@ The complete walkthrough for each OS (including common issues and uninstall) shi
 The harness (the `/mustard:*` commands, hooks, gates, agents, and the memory MCP server) is distributed as a **Claude Code plugin**:
 
 ```
-/plugin marketplace add <marketplace repository>
+/plugin marketplace add rubensrpj/mustard
 /plugin install mustard@mustard-local
 ```
 
-Restart (or reload) Claude Code so the hooks kick in. Until the public marketplace is published, `add` accepts the path of a local clone of this repository — the root containing `.claude-plugin/marketplace.json`.
+Restart (or reload) Claude Code so the hooks kick in. `add` registers the Mustard repository as a marketplace (it is the one carrying `.claude-plugin/marketplace.json`); the `@mustard-local` in `install` is the **marketplace name**, not a path. `add` also accepts the path of a local clone of this repository — the root containing `.claude-plugin/marketplace.json` — and the full HTTPS URL (`https://github.com/rubensrpj/mustard.git`), which helps when the `owner/repo` shorthand, which clones over SSH, cannot authenticate.
 
 > **Automatic binaries:** the plugin ships no binaries in git. On the **first session**, the bootstrap (`mustard-boot`) downloads the `mustard-bins-<version>-<os>` package from the Release assets matching the plugin's version and installs it inside the plugin — silent and fail-open (no network → the session continues normally and it retries next time). If you also ran Step 1, the CLI is on your PATH anyway; both paths coexist.
 
