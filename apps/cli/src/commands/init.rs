@@ -774,11 +774,19 @@ fn install_ripgrep() -> bool {
 
 /// Print the closing "next steps" block.
 ///
-/// The installer runs `mustard init --yes` at the end of a `curl … | sh`, so for
-/// a one-liner user this block is the LAST thing on screen and no document is
-/// ever opened. It therefore prints the two commands verbatim: the placeholder
-/// this replaced (`add <mustard repo or local directory>` → `install mustard`)
-/// typed as written answers `Plugin "mustard" not found in any marketplace`.
+/// This surface has to stand on its own, because `mustard init` is most often
+/// run DIRECTLY in a project, with no installer around it and no document open.
+/// It therefore prints the two commands verbatim: the placeholder this replaced
+/// (`add <mustard repo or local directory>` → `install mustard`) typed as
+/// written answers `Plugin "mustard" not found in any marketplace`.
+///
+/// The Linux installer also runs `mustard init --yes` at the end of a
+/// `curl … | sh`. There this block is NOT the last thing on screen — the
+/// installer prints its own closing block after it — so the two would otherwise
+/// teach the same plugin step twice, in English and then in Portuguese. The
+/// installer resolves that on its side: when it ran init itself it points back
+/// at these lines instead of reprinting them (`packaging/installer/install.sh`).
+/// Keep these two commands here regardless; they are what the direct run needs.
 fn print_next_steps() {
     println!("\nDone!\n");
     println!("Next:");

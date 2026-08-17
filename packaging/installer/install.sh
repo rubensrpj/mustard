@@ -19,7 +19,14 @@
 #   ./install.sh /caminho/projeto # também roda `mustard init` nesse projeto
 #   ./install.sh --dry-run        # só mostra o que seria instalado; não instala
 #                                 # (sai != 0 se não conseguir descobrir o pacote)
-#   MUSTARD_VERSION=<versao> ./install.sh # fixa a versão em vez do último Release
+#   MUSTARD_VERSION=0.1.35 ./install.sh   # fixa a versão em vez do último Release
+#   curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | MUSTARD_VERSION=0.1.35 sh
+#                                 # o mesmo, na forma de uma linha só
+#
+# Troque o 0.1.35 pelo número que a página de Releases mostrar. O número vai
+# LITERAL na linha: escrever <versao> não é um espaço em branco para preencher,
+# é um redirecionamento de entrada — o shell zera a variável, tenta abrir um
+# arquivo chamado `versao` e responde `sh: versao: No such file or directory`.
 #
 # O .deb ao lado deste script é a fonte preferida; quando não há nenhum (é o caso
 # do `curl … | sh`, que não deixa arquivo nenhum em disco) o instalador baixa o
@@ -46,7 +53,6 @@ SUDO=""
 DEB=""
 DEB_URL=""
 TMP_DIR=""
-HDR_FILE=""
 VERSION="${MUSTARD_VERSION:-}"
 VERSION="${VERSION#v}"
 
@@ -73,14 +79,16 @@ if [ -n "$VERSION" ] && ! valid_version "$VERSION"; then
   exit 1
 fi
 
-# Drop the download directory AND the captured header file on every exit path,
-# failures and signals included.
+# Drop the download directory on every exit path, failures and signals included.
+# $TMP_DIR is the ONLY thing this script creates on disk: the tag probe used to
+# park wget's headers in a mktemp file too, but that assignment happened inside
+# the `$(resolve_latest_tag)` command-substitution SUBSHELL, so the parent's copy
+# of the variable stayed empty and this trap could never see it — the guard was
+# always false and a Ctrl-C during the probe leaked the file. The probe now keeps
+# the headers in a variable, so there is no second path to clean up.
 cleanup() {
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
     rm -rf "$TMP_DIR"
-  fi
-  if [ -n "$HDR_FILE" ] && [ -f "$HDR_FILE" ]; then
-    rm -f "$HDR_FILE"
   fi
 }
 trap cleanup EXIT
@@ -128,6 +136,43 @@ if [ "$DRY_RUN" -eq 0 ] && ! command -v apt-get >/dev/null 2>&1; then
   exit 1
 fi
 
+# --- arquitetura: só existe pacote amd64 publicado --------------------------
+# O nome do asset é fixo (mustard_<versao>_amd64.deb) porque é o único que o
+# Release traz — não há URL arm64 a construir. Sem esta recusa, um arm64
+# (Raspberry Pi, Graviton, VM no Apple Silicon) resolve a tag, BAIXA um .deb
+# perfeitamente válido — o `dpkg-deb --info` aprova, ele só é de outra máquina —,
+# digita a senha do sudo, espera o `apt-get update` e só então morre com
+# "package architecture (amd64) does not match system (arm64)". Por isso a
+# verificação mora aqui, junto com as outras duas de "esta máquina serve?": ANTES
+# de qualquer ida à rede, ANTES do download e ANTES da senha do sudo.
+#
+# --dry-run não instala nada e não é barrado aqui — ele só resolve e descreve o
+# pacote, e precisa continuar respondendo isso em qualquer máquina (é assim que
+# um critério consegue exercitar a resolução sem apt e sem root).
+if [ "$DRY_RUN" -eq 0 ]; then
+  ARCH=""
+  if command -v dpkg >/dev/null 2>&1; then
+    ARCH=$(dpkg --print-architecture 2>/dev/null) || ARCH=""
+  fi
+  if [ -z "$ARCH" ]; then
+    echo "erro: não sei a arquitetura desta máquina — o dpkg não está aqui, ou não" >&2
+    echo "      respondeu. Como só existe pacote amd64 publicado, não vou instalar" >&2
+    echo "      no escuro." >&2
+    echo "      num Debian/Ubuntu o dpkg sempre existe; sem ele o próprio apt não" >&2
+    echo "      instalaria o pacote. Confira a máquina, ou baixe o .deb à mão da" >&2
+    echo "      página https://github.com/$GITHUB_REPO/releases." >&2
+    exit 1
+  fi
+  if [ "$ARCH" != "amd64" ]; then
+    echo "erro: arquitetura não suportada: $ARCH." >&2
+    echo "      o Release publica só o pacote amd64 (mustard_<versao>_amd64.deb);" >&2
+    echo "      não existe build $ARCH para baixar, e instalar o amd64 aqui falharia" >&2
+    echo "      no dpkg depois de pedir sua senha." >&2
+    echo "      saída: compilar do código-fonte — https://github.com/$GITHUB_REPO" >&2
+    exit 1
+  fi
+fi
+
 # --- sudo só quando não-root ------------------------------------------------
 # Verificado ANTES de qualquer ida à rede: resolver a versão custa até 60s, e
 # quem não é root nem tem sudo não pode instalar de jeito nenhum — dizer isso na
@@ -173,19 +218,24 @@ resolve_latest_tag() {
       # `wget … | sed | head` took its status from head, which is always 0: DNS
       # failure, TLS rejection, 404 and "answered, but no Location" all collapsed
       # into an empty $_url and one generic message about the network. POSIX sh
-      # has no `pipefail`, so the output is parked in a file and read twice —
-      # once for the Location, once to tell "never reached GitHub" from "reached
-      # it and it answered no tag". wget's own status cannot be that verdict:
+      # has no `pipefail`, so the output is captured whole and read twice — once
+      # for the Location, once to tell "never reached GitHub" from "reached it and
+      # it answered no tag". wget's own status cannot be that verdict:
       # --max-redirect=0 makes it exit non-zero on the SUCCESS path too, since
       # the redirect it is told not to follow IS the answer being asked for.
-      HDR_FILE=$(mktemp 2>/dev/null || mktemp -t mustard.XXXXXX) || return 1
+      #
+      # The capture is a VARIABLE, not a temp file: this function runs inside a
+      # command substitution, so anything it created on disk would be untrackable
+      # by the parent's cleanup trap (see cleanup()). A response header block is
+      # a few hundred bytes — there is nothing to gain by putting it on disk.
       # -q would also silence -S, so the headers are read from the captured stderr.
-      wget -S --max-redirect=0 --tries=1 --timeout=20 -O /dev/null "$LATEST_URL" \
-        >"$HDR_FILE" 2>&1 || :
-      _url=$(sed -n 's/^[[:space:]]*Location:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-               "$HDR_FILE" | head -1)
+      _hdr=$(wget -S --max-redirect=0 --tries=1 --timeout=20 -O /dev/null \
+               "$LATEST_URL" 2>&1 || :)
+      _url=$(printf '%s\n' "$_hdr" \
+               | sed -n 's/^[[:space:]]*Location:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+               | head -1)
       if [ -z "$_url" ]; then
-        if grep -q '^[[:space:]]*HTTP/' "$HDR_FILE" 2>/dev/null; then
+        if printf '%s\n' "$_hdr" | grep -q '^[[:space:]]*HTTP/'; then
           echo "aviso: o GitHub respondeu, mas não apontou nenhuma versão em" >&2
           echo "       $LATEST_URL — nenhum Release publicado, ou todos em rascunho." >&2
         else
@@ -193,8 +243,6 @@ resolve_latest_tag() {
           echo "       a resposta não chegou: DNS, proxy ou TLS — não é 'sem versão'." >&2
         fi
       fi
-      rm -f "$HDR_FILE"
-      HDR_FILE=""
       ;;
     *)
       return 1
@@ -232,12 +280,29 @@ download_file() {
 }
 
 # --- 1) .deb ao lado deste script (fonte preferida) -------------------------
-# $0 is not a usable path when the script arrives through a pipe (`curl | sh`),
-# so the directory is only derived when $0 really points at a file.
+# $0 is not a usable path when the script arrives through a pipe (`curl | sh`):
+# it is the literal string `sh`, which `[ -f "$0" ]` happily resolves against the
+# CURRENT directory. Run the one-liner from a directory that happens to hold a
+# file named `sh` (or `dash`, or `bash`) and SCRIPT_DIR became that directory,
+# so the picker below installed whatever stale or foreign-architecture .deb was
+# lying there instead of the release the user asked for. A path — something with
+# a slash in it — is the part `curl | sh` cannot fake, so it is what gets tested,
+# on top of the file still having to exist.
+#
+# What `curl | sh` cannot fake is a $0 that names THIS script: piped, $0 is the
+# interpreter's own name. So the interpreter names are what gets rejected, rather
+# than demanding a slash — `sh install.sh` (no slash, but a real script name) is a
+# legitimate invocation, and rejecting it would ignore a .deb sitting right there
+# and fail offline.
 SCRIPT_DIR=""
-if [ -f "$0" ]; then
-  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-fi
+case "$0" in
+  sh|bash|dash|ash|ksh|zsh|-sh|-bash) ;;
+  *)
+    if [ -f "$0" ]; then
+      SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    fi
+    ;;
+esac
 if [ -n "$SCRIPT_DIR" ]; then
   if [ -n "$VERSION" ]; then
     # An explicit version only accepts the local .deb of that same version.
@@ -281,7 +346,7 @@ if [ -z "$DEB" ]; then
     echo "erro: não consegui resolver a última versão em $LATEST_URL." >&2
     echo "      sem rede? tente de novo, ou fixe a versão que quer instalar" >&2
     echo "      (a lista está em https://github.com/$GITHUB_REPO/releases):" >&2
-    echo "      MUSTARD_VERSION=<versao> ./install.sh" >&2
+    echo "      MUSTARD_VERSION=0.1.35 ./install.sh   (troque pelo número de lá)" >&2
     exit 1
   fi
 fi
@@ -300,7 +365,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "      pôde ser resolvida em $LATEST_URL (sem rede? sem curl nem wget?)." >&2
     echo "      fixe a versão que quer instalar (a lista está em" >&2
     echo "      https://github.com/$GITHUB_REPO/releases):" >&2
-    echo "      MUSTARD_VERSION=<versao> ./install.sh --dry-run" >&2
+    echo "      MUSTARD_VERSION=0.1.35 ./install.sh --dry-run   (troque o número)" >&2
     exit 1
   fi
   echo "==> --dry-run: nada será instalado."
@@ -351,18 +416,62 @@ fi
 echo "==> Pacote: $DEB"
 
 # --- instala (apt resolve as dependências do dashboard) ---------------------
+# Duas blindagens, e as duas existem por causa do `curl … | sh`:
+#
+# `< /dev/null` — nesse modo a ENTRADA deste script é o próprio cano que ainda
+# carrega o resto do install.sh, ainda não lido pelo shell. O apt herda essa
+# entrada: qualquer pergunta que ele faça (um conffile do dpkg, uma tela do
+# debconf) lê dali e COME os bytes que faltavam — o bloco do `mustard init` e o
+# bloco do plugin somem, ou meia linha é executada. Com /dev/null na entrada, o
+# apt não tem de onde comer.
+#
+# DEBIAN_FRONTEND=noninteractive — o `-y` responde a pergunta do apt, não as do
+# debconf/dpkg. Vai via `env` porque o sudo zera o ambiente (env_reset): um
+# `DEBIAN_FRONTEND=… sudo apt-get …` seria descartado antes de chegar ao apt.
+APT_ENV="env DEBIAN_FRONTEND=noninteractive"
+
 echo "==> Atualizando índices do apt (para resolver as dependências do dashboard)…"
-$SUDO apt-get update || echo "  aviso: 'apt-get update' falhou — seguindo (deps podem já estar em cache)."
+$SUDO $APT_ENV apt-get update </dev/null \
+  || echo "  aviso: 'apt-get update' falhou — seguindo (deps podem já estar em cache)."
 
 echo "==> Instalando o Mustard (CLI + dashboard)…"
 # O caminho absoluto faz o apt tratar como arquivo local e puxar as dependências.
-$SUDO apt-get install -y "$DEB"
+$SUDO $APT_ENV apt-get install -y "$DEB" </dev/null
 
 # --- opcional: prepara um projeto -------------------------------------------
+INIT_RAN=0
 if [ -n "$TARGET" ]; then
   # Já validado e resolvido para caminho absoluto na leitura dos argumentos.
-  echo "==> Rodando 'mustard init' em $TARGET"
-  ( cd "$TARGET" && mustard init --yes )
+  #
+  # Como o apt exige root e o tutorial pede sudo, a forma natural do comando é
+  # `curl … | sudo sh -s -- ~/meu-projeto` — e aí o `mustard init` rodaria como
+  # root, deixando `.claude/` e `mustard.json` com dono root:root. Toda escrita
+  # posterior do dono do projeto (o próprio Claude Code, o `mustard init` de
+  # novo) morreria com EACCES. Quando o sudo preencheu SUDO_USER sabemos QUEM
+  # chamou, e o init volta a rodar como essa pessoa. Root de verdade (login root,
+  # sem SUDO_USER) roda como está: aí o dono do projeto é mesmo o root.
+  INIT_AS=""
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+     && command -v sudo >/dev/null 2>&1; then
+    # -H para o HOME ser o de $SUDO_USER, e não o do root.
+    INIT_AS="sudo -H -u $SUDO_USER"
+    echo "==> Rodando 'mustard init' em $TARGET (como $SUDO_USER, não como root)"
+  else
+    echo "==> Rodando 'mustard init' em $TARGET"
+  fi
+  # `set -e` mataria o script inteiro se o init falhasse (templates fora do
+  # lugar, alvo sem permissão de escrita, RTK ausente) — e o usuário sairia com
+  # status != 0 logo depois de um apt que DEU CERTO, sem ler uma palavra sobre o
+  # plugin, que é justamente o passo que este trabalho existe para não perder.
+  # Dentro de um `if`, a falha vira desvio em vez de morte súbita.
+  if ( cd "$TARGET" && $INIT_AS mustard init --yes ); then
+    INIT_RAN=1
+  else
+    echo "aviso: o 'mustard init' falhou em $TARGET — o Mustard em si ESTÁ" >&2
+    echo "       instalado (o apt terminou). Rode o init à mão para preparar o" >&2
+    echo "       projeto:" >&2
+    echo "           cd $TARGET && mustard init" >&2
+  fi
 fi
 
 echo
@@ -371,17 +480,32 @@ echo "    CLI:        mustard --version   (e mustard-rt, scan, rtk)"
 echo "    Dashboard:  procure \"Mustard Dashboard\" no menu de aplicativos,"
 echo "                ou rode  mustard-dashboard  no terminal."
 echo
-# Quem instalou pelo `curl … | sh` não baixou documento nenhum: este bloco é a
-# única superfície que ele lê. Sem o passo do plugin, os comandos /mustard:*, os
-# hooks e o MCP de memória simplesmente não existem — o .deb traz só binários e
-# templates, e nunca toca no ~/.claude.
-echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
-echo "    os hooks e o MCP de memória. Abra o Claude Code no projeto (claude) e"
-echo "    digite estas duas linhas DENTRO dele (não são comandos de terminal):"
-echo "        /plugin marketplace add rubensrpj/mustard"
-echo "        /plugin install mustard@mustard-local"
-echo "    O \"@mustard-local\" é o NOME do marketplace, não um caminho. Depois"
-echo "    feche e abra o Claude Code para os hooks entrarem."
+# Quem instalou pelo `curl … | sh` não baixou documento nenhum: alguma superfície
+# aqui no terminal PRECISA ensinar o passo do plugin, senão os comandos
+# /mustard:*, os hooks e o MCP de memória simplesmente não existem — o .deb traz
+# só binários e templates, e nunca toca no ~/.claude.
+#
+# Duas superfícies ensinam esse passo, e cada uma tem que bastar SOZINHA: o
+# `mustard init`, que também é rodado direto por quem já tem o Mustard instalado,
+# e este bloco, lido por quem instalou sem passar um projeto. O que não pode é
+# imprimir as duas — quando o init roda AQUI, o usuário lia as mesmas duas linhas
+# /plugin duas vezes seguidas, em inglês e depois em português. Então quando o
+# init já as imprimiu, este bloco aponta para lá em vez de repetir.
+if [ "$INIT_RAN" -eq 1 ]; then
+  echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
+  echo "    os hooks e o MCP de memória. As duas linhas /plugin … estão logo acima,"
+  echo "    na saída do 'mustard init' (\"Next: 1.\"): elas são digitadas DENTRO do"
+  echo "    Claude Code, não no terminal. Depois feche e abra o Claude Code para os"
+  echo "    hooks entrarem."
+else
+  echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
+  echo "    os hooks e o MCP de memória. Abra o Claude Code no projeto (claude) e"
+  echo "    digite estas duas linhas DENTRO dele (não são comandos de terminal):"
+  echo "        /plugin marketplace add rubensrpj/mustard"
+  echo "        /plugin install mustard@mustard-local"
+  echo "    O \"@mustard-local\" é o NOME do marketplace, não um caminho. Depois"
+  echo "    feche e abra o Claude Code para os hooks entrarem."
+fi
 echo
 echo "    Preparar um projeto:  cd /caminho/do/projeto && mustard init"
 echo "    Desinstalar tudo:     $SUDO apt remove mustard"
