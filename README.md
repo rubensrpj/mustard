@@ -35,13 +35,13 @@ Pré-requisito único em todos os ambientes: **[Claude Code](https://docs.claude
 
 ### Passo 1 — instalador do seu sistema
 
-Baixe **um** arquivo na página de [**Releases**](https://github.com/rubensrpj/mustard/releases) (seção *Assets*). Cada instalador traz o CLI completo (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **e** o **Mustard Dashboard**:
+No Windows e no macOS, baixe **um** arquivo na página de [**Releases**](https://github.com/rubensrpj/mustard/releases) (seção *Assets*); no **Linux**, uma linha de terminal resolve. Cada instalador traz o CLI completo (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **e** o **Mustard Dashboard**:
 
-| Sistema | Arquivo | Depois de baixar |
+| Sistema | O que baixar | O que fazer |
 |---|---|---|
 | 🪟 **Windows** 10/11 | `Mustard Dashboard_<versão>_x64-setup.exe` | Duplo-clique. No aviso do SmartScreen (o instalador não é assinado): **"Mais informações" → "Executar assim mesmo"**. Ao final, **abra um terminal novo** — o PATH só vale em terminais abertos depois da instalação. |
 | 🍎 **macOS** 11+ (Intel + Apple Silicon) | `Mustard-<versão>-universal.pkg` | O pacote não é assinado: **botão direito → Abrir** (Gatekeeper). Siga o assistente e abra um terminal novo. |
-| 🐧 **Linux** (Ubuntu 22.04+) | `mustard_<versão>_amd64.deb` + `install.sh` | Coloque os dois na mesma pasta e rode `./install.sh` (usa `apt` para resolver dependências). |
+| 🐧 **Linux** (Ubuntu 22.04+) | nenhum — instale numa linha:<br>`curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh \| sh` | O script baixa o `.deb` do último Release e chama o `apt` (que resolve as dependências). Rota manual, para quem quer conferir o `sha256` antes: baixe `mustard_<versão>_amd64.deb` + `install.sh` na mesma pasta e rode `chmod +x install.sh && ./install.sh` — os assets do Release chegam **sem** a permissão de execução, e sem o `chmod` o shell responde `Permission denied`. |
 
 Verifique num terminal novo:
 
@@ -57,11 +57,11 @@ O passo a passo completo de cada sistema (incluindo problemas comuns e desinstal
 O harness (comandos `/mustard:*`, hooks, gates, agentes e o servidor MCP de memória) é distribuído como **plugin do Claude Code**:
 
 ```
-/plugin marketplace add <repositório do marketplace>
+/plugin marketplace add rubensrpj/mustard
 /plugin install mustard@mustard-local
 ```
 
-Reinicie (ou recarregue) o Claude Code para os hooks entrarem. Enquanto o marketplace público não é publicado, o `add` aceita o caminho de um clone local deste repositório — a raiz que contém `.claude-plugin/marketplace.json`.
+Reinicie (ou recarregue) o Claude Code para os hooks entrarem. O `add` registra o repositório do Mustard como *marketplace* (é ele que traz o `.claude-plugin/marketplace.json`); o `@mustard-local` no `install` é o **nome do marketplace**, não um caminho. O `add` também aceita o caminho de um clone local deste repositório — a raiz que contém `.claude-plugin/marketplace.json` — e a URL completa do repositório (`https://github.com/rubensrpj/mustard.git`), que é a forma a usar quando o atalho `owner/repo` não consegue clonar.
 
 > **Binários automáticos:** o plugin não carrega binários no git. Na **primeira sessão**, o bootstrap (`mustard-boot`) baixa o pacote `mustard-bins-<versão>-<sistema>` dos *Assets* do Release correspondente à versão do plugin e o instala dentro do próprio plugin — silencioso e à prova de falha (sem rede, a sessão segue normal e ele tenta de novo na próxima). Quem instalou pelo Passo 1 já tem o CLI no PATH de qualquer forma; os dois caminhos convivem.
 

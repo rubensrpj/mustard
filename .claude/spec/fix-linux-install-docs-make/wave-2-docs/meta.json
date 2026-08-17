@@ -1,0 +1,31 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-17T12:38:08.532Z",
+  "parent": "fix-linux-install-docs-make",
+  "checklist": [
+    {
+      "label": "packaging/installer/TUTORIAL-LINUX.md",
+      "path": "packaging/installer/TUTORIAL-LINUX.md",
+      "done": true
+    },
+    {
+      "label": "packaging/installer/RELEASE-BODY.md",
+      "path": "packaging/installer/RELEASE-BODY.md",
+      "done": true
+    },
+    {
+      "label": "README.md",
+      "path": "README.md",
+      "done": true
+    },
+    {
+      "label": "README.en.md",
+      "path": "README.en.md",
+      "done": true
+    }
+  ]
+}

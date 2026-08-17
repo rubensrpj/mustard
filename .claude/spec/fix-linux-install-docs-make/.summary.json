@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "fix-linux-install-docs-make",
+  "title": "the Linux install docs teach a manual multi-download route and omit the Claude Code plugin step, and install.sh cannot install without a .deb beside it — so no one-line curl install exists",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "installer",
+      "summary": "Make install.sh fetch the .deb itself, survive being piped into sh, and expose a --dry-run that resolves without installing",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "docs",
+      "summary": "Rewrite the four Linux install texts around the one-liner and add the missing Claude Code plugin step",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

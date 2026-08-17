@@ -4,7 +4,9 @@ Este tutorial explica, passo a passo, como instalar o Mustard **completo** num
 Ubuntu: os comandos de linha (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`,
 `rtk`) **e** o **Mustard Dashboard** (aplicativo desktop). Tudo num único pacote
 `.deb`, instalado com `apt` — você não precisa instalar Rust, Node ou qualquer
-ferramenta de desenvolvimento.
+ferramenta de desenvolvimento. **Nem baixar o pacote à mão**: a instalação cabe
+numa linha (item 2); baixar o `.deb` é a rota alternativa (item 3), para quem
+quer conferir o `sha256` antes.
 
 O que será instalado (gerenciado pelo apt):
 
@@ -38,35 +40,37 @@ e faça login uma vez com `claude` (guia completo em <https://docs.claude.com/cl
 
 ---
 
-## 2. Baixar e descompactar o pacote
+## 2. Instalar numa linha (rota recomendada)
 
-Copie o pacote para qualquer pasta (por exemplo, `~/Downloads`) e descompacte
-(se ele veio num `.tar.gz` ou `.zip`); ou simplesmente coloque o `install.sh` e o
-`mustard_*_amd64.deb` na mesma pasta:
-
-```sh
-cd ~/Downloads
-# (se vier compactado) tar -xzf mustard-linux.tar.gz && cd mustard-linux
-ls
-# deve listar: install.sh   mustard_<versao>_amd64.deb   README.txt   TUTORIAL-LINUX.md
-```
-
----
-
-## 3. Instalar (tudo de uma vez)
-
-**a) Instalar tudo:**
+Cole **esta linha** num terminal. Ela baixa o instalador, que por sua vez baixa o
+`.deb` do último Release e entrega ao `apt` — você não baixa arquivo nenhum à mão:
 
 ```sh
-./install.sh
+curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh
 ```
 
-**b) Instalar e já preparar um projeto seu para testar** (roda o `mustard init`
-no projeto indicado):
+**Instalar e já preparar um projeto seu para testar** (roda o `mustard init` no
+projeto indicado) — o caminho vai depois do `-s --`:
 
 ```sh
-./install.sh /caminho/do/seu/projeto
+curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh -s -- /caminho/do/seu/projeto
 ```
+
+Duas variações úteis:
+
+```sh
+# só mostra o que seria feito; não instala nada
+curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh -s -- --dry-run
+
+# fixa uma versão em vez de pegar o último Release
+curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | MUSTARD_VERSION=0.1.35 sh
+```
+
+> O `0.1.35` acima é um exemplo: troque pelo número que a página de
+> [Releases](https://github.com/rubensrpj/mustard/releases) mostrar. Escreva o
+> número **literal** — um `<versao>` no lugar dele não é um espaço para
+> preencher: o `<` é redirecionamento de entrada, então o shell deixaria a
+> variável vazia e responderia `sh: versao: No such file or directory`.
 
 O instalador chama o `apt`, que:
 
@@ -77,6 +81,36 @@ O instalador chama o `apt`, que:
 3. adiciona o atalho "Mustard Dashboard" ao menu de aplicativos;
 4. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/`
    e o `mustard.json`).
+
+---
+
+## 3. Alternativa: baixar o `.deb` à mão (permite conferir o sha256)
+
+Prefere inspecionar o pacote antes de instalar? Baixe da página de
+[Releases](https://github.com/rubensrpj/mustard/releases) (seção **Assets**) os
+dois arquivos — `install.sh` e `mustard_<versao>_amd64.deb` — para a mesma pasta:
+
+```sh
+cd ~/Downloads
+ls
+# deve listar: install.sh   mustard_<versao>_amd64.deb   (e, se veio no pacote, README.txt e TUTORIAL-LINUX.md)
+```
+
+Confira o resumo **sha256** do `.deb` e compare com o `digest` que a página do
+Release mostra para esse mesmo asset:
+
+```sh
+sha256sum mustard_<versao>_amd64.deb
+```
+
+Batendo, instale. Com um `.deb` ao lado dele, o `install.sh` usa **esse arquivo**
+e não baixa nada:
+
+```sh
+chmod +x install.sh
+./install.sh                        # instala tudo
+./install.sh /caminho/do/projeto    # instala e roda `mustard init` no projeto
+```
 
 > Prefere o comando do apt direto? É só:
 > `sudo apt install ./mustard_<versao>_amd64.deb`
@@ -109,10 +143,30 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso cria a pasta `.claude/` (hooks, skills e configuração) e o
-`mustard.json` na raiz. A partir daí é só **abrir o Claude Code normalmente
-dentro do projeto** — os hooks do Mustard já estão ligados via
-`.claude/settings.json`; nenhum passo extra é necessário.
+Isso escreve a pasta `.claude/` (a configuração do projeto) e o `mustard.json` na
+raiz. Só isso: os **hooks** do Mustard **não** vêm daqui — o
+`.claude/settings.json` que o `init` grava não tem nenhum. Eles chegam junto com
+o plugin, que é o passo do item 6, e é por isso que ele não é opcional.
+
+---
+
+## 6. Instalar o plugin dentro do Claude Code
+
+O `.deb` traz **binários e templates**; ele não toca no seu `~/.claude`. Os
+comandos `/mustard:*`, os agentes e o servidor MCP de memória vêm do **plugin do
+Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
+
+Abra o Claude Code no projeto (`claude`) e digite:
+
+```
+/plugin marketplace add rubensrpj/mustard
+/plugin install mustard@mustard-local
+```
+
+O primeiro comando registra o *marketplace* (o repositório do Mustard, que traz o
+`.claude-plugin/marketplace.json`); o segundo instala o plugin `mustard` a partir
+dele — daí o `@mustard-local`, que é o **nome do marketplace**, não um caminho.
+Recarregue o Claude Code (feche e abra) para os hooks e comandos entrarem.
 
 São quatro portas dentro do Claude Code: `/mustard:git`, `/mustard:pr`,
 `/mustard:spec` e `/mustard:upsert`. Para COMEÇAR um trabalho não há comando —
@@ -120,7 +174,7 @@ descreva o pedido em palavras suas e o roteador escolhe o fluxo sozinho.
 
 ---
 
-## 6. Problemas comuns
+## 7. Problemas comuns
 
 **`mustard: command not found` logo após instalar**
 O `/usr/bin` já está no PATH de qualquer shell, então isso é raro. Se acontecer,
@@ -141,9 +195,24 @@ sudo apt --fix-broken install
 O dashboard exige glibc 2.35+ (Ubuntu 22.04+). Atualize a distro para usar o
 pacote completo.
 
+**`Plugin "mustard" not found in any marketplace`**
+Falta registrar o marketplace: rode `/plugin marketplace add rubensrpj/mustard`
+**antes** do `/plugin install mustard@mustard-local` (item 6). Se já tinha
+registrado, atualize a cópia local com `/plugin marketplace update mustard-local`
+e instale de novo.
+
+**`/plugin marketplace add rubensrpj/mustard` falha com erro de clone/autenticação**
+O `add` também aceita a URL completa do repositório, que é a forma a usar quando o
+atalho não consegue clonar:
+`/plugin marketplace add https://github.com/rubensrpj/mustard.git`.
+
+**O `curl … | sh` não instala nada / "não achei o pacote"**
+Sem rede, o instalador não consegue resolver a última versão. Confira a conexão,
+ou siga a rota manual do item 3 (baixando o `.deb` da página de Releases).
+
 ---
 
-## 7. Desinstalar
+## 8. Desinstalar
 
 Como é um pacote do apt, remover é uma linha:
 
