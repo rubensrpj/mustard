@@ -12,8 +12,16 @@
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
+//!
+//! `--private` selects the footprint that stays invisible to the host
+//! repository's git. It is needed only once: every later run reads the mode
+//! back off the clone-local exclude file that run wrote (see
+//! `shared::context::install_mode`), so the report grows its private half
+//! without the operator having to remember a flag.
 
 use std::path::PathBuf;
+
+use mustard_core::InstallMode;
 
 /// Execute `mustard-rt run upsert`.
 ///
@@ -22,14 +30,23 @@ use std::path::PathBuf;
 /// (`CLAUDE_PLUGIN_ROOT`), the core crate's own version otherwise. The field
 /// records "which harness last set this project up"; a legacy 3.1.x CLI stamp
 /// reads as drift once and this very command realigns it.
-pub fn run() {
+pub fn run(private: bool) {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
     let root = PathBuf::from(crate::shared::context::project_dir());
 
+    // The flag CHOOSES the mode; absent, the project's own exclude file answers.
+    // Never the other way round: a `--private` on an already-shared install must
+    // switch it, and a re-run without the flag must not silently undo one.
+    let mode = if private {
+        InstallMode::Private
+    } else {
+        crate::shared::context::install_mode(&root)
+    };
+
     let version = mustard_core::harness_version();
-    match mustard_core::upsert_project(&root, Some(&version)) {
+    match mustard_core::upsert_project(&root, Some(&version), mode) {
         Ok(report) => {
             let json = serde_json::to_string_pretty(&report)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));

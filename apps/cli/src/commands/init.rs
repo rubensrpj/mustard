@@ -47,6 +47,28 @@
 //! `.mcp.json` is deliberately **not** written: the `mustard` plugin ships its
 //! own `.mcp.json`, so a project-level copy is redundant once the plugin is
 //! enabled.
+//!
+//! ## `--private`
+//!
+//! `mustard init --private` installs the same harness under
+//! `mustard_core::InstallMode::Private`: every file above still lands on disk —
+//! the harness needs it there — but none of it is visible to the host
+//! repository's git. Three differences, all decided by the mode:
+//!
+//! - a step 0 runs before anything is written, adding
+//!   `mustard_core::footprint_paths` to the clone-local exclude file and
+//!   reporting whatever that repository already tracks (see [`hide_footprint`]);
+//! - the harness settings go to `.claude/settings.local.json`, the untracked
+//!   local layer Claude Code reads beside `settings.json` — the core picks the
+//!   destination from the mode, so no call site composes it by hand;
+//! - step 4 (the `.github/` pull-request template) is skipped entirely: it is
+//!   scaffolding for a repository the operator owns, and it lands outside
+//!   `.claude/` where nothing else covers it.
+//!
+//! The mode is a FLAG and lives in no versioned file — a knob in `mustard.json`
+//! would itself be the trace the mode exists to remove. There is no prompt for
+//! it either: `--private` is the whole surface, so an ordinary install is never
+//! asked a question it does not need.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -60,7 +82,7 @@ use serde_json::json;
 
 use crate::commands::git_flow;
 use crate::fs_ops::copy_dir;
-use mustard_core::{ProjectConfig, Runtime, SeedOutcome};
+use mustard_core::{InstallMode, ProjectConfig, Runtime, SeedOutcome};
 
 /// Flags accepted by `mustard init`.
 #[derive(Debug, Default, Clone)]
@@ -71,6 +93,9 @@ pub struct InitOptions {
     pub yes: bool,
     /// Print intended actions without touching disk.
     pub dry_run: bool,
+    /// Install privately — the footprint lands on disk but stays invisible to
+    /// this clone's git (see [`InstallMode::Private`]).
+    pub private: bool,
 }
 
 /// What to do with an already-present `.claude/` directory.
@@ -119,6 +144,11 @@ pub fn init_with_templates(
         .canonicalize()
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
     let claude_path = project_path.join(".claude");
+    let mode = if options.private {
+        InstallMode::Private
+    } else {
+        InstallMode::Shared
+    };
 
     // Location guard — runs in dry-run too: the honest "intended action" for a
     // subdirectory of a git repository is a refusal, not a simulated install.
@@ -130,6 +160,14 @@ pub fn init_with_templates(
     println!("[mustard] runtime: {} {}/{}", runtime.kind, runtime.os, runtime.arch);
 
     if options.dry_run {
+        if mode.is_private() {
+            println!(
+                "  (dry-run) would install PRIVATELY: the harness settings would go to settings.local.json,"
+            );
+            println!(
+                "            the footprint would be added to this clone's git exclude file, and no .github/ would be seeded"
+            );
+        }
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.json  — reduced seed (plugin enablement stays at user scope; a planted placeholder pair is retired)");
         println!("    mustard/*.md   — injectable instruction files (orchestrator, response style); hooks inject them per mustard.json#inject");
@@ -161,6 +199,12 @@ pub fn init_with_templates(
     mfs::create_dir_all(&claude_path)
         .with_context(|| format!("creating {}", claude_path.display()))?;
 
+    // Step 0, private only: hide the footprint BEFORE any of it is written, so
+    // no seed is ever momentarily visible to the host repository's git.
+    if mode.is_private() {
+        hide_footprint(&project_path);
+    }
+
     // Migration (idempotent, every run over an existing project): remove the
     // footprint the pre-injectable Mustard left in the project's instruction
     // files — the planted `.claude/CLAUDE.md` orchestrator and the import +
@@ -170,10 +214,17 @@ pub fn init_with_templates(
     report_migration(&mustard_core::migrate_orchestrator_footprint(&project_path, &claude_path));
 
     // (a)+(e) settings.json: the reduced seed + the plugin-enablement retire —
-    // the core engine owns the content (compiled-in seed) and the merge rules.
-    let outcome = mustard_core::seed_settings(&claude_path, overwrite)
-        .context("seeding .claude/settings.json")?;
-    report_seed(".claude/settings.json", outcome);
+    // the core engine owns the content (compiled-in seed), the merge rules and
+    // the destination: a private install targets the untracked local layer
+    // (`settings.local.json`) instead, and the shared file is never written.
+    let settings_name = if mode.is_private() {
+        ".claude/settings.local.json"
+    } else {
+        ".claude/settings.json"
+    };
+    let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode)
+        .with_context(|| format!("seeding {settings_name}"))?;
+    report_seed(settings_name, outcome);
     // (b) injectable instruction files — the orchestrator is INJECTED by the
     // session hooks now (per `mustard.json#inject`), never planted as
     // `.claude/CLAUDE.md`.
@@ -192,9 +243,18 @@ pub fn init_with_templates(
 
     // Project-root `.github/` scaffolding (PR template) — not part of the
     // plugin, seeded only when the project has a GitHub remote. Never overwrites.
-    let gh = install_github_templates(templates_dir, &project_path)?;
-    if gh > 0 {
-        println!("  wrote {gh} GitHub template(s) at .github/");
+    //
+    // A private install skips it outright. The template is project scaffolding
+    // for a repository the operator OWNS, and it lands outside `.claude/`, where
+    // nothing else covers it — writing it into a client's repository is exactly
+    // the visible trace the mode exists to avoid.
+    if mode.is_private() {
+        println!("  skipped .github/ templates (private install — the host repository stays untouched)");
+    } else {
+        let gh = install_github_templates(templates_dir, &project_path)?;
+        if gh > 0 {
+            println!("  wrote {gh} GitHub template(s) at .github/");
+        }
     }
 
     ensure_global_permissions().unwrap_or_else(|err| {
@@ -255,6 +315,75 @@ fn guard_init_location(project_path: &Path) -> Result<()> {
          first, then re-run `mustard init` here.",
         repo_root.display()
     )
+}
+
+/// Private mode, step 0: hide the Mustard footprint from THIS clone's git, and
+/// name whatever the host repository already tracks.
+///
+/// Mirrors the private step of `mustard_core::upsert_project` so the two
+/// install faces never drift: the rule list is
+/// [`mustard_core::footprint_paths`], the write goes through the clone-local
+/// exclude layer (a path git resolves — never the literal `.git/info/exclude`,
+/// which does not exist in a submodule or a linked worktree), and an
+/// already-tracked path is REPORTED, never unlinked: `git rm --cached` rewrites
+/// the host's index, and that is the operator's decision, not an install-time
+/// cosmetic.
+///
+/// Fail-open in the core seam: no git, no repository, an unreadable or
+/// unwritable exclude file each degrade to a printed reason. The CLI only
+/// narrates.
+fn hide_footprint(project_path: &Path) {
+    let mut footprint = mustard_core::footprint_paths();
+    footprint.extend(backup_dirs(project_path));
+    let outcome = mustard_core::ensure_excluded(project_path, &footprint);
+    match (&outcome.unavailable, outcome.appended.len()) {
+        (Some(reason), _) => println!("  private install: {reason}"),
+        (None, 0) => {
+            println!("  private install: this clone's exclude file already carries every rule");
+        }
+        (None, count) => println!(
+            "  private install: hid {count} path(s) from this clone's git (exclude file, never committed)"
+        ),
+    }
+
+    let tracked = mustard_core::tracked_paths(project_path, &footprint);
+    if !tracked.is_empty() {
+        println!(
+            "  note: this repository ALREADY tracks {} — a git ignore rule cannot hide a tracked path,",
+            tracked.join(", ")
+        );
+        println!("        so those stay visible. Nothing was unlinked; clear them yourself with:");
+        println!("          git rm --cached {}", tracked.join(" "));
+    }
+}
+
+/// The `.claude.backup.<stamp>/` directories sitting in the project — this
+/// run's, if the operator chose "backup and overwrite" (that choice is taken
+/// before [`hide_footprint`] runs), plus any an earlier run left behind.
+///
+/// They are deliberately NOT in `mustard_core::footprint_paths`, which declares
+/// what an install SEEDS: a backup is a runtime artifact whose name carries a
+/// timestamp, so it can only be discovered, never declared. It is still
+/// something Mustard put in the project, and `.claude/settings.json` — a rule
+/// with a slash, therefore anchored at the root — does not cover the copy of it
+/// inside the backup. Without this, the one interactive path through a private
+/// install would leave exactly the visible directory the mode exists to prevent.
+///
+/// Fail-open: an unreadable project root yields no names, never an error. The
+/// list is sorted so the appended rules are deterministic.
+fn backup_dirs(project_path: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(project_path) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(".claude.backup."))
+        .map(|name| format!("{name}/"))
+        .collect();
+    names.sort();
+    names
 }
 
 /// Print one didactic line per seeded file. The seeding itself lives in the

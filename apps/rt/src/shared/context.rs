@@ -8,19 +8,31 @@
 use mustard_core::io::fs;
 use mustard_core::io::workspace::{workspace_root, WorkspaceError};
 use mustard_core::ClaudePaths;
+use mustard_core::InstallMode;
 use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-/// A cheap fingerprint of `<root>/mustard.json` — `(mtime, len)`, or `None` when
-/// the file is absent / unstat-able. A `stat` is far cheaper than the open + read
-/// + JSON parse it lets a cache hit skip.
-fn mustard_json_fingerprint(root: &Path) -> Option<(SystemTime, u64)> {
-    let meta = std::fs::metadata(root.join("mustard.json")).ok()?;
+/// A cheap fingerprint of one file — `(mtime, len)`, or `None` when it is absent
+/// / unstat-able. A `stat` is far cheaper than the open + read + parse it lets a
+/// cache hit skip, and folding it into the cache KEY (rather than invalidating
+/// by hand) is what keeps a rewritten file from being served stale.
+fn file_fingerprint(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
 }
+
+/// A cheap fingerprint of `<root>/mustard.json` — see [`file_fingerprint`].
+fn mustard_json_fingerprint(root: &Path) -> Option<(SystemTime, u64)> {
+    file_fingerprint(&root.join("mustard.json"))
+}
+
+/// Key of a fingerprinted memo: the path an answer belongs to, plus the
+/// [`file_fingerprint`] of the file the answer was derived from. Shared by the
+/// two caches below, which are the same idea over two different files.
+type FingerprintKey = (PathBuf, Option<(SystemTime, u64)>);
 
 /// Process-wide cache of [`ProjectConfig`] keyed by `(root, mustard.json
 /// fingerprint)`.
@@ -34,9 +46,8 @@ fn mustard_json_fingerprint(root: &Path) -> Option<(SystemTime, u64)> {
 /// one-shot-process lifetime, so "process-wide" is "per dispatch" in production.
 /// The `(mtime, len)` fingerprint re-loads a rewritten config, so an in-place
 /// edit is never served stale (matters only to tests that mutate `mustard.json`).
-fn config_cache() -> &'static Mutex<HashMap<(PathBuf, Option<(SystemTime, u64)>), ProjectConfig>> {
-    static CACHE: OnceLock<Mutex<HashMap<(PathBuf, Option<(SystemTime, u64)>), ProjectConfig>>> =
-        OnceLock::new();
+fn config_cache() -> &'static Mutex<HashMap<FingerprintKey, ProjectConfig>> {
+    static CACHE: OnceLock<Mutex<HashMap<FingerprintKey, ProjectConfig>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -57,6 +68,126 @@ pub fn project_config_cached(root: &Path) -> ProjectConfig {
         cache.insert(key, config.clone());
     }
     config
+}
+
+// ---------------------------------------------------------------------------
+// Install mode — autodetected, never configured
+// ---------------------------------------------------------------------------
+
+/// `.claude/settings.local.json` — the untracked settings layer a private
+/// install seeds INSTEAD of the file a host repository may version.
+const SETTINGS_LOCAL_RULE: &str = ".claude/settings.local.json";
+
+/// `CLAUDE.local.md` — the untracked instruction layer a private `scan --full`
+/// writes a subproject's Guards into instead of that subproject's `CLAUDE.md`.
+///
+/// Claude Code discovers a subdirectory `CLAUDE.local.md` exactly as it
+/// discovers a subdirectory `CLAUDE.md` — on demand, when a file in that
+/// directory is read — and appends it AFTER the shared file in the same
+/// directory, so a host repository's own Guards survive and ours are additive
+/// (verified against the official memory documentation, 2026-08-17).
+///
+/// `pub` because `commands::scan_claude` writes the file this name identifies:
+/// the detector and the writer must read ONE literal, or the mode would hide a
+/// path nobody produces.
+pub const CLAUDE_LOCAL_MD: &str = "CLAUDE.local.md";
+
+/// Per-`root` memo of the clone-local exclude file git resolves.
+///
+/// This is the expensive half — a `git rev-parse --git-path info/exclude`
+/// process spawn — and its answer is a property of the repository's shape, which
+/// does not change under a running hook, so `root` alone is a sound key.
+fn exclude_path_cache() -> &'static Mutex<HashMap<PathBuf, Option<PathBuf>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<PathBuf>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Process-wide cache of the resolved [`InstallMode`], keyed by
+/// `(exclude file, its (mtime, len) fingerprint)`.
+///
+/// Same shape and the same reason as [`config_cache`]: the verdict is read
+/// repeatedly within one dispatch, and folding the fingerprint into the key
+/// means a run that WRITES the exclude file (a private `run upsert`) is never
+/// afterwards served the answer from before its own write.
+fn install_mode_cache() -> &'static Mutex<HashMap<FingerprintKey, InstallMode>> {
+    static CACHE: OnceLock<Mutex<HashMap<FingerprintKey, InstallMode>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Which footprint this project was installed with — autodetected, never
+/// configured.
+///
+/// The mode lives in no versioned file and in no environment variable: a knob in
+/// `mustard.json` would itself be the trace the private mode exists to remove
+/// (the setting would announce the tool it hides), and an env var is state the
+/// operator has to remember. It is chosen ONCE through `run upsert --private`
+/// and thereafter read back off the clone-local exclude file that run wrote —
+/// so the state is self-evident wherever the project is opened.
+///
+/// The rules it looks for are the footprint's two LOCAL-LAYER entries
+/// ([`SETTINGS_LOCAL_RULE`] and [`CLAUDE_LOCAL_MD`]) — the destinations that
+/// exist for the private mode alone. Deliberately NOT "every rule
+/// `footprint_paths` returns": that list GROWS with each new injectable seed, so
+/// an all-rules test would read an already-private project as shared the first
+/// time it ran a newer Mustard — and the very next `scan --full` would then
+/// write into the host's `CLAUDE.md`. Detection is therefore tolerant while the
+/// install stays total (a private `upsert` re-appends whatever the footprint
+/// gained), which is the safe direction for each half.
+///
+/// Fail-open: no git, no repository, or an unreadable exclude file answers
+/// [`InstallMode::Shared`] — today's behaviour, unchanged.
+#[must_use]
+pub fn install_mode(root: &Path) -> InstallMode {
+    let Some(path) = exclude_path_cached(root) else {
+        return InstallMode::Shared;
+    };
+    let key = (path.clone(), file_fingerprint(&path));
+    if let Ok(cache) = install_mode_cache().lock() {
+        if let Some(hit) = cache.get(&key) {
+            return *hit;
+        }
+    }
+    let mode = match fs::read_to_string(&path) {
+        Ok(body) if carries_private_marks(&body) => InstallMode::Private,
+        _ => InstallMode::Shared,
+    };
+    if let Ok(mut cache) = install_mode_cache().lock() {
+        cache.insert(key, mode);
+    }
+    mode
+}
+
+/// The clone-local exclude file for `root` through [`exclude_path_cache`].
+fn exclude_path_cached(root: &Path) -> Option<PathBuf> {
+    let key = root.to_path_buf();
+    if let Ok(cache) = exclude_path_cache().lock() {
+        if let Some(hit) = cache.get(&key) {
+            return hit.clone();
+        }
+    }
+    let resolved = mustard_core::exclude_file(root);
+    if let Ok(mut cache) = exclude_path_cache().lock() {
+        cache.insert(key, resolved.clone());
+    }
+    resolved
+}
+
+/// Whether an exclude file's body carries BOTH local-layer rules.
+///
+/// Compared on the TRIMMED line and skipping comments, exactly as the writer
+/// (`mustard_core::ensure_excluded`) compares before appending — a CRLF file
+/// answers the same as an LF one.
+fn carries_private_marks(body: &str) -> bool {
+    let mut settings = false;
+    let mut instructions = false;
+    for line in body.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        settings |= line == SETTINGS_LOCAL_RULE;
+        instructions |= line == CLAUDE_LOCAL_MD;
+    }
+    settings && instructions
 }
 
 /// Per-`project` memo of [`current_spec`] for the life of the process (one hook
@@ -904,6 +1035,53 @@ pub fn current_wave() -> Option<i64> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // -----------------------------------------------------------------------
+    // install_mode — the marks it reads must be marks something writes
+    // -----------------------------------------------------------------------
+
+    /// The detector looks for two rules; the installer writes
+    /// `mustard_core::footprint_paths()`. They are spelled in two crates, so pin
+    /// them together: if the footprint ever renamed or dropped either entry, no
+    /// exclude file would carry it, `install_mode` would answer `Shared` forever,
+    /// and the next `scan --full` would write straight into a client's own
+    /// `CLAUDE.md` — with every other test still green.
+    #[test]
+    fn the_marks_install_mode_reads_are_really_in_the_footprint() {
+        let footprint = mustard_core::footprint_paths();
+        for mark in [SETTINGS_LOCAL_RULE, CLAUDE_LOCAL_MD] {
+            assert!(
+                footprint.iter().any(|p| p == mark),
+                "{mark} is not written by any install, so nothing could ever detect it: {footprint:?}",
+            );
+        }
+    }
+
+    /// Comments are layout and a partial footprint is not the private mode — the
+    /// two halves that keep the detector from answering `Private` by accident.
+    #[test]
+    fn private_marks_need_both_rules_and_ignore_comments() {
+        assert!(carries_private_marks(&format!(
+            "# theirs\nbuild/\n{SETTINGS_LOCAL_RULE}\r\n  {CLAUDE_LOCAL_MD}  \n"
+        )));
+        assert!(
+            !carries_private_marks(&format!("{SETTINGS_LOCAL_RULE}\n")),
+            "one rule is not the mode",
+        );
+        assert!(
+            !carries_private_marks(&format!("#{CLAUDE_LOCAL_MD}\n#{SETTINGS_LOCAL_RULE}\n")),
+            "a commented-out rule is not in force",
+        );
+        assert!(!carries_private_marks(""), "an empty exclude file is a shared install");
+    }
+
+    /// Fail-open: a tree git knows nothing about is a shared install, not an
+    /// error and not a panic.
+    #[test]
+    fn a_tree_without_a_repository_reads_as_shared() {
+        let dir = tempdir().unwrap();
+        assert_eq!(install_mode(dir.path()), InstallMode::Shared);
+    }
 
     // -----------------------------------------------------------------------
     // clarified_marker_path — shape (F6 clarify gate)

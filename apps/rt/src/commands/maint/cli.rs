@@ -163,7 +163,20 @@ pub enum MaintCmd {
     /// the legacy planted-orchestrator footprint is migrated away. Emits the
     /// `UpsertReport` as deterministic pretty JSON.
     #[command(display_order = 44)]
-    Upsert {},
+    Upsert {
+        /// Install PRIVATELY: the same files land on disk — the harness needs
+        /// them there — but none of them is visible to this clone's git. The
+        /// footprint is written into the clone-local exclude file, the harness
+        /// settings go to `.claude/settings.local.json` instead of the file the
+        /// host repository may version, and whatever that repository ALREADY
+        /// tracks is reported as residue (never unlinked).
+        ///
+        /// Needed only ONCE. Every later run reads the mode back off the
+        /// exclude file this one wrote, so the operator has no setting to
+        /// remember and no versioned knob announces the tool it hides.
+        #[arg(long)]
+        private: bool,
+    },
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
@@ -220,6 +233,6 @@ pub fn dispatch(cmd: MaintCmd) {
         MaintCmd::MaintValidate { dry_run } => {
             maint::maint_validate::run(maint::maint_validate::MaintValidateOpts { dry_run });
         }
-        MaintCmd::Upsert {} => maint::upsert::run(),
+        MaintCmd::Upsert { private } => maint::upsert::run(private),
     }
 }

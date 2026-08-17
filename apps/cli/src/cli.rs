@@ -40,6 +40,11 @@ enum Commands {
         /// Print intended actions without writing to disk.
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Install privately: the harness lands on disk but stays invisible to
+        /// this clone's git (settings go to the local layer, the footprint is
+        /// added to the clone-local exclude file, no `.github/` is seeded).
+        #[arg(long)]
+        private: bool,
     },
     /// Configure or reconfigure `mustard.json` (git flow).
     Config {
@@ -97,8 +102,8 @@ pub fn run() -> Result<()> {
 fn dispatch(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     match cli.command {
-        Commands::Init { force, yes, dry_run } => {
-            init::init(&cwd, &InitOptions { force, yes, dry_run })
+        Commands::Init { force, yes, dry_run, private } => {
+            init::init(&cwd, &InitOptions { force, yes, dry_run, private })
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
         Commands::Add { template, force } => {
@@ -122,12 +127,25 @@ mod tests {
 
     #[test]
     fn parses_init_with_flags() {
-        let cli = Cli::try_parse_from(["mustard", "init", "--yes", "--dry-run"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["mustard", "init", "--yes", "--dry-run", "--private"]).unwrap();
         match cli.command {
-            Commands::Init { yes, dry_run, .. } => {
+            Commands::Init { yes, dry_run, private, .. } => {
                 assert!(yes);
                 assert!(dry_run);
+                assert!(private);
             }
+            other => panic!("expected Init, got {other:?}"),
+        }
+    }
+
+    /// `--private` is opt-in: an ordinary `mustard init` stays shared, so the
+    /// mode never turns itself on for a project that did not ask for it.
+    #[test]
+    fn init_is_shared_unless_private_is_asked_for() {
+        let cli = Cli::try_parse_from(["mustard", "init"]).unwrap();
+        match cli.command {
+            Commands::Init { private, .. } => assert!(!private),
             other => panic!("expected Init, got {other:?}"),
         }
     }
