@@ -64,6 +64,7 @@ In a host repository that already versions its own `CLAUDE.md`, a private instal
 - `packages/core/src/lib.rs` — re-exports what `apps/` consumes.
 - `packages/core/tests/private_install.rs` (create) — AC-1 to AC-4.
 - `packages/core/tests/private_install_leaves_no_trace.rs` (create) — AC-8, the field proof against real git.
+- `apps/rt/src/shared/context.rs` — the single autodetection seam the whole runtime reads, beside `project_config_cached` whose cache idiom it reuses.
 - `apps/rt/src/commands/scan_claude.rs` — `run_full` picks the local instruction file when the install is private.
 - `apps/rt/src/commands/maint/cli.rs` — `--private` on the `Upsert` variant plus its dispatch arm.
 - `apps/rt/src/commands/maint/upsert.rs` — passes the mode through and reports it.

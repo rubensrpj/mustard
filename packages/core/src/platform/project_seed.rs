@@ -98,6 +98,27 @@ const CLAUDE_MD: &str = "CLAUDE.md";
 const CLAUDE_LOCAL_MD: &str = "CLAUDE.local.md";
 /// The pull-request template the CLI seeds when it finds a GitHub remote.
 const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
+/// Every `.claude/` directory in the project, at any depth.
+///
+/// A gitignore pattern that carries a slash is anchored to the directory the
+/// rule file governs — the repository root, for the clone-local exclude file —
+/// so `.claude/settings.json` covers the ROOT `.claude/` and no other. A full
+/// scan creates one `.claude/` per subproject, and the harness keeps writing
+/// into the root one the whole time it works: spec directories, the knowledge
+/// store, rendered prompts, the scan census. None of that can be enumerated —
+/// the list grows with the harness — so the cover is the directory itself, and
+/// the `**/` prefix is what makes it reach every depth (the same shape this
+/// repository's own root `.gitignore` uses for `**/.claude/settings.local.json`).
+const CLAUDE_DIR_ANY_DEPTH: &str = "**/.claude/";
+/// The timestamped copy `mustard init` leaves beside `.claude/` when the
+/// operator chooses "backup and overwrite".
+///
+/// Not a seed and not enumerable — the name carries a clock reading — but it is
+/// still something Mustard put in the project, and it sits OUTSIDE `.claude/`,
+/// where [`CLAUDE_DIR_ANY_DEPTH`] does not reach. A pattern whose only slash is
+/// the trailing one is unanchored, so this matches wherever such a directory
+/// appears.
+const CLAUDE_BACKUP_DIRS: &str = ".claude.backup.*/";
 
 /// Every project-root-relative path a Mustard install can put in the project —
 /// the FOOTPRINT, declared in exactly one place.
@@ -124,6 +145,17 @@ const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
 /// The two bare file names carry no slash, so as git ignore rules they match at
 /// every depth — a subproject's instruction file is covered by the same line as
 /// the root's.
+///
+/// The list closes with two entries that are RULES rather than paths —
+/// [`CLAUDE_DIR_ANY_DEPTH`] and [`CLAUDE_BACKUP_DIRS`]. The seed entries above
+/// them each name one file, and a rule that names one file can only ever hide
+/// the files somebody thought of: a private install still showed a subproject's
+/// whole `.claude/` and every spec directory the harness wrote while working.
+/// The two covers close that by shape instead of by enumeration. The per-file
+/// entries stay because the exclude write is only ONE of this list's two
+/// consumers — [`crate::platform::git_exclude::tracked_paths`] hands the same
+/// strings to `git ls-files` as pathspecs, and a directory cover cannot say
+/// WHICH footprint file a host repository already versions.
 #[must_use]
 pub fn footprint_paths() -> Vec<String> {
     let mut paths = vec![SETTINGS_JSON.to_string(), SETTINGS_LOCAL_JSON.to_string()];
@@ -137,6 +169,8 @@ pub fn footprint_paths() -> Vec<String> {
     paths.push(CLAUDE_MD.to_string());
     paths.push(CLAUDE_LOCAL_MD.to_string());
     paths.push(GITHUB_PR_TEMPLATE.to_string());
+    paths.push(CLAUDE_DIR_ANY_DEPTH.to_string());
+    paths.push(CLAUDE_BACKUP_DIRS.to_string());
     paths
 }
 
@@ -1260,6 +1294,11 @@ mod tests {
             CLAUDE_MD,
             CLAUDE_LOCAL_MD,
             GITHUB_PR_TEMPLATE,
+            // The two covers: without them the per-file entries hide the root
+            // `.claude/` and nothing else — not a subproject's, and not one byte
+            // of what the harness writes into either while it works.
+            CLAUDE_DIR_ANY_DEPTH,
+            CLAUDE_BACKUP_DIRS,
         ] {
             assert!(
                 footprint.iter().any(|p| p == expected),
