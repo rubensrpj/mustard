@@ -1,0 +1,58 @@
+{
+  "spec": "fix-linux-install-docs-make",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "bash -c \"tr -d '\\r' < packaging/installer/install.sh | sh -s -- --dry-run\"",
+      "expect": null,
+      "control_command": "bash -c \"tr -d '\\r' < packaging/installer/install.sh | sh -n\"",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "erro: não achei mustard_*_amd64.deb ao lado do install.sh.\n      rode o install.sh de dentro da past"
+    },
+    {
+      "id": "AC-2",
+      "command": "bash -c \"grep -q 'releases/latest/download/install' packaging/installer/TUTORIAL-LINUX.md && grep -q 'releases/latest/download/install' packaging/installer/RELEASE-BODY.md && grep -q 'releases/latest/download/install' README.md && grep -q 'releases/latest/download/install' README.en.md && grep -q 'plugin marketplace add rubensrpj/mustard' packaging/installer/TUTORIAL-LINUX.md && grep -q 'plugin marketplace add rubensrpj/mustard' README.md && grep -q 'plugin marketplace add rubensrpj/mustard' README.en.md\"",
+      "expect": null,
+      "control_command": "bash -c \"tr -d '\\r' < packaging/installer/install.sh | sh -n\"",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

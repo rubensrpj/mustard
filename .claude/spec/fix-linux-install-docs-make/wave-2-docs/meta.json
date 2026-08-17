@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": null,
+  "parent": "fix-linux-install-docs-make",
+  "checklist": [
+    {
+      "label": "packaging/installer/TUTORIAL-LINUX.md",
+      "path": "packaging/installer/TUTORIAL-LINUX.md",
+      "done": false
+    },
+    {
+      "label": "packaging/installer/RELEASE-BODY.md",
+      "path": "packaging/installer/RELEASE-BODY.md",
+      "done": false
+    },
+    {
+      "label": "README.md",
+      "path": "README.md",
+      "done": false
+    },
+    {
+      "label": "README.en.md",
+      "path": "README.en.md",
+      "done": false
+    }
+  ]
+}
