@@ -194,8 +194,9 @@ Falta registrar o marketplace: rode `/plugin marketplace add rubensrpj/mustard`
 registrado, atualize a cópia local com `/plugin marketplace update mustard-local`
 e instale de novo.
 
-**`/plugin marketplace add rubensrpj/mustard` falha com erro de SSH/autenticação**
-O atalho `owner/repo` clona por SSH. Sem chave SSH configurada, use a URL HTTPS:
+**`/plugin marketplace add rubensrpj/mustard` falha com erro de clone/autenticação**
+O `add` também aceita a URL completa do repositório, que é a forma a usar quando o
+atalho não consegue clonar:
 `/plugin marketplace add https://github.com/rubensrpj/mustard.git`.
 
 **O `curl … | sh` não instala nada / "não achei o pacote"**

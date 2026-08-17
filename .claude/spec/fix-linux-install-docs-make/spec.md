@@ -68,6 +68,8 @@ is one line.
 - `packaging/installer/RELEASE-BODY.md` — the Linux line becomes the one-liner
 - `README.md` — Linux row + concrete marketplace commands
 - `README.en.md` — same, in English
+- `packaging/installer/README.txt` — the fifth install text, folded in mid-pipeline
+  by a change request (it ships in the tar.gz bundle and taught only the manual route)
 
 ## Boundaries
 

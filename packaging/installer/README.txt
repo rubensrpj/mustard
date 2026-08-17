@@ -75,7 +75,7 @@ Como usar depois
   O "@mustard-local" é o NOME do marketplace, não um caminho. Recarregue o
   Claude Code (feche e abra) para os hooks entrarem.
   Se aparecer  Plugin "mustard" not found in any marketplace , faltou o primeiro
-  comando; se o add falhar por SSH, use a URL HTTPS completa:
+  comando; se o add falhar ao clonar, use a URL completa do repositório:
       /plugin marketplace add https://github.com/rubensrpj/mustard.git
 - Rode o Claude Code normalmente — os hooks do Mustard já ficam ligados via
   .claude/settings.json.

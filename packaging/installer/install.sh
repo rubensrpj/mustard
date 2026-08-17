@@ -105,9 +105,19 @@ resolve_latest_tag() {
       return 1
       ;;
   esac
+  # A release tag looks like `v0.1.35`. Demanding that shape is what separates
+  # "no release published" from "a release was found": with every release in
+  # draft, /releases/latest redirects to /releases, whose last path segment is
+  # the word `releases` — a slug that passes a charset check and then builds
+  # `.../releases/download/releases/mustard_releases_amd64.deb`, so the failure
+  # only surfaces later, as a download error that names the wrong cause.
   _tag="${_url##*/}"
   case "$_tag" in
-    ""|latest|*[!A-Za-z0-9._-]*) return 1 ;;
+    v[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "$_tag" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
   esac
   printf '%s\n' "$_tag"
 }
