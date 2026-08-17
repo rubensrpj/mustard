@@ -296,6 +296,7 @@ jobs:
           path: |
             dist/mustard_*_amd64.deb
             dist/install.sh
+            dist/README.txt
             dist/TUTORIAL-LINUX.md
             dist/mustard-bins-*.tar.gz
 
@@ -340,6 +341,10 @@ jobs:
           body_path: artifacts/_body.md
           generate_release_notes: true
           fail_on_unmatched_files: false
+          # README.txt é o texto de instalação dos três sistemas: o build-deb.sh já
+          # o copiava para dist/, mas ele morria ali — nenhum release o publicava.
+          # Vem só do artefato linux-deb; nenhum outro job sobe um arquivo com esse
+          # nome, então ele não recai no 404 de nome duplicado descrito acima.
           files: |
             artifacts/**/*-setup.exe
             artifacts/**/*.pkg
@@ -349,3 +354,4 @@ jobs:
             artifacts/**/TUTORIAL-WINDOWS.md
             artifacts/**/TUTORIAL-MACOS.md
             artifacts/**/TUTORIAL-LINUX.md
+            artifacts/**/README.txt

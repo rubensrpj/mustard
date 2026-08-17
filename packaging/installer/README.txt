@@ -33,8 +33,11 @@ LINUX (Ubuntu) — alternativa manual (permite conferir o sha256 antes)
      para a mesma pasta e entre nela.
   2. Confira o pacote:  sha256sum mustard_<versao>_amd64.deb
      (compare com o "digest" que a página do Release mostra para esse asset)
-  3a. Instalar tudo:                        ./install.sh
-  3b. Instalar E já preparar um projeto:    ./install.sh /caminho/do/projeto
+  3. Dê permissão de execução ao script — os assets do Release chegam SEM ela,
+     e sem esse passo o shell responde "Permission denied":
+       chmod +x install.sh
+  4a. Instalar tudo:                        ./install.sh
+  4b. Instalar E já preparar um projeto:    ./install.sh /caminho/do/projeto
   Com um .deb ao lado, o install.sh usa esse arquivo e não baixa nada.
   (Equivale a:  sudo apt install ./mustard_<versao>_amd64.deb)
 

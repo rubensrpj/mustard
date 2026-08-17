@@ -69,7 +69,12 @@ is one line.
 - `README.md` — Linux row + concrete marketplace commands
 - `README.en.md` — same, in English
 - `packaging/installer/README.txt` — the fifth install text, folded in mid-pipeline
-  by a change request (it ships in the tar.gz bundle and taught only the manual route)
+  by a change request (it taught only the manual route). It does NOT ship in the
+  tar.gz bundle: `build-deb.sh` copies it into `dist/`, where every release so far
+  dropped it — no published asset ever carried it. This pass adds it to the release
+  assets in `release.yml` so the text reaches the reader it is written for
+- `.github/workflows/release.yml` — publishes README.txt as a release asset
+  (collection step + publish `files:` list)
 
 ## Boundaries
 
@@ -83,9 +88,13 @@ release URL), prints what it would install, and exits 0 without touching the
 system. Offline it still exits 0, naming the URL it would have used — otherwise
 the criterion would depend on the network.
 
-OUT: the `.deb` layout and `build-deb.sh`; `release.yml` (the assets it already
-publishes are enough); the Windows and macOS tutorials; `mustard init` and its
-closing message; signing, apt repositories and a public marketplace.
+OUT: the `.deb` layout and `build-deb.sh`; the Windows and macOS tutorials;
+`mustard init` and its closing message; signing, apt repositories and a public
+marketplace.
+
+Of `release.yml`, only the README.txt asset is IN — the fifth install text was
+rewritten here and no release published it, so without that one line the rewrite
+reaches nobody. Every other asset the workflow publishes stays untouched.
 
 ## Definitions
 

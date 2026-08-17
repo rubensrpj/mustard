@@ -63,7 +63,8 @@ Duas variações úteis:
 curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh -s -- --dry-run
 
 # fixa uma versão em vez de pegar o último Release
-curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | MUSTARD_VERSION=0.1.35 sh
+# (troque <versao> pelo número que a página do Release mostra, ex.: 0.1.35)
+curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | MUSTARD_VERSION=<versao> sh
 ```
 
 O instalador chama o `apt`, que:

@@ -18,7 +18,7 @@
 #   ./install.sh                  # instala tudo
 #   ./install.sh /caminho/projeto # também roda `mustard init` nesse projeto
 #   ./install.sh --dry-run        # só mostra o que seria instalado; não instala
-#   MUSTARD_VERSION=0.1.35 ./install.sh   # fixa a versão em vez do último Release
+#   MUSTARD_VERSION=<versao> ./install.sh # fixa a versão em vez do último Release
 #
 # O .deb ao lado deste script é a fonte preferida; quando não há nenhum (é o caso
 # do `curl … | sh`, que não deixa arquivo nenhum em disco) o instalador baixa o
@@ -37,6 +37,29 @@ DEB_URL=""
 TMP_DIR=""
 VERSION="${MUSTARD_VERSION:-}"
 VERSION="${VERSION#v}"
+
+# The ONE place that says what a version string may look like: it starts with a
+# digit and carries nothing outside [A-Za-z0-9._-]. Both callers go through here
+# — the tag resolved from the network AND $MUSTARD_VERSION, which is user input
+# that lands in a filesystem path ($DEB) and in a URL ($DEB_URL). Without the
+# charset gate, MUSTARD_VERSION=../../../etc/passwd escapes $TMP_DIR, and the
+# cleanup trap (which only removes $TMP_DIR) leaves the file behind.
+valid_version() {
+  case "$1" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+    [0-9]*)            return 0 ;;
+    *)                 return 1 ;;
+  esac
+}
+
+if [ -n "$VERSION" ] && ! valid_version "$VERSION"; then
+  # The rejected value is deliberately NOT echoed: it is untrusted input and
+  # this message is what a reader sees; the expected shape is what helps.
+  echo "erro: MUSTARD_VERSION inválida." >&2
+  echo "      esperado o número da versão, como 0.1.35 (o 'v' é opcional):" >&2
+  echo "      começa por dígito e aceita só letras, dígitos, ponto, hífen e _." >&2
+  exit 1
+fi
 
 # Drop the download directory on every exit path, failures and signals included.
 cleanup() {
@@ -65,7 +88,19 @@ for arg in "$@"; do
         echo "erro: aceito um único caminho de projeto (recebi '$TARGET' e '$arg')." >&2
         exit 1
       fi
-      TARGET="$arg"
+      # Checked HERE, before anything is installed. The check used to sit after
+      # `apt-get install`, so a typo in the path ran the whole root install and
+      # only then aborted — the user read a non-zero exit and concluded, wrongly,
+      # that nothing had been installed. --dry-run gets the same check for free.
+      if [ ! -d "$arg" ]; then
+        echo "erro: projeto-alvo não existe: $arg" >&2
+        echo "      passe o caminho de um diretório já existente." >&2
+        exit 1
+      fi
+      TARGET=$(CDPATH= cd -- "$arg" && pwd) || {
+        echo "erro: não consegui entrar no projeto-alvo: $arg" >&2
+        exit 1
+      }
       ;;
   esac
 done
@@ -75,6 +110,20 @@ done
 if [ "$DRY_RUN" -eq 0 ] && ! command -v apt-get >/dev/null 2>&1; then
   echo "erro: este instalador usa apt (Ubuntu/Debian). Não encontrei o apt-get." >&2
   exit 1
+fi
+
+# --- sudo só quando não-root ------------------------------------------------
+# Verificado ANTES de qualquer ida à rede: resolver a versão custa até 60s, e
+# quem não é root nem tem sudo não pode instalar de jeito nenhum — dizer isso na
+# primeira linha é mais honesto do que dizer depois da espera. Não depende de
+# nada resolvido adiante. --dry-run não instala, então não exige sudo.
+if [ "$DRY_RUN" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  else
+    echo "erro: não sou root e não há sudo. Rode como root ou instale o sudo." >&2
+    exit 1
+  fi
 fi
 
 # --- ferramenta de download (curl ou wget) ----------------------------------
@@ -92,7 +141,10 @@ resolve_latest_tag() {
   _url=""
   case "$DOWNLOADER" in
     curl)
-      _url=$(curl -fsSL --connect-timeout 10 --max-time 60 \
+      # -I (HEAD) yields the same %{url_effective} as a GET for a few hundred
+      # bytes; a GET here downloads the whole /releases/tag/vX page only to throw
+      # it away — real waste on the slow links this path exists to serve.
+      _url=$(curl -fsSLI --connect-timeout 10 --max-time 60 \
                -o /dev/null -w '%{url_effective}' "$LATEST_URL" 2>/dev/null) || return 1
       ;;
     wget)
@@ -113,18 +165,24 @@ resolve_latest_tag() {
   # only surfaces later, as a download error that names the wrong cause.
   _tag="${_url##*/}"
   case "$_tag" in
-    v[0-9]*) ;;
+    v*) ;;
     *) return 1 ;;
   esac
-  case "$_tag" in
-    *[!A-Za-z0-9._-]*) return 1 ;;
-  esac
+  # Charset and "starts with a digit" are decided in valid_version(), the single
+  # place that describes an accepted version — so the shape is edited once.
+  valid_version "${_tag#v}" || return 1
   printf '%s\n' "$_tag"
 }
 
 download_file() {
   case "$DOWNLOADER" in
-    curl) curl -fL --progress-bar --connect-timeout 15 --retry 2 -o "$2" "$1" ;;
+    # --connect-timeout bounds only the handshake: a proxy that accepts the
+    # connection and then trickles nothing would wedge the one-liner forever,
+    # three times over. --speed-limit/--speed-time aborts a stalled transfer
+    # (under 1 KB/s for 30s) without capping a slow-but-honest download, which a
+    # flat --max-time would do to a package this size. wget: --timeout=30.
+    curl) curl -fL --progress-bar --connect-timeout 15 --retry 2 \
+               --speed-limit 1024 --speed-time 30 -o "$2" "$1" ;;
     wget) wget --tries=3 --timeout=30 -O "$2" "$1" ;;
     *)    return 1 ;;
   esac
@@ -140,10 +198,14 @@ fi
 if [ -n "$SCRIPT_DIR" ]; then
   if [ -n "$VERSION" ]; then
     # An explicit version only accepts the local .deb of that same version.
-    [ -f "$SCRIPT_DIR/mustard_${VERSION}_amd64.deb" ] \
-      && DEB="$SCRIPT_DIR/mustard_${VERSION}_amd64.deb" || true
+    LOCAL_DEB="$SCRIPT_DIR/mustard_${VERSION}_amd64.deb"
+    if [ -f "$LOCAL_DEB" ]; then
+      DEB="$LOCAL_DEB"
+    fi
   else
-    DEB=$(ls "$SCRIPT_DIR"/mustard_*_amd64.deb 2>/dev/null | head -1 || true)
+    # sort -V | tail -1 = the NEWEST match. Plain `ls | head -1` sorts ascending,
+    # so a ~/Downloads holding 0.1.35 and 0.2.0 silently installed 0.1.35.
+    DEB=$(ls "$SCRIPT_DIR"/mustard_*_amd64.deb 2>/dev/null | sort -V | tail -1 || true)
   fi
 fi
 
@@ -172,8 +234,9 @@ if [ -z "$DEB" ]; then
     DEB_URL="https://github.com/$GITHUB_REPO/releases/download/$TAG/mustard_${VERSION}_amd64.deb"
   elif [ "$DRY_RUN" -eq 0 ]; then
     echo "erro: não consegui resolver a última versão em $LATEST_URL." >&2
-    echo "      sem rede? tente de novo, ou fixe a versão:" >&2
-    echo "      MUSTARD_VERSION=0.1.35 ./install.sh" >&2
+    echo "      sem rede? tente de novo, ou fixe a versão que quer instalar" >&2
+    echo "      (a lista está em https://github.com/$GITHUB_REPO/releases):" >&2
+    echo "      MUSTARD_VERSION=<versao> ./install.sh" >&2
     exit 1
   fi
 fi
@@ -200,16 +263,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-# --- sudo só quando não-root ------------------------------------------------
-if [ "$(id -u)" -ne 0 ]; then
-  if command -v sudo >/dev/null 2>&1; then
-    SUDO="sudo"
-  else
-    echo "erro: não sou root e não há sudo. Rode como root ou instale o sudo." >&2
-    exit 1
-  fi
-fi
-
 # --- 4) baixa o pacote quando ele não veio do disco -------------------------
 if [ -z "$DEB" ]; then
   TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t mustard.XXXXXX) || {
@@ -226,6 +279,18 @@ if [ -z "$DEB" ]; then
     echo "      confira a rede, ou baixe o .deb à mão e rode o install.sh ao lado dele." >&2
     exit 1
   fi
+  # "Não está vazio" não prova que é um pacote: um portal cativo responde 200 com
+  # uma página HTML, que passa pelo `curl -f` e pelo teste acima — e só falha lá
+  # na frente, como um erro de parse do dpkg que não nomeia a causa real. O
+  # dpkg-deb sempre existe num Debian/Ubuntu; se faltar, seguimos sem a conferência.
+  if command -v dpkg-deb >/dev/null 2>&1 && ! dpkg-deb --info "$DEB" >/dev/null 2>&1; then
+    echo "erro: o arquivo baixado não é um pacote .deb válido." >&2
+    echo "      origem: $DEB_URL" >&2
+    echo "      isso costuma ser um proxy/portal cativo devolvendo uma página HTML" >&2
+    echo "      no lugar do pacote. Confira a rede, ou baixe o .deb à mão da página" >&2
+    echo "      do Release e rode o install.sh de dentro da pasta dele." >&2
+    exit 1
+  fi
   chmod 0644 "$DEB"
 fi
 echo "==> Pacote: $DEB"
@@ -240,8 +305,7 @@ $SUDO apt-get install -y "$DEB"
 
 # --- opcional: prepara um projeto -------------------------------------------
 if [ -n "$TARGET" ]; then
-  [ -d "$TARGET" ] || { echo "erro: projeto-alvo não existe: $TARGET" >&2; exit 1; }
-  TARGET=$(CDPATH= cd -- "$TARGET" && pwd)
+  # Já validado e resolvido para caminho absoluto na leitura dos argumentos.
   echo "==> Rodando 'mustard init' em $TARGET"
   ( cd "$TARGET" && mustard init --yes )
 fi

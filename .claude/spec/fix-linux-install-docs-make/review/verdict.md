@@ -1,7 +1,6 @@
 # Review Verdict
 
 - Spec: `fix-linux-install-docs-make`
-- Verdict: **APPROVED**
-- Critical findings: 0
-- Subproject: `.`
+- Verdict: **REJECTED**
+- Critical findings: 3
 

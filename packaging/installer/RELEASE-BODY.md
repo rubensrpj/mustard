@@ -11,11 +11,12 @@ Cada instalador traz **tudo**: o CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `s
 ### Resumo rápido
 - **Windows:** execute o `.exe` → no aviso do SmartScreen, *Mais informações* → *Executar assim mesmo* → abra um terminal **novo**.
 - **macOS:** abra o `.pkg` (não assinado → **clique com o botão direito → Abrir**) → siga o assistente → abra um terminal **novo**.
-- **Linux (Ubuntu 22.04+):** uma linha, sem baixar nada à mão —
+- **Linux (Ubuntu 22.04+):** uma linha, sem baixar nada à mão — esta instala **exatamente a v{{VERSION}}**, a versão desta página:
   ```sh
-  curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh
+  curl -fsSL https://github.com/rubensrpj/mustard/releases/download/v{{VERSION}}/install.sh | sh
   ```
-  Quem preferir conferir o `sha256` antes: baixe o `.deb` e o `install.sh` dos *Assets* na mesma pasta e rode `./install.sh` (`TUTORIAL-LINUX.md` detalha as duas rotas).
+  Quer sempre o **último** Release, seja ele qual for? Troque a URL por `https://github.com/rubensrpj/mustard/releases/latest/download/install.sh`.
+  Quem preferir conferir o `sha256` antes: baixe o `.deb` e o `install.sh` dos *Assets* na mesma pasta e rode `chmod +x install.sh && ./install.sh` — os assets chegam sem a permissão de execução (`TUTORIAL-LINUX.md` detalha as duas rotas).
 
 Depois, em qualquer projeto: **`mustard init`** — e, **dentro do Claude Code**, o plugin (é ele que traz os comandos `/mustard:*`, os hooks e o MCP de memória):
 
