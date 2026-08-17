@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use mustard_core::{
-    footprint_paths, upsert_project, InstallMode, CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED,
+    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED,
 };
 
 // ---------------------------------------------------------------------------
@@ -52,13 +52,13 @@ fn ac1_private_upsert_writes_clone_local_exclude() {
     assert_eq!(report.exclude_unavailable, None, "git was available: {report:?}");
     assert_eq!(
         report.excluded,
-        footprint_paths(),
+        footprint_rules(),
         "a repository nobody excluded anything in yet receives the whole footprint",
     );
 
     // Every rule is really IN the file git pointed at — not in a path we chose.
     let body = read(&exclude).expect("git resolved an exclude file that exists");
-    for rule in footprint_paths() {
+    for rule in footprint_rules() {
         assert!(
             body.lines().any(|l| l.trim() == rule),
             "rule {rule:?} never reached {exclude:?}: {body}",
@@ -71,6 +71,24 @@ fn ac1_private_upsert_writes_clone_local_exclude() {
         "",
         "the install wrote its footprint and git must see none of it",
     );
+
+    // …and they work on OUR footprint ONLY. Asked of real git, because the
+    // failure this pins is a property of gitignore syntax that no reading of the
+    // rule list reveals: a pattern carrying no slash matches at EVERY depth, so a
+    // bare `mustard.json` or `CLAUDE.md` line silently swallowed files the CLIENT
+    // authored. A criterion that only demands a CLEAN status cannot see it —
+    // an over-broad rule makes that assertion MORE likely to pass, not less.
+    write(&root.join("CLAUDE.md"), "# the client's own rules\n");
+    write(&root.join("services/billing/CLAUDE.md"), "# their subproject\n");
+    write(&root.join("services/billing/mustard.json"), "{}\n");
+    let status = git_status(root);
+    for theirs in ["CLAUDE.md", "services/billing/CLAUDE.md", "services/billing/mustard.json"] {
+        assert!(
+            status.contains(theirs),
+            "the install hid {theirs}, which it never wrote — under a `git add -A` law \
+             that file would silently never be committed: {status:?}",
+        );
+    }
 
     // Idempotent: a second run adds nothing and changes not one byte.
     let second = upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");

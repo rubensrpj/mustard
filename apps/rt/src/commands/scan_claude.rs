@@ -476,7 +476,12 @@ fn run_full(
     // read) and appends it AFTER the shared one, so their Guards survive and
     // ours are additive. Autodetected off the clone-local exclude file — see
     // `shared::context::install_mode`.
-    let private = crate::shared::context::install_mode(root).is_private();
+    //
+    // The name is resolved ONCE, through the same declaration every READER of
+    // these Guards goes through (`shared::context::guards_file`). A writer and a
+    // reader that each spell the filename themselves is how the local layer
+    // shipped inert the first time.
+    let owned_name = crate::shared::context::guards_file_name(root);
 
     for project in projects {
         let dir = root.join(&project.dir);
@@ -484,11 +489,7 @@ fn run_full(
         // is ordinary, the local layer when it is private. In private mode the
         // host's `CLAUDE.md` is never read and never written — not even to
         // compare — so there is nothing for its git to report.
-        let claude_md_path = if private {
-            dir.join(crate::shared::context::CLAUDE_LOCAL_MD)
-        } else {
-            dir.join("CLAUDE.md")
-        };
+        let claude_md_path = dir.join(owned_name);
         let claude_dir = dir.join(".claude");
         let map_path = claude_dir.join("scan-map.md");
         // The workspace-root unit (empty `dir`): its CLAUDE.md is NEVER

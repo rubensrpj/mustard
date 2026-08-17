@@ -110,16 +110,24 @@ fn resolve_guards(guards: &str) -> Option<String> {
     }
 }
 
-/// Whether `path` is the workspace-root `CLAUDE.md` — i.e. its directory IS the
-/// scan `root`. Single-sourced with `scan-guards-list` via [`subproject_of`]: a
-/// file is the root unit iff its subproject path (relative to `root`) is empty.
+/// Whether `path` is the workspace-root instruction file — i.e. its directory IS
+/// the scan `root`. Single-sourced with `scan-guards-list` via [`subproject_of`]:
+/// a file is the root unit iff its subproject path (relative to `root`) is empty.
+///
+/// The name test goes through [`crate::shared::context::is_guards_file_name`],
+/// which recognises BOTH layers. Deliberately mode-blind: this is a REFUSAL, and
+/// one that only knew the current mode's name would wave the other layer's root
+/// file straight into [`splice`] — the wrong direction for a guard.
 ///
 /// This deliberately does NOT key off a sibling `mustard.json`: a real nested
 /// subproject (e.g. `apps/dashboard`) may ship its own per-package `mustard.json`
 /// yet still be a legitimate enrich target. Only the directory == `root`
 /// distinguishes the root unit.
 fn is_root_claude_md(path: &Path, root: &Path) -> bool {
-    path.file_name().is_some_and(|n| n == "CLAUDE.md") && subproject_of(path, root).is_empty()
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(crate::shared::context::is_guards_file_name)
+        && subproject_of(path, root).is_empty()
 }
 
 /// Splice the authored `body` into the pending guards block of `content`.
@@ -240,13 +248,19 @@ pub(crate) struct CheckableGuard {
     pub(crate) glob: String,
 }
 
-/// Read `<subproject_root>/CLAUDE.md` and return its critical Guards.
+/// Read a subproject's ALREADY-RESOLVED instruction file and return its critical
+/// Guards.
+///
+/// Takes the path rather than the directory on purpose: its one caller
+/// (`hooks::write::post_edit::guards_gate`) located that file by walking up
+/// through [`crate::shared::context::guards_file`], which under a private
+/// install resolves to `CLAUDE.local.md`. Re-deriving the name here would be a
+/// second place the mode is decided — and the one that got it wrong.
 ///
 /// Fail-open: an unreadable/absent file, or one with no `## Guards` block,
 /// yields an empty vec (no critical rules → the gate never blocks).
-pub(crate) fn critical_guards(subproject_root: &Path) -> Vec<CriticalGuard> {
-    let claude_md = subproject_root.join("CLAUDE.md");
-    match mfs::read_to_string(&claude_md) {
+pub(crate) fn critical_guards(instruction_file: &Path) -> Vec<CriticalGuard> {
+    match mfs::read_to_string(instruction_file) {
         Ok(content) => critical_guards_in(&content),
         Err(_) => Vec::new(),
     }

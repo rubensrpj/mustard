@@ -265,7 +265,7 @@ pub(crate) fn render_prompt_at(
     // ---- Collect placeholder values (fail-open per field). ----
 
     let subproject_str = subproject.to_string_lossy().to_string();
-    let guards_summary = read_guards_block(&project.join(&subproject_str));
+    let guards_summary = read_guards_block(&project, &project.join(&subproject_str));
     // With a spec, `meta.json`/`### Lang:` is the source of truth. Without one,
     // there is no spec to read — derive the narrative locale from the canonical
     // `mustard.json#specLang` accessor (`ProjectConfig::load(..).i18n()`), the

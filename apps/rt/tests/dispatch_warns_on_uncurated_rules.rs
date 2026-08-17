@@ -35,7 +35,10 @@ fn dispatch_warns_on_uncurated_rules() {
     )
     .unwrap();
 
-    let pending = read_guards_block(pending_dir.path());
+    // Root == subproject dir throughout: this file is about the NOTICE, and a
+    // tree with no repository resolves as a shared install, so the resolver
+    // names the `CLAUDE.md` each case wrote.
+    let pending = read_guards_block(pending_dir.path(), pending_dir.path());
     assert!(
         pending.starts_with("> NOTE:"),
         "the notice must lead the block — the agent reads top-down: {pending}"
@@ -61,7 +64,7 @@ fn dispatch_warns_on_uncurated_rules() {
     )
     .unwrap();
 
-    let curated = read_guards_block(curated_dir.path());
+    let curated = read_guards_block(curated_dir.path(), curated_dir.path());
     assert_eq!(
         curated, body,
         "a curated block must reach the agent byte-for-byte, with no notice"
@@ -70,7 +73,7 @@ fn dispatch_warns_on_uncurated_rules() {
     // --- Fail-open (inject contract): a missing source yields no injection. ---
     let empty_dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        read_guards_block(empty_dir.path()),
+        read_guards_block(empty_dir.path(), empty_dir.path()),
         "",
         "no CLAUDE.md ⇒ no injection at all — never a bare notice"
     );

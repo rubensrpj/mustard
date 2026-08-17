@@ -194,7 +194,10 @@ fn is_target(path: &Path) -> bool {
     // outside this linter's default scope — so in-repo the entry is effectively
     // inert until the scope is repointed. Kept to keep auditing any
     // `.claude/pipeline-config.md` a downstream install still carries.
-    if name == "CLAUDE.md" || name == "pipeline-config.md" {
+    // Both instruction layers: under a private install the file carrying the
+    // Guards is `CLAUDE.local.md`, and a linter that only knew the shared name
+    // would stop auditing the one file this install actually writes.
+    if crate::shared::context::is_guards_file_name(name) || name == "pipeline-config.md" {
         return true;
     }
     let ext = path

@@ -109,7 +109,7 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
 /// lines as text; never write a file — the caller pipes to `scan-guards-apply`).
 fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) -> String {
     let tone = mustard_core::ProjectConfig::load(project).i18n().tone.as_str().to_string();
-    let facts = read_guards_facts(&project.join(subproject));
+    let facts = read_guards_facts(project, &project.join(subproject));
     let facts_line = if facts.is_empty() {
         String::new()
     } else {
@@ -266,9 +266,12 @@ fn render_patterns_worklist(
 
 /// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`
 /// block (Wave 1's grounding context: `kind=...; frameworks=...`). Empty when
-/// the file or the facts line is absent. Shape-mirrors [`super::sections::read_guards_block`].
-fn read_guards_facts(subproject_dir: &Path) -> String {
-    let text = mfs::read_to_string(subproject_dir.join("CLAUDE.md")).unwrap_or_default();
+/// the file or the facts line is absent. Shape-mirrors [`super::sections::read_guards_block`]
+/// down to resolving its source through [`crate::shared::context::guards_file`],
+/// so the enrich pass keeps its grounding under a private install.
+fn read_guards_facts(root: &Path, subproject_dir: &Path) -> String {
+    let source = crate::shared::context::guards_file(root, subproject_dir);
+    let text = mfs::read_to_string(source).unwrap_or_default();
     for line in text.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("<!-- facts:") {

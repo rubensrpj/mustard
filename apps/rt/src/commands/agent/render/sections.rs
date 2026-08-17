@@ -23,15 +23,23 @@ const UNCURATED_GUARDS_NOTICE: &str = "> NOTE: this subproject's `## Guards` blo
      rules below: fall back to the sibling-convention read and do not treat the \
      placeholder as guidance.";
 
-/// Read the `## Guards` section body from a subproject's `CLAUDE.md`. Empty
+/// Read the `## Guards` section body from a subproject's instruction file. Empty
 /// when the file or the section is absent.
+///
+/// `root` is the project root, and it is not decoration: the file this reads is
+/// resolved through [`crate::shared::context::guards_file`], which under a
+/// private install prefers the untracked `CLAUDE.local.md` the scan wrote there.
+/// This block IS the mechanism the Guards exist for — inlined under `## GUARDS`
+/// into every dispatched prompt — so a hard-coded `CLAUDE.md` here means a
+/// private install dispatches agents with the CLIENT's rules, or with none.
 ///
 /// When the block still carries [`GUARDS_PENDING_OPEN`] the body is a
 /// placeholder, not rules: [`UNCURATED_GUARDS_NOTICE`] is prefixed so the
 /// dispatch says so. Fail-open per the inject contract — a missing/unreadable
 /// file yields no injection (empty string), and nothing here panics.
-pub fn read_guards_block(subproject_dir: &Path) -> String {
-    let text = mfs::read_to_string(subproject_dir.join("CLAUDE.md")).unwrap_or_default();
+pub fn read_guards_block(root: &Path, subproject_dir: &Path) -> String {
+    let source = crate::shared::context::guards_file(root, subproject_dir);
+    let text = mfs::read_to_string(source).unwrap_or_default();
     if text.is_empty() {
         return String::new();
     }
@@ -674,7 +682,10 @@ mod tests {
             "# Title\n\n## What\n- foo\n\n## Guards\n- rule A\n- rule B\n\n## Stack\nrust\n",
         )
         .unwrap();
-        let guards = read_guards_block(dir.path());
+        // Root == subproject dir: these cases are about SECTION CUTTING, and a
+        // tree with no repository resolves as a shared install, so the resolver
+        // names `CLAUDE.md` — the file each case wrote.
+        let guards = read_guards_block(dir.path(), dir.path());
         assert!(guards.contains("rule A"));
         assert!(guards.contains("rule B"));
         assert!(!guards.contains("Stack"));
@@ -699,7 +710,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let guards = read_guards_block(dir.path());
+        let guards = read_guards_block(dir.path(), dir.path());
         assert!(
             guards.starts_with("> NOTE:"),
             "the notice must lead the block, before the placeholder: {guards}"
@@ -713,9 +724,9 @@ mod tests {
     #[test]
     fn read_guards_block_missing_source_yields_no_injection() {
         let dir = tempdir().unwrap();
-        assert_eq!(read_guards_block(dir.path()), "", "absent file ⇒ no injection");
+        assert_eq!(read_guards_block(dir.path(), dir.path()), "", "absent file ⇒ no injection");
         std::fs::write(dir.path().join("CLAUDE.md"), "# Sub\n\n## Stack\nrust\n").unwrap();
-        assert_eq!(read_guards_block(dir.path()), "", "absent section ⇒ no injection");
+        assert_eq!(read_guards_block(dir.path(), dir.path()), "", "absent section ⇒ no injection");
     }
 
     #[test]

@@ -19,6 +19,23 @@
       "stderr_excerpt": "error: no test target named `private_install` in `mustard-core` package\nhelp: available test targets"
     },
     {
+      "id": "AC-10",
+      "command": "cargo test -p mustard-rt --test private_guards ac10_private_dispatch_prompt_carries_the_guards",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 101,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "warning: constant `MUSTARD_JSON_RULE` is never used\n  --> packages\\core\\src\\platform\\project_seed.rs"
+    },
+    {
       "id": "AC-2",
       "command": "cargo test -p mustard-core --test private_install ac2_private_upsert_seeds_local_settings",
       "expect": "[1-9][0-9]* passed",
@@ -156,5 +173,18 @@
     }
   ],
   "amendments": [],
-  "additions": []
+  "additions": [
+    {
+      "id": "AC-10",
+      "at": "2026-08-17T22:00:03.686Z",
+      "reason": "Review BLOCKING: the writer moved to CLAUDE.local.md and every reader stayed on CLAUDE.md, so a private install dispatched agents with an empty ## GUARDS block. AC-5 asserts the file lands; only this asserts it reaches the agent.",
+      "statement": "when a dispatch prompt is rendered under a private install, then the inlined `## GUARDS` block carries the Guards from the local layer — the mode moves the Guards' destination, never their reach",
+      "command": "cargo test -p mustard-rt --test private_guards ac10_private_dispatch_prompt_carries_the_guards",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/private-install-mode-leaving-no/spec.md",
+        ".claude/spec/private-install-mode-leaving-no/wave-plan.md"
+      ]
+    }
+  ]
 }

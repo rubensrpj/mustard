@@ -22,4 +22,7 @@ id: wave.private-install-mode-leaving-no.plan
 - AC-6 — when `mustard-rt run upsert --private` is invoked, then the flag is accepted and the emitted report carries the private outcome; the mode is thereafter autodetected with no flag and no versioned setting. Command: `cargo test -p mustard-rt --test private_surface ac6_upsert_accepts_private_flag_and_mode_is_autodetected` Expect: `[1-9][0-9]* passed`
 - AC-7 — when `mustard init --private` is invoked, then the install is private and the `.github/` pull-request template is not seeded into the host repository. Command: `cargo test -p mustard-cli --test private_init ac7_init_private_seeds_no_github_template` Expect: `[1-9][0-9]* passed`
 - AC-8 — when a host repository that ALREADY versions its own `CLAUDE.md` receives a private install plus a full scan plus a spec directory, then `git status --porcelain --untracked-files=all` comes back EMPTY against real git and that `CLAUDE.md` is byte-identical to before. Command: `cargo test -p mustard-core --test private_install_leaves_no_trace ac8_host_repo_stays_clean_and_untouched` Expect: `[1-9][0-9]* passed`
+- **AC-10** — when a dispatch prompt is rendered under a private install, then the inlined `## GUARDS` block carries the Guards from the local layer — the mode moves the Guards' destination, never their reach
+  Command: `cargo test -p mustard-rt --test private_guards ac10_private_dispatch_prompt_carries_the_guards`
+  Expect: `[1-9][0-9]* passed`
 - AC-9 — the project build passes green. Command: `cargo build --workspace`

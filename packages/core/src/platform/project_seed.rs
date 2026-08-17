@@ -27,9 +27,10 @@
 //! [`InstallMode::Private`] the same files still land on disk — the harness
 //! reads them from fixed locations — but none of them is visible to the host
 //! repository's git: the settings go to the untracked local layer
-//! (`.claude/settings.local.json`), and [`footprint_paths`] is written into the
+//! (`.claude/settings.local.json`), and [`footprint_rules`] is written into the
 //! clone-local exclude file through [`crate::platform::git_exclude`]. Whatever
-//! that repository ALREADY tracks is reported as residue, never unlinked.
+//! that repository ALREADY tracks under [`footprint_pathspecs`] is reported as
+//! residue, never unlinked.
 //!
 //! ## Contracts honoured
 //!
@@ -92,10 +93,22 @@ const SETTINGS_LOCAL_JSON: &str = ".claude/settings.local.json";
 const CLAUDE_GITIGNORE_PATH: &str = ".claude/.gitignore";
 /// `mustard.json` — the single project-root config.
 const MUSTARD_JSON: &str = "mustard.json";
+/// The same file as an ignore RULE. The leading slash anchors it to the
+/// repository root, which is the only `mustard.json` an install writes: without
+/// it the bare name would match at every depth and hide a `mustard.json` the
+/// CLIENT keeps in one of their own subprojects.
+const MUSTARD_JSON_RULE: &str = "/mustard.json";
 /// The shared per-directory instruction file a full scan writes Guards into.
-const CLAUDE_MD: &str = "CLAUDE.md";
+///
+/// `pub` because it is one half of the pair every reader of a subproject's
+/// Guards has to resolve between — see [`CLAUDE_LOCAL_MD`].
+pub const CLAUDE_MD: &str = "CLAUDE.md";
 /// Its untracked local-layer twin, which a private scan writes instead.
-const CLAUDE_LOCAL_MD: &str = "CLAUDE.local.md";
+///
+/// `pub` for the same reason as [`CLAUDE_MD`]: the writer (`scan --full`) and
+/// every reader of the Guards must spell this ONE literal, or the private mode
+/// would write a file nobody reads.
+pub const CLAUDE_LOCAL_MD: &str = "CLAUDE.local.md";
 /// The pull-request template the CLI seeds when it finds a GitHub remote.
 const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
 /// Every `.claude/` directory in the project, at any depth.
@@ -120,58 +133,203 @@ const CLAUDE_DIR_ANY_DEPTH: &str = "**/.claude/";
 /// appears.
 const CLAUDE_BACKUP_DIRS: &str = ".claude.backup.*/";
 
-/// Every project-root-relative path a Mustard install can put in the project —
-/// the FOOTPRINT, declared in exactly one place.
+/// One entry of the FOOTPRINT — what a Mustard install can put in a project.
 ///
-/// Two consumers read it and must never drift: [`InstallMode::Private`]
-/// excludes this list from the host repository's git and reports the entries
-/// that repository already tracks, and the field proof reads it back to know
-/// what to look for.
+/// The three fields exist because the footprint's consumers genuinely disagree
+/// about what an entry IS, and handing one flat list of strings to all of them
+/// is what shipped an install that hid the CLIENT's own files: a gitignore
+/// pattern carrying no slash matches at every depth, while a `git ls-files`
+/// pathspec is a path and a directory cover is neither.
+///
+/// `CLAUDE.md` is the sharp case. A private install never writes one — the
+/// Guards go to `CLAUDE.local.md` BESIDE it — so it carries no [`rule`] at all;
+/// a rule would hide an instruction file the operator authored FOR the client
+/// from that client's own `git add -A`. It still carries a [`pathspec`],
+/// because a host repository that already versions its own is precisely the
+/// case the whole mode exists for, and it is [`written`] `false`, because the
+/// residue advice (`git rm --cached`) would untrack THEIR work.
+///
+/// [`rule`]: Self::rule
+/// [`pathspec`]: Self::pathspec
+/// [`written`]: Self::written
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FootprintEntry {
+    /// The clone-local exclude rule that hides it, in gitignore syntax. `None`
+    /// for a path Mustard never writes.
+    pub rule: Option<String>,
+    /// The `git ls-files` pathspec that finds it in the host repository's index.
+    /// `None` for an entry that is a SHAPE rather than a path (`**/.claude/`,
+    /// `.claude.backup.*/`) — measured against real git, `ls-files` answers
+    /// nothing for either, so passing them would only be noise.
+    pub pathspec: Option<String>,
+    /// Whether MUSTARD writes this path. Only a written path is residue the
+    /// operator may clear with `git rm --cached`.
+    pub written: bool,
+}
+
+/// An entry Mustard writes whose rule and pathspec are the same string — the
+/// ordinary seed.
+fn seeded(path: &str) -> FootprintEntry {
+    FootprintEntry {
+        rule: Some(path.to_string()),
+        pathspec: Some(path.to_string()),
+        written: true,
+    }
+}
+
+/// An entry Mustard writes whose ignore RULE is spelled differently from its
+/// pathspec (today: the root-anchored `mustard.json`).
+fn anchored(rule: &str, pathspec: &str) -> FootprintEntry {
+    FootprintEntry {
+        rule: Some(rule.to_string()),
+        pathspec: Some(pathspec.to_string()),
+        written: true,
+    }
+}
+
+/// An entry Mustard only WATCHES — the host's own file, asked about but never
+/// hidden and never advised away.
+fn watched(pathspec: &str) -> FootprintEntry {
+    FootprintEntry {
+        rule: None,
+        pathspec: Some(pathspec.to_string()),
+        written: false,
+    }
+}
+
+/// A directory COVER: a rule by shape, with no path for `ls-files` to answer.
+fn cover(rule: &str) -> FootprintEntry {
+    FootprintEntry {
+        rule: Some(rule.to_string()),
+        pathspec: None,
+        written: true,
+    }
+}
+
+/// The Mustard FOOTPRINT, declared in exactly one place.
 ///
 /// Derived rather than re-typed: the seed entries are the same constants
 /// [`upsert_project`] records, and the injectable instruction files come
-/// straight from [`INJECTABLE_SEEDS`], so a new injectable is covered the day
-/// it is added. Three entries are not seeds and are here on purpose:
+/// straight from [`INJECTABLE_SEEDS`], so a new injectable is covered the day it
+/// is added. Two entries are not seeds and are here on purpose:
 ///
 /// - `settings.local.json` — so switching modes never leaves the other twin
-///   visible.
-/// - `CLAUDE.md` — an exclude rule cannot hide a path the host repository
-///   already tracks, and that is exactly the case this entry exists to
-///   REPORT. Its `CLAUDE.local.md` twin, which a private scan writes instead,
-///   is the one the rule really hides.
-/// - the pull-request template — a fifth versioned path the CLI seeds, outside
-///   `.claude/` entirely.
+///   visible;
+/// - `CLAUDE.md` — watched, never hidden (see [`FootprintEntry`]).
 ///
-/// The two bare file names carry no slash, so as git ignore rules they match at
-/// every depth — a subproject's instruction file is covered by the same line as
-/// the root's.
+/// `CLAUDE.local.md` is the one rule deliberately left unanchored: a private
+/// `scan --full` writes one per SUBPROJECT and the set cannot be enumerated, so
+/// the rule has to reach every depth. It is safe there and nowhere else — the
+/// name belongs to the untracked local layer by convention, so no rule of ours
+/// is hiding a file a client would ever commit.
 ///
 /// The list closes with two entries that are RULES rather than paths —
 /// [`CLAUDE_DIR_ANY_DEPTH`] and [`CLAUDE_BACKUP_DIRS`]. The seed entries above
 /// them each name one file, and a rule that names one file can only ever hide
 /// the files somebody thought of: a private install still showed a subproject's
 /// whole `.claude/` and every spec directory the harness wrote while working.
-/// The two covers close that by shape instead of by enumeration. The per-file
-/// entries stay because the exclude write is only ONE of this list's two
-/// consumers — [`crate::platform::git_exclude::tracked_paths`] hands the same
-/// strings to `git ls-files` as pathspecs, and a directory cover cannot say
-/// WHICH footprint file a host repository already versions.
+/// The two covers close that by shape instead of by enumeration.
 #[must_use]
-pub fn footprint_paths() -> Vec<String> {
-    let mut paths = vec![SETTINGS_JSON.to_string(), SETTINGS_LOCAL_JSON.to_string()];
-    paths.extend(
+pub fn footprint() -> Vec<FootprintEntry> {
+    let mut out = vec![seeded(SETTINGS_JSON), seeded(SETTINGS_LOCAL_JSON)];
+    out.extend(
         INJECTABLE_SEEDS
             .iter()
-            .map(|(name, _)| format!(".claude/mustard/{name}")),
+            .map(|(name, _)| seeded(&format!(".claude/mustard/{name}"))),
     );
-    paths.push(CLAUDE_GITIGNORE_PATH.to_string());
-    paths.push(MUSTARD_JSON.to_string());
-    paths.push(CLAUDE_MD.to_string());
-    paths.push(CLAUDE_LOCAL_MD.to_string());
-    paths.push(GITHUB_PR_TEMPLATE.to_string());
-    paths.push(CLAUDE_DIR_ANY_DEPTH.to_string());
-    paths.push(CLAUDE_BACKUP_DIRS.to_string());
-    paths
+    out.push(seeded(CLAUDE_GITIGNORE_PATH));
+    out.push(anchored(MUSTARD_JSON_RULE, MUSTARD_JSON));
+    out.push(seeded(CLAUDE_LOCAL_MD));
+    out.push(watched(CLAUDE_MD));
+    out.push(seeded(GITHUB_PR_TEMPLATE));
+    out.push(cover(CLAUDE_DIR_ANY_DEPTH));
+    out.push(cover(CLAUDE_BACKUP_DIRS));
+    out
+}
+
+/// The clone-local exclude RULES a private install writes — every footprint
+/// entry Mustard itself puts in the project, and only those.
+#[must_use]
+pub fn footprint_rules() -> Vec<String> {
+    footprint().into_iter().filter_map(|e| e.rule).collect()
+}
+
+/// The `git ls-files` PATHSPECS the residue question is asked with — every
+/// footprint entry that names a real path, including the host's own `CLAUDE.md`,
+/// which no rule hides but every private install must report.
+#[must_use]
+pub fn footprint_pathspecs() -> Vec<String> {
+    footprint().into_iter().filter_map(|e| e.pathspec).collect()
+}
+
+/// Whether `path` — as `git ls-files` reported it — is one MUSTARD writes.
+///
+/// The predicate behind the residue ADVICE: `git rm --cached` clears a path the
+/// install put there, and would untrack the client's own work for anything else.
+#[must_use]
+pub fn is_written_footprint(path: &str) -> bool {
+    footprint()
+        .iter()
+        .any(|e| e.written && e.pathspec.as_deref() == Some(path))
+}
+
+/// The footprint entries that exist for the PRIVATE mode ALONE — the two
+/// local-layer destinations no shared install ever writes.
+///
+/// They are what makes the mode self-evident: an exclude file carrying both was
+/// written by a private install and by nothing else, so the mode needs no knob
+/// in any versioned file. Deliberately NOT "every rule [`footprint_rules`]
+/// returns": that list GROWS with each new injectable seed, so an all-rules test
+/// would read an already-private project as shared the first time it ran a newer
+/// Mustard — and the very next `scan --full` would then write straight into the
+/// client's `CLAUDE.md`.
+pub const PRIVATE_MARKS: [&str; 2] = [SETTINGS_LOCAL_JSON, CLAUDE_LOCAL_MD];
+
+/// Whether an exclude file's body carries every [`PRIVATE_MARKS`] rule.
+///
+/// Compared on the TRIMMED line and skipping comments, exactly as
+/// [`crate::platform::git_exclude::ensure_excluded`] compares before appending —
+/// a CRLF file answers the same as an LF one, and a commented-out rule is not in
+/// force.
+#[must_use]
+pub fn carries_private_marks(body: &str) -> bool {
+    let mut seen = [false; PRIVATE_MARKS.len()];
+    for line in body.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        for (slot, mark) in seen.iter_mut().zip(PRIVATE_MARKS) {
+            *slot |= line == mark;
+        }
+    }
+    seen.iter().all(|s| *s)
+}
+
+/// Which footprint the project at `root` was installed with — autodetected off
+/// the clone-local exclude file, never configured.
+///
+/// The mode lives in no versioned file and in no environment variable: a knob in
+/// `mustard.json` would itself be the trace the private mode exists to remove
+/// (the setting would announce the tool it hides), and an env var is state the
+/// operator has to remember. It is chosen ONCE through a `--private` flag and
+/// thereafter read back off the exclude file that run wrote.
+///
+/// The single home for the question, so the two install faces cannot drift: the
+/// CLI's `mustard init` and the runtime's `run upsert` both re-run over projects
+/// that are already private, and either one silently deciding "shared" would
+/// re-seed the versioned twin of a file it had already hidden.
+///
+/// Fail-open: no git, no repository, or an unreadable exclude file answers
+/// [`InstallMode::Shared`] — today's behaviour, unchanged.
+#[must_use]
+pub fn detect_install_mode(root: &Path) -> InstallMode {
+    let Some(path) = git_exclude::exclude_file(root) else {
+        return InstallMode::Shared;
+    };
+    match fs::read_to_string(&path) {
+        Ok(body) if carries_private_marks(&body) => InstallMode::Private,
+        _ => InstallMode::Shared,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +384,7 @@ pub struct UpsertReport {
     /// second run — the append is idempotent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded: Vec<String>,
-    /// [`footprint_paths`] entries the host repository ALREADY tracks. An
+    /// [`footprint_pathspecs`] entries the host repository ALREADY tracks. An
     /// ignore rule cannot hide a tracked path, so these are residue: the
     /// install names them and unlinks nothing — `git rm --cached` rewrites the
     /// host's index, which is the operator's decision.
@@ -289,12 +447,12 @@ impl UpsertReport {
 /// `mustard.json` line), a caller with no authoritative version passes
 /// `None` and the stamp is withheld.
 ///
-/// Under [`InstallMode::Private`] a step 0 runs first — [`footprint_paths`] is
+/// Under [`InstallMode::Private`] a step 0 runs first — [`footprint_rules`] is
 /// written into the clone-local exclude file, and whatever the host repository
-/// already tracks is recorded as residue — so no seed is ever momentarily
-/// visible to that repository's git. Step 2 then targets the local settings
-/// layer. [`InstallMode::Shared`] does neither and is byte-for-byte what it was
-/// before the mode existed.
+/// already tracks under [`footprint_pathspecs`] is recorded as residue — so no
+/// seed is ever momentarily visible to that repository's git. Step 2 then
+/// targets the local settings layer. [`InstallMode::Shared`] does neither and is
+/// byte-for-byte what it was before the mode existed.
 ///
 /// # Errors
 ///
@@ -315,14 +473,16 @@ pub fn upsert_project(
         ..UpsertReport::default()
     };
 
-    // 0. Private mode: hide the footprint BEFORE any of it is written.
+    // 0. Private mode: hide the footprint BEFORE any of it is written. The two
+    //    halves read two different projections of the ONE declaration — the
+    //    rules are what an install may hide, the pathspecs are what it may ask
+    //    about, and they are not the same set (see `FootprintEntry`).
     if mode.is_private() {
-        let footprint = footprint_paths();
-        let outcome = git_exclude::ensure_excluded(root, &footprint);
+        let outcome = git_exclude::ensure_excluded(root, &footprint_rules());
         report.private = true;
         report.excluded = outcome.appended;
         report.exclude_unavailable = outcome.unavailable;
-        report.already_tracked = git_exclude::tracked_paths(root, &footprint);
+        report.already_tracked = git_exclude::tracked_paths(root, &footprint_pathspecs());
     }
 
     // 1. Migration away from the planted-orchestrator layout (fail-open).
@@ -431,7 +591,7 @@ fn settings_dest(claude_dir: &Path, mode: InstallMode) -> PathBuf {
 
 /// The project-root-relative name [`upsert_project`] reports for the file
 /// [`settings_dest`] wrote — the report half of the same decision, and one of
-/// the [`footprint_paths`] entries.
+/// the [`footprint_rules`] entries.
 fn settings_footprint(mode: InstallMode) -> &'static str {
     if mode.is_private() {
         SETTINGS_LOCAL_JSON
@@ -1266,7 +1426,7 @@ mod tests {
                 "{mode:?}: reported {name} but wrote {dest:?}",
             );
             assert!(
-                footprint_paths().iter().any(|p| p == name),
+                footprint_rules().iter().any(|p| p == name),
                 "{mode:?}: {name} is not in the footprint the private mode hides",
             );
         }
@@ -1281,17 +1441,16 @@ mod tests {
     /// anyone editing a second list.
     #[test]
     fn the_footprint_is_derived_from_the_seeds_it_hides() {
-        let footprint = footprint_paths();
+        let rules = footprint_rules();
         for (name, _) in INJECTABLE_SEEDS {
             let expected = format!(".claude/mustard/{name}");
-            assert!(footprint.contains(&expected), "{expected} missing: {footprint:?}");
+            assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
         for expected in [
             SETTINGS_JSON,
             SETTINGS_LOCAL_JSON,
             CLAUDE_GITIGNORE_PATH,
-            MUSTARD_JSON,
-            CLAUDE_MD,
+            MUSTARD_JSON_RULE,
             CLAUDE_LOCAL_MD,
             GITHUB_PR_TEMPLATE,
             // The two covers: without them the per-file entries hide the root
@@ -1300,19 +1459,84 @@ mod tests {
             CLAUDE_DIR_ANY_DEPTH,
             CLAUDE_BACKUP_DIRS,
         ] {
-            assert!(
-                footprint.iter().any(|p| p == expected),
-                "{expected} missing: {footprint:?}",
-            );
+            assert!(rules.iter().any(|p| p == expected), "{expected} missing: {rules:?}");
         }
-        // Project-root-relative, forward slashes, no duplicates — the list is
-        // written verbatim into a git exclude file and read back by the proof.
-        let mut seen = footprint.clone();
+        // No duplicates and no backslashes — the list is written verbatim into a
+        // git exclude file, which speaks forward slashes on every platform.
+        let mut seen = rules.clone();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen.len(), footprint.len(), "duplicate rule: {footprint:?}");
-        for rule in &footprint {
-            assert!(!rule.contains('\\') && !rule.starts_with('/'), "not relative: {rule}");
+        assert_eq!(seen.len(), rules.len(), "duplicate rule: {rules:?}");
+        for rule in &rules {
+            assert!(!rule.contains('\\'), "not a git rule: {rule}");
         }
+    }
+
+    /// The defect this splits the footprint for: an ignore rule that carries no
+    /// slash matches at EVERY depth, so a bare `mustard.json` or `CLAUDE.md`
+    /// line hides the client's own files — the exact opposite of the mode's
+    /// promise, and invisible to a criterion that only asserts a CLEAN status
+    /// (an over-broad rule makes that assertion MORE likely to pass).
+    ///
+    /// Stated as a property rather than a list: any unanchored rule must be a
+    /// name Mustard alone writes at arbitrary depth.
+    #[test]
+    fn no_rule_reaches_a_depth_that_is_not_ours() {
+        // The only names a private install writes at unpredictable depth: the
+        // per-subproject local instruction layer, and the `.claude/` covers.
+        let ours_at_any_depth = [CLAUDE_LOCAL_MD, CLAUDE_DIR_ANY_DEPTH, CLAUDE_BACKUP_DIRS];
+        for rule in footprint_rules() {
+            // A rule with an interior slash is anchored to the repository root
+            // by git itself; a trailing slash alone does not anchor anything.
+            let anchored = rule.starts_with('/') || rule.trim_end_matches('/').contains('/');
+            assert!(
+                anchored || ours_at_any_depth.contains(&rule.as_str()),
+                "{rule:?} matches at every depth but is not a name only Mustard writes — \
+                 it would hide the client's own file from their own `git add -A`",
+            );
+        }
+        // The host's own instruction file is asked about and never hidden.
+        assert!(
+            !footprint_rules().iter().any(|r| r == CLAUDE_MD),
+            "a private install never writes a CLAUDE.md, so it must never hide one",
+        );
+        assert!(
+            footprint_pathspecs().iter().any(|p| p == CLAUDE_MD),
+            "…but it must still REPORT one the host repository already tracks",
+        );
+        assert!(
+            !is_written_footprint(CLAUDE_MD),
+            "the residue advice (`git rm --cached`) must never target the client's own file",
+        );
+        assert!(is_written_footprint(MUSTARD_JSON), "a real seed IS removable residue");
+    }
+
+    /// The mode is read back off the exclude file, so the marks the detector
+    /// looks for must be rules some install really writes.
+    #[test]
+    fn the_private_marks_are_rules_an_install_writes() {
+        let rules = footprint_rules();
+        for mark in PRIVATE_MARKS {
+            assert!(
+                rules.iter().any(|r| r == mark),
+                "{mark} is written by no install, so nothing could ever detect it: {rules:?}",
+            );
+        }
+        let body = PRIVATE_MARKS.map(|m| format!("  {m}  \r\n")).concat();
+        assert!(carries_private_marks(&format!("# theirs\nbuild/\n{body}")));
+        assert!(!carries_private_marks(&format!("{}\n", PRIVATE_MARKS[0])), "one rule is not the mode");
+        assert!(
+            !carries_private_marks(&PRIVATE_MARKS.map(|m| format!("#{m}\n")).concat()),
+            "a commented-out rule is not in force",
+        );
+        assert!(!carries_private_marks(""), "an empty exclude file is a shared install");
+    }
+
+    /// Fail-open: a tree git knows nothing about is a shared install, not an
+    /// error and not a panic.
+    #[test]
+    fn detect_install_mode_degrades_to_shared_without_a_repository() {
+        let dir = tempdir().unwrap();
+        assert_eq!(detect_install_mode(dir.path()), InstallMode::Shared);
     }
 }

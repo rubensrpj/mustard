@@ -574,8 +574,9 @@ struct GuardsReport {
 
 /// The data-driven Guards gate: does this edit violate a critical Guard of the
 /// subproject it lands in? The rules are loaded from that subproject's
-/// `CLAUDE.md` — language-agnostic. Fail-open: `mode == Off`, no governing
-/// `CLAUDE.md`, or no critical Guards → an empty (no-opinion) report.
+/// instruction file — `CLAUDE.md`, or the `CLAUDE.local.md` a private install
+/// writes instead — language-agnostic. Fail-open: `mode == Off`, no governing
+/// instruction file, or no critical Guards → an empty (no-opinion) report.
 fn guards_gate(cwd: &str, file_path: &str, new_content: &str, mode: GuardGateMode) -> GuardsReport {
     let mut report = GuardsReport::default();
     if mode == GuardGateMode::Off {
@@ -586,7 +587,7 @@ fn guards_gate(cwd: &str, file_path: &str, new_content: &str, mode: GuardGateMod
     else {
         return report;
     };
-    let guards = critical_guards(&subproject_dir);
+    let guards = critical_guards(&claude_md);
     if guards.is_empty() {
         return report;
     }
@@ -619,14 +620,20 @@ fn guards_gate(cwd: &str, file_path: &str, new_content: &str, mode: GuardGateMod
 }
 
 /// Walk up from `edited`'s directory to `root` (inclusive) and return the first
-/// `(CLAUDE.md path, its directory)` — the subproject that governs the edit.
-/// `None` when no `CLAUDE.md` is found up to `root`. Depth-bounded so a path
-/// outside `root` can never loop.
+/// `(instruction file path, its directory)` — the subproject that governs the
+/// edit. `None` when none is found up to `root`. Depth-bounded so a path outside
+/// `root` can never loop.
+///
+/// The candidate at each level is resolved through
+/// [`crate::shared::context::guards_file`], so under a private install the walk
+/// finds the `CLAUDE.local.md` the scan wrote there. A hard-coded `CLAUDE.md`
+/// would make this return `None` in a client repository that has none — and the
+/// whole critical-Guards gate would go silent without ever saying so.
 fn governing_subproject(edited: &Path, root: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut dir = edited.parent();
     for _ in 0..MAX_SUBPROJECT_WALK {
         let d = dir?;
-        let candidate = d.join("CLAUDE.md");
+        let candidate = crate::shared::context::guards_file(root, d);
         if candidate.is_file() {
             return Some((candidate, d.to_path_buf()));
         }

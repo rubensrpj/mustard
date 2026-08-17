@@ -168,11 +168,56 @@ fn ac7_init_private_seeds_no_github_template() {
         !claude.join("settings.json").exists(),
         "private install must never create the shared .claude/settings.json",
     );
+    // Derived from the declaration, never retyped: a list copied into this file
+    // could only ever prove that the rules cover what its author remembered, and
+    // the spelling of a rule is load-bearing (`/mustard.json` is anchored to the
+    // repository root precisely so it cannot swallow a client's own nested one).
     let excluded = exclude_body(&private);
-    for rule in ["mustard.json", ".claude/settings.local.json"] {
+    for rule in mustard_core::footprint_rules() {
         assert!(
             excluded.lines().any(|line| line.trim() == rule),
             "the clone-local exclude file must carry `{rule}`:\n{excluded}",
         );
+    }
+    // And the install must be DETECTABLE as private from the file alone — that is
+    // how a later `mustard init` with no flag knows not to re-seed the versioned
+    // twin of a file this run already hid.
+    assert!(
+        mustard_core::carries_private_marks(&excluded),
+        "the exclude file must read back as a private install:\n{excluded}",
+    );
+
+    // The other half of "invisible": the rules cover OUR footprint and stop
+    // there. Written after the install, so these are files the operator produces
+    // FOR the client — under a `git add -A` law an over-broad rule would keep
+    // them out of every commit, silently.
+    for theirs in ["CLAUDE.md", "services/billing/mustard.json"] {
+        let path = private.join(theirs);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("client dir");
+        }
+        std::fs::write(&path, "# theirs\n").expect("client file");
+    }
+    let status = git_status(&private);
+    for theirs in ["CLAUDE.md", "services/billing/mustard.json"] {
+        assert!(
+            status.contains(theirs),
+            "the install hid {theirs}, which it never wrote: {status}",
+        );
+    }
+}
+
+/// The repository's dirt, trimmed. `--untracked-files=all` because the default
+/// collapses a wholly untracked directory into ONE line. A failure returns a
+/// sentinel rather than an empty string, so a measurement that did not happen
+/// fails the assertions it feeds instead of satisfying them.
+fn git_status(root: &Path) -> String {
+    let out = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(root)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => "<git status unavailable>".to_string(),
     }
 }

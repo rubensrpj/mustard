@@ -13,7 +13,8 @@
 //! The paths are not this file's invention either. The seeds come from the
 //! install's own report — the engine says what it wrote — and the footprint the
 //! negative control looks for is read back from
-//! [`mustard_core::footprint_paths`], the single declaration wave 1 introduced.
+//! [`mustard_core::footprint_pathspecs`], one projection of the single
+//! declaration wave 1 introduced.
 //! A list retyped here could only ever prove the rules cover what the test author
 //! already thought of, which is exactly how the previous version of this class of
 //! test passed while seven runtime paths stayed visible.
@@ -49,7 +50,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mustard_core::{footprint_paths, upsert_project, InstallMode, UpsertReport};
+use mustard_core::{footprint_pathspecs, upsert_project, InstallMode, UpsertReport};
 
 /// The subproject whose own `CLAUDE.md` the host repository versions. Nested one
 /// level down so the fixture really exercises depth, which is where a
@@ -94,6 +95,24 @@ fn ac8_host_repo_stays_clean_and_untouched() {
         "the client's own {SUBPROJECT}/CLAUDE.md must come back byte-identical — \
          content and line terminators alike",
     );
+
+    // The other side of "leaves no trace": the rules must hide OUR footprint and
+    // nothing else. This assertion cannot be folded into the one above — an
+    // over-broad rule makes an EMPTY status more likely, not less, so a clean
+    // tree is exactly what a client-swallowing install also produces. What
+    // separates them is whether files the operator writes FOR the client, after
+    // the install, are still visible to that client's own `git add -A`.
+    write(&private.join("CLAUDE.md"), b"# the client's own root rules\n");
+    write(&private.join(SUBPROJECT).join("mustard.json"), b"{}\n");
+    write(&private.join("services/billing/CLAUDE.md"), b"# their other subproject\n");
+    let visible = git_status(&private);
+    let sub_config = format!("{SUBPROJECT}/mustard.json");
+    for theirs in ["CLAUDE.md", sub_config.as_str(), "services/billing/CLAUDE.md"] {
+        assert!(
+            visible.contains(theirs),
+            "the install hid {theirs}, which it never wrote: {visible:?}",
+        );
+    }
 
     // --- THE NEGATIVE CONTROL ----------------------------------------------
     // The same fixture, installed SHARED. Without this a green run above would
@@ -192,13 +211,16 @@ fn write_harness_output(root: &Path, mode: InstallMode) {
 }
 
 /// The footprint entries that really exist on disk under `root`, read back from
-/// [`footprint_paths`] rather than retyped here.
+/// [`footprint_pathspecs`] rather than retyped here.
 ///
-/// Two kinds of entry are skipped, and neither is a judgement call: an entry
-/// carrying `*` is a directory COVER (a rule, not a path — nothing is at that
-/// name), and an entry the install did not produce is not evidence of anything.
-/// `report` is consulted only to fail loudly if the two ever disagree about a
-/// file the engine claims to have written.
+/// The PATHSPEC projection, not the rule one: a rule is a pattern (`/mustard.json`
+/// is anchored, `**/.claude/` is a shape) while a pathspec names the file the
+/// install actually produces, which is what "exists on disk" can be asked about.
+///
+/// An entry the install did not produce is skipped, and that is not a judgement
+/// call: it is not evidence of anything. `report` is consulted only to fail
+/// loudly if the two ever disagree about a file the engine claims to have
+/// written.
 fn footprint_on_disk(root: &Path, report: &UpsertReport) -> Vec<String> {
     let claimed: Vec<&String> = report
         .created
@@ -207,8 +229,8 @@ fn footprint_on_disk(root: &Path, report: &UpsertReport) -> Vec<String> {
         .chain(&report.preserved)
         .collect();
     let mut found = Vec::new();
-    for entry in footprint_paths() {
-        if entry.contains('*') || !root.join(&entry).exists() {
+    for entry in footprint_pathspecs() {
+        if !root.join(&entry).exists() {
             assert!(
                 !claimed.iter().any(|c| **c == entry),
                 "the install reported writing {entry}, but it is not on disk",

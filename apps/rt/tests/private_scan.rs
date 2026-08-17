@@ -43,7 +43,7 @@ fn ac5_private_scan_writes_local_guards_and_never_touches_claude_md() {
     // Make the clone private exactly as a private install does — by writing the
     // footprint into the clone-local exclude file. Nothing else declares the
     // mode: there is no knob to set.
-    let outcome = mustard_core::ensure_excluded(root, &mustard_core::footprint_paths());
+    let outcome = mustard_core::ensure_excluded(root, &mustard_core::footprint_rules());
     assert_eq!(outcome.unavailable, None, "the fixture needs a real repository: {outcome:?}");
 
     let result = run_pass(root, &[project("sub", "apps/sub")], true);

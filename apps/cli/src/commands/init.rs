@@ -56,7 +56,7 @@
 //! repository's git. Three differences, all decided by the mode:
 //!
 //! - a step 0 runs before anything is written, adding
-//!   `mustard_core::footprint_paths` to the clone-local exclude file and
+//!   `mustard_core::footprint_rules` to the clone-local exclude file and
 //!   reporting whatever that repository already tracks (see [`hide_footprint`]);
 //! - the harness settings go to `.claude/settings.local.json`, the untracked
 //!   local layer Claude Code reads beside `settings.json` — the core picks the
@@ -65,10 +65,16 @@
 //!   scaffolding for a repository the operator owns, and it lands outside
 //!   `.claude/` where nothing else covers it.
 //!
-//! The mode is a FLAG and lives in no versioned file — a knob in `mustard.json`
-//! would itself be the trace the mode exists to remove. There is no prompt for
-//! it either: `--private` is the whole surface, so an ordinary install is never
-//! asked a question it does not need.
+//! The mode lives in no versioned file — a knob in `mustard.json` would itself
+//! be the trace the mode exists to remove. It is CHOSEN once with `--private`
+//! and thereafter AUTODETECTED off the clone-local exclude file that choice
+//! wrote (`mustard_core::detect_install_mode`), exactly as `mustard-rt run
+//! upsert` resolves it. Both halves are load-bearing: without the flag there is
+//! no way to say it the first time, and without the autodetection a plain
+//! `mustard init` re-run over a private project would re-seed the versioned twin
+//! of a file it had already hidden — two settings layers, hooks registered
+//! twice. There is no prompt: an ordinary install is never asked a question it
+//! does not need.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -144,10 +150,15 @@ pub fn init_with_templates(
         .canonicalize()
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
     let claude_path = project_path.join(".claude");
+    // The flag CHOOSES the mode; absent, the project's own exclude file answers.
+    // Never the other way round: a `--private` on an already-shared install must
+    // switch it, and a re-run without the flag must not silently undo one. Same
+    // resolution `mustard-rt run upsert` performs — one core function, so the two
+    // install faces cannot disagree about what a project already is.
     let mode = if options.private {
         InstallMode::Private
     } else {
-        InstallMode::Shared
+        mustard_core::detect_install_mode(&project_path)
     };
 
     // Location guard — runs in dry-run too: the honest "intended action" for a
@@ -321,21 +332,28 @@ fn guard_init_location(project_path: &Path) -> Result<()> {
 /// name whatever the host repository already tracks.
 ///
 /// Mirrors the private step of `mustard_core::upsert_project` so the two
-/// install faces never drift: the rule list is
-/// [`mustard_core::footprint_paths`], the write goes through the clone-local
-/// exclude layer (a path git resolves — never the literal `.git/info/exclude`,
-/// which does not exist in a submodule or a linked worktree), and an
-/// already-tracked path is REPORTED, never unlinked: `git rm --cached` rewrites
-/// the host's index, and that is the operator's decision, not an install-time
-/// cosmetic.
+/// install faces never drift: the rules are [`mustard_core::footprint_rules`],
+/// the residue question is asked with [`mustard_core::footprint_pathspecs`] (the
+/// two are NOT the same list — a rule is a pattern, a pathspec is a path), the
+/// write goes through the clone-local exclude layer (a path git resolves — never
+/// the literal `.git/info/exclude`, which does not exist in a submodule or a
+/// linked worktree), and an already-tracked path is REPORTED, never unlinked:
+/// `git rm --cached` rewrites the host's index, and that is the operator's
+/// decision, not an install-time cosmetic.
+///
+/// The residue report is SPLIT, and that split is the difference between advice
+/// and damage. `git rm --cached` clears a file the install put there; aimed at
+/// the client's own `CLAUDE.md` — which a private install never writes, because
+/// the Guards go to `CLAUDE.local.md` beside it — the same command untracks
+/// THEIR work, and their next commit deletes it. So only a path
+/// [`mustard_core::is_written_footprint`] recognises is offered the command; the
+/// host's own file is named for what it is and left alone.
 ///
 /// Fail-open in the core seam: no git, no repository, an unreadable or
 /// unwritable exclude file each degrade to a printed reason. The CLI only
 /// narrates.
 fn hide_footprint(project_path: &Path) {
-    let mut footprint = mustard_core::footprint_paths();
-    footprint.extend(backup_dirs(project_path));
-    let outcome = mustard_core::ensure_excluded(project_path, &footprint);
+    let outcome = mustard_core::ensure_excluded(project_path, &mustard_core::footprint_rules());
     match (&outcome.unavailable, outcome.appended.len()) {
         (Some(reason), _) => println!("  private install: {reason}"),
         (None, 0) => {
@@ -346,44 +364,25 @@ fn hide_footprint(project_path: &Path) {
         ),
     }
 
-    let tracked = mustard_core::tracked_paths(project_path, &footprint);
-    if !tracked.is_empty() {
+    let tracked =
+        mustard_core::tracked_paths(project_path, &mustard_core::footprint_pathspecs());
+    let (ours, theirs): (Vec<String>, Vec<String>) = tracked
+        .into_iter()
+        .partition(|path| mustard_core::is_written_footprint(path));
+    if !ours.is_empty() {
         println!(
             "  note: this repository ALREADY tracks {} — a git ignore rule cannot hide a tracked path,",
-            tracked.join(", ")
+            ours.join(", ")
         );
         println!("        so those stay visible. Nothing was unlinked; clear them yourself with:");
-        println!("          git rm --cached {}", tracked.join(" "));
+        println!("          git rm --cached {}", ours.join(" "));
     }
-}
-
-/// The `.claude.backup.<stamp>/` directories sitting in the project — this
-/// run's, if the operator chose "backup and overwrite" (that choice is taken
-/// before [`hide_footprint`] runs), plus any an earlier run left behind.
-///
-/// They are deliberately NOT in `mustard_core::footprint_paths`, which declares
-/// what an install SEEDS: a backup is a runtime artifact whose name carries a
-/// timestamp, so it can only be discovered, never declared. It is still
-/// something Mustard put in the project, and `.claude/settings.json` — a rule
-/// with a slash, therefore anchored at the root — does not cover the copy of it
-/// inside the backup. Without this, the one interactive path through a private
-/// install would leave exactly the visible directory the mode exists to prevent.
-///
-/// Fail-open: an unreadable project root yields no names, never an error. The
-/// list is sorted so the appended rules are deterministic.
-fn backup_dirs(project_path: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(project_path) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.starts_with(".claude.backup."))
-        .map(|name| format!("{name}/"))
-        .collect();
-    names.sort();
-    names
+    for path in theirs {
+        println!(
+            "  note: {path} is the repository's OWN versioned file — Mustard never writes it in \
+             this mode (the Guards go to CLAUDE.local.md beside it), so it is left exactly as it is."
+        );
+    }
 }
 
 /// Print one didactic line per seeded file. The seeding itself lives in the
