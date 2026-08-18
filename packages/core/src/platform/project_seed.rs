@@ -132,9 +132,16 @@ const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
 /// A trailing slash means "the directory and everything under it"; everything
 /// else is one file. `no_rule_reaches_a_depth_that_is_not_ours` refuses any
 /// entry a private install cannot be shown to produce.
-const HARNESS_CLAUDE_OUTPUT: &[&str] = &[
+///
+/// The FILES are listed here; the DIRECTORIES are derived from
+/// [`ClaudePaths::documented_dirs`] by [`harness_claude_output`] — the catalog
+/// whose own documentation says to derive from it instead of hand-maintaining a
+/// duplicate. Hand-maintaining it is exactly what shipped the leak this replaces:
+/// the typed list omitted `plans/` (filled because Mustard's own settings seed
+/// sets `plansDirectory`), `graph/` and the runtime scratch, and 18 real files
+/// carrying the operator's own prompt titles stayed visible to the client's git.
+const HARNESS_CLAUDE_FILES: &[&str] = &[
     ".artifacts.json",
-    "capabilities/",
     "grain.dictionary.json",
     "grain.equivalences.json",
     "grain.model.json",
@@ -145,8 +152,36 @@ const HARNESS_CLAUDE_OUTPUT: &[&str] = &[
     // 30 in this repository carries that suffix. The rule is the mold, not the
     // shelf — the same distinction that took `.claude/commands/` back.
     "skills/*-pattern/",
-    "spec/",
 ];
+
+/// The `.claude/` directories a CLIENT may also author in, so no rule of ours
+/// may cover them wholesale.
+///
+/// This is the ONLY hand-maintained half, and it is the safe half to get wrong:
+/// forgetting an entry here hides something of the client's (loud, and the
+/// ownership ratchet refuses it), while forgetting a directory in the derived
+/// half leaks something of ours. `skills` is here and its `*-pattern/` molds are
+/// covered by name in [`HARNESS_CLAUDE_FILES`].
+const CLIENT_AUTHORED_CLAUDE_DIRS: &[&str] =
+    &["commands", "skills", "refs", "agents", ".obsidian"];
+
+/// Every `.claude/`-relative name the harness writes: the files above plus every
+/// documented directory that is not one a client authors in.
+///
+/// Derived, so a directory added to the catalog is covered here without anyone
+/// remembering to. Sorted, because the rules are written verbatim into an
+/// exclude file and the report must stay byte-stable.
+fn harness_claude_output() -> Vec<String> {
+    let mut out: Vec<String> = HARNESS_CLAUDE_FILES.iter().map(|s| (*s).to_string()).collect();
+    out.extend(
+        crate::io::claude_paths::ClaudePaths::documented_dirs()
+            .into_iter()
+            .filter(|dir| !CLIENT_AUTHORED_CLAUDE_DIRS.contains(dir))
+            .map(|dir| format!("{dir}/")),
+    );
+    out.sort();
+    out
+}
 /// The timestamped copy `mustard init` leaves beside `.claude/` when the
 /// operator chooses "backup and overwrite".
 ///
@@ -305,7 +340,7 @@ pub fn footprint() -> Vec<FootprintEntry> {
         .collect();
     out.extend(lifted);
     out.extend(
-        HARNESS_CLAUDE_OUTPUT
+        harness_claude_output()
             .iter()
             .map(|name| cover(&format!("**/.claude/{name}"))),
     );
@@ -1553,9 +1588,24 @@ mod tests {
             let lifted = format!("**/{seed}");
             assert!(rules.iter().any(|p| *p == lifted), "{lifted} missing: {rules:?}");
         }
-        for name in HARNESS_CLAUDE_OUTPUT {
+        for name in harness_claude_output() {
             let expected = format!("**/.claude/{name}");
             assert!(rules.iter().any(|p| *p == expected), "{expected} missing: {rules:?}");
+        }
+        // Every documented directory that is not client-authored MUST be covered.
+        // This is the direction the ratchet lacked: it validated the rules that
+        // were emitted and never asked whether one was MISSING, which is how
+        // `plans/` — filled by Mustard's own `plansDirectory` seed — leaked 18
+        // files carrying the operator's prompt titles into a client's repo.
+        for dir in crate::io::claude_paths::ClaudePaths::documented_dirs() {
+            if CLIENT_AUTHORED_CLAUDE_DIRS.contains(&dir) {
+                continue;
+            }
+            let expected = format!("**/.claude/{dir}/");
+            assert!(
+                rules.iter().any(|p| *p == expected),
+                "{expected} missing — a documented harness directory with no rule leaks: {rules:?}",
+            );
         }
         // No duplicates and no backslashes — the list is written verbatim into a
         // git exclude file, which speaks forward slashes on every platform.

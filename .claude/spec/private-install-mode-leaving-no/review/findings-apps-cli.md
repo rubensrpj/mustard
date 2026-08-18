@@ -1,29 +1,38 @@
-## Verdict — apps/cli, round 2
+## Verdict — apps/cli, round 3: REJECTED (1 critical)
 
-**REJECTED — 1 blocking defect.** The declared criteria pass; a defect they cannot see ships a silent-data-loss trap into the client repo.
+Every acceptance criterion passes, and one measured defect blocks.
 
-### Claims verified (all green)
-| Claim | Command | Real output |
-|---|---|---|
-| AC-7 | `cargo test -p mustard-cli --test private_init ac7_init_private_seeds_no_github_template` | `1 passed (1 suite, 1.78s)` |
-| No CLI regression | `cargo test -p mustard-cli` | `50 passed (5 suites, 4.08s)` |
-| AC-9 | `cargo build --workspace` | `0 errors, 1 warnings` (pre-existing, `apps/rt/src/commands/feature.rs:488`, untouched) |
-| Lints | `cargo clippy -p mustard-cli --all-targets` | `0 errors, 30 warnings` — all pre-existing files |
+### Criteria — all green, run individually against the spec's exact commands
+| AC | result |
+|---|---|
+| AC-1..AC-4, AC-11 | `cargo test -p mustard-core --test private_install <name>` → `1 passed` each |
+| AC-5 / AC-6 / AC-10 | `cargo test -p mustard-rt --test private_scan|private_surface|private_guards <name>` → `1 passed` each |
+| AC-7 | `cargo test -p mustard-cli --test private_init ac7_…` → `1 passed` |
+| AC-8 | `cargo test -p mustard-core --test private_install_leaves_no_trace ac8_…` → `1 passed` |
+| AC-9 | `cargo build --workspace` → 0 errors (1 pre-existing warning, untouched) |
 
-Independent field proof (not the test suite): drove the real `target/debug/mustard.exe init --yes --private` in a fresh git host repo that already versioned its own `CLAUDE.md`, then planted a subproject `.claude/`, a `CLAUDE.local.md`, a `.claude.backup.20260817T120000/` and a `.claude/spec/foo/` — `git status --porcelain --untracked-files=all` came back **empty**, `CLAUDE.md` untouched. Re-running `init --yes` with **no flag** stayed private (`kept .claude/settings.local.json`, no `settings.json`, no `.github/`), so the autodetection seam really works through the CLI. Switching an already-shared install to `--private` printed the correct residue report and the `git rm --cached` line. Guards checked: no `unwrap`/`expect` outside `#[cfg(test)]` in the new code, `mustard.json` stays root-anchored (`/mustard.json`), `.claude` skip-list and the fail-open probes untouched. Mold `cli-options-pattern` conformant.
+`cargo test --workspace` → no failure anywhere; `cargo clippy --workspace --all-targets` → 0 errors, no new warning in a changed file. Mold `cli-options-pattern` compliant. `apps/cli` Guards clean. Change requests 1–3 and 4(a)/(c)/(d) are all in the code and covered by a criterion.
 
-### CRITICAL — a private install hides a file it never writes
-`apps/cli/src/commands/init.rs:262` refuses to seed `.github/` precisely because "it lands outside `.claude/`, where nothing else covers it". Then `hide_footprint` at `apps/cli/src/commands/init.rs:356` writes **every** `footprint_rules()` entry into the clone-local exclude file — including `.github/pull_request_template.md` (`packages/core/src/platform/project_seed.rs:244`, `seeded(GITHUB_PR_TEMPLATE)`). Measured in the fixture above:
+### CRITICAL — the enumerated cover is incomplete, and the leak is not hypothetical
+`packages/core/src/platform/project_seed.rs:135` — `HARNESS_CLAUDE_OUTPUT` was hand-typed. Change request 4(b) said to derive it "from the declarations that already exist rather than retyped"; that declaration is `DOCUMENTED_DIRS` at `packages/core/src/io/claude_paths.rs:156`, whose own doc says "derive their catalog from it instead of hand-maintaining a duplicate". The duplicate is already wrong.
+
+Built a probe repo carrying exactly this wave's `footprint_rules()` plus the seeded `.claude/.gitignore`, and asked git about every file this repository's harness has really produced:
 
 ```
-$ git check-ignore -v .github/pull_request_template.md
-.git/info/exclude:15:.github/pull_request_template.md   .github/pull_request_template.md
-$ git status --porcelain --untracked-files=all
-?? .github/workflows/ci.yml          <- the client's other file shows; their PR template does not
+$ git check-ignore --no-index --stdin < allpaths.txt   # 29154 real .claude files
+total visible: 18   → all .claude/plans/*.md
+$ ... over subproject .claude/ trees
+apps/rt/.claude/.metrics/qa.jsonl
 ```
 
-So in the mode's own headline scenario — a fresh `--private` install into a client repo — a PR template the client (or the operator, for the client) authors is invisible to `git status` and skipped by `git add -A`, silently, forever. This is the *identical* failure the wave already reasoned about and closed for `CLAUDE.md`: `FootprintEntry` doc at `packages/core/src/platform/project_seed.rs:144` ("a rule would hide an instruction file the operator authored FOR the client from that client's own `git add -A`") and the property test `no_rule_reaches_a_depth_that_is_not_ours` at `:1499` ("a private install never writes a `CLAUDE.md`, so it must never hide one"). The PR template is in exactly that class under this mode, yet it is `seeded(..)` instead of the `watched(..)`-shaped entry (rule `None`, pathspec kept so the residue report still names it, as it correctly did in the shared→private switch run). The property test passes only because the rule carries an interior slash — it checks anchoring, not "is this ours".
+- `.claude/plans/` is filled **because of Mustard's own seed**: `packages/core/templates/settings.json:4` is `"plansDirectory": ".claude/plans"`. Mustard's own clone needed a hand-written `.git/info/exclude:31` for it.
+- `.claude/graph/` is the same class — production `run capability` materializes nodes there (`apps/rt/src/commands/capability/mod.rs:292`). Not in the list.
+- `<sub>/.claude/.metrics/` is uncovered from the other direction: the seeded `.claude/.gitignore` governs only the **root** `.claude/`, and no `**/.claude/.metrics/` rule was lifted to depth.
 
-### Non-blocking
-- `apps/cli/src/commands/init.rs:213` — the comment claims step 0 hides the footprint "BEFORE any of it is written", but the interactive backup-and-overwrite branch creates `.claude.backup.<stamp>/` at `:198`, before `hide_footprint` at `:216`. End state is still clean (an exclude rule applies to an untracked path whenever it is added), so this is a doc inaccuracy, not a leak.
-- `apps/cli/tests/private_init.rs:194` — the "the rules cover OUR footprint and stop there" loop tries only `CLAUDE.md` and `services/billing/mustard.json`; adding `.github/pull_request_template.md` to that list is what would have caught the critical above. The CLI-side autodetection re-run also has no regression guard.
+This is not the accepted trade. The user decision accepted a *future* producer staying visible; these are declared today. And under this project's `git add -A` law, "visible" means **staged and committed** — 18 files whose names are the operator's own prompt titles, landing in a client's repository. That is the Success Metric ("`git status` EMPTY") failing on first real use.
+
+### MAJOR — the ratchet is one-directional
+`project_seed.rs:1595` `no_rule_reaches_a_depth_that_is_not_ours` asks, for each *emitted* rule, "does it match ours / does it spare theirs". It has no direction that asks "is every path Mustard produces matched by some rule", which is exactly why the gap above shipped green. AC-8 cannot see it either — its `write_harness_output` fixture writes only `scan-map.md`, `CLAUDE.local.md` and `spec/`.
+
+### MINOR
+`packages/core/src/platform/error.rs` renders "private install cannot hide" while `apps/cli/src/commands/init.rs:~360` bails with "a private install must not write anything it cannot hide" — two wordings for one refusal; only the core one is asserted.
