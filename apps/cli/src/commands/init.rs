@@ -99,9 +99,6 @@ pub struct InitOptions {
     pub yes: bool,
     /// Print intended actions without touching disk.
     pub dry_run: bool,
-    /// Install privately — the footprint lands on disk but stays invisible to
-    /// this clone's git (see [`InstallMode::Private`]).
-    pub private: bool,
 }
 
 /// What to do with an already-present `.claude/` directory.
@@ -150,16 +147,11 @@ pub fn init_with_templates(
         .canonicalize()
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
     let claude_path = project_path.join(".claude");
-    // The flag CHOOSES the mode; absent, the project's own exclude file answers.
-    // Never the other way round: a `--private` on an already-shared install must
-    // switch it, and a re-run without the flag must not silently undo one. Same
-    // resolution `mustard-rt run upsert` performs — one core function, so the two
-    // install faces cannot disagree about what a project already is.
-    let mode = if options.private {
-        InstallMode::Private
-    } else {
-        mustard_core::detect_install_mode(&project_path)
-    };
+    // Unconditional, and both install faces spell it the same way. There is no
+    // flag, no config key and no detection step that could answer otherwise:
+    // installing the harness INTO someone else's repository is not an outcome
+    // this command can be steered towards, by anyone, including by forgetting.
+    let mode = InstallMode::Private;
 
     // Location guard — runs in dry-run too: the honest "intended action" for a
     // subdirectory of a git repository is a refusal, not a simulated install.
@@ -1118,7 +1110,16 @@ mod tests {
 
         let claude = project.join(".claude");
         // The seed files are laid down — injectables replace the planted orchestrator.
-        assert!(claude.join("settings.json").exists(), ".claude/settings.json seeded");
+        // The LOCAL layer, always: the install has no shared mode any more, so
+        // the versioned twin must never appear.
+        assert!(
+            claude.join("settings.local.json").exists(),
+            ".claude/settings.local.json seeded",
+        );
+        assert!(
+            !claude.join("settings.json").exists(),
+            "the versioned settings file is never created",
+        );
         assert!(
             claude.join("mustard").join("orchestrator.md").exists(),
             ".claude/mustard/orchestrator.md seeded"
@@ -1144,7 +1145,7 @@ mod tests {
         // that choice lives at user scope, never planted into the project.
         // Content now comes from the compiled-in core seed, so assert on a
         // stable key the real seed carries.
-        let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
+        let settings = crate::fs_ops::read_json_object(&claude.join("settings.local.json"));
         assert_eq!(
             settings
                 .get("env")
@@ -1284,7 +1285,7 @@ mod tests {
             "merge backfills a missing seed"
         );
         // …and no plugin enablement is planted on the merge path either.
-        let settings = crate::fs_ops::read_json_object(&claude.join("settings.json"));
+        let settings = crate::fs_ops::read_json_object(&claude.join("settings.local.json"));
         assert!(
             settings
                 .get("enabledPlugins")
@@ -1424,7 +1425,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(project.join(".claude").join("settings.json").exists());
+        assert!(project.join(".claude").join("settings.local.json").exists());
         assert!(project.join("mustard.json").exists());
     }
 
@@ -1447,7 +1448,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            sub.join(".claude").join("settings.json").exists(),
+            sub.join(".claude").join("settings.local.json").exists(),
             "a submodule root (.git file) is a legitimate init target"
         );
     }
@@ -1466,7 +1467,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(project.join(".claude").join("settings.json").exists());
+        assert!(project.join(".claude").join("settings.local.json").exists());
     }
 
     // The `retire_planted_plugin_enablement` unit tests moved to the core with

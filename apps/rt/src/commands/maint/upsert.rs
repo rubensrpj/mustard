@@ -13,11 +13,10 @@
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
 //!
-//! `--private` selects the footprint that stays invisible to the host
-//! repository's git. It is needed only once: every later run reads the mode
-//! back off the clone-local exclude file that run wrote (see
-//! `shared::context::install_mode`), so the report grows its private half
-//! without the operator having to remember a flag.
+//! The footprint is ALWAYS the one that stays invisible to the host
+//! repository's git. There is no flag and no mode to choose: an install that
+//! versions the harness into a repository is not something this door can be
+//! asked for, so no argv, no config and no forgotten default can produce one.
 //!
 //! The one loud failure: when a private install cannot hide itself in a
 //! repository that exists, the engine writes NOTHING and the error is narrated
@@ -36,20 +35,17 @@ use mustard_core::InstallMode;
 /// (`CLAUDE_PLUGIN_ROOT`), the core crate's own version otherwise. The field
 /// records "which harness last set this project up"; a legacy 3.1.x CLI stamp
 /// reads as drift once and this very command realigns it.
-pub fn run(private: bool) {
+pub fn run() {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
     let root = PathBuf::from(crate::shared::context::project_dir());
 
-    // The flag CHOOSES the mode; absent, the project's own exclude file answers.
-    // Never the other way round: a `--private` on an already-shared install must
-    // switch it, and a re-run without the flag must not silently undo one.
-    let mode = if private {
-        InstallMode::Private
-    } else {
-        crate::shared::context::install_mode(&root)
-    };
+    // Unconditional. The mode is not read from anywhere and not asked for
+    // anywhere: a harness that installs itself into someone else's repository
+    // is the failure this door exists to make unreachable, and a knob that can
+    // reach it is the same failure with an extra step.
+    let mode = InstallMode::Private;
 
     let version = mustard_core::harness_version();
     match mustard_core::upsert_project(&root, Some(&version), mode) {

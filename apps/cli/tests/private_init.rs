@@ -136,20 +136,36 @@ fn ac7_init_private_seeds_no_github_template() {
     let templates = fake_templates(work.path());
     let shims = tool_shims(work.path());
 
-    // CONTROL — the same fixture installed SHARED does seed the template. If
-    // this ever stops holding, the private assertion below is measuring an
-    // install that simply did not happen.
-    let shared = git_project_with_github_remote(work.path(), "shared-host");
-    let out = run_init(&shared, &templates, &shims, &[]);
-    assert_ok("shared init", &out);
+    // CONTROL — both conditions that MAKE the seed happen are present, so a
+    // missing `.github/` below can only be the install refusing it.
+    //
+    // The control used to be a shared install of the same fixture. There is no
+    // longer any argv that produces one — the mode is unconditional — so the
+    // control moved to the two preconditions the seeder reads: the template has
+    // to exist in the source tree, and the project has to have a github.com
+    // origin. Without this, a fixture with no template at all would satisfy the
+    // criterion by accident, which is the exact shape of failure this unit hit
+    // three times.
     assert!(
-        shared.join(PR_TEMPLATE).is_file(),
-        "fixture broken: a shared install must seed {PR_TEMPLATE} when origin is on github.com",
+        templates.join(".github").join("pull_request_template.md").is_file(),
+        "fixture broken: the source template must exist, or nothing could be seeded anyway",
     );
 
-    // THE CRITERION — the private install writes no `.github/` at all.
+    // THE CRITERION — a BARE `mustard init` is private and writes no `.github/`
+    // at all. No flag: the operator who most needs this mode is the one who
+    // would never think to ask for it.
     let private = git_project_with_github_remote(work.path(), "private-host");
-    let out = run_init(&private, &templates, &shims, &["--private"]);
+    let remote = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(&private)
+        .output()
+        .expect("git config");
+    assert!(
+        String::from_utf8_lossy(&remote.stdout).contains("github.com"),
+        "fixture broken: the seeder only fires on a github.com origin",
+    );
+
+    let out = run_init(&private, &templates, &shims, &[]);
     assert_ok("private init", &out);
     assert!(
         !private.join(".github").exists(),

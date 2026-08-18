@@ -1,12 +1,15 @@
-//! `mustard-rt run upsert --private` — the one door that chooses the footprint,
-//! and the autodetection that means it is only ever typed once.
+//! `mustard-rt run upsert` — the footprint is invisible to the host repository,
+//! unconditionally, and NO argv can ask for anything else.
 //!
 //! Driven through the real binary rather than the library, because the claim is
-//! about the published CLI: a flag that parses in-process proves nothing about a
-//! variant whose `dispatch` arm was never wired, and the mode is resolved inside
-//! that arm. Each run is a fresh process, which is also the only honest way to
-//! prove the SECOND half — a same-process call could be answered by the cache the
-//! first one warmed, so "autodetected" would really mean "remembered".
+//! about the published CLI: a mode resolved in-process proves nothing about a
+//! `dispatch` arm that was never wired, and the resolution lives inside that arm.
+//!
+//! The negative control is not a shared install any more — there is no argv that
+//! produces one. It is the pair of assertions that the install really HAPPENED:
+//! the seeds landed and the exclude file grew. Without them, a build that wrote
+//! nothing at all would satisfy every "the visible file is absent" assertion
+//! here, which is precisely how three defects in this unit shipped green.
 
 use std::path::Path;
 use std::process::Command;
@@ -14,13 +17,15 @@ use std::process::Command;
 use serde_json::Value;
 
 #[test]
-fn ac6_upsert_accepts_private_flag_and_mode_is_autodetected() {
+fn ac6_upsert_is_private_unconditionally_and_offers_no_switch() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
 
-    // --- run 1: the flag is accepted, and it installs privately -------------
-    let first = upsert(root, &["--private"]);
+    // --- run 1: a BARE run installs privately -------------------------------
+    // There is no flag to ask for privacy, because there is nothing else to ask
+    // for. The mode is not a choice the caller can express.
+    let first = upsert(root, &[]);
     assert_eq!(first["private"], Value::Bool(true), "the run must declare itself private: {first}");
     assert!(
         root.join(".claude/settings.local.json").is_file(),
@@ -55,28 +60,37 @@ fn ac6_upsert_accepts_private_flag_and_mode_is_autodetected() {
         "the exclude append converged, so the key is absent entirely: {second}",
     );
 
-    // --- the negative control ------------------------------------------------
-    // Without the marks in its exclude file the same argv installs SHARED. If
-    // this were missing, a build that hard-coded `private` would pass every
-    // assertion above.
-    let plain = tempfile::tempdir().expect("temp dir");
-    let plain_root = plain.path();
-    init_repo(plain_root);
+    // --- negative control A: the install really happened ---------------------
+    // Every assertion above is of the form "the visible file is absent", and a
+    // build that wrote NOTHING satisfies all of them. These two say the work was
+    // actually done, so absence means refused rather than skipped.
+    assert!(
+        root.join("mustard.json").is_file(),
+        "the install must really have run — the project config is its own evidence",
+    );
+    assert!(
+        root.join(".claude/mustard/orchestrator.md").is_file(),
+        "…and so is the injectable it seeds",
+    );
 
-    let shared = upsert(plain_root, &[]);
-    assert_eq!(
-        shared.get("private"),
-        None,
-        "a shared report carries no private key at all: {shared}",
-    );
-    assert!(
-        plain_root.join(".claude/settings.json").is_file(),
-        "a shared install seeds the file it always seeded",
-    );
-    assert!(
-        !plain_root.join(".claude/settings.local.json").exists(),
-        "the local layer belongs to the private mode only",
-    );
+    // --- negative control B: no argv reaches the other outcome ---------------
+    // The mode is unconditional, so the surface must offer no way to ask for a
+    // visible install — not the flag that used to exist, and not its opposite.
+    for argv in [["--private"], ["--shared"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .arg("run")
+            .arg("upsert")
+            .args(argv)
+            .current_dir(root)
+            .env("CLAUDE_PROJECT_DIR", root)
+            .output()
+            .expect("run upsert");
+        assert!(
+            !out.status.success(),
+            "`run upsert {}` must be rejected — the install mode is not a choice",
+            argv[0],
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

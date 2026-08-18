@@ -44,9 +44,9 @@ In a host repository that already versions its own `CLAUDE.md`, a private instal
   Command: `cargo test -p mustard-core --test private_install ac4_shared_install_is_byte_identical_to_today` Expect: `[1-9][0-9]* passed`
 - **AC-5** — when `scan --full` runs under a private install, then each subproject's Guards are written to `<sub>/CLAUDE.local.md` and an existing `<sub>/CLAUDE.md` is left byte-identical.
   Command: `cargo test -p mustard-rt --test private_scan ac5_private_scan_writes_local_guards_and_never_touches_claude_md` Expect: `[1-9][0-9]* passed`
-- **AC-6** — when `mustard-rt run upsert --private` is invoked, then the flag is accepted and the emitted report carries the private outcome; the mode is thereafter autodetected with no flag and no versioned setting.
-  Command: `cargo test -p mustard-rt --test private_surface ac6_upsert_accepts_private_flag_and_mode_is_autodetected` Expect: `[1-9][0-9]* passed`
-- **AC-7** — when `mustard init --private` is invoked, then the install is private and the `.github/` pull-request template is not seeded into the host repository.
+- **AC-6** — when `mustard-rt run upsert` is invoked with no argument at all, then the install is private, and no argv exists that can ask for a visible one — neither `--private` nor `--shared` parses.
+  Command: `cargo test -p mustard-rt --test private_surface ac6_upsert_is_private_unconditionally_and_offers_no_switch` Expect: `[1-9][0-9]* passed`
+- **AC-7** — when a bare `mustard init` is invoked in a repository with a github.com origin, then the install is private and the `.github/` pull-request template is not seeded into the host repository.
   Command: `cargo test -p mustard-cli --test private_init ac7_init_private_seeds_no_github_template` Expect: `[1-9][0-9]* passed`
 - **AC-8** — when a host repository that ALREADY versions its own `CLAUDE.md` receives a private install plus a full scan plus a spec directory, then `git status --porcelain --untracked-files=all` comes back EMPTY against real git and that `CLAUDE.md` is byte-identical to before.
   Command: `cargo test -p mustard-core --test private_install_leaves_no_trace ac8_host_repo_stays_clean_and_untouched` Expect: `[1-9][0-9]* passed`

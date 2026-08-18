@@ -10,13 +10,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_install` in `mustard-core` package\nhelp: available test targets"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac1_private_upsert_writes_clone_local_exclude`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-10",
@@ -27,13 +27,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
-      "removal_exit": null,
+      "confirmation_exit": 0,
+      "removal": "red",
+      "removal_exit": 101,
       "reason": null,
-      "stderr_excerpt": "warning: constant `MUSTARD_JSON_RULE` is never used\n  --> packages\\core\\src\\platform\\project_seed.rs"
+      "stderr_excerpt": "Compiling find-msvc-tools v0.1.9\n   Compiling shlex v2.0.1\n   Compiling proc-macro2 v1.0.107\n   Comp"
     },
     {
       "id": "AC-11",
@@ -44,13 +44,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 0,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s\n     Running tests\\private_inst"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac11_private_install_refuses_when_it_cannot_hide`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-2",
@@ -61,13 +61,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_install` in `mustard-core` package\nhelp: available test targets"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac2_private_upsert_seeds_local_settings`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-3",
@@ -78,13 +78,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_install` in `mustard-core` package\nhelp: available test targets"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac3_already_tracked_paths_are_reported_not_unlinked`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-4",
@@ -95,13 +95,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_install` in `mustard-core` package\nhelp: available test targets"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac4_shared_install_is_byte_identical_to_today`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-5",
@@ -112,13 +112,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_scan` in `mustard-rt` package\nhelp: available test targets:\n   "
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac5_private_scan_writes_local_guards_and_never_touches_claude_md`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-6",
@@ -129,13 +129,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_surface` in `mustard-rt` package\nhelp: available test targets:\n"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac6_upsert_accepts_private_flag_and_mode_is_autodetected`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-7",
@@ -146,13 +146,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_init` in `mustard-cli` package\nhelp: available test targets:\n  "
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac7_init_private_seeds_no_github_template`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-8",
@@ -163,13 +163,13 @@
       "proof": "red",
       "control": "not-declared",
       "control_exit": null,
-      "confirmation": "not-taken",
+      "confirmation": "green",
       "exit": 101,
-      "confirmation_exit": null,
-      "removal": "not-taken",
+      "confirmation_exit": 0,
+      "removal": "evidence-removed",
       "removal_exit": null,
-      "reason": null,
-      "stderr_excerpt": "error: no test target named `private_install_leaves_no_trace` in `mustard-core` package\nhelp: availa"
+      "reason": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `ac8_host_repo_stays_clean_and_untouched`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "stderr_excerpt": ""
     },
     {
       "id": "AC-9",
