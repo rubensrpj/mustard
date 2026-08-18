@@ -29,7 +29,7 @@ Print stdout verbatim, then these two blocks literally:
 
 ## 3. Resolve + route via `resume-bootstrap`
 
-Letter mode: map the picked letter to its `active-specs` row → `{specName}`. Focused mode: `{specName}` = `alvo` verbatim. Then:
+Letter mode: map the picked letter to its `active-specs` row → `{specName}`. Focused mode: `{specName}` = `alvo` verbatim. **Empty + work-branch mode (§1) counts as focused**: `{specName}` = the slug read off the branch name, and everything below that says "focused mode" applies to it too — there is no third mode to route on. Then:
 
 ```bash
 rtk mustard-rt run resume-bootstrap --spec {specName} --json
