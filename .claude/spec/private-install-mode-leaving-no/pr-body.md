@@ -2,6 +2,8 @@
 
 O Mustard agora se instala sem deixar nenhum rastro versionado no repositório. Tudo que ele gera continua no disco — o harness precisa dos arquivos ali — mas nada disso é visto pelo git daquele clone. Não há flag para ligar nem para desligar: é o único modo de instalação que existe.
 
+O PR carrega mais duas frentes que nasceram da mesma conversa: as portas `git` e `pr` foram separadas pelo que cada uma toca, e todo PR passa a levar um corpo explicativo escrito antes de abrir. As três estão descritas abaixo.
+
 ---
 
 ## Por que
@@ -126,7 +128,7 @@ Onze critérios, cada um com um comando que qualquer pessoa roda. Todos foram pr
 | AC-11 | quando não consegue esconder, a instalação **recusa** e não escreve nada | `cargo test -p mustard-core --test private_install ac11_…` |
 | AC-9 | o workspace compila | `cargo build --workspace` |
 
-Suíte completa: **2936 testes, exit 0.**
+Suíte completa: **2940 testes, exit 0** (os quatro últimos cobrem os avisos de corpo de PR da terceira frente).
 
 **Cada teste carrega um controle negativo.** Toda asserção aqui tem a forma "o arquivo visível está ausente" — e um código que **não escreve nada** satisfaz todas elas. Por isso cada teste prova também que a instalação *aconteceu*: o `mustard.json` aterrissou, o arquivo de exclusão cresceu. Sem isso, verde poderia significar "nada foi feito".
 
@@ -156,6 +158,42 @@ Seis defeitos apareceram na revisão, todos com **a mesma causa**:
 | mais **estreita** que a autoria | vaza arquivo do Mustard | 1 |
 
 O caso estreito foi o mais instrutivo: a lista tinha sido digitada à mão e omitia `.claude/plans/` — que é preenchido pelo **próprio seed do Mustard**, e cujos nomes de arquivo são os títulos dos prompts do operador. Hoje a lista é **derivada** do catálogo que já existia, e a catraca faz as **duas** perguntas: toda regra casa algo nosso, e todo caminho nosso é casado por alguma regra. Só validar as regras emitidas foi o que deixou o vazamento passar verde por onze critérios e três rodadas de revisão.
+
+---
+
+---
+
+## Segunda frente: `git` e `pr` separadas pelo que tocam
+
+`/mustard:git pr` e `/mustard:pr` liam-se como duplicata uma da outra, e a sobreposição era real — `git pr close` e `pr merge` rodavam a mesma poda.
+
+A linha que de fato separa as duas não é local contra remoto; é **mecânico contra portão**. O `git` move bits e não decide nada: toda ação é reversível e nenhuma pode recusar trabalho. O `pr` é dono do pull request no provedor **e** dos portões que podem dizer "isto não entra". Publicar estava na casa errada: toca o provedor, e a porta que o hospedava não podia recusar nada.
+
+```
+/git pr        →  /mustard:pr open
+/git pr close  →  /mustard:git finish
+```
+
+O `finish` ficou no `git` porque voltar à base e podar branch acontece na sua árvore. E é raramente digitado: o `pr merge` roda a mesma poda em processo, então ele existe para um PR mergeado **por fora** — o que o nome antigo nunca dizia, e é metade do motivo dos dois parecerem redundantes.
+
+A palavra `pr` não nomeia mais nenhuma ação dentro do `git`. Digitar lá imprime para onde foi.
+
+## Terceira frente: todo PR leva um corpo, e ele acompanha o trabalho
+
+Um PR cuja descrição é a lista de commits faz o revisor reconstruir um raciocínio que a unidade **já registrou** — o Context e as Decisions com suas razões no `spec.md`, os critérios com os comandos que os verificam. Nada levava esse registro até quem lê o diff.
+
+Agora `/mustard:pr open` escreve `<spec>/pr-body.md` antes de abrir e publica com `--body-file`. O arquivo é commitado junto da spec, então a explicação viaja com a unidade em vez de existir só no provedor, onde não pode ser revisada nem corrigida.
+
+**E ele acompanha:** um corpo escrito no `open` vale exatamente para os commits contra os quais foi escrito, e todo push depois re-mira o **mesmo** PR. Por isso a regra é reescrever o arquivo, commitar **e** mandar com `gh pr edit --body-file` — atualizar só o arquivo não muda nada para quem lê o PR.
+
+Dois avisos determinísticos sustentam isso, porque instrução em prosa vale enquanto alguém a segue:
+
+| Quando | O que avisa |
+|---|---|
+| `gh pr create` sem `--body-file` | nomeia o arquivo a escrever. `--fill` **não** conta como corpo — é o padrão que escreve a lista de commits |
+| `git push` com o corpo mais velho que o último commit | a descrição sob revisão ficou atrás do diff |
+
+A defasagem é **medida**, não adivinhada: mtime do `pr-body.md` contra o do `.git/HEAD`, que todo commit reescreve. Os dois são avisos, nunca bloqueios — um corpo fraco se conserta com um `gh pr edit`, e uma promoção base→base não carrega unidade nenhuma e não pode ser barrada por uma regra sobre unidades. E ambos ficam calados quando não conseguem medir, ou quando o corpo está mais novo que o commit: um aviso que dispara em quem fez certo é um aviso que se aprende a ignorar.
 
 ---
 
