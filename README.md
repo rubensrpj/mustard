@@ -120,10 +120,50 @@ São **quatro**, e só quatro — o que você digita. Todo o resto é fluxo inte
 
 | Comando | Papel |
 |---|---|
-| `/mustard:git` | Commit/push/sync/PR — lê o *git flow* do `mustard.json`. Sobe sempre o trabalho completo; só operações reversíveis. `delete <branch>` cancela uma unidade abandonada, removendo branch, remoto e PR de uma vez. |
-| `/mustard:pr` | Lista, revisa e mergeia PRs. **Revisão, QA e fechamento são passos daqui**, não comandos: o merge cruza os gates (build+testes, QA, review-spans, docs) e depois poda a unidade. |
-| `/mustard:spec` | *Picker* único — aprova uma spec planejada ou retoma uma em andamento. |
+| `/mustard:spec` | Retoma uma unidade que já tem spec — aprova a planejada, continua a que está em andamento. |
+| `/mustard:git` | O trabalho local: sync, commit, push, PR e o ritual de saída. |
+| `/mustard:pr` | A porta do pull request: listar, revisar, mergear. |
 | `/mustard:upsert` | Instala/atualiza o Mustard no projeto. `--off` / `--on` desligam e religam o harness; `--doctor` diagnostica a instalação. |
+
+#### `/mustard:spec` — a porta da unidade
+
+Uma coisa só: pegar uma unidade que já tem spec e tocar ela adiante. Ele nunca **cria** uma unidade — quem faz isso é o roteador, a partir do seu pedido em linguagem natural.
+
+| Você digita | O que acontece |
+|---|---|
+| `/mustard:spec` | lista as specs ativas numa tabela e espera a letra |
+| `/mustard:spec a` | age na linha `a`: em PLAN aprova, em EXEC continua de onde parou |
+| `/mustard:spec ar` | **digitado por inteiro**, aprova *e* implementa no mesmo gesto — sem segunda pergunta |
+| `/mustard:spec meu-slug` | vai direto naquela spec, sem tabela |
+
+#### `/mustard:git` — o trabalho local
+
+**Lei de ferro: sobe tudo (`add -A`), nunca um escopo parcial silencioso.** Só operações reversíveis — a única exceção é o `delete`, e é por isso que ele nunca é inferido de uma falha, só digitado.
+
+| Ação | O que faz |
+|---|---|
+| `sync` | rebase da branch atual na base que o *kind* dela implica; aborta em conflito, jamais força |
+| `commit` | cria o commit, sem push |
+| `push` | faz `sync`, commita e sobe **apenas a branch atual** |
+| `pr [<alvo>]` | abre ou atualiza o PR — idempotente, sempre o mesmo PR. Um por repositório, submódulos antes do pai (enquanto um PR de submódulo estiver aberto, o pai abre como *draft*, e o GitHub recusa mergear *draft*) |
+| `pr close` | ritual de saída, rodado da branch de trabalho **depois que o PR mergeou**: volta à base, puxa, remove worktree e apaga a branch local e a remota |
+| `delete <branch>` | cancela uma unidade **abandonada**: fecha o PR, remove a worktree, apaga branch local e remota — tudo de uma vez |
+
+A diferença entre os dois últimos é o estado da unidade: `pr close` aposenta uma unidade **entregue**; `delete` cancela uma **abandonada**. PR é o único caminho de integração — uma branch de trabalho nunca chega à base por push direto, e não existe ação `merge` aqui.
+
+#### `/mustard:pr` — a porta do pull request
+
+**Lei de ferro: merge nunca é silencioso.** Mergear uma unidade cuja revisão não voltou `approved` é permitido — quem decide é você, caso a caso — mas é sempre **perguntado** antes, nunca feito calado e nunca recusado de plano.
+
+| Ação | O que faz |
+|---|---|
+| `list` | os PRs abertos da base onde você está: número, título, se é *draft* e em que branch a unidade vive. Só roda de uma base — "quais PRs estão abertos" é pergunta sobre a base, não sobre uma unidade |
+| `review [<pr>]` | revisa **contra a spec da própria unidade** e os moldes daquele subprojeto, e grava o veredito. É esse registro que o merge lê |
+| `merge [<pr>] [--confirm]` | cruza o portão de verificação, mergeia e poda: volta à base, puxa, remove worktree e apaga as branches |
+
+O portão que o `merge` cruza, nesta ordem: **build + testes** → **QA** (só um `pass` registrado abre o fechamento) → **review-spans** → **auditoria de docs** → **gates de fechamento**. Passando tudo, a spec é finalizada sozinha — você nunca decide chamar o fechamento à mão.
+
+**Revisão, QA e fechamento não são comandos.** Nenhum deles é o que você saiu para fazer: são o que precisa acontecer no caminho de um merge.
 
 ### Fluxos internos (o roteador escolhe)
 
