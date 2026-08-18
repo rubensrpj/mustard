@@ -36,9 +36,68 @@
 //! (pass through). The stage speaks only on a positive observation: opening a
 //! PR, for a known unit, with nothing carrying its record.
 
+use std::path::Path;
+use std::time::SystemTime;
+
 use mustard_core::domain::model::contract::Verdict;
 
 use super::pr_detect::classify_pr;
+
+/// Warn when the unit's PR body is OLDER than the work being pushed.
+///
+/// The second half of the same rule, and the half that actually bites. A body
+/// written once at `open` is correct for exactly one commit: every `push` after
+/// it re-targets the SAME pull request, so the description on the provider
+/// silently drifts behind the diff it describes. A reviewer reading a stale
+/// body is worse served than one reading none, because a wrong explanation is
+/// believed.
+///
+/// Staleness is measured, not guessed: the body file's mtime against the mtime
+/// of `.git/HEAD`, which every commit rewrites. Both are metadata reads, taken
+/// only after a cheap string match — no process is spawned in the Bash chain.
+///
+/// Fail-open at every step: not a push, no spec, no body file yet (the `create`
+/// half already speaks for that case), or either timestamp unreadable, all
+/// answer `None`.
+pub(super) fn pr_body_stale_gate(command: &str, cwd: &str) -> Option<Verdict> {
+    if !is_push(command) {
+        return None;
+    }
+    let spec = crate::shared::context::current_spec(cwd)?;
+    let root = Path::new(cwd);
+    let body = root.join(".claude/spec").join(&spec).join("pr-body.md");
+    let body_at = modified_at(&body)?;
+    // `.git` is a FILE in a submodule or a linked worktree, so the literal path
+    // is not universal — but a missing HEAD simply means "cannot measure", and
+    // an advisory that cannot measure says nothing.
+    let head_at = modified_at(&root.join(".git/HEAD"))?;
+    if body_at >= head_at {
+        return None;
+    }
+    Some(Verdict::Warn {
+        message: format!(
+            "[pr-body] Pushing `{spec}` with a PR body older than the work. Every push re-targets \
+             the SAME pull request, so the description on the provider now describes a smaller \
+             diff than the one under review — and a reviewer believes a wrong explanation more \
+             readily than a missing one. Rewrite `.claude/spec/{spec}/pr-body.md` from what the \
+             unit recorded, then push it to the PR too: `gh pr edit <n> --body-file \
+             .claude/spec/{spec}/pr-body.md`. Updating the file alone changes nothing for the \
+             person reading the PR."
+        ),
+    })
+}
+
+/// Whether `command` pushes. Deliberately literal and `rtk`-tolerant: the
+/// rewrite stage runs first, so what reaches here is usually `rtk git push`.
+fn is_push(command: &str) -> bool {
+    command.contains("git push")
+}
+
+/// `path`'s mtime, or `None` when it cannot be read — absence and IO error are
+/// the same answer here, because both mean the comparison did not happen.
+fn modified_at(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
 
 /// Warn when a PR is opened for a spec without a body file.
 ///
@@ -92,6 +151,40 @@ mod tests {
                 "must pass through: {quiet}",
             );
         }
+    }
+
+    /// The staleness half is silent on everything it cannot MEASURE, and that
+    /// is the property worth pinning: an advisory that guesses is an advisory
+    /// operators learn to ignore.
+    #[test]
+    fn staleness_is_silent_when_it_cannot_measure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        // Not a push at all.
+        assert!(pr_body_stale_gate("cargo build", &cwd).is_none());
+        // A push, but nothing to compare against: no spec bound, no body file,
+        // no `.git/HEAD`. Each alone is enough to stay quiet.
+        assert!(pr_body_stale_gate("rtk git push", &cwd).is_none());
+    }
+
+    /// A body newer than the last commit is exactly the state the rule asks
+    /// for, so it must produce no noise — otherwise the operator who DID the
+    /// right thing is the one who gets warned.
+    #[test]
+    fn a_body_newer_than_head_is_quiet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::write(root.join(".git/HEAD"), b"ref: refs/heads/x\n").expect("head");
+        std::fs::create_dir_all(root.join(".claude/spec/demo")).expect("spec dir");
+        // Written after HEAD, which is the ordering the rule wants.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join(".claude/spec/demo/pr-body.md"), b"# body\n").expect("body");
+
+        assert!(
+            pr_body_stale_gate("rtk git push", &root.to_string_lossy()).is_none(),
+            "a body written after the last commit must not be reported stale",
+        );
     }
 
     /// `--fill` is the exact case: it looks like an author's choice and is in

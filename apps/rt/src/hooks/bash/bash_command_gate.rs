@@ -171,6 +171,10 @@ impl Check for BashCommandGate {
         if let Some(verdict) = pr_body_gate::pr_body_gate(&cmd, &ctx.project_dir) {
             return Ok(verdict);
         }
+        // …and its staleness half, on the push that re-targets the same PR.
+        if let Some(verdict) = pr_body_gate::pr_body_stale_gate(&cmd, &ctx.project_dir) {
+            return Ok(verdict);
+        }
         Ok(Verdict::Allow)
     }
 }

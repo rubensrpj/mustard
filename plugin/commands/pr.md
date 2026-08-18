@@ -38,7 +38,9 @@ disable-model-invocation: true
 
 ### 0. `open [<target>]` — publish it
 
-**First, the PR body — and it is not optional.** A pull request whose description is a commit list makes the reviewer reconstruct the reasoning you already did, and the unit's own record is where that reasoning lives. Write `<spec>/pr-body.md` BEFORE opening, and pass it with `--body-file`; on an update, rewrite it and `rtk gh pr edit <n> --body-file`. It is committed with the spec, so the explanation travels with the unit instead of living only on the provider.
+**First, the PR body — and it is not optional.** A pull request whose description is a commit list makes the reviewer reconstruct the reasoning you already did, and the unit's own record is where that reasoning lives. Write `<spec>/pr-body.md` BEFORE opening, and pass it with `--body-file`. It is committed with the spec, so the explanation travels with the unit instead of living only on the provider.
+
+**It is rewritten on every update, and BOTH halves are pushed.** The body is correct for exactly the commits it was written against; every later `push` re-targets the SAME pull request, so a body written once drifts behind the diff it describes — and a reviewer believes a wrong explanation more readily than a missing one. So whenever the unit gains work: rewrite the file, commit it, AND send it to the provider with `rtk gh pr edit <n> --body-file <spec>/pr-body.md`. **Updating the file alone changes nothing for the person reading the PR** — that is the half that is easy to forget and the only half the reviewer ever sees. `pr_body_gate` measures it (the file's mtime against `.git/HEAD`) and warns on the push, so a stale body is caught where it happens rather than at review.
 
 Compose it from what the unit already recorded — never re-derive and never invent: `## Context` and `## Decisions` (with their reasons) from `spec.md`, the criteria and their commands from `## Acceptance Criteria`, the non-obvious calls from each wave's report, and what was deliberately left out from `## Non-Goals`. Sections, in order:
 
