@@ -121,8 +121,8 @@ There are **four**, and only four — what you type. Everything else is an inter
 | Command | Role |
 |---|---|
 | `/mustard:spec` | Resumes a unit that already has a spec — approves the planned one, continues the one in flight. |
-| `/mustard:git` | The local work: sync, commit, push, PR and the exit ritual. |
-| `/mustard:pr` | The pull request door: list, review, merge. |
+| `/mustard:git` | The local work: sync, commit, push, the exit ritual and cancelling. Moves bits, decides nothing. |
+| `/mustard:pr` | The pull request door: open, list, review, merge. Where work can be refused. |
 | `/mustard:upsert` | Installs/updates Mustard in the project. `--off` / `--on` turn the harness off and back on; `--doctor` diagnoses the installation. |
 
 #### `/mustard:spec` — the unit's door
@@ -140,16 +140,19 @@ One thing only: take a unit that already has a spec and move it forward. It neve
 
 **Iron law: everything goes up (`add -A`), never a silent partial scope.** Reversible operations only — the one exception is `delete`, which is why it is never inferred from a failure, only typed.
 
+**This door moves bits and decides nothing.** No action here can refuse work — that is the line against `/mustard:pr`, which owns the pull request on the provider *and* the gates that can say "this does not go in".
+
 | Action | What it does |
 |---|---|
 | `sync` | rebases the current branch onto the base its kind implies; aborts on conflict, never forces |
 | `commit` | creates the commit, no push |
 | `push` | runs `sync`, commits and pushes **only the current branch** |
-| `pr [<target>]` | opens or updates the PR — idempotent, always the same PR. One per repository, submodules before the parent (while a submodule PR is open the parent opens as a draft, and GitHub refuses to merge a draft) |
-| `pr close` | the exit ritual, run from the work branch **after its PR merged**: back to the base, pull, remove the worktree, delete the local and remote branch |
+| `finish` | the exit ritual, run from the work branch **after its PR merged**: back to the base, pull, remove the worktree, delete the local and remote branch |
 | `delete <branch>` | cancels an **abandoned** unit: closes its PR, removes the worktree, deletes the local and remote branch — all at once |
 
-The difference between the last two is the unit's state: `pr close` retires a **delivered** unit; `delete` cancels an **abandoned** one. PRs are the only integration path — a work branch never reaches its base through a direct push, and there is no `merge` action here.
+The difference between the last two is the unit's state: `finish` retires a **delivered** unit; `delete` cancels an **abandoned** one. And you rarely type `finish` — `/mustard:pr merge` already runs that prune; it exists for a PR that merged **elsewhere**, by someone else on the provider.
+
+**Publishing the PR is not here** — it is `/mustard:pr open`. That split is what took the word `pr` out of `git`: while both doors created pull requests, they read as duplicates of each other. PRs are still the only integration path: a work branch never reaches its base through a direct push, and there is no `merge` action here.
 
 #### `/mustard:pr` — the pull request door
 
@@ -157,6 +160,7 @@ The difference between the last two is the unit's state: `pr close` retires a **
 
 | Action | What it does |
 |---|---|
+| `open [<target>]` | opens or updates the PR — idempotent, always the same PR. One per repository, submodules before the parent (while a submodule PR is open the parent opens as a draft, and the provider refuses to merge a draft). The one action here that crosses **no** gate: publishing is not integrating |
 | `list` | the open PRs of the base you are standing on: number, title, whether it is a draft, and the branch its unit lives on. Runs only from a base — "which PRs are open" is a question about the base, not about one unit |
 | `review [<pr>]` | reviews it **against the unit's own spec** and that subproject's molds, and records the verdict. That record is what the merge reads |
 | `merge [<pr>] [--confirm]` | crosses the verification gate, merges and prunes: back to the base, pull, remove the worktree, delete the branches |
