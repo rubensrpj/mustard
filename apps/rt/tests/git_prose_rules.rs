@@ -139,8 +139,8 @@ fn git_prose_conditions_gitlink_on_reachability() {
         refs.contains("### The bump step"),
         "nothing tells the operator how the deferred pointer is ever recorded",
     );
-    let close_step = line_with(&git_md, "- **pr close** —")
-        .expect("the procedure no longer spells out `pr close`");
+    let close_step = line_with(&git_md, "- **finish** —")
+        .expect("the procedure no longer spells out `finish` (the exit ritual, once `pr close`)");
     assert!(
         close_step.contains("bump"),
         "the close ritual never runs the bump, so `[pending-bump]` is permanent: {close_step}",
@@ -159,8 +159,11 @@ fn git_prose_conditions_gitlink_on_reachability() {
     );
 
     // --- 1d. The parent PR cannot merge past an open submodule PR ----------
-    let pr_step =
-        line_with(&git_md, "- **pr** —").expect("the procedure no longer spells out `pr`");
+    // Read from `pr.md`, not `git.md`: publishing moved to `/mustard:pr open`
+    // when the doors were split by what they touch (the provider vs. your tree).
+    // The rule is about the PR, so it followed the PR.
+    let pr_md = read("plugin/commands/pr.md");
+    let pr_step = section(&pr_md, "### 0. `open [<target>]` — publish it");
     assert!(
         pr_step.contains("--draft"),
         "the parent PR still opens mergeable while a submodule PR is open — the \

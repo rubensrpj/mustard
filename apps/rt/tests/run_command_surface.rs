@@ -450,7 +450,7 @@ fn amendment_path_is_published_and_instructed() {
 /// per repo (`repos` / `complete`); this keeps the instruction surface from
 /// drifting back away from it.
 #[test]
-fn pr_close_ritual_names_submodules() {
+fn finish_ritual_names_submodules() {
     // Resolved through the shared `repo_root()` helper rather than a second
     // inline `CARGO_MANIFEST_DIR` join: the two units that met in this file each
     // taught it to read shipped surfaces, and keeping both resolutions is the
@@ -458,22 +458,32 @@ fn pr_close_ritual_names_submodules() {
     let git_md = repo_root().join("plugin/commands/git.md");
     let text = fs::read_to_string(&git_md).expect("plugin/commands/git.md is the shipped ritual");
 
+    // The exit ritual was called `pr close` until the doors were split by what
+    // they touch; it is `finish` now, and it stayed in `/git` because returning
+    // to the base and pruning a branch happen in YOUR tree, not on the provider.
     let row = text
         .lines()
-        .find(|l| l.trim_start().starts_with("| `pr close"))
-        .expect("the actions table still describes `pr close`");
+        .find(|l| l.trim_start().starts_with("| `finish"))
+        .expect("the actions table still describes the exit ritual (`finish`)");
     assert!(
         row.to_lowercase().contains("submodule"),
-        "the `pr close` action must state the submodule-first order its own iron rule promises: {row}"
+        "the `finish` action must state the submodule-first order its own iron rule promises: {row}"
     );
 
     let step = text
         .lines()
-        .find(|l| l.trim_start().starts_with("- **pr close**"))
-        .expect("the procedure still spells out `pr close`");
+        .find(|l| l.trim_start().starts_with("- **finish**"))
+        .expect("the procedure still spells out `finish`");
     assert!(
         step.to_lowercase().contains("submodule"),
-        "the `pr close` procedure must close each repo of the unit, submodules first: {step}"
+        "the `finish` procedure must close each repo of the unit, submodules first: {step}"
+    );
+
+    // And the door it moved AWAY from must not still offer to open a PR: two
+    // doors that both create pull requests is the confusion the split removed.
+    assert!(
+        !text.lines().any(|l| l.trim_start().starts_with("- **pr** — work branch")),
+        "`/git` still carries the PR-opening procedure — it belongs to `/mustard:pr open`",
     );
 }
 

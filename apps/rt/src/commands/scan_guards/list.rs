@@ -72,7 +72,13 @@ pub(crate) struct PendingScaffolds {
 /// walk. Fail-open: nothing here propagates an error or panics.
 pub(crate) fn collect_pending(root: &Path) -> PendingScaffolds {
     let mut out = PendingScaffolds { entries: Vec::new(), errors: Vec::new() };
-    walk(root, root, &mut out, 0);
+    // Resolved ONCE for the whole walk: the census must recognise exactly the
+    // file `scan --full` produced, which under a private install is
+    // `CLAUDE.local.md`. Not the tolerant reader-side `guards_file` — an entry
+    // here is handed to `scan-guards-apply`, which SPLICES it, and a private
+    // install must never splice the file the host repository versions.
+    let owned = crate::shared::context::guards_file_name(root);
+    walk(root, root, owned, &mut out, 0);
     // Stable order so every projection is deterministic across runs.
     out.entries.sort_by(|a, b| a.path.cmp(&b.path));
     out.errors.sort();
@@ -99,9 +105,10 @@ pub fn run(root: &Path) {
     println!("{}", serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string()));
 }
 
-/// Recursively walk `dir`, collecting pending subproject `CLAUDE.md` files.
+/// Recursively walk `dir`, collecting pending subproject instruction files named
+/// `owned` (see [`collect_pending`]).
 /// Fail-open: an unreadable directory is skipped and recorded, never propagated.
-fn walk(dir: &Path, root: &Path, out: &mut PendingScaffolds, depth: usize) {
+fn walk(dir: &Path, root: &Path, owned: &str, out: &mut PendingScaffolds, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -120,8 +127,8 @@ fn walk(dir: &Path, root: &Path, out: &mut PendingScaffolds, depth: usize) {
             if name.starts_with('.') {
                 continue;
             }
-            walk(&entry.path, root, out, depth + 1);
-        } else if entry.file_name == "CLAUDE.md" {
+            walk(&entry.path, root, owned, out, depth + 1);
+        } else if entry.file_name == owned {
             classify(&entry.path, root, out);
         }
     }
@@ -138,8 +145,14 @@ fn classify(path: &Path, root: &Path, out: &mut PendingScaffolds) {
         return;
     }
     let Ok(text) = fs::read_to_string(path) else {
+        // The real file name, not the shared one — under a private install this
+        // line would otherwise name a file the operator does not have.
+        let name = path.file_name().map_or_else(
+            || crate::shared::context::CLAUDE_MD.to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         out.errors
-            .push(format!("{subproject}/CLAUDE.md: unreadable (guards state unknown)"));
+            .push(format!("{subproject}/{name}: unreadable (guards state unknown)"));
         return;
     };
     if !text.contains(GUARDS_PENDING_OPEN) {

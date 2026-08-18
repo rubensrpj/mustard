@@ -47,11 +47,16 @@ pub struct AdaptReport {
     pub dry_run: bool,
 }
 
-/// Discover all `CLAUDE.md` source files under `repo`.
+/// Discover all instruction-file sources under `repo`.
 /// Returns absolute paths in deterministic order: root, then `apps/*`, then `packages/*`.
+///
+/// Each candidate is resolved through [`context::guards_file`], so under a
+/// private install the Cursor rules are built from the `CLAUDE.local.md` the
+/// scan wrote rather than from a file that no longer carries our Guards. Under a
+/// shared install every candidate resolves to `CLAUDE.md`, exactly as before.
 fn discover_sources(repo: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let root = repo.join("CLAUDE.md");
+    let root = context::guards_file(repo, repo);
     if root.is_file() {
         out.push(root);
     }
@@ -67,7 +72,7 @@ fn discover_sources(repo: &Path) -> Vec<PathBuf> {
             .collect();
         children.sort();
         for c in children {
-            let candidate = c.join("CLAUDE.md");
+            let candidate = context::guards_file(repo, &c);
             if candidate.is_file() {
                 out.push(candidate);
             }

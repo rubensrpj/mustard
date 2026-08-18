@@ -13,7 +13,7 @@ source: manual
 
 **Git hygiene — the refresh is its OWN unit.** Everything written here is **versioned**: the grain model, every `scan-map.md`, the `## Guards` of every subproject `CLAUDE.md`, and the `{role}-pattern` molds (`.claude/.gitignore` covers only runtime scratch). So:
 - **Before:** run it on a CLEAN tree — `scan-clean-gate` refuses otherwise, because under the `/git` `add -A` law the regenerated model could not be committed apart from your work. This is the same clean-tree premise the base gate checks before it re-mines.
-- **After:** if it produced changes, commit + push them as their own unit (`/mustard:git pr`). A re-scan over unchanged code is byte-stable and leaves the tree clean — no diff, nothing to push.
+- **After:** if it produced changes, commit + push them as their own unit (`/mustard:git push`, then `/mustard:pr open`). A re-scan over unchanged code is byte-stable and leaves the tree clean — no diff, nothing to push.
 
 ## 1. Deterministic model + maps (no AI, you do NOT read source)
 

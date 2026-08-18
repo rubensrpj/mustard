@@ -1195,8 +1195,8 @@ fn hygiene_prose_teaches_the_collision_condition() {
 #[test]
 fn settle_refusal_prose_teaches_the_fields_the_gate_now_emits() {
     let git_md = read("plugin/commands/git.md");
-    let close = line_with(&git_md, "pr close** — one close per repo")
-        .expect("`/git` no longer documents the `pr close` procedure at all");
+    let close = line_with(&git_md, "finish** — one close per repo")
+        .expect("`/git` no longer documents the exit ritual (`finish`, once `pr close`) at all");
 
     // --- 1. The shape of a refusal, and that it touched nothing -------------
     assert!(

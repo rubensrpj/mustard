@@ -35,13 +35,13 @@ Pré-requisito único em todos os ambientes: **[Claude Code](https://docs.claude
 
 ### Passo 1 — instalador do seu sistema
 
-Baixe **um** arquivo na página de [**Releases**](https://github.com/rubensrpj/mustard/releases) (seção *Assets*). Cada instalador traz o CLI completo (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **e** o **Mustard Dashboard**:
+No Windows e no macOS, baixe **um** arquivo na página de [**Releases**](https://github.com/rubensrpj/mustard/releases) (seção *Assets*); no **Linux**, uma linha de terminal resolve. Cada instalador traz o CLI completo (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **e** o **Mustard Dashboard**:
 
-| Sistema | Arquivo | Depois de baixar |
+| Sistema | O que baixar | O que fazer |
 |---|---|---|
 | 🪟 **Windows** 10/11 | `Mustard Dashboard_<versão>_x64-setup.exe` | Duplo-clique. No aviso do SmartScreen (o instalador não é assinado): **"Mais informações" → "Executar assim mesmo"**. Ao final, **abra um terminal novo** — o PATH só vale em terminais abertos depois da instalação. |
 | 🍎 **macOS** 11+ (Intel + Apple Silicon) | `Mustard-<versão>-universal.pkg` | O pacote não é assinado: **botão direito → Abrir** (Gatekeeper). Siga o assistente e abra um terminal novo. |
-| 🐧 **Linux** (Ubuntu 22.04+) | `mustard_<versão>_amd64.deb` + `install.sh` | Coloque os dois na mesma pasta e rode `./install.sh` (usa `apt` para resolver dependências). |
+| 🐧 **Linux** (Ubuntu 22.04+) | nenhum — instale numa linha:<br>`curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh \| sh` | O script baixa o `.deb` do último Release e chama o `apt` (que resolve as dependências). Rota manual, para quem quer conferir o `sha256` antes: baixe `mustard_<versão>_amd64.deb` + `install.sh` na mesma pasta e rode `chmod +x install.sh && ./install.sh` — os assets do Release chegam **sem** a permissão de execução, e sem o `chmod` o shell responde `Permission denied`. |
 
 Verifique num terminal novo:
 
@@ -57,11 +57,11 @@ O passo a passo completo de cada sistema (incluindo problemas comuns e desinstal
 O harness (comandos `/mustard:*`, hooks, gates, agentes e o servidor MCP de memória) é distribuído como **plugin do Claude Code**:
 
 ```
-/plugin marketplace add <repositório do marketplace>
+/plugin marketplace add rubensrpj/mustard
 /plugin install mustard@mustard-local
 ```
 
-Reinicie (ou recarregue) o Claude Code para os hooks entrarem. Enquanto o marketplace público não é publicado, o `add` aceita o caminho de um clone local deste repositório — a raiz que contém `.claude-plugin/marketplace.json`.
+Reinicie (ou recarregue) o Claude Code para os hooks entrarem. O `add` registra o repositório do Mustard como *marketplace* (é ele que traz o `.claude-plugin/marketplace.json`); o `@mustard-local` no `install` é o **nome do marketplace**, não um caminho. O `add` também aceita o caminho de um clone local deste repositório — a raiz que contém `.claude-plugin/marketplace.json` — e a URL completa do repositório (`https://github.com/rubensrpj/mustard.git`), que é a forma a usar quando o atalho `owner/repo` não consegue clonar.
 
 > **Binários automáticos:** o plugin não carrega binários no git. Na **primeira sessão**, o bootstrap (`mustard-boot`) baixa o pacote `mustard-bins-<versão>-<sistema>` dos *Assets* do Release correspondente à versão do plugin e o instala dentro do próprio plugin — silencioso e à prova de falha (sem rede, a sessão segue normal e ele tenta de novo na próxima). Quem instalou pelo Passo 1 já tem o CLI no PATH de qualquer forma; os dois caminhos convivem.
 
@@ -120,10 +120,54 @@ São **quatro**, e só quatro — o que você digita. Todo o resto é fluxo inte
 
 | Comando | Papel |
 |---|---|
-| `/mustard:git` | Commit/push/sync/PR — lê o *git flow* do `mustard.json`. Sobe sempre o trabalho completo; só operações reversíveis. `delete <branch>` cancela uma unidade abandonada, removendo branch, remoto e PR de uma vez. |
-| `/mustard:pr` | Lista, revisa e mergeia PRs. **Revisão, QA e fechamento são passos daqui**, não comandos: o merge cruza os gates (build+testes, QA, review-spans, docs) e depois poda a unidade. |
-| `/mustard:spec` | *Picker* único — aprova uma spec planejada ou retoma uma em andamento. |
+| `/mustard:spec` | Retoma uma unidade que já tem spec — aprova a planejada, continua a que está em andamento. |
+| `/mustard:git` | O trabalho local: sync, commit, push, o ritual de saída e o cancelamento. Move bits, não decide nada. |
+| `/mustard:pr` | A porta do pull request: abrir, listar, revisar, mergear. É onde o trabalho pode ser recusado. |
 | `/mustard:upsert` | Instala/atualiza o Mustard no projeto. `--off` / `--on` desligam e religam o harness; `--doctor` diagnostica a instalação. |
+
+#### `/mustard:spec` — a porta da unidade
+
+Uma coisa só: pegar uma unidade que já tem spec e tocar ela adiante. Ele nunca **cria** uma unidade — quem faz isso é o roteador, a partir do seu pedido em linguagem natural.
+
+| Você digita | O que acontece |
+|---|---|
+| `/mustard:spec` | lista as specs ativas numa tabela e espera a letra |
+| `/mustard:spec a` | age na linha `a`: em PLAN aprova, em EXEC continua de onde parou |
+| `/mustard:spec ar` | **digitado por inteiro**, aprova *e* implementa no mesmo gesto — sem segunda pergunta |
+| `/mustard:spec meu-slug` | vai direto naquela spec, sem tabela |
+
+#### `/mustard:git` — o trabalho local
+
+**Lei de ferro: sobe tudo (`add -A`), nunca um escopo parcial silencioso.** Só operações reversíveis — a única exceção é o `delete`, e é por isso que ele nunca é inferido de uma falha, só digitado.
+
+**Esta porta move bits e não decide nada.** Nenhuma ação aqui pode recusar trabalho — é essa a linha contra `/mustard:pr`, que é dono do pull request no provedor *e* dos portões que podem dizer "isto não entra".
+
+| Ação | O que faz |
+|---|---|
+| `sync` | rebase da branch atual na base que o *kind* dela implica; aborta em conflito, jamais força |
+| `commit` | cria o commit, sem push |
+| `push` | faz `sync`, commita e sobe **apenas a branch atual** |
+| `finish` | ritual de saída, rodado da branch de trabalho **depois que o PR mergeou**: volta à base, puxa, remove worktree e apaga a branch local e a remota |
+| `delete <branch>` | cancela uma unidade **abandonada**: fecha o PR, remove a worktree, apaga branch local e remota — tudo de uma vez |
+
+A diferença entre os dois últimos é o estado da unidade: `finish` aposenta uma unidade **entregue**; `delete` cancela uma **abandonada**. E você raramente digita `finish` — o `/mustard:pr merge` já faz essa poda; ele existe para quando o PR mergeou **por fora**, por outra pessoa no provedor.
+
+**Publicar o PR não está aqui** — é `/mustard:pr open`. Foi a separação que tirou a palavra `pr` de dentro do `git`: enquanto as duas portas criavam pull request, elas se liam como duplicata uma da outra. PR continua sendo o único caminho de integração: uma branch de trabalho nunca chega à base por push direto, e não existe ação `merge` aqui.
+
+#### `/mustard:pr` — a porta do pull request
+
+**Lei de ferro: merge nunca é silencioso.** Mergear uma unidade cuja revisão não voltou `approved` é permitido — quem decide é você, caso a caso — mas é sempre **perguntado** antes, nunca feito calado e nunca recusado de plano.
+
+| Ação | O que faz |
+|---|---|
+| `open [<alvo>]` | abre ou atualiza o PR — idempotente, sempre o mesmo PR. Um por repositório, submódulos antes do pai (enquanto um PR de submódulo estiver aberto, o pai abre como *draft*, e o provedor recusa mergear *draft*). É a única ação daqui que **não** cruza portão nenhum: publicar não é integrar |
+| `list` | os PRs abertos da base onde você está: número, título, se é *draft* e em que branch a unidade vive. Só roda de uma base — "quais PRs estão abertos" é pergunta sobre a base, não sobre uma unidade |
+| `review [<pr>]` | revisa **contra a spec da própria unidade** e os moldes daquele subprojeto, e grava o veredito. É esse registro que o merge lê |
+| `merge [<pr>] [--confirm]` | cruza o portão de verificação, mergeia e poda: volta à base, puxa, remove worktree e apaga as branches |
+
+O portão que o `merge` cruza, nesta ordem: **build + testes** → **QA** (só um `pass` registrado abre o fechamento) → **review-spans** → **auditoria de docs** → **gates de fechamento**. Passando tudo, a spec é finalizada sozinha — você nunca decide chamar o fechamento à mão.
+
+**Revisão, QA e fechamento não são comandos.** Nenhum deles é o que você saiu para fazer: são o que precisa acontecer no caminho de um merge.
 
 ### Fluxos internos (o roteador escolhe)
 

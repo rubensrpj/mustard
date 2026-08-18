@@ -38,7 +38,7 @@ flowchart TD
     bug -->|"full path: spec"| spec
 
     spec -->|EXECUTE| exec["EXECUTE<br/>(Task: agentes por onda)"]
-    exec --> pr["/mustard:pr<br/>list · review · merge"]
+    exec --> pr["/mustard:pr<br/>open · list · review · merge"]
     pr -->|"passo: review"| rev["verdito registrado"]
     pr -->|"passo: QA + CLOSE"| gates["close-orchestrate<br/>(build+test · qa-run · review-spans · docs)"]
     gates -->|"gate: pass"| merge["merge + poda da unidade"]
@@ -291,11 +291,13 @@ flowchart TD
 
 ## `/mustard:pr` — A porta do Pull Request
 
-Lista, revisa e mergeia. **Revisão, QA e fechamento são PASSOS daqui, não portas.** Nenhum deles é o que o operador se propõe a fazer — são o que precisa acontecer no caminho até o merge, e eram comandos só por herança. O merge também poda a unidade: volta pra base, puxa, remove a worktree e apaga o branch local e remoto.
+Abre, lista, revisa e mergeia. **Revisão, QA e fechamento são PASSOS daqui, não portas.** Nenhum deles é o que o operador se propõe a fazer — são o que precisa acontecer no caminho até o merge, e eram comandos só por herança. O merge também poda a unidade: volta pra base, puxa, remove a worktree e apaga o branch local e remoto.
+
+**Esta porta é dona do pull request no provedor E dos portões que podem recusar o trabalho** — é essa a linha contra `/mustard:git`, que move bits na sua árvore e não decide nada. `open` mora aqui (era `/mustard:git pr`) exatamente por isso: publicar toca o provedor. É a única ação daqui que **não** cruza portão nenhum — publicar não é integrar.
 
 | | |
 |---|---|
-| **Trigger** | `/mustard:pr <list\|review\|merge> [<nº do PR>] [--confirm]` |
+| **Trigger** | `/mustard:pr <open\|list\|review\|merge> [<nº do PR>] [--confirm]` |
 | **Backend** | `pr-list` · `pr-review` · `pr-merge` (dobra `git-settle`) · `review-prefetch` · `diff-context` · `close-orchestrate` (build+test · `qa-run` · review-spans · `docs-stale-check` · `pipeline-summary`) · `tactical-fix-detect` |
 | **Lei de ferro** | Merge nunca é silencioso: sem verdito `approved` registrado ele **avisa e pergunta** — nunca recusa de saída, nunca mergeia calado. `--confirm` é a resposta voltando |
 | **Regra** | NUNCA chamar `complete-spec` à mão, NUNCA mover o diretório da spec (arquivamento é só evento), NUNCA rodar QA antes do EXECUTE nem editar código durante o QA (read-only) |
@@ -303,6 +305,8 @@ Lista, revisa e mergeia. **Revisão, QA e fechamento são PASSOS daqui, não por
 ```mermaid
 flowchart TD
     start(["/mustard:pr"]) --> act{"ação"}
+
+    act -->|open| open["/git push → 1 PR por repo<br/>(submódulo antes do pai) na base do tipo<br/>submódulo com PR aberto → pai vira DRAFT<br/>PR existente → imprime a URL do MESMO<br/>depois imprime o notebook da unidade"]
 
     act -->|list| list["pr-list — só de uma base de integração;<br/>de um branch de trabalho recusa e nomeia a base"]
 
@@ -420,29 +424,31 @@ Lê o *git flow* do `mustard.json`. **PR é o único caminho de integração** �
 | `sync` | Rebase da branch atual sobre `origin/<base>` (base derivada do TIPO da branch via `git.flow`; nome antigo `{base}_` ainda resolve pelo prefixo) |
 | `commit` | Commit sem push; `--scope` default `all` (`add -A` — nunca escopo parcial silencioso) |
 | `push` | Sync → commit + push SÓ da branch atual (com upstream) |
-| `pr [<target>]` | Abre/atualiza PR (idempotente) — um por repo, submódulo antes do pai; cada `push`/`pr` atualiza o MESMO PR até o `pr close`. Base pura `B` → promove/backporta via `flow[B]` |
-| `pr close [<worktree>]` | Ritual de saída pós-merge — **um por repo, submódulo antes do pai**: confirma o merge, volta à base, remove worktree + branch local e remota. O relatório traz `repos` (uma entrada por repositório da unidade) e `complete`; `complete:false` significa que ainda falta fechar algum. Não mergeado → só avisa |
+| ~~`pr`~~ | **Moveu para `/mustard:pr open`.** Publicar toca o PROVEDOR, e esta porta só mexe na sua árvore. Digitar aqui imprime essa linha e para |
+| `finish [<worktree>]` | Ritual de saída pós-merge — **um por repo, submódulo antes do pai**: confirma o merge, volta à base, remove worktree + branch local e remota. O relatório traz `repos` (uma entrada por repositório da unidade) e `complete`; `complete:false` significa que ainda falta fechar algum. Não mergeado → só avisa. Chamava-se `pr close` até as portas serem separadas. **Você só recorre a ele quando o PR mergeou POR FORA** — `/mustard:pr merge` faz essa mesma poda |
 
 Não existe ação `merge` — a integração acontece no provedor, via PR.
 
+**A linha entre as duas portas:** `/mustard:git` move bits e não decide nada — tudo reversível, exceto `delete`. `/mustard:pr` é dono do pull request no provedor **e dos portões que podem recusar o trabalho**. Por isso `open` mora lá: duas portas que ambas criavam PR liam-se como duplicata uma da outra, e a que não podia recusar nada era a casa errada.
+
 | | |
 |---|---|
-| **Backend** | `git-settle` (+ `git-settle --unit <branch>`) no `pr close`; todo git/gh cru via `rtk git` / `rtk gh` |
-| **Regras de ferro** | Sobe TUDO (`add -A`); nunca operar numa base pura (exceto `pr`); `rtk` prefixa todo `git` (até em `&&` e `$(…)`); submódulos antes do pai, cada um carregando a unidade na branch `{kind}/{slug}` (cortada da base do PRÓPRIO repo) com PR próprio |
+| **Backend** | `git-settle` (+ `git-settle --unit <branch>`) no `finish`; todo git/gh cru via `rtk git` / `rtk gh` |
+| **Regras de ferro** | Sobe TUDO (`add -A`); nunca operar numa base pura (exceto `delete`; e `/mustard:pr open`, que é de outra porta); `rtk` prefixa todo `git` (até em `&&` e `$(…)`); submódulos antes do pai, cada um carregando a unidade na branch `{kind}/{slug}` (cortada da base do PRÓPRIO repo) com PR próprio |
 
 ```mermaid
 flowchart TD
     start(["/mustard:git &lt;ação&gt;"]) --> s0["Step 0: resolve $BASE pelo TIPO<br/>da branch via git.flow<br/>(nome antigo {base}_ : pelo prefixo)"]
     s0 --> prot{"base pura (ex.: dev, main)?"}
-    prot -->|"sim, ação de escrita"| refuse(["recusa — na base pura<br/>só /git pr é permitido"])
+    prot -->|"sim, ação de escrita"| refuse(["recusa — na base pura<br/>só /git delete é permitido"])
     prot -->|ok| sub["Step 0c: checa HEAD de submódulos"]
 
     sub --> action{"ação?"}
     action -->|sync| sync["auto-stash → fetch +<br/>rebase origin/$BASE → stash pop<br/>(aborta em conflito)"]
     action -->|commit| commit["analisa → exclui efêmeros → add -A<br/>→ commit submódulos (paralelo) → commit pai"]
     action -->|push| push["sync (para em conflito) →<br/>commit + push só a branch atual<br/>(submódulo na base corta {kind}/{slug} ANTES)"]
-    action -->|pr| pr["push → 1 PR por repo<br/>(submódulo antes do pai) na base do tipo<br/>PR existente → imprime a URL do MESMO"]
-    action -->|"pr close"| settle["submódulo primeiro, depois o pai<br/>git-settle (confirma merge, avança a base)<br/>→ ExitWorktree → git-settle --unit &lt;branch&gt;<br/>(pull, remove worktree, apaga branch local+remota)<br/>repos[] + complete:false → ainda falta repo"]
+    action -->|pr| pr["MOVEU → /mustard:pr open<br/>imprime a linha e para"]
+    action -->|finish| settle["submódulo primeiro, depois o pai<br/>git-settle (confirma merge, avança a base)<br/>→ ExitWorktree → git-settle --unit &lt;branch&gt;<br/>(pull, remove worktree, apaga branch local+remota)<br/>repos[] + complete:false → ainda falta repo"]
 
     sync --> reportx["Final Status Report"]
     commit --> reportx

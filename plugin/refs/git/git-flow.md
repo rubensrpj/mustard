@@ -22,7 +22,7 @@ Read `mustard.json` from the **project root** via the `Read` tool (not `cat`); m
 
 **Integration bases** = every non-`*` key ∪ every value of `git.flow` (`{"*":"dev","dev":"main"}` → `dev`, `main`). Agnostic — no hardcoded `dev`/`main`; an empty flow falls back to `main`/`master`.
 
-**Flow resolution** — match the current branch against `flow` keys, exact before glob; `*` is the fallback for anything unlisted. `dev` → `main` (promotion via `/git pr`); `main` is terminal (no ops).
+**Flow resolution** — match the current branch against `flow` keys, exact before glob; `*` is the fallback for anything unlisted. `dev` → `main` (promotion via `/mustard:pr open`); `main` is terminal (no ops).
 
 ## Work branches & the gate
 
@@ -69,7 +69,7 @@ You can still work in parallel — cut a worktree yourself (`git worktree add`, 
 
 - **Desktop / background CLI** — isolated automatically. A Desktop branch reads as nobody's unit (no kind prefix, no declared base prefix), so `/git` falls back to the primary base (`git.flow["*"]`); pass an explicit `<target>` for any other base.
 - **Foreground CLI** — the branch is already out from approval, so the isolation step DEGRADES rather than cutting twice: `EnterWorktree name={kind}/{slug}` (the `branch` echoed by `emit-pipeline`) answers with the checkout that already holds it (`inPlace:true`, nothing created). `git worktree add` over a branch another tree holds is what git refuses with exit 128 — the degrade is what keeps that from ending the step. When the branch is NOT already out, the plugin's `WorktreeCreate` hook replaces the native cut: a `{kind}/{slug}` name → fresh `origin/{base}` for the base its kind implies (idempotent; attaches an existing branch), landing at `.claude/worktrees/{kind}/{slug}`; a `{base}_` name with a DECLARED base → the same, by its prefix; any other name (the harness's own slug, e.g. `recursing-benz-063389`) → the native default cut, refused while the tree is dirty; an UNDECLARED `{base}_` prefix, an unknown `{kind}`, a second `/`, a `..` or a backslash → loud abort. `mustard-rt run work-unit-open --spec {slug} --type {kind} [--base {base}]` remains the manual face of the same engine (then `EnterWorktree path={path}`), and it is the one that takes an explicit `--base` when a hotfix has several candidates.
-- **Abandoning an UNMERGED unit** — `/git delete <branch>`, run from an integration base. ONE gesture removes the unit whole (open PR, worktree, local branch, remote branch), and it refuses from a work branch, over a bare base, and over a name no ref carries. `pr close` stays the ritual for MERGED units only.
+- **Abandoning an UNMERGED unit** — `/git delete <branch>`, run from an integration base. ONE gesture removes the unit whole (open PR, worktree, local branch, remote branch), and it refuses from a work branch, over a bare base, and over a name no ref carries. `/git finish` stays the ritual for MERGED units only.
 
 ## The notebook — the porta rule
 
@@ -82,13 +82,13 @@ Every unit turns up something true but off-topic: a defect three files away, a r
 
 **Per branch, never one global list.** The file lives at `.claude/spec/{slug}/notebook.md` — the same directory the spec, the waves and the ceremony are materialized into — so it travels with the unit, shows up in the PR diff, and disappears with the branch when `/git delete` retires it. Which work produced a pendency is information: it sets the item's priority and is the only thing that still makes it legible weeks later. A shared list loses that on the first append.
 
-**Closing the loop.** Read it back with `mustard-rt run notebook` (no `--add`), optionally naming another unit with `--unit {kind}/{slug}` (or its old `{base}_{slug}` name). `/git pr` prints it once the PR is open: the work is in review, so the notebook is now the next cycle's prompt — it goes back to the base gate as the next request, and the loop closes. An empty notebook prints nothing; items are never invented to fill it.
+**Closing the loop.** Read it back with `mustard-rt run notebook` (no `--add`), optionally naming another unit with `--unit {kind}/{slug}` (or its old `{base}_{slug}` name). `/mustard:pr open` prints it once the PR is open: the work is in review, so the notebook is now the next cycle's prompt — it goes back to the base gate as the next request, and the loop closes. An empty notebook prints nothing; items are never invented to fill it.
 
 ## PRs are the integration path
 
 A work branch reaches its base ONLY through a PR — never a local push to the base, and there is no `merge` action. Both `push` and `pr` **sync-first** (rebase onto `origin/<its base>`), so the branch never drifts from the latest base.
 
-**Base→base PRs (promotion & backport).** `/git pr` run while ON a bare base `B` is the sole write-op allowed on a base — it opens a PR, never pushes to `B`:
+**Base→base PRs (promotion & backport).** `/mustard:pr open` run while ON a bare base `B` is the sole write-op allowed on a base — it opens a PR, never pushes to `B`:
 
 - **Promotion** (up the flow): PR `B → flow[B]` (e.g. `dev → main`).
 - **Backport** (against the flow): `/git pr <target>` → PR `B → <target>` (e.g. `main → dev` after a hotfix).
@@ -113,7 +113,7 @@ Derive the integration bases from `git.flow`, then read `$BASE` off the branch �
 
 ## Step 0b — branch protection
 
-Before any write op (commit, push, sync): if the current branch **is** a bare integration base → **REFUSE** (`Cannot operate directly on protected branch '<branch>'. Create a work branch first.`). A work branch — `{kind}/…` or the older `{base}_…` — proceeds. **Exception:** `/git pr` on a base opens a base→base PR (above) and is allowed.
+Before any write op (commit, push, sync): if the current branch **is** a bare integration base → **REFUSE** (`Cannot operate directly on protected branch '<branch>'. Create a work branch first.`). A work branch — `{kind}/…` or the older `{base}_…` — proceeds. **Exception:** `/mustard:pr open` on a base opens a base→base PR (above) and is allowed.
 
 ## Commit scope policy — the `add -A` law
 

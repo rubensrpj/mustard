@@ -24,7 +24,8 @@ The placeholders the renderer substitutes — `TEMPLATE_PLACEHOLDERS` in `apps/r
 | Placeholder | Source | Notes |
 |---|---|---|
 | `{subproject}` | `--subproject` | Absolute or repo-relative path. |
-| `{guards_summary}` | `## Guards` of `{subproject}/CLAUDE.md` | Extracted via regex; empty when the file has no `## Guards`. |
+| `{guards_file}` | `shared::context::guards_file_name` | The instruction file THIS install owns — `CLAUDE.md` normally, `CLAUDE.local.md` under a private install, where the scan writes beside the host repository's own file instead of into it. The prompt names it rather than spelling `CLAUDE.md`, so a dispatched agent is never sent to open the client's file. |
+| `{guards_summary}` | `## Guards` of `{subproject}/{guards_file}` | Extracted via regex; empty when the file has no `## Guards`. |
 | `{role_block}` | `--role` (`build_role_block` / `build_guards_role_block`) | The role cue **plus** a per-role delivery contract (what to produce, return-cap, read-only vs write). |
 | `{spec_lang}` | spec `meta.json#lang` | Defaults to `en`; affects only the narrative — code stays EN. |
 | `{task_steps}` | `## Tasks` of the wave, or `--task-text` when spec-less (`/scan` guards, `/task`) | VARIABLE — per wave; `--task-text` fills `## TASK` so the prompt stays self-contained (never hand-append the task). |

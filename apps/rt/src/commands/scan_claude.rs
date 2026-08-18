@@ -465,9 +465,31 @@ fn run_full(
     // existing installs render exactly as before (finding #1, SOLID audit).
     let lang = crate::shared::context::project_config_cached(root).i18n().lang;
 
+    // A PRIVATE install keeps its footprint out of the host repository's git, so
+    // a subproject's Guards go to the untracked local layer BESIDE `CLAUDE.md`
+    // instead of into it. An ignore rule only acts on an untracked path, and a
+    // host repository that already versions its own `CLAUDE.md` would report it
+    // modified on every scan no matter how many rules exist — writing beside the
+    // file is the only way the client's own file is never touched. Claude Code
+    // discovers a subdirectory `CLAUDE.local.md` exactly as it discovers a
+    // subdirectory `CLAUDE.md` (on demand, when a file in that directory is
+    // read) and appends it AFTER the shared one, so their Guards survive and
+    // ours are additive. Autodetected off the clone-local exclude file — see
+    // `shared::context::install_mode`.
+    //
+    // The name is resolved ONCE, through the same declaration every READER of
+    // these Guards goes through (`shared::context::guards_file`). A writer and a
+    // reader that each spell the filename themselves is how the local layer
+    // shipped inert the first time.
+    let owned_name = crate::shared::context::guards_file_name(root);
+
     for project in projects {
         let dir = root.join(&project.dir);
-        let claude_md_path = dir.join("CLAUDE.md");
+        // The instruction file this pass owns: the shared one when the install
+        // is ordinary, the local layer when it is private. In private mode the
+        // host's `CLAUDE.md` is never read and never written — not even to
+        // compare — so there is nothing for its git to report.
+        let claude_md_path = dir.join(owned_name);
         let claude_dir = dir.join(".claude");
         let map_path = claude_dir.join("scan-map.md");
         // The workspace-root unit (empty `dir`): its CLAUDE.md is NEVER
@@ -530,7 +552,7 @@ fn run_full(
             }
         }
 
-        // --- 2. The project's CLAUDE.md (SUBPROJECTS ONLY) -----------------
+        // --- 2. The project's instruction file (SUBPROJECTS ONLY) ----------
         // The workspace root is skipped entirely: no scaffold, no import
         // line, no breadcrumb heal — the root file belongs to the user
         // (orchestrator redesign; the hooks inject the orientation instead).

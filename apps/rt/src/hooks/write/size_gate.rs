@@ -23,13 +23,19 @@
 //!
 //! Each gate resolves its **own** `MUSTARD_*_MODE` env var, independent of the
 //! dispatcher's module-level mode:
-//! - `spec-size-gate` → `MUSTARD_SPEC_SIZE_MODE` (default `warn`).
-//! - `skill-size-gate` → `MUSTARD_SKILL_SIZE_MODE` (default `warn`).
-//! - `skill-validate-gate` → `MUSTARD_SKILL_VALIDATE_GATE_MODE` (default `warn`).
+//! - `spec-size-gate` → `MUSTARD_SPEC_SIZE_MODE` (default `strict`).
+//! - `skill-size-gate` → `MUSTARD_SKILL_SIZE_MODE` (default `strict`).
+//! - `skill-validate-gate` → `MUSTARD_SKILL_VALIDATE_GATE_MODE` (default `strict`).
 //! - the AC audit → `MUSTARD_AC_QUALITY_MODE` (default `warn`) — advisory only.
 //!
-//! All three size/validate gates default to `warn`: the dominant verdict is an
-//! advisory (`Warn`), never a `Deny` unless the env var is explicitly `strict`.
+//! The three size/validate gates default to `strict`, and the split from the AC
+//! audit is the whole rule: **a gate blocks when it catches DEBT the author can
+//! clear where they stand; it warns when it catches something else.** An
+//! oversized document is debt every future session pays and one edit removes.
+//! The AC audit reads QUALITY — whether a criterion asserts anything — which is
+//! a judgement, and blocking on a judgement stops work the author may be right
+//! about. Same reason `boundary_gate` stays advisory: it fires when a PLAN was
+//! incomplete, which the author cannot fix without leaving the work.
 //! Because the gate computes its own verdict, the dispatcher repasses it
 //! without downgrade.
 
@@ -819,10 +825,17 @@ impl Check for SizeGate {
 
         // ── spec-size-gate (+ AC quality audit) ───────────────────────────
         if is_spec_path(&file_path) {
+            // Strict by default. A document over its budget is debt every future
+            // session pays, and it is fixable in the same keystroke that created
+            // it — so blocking costs the author one edit and saves everyone else
+            // the excess. Contrast `boundary_gate`, which stays advisory on
+            // purpose: it fires when a PLAN was incomplete, which the author
+            // cannot fix without leaving the work, so blocking there would be
+            // friction that protects nothing.
             let spec_mode = resolve_mode(
                 "MUSTARD_SPEC_SIZE_MODE",
                 gates.spec_size.as_deref(),
-                GateMode::Warn,
+                GateMode::Strict,
             );
             let ac_mode = resolve_mode("MUSTARD_AC_QUALITY_MODE", None, GateMode::Warn);
             if spec_mode != GateMode::Off || ac_mode != GateMode::Off {
@@ -846,13 +859,15 @@ impl Check for SizeGate {
 
         // ── skill-size-gate + skill-validate-gate ─────────────────────────
         if is_skill_path(&file_path) {
+            // Strict for the same reason as the spec size above: an oversized or
+            // malformed skill is debt with a one-edit fix.
             let size_mode = resolve_mode(
                 "MUSTARD_SKILL_SIZE_MODE",
                 gates.skill_size.as_deref(),
-                GateMode::Warn,
+                GateMode::Strict,
             );
             let validate_mode =
-                resolve_mode("MUSTARD_SKILL_VALIDATE_GATE_MODE", None, GateMode::Warn);
+                resolve_mode("MUSTARD_SKILL_VALIDATE_GATE_MODE", None, GateMode::Strict);
             if size_mode != GateMode::Off || validate_mode != GateMode::Off {
                 if let Some(content) = resolve_content(input) {
                     if size_mode != GateMode::Off {
