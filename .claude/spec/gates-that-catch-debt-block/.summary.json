@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "gates-that-catch-debt-block",
+  "title": "Gates that catch real debt must block instead of warning, and the house style must explain without jargon",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
