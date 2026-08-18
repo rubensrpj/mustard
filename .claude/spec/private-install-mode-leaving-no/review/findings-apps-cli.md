@@ -1,32 +1,29 @@
-## Verdict: APPROVED (0 blocking)
+## Verdict — apps/cli, round 2
 
-### Guards (`apps/cli/CLAUDE.md`) — all held
-- No `unwrap`/`expect` outside `#[cfg(test)]`: `git diff -U0 … | grep '^\+.*\.\(unwrap\|expect\)('` → 26 hits, **all** inside test modules. `backup_dirs` uses `let-else` + `flatten`/`filter_map`; `settings_dest` uses `parent().unwrap_or(claude_dir)`.
-- `mustard.json` still written at `<root>` (`write_project_config`), `.claude` untouched in `copy_dir` skip list, `update --force` path unchanged, `~/.claude` write still gated (`MUSTARD_GLOBAL_PERMISSIONS`).
-- New git seam is fail-open by construction (`ExcludeOutcome::unavailable`, `tracked_paths` → empty), never blocking — verified by `a_tree_without_a_repository_reports_instead_of_failing`.
+**REJECTED — 1 blocking defect.** The declared criteria pass; a defect they cannot see ships a silent-data-loss trap into the client repo.
 
-### Mold `cli-options-pattern` — followed
-`InitOptions` gained `pub private: bool` with its own `///` line, no field attribute, derive set unchanged; the `#[arg(long)]` lives in `apps/cli/src/cli.rs:44` on `Commands::Init`; `dispatch` builds the literal with field-init shorthand; entry signature still `&Path, &InitOptions`. The new `apps/cli/tests/private_init.rs` is a *tests/* file rather than an in-file `mod tests`, which the mold discourages — justified and accepted: AC-7 names `--test private_init`, and `cfg!(test)` is false in-crate so `probe_rtk`'s `process::exit(1)` would kill the binary (documented at `apps/cli/tests/private_init.rs:5-19`).
+### Claims verified (all green)
+| Claim | Command | Real output |
+|---|---|---|
+| AC-7 | `cargo test -p mustard-cli --test private_init ac7_init_private_seeds_no_github_template` | `1 passed (1 suite, 1.78s)` |
+| No CLI regression | `cargo test -p mustard-cli` | `50 passed (5 suites, 4.08s)` |
+| AC-9 | `cargo build --workspace` | `0 errors, 1 warnings` (pre-existing, `apps/rt/src/commands/feature.rs:488`, untouched) |
+| Lints | `cargo clippy -p mustard-cli --all-targets` | `0 errors, 30 warnings` — all pre-existing files |
 
-### AC verification (commands run, real output)
-| AC | Command | Result |
-|----|---------|--------|
-| 1-4 | `cargo test -p mustard-core --test private_install` | `4 passed` |
-| 5 | `… -p mustard-rt --test private_scan` | `1 passed` |
-| 6 | `… -p mustard-rt --test private_surface` | `test result: ok. 1 passed` |
-| 7 | `… -p mustard-cli --test private_init ac7_…` | `1 passed` |
-| 8 | `… --test private_install_leaves_no_trace ac8_…` | `test result: ok. 1 passed` |
-| 9 | `cargo build --workspace` | `0 errors` (1 pre-existing warning in `feature.rs:488`, untouched) |
+Independent field proof (not the test suite): drove the real `target/debug/mustard.exe init --yes --private` in a fresh git host repo that already versioned its own `CLAUDE.md`, then planted a subproject `.claude/`, a `CLAUDE.local.md`, a `.claude.backup.20260817T120000/` and a `.claude/spec/foo/` — `git status --porcelain --untracked-files=all` came back **empty**, `CLAUDE.md` untouched. Re-running `init --yes` with **no flag** stayed private (`kept .claude/settings.local.json`, no `settings.json`, no `.github/`), so the autodetection seam really works through the CLI. Switching an already-shared install to `--private` printed the correct residue report and the `git rm --cached` line. Guards checked: no `unwrap`/`expect` outside `#[cfg(test)]` in the new code, `mustard.json` stays root-anchored (`/mustard.json`), `.claude` skip-list and the fail-open probes untouched. Mold `cli-options-pattern` conformant.
 
-Regression sweep: `cargo test --workspace` → **2929 passed, 6 ignored, exit 0**. `cargo clippy --workspace --all-targets` → **0 errors**.
+### CRITICAL — a private install hides a file it never writes
+`apps/cli/src/commands/init.rs:262` refuses to seed `.github/` precisely because "it lands outside `.claude/`, where nothing else covers it". Then `hide_footprint` at `apps/cli/src/commands/init.rs:356` writes **every** `footprint_rules()` entry into the clone-local exclude file — including `.github/pull_request_template.md` (`packages/core/src/platform/project_seed.rs:244`, `seeded(GITHUB_PR_TEMPLATE)`). Measured in the fixture above:
 
-Each AC test carries a real negative control (shared install seeds `.github/`, shared status *must* show the footprint, shared `run upsert` reports no `private` key), so a green run is not "nothing happened".
+```
+$ git check-ignore -v .github/pull_request_template.md
+.git/info/exclude:15:.github/pull_request_template.md   .github/pull_request_template.md
+$ git status --porcelain --untracked-files=all
+?? .github/workflows/ci.yml          <- the client's other file shows; their PR template does not
+```
 
-### Change requests — both addressed
-- **CR (blocking, root-anchored rules):** fixed at `packages/core/src/platform/project_seed.rs:112` with `**/.claude/` + `.claude.backup.*/` covers; AC-8's fixture really carries a subproject `packages/api/.claude/` and a committed CRLF `packages/api/CLAUDE.md`, and the shared control asserts git *sees* `packages/api/.claude/scan-map.md`. Deviation from the CR's literal instruction (per-file `**/` prefix) is documented and justified: `tracked_paths` hands the same strings to `git ls-files`, where a `**/`-prefixed pathspec would break the residue report.
-- **CR (backup dir under AC-8):** the fixture seeds `.claude.backup.20260817-101500/` and asserts empty `git status --porcelain -uall`; the shared control asserts `{BACKUP_DIR}/settings.json` is visible. No new criterion added, as instructed.
+So in the mode's own headline scenario — a fresh `--private` install into a client repo — a PR template the client (or the operator, for the client) authors is invisible to `git status` and skipped by `git add -A`, silently, forever. This is the *identical* failure the wave already reasoned about and closed for `CLAUDE.md`: `FootprintEntry` doc at `packages/core/src/platform/project_seed.rs:144` ("a rule would hide an instruction file the operator authored FOR the client from that client's own `git add -A`") and the property test `no_rule_reaches_a_depth_that_is_not_ours` at `:1499` ("a private install never writes a `CLAUDE.md`, so it must never hide one"). The PR template is in exactly that class under this mode, yet it is `seeded(..)` instead of the `watched(..)`-shaped entry (rule `None`, pathspec kept so the residue report still names it, as it correctly did in the shared→private switch run). The property test passes only because the rule carries an interior slash — it checks anchoring, not "is this ours".
 
-### Non-blocking findings
-1. **minor** — `apps/cli/src/commands/init.rs:374` `backup_dirs()` is now redundant: wave 4 added `CLAUDE_BACKUP_DIRS = ".claude.backup.*/"` to `footprint_paths()`, which already covers every such directory at any depth. The CLI's per-name discovery appends an extra exact-name line per backup on each private init (`missing_rules` compares trimmed literals, so `.claude.backup.X/` never matches `.claude.backup.*/`), slowly growing the exclude file. No test exercises this path — AC-7's init takes the non-interactive merge branch, and AC-8 never calls the CLI.
-2. **minor** — `apps/cli/src/commands/init.rs:147` `mustard init` does **not** autodetect the mode, while `run upsert` does (`apps/rt/src/commands/maint/upsert.rs:40`). Since `init.rs:268` calls a re-run "the idempotent replacement for `mustard update`", a later plain `mustard init` on a private project seeds `.claude/settings.json` and re-attempts `.github/`. Not a leak — both are already in the exclude file and `copy_dir` never overwrites — but the two install faces disagree about a decision the spec says is taken once.
-3. **minor** — `packages/core/src/platform/project_seed.rs:169` `CLAUDE_MD` as an `ls-files` pathspec is literal, so a host repo that tracks a *subproject* `CLAUDE.md` is never named in `already_tracked`. Harmless today (private mode never writes that file), but the residue report under-covers depth exactly where AC-8's own fixture puts it.
+### Non-blocking
+- `apps/cli/src/commands/init.rs:213` — the comment claims step 0 hides the footprint "BEFORE any of it is written", but the interactive backup-and-overwrite branch creates `.claude.backup.<stamp>/` at `:198`, before `hide_footprint` at `:216`. End state is still clean (an exclude rule applies to an untracked path whenever it is added), so this is a doc inaccuracy, not a leak.
+- `apps/cli/tests/private_init.rs:194` — the "the rules cover OUR footprint and stop there" loop tries only `CLAUDE.md` and `services/billing/mustard.json`; adding `.github/pull_request_template.md` to that list is what would have caught the critical above. The CLI-side autodetection re-run also has no regression guard.

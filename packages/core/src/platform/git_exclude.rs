@@ -32,10 +32,15 @@
 //!
 //! - Writes go through [`fs::write_atomic`] only; nothing here panics
 //!   (`unwrap`/`expect` are `deny` outside tests).
-//! - **Fail-open throughout.** No git on `PATH`, no repository, an unreadable or
-//!   unwritable exclude file — each degrades to "nothing was excluded" and is
-//!   REPORTED through [`ExcludeOutcome::unavailable`]. None of them is an error
-//!   and none of them stops an install.
+//! - **This module never errors and never stops anything.** No git on `PATH`,
+//!   no repository, an unreadable or unwritable exclude file — each degrades to
+//!   "nothing was excluded" and is REPORTED through
+//!   [`ExcludeOutcome::unavailable`]. What it does NOT do is flatten the three
+//!   into one sentence: [`ExcludeFailure::is_blocking`] separates "there was no
+//!   repository to hide from" from "there WAS one and we failed to hide", and a
+//!   private install refuses on the second. Deciding that here would be wrong —
+//!   a shared install calls the same seam and has nothing to refuse — so the
+//!   fact is typed and the judgement stays with the caller.
 //! - No `println!`: this is a library seam. Callers render the outcome.
 
 use std::path::{Path, PathBuf};
@@ -48,12 +53,61 @@ use crate::platform::error::Error;
 // Outcome
 // ---------------------------------------------------------------------------
 
+/// Why NOTHING could be excluded — a closed set, because the caller does not
+/// react to all three the same way.
+///
+/// [`Self::NoRepository`] is the harmless one: there is no git here, so there is
+/// nobody for a footprint to be visible TO, and an install may proceed exactly
+/// as it does in an ordinary directory. The other two happen only *inside a real
+/// repository* — git resolved an exclude file and the write still did not
+/// land — and for a private install that is the worst outcome the mode has: the
+/// operator believes the client's git cannot see the harness, and it can. So the
+/// distinction is carried in the type rather than recovered by reading a
+/// sentence, and [`Self::is_blocking`] is the one place it is spelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcludeFailure {
+    /// `git` is not reachable, or the project root is not inside a repository
+    /// at all.
+    NoRepository,
+    /// The exclude file exists but could not be read. Preserving what we could
+    /// not inspect is the same rule `seed_static_file` follows.
+    Unreadable,
+    /// The merged exclude file could not be written back.
+    Unwritable,
+}
+
+impl ExcludeFailure {
+    /// The one short, path-free sentence a report renders. Path-free on purpose:
+    /// the install report must stay machine-independent and byte-stable.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::NoRepository => "no git repository here, so nothing was excluded",
+            Self::Unreadable => {
+                "the clone-local exclude file could not be read, so nothing was excluded"
+            }
+            Self::Unwritable => {
+                "the clone-local exclude file could not be written, so nothing was excluded"
+            }
+        }
+    }
+
+    /// Whether a private install must REFUSE rather than proceed.
+    ///
+    /// True exactly when there was a repository to hide from and we failed to.
+    /// A tree with no repository is not a failure of the mode — nothing there
+    /// can ever report a footprint.
+    #[must_use]
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::Unreadable | Self::Unwritable)
+    }
+}
+
 /// What one [`ensure_excluded`] run did — facts, not an error.
 ///
 /// The two fields are mutually exclusive in practice: either the write happened
 /// (and `appended` names the lines it added, empty when the file already carried
-/// them all) or it could not happen at all (and `unavailable` says why in one
-/// short, path-free sentence — the report must stay machine-independent).
+/// them all) or it could not happen at all (and `unavailable` says why).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExcludeOutcome {
     /// The rule lines this run appended, in the order they were supplied.
@@ -61,20 +115,8 @@ pub struct ExcludeOutcome {
     pub appended: Vec<String>,
     /// Why NOTHING was excluded, when the write could not happen. `None` on
     /// every successful run, including the one that had nothing left to add.
-    pub unavailable: Option<String>,
+    pub unavailable: Option<ExcludeFailure>,
 }
-
-/// Reason: `git` is not reachable, or the project root is not inside a
-/// repository at all. Deliberately path-free — the report is byte-stable.
-const NO_REPOSITORY: &str = "no git repository here, so nothing was excluded";
-
-/// Reason: the exclude file exists but could not be read. Preserving what we
-/// could not inspect is the same rule `seed_static_file` follows.
-const UNREADABLE: &str = "the clone-local exclude file could not be read, so nothing was excluded";
-
-/// Reason: the merged exclude file could not be written back.
-const UNWRITABLE: &str =
-    "the clone-local exclude file could not be written, so nothing was excluded";
 
 /// The header the append writes above the rules it adds, so the lines are
 /// attributable rather than mysterious to whoever opens the file next. Mirrors
@@ -120,13 +162,13 @@ pub fn exclude_file(root: &Path) -> Option<PathBuf> {
 /// excluded" with a reason in [`ExcludeOutcome::unavailable`].
 #[must_use]
 pub fn ensure_excluded(root: &Path, rules: &[String]) -> ExcludeOutcome {
-    let unavailable = |reason: &str| ExcludeOutcome {
+    let unavailable = |failure: ExcludeFailure| ExcludeOutcome {
         appended: Vec::new(),
-        unavailable: Some(reason.to_string()),
+        unavailable: Some(failure),
     };
 
     let Some(path) = exclude_file(root) else {
-        return unavailable(NO_REPOSITORY);
+        return unavailable(ExcludeFailure::NoRepository);
     };
     let existing = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -135,7 +177,7 @@ pub fn ensure_excluded(root: &Path, rules: &[String]) -> ExcludeOutcome {
         Err(Error::NotFound(_)) => String::new(),
         // Present but unreadable is a genuine failure: never stomp what we
         // could not inspect.
-        Err(_) => return unavailable(UNREADABLE),
+        Err(_) => return unavailable(ExcludeFailure::Unreadable),
     };
 
     let missing = missing_rules(&existing, rules);
@@ -159,7 +201,7 @@ pub fn ensure_excluded(root: &Path, rules: &[String]) -> ExcludeOutcome {
         merged.push('\n');
     }
     if fs::write_atomic(&path, merged.as_bytes()).is_err() {
-        return unavailable(UNWRITABLE);
+        return unavailable(ExcludeFailure::Unwritable);
     }
     ExcludeOutcome {
         appended: missing,
@@ -311,9 +353,41 @@ mod tests {
         let dir = tempdir().unwrap();
         let outcome = ensure_excluded(dir.path(), &rules(&["mustard.json"]));
         assert!(outcome.appended.is_empty());
-        assert_eq!(outcome.unavailable.as_deref(), Some(NO_REPOSITORY));
+        assert_eq!(outcome.unavailable, Some(ExcludeFailure::NoRepository));
+        assert!(
+            !ExcludeFailure::NoRepository.is_blocking(),
+            "there is no repository here, so there is nothing a footprint could be visible to",
+        );
         // …and the tracked question degrades the same way, to "nothing proven".
         assert!(tracked_paths(dir.path(), &rules(&["mustard.json"])).is_empty());
+    }
+
+    /// The half a private install refuses on: git resolved an exclude file and
+    /// the write still did not land. Measured in a REAL repository, because the
+    /// distinction is precisely "was there a repository to hide from".
+    ///
+    /// The unwritable case is provoked by making the exclude path a DIRECTORY —
+    /// portable, unlike a permission bit, which a Windows administrator and a
+    /// POSIX root both walk straight through.
+    #[test]
+    fn a_repository_we_cannot_hide_in_is_a_blocking_failure() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        let path = exclude_file(dir.path()).unwrap();
+        if path.exists() {
+            std_fs::remove_file(&path).unwrap();
+        }
+        std_fs::create_dir_all(&path).unwrap();
+
+        let outcome = ensure_excluded(dir.path(), &rules(&["mustard.json"]));
+
+        assert!(outcome.appended.is_empty(), "nothing was excluded: {outcome:?}");
+        let failure = outcome.unavailable.expect("a real repository refused the write");
+        assert!(
+            failure.is_blocking(),
+            "{failure:?} happened INSIDE a repository — a caller that proceeds now lays its \
+             footprint down visibly while believing it is hidden",
+        );
     }
 
     #[test]

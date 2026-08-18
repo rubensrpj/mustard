@@ -64,7 +64,9 @@ pub use platform::project_seed::{
 // resolved through `git rev-parse --git-path info/exclude` (never the literal
 // `.git/info/exclude`, which is absent in a submodule or a linked worktree).
 // See `platform/git_exclude.rs`.
-pub use platform::git_exclude::{ensure_excluded, exclude_file, tracked_paths, ExcludeOutcome};
+pub use platform::git_exclude::{
+    ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,
+};
 pub use platform::harness::harness_version;
 pub use platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
 

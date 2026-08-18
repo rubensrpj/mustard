@@ -51,7 +51,7 @@ use crate::domain::command_detect::detect_commands;
 use crate::domain::config::{Injectable, ProjectConfig, Runtime};
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
-use crate::platform::error::Result;
+use crate::platform::error::{Error, Result};
 use crate::platform::git_exclude;
 use crate::platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
 
@@ -111,18 +111,42 @@ pub const CLAUDE_MD: &str = "CLAUDE.md";
 pub const CLAUDE_LOCAL_MD: &str = "CLAUDE.local.md";
 /// The pull-request template the CLI seeds when it finds a GitHub remote.
 const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
-/// Every `.claude/` directory in the project, at any depth.
+/// What the HARNESS — as opposed to the install — puts inside a `.claude/`
+/// directory, wherever that directory sits.
 ///
-/// A gitignore pattern that carries a slash is anchored to the directory the
-/// rule file governs — the repository root, for the clone-local exclude file —
-/// so `.claude/settings.json` covers the ROOT `.claude/` and no other. A full
-/// scan creates one `.claude/` per subproject, and the harness keeps writing
-/// into the root one the whole time it works: spec directories, the knowledge
-/// store, rendered prompts, the scan census. None of that can be enumerated —
-/// the list grows with the harness — so the cover is the directory itself, and
-/// the `**/` prefix is what makes it reach every depth (the same shape this
-/// repository's own root `.gitignore` uses for `**/.claude/settings.local.json`).
-const CLAUDE_DIR_ANY_DEPTH: &str = "**/.claude/";
+/// The seeds below are covered by [`at_any_depth`], which lifts each of them
+/// automatically. This list is the rest: the durable output the harness writes
+/// while it WORKS, which the seeded `.claude/.gitignore` deliberately leaves
+/// versioned because in a shared install it belongs to the repository — the
+/// scan census, the pattern molds, the spec directories, the grain model.
+///
+/// It is an enumeration and not the directory itself, and that is the whole
+/// lesson of the round that produced it. A single `**/.claude/` cover was
+/// simpler and reached everything, including a `.claude/commands/their-command.md`
+/// the CLIENT authored — measured in a real repository, invisible to their own
+/// `git add -A`. **An exclude rule may name only what Mustard writes.** The
+/// trade that accepts is deliberate: a future producer nobody adds here stays
+/// VISIBLE in `git status`, which is a noisy failure the operator can see,
+/// instead of a silent one that eats their work.
+///
+/// A trailing slash means "the directory and everything under it"; everything
+/// else is one file. `no_rule_reaches_a_depth_that_is_not_ours` refuses any
+/// entry a private install cannot be shown to produce.
+const HARNESS_CLAUDE_OUTPUT: &[&str] = &[
+    ".artifacts.json",
+    "capabilities/",
+    "grain.dictionary.json",
+    "grain.equivalences.json",
+    "grain.model.json",
+    "scan-declined.json",
+    "scan-map.md",
+    // NOT `skills/`. The shelf is a directory a client may also author in; what
+    // the scan writes there is the `{role}-pattern` mold, and every one of the
+    // 30 in this repository carries that suffix. The rule is the mold, not the
+    // shelf — the same distinction that took `.claude/commands/` back.
+    "skills/*-pattern/",
+    "spec/",
+];
 /// The timestamped copy `mustard init` leaves beside `.claude/` when the
 /// operator chooses "backup and overwrite".
 ///
@@ -197,7 +221,7 @@ fn watched(pathspec: &str) -> FootprintEntry {
     }
 }
 
-/// A directory COVER: a rule by shape, with no path for `ls-files` to answer.
+/// A COVER: a rule by shape, with no path for `ls-files` to answer.
 fn cover(rule: &str) -> FootprintEntry {
     FootprintEntry {
         rule: Some(rule.to_string()),
@@ -206,16 +230,47 @@ fn cover(rule: &str) -> FootprintEntry {
     }
 }
 
+/// The same `.claude/` rule, lifted to reach a `.claude/` at ANY depth.
+///
+/// A gitignore pattern that carries an interior slash is anchored to the
+/// directory its rule file governs — the repository root, for the clone-local
+/// exclude file — so `.claude/settings.json` covers the ROOT `.claude/` and no
+/// other. A full scan creates one `.claude/` per SUBPROJECT, and a leading `**/`
+/// is what reaches them (the shape this repository's own root `.gitignore`
+/// already uses for `**/.claude/settings.local.json`).
+///
+/// Derived rather than listed: every seed keeps ONE declaration and gains its
+/// depth-reaching twin here, so a seed added later cannot be hidden at the root
+/// and forgotten in a subproject.
+///
+/// The root-anchored original is kept alongside the twin rather than replaced by
+/// it, even though the twin subsumes it as a pattern. The original is the string
+/// two other things read: [`PRIVATE_MARKS`], which is how the mode is detected
+/// off the exclude file, and [`footprint_pathspecs`], which is the PATH the
+/// residue report names. A pattern is not a path, and collapsing the two is the
+/// mistake [`FootprintEntry`] exists to prevent.
+fn at_any_depth(rule: &str) -> Option<FootprintEntry> {
+    rule.strip_prefix(".claude/")
+        .map(|rest| cover(&format!("**/.claude/{rest}")))
+}
+
 /// The Mustard FOOTPRINT, declared in exactly one place.
 ///
 /// Derived rather than re-typed: the seed entries are the same constants
-/// [`upsert_project`] records, and the injectable instruction files come
-/// straight from [`INJECTABLE_SEEDS`], so a new injectable is covered the day it
-/// is added. Two entries are not seeds and are here on purpose:
+/// [`upsert_project`] records, the injectable instruction files come straight
+/// from [`INJECTABLE_SEEDS`] (so a new injectable is covered the day it is
+/// added), and each of those seeds gains its depth-reaching twin through
+/// [`at_any_depth`] instead of being spelled a second time. Three entries are
+/// not seeds and are here on purpose:
 ///
 /// - `settings.local.json` — so switching modes never leaves the other twin
 ///   visible;
-/// - `CLAUDE.md` — watched, never hidden (see [`FootprintEntry`]).
+/// - `CLAUDE.md` — watched, never hidden (see [`FootprintEntry`]);
+/// - `.github/pull_request_template.md` — watched for the same reason from the
+///   other direction. A private install explicitly REFUSES to seed it, so no
+///   rule of ours may hide it; a repository that already tracks one (from an
+///   earlier shared install, or because it is simply the client's) still has to
+///   be named as residue, which is what the pathspec is for.
 ///
 /// `CLAUDE.local.md` is the one rule deliberately left unanchored: a private
 /// `scan --full` writes one per SUBPROJECT and the set cannot be enumerated, so
@@ -223,12 +278,14 @@ fn cover(rule: &str) -> FootprintEntry {
 /// name belongs to the untracked local layer by convention, so no rule of ours
 /// is hiding a file a client would ever commit.
 ///
-/// The list closes with two entries that are RULES rather than paths —
-/// [`CLAUDE_DIR_ANY_DEPTH`] and [`CLAUDE_BACKUP_DIRS`]. The seed entries above
-/// them each name one file, and a rule that names one file can only ever hide
-/// the files somebody thought of: a private install still showed a subproject's
-/// whole `.claude/` and every spec directory the harness wrote while working.
-/// The two covers close that by shape instead of by enumeration.
+/// The list closes with the rules that are SHAPES rather than paths:
+/// [`HARNESS_CLAUDE_OUTPUT`] lifted to every depth, and [`CLAUDE_BACKUP_DIRS`].
+/// The seeds each name one file, and a rule that names one file can only hide
+/// the files somebody thought of — a private install used to show a
+/// subproject's whole `.claude/` and every spec directory the harness wrote
+/// while working. These close that by naming what the harness produces, one
+/// name at a time, because the shortcut of covering `.claude/` wholesale hid
+/// the client's own files too.
 #[must_use]
 pub fn footprint() -> Vec<FootprintEntry> {
     let mut out = vec![seeded(SETTINGS_JSON), seeded(SETTINGS_LOCAL_JSON)];
@@ -241,8 +298,17 @@ pub fn footprint() -> Vec<FootprintEntry> {
     out.push(anchored(MUSTARD_JSON_RULE, MUSTARD_JSON));
     out.push(seeded(CLAUDE_LOCAL_MD));
     out.push(watched(CLAUDE_MD));
-    out.push(seeded(GITHUB_PR_TEMPLATE));
-    out.push(cover(CLAUDE_DIR_ANY_DEPTH));
+    out.push(watched(GITHUB_PR_TEMPLATE));
+    let lifted: Vec<FootprintEntry> = out
+        .iter()
+        .filter_map(|entry| entry.rule.as_deref().and_then(at_any_depth))
+        .collect();
+    out.extend(lifted);
+    out.extend(
+        HARNESS_CLAUDE_OUTPUT
+            .iter()
+            .map(|name| cover(&format!("**/.claude/{name}"))),
+    );
     out.push(cover(CLAUDE_BACKUP_DIRS));
     out
 }
@@ -398,6 +464,12 @@ pub struct UpsertReport {
 
 /// `skip_serializing_if` predicate for the additive booleans above — a `false`
 /// flag is simply absent, keeping the shared-install shape unchanged.
+///
+/// The `&bool` is serde's signature, not a choice: `skip_serializing_if` calls
+/// the predicate with a reference to the field. Taking it by value does not
+/// compile, so the lint is answered where it is raised rather than by changing
+/// a signature that is fixed elsewhere.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -450,22 +522,24 @@ impl UpsertReport {
 /// Under [`InstallMode::Private`] a step 0 runs first — [`footprint_rules`] is
 /// written into the clone-local exclude file, and whatever the host repository
 /// already tracks under [`footprint_pathspecs`] is recorded as residue — so no
-/// seed is ever momentarily visible to that repository's git. Step 2 then
-/// targets the local settings layer. [`InstallMode::Shared`] does neither and is
-/// byte-for-byte what it was before the mode existed.
+/// seed is ever momentarily visible to that repository's git. When that write
+/// cannot happen inside a repository that exists, step 0 REFUSES and no step
+/// after it runs. Step 2 then targets the local settings layer.
+/// [`InstallMode::Shared`] does neither and is byte-for-byte what it was before
+/// the mode existed.
 ///
 /// # Errors
 ///
-/// An IO or serialization failure from any seeding step. The migration and the
-/// private step are both fail-open and never error.
+/// An IO or serialization failure from any seeding step. The migration is
+/// fail-open and never errors. The private step errors — [`Error::NotHidden`] —
+/// only when a REAL repository refused the exclude write, and it does so before
+/// anything at all has been written.
 pub fn upsert_project(
     root: &Path,
     version: Option<&str>,
     mode: InstallMode,
 ) -> Result<UpsertReport> {
     let installed_before = ProjectConfig::exists(root);
-    let claude_dir = root.join(".claude");
-    fs::create_dir_all(&claude_dir)?;
 
     let mut report = UpsertReport {
         installed_before,
@@ -473,17 +547,33 @@ pub fn upsert_project(
         ..UpsertReport::default()
     };
 
-    // 0. Private mode: hide the footprint BEFORE any of it is written. The two
-    //    halves read two different projections of the ONE declaration — the
-    //    rules are what an install may hide, the pathspecs are what it may ask
-    //    about, and they are not the same set (see `FootprintEntry`).
+    // 0. Private mode: hide the footprint BEFORE any of it is written — before
+    //    even `.claude/` is created. The two halves read two different
+    //    projections of the ONE declaration — the rules are what an install may
+    //    hide, the pathspecs are what it may ask about, and they are not the
+    //    same set (see `FootprintEntry`).
+    //
+    //    This is the one step that can REFUSE. Everything else in this engine
+    //    fails open, because everything else costs a feature when it degrades;
+    //    a private install that cannot hide costs the operator's belief. If git
+    //    resolved an exclude file in a real repository and the write still did
+    //    not land, the seeds below would land VISIBLY in a client's git while
+    //    the report said "private". Nothing is written on that path.
     if mode.is_private() {
         let outcome = git_exclude::ensure_excluded(root, &footprint_rules());
+        if let Some(failure) = outcome.unavailable {
+            if failure.is_blocking() {
+                return Err(Error::NotHidden(failure.reason().to_string()));
+            }
+            report.exclude_unavailable = Some(failure.reason().to_string());
+        }
         report.private = true;
         report.excluded = outcome.appended;
-        report.exclude_unavailable = outcome.unavailable;
         report.already_tracked = git_exclude::tracked_paths(root, &footprint_pathspecs());
     }
+
+    let claude_dir = root.join(".claude");
+    fs::create_dir_all(&claude_dir)?;
 
     // 1. Migration away from the planted-orchestrator layout (fail-open).
     report.migrated = migrate_orchestrator_footprint(root, &claude_dir).migrated;
@@ -1452,14 +1542,20 @@ mod tests {
             CLAUDE_GITIGNORE_PATH,
             MUSTARD_JSON_RULE,
             CLAUDE_LOCAL_MD,
-            GITHUB_PR_TEMPLATE,
-            // The two covers: without them the per-file entries hide the root
-            // `.claude/` and nothing else — not a subproject's, and not one byte
-            // of what the harness writes into either while it works.
-            CLAUDE_DIR_ANY_DEPTH,
             CLAUDE_BACKUP_DIRS,
         ] {
             assert!(rules.iter().any(|p| p == expected), "{expected} missing: {rules:?}");
+        }
+        // Every `.claude/` seed also reaches a `.claude/` at DEPTH — without the
+        // lift, the per-file entries hide the root one and no subproject's.
+        // Derived from the seeds, so this is a property and not a second list.
+        for seed in [SETTINGS_JSON, SETTINGS_LOCAL_JSON, CLAUDE_GITIGNORE_PATH] {
+            let lifted = format!("**/{seed}");
+            assert!(rules.iter().any(|p| *p == lifted), "{lifted} missing: {rules:?}");
+        }
+        for name in HARNESS_CLAUDE_OUTPUT {
+            let expected = format!("**/.claude/{name}");
+            assert!(rules.iter().any(|p| *p == expected), "{expected} missing: {rules:?}");
         }
         // No duplicates and no backslashes — the list is written verbatim into a
         // git exclude file, which speaks forward slashes on every platform.
@@ -1472,29 +1568,53 @@ mod tests {
         }
     }
 
-    /// The defect this splits the footprint for: an ignore rule that carries no
-    /// slash matches at EVERY depth, so a bare `mustard.json` or `CLAUDE.md`
-    /// line hides the client's own files — the exact opposite of the mode's
-    /// promise, and invisible to a criterion that only asserts a CLEAN status
-    /// (an over-broad rule makes that assertion MORE likely to pass).
+    /// **An exclude rule may name ONLY what Mustard writes.** Asked of every
+    /// emitted rule, against real git, in both directions: it must match
+    /// something a private install really produces, and it must match nothing
+    /// the CLIENT authored.
     ///
-    /// Stated as a property rather than a list: any unanchored rule must be a
-    /// name Mustard alone writes at arbitrary depth.
+    /// The previous version of this ratchet asked about ANCHORING — does the
+    /// rule carry an interior slash — and that is the wrong question twice over.
+    /// It passed `.github/pull_request_template.md`, a rule for a file a private
+    /// install explicitly refuses to seed, purely because the path has a slash
+    /// in it. And it passed a bare `**/.claude/` cover, which review then
+    /// measured hiding a client-authored `.claude/commands/their-command.md`
+    /// from that client's own `git add -A`. Anchoring says where a rule reaches;
+    /// only ownership says whether it should.
+    ///
+    /// Both halves are needed, and the negative one carries most of the weight:
+    /// an over-broad rule makes the CLEAN-status criterion (AC-8) MORE likely to
+    /// pass, not less, so nothing else in this unit can see it.
+    ///
+    /// The matching is done by git — `check-ignore` in a probe repository
+    /// carrying ONE rule at a time and no `.gitignore` of any kind, so every
+    /// answer is attributable to that rule alone. A matcher of our own would be
+    /// asserting our reading of gitignore syntax, which is precisely the reading
+    /// that was wrong.
     #[test]
     fn no_rule_reaches_a_depth_that_is_not_ours() {
-        // The only names a private install writes at unpredictable depth: the
-        // per-subproject local instruction layer, and the `.claude/` covers.
-        let ours_at_any_depth = [CLAUDE_LOCAL_MD, CLAUDE_DIR_ANY_DEPTH, CLAUDE_BACKUP_DIRS];
+        let work = tempdir().unwrap();
+        let ours = install_and_work(&work.path().join("host"));
+        let probe = tempdir().unwrap();
+        let probe_exclude = probe_repo(probe.path());
+
         for rule in footprint_rules() {
-            // A rule with an interior slash is anchored to the repository root
-            // by git itself; a trailing slash alone does not anchor anything.
-            let anchored = rule.starts_with('/') || rule.trim_end_matches('/').contains('/');
+            let mine = check_ignore(probe.path(), &probe_exclude, &rule, &ours);
             assert!(
-                anchored || ours_at_any_depth.contains(&rule.as_str()),
-                "{rule:?} matches at every depth but is not a name only Mustard writes — \
-                 it would hide the client's own file from their own `git add -A`",
+                !mine.is_empty(),
+                "no file a private install produced is matched by {rule:?} — a rule that \
+                 hides nothing of ours can only ever hide something of theirs. Either the \
+                 rule is stale, or the fixture above must be taught to write the path it \
+                 exists for.\nwhat the install produced: {ours:?}",
+            );
+            let stolen = check_ignore(probe.path(), &probe_exclude, &rule, CLIENT_AUTHORED);
+            assert!(
+                stolen.is_empty(),
+                "{rule:?} hides {stolen:?}, which Mustard never writes — under a \
+                 `git add -A` law those files would silently never be committed",
             );
         }
+
         // The host's own instruction file is asked about and never hidden.
         assert!(
             !footprint_rules().iter().any(|r| r == CLAUDE_MD),
@@ -1538,5 +1658,166 @@ mod tests {
     fn detect_install_mode_degrades_to_shared_without_a_repository() {
         let dir = tempdir().unwrap();
         assert_eq!(detect_install_mode(dir.path()), InstallMode::Shared);
+    }
+
+    // --- ownership ratchet scaffolding ---------------------------------------
+
+    /// Files a CLIENT plausibly authors in a repository Mustard was installed
+    /// into, and that Mustard writes NONE of. The negative half of the ownership
+    /// ratchet — every one of these must survive every rule.
+    ///
+    /// Three are specific answers to defects this unit shipped and review then
+    /// measured in a real repository: `.claude/commands/their-command.md` and
+    /// `.claude/agents/their-agent.md` were swallowed by a bare `**/.claude/`
+    /// cover, and `.github/pull_request_template.md` carried a rule of its own
+    /// even though a private install explicitly refuses to seed it.
+    const CLIENT_AUTHORED: &[&str] = &[
+        "CLAUDE.md",
+        "README.md",
+        "mustard.json.example",
+        "packages/api/CLAUDE.md",
+        "packages/api/mustard.json",
+        "packages/api/src/lib.rs",
+        ".claude/commands/their-command.md",
+        ".claude/agents/their-agent.md",
+        ".claude/refs/their-notes.md",
+        ".claude/skills/their-own-skill/SKILL.md",
+        "packages/api/.claude/skills/their-other-skill/SKILL.md",
+        ".github/pull_request_template.md",
+        ".github/workflows/ci.yml",
+    ];
+
+    /// Everything a private install and the harness it installs really put in a
+    /// project, measured by walking the tree afterwards rather than by listing.
+    ///
+    /// The install runs SHARED first and private second, which is not decoration:
+    /// that is the project the `settings.json` / `settings.local.json` pair
+    /// exists for — an operator switching an existing install to private, where
+    /// leaving the shared twin visible would announce the tool the mode hides.
+    ///
+    /// What follows the two installs is what the harness writes while it WORKS,
+    /// which no function in this crate can produce (the scan and the spec cycle
+    /// live in `apps/rt`). It is therefore written here — and that is exactly the
+    /// obligation the ratchet imposes: a rule may not be added without declaring,
+    /// right here, the Mustard path it exists for.
+    fn install_and_work(root: &Path) -> Vec<String> {
+        std_fs::create_dir_all(root).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+        ] {
+            let ok = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} failed");
+        }
+
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Private).unwrap();
+
+        // The scan census, the grain model, the capability docs and the spec
+        // directories — the root `.claude/`.
+        for (name, body) in [
+            ("scan-map.md", "Type: cargo\n"),
+            ("grain.model.json", "{}\n"),
+            ("grain.dictionary.json", "{}\n"),
+            ("grain.equivalences.json", "{}\n"),
+            ("scan-declined.json", "{}\n"),
+            (".artifacts.json", "{}\n"),
+            ("capabilities/cap.demo.md", "# cap\n"),
+            ("spec/demo/spec.md", "# demo\n"),
+            ("spec/demo/qa/report.md", "# QA\n"),
+        ] {
+            let dest = root.join(".claude").join(name);
+            std_fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std_fs::write(dest, body).unwrap();
+        }
+        // A subproject's own `.claude/`, which a full scan creates: its census,
+        // its pattern molds, and the Guards on the untracked local layer beside
+        // the client's own instruction file.
+        let sub = root.join("packages/api");
+        for (name, body) in [
+            (".claude/scan-map.md", "Type: cargo\n"),
+            (".claude/skills/core-demo-pattern/SKILL.md", "# mold\n"),
+            ("CLAUDE.local.md", "## Guards\n"),
+        ] {
+            let dest = sub.join(name);
+            std_fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std_fs::write(dest, body).unwrap();
+        }
+        // The timestamped copy `mustard init`'s backup-and-overwrite branch
+        // leaves beside `.claude/`. Placed rather than produced: that branch is
+        // INTERACTIVE and never runs with stdin off a terminal.
+        let backup = root.join(".claude.backup.20260817-101500");
+        std_fs::create_dir_all(&backup).unwrap();
+        std_fs::write(backup.join("settings.json"), "{}\n").unwrap();
+
+        let mut found = Vec::new();
+        collect_files(root, root, &mut found);
+        found.sort();
+        assert!(found.len() > 10, "the fixture measured almost nothing: {found:?}");
+        found
+    }
+
+    /// Every file under `dir`, as a project-root-relative path with forward
+    /// slashes. `.git/` is skipped — it is git's own, not Mustard's, and
+    /// `check-ignore` refuses to answer about it.
+    fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std_fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            if path.is_dir() {
+                collect_files(root, &path, out);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    /// An EMPTY repository whose only ignore source is its clone-local exclude
+    /// file — returns that file's path. Nothing is committed and no `.gitignore`
+    /// exists anywhere, so a `check-ignore` answer here is attributable to the
+    /// one rule the caller writes into it.
+    fn probe_repo(root: &Path) -> PathBuf {
+        let ok = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git init failed");
+        let path = git_exclude::exclude_file(root).expect("git resolves the exclude file");
+        std_fs::create_dir_all(path.parent().unwrap()).unwrap();
+        path
+    }
+
+    /// Which of `paths` git says the single `rule` matches.
+    fn check_ignore<S: AsRef<str>>(
+        probe: &Path,
+        exclude: &Path,
+        rule: &str,
+        paths: &[S],
+    ) -> Vec<String> {
+        std_fs::write(exclude, format!("{rule}\n")).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["check-ignore", "--no-index", "--"])
+            .args(paths.iter().map(AsRef::as_ref))
+            .current_dir(probe)
+            .output()
+            .expect("git check-ignore ran");
+        // Exit 1 means "nothing matched" and is not a failure; 128 is.
+        assert_ne!(out.status.code(), Some(128), "git check-ignore refused {rule:?}");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().replace('\\', "/"))
+            .filter(|l| !l.is_empty())
+            .collect()
     }
 }

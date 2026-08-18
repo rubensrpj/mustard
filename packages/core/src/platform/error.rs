@@ -66,6 +66,19 @@ pub enum Error {
     /// to its own logic.
     #[error("check failed: {0}")]
     CheckFailed(String),
+
+    /// A PRIVATE install could not hide its own footprint from the host
+    /// repository it is being installed into.
+    ///
+    /// The one place in this crate where fail-open is the wrong answer. Every
+    /// other degradation here costs a feature; this one costs the operator's
+    /// belief: they asked for an install nothing in the client's git can see,
+    /// and a quiet "nothing was excluded" would let the seeds land VISIBLY
+    /// under exactly that belief. So the install refuses before writing
+    /// anything. The string is the reason, from
+    /// [`crate::platform::git_exclude::ExcludeFailure`].
+    #[error("private install cannot hide its footprint: {0}")]
+    NotHidden(String),
 }
 
 impl Error {

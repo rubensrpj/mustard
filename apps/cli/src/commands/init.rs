@@ -192,6 +192,14 @@ pub fn init_with_templates(
         return Ok(());
     }
 
+    // Step 0, private only: hide the footprint BEFORE any of it exists — before
+    // `.claude/` is created, and before the backup-and-overwrite branch below
+    // can leave a `.claude.backup.<stamp>/` beside it. A refusal here writes
+    // nothing at all, not even a directory.
+    if mode.is_private() {
+        hide_footprint(&project_path)?;
+    }
+
     // Decide how to treat an existing `.claude/`. A fresh project is a plain
     // overwrite of an empty tree.
     let overwrite = if claude_path.exists() {
@@ -209,12 +217,6 @@ pub fn init_with_templates(
 
     mfs::create_dir_all(&claude_path)
         .with_context(|| format!("creating {}", claude_path.display()))?;
-
-    // Step 0, private only: hide the footprint BEFORE any of it is written, so
-    // no seed is ever momentarily visible to the host repository's git.
-    if mode.is_private() {
-        hide_footprint(&project_path);
-    }
 
     // Migration (idempotent, every run over an existing project): remove the
     // footprint the pre-injectable Mustard left in the project's instruction
@@ -349,13 +351,34 @@ fn guard_init_location(project_path: &Path) -> Result<()> {
 /// [`mustard_core::is_written_footprint`] recognises is offered the command; the
 /// host's own file is named for what it is and left alone.
 ///
-/// Fail-open in the core seam: no git, no repository, an unreadable or
-/// unwritable exclude file each degrade to a printed reason. The CLI only
-/// narrates.
-fn hide_footprint(project_path: &Path) {
+/// One failure here is NOT narrated away, and it is the reason this function
+/// returns a `Result` at all: when git resolved an exclude file in a real
+/// repository and the write still did not land, the install refuses. Everything
+/// after this point would then be written VISIBLY into a repository the operator
+/// believes cannot see it — the one outcome this mode exists to prevent, and the
+/// one an operator cannot notice for themselves. A tree with no repository is a
+/// different thing entirely (there is nobody for a footprint to be visible to)
+/// and still degrades to a printed line.
+///
+/// # Errors
+///
+/// [`mustard_core::ExcludeFailure::is_blocking`] — the exclude file could not be
+/// read or written inside a repository that exists.
+fn hide_footprint(project_path: &Path) -> Result<()> {
     let outcome = mustard_core::ensure_excluded(project_path, &mustard_core::footprint_rules());
-    match (&outcome.unavailable, outcome.appended.len()) {
-        (Some(reason), _) => println!("  private install: {reason}"),
+    match (outcome.unavailable, outcome.appended.len()) {
+        (Some(failure), _) if failure.is_blocking() => anyhow::bail!(
+            "a private install must not write anything it cannot hide.\n\
+             \n\
+               {}\n\
+             \n\
+             Nothing was written. This clone's exclude file is where the footprint is hidden;\n\
+             until it can be read and written, every file `mustard init` seeds would be visible\n\
+             in this repository's `git status` while the install reported itself private.\n\
+             Fix the file's permissions (or its type — it must be a FILE) and re-run.",
+            failure.reason(),
+        ),
+        (Some(failure), _) => println!("  private install: {}", failure.reason()),
         (None, 0) => {
             println!("  private install: this clone's exclude file already carries every rule");
         }
@@ -379,10 +402,11 @@ fn hide_footprint(project_path: &Path) {
     }
     for path in theirs {
         println!(
-            "  note: {path} is the repository's OWN versioned file — Mustard never writes it in \
-             this mode (the Guards go to CLAUDE.local.md beside it), so it is left exactly as it is."
+            "  note: {path} is the repository's OWN versioned file — a private install never \
+             writes it, so it is left exactly as it is and no rule of ours hides it."
         );
     }
+    Ok(())
 }
 
 /// Print one didactic line per seeded file. The seeding itself lives in the

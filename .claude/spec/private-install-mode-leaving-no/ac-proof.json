@@ -36,6 +36,23 @@
       "stderr_excerpt": "warning: constant `MUSTARD_JSON_RULE` is never used\n  --> packages\\core\\src\\platform\\project_seed.rs"
     },
     {
+      "id": "AC-11",
+      "command": "cargo test -p mustard-core --test private_install ac11_private_install_refuses_when_it_cannot_hide",
+      "expect": "[1-9][0-9]* passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 0,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": "Expect `[1-9][0-9]* passed` not found in command output: Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s\n     Running tests\\private_inst"
+    },
+    {
       "id": "AC-2",
       "command": "cargo test -p mustard-core --test private_install ac2_private_upsert_seeds_local_settings",
       "expect": "[1-9][0-9]* passed",
@@ -180,6 +197,18 @@
       "reason": "Review BLOCKING: the writer moved to CLAUDE.local.md and every reader stayed on CLAUDE.md, so a private install dispatched agents with an empty ## GUARDS block. AC-5 asserts the file lands; only this asserts it reaches the agent.",
       "statement": "when a dispatch prompt is rendered under a private install, then the inlined `## GUARDS` block carries the Guards from the local layer — the mode moves the Guards' destination, never their reach",
       "command": "cargo test -p mustard-rt --test private_guards ac10_private_dispatch_prompt_carries_the_guards",
+      "expect": "[1-9][0-9]* passed",
+      "wrote": [
+        ".claude/spec/private-install-mode-leaving-no/spec.md",
+        ".claude/spec/private-install-mode-leaving-no/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-11",
+      "at": "2026-08-17T23:46:47.775Z",
+      "reason": "USER DECISION 2026-08-17: git_exclude degraded to nothing-was-excluded on a real repository and the install proceeded, so the operator believes they are private and are not. No criterion covered that branch — the worst possible failure for this mode was the one nothing measured.",
+      "statement": "when a private install cannot hide its footprint in a repository that EXISTS — the clone-local exclude file is unreadable or unwritable — then the install REFUSES and writes nothing, instead of laying the footprint down visibly while reporting itself private",
+      "command": "cargo test -p mustard-core --test private_install ac11_private_install_refuses_when_it_cannot_hide",
       "expect": "[1-9][0-9]* passed",
       "wrote": [
         ".claude/spec/private-install-mode-leaving-no/spec.md",

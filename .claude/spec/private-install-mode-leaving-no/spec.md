@@ -53,6 +53,9 @@ In a host repository that already versions its own `CLAUDE.md`, a private instal
 - **AC-10** — when a dispatch prompt is rendered under a private install, then the inlined `## GUARDS` block carries the Guards from the local layer — the mode moves the Guards' destination, never their reach
   Command: `cargo test -p mustard-rt --test private_guards ac10_private_dispatch_prompt_carries_the_guards`
   Expect: `[1-9][0-9]* passed`
+- **AC-11** — when a private install cannot hide its footprint in a repository that EXISTS — the clone-local exclude file is unreadable or unwritable — then the install REFUSES and writes nothing, instead of laying the footprint down visibly while reporting itself private
+  Command: `cargo test -p mustard-core --test private_install ac11_private_install_refuses_when_it_cannot_hide`
+  Expect: `[1-9][0-9]* passed`
 - **AC-9** — the project build passes green
   Command: `cargo build --workspace`
 
@@ -64,6 +67,7 @@ In a host repository that already versions its own `CLAUDE.md`, a private instal
 - `packages/core/src/platform/project_seed.rs` — `upsert_project` takes the mode; `seed_settings` targets the local settings file when private; `UpsertReport` grows the private outcome.
 - `packages/core/src/io/claude_paths.rs` — the local-settings path joins its shared twin, so no call site composes it by hand.
 - `packages/core/src/platform/mod.rs` — registers the new module.
+- `packages/core/src/platform/error.rs` — `Error::NotHidden`, the one refusal in an otherwise fail-open engine (AC-11).
 - `packages/core/src/lib.rs` — re-exports what `apps/` consumes.
 - `packages/core/tests/private_install.rs` (create) — AC-1 to AC-4.
 - `packages/core/tests/private_install_leaves_no_trace.rs` (create) — AC-8, the field proof against real git.
@@ -74,6 +78,8 @@ In a host repository that already versions its own `CLAUDE.md`, a private instal
 - `apps/rt/tests/run_command_surface.rs` — the locked command surface admits the new flag.
 - `apps/rt/tests/private_scan.rs` (create) — AC-5.
 - `apps/rt/tests/private_surface.rs` (create) — AC-6.
+- `apps/rt/src/commands/agent/agent_prompt_template.md` + `apps/rt/src/commands/agent/render/mod.rs` — the dispatch prompt names the instruction file through a `{guards_file}` placeholder instead of spelling `CLAUDE.md`, so a dispatched agent is never sent to open the client's own file.
+- `plugin/refs/agent-prompt/agent-prompt.md` — the shipped placeholder table documents `{guards_file}` (the ratchet in `tests/plugin_agents.rs` reads the constant, not this prose).
 - `apps/cli/src/cli.rs` — `--private` on `Init`.
 - `apps/cli/src/commands/init.rs` — carries the mode into the seeders and skips the `.github/` copy when private.
 - `apps/cli/tests/private_init.rs` (create) — AC-7.
@@ -103,6 +109,10 @@ OUT: the location of the footprint (it stays in the working tree — see Non-Goa
   Reason: in a submodule or a linked worktree `.git` is a FILE, not a directory, so the literal path does not exist and the write silently lands nowhere. The project already states this rule for its own git flows
 - already-tracked paths are reported, not silently unlinked
   Reason: `git rm --cached` rewrites the host repo's index — a consequence the operator must choose. Reporting names the residue and the one command that clears it; doing it unasked would mutate a client repository on a flag that reads as install-time cosmetics
+- an exclude rule may name ONLY what Mustard writes — never a directory it merely writes INSIDE (USER DECISION, 2026-08-17)
+  Reason: five defects in this unit had that one cause. A rule broader than authorship silently swallows the client's own files under the `git add -A` law, and no clean-status criterion can see it — an over-broad rule makes an empty `git status` MORE likely, not less. Measured in a real repository: a bare `**/.claude/` cover hid a client-authored `.claude/commands/their-command.md`, and `.github/pull_request_template.md` carried a rule for a file a private install explicitly refuses to seed. The trade this accepts is deliberate: a future producer nobody declares stays VISIBLE in `git status`, which is a noisy failure the operator can see, instead of a silent one that eats their work
+- a private install that cannot hide REFUSES; it does not proceed and report the failure (USER DECISION, 2026-08-17)
+  Reason: every other degradation in the install engine costs a feature; this one costs the operator's belief. A quiet `excludeUnavailable` line let all four seeds land visibly in a client's repository while the report called itself private — and it is the one failure the operator cannot notice for themselves, because a successful private install and a failed one look identical until the commit. Scoped to a repository that EXISTS: a tree with no git has nobody for a footprint to be visible to, and still installs
 
 ## Evidence
 

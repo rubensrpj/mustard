@@ -1,35 +1,37 @@
-All nine ACs run green, the full CI suite is green — and the wave still ships one blocking seam defect.
+## Verdict — apps/rt, round 2: APPROVED (0 critical)
 
-## Verified claims (each run, real output)
+All ten criteria run green, plus the whole `mustard-rt` suite.
 
-| AC | Command | Result |
+## Verified claims — each command run, real output
+
+| Claim | Command | Result |
 |---|---|---|
-| AC-1..4 | `cargo test -p mustard-core --test private_install <name>` | 4× `1 passed` |
+| AC-1..4 | `cargo test -p mustard-core --test private_install <each filter>` | `1 passed` × 4 (`3 filtered out` each — the filters really match) |
 | AC-5 | `cargo test -p mustard-rt --test private_scan ac5_…` | `1 passed` |
 | AC-6 | `cargo test -p mustard-rt --test private_surface ac6_…` | `1 passed` |
 | AC-7 | `cargo test -p mustard-cli --test private_init ac7_…` | `1 passed` |
 | AC-8 | `cargo test -p mustard-core --test private_install_leaves_no_trace ac8_…` | `1 passed` |
-| AC-9 | `cargo build --workspace` | `0 errors, 1 warning` (pre-existing, `feature.rs:488`, untouched by this wave) |
-| regression | `cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan` | `2916 passed, 4 ignored (72 suites)` |
-| lints | `cargo clippy --workspace --all-targets` | exit 0 (pedantic warnings only) |
+| AC-10 | `cargo test -p mustard-rt --test private_guards ac10_…` | `1 passed` |
+| AC-9 | `cargo build --workspace` | `0 errors, 1 warning` (`feature.rs:488`, pre-existing, untouched) |
+| regression | `cargo test -p mustard-rt` / `-p mustard-core` / `-p mustard-cli` | `2074 passed (37 suites)` / `647 passed, 4 ignored` / `50 passed` |
+| lints | `cargo clippy --workspace --all-targets` | `0 errors, 172 warnings` (all pedantic, pre-existing) |
 
-The tests are honest: each carries a negative control (shared install visible to git, shared scan writing into `CLAUDE.md`, shared `run upsert` producing no `private` key), each asks real `git` instead of reading a constant, and `git_status` returns a failing sentinel when the measurement did not happen. Both mid-pipeline change requests are really in the code: `packages/core/tests/private_install_leaves_no_trace.rs:57,65` puts a `packages/api/.claude/` subproject and a `.claude.backup.<stamp>/` under the empty-status assertion, and the shared control at line 118-130 proves both are otherwise visible.
+The tests are not tautological: each carries a negative control, `private_guards.rs` and `private_surface.rs` drive the **built binary** so a warm process cache cannot answer "autodetected", and `git_status` returns a failing sentinel when the measurement did not happen.
 
-Guards + mold: clean. No new `run` subcommand, so the four-registration rule does not bite (the surface test locks names, not flags); `MaintCmd::Upsert` keeps `display_order = 44`, the flag has help prose, the dispatch arm is wired (`apps/rt/src/commands/maint/cli.rs:236`) — `rt-cmd-pattern` respected. No `unwrap`/`expect` outside tests. The report stays byte-stable: the four new fields skip when empty and the `unavailable` reasons are deliberately path-free.
+## Guards + molds (apps/rt) — clean
 
-## BLOCKING — the writer moved, every reader stayed
+- **Four registrations**: no new `run` subcommand, only a flag, so the rule does not bite; `run_command_surface.rs` locks names, not flags, and `template_parity.rs`'s reverse ratchet passed. `MaintCmd::Upsert` keeps `display_order = 44`, dispatch arm wired at `apps/rt/src/commands/maint/cli.rs:236` — **rt-cmd-pattern** respected.
+- **No panic / no `unwrap`**: the new hook-reachable path degrades through `let-else`, `if let Ok(cache)` and `Command::…output().ok()?` to `InstallMode::Shared`.
+- **Byte-stable `run` output**: the four new `UpsertReport` fields all `skip_serializing_if`, and the `unavailable` reasons are path-free constants — a shared report is byte-identical (asserted at `packages/core/tests/private_install.rs:227`).
 
-`apps/rt/src/commands/scan_claude.rs:487` now writes the subproject Guards to `CLAUDE.local.md` in private mode. Nothing that CONSUMES those Guards was taught the new name — a repo-wide grep for `CLAUDE.local.md` returns only `context.rs`, `scan_claude.rs` and the tests:
+## Change requests — all three landed
 
-- `apps/rt/src/commands/agent/render/sections.rs:34` — `read_guards_block` reads `subproject_dir.join("CLAUDE.md")` unconditionally. This is the `## GUARDS` block inlined into every dispatched agent prompt. Under a private install it returns the *client's* file — or `""`, which `collapse_empty_sections` then deletes. Agents get no Guards.
-- `apps/rt/src/commands/agent/render/role.rs:271` — `read_guards_facts` loses the `<!-- facts: kind=…; frameworks=… -->` grounding the enrich pass needs.
-- `apps/rt/src/hooks/write/post_edit.rs:629` — `governing_subproject` locates the owning unit by finding a `CLAUDE.md`; in a client repo without one it returns `None` and the guard-reminder gate goes silent.
-- `apps/rt/src/commands/scan_guards/list.rs:124` — the guards census only recognises `CLAUDE.md`, so the curation loop never sees a private install's pending blocks.
+- *backup dir*: seeded under the empty-status assertion; the shared control requires git to SEE it.
+- *depth*: `cover("**/.claude/")` plus the `packages/api/.claude/` fixture. Empirically proven, not read off a constant.
+- *one resolver + effectiveness*: re-derived the reader list independently — a repo-wide grep for `join("CLAUDE.md")` / `== "CLAUDE.md"` in `apps/rt/src` leaves **no production site**; every remaining literal is inside `#[cfg(test)]`.
 
-AC-5 only asserts the file *lands*; code presence is not effectiveness. The spec Decision claims "their Guards survive and ours are additive" — true for Claude Code's memory loader, false for Mustard's own injection, which is the mechanism the Guards exist for. A private install therefore ships a harness whose central artifact is inert. Fix shape: one resolver honouring `install_mode` (prefer `CLAUDE.local.md`, fall back to `CLAUDE.md`), used by those four readers, plus a criterion that dispatches a prompt under a private install and asserts the GUARDS text is present.
+## Non-blocking findings
 
-## Non-blocking
-
-- MAJOR `apps/cli/src/commands/init.rs:147` — `init` picks the mode from the flag ALONE; `run upsert` autodetects (`upsert.rs`), `init` does not. A plain `mustard init` re-run over a private project re-seeds `.claude/settings.json` and `.github/`; both stay git-invisible, but Claude Code then merges two settings layers (hooks registered twice). The spec's "chosen once, thereafter autodetected" is half-implemented.
-- MINOR `apps/cli/src/commands/init.rs:374` — `backup_dirs()` discovery is redundant since wave 4 added the `.claude.backup.*/` wildcard to `footprint_paths()`; no test exercises it, and every init appends one more per-timestamp line to the exclude file.
-- MINOR `packages/core/src/platform/project_seed.rs:169` — the bare `CLAUDE.md` rule (there for the `ls-files` residue report) also lands in the exclude file, hiding the client's own future untracked `CLAUDE.md` at any depth from the operator's clone.
+- **MAJOR** — `apps/rt/src/commands/agent/agent_prompt_template.md:4` is the one reader that still spells the name: `Read the ## Guards section of {subproject}/CLAUDE.md — mandatory rules`. Under a private install that sends every dispatched agent to the *client's* file, or to one that does not exist. Not blocking: the `## GUARDS` block itself is resolved correctly and AC-10 proves the rules reach the prompt — but this is exactly the "N call sites each choosing a filename" shape the change request condemned, surviving in the site that happens to be prose. (Same line exists in `plugin/agents/mustard-review.md:8` and `plugin/refs/agent-prompt/agent-prompt.md:27`, outside this subproject.)
+- **MINOR** — `apps/rt/src/commands/work_unit_open.rs:627`: operator-facing prose still says `/scan` "rewrites each subproject's CLAUDE.md ## Guards"; stale under a private install.
+- **MINOR** — `apps/rt/src/commands/scan_claude.rs:579`: `fix_breadcrumb` writes `> Parent: [../../CLAUDE.md]` into the new `CLAUDE.local.md`, pointing at the client's root file (or none). Cosmetic.

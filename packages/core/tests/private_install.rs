@@ -236,6 +236,88 @@ fn ac4_shared_install_is_byte_identical_to_today() {
 }
 
 // ---------------------------------------------------------------------------
+// AC-11 — the one failure that must not be narrated away
+// ---------------------------------------------------------------------------
+
+/// A private install that cannot hide REFUSES, and writes nothing.
+///
+/// Every other degradation in this engine costs a feature. This one costs the
+/// operator's belief: they asked for an install the client's git cannot see, and
+/// a quiet `excludeUnavailable` line would let all four seeds land VISIBLY under
+/// exactly that belief — in a repository they do not own, under a `git add -A`
+/// law. It is also the failure they cannot notice for themselves, because a
+/// successful private install and a failed one look identical until the commit.
+///
+/// "Cannot hide" means a repository that EXISTS refused the write. A tree with
+/// no repository at all is a different thing — there is nobody for a footprint
+/// to be visible to — and the second half asserts that it still installs.
+///
+/// The unwritable exclude file is provoked by making its path a DIRECTORY, which
+/// is portable; a permission bit is not, since a Windows administrator and a
+/// POSIX root both walk straight through one.
+#[test]
+fn ac11_private_install_refuses_when_it_cannot_hide() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    init_repo(root);
+    let exclude = exclude_file(root);
+    if exclude.exists() {
+        std::fs::remove_file(&exclude).expect("clear the exclude file");
+    }
+    std::fs::create_dir_all(&exclude).expect("make the exclude path unwritable-as-a-file");
+
+    let err = upsert_project(root, Some("9.9.9"), InstallMode::Private)
+        .expect_err("an install that cannot hide must not report success");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("private install cannot hide"),
+        "the refusal must name what went wrong: {rendered}",
+    );
+
+    // NOTHING was written — not the seeds, not the local layer, not even the
+    // directory they live in. A refusal that still left a footprint behind would
+    // be the same defect wearing an error message.
+    for path in [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".claude/mustard/orchestrator.md",
+        ".claude/.gitignore",
+        ".claude",
+        "mustard.json",
+    ] {
+        assert!(!root.join(path).exists(), "the refused install wrote {path}");
+    }
+    assert_eq!(
+        git_status(root),
+        "",
+        "the host repository must have nothing to report after a refused install",
+    );
+
+    // The negative control, and it is what makes the refusal a decision rather
+    // than a broken code path: the same repository, with a healthy exclude file,
+    // installs. Without it this test would also pass if `--private` had simply
+    // stopped working.
+    std::fs::remove_dir(&exclude).expect("restore the exclude path");
+    let report = upsert_project(root, Some("9.9.9"), InstallMode::Private)
+        .expect("a repository whose exclude file is writable installs privately");
+    assert!(report.private, "the control really installed privately: {report:?}");
+    assert_eq!(report.exclude_unavailable, None, "…with nothing unavailable: {report:?}");
+    assert!(root.join(".claude/settings.local.json").is_file(), "the seeds landed");
+    assert_eq!(git_status(root), "", "…and git sees none of them");
+
+    // A tree with NO repository is not this failure: there is nobody a footprint
+    // could be visible to, so the install proceeds and only reports the reason.
+    let bare = tempfile::tempdir().expect("temp dir");
+    let report = upsert_project(bare.path(), Some("9.9.9"), InstallMode::Private)
+        .expect("a directory outside any repository still installs");
+    assert!(
+        report.exclude_unavailable.is_some(),
+        "…and says why nothing was excluded: {report:?}",
+    );
+    assert!(bare.path().join("mustard.json").is_file(), "the seeds landed");
+}
+
+// ---------------------------------------------------------------------------
 // Fixture
 // ---------------------------------------------------------------------------
 

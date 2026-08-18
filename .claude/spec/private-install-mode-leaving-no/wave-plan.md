@@ -25,4 +25,7 @@ id: wave.private-install-mode-leaving-no.plan
 - **AC-10** — when a dispatch prompt is rendered under a private install, then the inlined `## GUARDS` block carries the Guards from the local layer — the mode moves the Guards' destination, never their reach
   Command: `cargo test -p mustard-rt --test private_guards ac10_private_dispatch_prompt_carries_the_guards`
   Expect: `[1-9][0-9]* passed`
+- **AC-11** — when a private install cannot hide its footprint in a repository that EXISTS — the clone-local exclude file is unreadable or unwritable — then the install REFUSES and writes nothing, instead of laying the footprint down visibly while reporting itself private
+  Command: `cargo test -p mustard-core --test private_install ac11_private_install_refuses_when_it_cannot_hide`
+  Expect: `[1-9][0-9]* passed`
 - AC-9 — the project build passes green. Command: `cargo build --workspace`
