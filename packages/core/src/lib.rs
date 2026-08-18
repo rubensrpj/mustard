@@ -54,9 +54,18 @@ pub use platform::hook_resolve::{
 // install/update engine (`project_seed`) shared by `mustard init` and
 // `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed.rs`.
 pub use platform::project_seed::{
-    default_inject_entries, migrate_orchestrator_footprint, retire_planted_plugin_enablement,
-    seed_gitignore, seed_injectable_files, seed_settings, upsert_project, MigrationOutcome,
-    SeedOutcome, UpsertReport,
+    carries_private_marks, default_inject_entries, detect_install_mode, footprint,
+    footprint_pathspecs, footprint_rules, is_written_footprint, migrate_orchestrator_footprint,
+    retire_planted_plugin_enablement, seed_gitignore, seed_injectable_files, seed_settings,
+    upsert_project, FootprintEntry, InstallMode, MigrationOutcome, SeedOutcome, UpsertReport,
+    CLAUDE_LOCAL_MD, CLAUDE_MD, PRIVATE_MARKS,
+};
+// Clone-local git exclude — the layer a private install hides its footprint in,
+// resolved through `git rev-parse --git-path info/exclude` (never the literal
+// `.git/info/exclude`, which is absent in a submodule or a linked worktree).
+// See `platform/git_exclude.rs`.
+pub use platform::git_exclude::{
+    ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,
 };
 pub use platform::harness::harness_version;
 pub use platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};

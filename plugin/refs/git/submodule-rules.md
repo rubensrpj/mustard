@@ -164,7 +164,7 @@ It is cleared by the bump step below, after the submodule PR merges.
 ### The bump step — after the submodule PR merges
 
 The bump is the parent commit that moves the pointer to a commit **already present on the
-submodule's base**. It runs in `pr close`, between the submodule's settle and the parent's, and
+submodule's base**. It runs in `/git finish`, between the submodule's settle and the parent's, and
 BEFORE the parent PR merges — the parent PR sits as a draft until it lands (see the PR section).
 
 ```bash
@@ -179,7 +179,7 @@ section.
 
 ## PR per repo — submodules before parent
 
-`/git pr` opens ONE PR per repo, **submodules FIRST**: the submodule's PR is what lands its commit on its own base, and only then can the parent record a pointer that does not dangle. Until it merges the parent carries a `[pending-bump]`, not a gitlink — and its own PR stays a draft so nothing can merge past that gap.
+`/mustard:pr open` opens ONE PR per repo, **submodules FIRST**: the submodule's PR is what lands its commit on its own base, and only then can the parent record a pointer that does not dangle. Until it merges the parent carries a `[pending-bump]`, not a gitlink — and its own PR stays a draft so nothing can merge past that gap.
 
 1. Each submodule ahead of its base (`rtk git -C <SUB_ABS> rev-parse "$SUB_BASE..$SUB_WORK"` non-empty): `( cd "<SUB_ABS>" && rtk gh pr create --base "$SUB_BASE" --head "$SUB_WORK" --fill )`. The `( … )` subshell isolates the `cd`; the "no `cd`" rule targets `git`, not `gh` (which reads the repo from cwd). Existing PR → print its URL.
 2. Then the parent — **as a DRAFT while ANY submodule PR from step 1 is still open**:
@@ -202,15 +202,15 @@ section.
 
    Every submodule PR already merged (or no submodule carries the unit) → open the parent normally,
    `--fill`, no draft.
-3. No return to base — every repo stays live on its work branch; a later `push`/`pr` re-targets the SAME PR until `pr close`.
+3. No return to base — every repo stays live on its work branch; a later `push`/`pr` re-targets the SAME PR until `/git finish`.
 
 A base→base `pr` opens its single PR only — no push, no submodule branches, no return.
 
 ## Close per repo — submodules before parent
 
-`pr close` is the exit ritual of ONE unit, and the unit lives in every repo it touched. It closes the same way it opened: **submodules FIRST**, then the parent — merging the submodule PR first is what keeps the parent's gitlink pointing at a commit that exists on the submodule's base.
+`/git finish` is the exit ritual of ONE unit, and the unit lives in every repo it touched. It closes the same way it opened: **submodules FIRST**, then the parent — merging the submodule PR first is what keeps the parent's gitlink pointing at a commit that exists on the submodule's base.
 
-1. **Each submodule whose own PR already merged** — from `<SUB_ABS>`: `mustard-rt run git-settle --unit "$SUB_WORK"` (confirm merged, advance `$SUB_BASE`, delete the local + remote branch). Not merged → it refuses and touches NOTHING; merge that PR first. Merged but the base did not advance → it refuses the same way (`ok:false`, `reason:"base-behind"`, both branches alive): clear what `baseAdvance.reason` names and rerun the command in `nextAction` — see the refusal shape in `${CLAUDE_PLUGIN_ROOT}/commands/git.md` § `pr close`. A submodule carries no `mustard.json`, so settle reads the bases from the superproject's `git.flow` — a `$SUB_BASE` that flow never names is refused with `no-base-prefix`, and the refusal prints the root, the config root and the bases it knows.
+1. **Each submodule whose own PR already merged** — from `<SUB_ABS>`: `mustard-rt run git-settle --unit "$SUB_WORK"` (confirm merged, advance `$SUB_BASE`, delete the local + remote branch). Not merged → it refuses and touches NOTHING; merge that PR first. Merged but the base did not advance → it refuses the same way (`ok:false`, `reason:"base-behind"`, both branches alive): clear what `baseAdvance.reason` names and rerun the command in `nextAction` — see the refusal shape in `${CLAUDE_PLUGIN_ROOT}/commands/git.md` § `/git finish`. A submodule carries no `mustard.json`, so settle reads the bases from the superproject's `git.flow` — a `$SUB_BASE` that flow never names is refused with `no-base-prefix`, and the refusal prints the root, the config root and the bases it knows.
 2. **Then the bump + ready, in the parent — before the parent settles.** The submodule commit now
    lives on its base, so the pointer the commit step left as `[pending-bump]` finally has a
    reachable target. Run the bump step above (re-sample, commit the pointer ALONE, push), then
@@ -218,7 +218,7 @@ A base→base `pr` opens its single PR only — no push, no submodule branches, 
    of the submodule, and `ready` is also what requests the code owners. Skipping this leaves the
    super-repo pointing at a work-branch commit that the submodule's branch deletion is about to
    make unreachable.
-3. **Then the parent** — the `pr close` procedure in `${CLAUDE_PLUGIN_ROOT}/commands/git.md`, run
+3. **Then the parent** — the `/git finish` procedure in `${CLAUDE_PLUGIN_ROOT}/commands/git.md`, run
    after the parent PR merges.
 4. **Read the report, not the action.** `git-settle` acts ONLY on the repo it was pointed at, but `repos` carries one entry per repo of the unit (`settled` + `reason`) and `complete` stays false while any repo still holds it. `complete:false` with a submodule entry means step 1 was skipped for that repo — go do it; a bare `"action":"settled"` no longer means the unit is gone.
 
@@ -245,7 +245,7 @@ which.** Do not classify it as ordinary pending work:
 
 - The submodule PR is still OPEN (or was never opened) → `[pending-bump]`. This is the expected
   state after a conditioned gitlink step: recording the pointer now would name a work-branch SHA
-  that exists nowhere on the submodule's base. Leave it. The bump step clears it in `pr close`.
+  that exists nowhere on the submodule's base. Leave it. The bump step clears it in `/git finish`.
 - The submodule PR already MERGED → a MISSED step. Its commit is on the base now, so the pointer
   has a reachable target and nothing justifies the parent still aiming at the old one. Run the
   gitlink step (or the bump step, if the close is already under way) before declaring the action

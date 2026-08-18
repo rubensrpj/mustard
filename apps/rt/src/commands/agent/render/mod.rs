@@ -107,6 +107,7 @@ use skills::build_skills_list;
 /// never a claim the guard asserts.
 pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
     "{subproject}",
+    "{guards_file}",
     "{guards_summary}",
     "{role_block}",
     "{spec_lang}",
@@ -265,7 +266,15 @@ pub(crate) fn render_prompt_at(
     // ---- Collect placeholder values (fail-open per field). ----
 
     let subproject_str = subproject.to_string_lossy().to_string();
-    let guards_summary = read_guards_block(&project.join(&subproject_str));
+    // The prompt TELLS the agent which instruction file to open, and under a
+    // private install that is not the same file the Guards were read from: the
+    // scan writes `CLAUDE.local.md` beside the client's `CLAUDE.md` and never
+    // into it. A literal in the template is still a call site choosing a
+    // filename — the defect this unit removed from every reader — so the name
+    // comes from the same resolver they use, and resolves to `CLAUDE.md` on a
+    // shared install, leaving the cached prefix byte-identical to today's.
+    let guards_file = crate::shared::context::guards_file_name(&project).to_string();
+    let guards_summary = read_guards_block(&project, &project.join(&subproject_str));
     // With a spec, `meta.json`/`### Lang:` is the source of truth. Without one,
     // there is no spec to read — derive the narrative locale from the canonical
     // `mustard.json#specLang` accessor (`ProjectConfig::load(..).i18n()`), the
@@ -451,6 +460,7 @@ pub(crate) fn render_prompt_at(
     // constant, so adding a key without its value fails to compile.
     let values: [&str; TEMPLATE_PLACEHOLDERS.len()] = [
         &subproject_str,
+        &guards_file,
         &guards_summary,
         &role_block,
         &spec_lang,
@@ -884,6 +894,7 @@ mod tests {
         // here either.
         let subs: &[(&str, &str)] = &[
             ("{subproject}", "api"),
+            ("{guards_file}", "CLAUDE.md"),
             ("{guards_summary}", "g"),
             ("{role_block}", "ROLE: review"),
             ("{spec_lang}", "en-US"),

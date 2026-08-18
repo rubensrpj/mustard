@@ -120,10 +120,54 @@ There are **four**, and only four — what you type. Everything else is an inter
 
 | Command | Role |
 |---|---|
-| `/mustard:git` | Commit/push/sync/PR — reads the git flow from `mustard.json`. Always ships the complete work; reversible operations only. `delete <branch>` cancels an abandoned unit, removing branch, remote and PR in one gesture. |
-| `/mustard:pr` | Lists, reviews and merges PRs. **Review, QA and close are steps here**, not commands: the merge crosses the gates (build+tests, QA, review spans, docs) and then prunes the unit. |
-| `/mustard:spec` | Single picker — approves a planned spec or resumes one in progress. |
+| `/mustard:spec` | Resumes a unit that already has a spec — approves the planned one, continues the one in flight. |
+| `/mustard:git` | The local work: sync, commit, push, the exit ritual and cancelling. Moves bits, decides nothing. |
+| `/mustard:pr` | The pull request door: open, list, review, merge. Where work can be refused. |
 | `/mustard:upsert` | Installs/updates Mustard in the project. `--off` / `--on` turn the harness off and back on; `--doctor` diagnoses the installation. |
+
+#### `/mustard:spec` — the unit's door
+
+One thing only: take a unit that already has a spec and move it forward. It never **creates** a unit — the router does that, from your request in plain language.
+
+| You type | What happens |
+|---|---|
+| `/mustard:spec` | lists the active specs in a table and waits for a letter |
+| `/mustard:spec a` | acts on row `a`: approves it in PLAN, continues it in EXEC |
+| `/mustard:spec ar` | **typed in full**, approves *and* implements in the same gesture — no second question |
+| `/mustard:spec my-slug` | jumps straight to that spec, no table |
+
+#### `/mustard:git` — the local work
+
+**Iron law: everything goes up (`add -A`), never a silent partial scope.** Reversible operations only — the one exception is `delete`, which is why it is never inferred from a failure, only typed.
+
+**This door moves bits and decides nothing.** No action here can refuse work — that is the line against `/mustard:pr`, which owns the pull request on the provider *and* the gates that can say "this does not go in".
+
+| Action | What it does |
+|---|---|
+| `sync` | rebases the current branch onto the base its kind implies; aborts on conflict, never forces |
+| `commit` | creates the commit, no push |
+| `push` | runs `sync`, commits and pushes **only the current branch** |
+| `finish` | the exit ritual, run from the work branch **after its PR merged**: back to the base, pull, remove the worktree, delete the local and remote branch |
+| `delete <branch>` | cancels an **abandoned** unit: closes its PR, removes the worktree, deletes the local and remote branch — all at once |
+
+The difference between the last two is the unit's state: `finish` retires a **delivered** unit; `delete` cancels an **abandoned** one. And you rarely type `finish` — `/mustard:pr merge` already runs that prune; it exists for a PR that merged **elsewhere**, by someone else on the provider.
+
+**Publishing the PR is not here** — it is `/mustard:pr open`. That split is what took the word `pr` out of `git`: while both doors created pull requests, they read as duplicates of each other. PRs are still the only integration path: a work branch never reaches its base through a direct push, and there is no `merge` action here.
+
+#### `/mustard:pr` — the pull request door
+
+**Iron law: a merge is never silent.** Merging a unit whose review did not come back `approved` is allowed — you decide, case by case — but it is always **asked** about first, never done quietly and never refused outright.
+
+| Action | What it does |
+|---|---|
+| `open [<target>]` | opens or updates the PR — idempotent, always the same PR. One per repository, submodules before the parent (while a submodule PR is open the parent opens as a draft, and the provider refuses to merge a draft). The one action here that crosses **no** gate: publishing is not integrating |
+| `list` | the open PRs of the base you are standing on: number, title, whether it is a draft, and the branch its unit lives on. Runs only from a base — "which PRs are open" is a question about the base, not about one unit |
+| `review [<pr>]` | reviews it **against the unit's own spec** and that subproject's molds, and records the verdict. That record is what the merge reads |
+| `merge [<pr>] [--confirm]` | crosses the verification gate, merges and prunes: back to the base, pull, remove the worktree, delete the branches |
+
+The gate `merge` crosses, in order: **build + tests** → **QA** (only a recorded `pass` opens the close) → **review spans** → **docs audit** → **close gates**. On a full pass the spec finalizes itself — you never decide to call the close by hand.
+
+**Review, QA and close are not commands.** None of them is what you set out to do: they are what has to happen on the way to a merge.
 
 ### Internal flows (the router picks)
 

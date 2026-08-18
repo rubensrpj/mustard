@@ -1,0 +1,16 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "en-US",
+  "checkpoint": "2026-08-17T21:31:58.262Z",
+  "parent": "private-install-mode-leaving-no",
+  "checklist": [
+    {
+      "label": "packages/core/tests/private_install_leaves_no_trace.rs",
+      "path": "packages/core/tests/private_install_leaves_no_trace.rs",
+      "done": true
+    }
+  ]
+}

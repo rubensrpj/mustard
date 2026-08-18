@@ -132,6 +132,23 @@ mod tests {
         }
     }
 
+    /// The install has NO mode switch. A private install is the only install
+    /// there is, so `init` takes no flag for it and none against it — nothing
+    /// to pass, nothing to remember, and no argv that can produce a visible
+    /// footprint by accident.
+    #[test]
+    fn init_offers_no_switch_for_the_install_mode() {
+        for argv in [
+            ["mustard", "init", "--private"],
+            ["mustard", "init", "--shared"],
+        ] {
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "{argv:?} must be rejected — the install mode is not a choice",
+            );
+        }
+    }
+
     #[test]
     fn parses_add_positional() {
         let cli = Cli::try_parse_from(["mustard", "add", "template:foo"]).unwrap();

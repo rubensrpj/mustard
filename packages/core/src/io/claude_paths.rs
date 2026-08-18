@@ -355,6 +355,21 @@ impl ClaudePaths {
         self.claude_dir().join("settings.json")
     }
 
+    /// `<root>/.claude/settings.local.json` — the untracked LOCAL LAYER beside
+    /// [`Self::settings_json_path`].
+    ///
+    /// Claude Code reads it exactly like its shared twin, and the seeded
+    /// `.claude/.gitignore` already covers it, so it is where machine-local or
+    /// repository-invisible settings belong: the statusline heal observer
+    /// already writes here, and a private install seeds the whole harness
+    /// configuration here instead of into the shared file the host repository
+    /// may version. Composed here rather than at the call sites because this
+    /// module is the single owner of `.claude/` path composition.
+    #[must_use]
+    pub fn settings_local_json_path(&self) -> PathBuf {
+        self.claude_dir().join("settings.local.json")
+    }
+
     /// `<root>/mustard.json` — Mustard project config (git flow, build/test
     /// commands, `specLang`, `tone`, runtime/version stamp).
     ///

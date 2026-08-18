@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "spec": "private-install-mode-leaving-no",
+  "title": "Mustard must be installable into a client repository without leaving any versioned trace: nothing it writes — at the root or in any subproject — may appear in that repo's git",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "core",
+      "summary": "Teach the install engine a private mode: a clone-local exclude writer, local-layer settings, and a report that names already-tracked residue.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "rt",
+      "summary": "Make the runtime honour the mode: Guards to the local instruction file, the --private flag on the bootstrap door, and autodetection so the flag is needed once.",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "cli",
+      "summary": "Give the installer face the same one-time choice: mustard init --private, and no .github/ scaffolding in a repository that is not the operator's.",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "proof",
+      "summary": "Ask real git the whole question: a host repo that already versions its own CLAUDE.md must stay byte-identical and report nothing after a private install, a scan and a spec.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
