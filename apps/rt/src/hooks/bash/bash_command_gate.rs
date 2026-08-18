@@ -14,6 +14,7 @@
 //! - [`review_gate`] — validate before `git commit` (its own
 //!   `MUSTARD_COMMIT_GATE_MODE`, default `warn`).
 //! - [`pr_detect`] — DORA telemetry on `gh pr` commands (PostToolUse).
+//! - [`pr_body_gate`] — advisory when a `gh pr create` carries no `--body-file`
 //! - [`pr_qa_gate`] — advisory when a `gh pr create`/`merge` integrates a spec
 //!   with no passing `qa.result` (the QA ↔ integration coupling).
 //!
@@ -33,7 +34,8 @@ use mustard_core::time::now_iso8601;
 use serde_json::json;
 
 use super::{
-    native_redirect, pr_detect, pr_qa_gate, review_gate, rtk_rewrite, safety, windows_redirect,
+    native_redirect, pr_body_gate, pr_detect, pr_qa_gate, review_gate, rtk_rewrite, safety,
+    windows_redirect,
 };
 
 /// The consolidated Bash-tool enforcement module (dispatcher).
@@ -160,6 +162,13 @@ impl Check for BashCommandGate {
         // re-issued `rtk gh pr …` reaches here — `classify_pr` sees through the
         // wrapper). Advisory only; never blocks integration.
         if let Some(verdict) = pr_qa_gate::pr_qa_gate(&cmd, &ctx.project_dir) {
+            return Ok(verdict);
+        }
+        // `pr-body-gate` runs after it, for the same reason and with the same
+        // shape: it must see the command AFTER `rtk_rewrite`. QA first because
+        // integrating unverified work is the graver of the two — a thin PR body
+        // is recoverable with one `gh pr edit`.
+        if let Some(verdict) = pr_body_gate::pr_body_gate(&cmd, &ctx.project_dir) {
             return Ok(verdict);
         }
         Ok(Verdict::Allow)
