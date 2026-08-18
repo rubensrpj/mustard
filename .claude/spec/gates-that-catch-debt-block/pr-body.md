@@ -73,6 +73,10 @@ Suíte completa: **2943 testes, exit 0.**
 
 **Um segundo achado nesta sessão, tratado à parte** (arquivo `plugin/output-styles/mustard-didactic.md`, sem AC formal porque é sobre estilo de resposta, não comportamento medível): o usuário apontou que minha explicação sobre esses mesmos portões ficou complicada demais. O arquivo de estilo mandava "ser didático" mas não proibia o que deu errado — usar termo interno sem traduzir, e oferecer três opções densas em vez de uma recomendação. As duas regras foram escritas no estilo da casa.
 
+## Revisão
+
+O usuário recusou o pedido de "mergear sem revisão" e pediu para resolver a lacuna primeiro, em vez de pular a etapa. A revisão encontrou um problema real de clareza, não de comportamento: a §3 do `plugin/commands/spec.md` só nomeava dois modos de roteamento (Letter e Focused), e a regra nova do §1 mandava tratar o caso "vazio, dentro da branch" como se tivesse sido nomeado — sem dizer, na própria §3, a que modo isso corresponde. Um leitor seguindo só a §3 não teria como saber. Corrigido explicitando que esse caso conta como modo focado, então toda regra que já diz "modo focado" passa a cobri-lo sem precisar de uma linha nova. Os 3 critérios e as 24 catracas de prosa que dependem desse arquivo continuam verdes depois da correção.
+
 ## Fora de escopo
 
 - **Os outros portões que já bloqueavam** (fechamento, dívida, checklist, achados, QA) não mudaram — já nasciam estritos, e eu tinha informado o usuário do contrário por engano durante a conversa. Corrigido verbalmente, sem necessidade de código.
