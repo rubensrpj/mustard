@@ -553,11 +553,17 @@ mod tests {
     /// The session's own ancestry is never a reap target: the set holds this
     /// process and walks upward to init, so a pid list that (through any
     /// future query bug) names an ancestor is filtered before the kill.
+    ///
+    /// The full walk needs `/proc`, so only Linux can assert an ancestor was
+    /// reached; macOS (no procfs) and Windows degrade to protecting the own
+    /// PID alone — fail-open, and on those systems the platform query already
+    /// cannot name the session (Windows filters LISTENING; macOS's lsof takes
+    /// the same `-sTCP:LISTEN` filter this fix pins).
     #[test]
     fn the_session_ancestry_protects_self_and_parents() {
         let own = session_ancestry();
         assert!(own.contains(&std::process::id()), "self is protected");
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         assert!(own.len() >= 2, "at least one ancestor walked: {own:?}");
     }
 
