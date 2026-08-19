@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "non_english_comments": 239,
+  "non_english_comments": 247,
   "terms": [
     {
       "term": "000z",
-      "specificity_x1024": 610050,
+      "specificity_x1024": 610260,
       "count": 105,
       "df": 10,
       "anchors": [
@@ -23,7 +23,7 @@
     },
     {
       "term": "absent",
-      "specificity_x1024": 878740,
+      "specificity_x1024": 879800,
       "count": 530,
       "df": 182,
       "anchors": [
@@ -47,7 +47,7 @@
     },
     {
       "term": "acceptance",
-      "specificity_x1024": 1013400,
+      "specificity_x1024": 1014000,
       "count": 300,
       "df": 55,
       "anchors": [
@@ -71,7 +71,7 @@
     },
     {
       "term": "across",
-      "specificity_x1024": 520700,
+      "specificity_x1024": 521208,
       "count": 254,
       "df": 133,
       "anchors": [
@@ -95,8 +95,8 @@
     },
     {
       "term": "actually",
-      "specificity_x1024": 536958,
-      "count": 207,
+      "specificity_x1024": 539968,
+      "count": 208,
       "df": 96,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -119,7 +119,7 @@
     },
     {
       "term": "add",
-      "specificity_x1024": 486380,
+      "specificity_x1024": 486712,
       "count": 166,
       "df": 75,
       "anchors": [
@@ -143,7 +143,7 @@
     },
     {
       "term": "advance",
-      "specificity_x1024": 542250,
+      "specificity_x1024": 542500,
       "count": 125,
       "df": 28,
       "anchors": [
@@ -167,7 +167,7 @@
     },
     {
       "term": "advisory",
-      "specificity_x1024": 1023000,
+      "specificity_x1024": 1023600,
       "count": 300,
       "df": 54,
       "anchors": [
@@ -191,7 +191,7 @@
     },
     {
       "term": "affix",
-      "specificity_x1024": 920484,
+      "specificity_x1024": 920808,
       "count": 162,
       "df": 11,
       "anchors": [
@@ -211,7 +211,7 @@
     },
     {
       "term": "age",
-      "specificity_x1024": 500016,
+      "specificity_x1024": 500192,
       "count": 88,
       "df": 11,
       "anchors": [
@@ -231,7 +231,7 @@
     },
     {
       "term": "alias",
-      "specificity_x1024": 518400,
+      "specificity_x1024": 518656,
       "count": 128,
       "df": 34,
       "anchors": [
@@ -255,7 +255,7 @@
     },
     {
       "term": "allow",
-      "specificity_x1024": 689730,
+      "specificity_x1024": 690228,
       "count": 249,
       "df": 85,
       "anchors": [
@@ -279,8 +279,8 @@
     },
     {
       "term": "allows",
-      "specificity_x1024": 502200,
-      "count": 124,
+      "specificity_x1024": 506500,
+      "count": 125,
       "df": 34,
       "anchors": [
         "apps/rt/src/hooks/bash/native_redirect.rs",
@@ -303,9 +303,9 @@
     },
     {
       "term": "alone",
-      "specificity_x1024": 536916,
-      "count": 202,
-      "df": 92,
+      "specificity_x1024": 539376,
+      "count": 204,
+      "df": 93,
       "anchors": [
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -327,9 +327,9 @@
     },
     {
       "term": "already",
-      "specificity_x1024": 1156796,
-      "count": 982,
-      "df": 242,
+      "specificity_x1024": 1152076,
+      "count": 983,
+      "df": 243,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/feature.rs",
@@ -351,8 +351,8 @@
     },
     {
       "term": "always",
-      "specificity_x1024": 600600,
-      "count": 364,
+      "specificity_x1024": 609588,
+      "count": 369,
       "df": 183,
       "anchors": [
         "apps/rt/src/commands/glossary_coverage.rs",
@@ -368,14 +368,14 @@
         "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
         "apps/rt/src/commands/review/qa_run/mod.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
-        "apps/dashboard/src-tauri/src/spec_views.rs",
-        "apps/rt/src/commands/agent/render/sections.rs"
+        "packages/core/src/platform/project_seed.rs",
+        "apps/dashboard/src-tauri/src/spec_views.rs"
       ],
       "source": "both"
     },
     {
       "term": "amend",
-      "specificity_x1024": 512102,
+      "specificity_x1024": 512316,
       "count": 107,
       "df": 21,
       "anchors": [
@@ -399,7 +399,7 @@
     },
     {
       "term": "analyze",
-      "specificity_x1024": 547992,
+      "specificity_x1024": 548336,
       "count": 172,
       "df": 61,
       "anchors": [
@@ -423,7 +423,7 @@
     },
     {
       "term": "anchor",
-      "specificity_x1024": 749280,
+      "specificity_x1024": 749760,
       "count": 240,
       "df": 63,
       "anchors": [
@@ -447,7 +447,7 @@
     },
     {
       "term": "anchors",
-      "specificity_x1024": 620682,
+      "specificity_x1024": 620964,
       "count": 141,
       "df": 27,
       "anchors": [
@@ -471,19 +471,19 @@
     },
     {
       "term": "answer",
-      "specificity_x1024": 1057694,
-      "count": 367,
-      "df": 78,
+      "specificity_x1024": 1075204,
+      "count": 377,
+      "df": 80,
       "anchors": [
         "apps/rt/src/shared/work_kind.rs",
         "apps/rt/src/hooks/observe/approval_marker_observer.rs",
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
+        "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/review/pr_door.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
         "apps/rt/src/commands/feature.rs",
-        "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/shared/context.rs",
         "apps/rt/src/commands/glossary_coverage.rs",
@@ -495,9 +495,9 @@
     },
     {
       "term": "answers",
-      "specificity_x1024": 526926,
-      "count": 159,
-      "df": 57,
+      "specificity_x1024": 535292,
+      "count": 163,
+      "df": 58,
       "anchors": [
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/glossary_coverage.rs",
@@ -508,8 +508,8 @@
         "apps/rt/src/shared/work_kind.rs",
         "apps/rt/src/commands/review/pr_door.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
-        "apps/rt/src/hooks/write/work_branch_gate.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/event/base_candidates.rs",
         "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
         "apps/rt/src/commands/pipeline/resume_bootstrap/wave_progress.rs",
@@ -518,8 +518,32 @@
       "source": "both"
     },
     {
+      "term": "anything",
+      "specificity_x1024": 487596,
+      "count": 227,
+      "df": 124,
+      "anchors": [
+        "apps/rt/src/commands/review/ac_negative_check.rs",
+        "apps/rt/src/commands/event/work_branch.rs",
+        "apps/rt/src/commands/git_settle.rs",
+        "apps/rt/src/shared/work_kind.rs",
+        "apps/rt/src/commands/spec/active_specs.rs",
+        "apps/rt/src/commands/spec/spec_draft.rs",
+        "apps/rt/src/shared/branch_state.rs",
+        "apps/rt/src/commands/event/emit_pipeline.rs",
+        "apps/rt/src/commands/maint/worktree_gc.rs",
+        "apps/rt/src/commands/scan_patterns/relay.rs",
+        "apps/rt/src/commands/wave/wave_scaffold.rs",
+        "apps/rt/src/hooks/observe/picker_approval_observer.rs",
+        "packages/core/src/domain/economy/scope.rs",
+        "packages/core/src/platform/error.rs",
+        "packages/core/src/platform/git_exclude.rs"
+      ],
+      "source": "both"
+    },
+    {
       "term": "api",
-      "specificity_x1024": 1314730,
+      "specificity_x1024": 1315460,
       "count": 365,
       "df": 48,
       "anchors": [
@@ -543,7 +567,7 @@
     },
     {
       "term": "apply",
-      "specificity_x1024": 675892,
+      "specificity_x1024": 676296,
       "count": 202,
       "df": 56,
       "anchors": [
@@ -567,7 +591,7 @@
     },
     {
       "term": "approval",
-      "specificity_x1024": 1065130,
+      "specificity_x1024": 1065636,
       "count": 253,
       "df": 30,
       "anchors": [
@@ -591,7 +615,7 @@
     },
     {
       "term": "approved",
-      "specificity_x1024": 831464,
+      "specificity_x1024": 831888,
       "count": 212,
       "df": 38,
       "anchors": [
@@ -615,7 +639,7 @@
     },
     {
       "term": "apps",
-      "specificity_x1024": 1374820,
+      "specificity_x1024": 1375880,
       "count": 530,
       "df": 96,
       "anchors": [
@@ -639,7 +663,7 @@
     },
     {
       "term": "arg",
-      "specificity_x1024": 1384776,
+      "specificity_x1024": 1385424,
       "count": 324,
       "df": 29,
       "anchors": [
@@ -663,7 +687,7 @@
     },
     {
       "term": "assert",
-      "specificity_x1024": 1874022,
+      "specificity_x1024": 1875164,
       "count": 571,
       "df": 58,
       "anchors": [
@@ -687,7 +711,7 @@
     },
     {
       "term": "ast",
-      "specificity_x1024": 572934,
+      "specificity_x1024": 573180,
       "count": 123,
       "df": 23,
       "anchors": [
@@ -711,7 +735,7 @@
     },
     {
       "term": "audit",
-      "specificity_x1024": 601848,
+      "specificity_x1024": 602160,
       "count": 156,
       "df": 40,
       "anchors": [
@@ -735,7 +759,7 @@
     },
     {
       "term": "authored",
-      "specificity_x1024": 487630,
+      "specificity_x1024": 487916,
       "count": 143,
       "df": 54,
       "anchors": [
@@ -759,7 +783,7 @@
     },
     {
       "term": "auto",
-      "specificity_x1024": 680260,
+      "specificity_x1024": 680712,
       "count": 226,
       "df": 70,
       "anchors": [
@@ -783,7 +807,7 @@
     },
     {
       "term": "back",
-      "specificity_x1024": 927978,
+      "specificity_x1024": 929444,
       "count": 733,
       "df": 231,
       "anchors": [
@@ -807,7 +831,7 @@
     },
     {
       "term": "backend",
-      "specificity_x1024": 495532,
+      "specificity_x1024": 495800,
       "count": 134,
       "df": 45,
       "anchors": [
@@ -831,7 +855,7 @@
     },
     {
       "term": "bare",
-      "specificity_x1024": 812490,
+      "specificity_x1024": 813220,
       "count": 365,
       "df": 119,
       "anchors": [
@@ -855,8 +879,8 @@
     },
     {
       "term": "base",
-      "specificity_x1024": 2646468,
-      "count": 978,
+      "specificity_x1024": 2651132,
+      "count": 979,
       "df": 89,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
@@ -879,7 +903,7 @@
     },
     {
       "term": "bases",
-      "specificity_x1024": 532646,
+      "specificity_x1024": 532860,
       "count": 107,
       "df": 18,
       "anchors": [
@@ -903,7 +927,7 @@
     },
     {
       "term": "bash",
-      "specificity_x1024": 753798,
+      "specificity_x1024": 754236,
       "count": 219,
       "df": 53,
       "anchors": [
@@ -927,7 +951,7 @@
     },
     {
       "term": "binary",
-      "specificity_x1024": 824252,
+      "specificity_x1024": 824824,
       "count": 286,
       "df": 78,
       "anchors": [
@@ -951,9 +975,9 @@
     },
     {
       "term": "blocks",
-      "specificity_x1024": 615330,
-      "count": 265,
-      "df": 113,
+      "specificity_x1024": 613928,
+      "count": 266,
+      "df": 114,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/relay.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -975,7 +999,7 @@
     },
     {
       "term": "boundary",
-      "specificity_x1024": 835780,
+      "specificity_x1024": 836360,
       "count": 290,
       "df": 78,
       "anchors": [
@@ -999,7 +1023,7 @@
     },
     {
       "term": "budget",
-      "specificity_x1024": 751088,
+      "specificity_x1024": 751456,
       "count": 184,
       "df": 33,
       "anchors": [
@@ -1023,7 +1047,7 @@
     },
     {
       "term": "built",
-      "specificity_x1024": 540150,
+      "specificity_x1024": 540540,
       "count": 195,
       "df": 85,
       "anchors": [
@@ -1047,7 +1071,7 @@
     },
     {
       "term": "bullet",
-      "specificity_x1024": 528546,
+      "specificity_x1024": 528820,
       "count": 137,
       "df": 40,
       "anchors": [
@@ -1071,7 +1095,7 @@
     },
     {
       "term": "byte",
-      "specificity_x1024": 973000,
+      "specificity_x1024": 974000,
       "count": 500,
       "df": 146,
       "anchors": [
@@ -1095,7 +1119,7 @@
     },
     {
       "term": "bytes",
-      "specificity_x1024": 521100,
+      "specificity_x1024": 521400,
       "count": 150,
       "df": 52,
       "anchors": [
@@ -1119,7 +1143,7 @@
     },
     {
       "term": "cache",
-      "specificity_x1024": 877424,
+      "specificity_x1024": 877920,
       "count": 248,
       "df": 50,
       "anchors": [
@@ -1143,9 +1167,9 @@
     },
     {
       "term": "call",
-      "specificity_x1024": 561224,
-      "count": 292,
-      "df": 149,
+      "specificity_x1024": 561388,
+      "count": 293,
+      "df": 150,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
@@ -1167,9 +1191,9 @@
     },
     {
       "term": "caller",
-      "specificity_x1024": 835978,
-      "count": 481,
-      "df": 172,
+      "specificity_x1024": 836556,
+      "count": 483,
+      "df": 173,
       "anchors": [
         "apps/rt/src/commands/event/emit_pipeline.rs",
         "apps/rt/src/commands/event/work_branch.rs",
@@ -1178,20 +1202,20 @@
         "packages/core/src/platform/i18n.rs",
         "apps/rt/src/commands/glossary_coverage.rs",
         "apps/rt/src/shared/context.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/checklist/mark_checklist_item.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/review/review_spans.rs",
         "apps/rt/src/commands/work_unit_open.rs",
         "apps/rt/src/shared/events/writer_ndjson.rs",
         "apps/rt/src/shared/proc.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/git_settle.rs"
       ],
       "source": "both"
     },
     {
       "term": "canonical",
-      "specificity_x1024": 894740,
+      "specificity_x1024": 895720,
       "count": 490,
       "df": 161,
       "anchors": [
@@ -1215,7 +1239,7 @@
     },
     {
       "term": "cap",
-      "specificity_x1024": 770120,
+      "specificity_x1024": 770640,
       "count": 260,
       "df": 73,
       "anchors": [
@@ -1239,7 +1263,7 @@
     },
     {
       "term": "capabilities",
-      "specificity_x1024": 491150,
+      "specificity_x1024": 491340,
       "count": 95,
       "df": 15,
       "anchors": [
@@ -1263,7 +1287,7 @@
     },
     {
       "term": "capture",
-      "specificity_x1024": 750056,
+      "specificity_x1024": 750480,
       "count": 212,
       "df": 50,
       "anchors": [
@@ -1287,7 +1311,7 @@
     },
     {
       "term": "cargo",
-      "specificity_x1024": 825660,
+      "specificity_x1024": 826200,
       "count": 270,
       "df": 67,
       "anchors": [
@@ -1311,8 +1335,8 @@
     },
     {
       "term": "carries",
-      "specificity_x1024": 1097078,
-      "count": 787,
+      "specificity_x1024": 1102840,
+      "count": 790,
       "df": 215,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -1328,16 +1352,16 @@
         "apps/rt/src/commands/spec/ac_amend.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/event/work_branch.rs",
-        "apps/rt/src/commands/spec/active_specs.rs",
-        "apps/rt/src/commands/pipeline/close_gates.rs"
+        "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/commands/spec/active_specs.rs"
       ],
       "source": "both"
     },
     {
       "term": "carry",
-      "specificity_x1024": 664158,
-      "count": 319,
-      "df": 129,
+      "specificity_x1024": 663828,
+      "count": 321,
+      "df": 131,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -1359,8 +1383,8 @@
     },
     {
       "term": "carrying",
-      "specificity_x1024": 538890,
-      "count": 213,
+      "specificity_x1024": 541848,
+      "count": 214,
       "df": 100,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -1369,11 +1393,11 @@
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/work_unit_open.rs",
         "apps/rt/src/shared/branch_state.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/feature.rs",
         "apps/rt/src/commands/pipeline/wave_advance.rs",
         "apps/rt/src/commands/scan_claude.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/economy/otel/collector.rs",
         "apps/rt/src/hooks/observe/picker_approval_observer.rs",
         "apps/rt/src/hooks/observe/plan_approval_observer.rs",
@@ -1383,9 +1407,9 @@
     },
     {
       "term": "case",
-      "specificity_x1024": 927274,
-      "count": 541,
-      "df": 175,
+      "specificity_x1024": 927216,
+      "count": 548,
+      "df": 178,
       "anchors": [
         "apps/dashboard/src-tauri/src/spec_views.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -1401,14 +1425,14 @@
         "packages/core/src/platform/i18n.rs",
         "apps/rt/src/commands/scan_guards/apply.rs",
         "packages/core/src/domain/ast/conventions.rs",
-        "packages/core/src/domain/model/view/spec.rs"
+        "packages/core/src/domain/config.rs"
       ],
       "source": "both"
     },
     {
       "term": "census",
-      "specificity_x1024": 717066,
-      "count": 189,
+      "specificity_x1024": 740220,
+      "count": 195,
       "df": 42,
       "anchors": [
         "apps/dashboard/src-tauri/src/spec_staleness.rs",
@@ -1431,7 +1455,7 @@
     },
     {
       "term": "change",
-      "specificity_x1024": 862002,
+      "specificity_x1024": 862628,
       "count": 313,
       "df": 86,
       "anchors": [
@@ -1455,7 +1479,7 @@
     },
     {
       "term": "channel",
-      "specificity_x1024": 489966,
+      "specificity_x1024": 490220,
       "count": 127,
       "df": 40,
       "anchors": [
@@ -1479,7 +1503,7 @@
     },
     {
       "term": "checklist",
-      "specificity_x1024": 1584488,
+      "specificity_x1024": 1585296,
       "count": 404,
       "df": 38,
       "anchors": [
@@ -1503,7 +1527,7 @@
     },
     {
       "term": "checkout",
-      "specificity_x1024": 1328822,
+      "specificity_x1024": 1329468,
       "count": 323,
       "df": 32,
       "anchors": [
@@ -1527,7 +1551,7 @@
     },
     {
       "term": "children",
-      "specificity_x1024": 676658,
+      "specificity_x1024": 677044,
       "count": 193,
       "df": 51,
       "anchors": [
@@ -1551,7 +1575,7 @@
     },
     {
       "term": "class",
-      "specificity_x1024": 547200,
+      "specificity_x1024": 547584,
       "count": 192,
       "df": 80,
       "anchors": [
@@ -1575,7 +1599,7 @@
     },
     {
       "term": "classify",
-      "specificity_x1024": 595378,
+      "specificity_x1024": 595700,
       "count": 161,
       "df": 45,
       "anchors": [
@@ -1599,8 +1623,8 @@
     },
     {
       "term": "claude",
-      "specificity_x1024": 2088594,
-      "count": 1773,
+      "specificity_x1024": 2095680,
+      "count": 1776,
       "df": 242,
       "anchors": [
         "apps/cli/src/commands/init.rs",
@@ -1623,8 +1647,8 @@
     },
     {
       "term": "clean",
-      "specificity_x1024": 586000,
-      "count": 200,
+      "specificity_x1024": 589332,
+      "count": 201,
       "df": 75,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
@@ -1647,8 +1671,8 @@
     },
     {
       "term": "cli",
-      "specificity_x1024": 659614,
-      "count": 271,
+      "specificity_x1024": 657720,
+      "count": 270,
       "df": 106,
       "anchors": [
         "apps/rt/src/shared/branch_state.rs",
@@ -1671,9 +1695,9 @@
     },
     {
       "term": "clone",
-      "specificity_x1024": 1018958,
-      "count": 499,
-      "df": 134,
+      "specificity_x1024": 1026144,
+      "count": 504,
+      "df": 135,
       "anchors": [
         "apps/dashboard/src-tauri/src/spec_views.rs",
         "packages/core/src/domain/scan.rs",
@@ -1695,7 +1719,7 @@
     },
     {
       "term": "close",
-      "specificity_x1024": 1607304,
+      "specificity_x1024": 1608848,
       "count": 772,
       "df": 129,
       "anchors": [
@@ -1719,7 +1743,7 @@
     },
     {
       "term": "closed",
-      "specificity_x1024": 704370,
+      "specificity_x1024": 704900,
       "count": 265,
       "df": 92,
       "anchors": [
@@ -1743,7 +1767,7 @@
     },
     {
       "term": "cluster",
-      "specificity_x1024": 571648,
+      "specificity_x1024": 571904,
       "count": 128,
       "df": 26,
       "anchors": [
@@ -1767,9 +1791,9 @@
     },
     {
       "term": "code",
-      "specificity_x1024": 1035956,
-      "count": 634,
-      "df": 185,
+      "specificity_x1024": 1033780,
+      "count": 635,
+      "df": 186,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/scan_equivalences.rs",
@@ -1791,7 +1815,7 @@
     },
     {
       "term": "collect",
-      "specificity_x1024": 946104,
+      "specificity_x1024": 946736,
       "count": 316,
       "df": 71,
       "anchors": [
@@ -1815,7 +1839,7 @@
     },
     {
       "term": "collector",
-      "specificity_x1024": 822432,
+      "specificity_x1024": 822848,
       "count": 208,
       "df": 37,
       "anchors": [
@@ -1839,7 +1863,7 @@
     },
     {
       "term": "column",
-      "specificity_x1024": 614898,
+      "specificity_x1024": 615252,
       "count": 177,
       "df": 52,
       "anchors": [
@@ -1863,8 +1887,8 @@
     },
     {
       "term": "commands",
-      "specificity_x1024": 802332,
-      "count": 414,
+      "specificity_x1024": 805100,
+      "count": 415,
       "df": 147,
       "anchors": [
         "apps/rt/src/commands/scan_claude.rs",
@@ -1887,7 +1911,7 @@
     },
     {
       "term": "comment",
-      "specificity_x1024": 500808,
+      "specificity_x1024": 501072,
       "count": 132,
       "df": 42,
       "anchors": [
@@ -1911,8 +1935,8 @@
     },
     {
       "term": "commit",
-      "specificity_x1024": 1080600,
-      "count": 300,
+      "specificity_x1024": 1088408,
+      "count": 302,
       "df": 48,
       "anchors": [
         "apps/rt/src/hooks/bash/review_gate.rs",
@@ -1935,7 +1959,7 @@
     },
     {
       "term": "common",
-      "specificity_x1024": 517446,
+      "specificity_x1024": 517788,
       "count": 171,
       "df": 69,
       "anchors": [
@@ -1959,7 +1983,7 @@
     },
     {
       "term": "complete",
-      "specificity_x1024": 1000054,
+      "specificity_x1024": 1000748,
       "count": 347,
       "df": 78,
       "anchors": [
@@ -1983,7 +2007,7 @@
     },
     {
       "term": "completed",
-      "specificity_x1024": 893010,
+      "specificity_x1024": 893588,
       "count": 289,
       "df": 65,
       "anchors": [
@@ -2007,7 +2031,7 @@
     },
     {
       "term": "confirmation",
-      "specificity_x1024": 554620,
+      "specificity_x1024": 554840,
       "count": 110,
       "df": 17,
       "anchors": [
@@ -2031,9 +2055,9 @@
     },
     {
       "term": "contains",
-      "specificity_x1024": 691480,
-      "count": 236,
-      "df": 75,
+      "specificity_x1024": 691092,
+      "count": 237,
+      "df": 76,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
         "apps/rt/src/hooks/bash/native_redirect.rs",
@@ -2055,9 +2079,9 @@
     },
     {
       "term": "context",
-      "specificity_x1024": 1278900,
-      "count": 522,
-      "df": 105,
+      "specificity_x1024": 1274028,
+      "count": 523,
+      "df": 106,
       "anchors": [
         "apps/rt/src/hooks/task/context_budget_gate.rs",
         "apps/rt/src/commands/economy/context_slice.rs",
@@ -2079,7 +2103,7 @@
     },
     {
       "term": "contract",
-      "specificity_x1024": 853000,
+      "specificity_x1024": 854000,
       "count": 500,
       "df": 176,
       "anchors": [
@@ -2103,7 +2127,7 @@
     },
     {
       "term": "control",
-      "specificity_x1024": 643160,
+      "specificity_x1024": 643440,
       "count": 140,
       "df": 24,
       "anchors": [
@@ -2127,7 +2151,7 @@
     },
     {
       "term": "convention",
-      "specificity_x1024": 574420,
+      "specificity_x1024": 574728,
       "count": 154,
       "df": 44,
       "anchors": [
@@ -2151,7 +2175,7 @@
     },
     {
       "term": "copy",
-      "specificity_x1024": 551250,
+      "specificity_x1024": 551700,
       "count": 225,
       "df": 105,
       "anchors": [
@@ -2175,9 +2199,9 @@
     },
     {
       "term": "core",
-      "specificity_x1024": 864960,
-      "count": 480,
-      "df": 164,
+      "specificity_x1024": 867468,
+      "count": 483,
+      "df": 165,
       "anchors": [
         "apps/cli/src/commands/init.rs",
         "apps/dashboard/src-tauri/src/spec_views.rs",
@@ -2199,7 +2223,7 @@
     },
     {
       "term": "corpus",
-      "specificity_x1024": 520896,
+      "specificity_x1024": 521088,
       "count": 96,
       "df": 13,
       "anchors": [
@@ -2221,7 +2245,7 @@
     },
     {
       "term": "counts",
-      "specificity_x1024": 619850,
+      "specificity_x1024": 620340,
       "count": 245,
       "df": 100,
       "anchors": [
@@ -2245,8 +2269,8 @@
     },
     {
       "term": "crate",
-      "specificity_x1024": 1000350,
-      "count": 675,
+      "specificity_x1024": 1007636,
+      "count": 679,
       "df": 204,
       "anchors": [
         "packages/core/src/io/fs/mod.rs",
@@ -2269,7 +2293,7 @@
     },
     {
       "term": "create",
-      "specificity_x1024": 734440,
+      "specificity_x1024": 734928,
       "count": 244,
       "df": 70,
       "anchors": [
@@ -2293,7 +2317,7 @@
     },
     {
       "term": "criteria",
-      "specificity_x1024": 1163500,
+      "specificity_x1024": 1164216,
       "count": 358,
       "df": 59,
       "anchors": [
@@ -2317,7 +2341,7 @@
     },
     {
       "term": "criterion",
-      "specificity_x1024": 2448640,
+      "specificity_x1024": 2449920,
       "count": 640,
       "df": 41,
       "anchors": [
@@ -2341,7 +2365,7 @@
     },
     {
       "term": "critical",
-      "specificity_x1024": 538738,
+      "specificity_x1024": 538932,
       "count": 97,
       "df": 12,
       "anchors": [
@@ -2362,7 +2386,7 @@
     },
     {
       "term": "current",
-      "specificity_x1024": 693450,
+      "specificity_x1024": 694140,
       "count": 345,
       "df": 138,
       "anchors": [
@@ -2386,7 +2410,7 @@
     },
     {
       "term": "cut",
-      "specificity_x1024": 1511250,
+      "specificity_x1024": 1512180,
       "count": 465,
       "df": 59,
       "anchors": [
@@ -2410,7 +2434,7 @@
     },
     {
       "term": "cwd",
-      "specificity_x1024": 853182,
+      "specificity_x1024": 853740,
       "count": 279,
       "df": 67,
       "anchors": [
@@ -2434,7 +2458,7 @@
     },
     {
       "term": "dashboard",
-      "specificity_x1024": 1046060,
+      "specificity_x1024": 1047144,
       "count": 542,
       "df": 148,
       "anchors": [
@@ -2458,7 +2482,7 @@
     },
     {
       "term": "data",
-      "specificity_x1024": 491378,
+      "specificity_x1024": 491764,
       "count": 193,
       "df": 99,
       "anchors": [
@@ -2482,7 +2506,7 @@
     },
     {
       "term": "date",
-      "specificity_x1024": 556924,
+      "specificity_x1024": 557208,
       "count": 142,
       "df": 38,
       "anchors": [
@@ -2506,7 +2530,7 @@
     },
     {
       "term": "debug",
-      "specificity_x1024": 910712,
+      "specificity_x1024": 911760,
       "count": 524,
       "df": 172,
       "anchors": [
@@ -2530,8 +2554,8 @@
     },
     {
       "term": "decision",
-      "specificity_x1024": 817220,
-      "count": 290,
+      "specificity_x1024": 823440,
+      "count": 292,
       "df": 82,
       "anchors": [
         "apps/rt/src/hooks/task/subagent_inject.rs",
@@ -2554,8 +2578,8 @@
     },
     {
       "term": "declaration",
-      "specificity_x1024": 767226,
-      "count": 213,
+      "specificity_x1024": 771256,
+      "count": 214,
       "df": 48,
       "anchors": [
         "apps/scan/src/digest.rs",
@@ -2572,15 +2596,15 @@
         "apps/scan/src/pagerank.rs",
         "apps/scan/src/rank.rs",
         "packages/core/src/domain/scan.rs",
-        "packages/core/src/domain/meta.rs"
+        "apps/cli/src/commands/git_flow.rs"
       ],
       "source": "both"
     },
     {
       "term": "declared",
-      "specificity_x1024": 998920,
-      "count": 452,
-      "df": 120,
+      "specificity_x1024": 1001376,
+      "count": 456,
+      "df": 121,
       "anchors": [
         "apps/rt/src/hooks/write/boundary_gate.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -2602,8 +2626,8 @@
     },
     {
       "term": "declares",
-      "specificity_x1024": 515388,
-      "count": 174,
+      "specificity_x1024": 512772,
+      "count": 173,
       "df": 73,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -2619,16 +2643,16 @@
         "apps/scan/src/pagerank.rs",
         "apps/rt/src/commands/agent/render/sections.rs",
         "apps/rt/src/commands/feature.rs",
-        "apps/rt/src/commands/git_settle.rs",
-        "apps/rt/src/commands/pipeline/close_gates.rs"
+        "apps/rt/src/commands/pipeline/close_gates.rs",
+        "apps/rt/src/commands/review/analyze_validation.rs"
       ],
       "source": "both"
     },
     {
       "term": "default",
-      "specificity_x1024": 1925114,
-      "count": 1381,
-      "df": 215,
+      "specificity_x1024": 1925156,
+      "count": 1387,
+      "df": 216,
       "anchors": [
         "packages/core/src/domain/scan.rs",
         "packages/core/src/domain/model/event.rs",
@@ -2650,9 +2674,9 @@
     },
     {
       "term": "degrades",
-      "specificity_x1024": 578048,
-      "count": 256,
-      "df": 117,
+      "specificity_x1024": 578952,
+      "count": 258,
+      "df": 118,
       "anchors": [
         "apps/dashboard/src-tauri/src/lib.rs",
         "apps/mcp/src/lib.rs",
@@ -2674,7 +2698,7 @@
     },
     {
       "term": "deny",
-      "specificity_x1024": 792540,
+      "specificity_x1024": 792984,
       "count": 222,
       "df": 49,
       "anchors": [
@@ -2698,7 +2722,7 @@
     },
     {
       "term": "dependency",
-      "specificity_x1024": 568008,
+      "specificity_x1024": 568400,
       "count": 196,
       "df": 77,
       "anchors": [
@@ -2722,7 +2746,7 @@
     },
     {
       "term": "derive",
-      "specificity_x1024": 1023876,
+      "specificity_x1024": 1025304,
       "count": 714,
       "df": 210,
       "anchors": [
@@ -2746,8 +2770,8 @@
     },
     {
       "term": "derived",
-      "specificity_x1024": 502710,
-      "count": 195,
+      "specificity_x1024": 510840,
+      "count": 198,
       "df": 97,
       "anchors": [
         "apps/rt/src/commands/event/work_branch.rs",
@@ -2763,14 +2787,14 @@
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/wave/wave_dependency.rs",
         "apps/scan/src/pagerank.rs",
-        "apps/dashboard/src-tauri/src/lib.rs",
-        "apps/dashboard/src/features/specs/SpecWavesTab/index.tsx"
+        "apps/cli/src/commands/git_flow.rs",
+        "apps/dashboard/src-tauri/src/lib.rs"
       ],
       "source": "both"
     },
     {
       "term": "description",
-      "specificity_x1024": 563268,
+      "specificity_x1024": 563560,
       "count": 146,
       "df": 40,
       "anchors": [
@@ -2794,7 +2818,7 @@
     },
     {
       "term": "deserialize",
-      "specificity_x1024": 925714,
+      "specificity_x1024": 926228,
       "count": 257,
       "df": 48,
       "anchors": [
@@ -2818,9 +2842,9 @@
     },
     {
       "term": "detect",
-      "specificity_x1024": 550732,
-      "count": 182,
-      "df": 69,
+      "specificity_x1024": 551196,
+      "count": 183,
+      "df": 70,
       "anchors": [
         "packages/core/src/domain/ast/stub_detect.rs",
         "apps/rt/src/hooks/bash/pr_detect.rs",
@@ -2841,8 +2865,32 @@
       "source": "both"
     },
     {
+      "term": "detected",
+      "specificity_x1024": 495884,
+      "count": 151,
+      "df": 58,
+      "anchors": [
+        "apps/translate/src/main.rs",
+        "packages/core/src/domain/source_lang.rs",
+        "packages/core/src/domain/scan.rs",
+        "apps/rt/src/commands/pipeline/verify_pipeline.rs",
+        "apps/rt/src/hooks/session/spec_hygiene_observer.rs",
+        "apps/rt/src/shared/translate.rs",
+        "apps/cli/src/commands/git_flow.rs",
+        "apps/cli/src/commands/init.rs",
+        "apps/rt/src/commands/doctor/doctor.rs",
+        "apps/dashboard/src-tauri/src/project_overview.rs",
+        "apps/rt/src/commands/feature.rs",
+        "apps/cli/src/cli.rs",
+        "apps/rt/src/commands/review/security_scan.rs",
+        "apps/rt/src/hooks/bash/review_gate.rs",
+        "apps/scan/src/dictionary.rs"
+      ],
+      "source": "both"
+    },
+    {
       "term": "deterministic",
-      "specificity_x1024": 650364,
+      "specificity_x1024": 650936,
       "count": 286,
       "df": 116,
       "anchors": [
@@ -2866,9 +2914,9 @@
     },
     {
       "term": "dev",
-      "specificity_x1024": 1063050,
-      "count": 285,
-      "df": 44,
+      "specificity_x1024": 1060052,
+      "count": 289,
+      "df": 46,
       "anchors": [
         "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/git_settle.rs",
@@ -2890,7 +2938,7 @@
     },
     {
       "term": "dictionary",
-      "specificity_x1024": 537624,
+      "specificity_x1024": 537840,
       "count": 108,
       "df": 18,
       "anchors": [
@@ -2914,9 +2962,9 @@
     },
     {
       "term": "diff",
-      "specificity_x1024": 795846,
-      "count": 219,
-      "df": 47,
+      "specificity_x1024": 792880,
+      "count": 220,
+      "df": 48,
       "anchors": [
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "packages/core/src/domain/regression_check/mod.rs",
@@ -2938,7 +2986,7 @@
     },
     {
       "term": "directory",
-      "specificity_x1024": 1345680,
+      "specificity_x1024": 1347360,
       "count": 840,
       "df": 189,
       "anchors": [
@@ -2962,7 +3010,7 @@
     },
     {
       "term": "dirs",
-      "specificity_x1024": 552366,
+      "specificity_x1024": 552684,
       "count": 159,
       "df": 52,
       "anchors": [
@@ -2986,7 +3034,7 @@
     },
     {
       "term": "disk",
-      "specificity_x1024": 651398,
+      "specificity_x1024": 652036,
       "count": 319,
       "df": 134,
       "anchors": [
@@ -3010,7 +3058,7 @@
     },
     {
       "term": "dispatch",
-      "specificity_x1024": 1203450,
+      "specificity_x1024": 1204580,
       "count": 565,
       "df": 125,
       "anchors": [
@@ -3034,7 +3082,7 @@
     },
     {
       "term": "display",
-      "specificity_x1024": 733590,
+      "specificity_x1024": 733980,
       "count": 195,
       "df": 43,
       "anchors": [
@@ -3058,7 +3106,7 @@
     },
     {
       "term": "distinct",
-      "specificity_x1024": 609310,
+      "specificity_x1024": 609740,
       "count": 215,
       "df": 81,
       "anchors": [
@@ -3082,7 +3130,7 @@
     },
     {
       "term": "document",
-      "specificity_x1024": 559080,
+      "specificity_x1024": 559440,
       "count": 180,
       "df": 64,
       "anchors": [
@@ -3106,9 +3154,9 @@
     },
     {
       "term": "domain",
-      "specificity_x1024": 696046,
-      "count": 247,
-      "df": 82,
+      "specificity_x1024": 695392,
+      "count": 248,
+      "df": 83,
       "anchors": [
         "apps/scan/src/digest.rs",
         "apps/rt/src/commands/glossary_coverage.rs",
@@ -3130,7 +3178,7 @@
     },
     {
       "term": "done",
-      "specificity_x1024": 760970,
+      "specificity_x1024": 761460,
       "count": 245,
       "df": 64,
       "anchors": [
@@ -3154,8 +3202,8 @@
     },
     {
       "term": "door",
-      "specificity_x1024": 648774,
-      "count": 171,
+      "specificity_x1024": 656708,
+      "count": 173,
       "df": 42,
       "anchors": [
         "apps/rt/src/commands/spec/ac_amend.rs",
@@ -3170,15 +3218,15 @@
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/commands/pipeline/status.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
+        "apps/rt/src/commands/event/base_gate.rs",
         "apps/rt/src/commands/review/qa_run/mod.rs",
-        "apps/rt/src/hooks/write/work_branch_gate.rs",
-        "apps/rt/src/commands/event/base_gate.rs"
+        "apps/rt/src/hooks/write/scan_clean_gate.rs"
       ],
       "source": "both"
     },
     {
       "term": "draft",
-      "specificity_x1024": 971804,
+      "specificity_x1024": 972312,
       "count": 254,
       "df": 41,
       "anchors": [
@@ -3202,7 +3250,7 @@
     },
     {
       "term": "drop",
-      "specificity_x1024": 490336,
+      "specificity_x1024": 490688,
       "count": 176,
       "df": 84,
       "anchors": [
@@ -3226,7 +3274,7 @@
     },
     {
       "term": "dropped",
-      "specificity_x1024": 773760,
+      "specificity_x1024": 774400,
       "count": 320,
       "df": 107,
       "anchors": [
@@ -3250,7 +3298,7 @@
     },
     {
       "term": "edit",
-      "specificity_x1024": 1022994,
+      "specificity_x1024": 1023700,
       "count": 353,
       "df": 77,
       "anchors": [
@@ -3274,9 +3322,9 @@
     },
     {
       "term": "either",
-      "specificity_x1024": 486736,
-      "count": 232,
-      "df": 127,
+      "specificity_x1024": 487436,
+      "count": 233,
+      "df": 128,
       "anchors": [
         "apps/dashboard/src-tauri/src/project_overview.rs",
         "apps/rt/src/commands/agent/context_inject.rs",
@@ -3298,7 +3346,7 @@
     },
     {
       "term": "else",
-      "specificity_x1024": 694192,
+      "specificity_x1024": 694880,
       "count": 344,
       "df": 137,
       "anchors": [
@@ -3322,7 +3370,7 @@
     },
     {
       "term": "emit",
-      "specificity_x1024": 1079496,
+      "specificity_x1024": 1080624,
       "count": 564,
       "df": 150,
       "anchors": [
@@ -3346,7 +3394,7 @@
     },
     {
       "term": "emits",
-      "specificity_x1024": 640460,
+      "specificity_x1024": 641080,
       "count": 310,
       "df": 131,
       "anchors": [
@@ -3370,7 +3418,7 @@
     },
     {
       "term": "emitted",
-      "specificity_x1024": 535310,
+      "specificity_x1024": 535708,
       "count": 199,
       "df": 90,
       "anchors": [
@@ -3394,7 +3442,7 @@
     },
     {
       "term": "end",
-      "specificity_x1024": 744404,
+      "specificity_x1024": 745000,
       "count": 298,
       "df": 102,
       "anchors": [
@@ -3418,7 +3466,7 @@
     },
     {
       "term": "engine",
-      "specificity_x1024": 496566,
+      "specificity_x1024": 496860,
       "count": 147,
       "df": 55,
       "anchors": [
@@ -3442,7 +3490,7 @@
     },
     {
       "term": "english",
-      "specificity_x1024": 666740,
+      "specificity_x1024": 667080,
       "count": 170,
       "df": 38,
       "anchors": [
@@ -3466,7 +3514,7 @@
     },
     {
       "term": "entity",
-      "specificity_x1024": 1107120,
+      "specificity_x1024": 1107680,
       "count": 280,
       "df": 37,
       "anchors": [
@@ -3490,7 +3538,7 @@
     },
     {
       "term": "env",
-      "specificity_x1024": 1033606,
+      "specificity_x1024": 1034348,
       "count": 371,
       "df": 84,
       "anchors": [
@@ -3514,7 +3562,7 @@
     },
     {
       "term": "epic",
-      "specificity_x1024": 514100,
+      "specificity_x1024": 514312,
       "count": 106,
       "df": 20,
       "anchors": [
@@ -3538,9 +3586,9 @@
     },
     {
       "term": "errors",
-      "specificity_x1024": 568578,
-      "count": 193,
-      "df": 74,
+      "specificity_x1024": 568808,
+      "count": 194,
+      "df": 75,
       "anchors": [
         "packages/core/src/io/fs/mod.rs",
         "packages/core/src/domain/scan.rs",
@@ -3562,7 +3610,7 @@
     },
     {
       "term": "events",
-      "specificity_x1024": 1776192,
+      "specificity_x1024": 1778048,
       "count": 928,
       "df": 150,
       "anchors": [
@@ -3585,10 +3633,34 @@
       "source": "both"
     },
     {
+      "term": "ever",
+      "specificity_x1024": 487812,
+      "count": 177,
+      "df": 86,
+      "anchors": [
+        "apps/rt/src/commands/review/ac_negative_check.rs",
+        "apps/rt/src/hooks/task/subagent_inject.rs",
+        "apps/rt/src/commands/git_settle.rs",
+        "apps/rt/src/shared/context.rs",
+        "apps/rt/src/commands/event/event_projections/pr_metrics.rs",
+        "apps/rt/src/commands/glossary_coverage.rs",
+        "apps/rt/src/commands/maint/worktree_gc.rs",
+        "apps/rt/src/commands/pipeline/close_pipeline.rs",
+        "apps/rt/src/commands/pipeline/wave_done.rs",
+        "apps/rt/src/commands/spec/spec_draft.rs",
+        "apps/rt/src/commands/wave/wave_scaffold.rs",
+        "apps/rt/src/commands/event/emit_pipeline.rs",
+        "apps/rt/src/commands/event/work_branch.rs",
+        "apps/rt/src/shared/branch_state.rs",
+        "packages/core/src/platform/project_seed.rs"
+      ],
+      "source": "comment"
+    },
+    {
       "term": "evidence",
-      "specificity_x1024": 1015256,
-      "count": 332,
-      "df": 67,
+      "specificity_x1024": 1013652,
+      "count": 333,
+      "df": 68,
       "anchors": [
         "apps/rt/src/commands/feature.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -3610,7 +3682,7 @@
     },
     {
       "term": "exact",
-      "specificity_x1024": 549928,
+      "specificity_x1024": 550352,
       "count": 212,
       "df": 96,
       "anchors": [
@@ -3634,9 +3706,9 @@
     },
     {
       "term": "exactly",
-      "specificity_x1024": 872958,
-      "count": 519,
-      "df": 179,
+      "specificity_x1024": 873196,
+      "count": 521,
+      "df": 180,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/spec/ac_amend.rs",
@@ -3658,15 +3730,16 @@
     },
     {
       "term": "exclude",
-      "specificity_x1024": 534452,
-      "count": 106,
-      "df": 17,
+      "specificity_x1024": 562740,
+      "count": 113,
+      "df": 18,
       "anchors": [
-        "packages/core/src/platform/git_exclude.rs",
         "packages/core/src/platform/project_seed.rs",
+        "packages/core/src/platform/git_exclude.rs",
         "apps/rt/src/commands/pipeline/verify_pipeline.rs",
         "apps/rt/src/shared/context.rs",
         "apps/cli/src/commands/init.rs",
+        "apps/rt/src/hooks/write/scan_clean_gate.rs",
         "apps/rt/src/commands/event/event_projections/pipeline.rs",
         "packages/core/src/lib.rs",
         "packages/core/src/domain/config.rs",
@@ -3675,14 +3748,13 @@
         "apps/scan/src/digest.rs",
         "apps/rt/src/commands/pipeline/resume_bootstrap/context_loader.rs",
         "apps/rt/src/commands/pipeline/resume_bootstrap/post_execute_gate.rs",
-        "apps/rt/src/commands/review/qa_run/mod.rs",
-        "apps/rt/src/commands/scan_claude.rs"
+        "apps/rt/src/commands/review/qa_run/mod.rs"
       ],
       "source": "both"
     },
     {
       "term": "exe",
-      "specificity_x1024": 589512,
+      "specificity_x1024": 589776,
       "count": 132,
       "df": 26,
       "anchors": [
@@ -3706,7 +3778,7 @@
     },
     {
       "term": "execute",
-      "specificity_x1024": 971574,
+      "specificity_x1024": 972252,
       "count": 339,
       "df": 79,
       "anchors": [
@@ -3730,7 +3802,7 @@
     },
     {
       "term": "exemplars",
-      "specificity_x1024": 586810,
+      "specificity_x1024": 587012,
       "count": 101,
       "df": 10,
       "anchors": [
@@ -3749,15 +3821,15 @@
     },
     {
       "term": "existing",
-      "specificity_x1024": 551450,
-      "count": 205,
-      "df": 90,
+      "specificity_x1024": 556608,
+      "count": 208,
+      "df": 91,
       "anchors": [
         "apps/cli/src/commands/init.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/cli/src/commands/git_flow.rs",
         "apps/rt/src/commands/scan_claude.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
-        "apps/cli/src/commands/git_flow.rs",
         "apps/rt/src/shared/context.rs",
         "apps/rt/src/commands/feature.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
@@ -3773,9 +3845,9 @@
     },
     {
       "term": "exists",
-      "specificity_x1024": 906810,
-      "count": 501,
-      "df": 163,
+      "specificity_x1024": 907412,
+      "count": 503,
+      "df": 164,
       "anchors": [
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -3797,7 +3869,7 @@
     },
     {
       "term": "exit",
-      "specificity_x1024": 844842,
+      "specificity_x1024": 845676,
       "count": 417,
       "df": 136,
       "anchors": [
@@ -3821,9 +3893,9 @@
     },
     {
       "term": "expect",
-      "specificity_x1024": 771270,
-      "count": 235,
-      "df": 58,
+      "specificity_x1024": 767472,
+      "count": 236,
+      "df": 59,
       "anchors": [
         "apps/rt/src/commands/spec/ac_amend.rs",
         "apps/rt/src/commands/review/qa_run/mod.rs",
@@ -3845,9 +3917,9 @@
     },
     {
       "term": "explicit",
-      "specificity_x1024": 524476,
-      "count": 206,
-      "df": 99,
+      "specificity_x1024": 526656,
+      "count": 208,
+      "df": 100,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -3869,7 +3941,7 @@
     },
     {
       "term": "extract",
-      "specificity_x1024": 567468,
+      "specificity_x1024": 567864,
       "count": 198,
       "df": 79,
       "anchors": [
@@ -3893,7 +3965,7 @@
     },
     {
       "term": "failed",
-      "specificity_x1024": 695192,
+      "specificity_x1024": 695728,
       "count": 268,
       "df": 96,
       "anchors": [
@@ -3917,7 +3989,7 @@
     },
     {
       "term": "failure",
-      "specificity_x1024": 713472,
+      "specificity_x1024": 714240,
       "count": 384,
       "df": 157,
       "anchors": [
@@ -3941,9 +4013,9 @@
     },
     {
       "term": "fallback",
-      "specificity_x1024": 941364,
-      "count": 474,
-      "df": 141,
+      "specificity_x1024": 946440,
+      "count": 478,
+      "df": 142,
       "anchors": [
         "packages/core/src/domain/ast/signature.rs",
         "packages/core/src/domain/ast/stub_detect.rs",
@@ -3965,7 +4037,7 @@
     },
     {
       "term": "falls",
-      "specificity_x1024": 502482,
+      "specificity_x1024": 502980,
       "count": 249,
       "df": 137,
       "anchors": [
@@ -3989,7 +4061,7 @@
     },
     {
       "term": "false",
-      "specificity_x1024": 844200,
+      "specificity_x1024": 845040,
       "count": 420,
       "df": 138,
       "anchors": [
@@ -4013,7 +4085,7 @@
     },
     {
       "term": "feature",
-      "specificity_x1024": 646352,
+      "specificity_x1024": 646816,
       "count": 232,
       "df": 84,
       "anchors": [
@@ -4037,8 +4109,8 @@
     },
     {
       "term": "field",
-      "specificity_x1024": 994578,
-      "count": 533,
+      "specificity_x1024": 997512,
+      "count": 534,
       "df": 156,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
@@ -4061,7 +4133,7 @@
     },
     {
       "term": "fields",
-      "specificity_x1024": 595080,
+      "specificity_x1024": 595536,
       "count": 228,
       "df": 95,
       "anchors": [
@@ -4085,7 +4157,7 @@
     },
     {
       "term": "find",
-      "specificity_x1024": 622402,
+      "specificity_x1024": 622820,
       "count": 209,
       "df": 72,
       "anchors": [
@@ -4109,7 +4181,7 @@
     },
     {
       "term": "finding",
-      "specificity_x1024": 1011624,
+      "specificity_x1024": 1012112,
       "count": 244,
       "df": 31,
       "anchors": [
@@ -4133,7 +4205,7 @@
     },
     {
       "term": "findings",
-      "specificity_x1024": 1067000,
+      "specificity_x1024": 1067440,
       "count": 220,
       "df": 20,
       "anchors": [
@@ -4157,9 +4229,9 @@
     },
     {
       "term": "first",
-      "specificity_x1024": 1292266,
-      "count": 1097,
-      "df": 242,
+      "specificity_x1024": 1288028,
+      "count": 1099,
+      "df": 243,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
@@ -4181,7 +4253,7 @@
     },
     {
       "term": "fix",
-      "specificity_x1024": 642838,
+      "specificity_x1024": 643356,
       "count": 259,
       "df": 103,
       "anchors": [
@@ -4205,9 +4277,9 @@
     },
     {
       "term": "fixture",
-      "specificity_x1024": 599834,
-      "count": 181,
-      "df": 57,
+      "specificity_x1024": 597688,
+      "count": 182,
+      "df": 58,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
@@ -4229,7 +4301,7 @@
     },
     {
       "term": "flag",
-      "specificity_x1024": 561736,
+      "specificity_x1024": 562128,
       "count": 196,
       "df": 79,
       "anchors": [
@@ -4253,7 +4325,7 @@
     },
     {
       "term": "floor",
-      "specificity_x1024": 675332,
+      "specificity_x1024": 675688,
       "count": 178,
       "df": 42,
       "anchors": [
@@ -4277,9 +4349,9 @@
     },
     {
       "term": "flow",
-      "specificity_x1024": 947050,
-      "count": 325,
-      "df": 76,
+      "specificity_x1024": 951200,
+      "count": 328,
+      "df": 77,
       "anchors": [
         "apps/rt/src/shared/work_kind.rs",
         "packages/core/src/domain/config.rs",
@@ -4301,7 +4373,7 @@
     },
     {
       "term": "fold",
-      "specificity_x1024": 655686,
+      "specificity_x1024": 656124,
       "count": 219,
       "df": 71,
       "anchors": [
@@ -4325,7 +4397,7 @@
     },
     {
       "term": "folder",
-      "specificity_x1024": 698116,
+      "specificity_x1024": 698472,
       "count": 178,
       "df": 38,
       "anchors": [
@@ -4349,7 +4421,7 @@
     },
     {
       "term": "form",
-      "specificity_x1024": 677952,
+      "specificity_x1024": 678528,
       "count": 288,
       "df": 111,
       "anchors": [
@@ -4373,7 +4445,7 @@
     },
     {
       "term": "format",
-      "specificity_x1024": 681762,
+      "specificity_x1024": 682260,
       "count": 249,
       "df": 87,
       "anchors": [
@@ -4397,7 +4469,7 @@
     },
     {
       "term": "found",
-      "specificity_x1024": 503792,
+      "specificity_x1024": 504160,
       "count": 184,
       "df": 87,
       "anchors": [
@@ -4421,7 +4493,7 @@
     },
     {
       "term": "free",
-      "specificity_x1024": 502152,
+      "specificity_x1024": 502544,
       "count": 196,
       "df": 98,
       "anchors": [
@@ -4445,8 +4517,8 @@
     },
     {
       "term": "fresh",
-      "specificity_x1024": 510686,
-      "count": 167,
+      "specificity_x1024": 517140,
+      "count": 169,
       "df": 67,
       "anchors": [
         "apps/rt/src/commands/work_unit_open.rs",
@@ -4462,14 +4534,14 @@
         "apps/rt/src/hooks/write/boundary_gate.rs",
         "apps/translate/src/main.rs",
         "packages/core/src/domain/spec/contract.rs",
-        "apps/dashboard/src-tauri/src/spec_staleness.rs",
-        "apps/rt/src/commands/spec/spec_scaffold.rs"
+        "apps/cli/src/commands/git_flow.rs",
+        "apps/dashboard/src-tauri/src/spec_staleness.rs"
       ],
       "source": "both"
     },
     {
       "term": "frontmatter",
-      "specificity_x1024": 785178,
+      "specificity_x1024": 785540,
       "count": 181,
       "df": 28,
       "anchors": [
@@ -4493,9 +4565,9 @@
     },
     {
       "term": "full",
-      "specificity_x1024": 1236144,
-      "count": 728,
-      "df": 177,
+      "specificity_x1024": 1233468,
+      "count": 729,
+      "df": 178,
       "anchors": [
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/commands/spec/scope_decompose.rs",
@@ -4517,7 +4589,7 @@
     },
     {
       "term": "generated",
-      "specificity_x1024": 690050,
+      "specificity_x1024": 690420,
       "count": 185,
       "df": 44,
       "anchors": [
@@ -4541,7 +4613,7 @@
     },
     {
       "term": "glob",
-      "specificity_x1024": 599400,
+      "specificity_x1024": 599696,
       "count": 148,
       "df": 34,
       "anchors": [
@@ -4565,9 +4637,9 @@
     },
     {
       "term": "global",
-      "specificity_x1024": 540300,
-      "count": 150,
-      "df": 48,
+      "specificity_x1024": 542944,
+      "count": 152,
+      "df": 49,
       "anchors": [
         "apps/rt/src/commands/pipeline/verify_pipeline.rs",
         "apps/cli/src/commands/init.rs",
@@ -4589,7 +4661,7 @@
     },
     {
       "term": "glossary",
-      "specificity_x1024": 668952,
+      "specificity_x1024": 669168,
       "count": 108,
       "df": 7,
       "anchors": [
@@ -4605,7 +4677,7 @@
     },
     {
       "term": "got",
-      "specificity_x1024": 594956,
+      "specificity_x1024": 595192,
       "count": 118,
       "df": 17,
       "anchors": [
@@ -4629,7 +4701,7 @@
     },
     {
       "term": "grain",
-      "specificity_x1024": 832964,
+      "specificity_x1024": 833448,
       "count": 242,
       "df": 53,
       "anchors": [
@@ -4653,7 +4725,7 @@
     },
     {
       "term": "grammar",
-      "specificity_x1024": 507360,
+      "specificity_x1024": 507584,
       "count": 112,
       "df": 25,
       "anchors": [
@@ -4677,9 +4749,9 @@
     },
     {
       "term": "green",
-      "specificity_x1024": 798064,
-      "count": 248,
-      "df": 60,
+      "specificity_x1024": 793812,
+      "count": 249,
+      "df": 61,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/spec/ac_amend.rs",
@@ -4701,7 +4773,7 @@
     },
     {
       "term": "guards",
-      "specificity_x1024": 1311632,
+      "specificity_x1024": 1312416,
       "count": 392,
       "df": 56,
       "anchors": [
@@ -4725,9 +4797,9 @@
     },
     {
       "term": "half",
-      "specificity_x1024": 612920,
-      "count": 220,
-      "df": 84,
+      "specificity_x1024": 615384,
+      "count": 222,
+      "df": 85,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/git_settle.rs",
@@ -4749,7 +4821,7 @@
     },
     {
       "term": "hand",
-      "specificity_x1024": 610816,
+      "specificity_x1024": 611328,
       "count": 256,
       "df": 109,
       "anchors": [
@@ -4773,8 +4845,8 @@
     },
     {
       "term": "harness",
-      "specificity_x1024": 1130598,
-      "count": 567,
+      "specificity_x1024": 1133728,
+      "count": 568,
       "df": 140,
       "anchors": [
         "apps/rt/src/hooks/session/session_start_inject.rs",
@@ -4797,7 +4869,7 @@
     },
     {
       "term": "head",
-      "specificity_x1024": 890010,
+      "specificity_x1024": 890532,
       "count": 261,
       "df": 54,
       "anchors": [
@@ -4821,7 +4893,7 @@
     },
     {
       "term": "header",
-      "specificity_x1024": 1311178,
+      "specificity_x1024": 1312292,
       "count": 557,
       "df": 111,
       "anchors": [
@@ -4845,7 +4917,7 @@
     },
     {
       "term": "heading",
-      "specificity_x1024": 1277546,
+      "specificity_x1024": 1278340,
       "count": 397,
       "df": 60,
       "anchors": [
@@ -4869,7 +4941,7 @@
     },
     {
       "term": "holds",
-      "specificity_x1024": 516082,
+      "specificity_x1024": 516468,
       "count": 193,
       "df": 91,
       "anchors": [
@@ -4893,7 +4965,7 @@
     },
     {
       "term": "hook",
-      "specificity_x1024": 944116,
+      "specificity_x1024": 945048,
       "count": 466,
       "df": 136,
       "anchors": [
@@ -4917,8 +4989,8 @@
     },
     {
       "term": "hooks",
-      "specificity_x1024": 603366,
-      "count": 227,
+      "specificity_x1024": 606480,
+      "count": 228,
       "df": 92,
       "anchors": [
         "packages/core/src/platform/hook_resolve.rs",
@@ -4941,7 +5013,7 @@
     },
     {
       "term": "house",
-      "specificity_x1024": 679392,
+      "specificity_x1024": 679616,
       "count": 112,
       "df": 8,
       "anchors": [
@@ -4958,7 +5030,7 @@
     },
     {
       "term": "hygiene",
-      "specificity_x1024": 491150,
+      "specificity_x1024": 491340,
       "count": 95,
       "df": 15,
       "anchors": [
@@ -4982,7 +5054,7 @@
     },
     {
       "term": "identifier",
-      "specificity_x1024": 533554,
+      "specificity_x1024": 533876,
       "count": 161,
       "df": 57,
       "anchors": [
@@ -5006,7 +5078,7 @@
     },
     {
       "term": "import",
-      "specificity_x1024": 717588,
+      "specificity_x1024": 717960,
       "count": 186,
       "df": 40,
       "anchors": [
@@ -5030,7 +5102,7 @@
     },
     {
       "term": "index",
-      "specificity_x1024": 756230,
+      "specificity_x1024": 756700,
       "count": 235,
       "df": 60,
       "anchors": [
@@ -5054,7 +5126,7 @@
     },
     {
       "term": "inside",
-      "specificity_x1024": 810104,
+      "specificity_x1024": 811152,
       "count": 524,
       "df": 196,
       "anchors": [
@@ -5078,9 +5150,9 @@
     },
     {
       "term": "install",
-      "specificity_x1024": 1053990,
-      "count": 315,
-      "df": 56,
+      "specificity_x1024": 1127000,
+      "count": 350,
+      "df": 60,
       "anchors": [
         "apps/cli/src/commands/init.rs",
         "packages/core/src/platform/project_seed.rs",
@@ -5088,47 +5160,23 @@
         "apps/rt/src/commands/doctor/docs_stale_check.rs",
         "apps/cli/src/commands/install_nerd_font.rs",
         "apps/cli/src/cli.rs",
+        "apps/cli/src/commands/git_flow.rs",
         "apps/rt/src/commands/maint/maint_deps.rs",
+        "apps/rt/src/hooks/write/scan_clean_gate.rs",
         "packages/core/src/platform/git_exclude.rs",
         "apps/cli/src/commands/install_grammars.rs",
         "packages/core/src/platform/hook_resolve.rs",
-        "apps/cli/src/commands/git_flow.rs",
-        "apps/rt/src/commands/doctor/doctor.rs",
-        "apps/rt/src/commands/maint/upsert.rs",
-        "packages/core/src/platform/error.rs",
-        "apps/cli/src/commands/add.rs"
-      ],
-      "source": "both"
-    },
-    {
-      "term": "installed",
-      "specificity_x1024": 485632,
-      "count": 128,
-      "df": 42,
-      "anchors": [
-        "apps/cli/src/commands/init.rs",
-        "packages/core/src/platform/project_seed.rs",
-        "apps/cli/src/commands/install_grammars.rs",
-        "packages/core/src/domain/ast/mod.rs",
-        "apps/rt/src/commands/review/qa_run/runner.rs",
-        "apps/rt/src/hooks/bash/rtk_rewrite.rs",
-        "apps/rt/src/hooks/session/session_start_inject.rs",
-        "packages/core/src/domain/ast/loader.rs",
-        "packages/core/src/domain/ast/stub_detect.rs",
-        "apps/cli/src/commands/install_nerd_font.rs",
-        "packages/core/src/platform/hook_resolve.rs",
-        "apps/dashboard/src-tauri/src/projects.rs",
-        "apps/rt/src/commands/event/work_branch.rs",
-        "apps/rt/src/commands/review/gate_regression_check.rs",
-        "apps/dashboard/src/lib/dashboard.ts"
+        "apps/rt/src/commands/event/base_gate.rs",
+        "packages/core/src/domain/config.rs",
+        "apps/rt/src/commands/doctor/doctor.rs"
       ],
       "source": "both"
     },
     {
       "term": "instead",
-      "specificity_x1024": 724122,
-      "count": 441,
-      "df": 184,
+      "specificity_x1024": 722832,
+      "count": 444,
+      "df": 186,
       "anchors": [
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
@@ -5141,8 +5189,8 @@
         "apps/rt/src/commands/agent/render/mod.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
-        "apps/rt/src/commands/event/emit_pipeline.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/commands/event/emit_pipeline.rs",
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/agent/context_inject.rs"
       ],
@@ -5150,7 +5198,7 @@
     },
     {
       "term": "integration",
-      "specificity_x1024": 591864,
+      "specificity_x1024": 592176,
       "count": 156,
       "df": 42,
       "anchors": [
@@ -5174,7 +5222,7 @@
     },
     {
       "term": "iso",
-      "specificity_x1024": 579700,
+      "specificity_x1024": 580040,
       "count": 170,
       "df": 54,
       "anchors": [
@@ -5198,7 +5246,7 @@
     },
     {
       "term": "iter",
-      "specificity_x1024": 582426,
+      "specificity_x1024": 582660,
       "count": 117,
       "df": 18,
       "anchors": [
@@ -5222,7 +5270,7 @@
     },
     {
       "term": "join",
-      "specificity_x1024": 1167540,
+      "specificity_x1024": 1168200,
       "count": 330,
       "df": 50,
       "anchors": [
@@ -5245,34 +5293,10 @@
       "source": "both"
     },
     {
-      "term": "json",
-      "specificity_x1024": 2037868,
-      "count": 1994,
-      "df": 268,
-      "anchors": [
-        "apps/rt/src/commands/wave/wave_scaffold.rs",
-        "apps/cli/src/commands/init.rs",
-        "apps/rt/src/commands/doctor/doctor.rs",
-        "packages/core/src/platform/project_seed.rs",
-        "packages/core/src/io/claude_paths.rs",
-        "apps/rt/src/commands/spec/spec_draft.rs",
-        "apps/rt/src/commands/event/emit_pipeline.rs",
-        "apps/dashboard/src-tauri/src/spec_views.rs",
-        "apps/rt/src/hooks/write/boundary_gate.rs",
-        "apps/rt/src/commands/scan_patterns/list.rs",
-        "apps/rt/src/commands/spec/active_specs.rs",
-        "apps/dashboard/src-tauri/src/project_overview.rs",
-        "packages/core/src/domain/meta.rs",
-        "apps/rt/src/commands/maint/unhook.rs",
-        "apps/rt/src/commands/review/gate_regression_check.rs"
-      ],
-      "source": "both"
-    },
-    {
       "term": "keep",
-      "specificity_x1024": 593850,
-      "count": 321,
-      "df": 158,
+      "specificity_x1024": 595612,
+      "count": 323,
+      "df": 159,
       "anchors": [
         "apps/rt/src/commands/maint/claude_dir_prune.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
@@ -5294,9 +5318,9 @@
     },
     {
       "term": "keeps",
-      "specificity_x1024": 804204,
-      "count": 534,
-      "df": 201,
+      "specificity_x1024": 802500,
+      "count": 535,
+      "df": 202,
       "anchors": [
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
@@ -5318,7 +5342,7 @@
     },
     {
       "term": "kept",
-      "specificity_x1024": 524680,
+      "specificity_x1024": 525200,
       "count": 260,
       "df": 137,
       "anchors": [
@@ -5342,7 +5366,7 @@
     },
     {
       "term": "keys",
-      "specificity_x1024": 547062,
+      "specificity_x1024": 547500,
       "count": 219,
       "df": 102,
       "anchors": [
@@ -5366,7 +5390,7 @@
     },
     {
       "term": "knowledge",
-      "specificity_x1024": 584284,
+      "specificity_x1024": 584600,
       "count": 158,
       "df": 45,
       "anchors": [
@@ -5390,9 +5414,9 @@
     },
     {
       "term": "known",
-      "specificity_x1024": 494400,
-      "count": 160,
-      "df": 65,
+      "specificity_x1024": 495236,
+      "count": 161,
+      "df": 66,
       "anchors": [
         "apps/rt/src/shared/work_kind.rs",
         "apps/rt/src/commands/doctor/capability_drift_check.rs",
@@ -5414,7 +5438,7 @@
     },
     {
       "term": "label",
-      "specificity_x1024": 934914,
+      "specificity_x1024": 935748,
       "count": 417,
       "df": 118,
       "anchors": [
@@ -5438,7 +5462,7 @@
     },
     {
       "term": "language",
-      "specificity_x1024": 1220570,
+      "specificity_x1024": 1221636,
       "count": 533,
       "df": 115,
       "anchors": [
@@ -5462,7 +5486,7 @@
     },
     {
       "term": "last",
-      "specificity_x1024": 888196,
+      "specificity_x1024": 889128,
       "count": 466,
       "df": 151,
       "anchors": [
@@ -5486,7 +5510,7 @@
     },
     {
       "term": "layer",
-      "specificity_x1024": 867946,
+      "specificity_x1024": 868580,
       "count": 317,
       "df": 87,
       "anchors": [
@@ -5510,7 +5534,7 @@
     },
     {
       "term": "layout",
-      "specificity_x1024": 524128,
+      "specificity_x1024": 524480,
       "count": 176,
       "df": 72,
       "anchors": [
@@ -5534,8 +5558,8 @@
     },
     {
       "term": "left",
-      "specificity_x1024": 568800,
-      "count": 240,
+      "specificity_x1024": 571652,
+      "count": 241,
       "df": 110,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
@@ -5546,10 +5570,10 @@
         "apps/rt/src/commands/glossary_coverage.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/agent/render/sections.rs",
         "apps/rt/src/commands/maint/unhook.rs",
         "apps/rt/src/commands/review/analyze_validation.rs"
@@ -5558,7 +5582,7 @@
     },
     {
       "term": "legacy",
-      "specificity_x1024": 1015822,
+      "specificity_x1024": 1016748,
       "count": 463,
       "df": 121,
       "anchors": [
@@ -5582,9 +5606,9 @@
     },
     {
       "term": "less",
-      "specificity_x1024": 518252,
-      "count": 166,
-      "df": 63,
+      "specificity_x1024": 519036,
+      "count": 167,
+      "df": 64,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/agent/render/mod.rs",
@@ -5606,7 +5630,7 @@
     },
     {
       "term": "lesson",
-      "specificity_x1024": 579830,
+      "specificity_x1024": 580060,
       "count": 115,
       "df": 17,
       "anchors": [
@@ -5630,7 +5654,7 @@
     },
     {
       "term": "let",
-      "specificity_x1024": 2532510,
+      "specificity_x1024": 2534220,
       "count": 855,
       "df": 73,
       "anchors": [
@@ -5654,7 +5678,7 @@
     },
     {
       "term": "level",
-      "specificity_x1024": 839046,
+      "specificity_x1024": 839852,
       "count": 403,
       "df": 129,
       "anchors": [
@@ -5678,7 +5702,7 @@
     },
     {
       "term": "lifecycle",
-      "specificity_x1024": 623480,
+      "specificity_x1024": 623920,
       "count": 220,
       "df": 81,
       "anchors": [
@@ -5702,7 +5726,7 @@
     },
     {
       "term": "light",
-      "specificity_x1024": 702156,
+      "specificity_x1024": 702520,
       "count": 182,
       "df": 40,
       "anchors": [
@@ -5726,17 +5750,17 @@
     },
     {
       "term": "like",
-      "specificity_x1024": 588600,
-      "count": 300,
-      "df": 144,
+      "specificity_x1024": 594624,
+      "count": 304,
+      "df": 145,
       "anchors": [
         "apps/scan/src/spec.rs",
         "packages/core/src/domain/regression_check/snapshot.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
-        "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
         "apps/rt/src/hooks/write/boundary_gate.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
+        "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/pipeline/plan_materialize.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
@@ -5750,7 +5774,7 @@
     },
     {
       "term": "lines",
-      "specificity_x1024": 930180,
+      "specificity_x1024": 930920,
       "count": 370,
       "df": 101,
       "anchors": [
@@ -5774,7 +5798,7 @@
     },
     {
       "term": "link",
-      "specificity_x1024": 580158,
+      "specificity_x1024": 580492,
       "count": 167,
       "df": 52,
       "anchors": [
@@ -5798,9 +5822,9 @@
     },
     {
       "term": "list",
-      "specificity_x1024": 1078800,
-      "count": 744,
-      "df": 208,
+      "specificity_x1024": 1075780,
+      "count": 745,
+      "df": 209,
       "anchors": [
         "apps/dashboard/src-tauri/src/lib.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -5822,7 +5846,7 @@
     },
     {
       "term": "live",
-      "specificity_x1024": 580720,
+      "specificity_x1024": 581280,
       "count": 280,
       "df": 130,
       "anchors": [
@@ -5846,9 +5870,9 @@
     },
     {
       "term": "lives",
-      "specificity_x1024": 572862,
-      "count": 311,
-      "df": 159,
+      "specificity_x1024": 572832,
+      "count": 312,
+      "df": 160,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
@@ -5870,9 +5894,9 @@
     },
     {
       "term": "local",
-      "specificity_x1024": 943548,
-      "count": 366,
-      "df": 97,
+      "specificity_x1024": 946116,
+      "count": 369,
+      "df": 98,
       "anchors": [
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/git_settle.rs",
@@ -5894,7 +5918,7 @@
     },
     {
       "term": "log",
-      "specificity_x1024": 809100,
+      "specificity_x1024": 809720,
       "count": 310,
       "df": 95,
       "anchors": [
@@ -5918,7 +5942,7 @@
     },
     {
       "term": "long",
-      "specificity_x1024": 1149958,
+      "specificity_x1024": 1150652,
       "count": 347,
       "df": 57,
       "anchors": [
@@ -5942,9 +5966,9 @@
     },
     {
       "term": "machine",
-      "specificity_x1024": 536176,
-      "count": 184,
-      "df": 76,
+      "specificity_x1024": 536500,
+      "count": 185,
+      "df": 77,
       "anchors": [
         "apps/rt/src/commands/scan_claude.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -5966,7 +5990,7 @@
     },
     {
       "term": "main",
-      "specificity_x1024": 1124424,
+      "specificity_x1024": 1125200,
       "count": 388,
       "df": 77,
       "anchors": [
@@ -5990,7 +6014,7 @@
     },
     {
       "term": "many",
-      "specificity_x1024": 501618,
+      "specificity_x1024": 501972,
       "count": 177,
       "df": 81,
       "anchors": [
@@ -6014,7 +6038,7 @@
     },
     {
       "term": "map",
-      "specificity_x1024": 895956,
+      "specificity_x1024": 896744,
       "count": 394,
       "df": 116,
       "anchors": [
@@ -6038,9 +6062,9 @@
     },
     {
       "term": "mark",
-      "specificity_x1024": 581880,
-      "count": 156,
-      "df": 44,
+      "specificity_x1024": 580900,
+      "count": 157,
+      "df": 45,
       "anchors": [
         "packages/core/src/domain/spec/contract.rs",
         "apps/rt/src/hooks/write/post_edit.rs",
@@ -6062,7 +6086,7 @@
     },
     {
       "term": "markdown",
-      "specificity_x1024": 736522,
+      "specificity_x1024": 737060,
       "count": 269,
       "df": 87,
       "anchors": [
@@ -6086,7 +6110,7 @@
     },
     {
       "term": "matched",
-      "specificity_x1024": 790920,
+      "specificity_x1024": 791440,
       "count": 260,
       "df": 68,
       "anchors": [
@@ -6110,9 +6134,9 @@
     },
     {
       "term": "matches",
-      "specificity_x1024": 764306,
-      "count": 401,
-      "df": 151,
+      "specificity_x1024": 765700,
+      "count": 403,
+      "df": 152,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -6134,9 +6158,9 @@
     },
     {
       "term": "measured",
-      "specificity_x1024": 737450,
-      "count": 245,
-      "df": 70,
+      "specificity_x1024": 743008,
+      "count": 248,
+      "df": 71,
       "anchors": [
         "apps/rt/src/shared/branch_state.rs",
         "packages/core/src/domain/economy/reader.rs",
@@ -6148,9 +6172,9 @@
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
         "packages/core/src/domain/economy/model.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/dashboard/src/lib/types/economy.ts",
         "apps/rt/src/commands/scan_claude.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/dashboard/src-tauri/src/lib.rs",
         "apps/rt/src/commands/economy/metrics.rs"
       ],
@@ -6158,9 +6182,9 @@
     },
     {
       "term": "memory",
-      "specificity_x1024": 1019590,
-      "count": 299,
-      "df": 54,
+      "specificity_x1024": 1014000,
+      "count": 300,
+      "df": 55,
       "anchors": [
         "apps/rt/src/commands/agent/context_inject.rs",
         "apps/rt/src/hooks/task/subagent_inject.rs",
@@ -6182,7 +6206,7 @@
     },
     {
       "term": "merge",
-      "specificity_x1024": 907476,
+      "specificity_x1024": 908040,
       "count": 282,
       "df": 60,
       "anchors": [
@@ -6206,7 +6230,7 @@
     },
     {
       "term": "merged",
-      "specificity_x1024": 777270,
+      "specificity_x1024": 777660,
       "count": 195,
       "df": 36,
       "anchors": [
@@ -6230,7 +6254,7 @@
     },
     {
       "term": "message",
-      "specificity_x1024": 508980,
+      "specificity_x1024": 509320,
       "count": 170,
       "df": 71,
       "anchors": [
@@ -6254,7 +6278,7 @@
     },
     {
       "term": "metric",
-      "specificity_x1024": 940280,
+      "specificity_x1024": 940720,
       "count": 220,
       "df": 29,
       "anchors": [
@@ -6278,7 +6302,7 @@
     },
     {
       "term": "mirrors",
-      "specificity_x1024": 530962,
+      "specificity_x1024": 531476,
       "count": 257,
       "df": 131,
       "anchors": [
@@ -6302,7 +6326,7 @@
     },
     {
       "term": "missing",
-      "specificity_x1024": 984358,
+      "specificity_x1024": 985812,
       "count": 727,
       "df": 220,
       "anchors": [
@@ -6326,7 +6350,7 @@
     },
     {
       "term": "module",
-      "specificity_x1024": 972064,
+      "specificity_x1024": 973248,
       "count": 592,
       "df": 184,
       "anchors": [
@@ -6350,7 +6374,7 @@
     },
     {
       "term": "modules",
-      "specificity_x1024": 900500,
+      "specificity_x1024": 901000,
       "count": 250,
       "df": 48,
       "anchors": [
@@ -6374,7 +6398,7 @@
     },
     {
       "term": "mold",
-      "specificity_x1024": 1368950,
+      "specificity_x1024": 1369500,
       "count": 275,
       "df": 18,
       "anchors": [
@@ -6398,7 +6422,7 @@
     },
     {
       "term": "mut",
-      "specificity_x1024": 519204,
+      "specificity_x1024": 519400,
       "count": 98,
       "df": 14,
       "anchors": [
@@ -6421,7 +6445,7 @@
     },
     {
       "term": "named",
-      "specificity_x1024": 557316,
+      "specificity_x1024": 557768,
       "count": 226,
       "df": 104,
       "anchors": [
@@ -6445,9 +6469,9 @@
     },
     {
       "term": "names",
-      "specificity_x1024": 1087810,
-      "count": 601,
-      "df": 163,
+      "specificity_x1024": 1087812,
+      "count": 603,
+      "df": 164,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/scan/src/digest.rs",
@@ -6460,16 +6484,16 @@
         "apps/rt/src/commands/wave/wave_scaffold.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
         "apps/rt/src/commands/event/emit_pipeline.rs",
-        "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/review/finding_collect.rs",
         "apps/rt/src/commands/review/pr_door.rs",
-        "apps/rt/src/commands/doctor/doctor.rs"
+        "apps/rt/src/commands/doctor/doctor.rs",
+        "apps/rt/src/commands/git_settle.rs"
       ],
       "source": "both"
     },
     {
       "term": "ndjson",
-      "specificity_x1024": 1283972,
+      "specificity_x1024": 1285000,
       "count": 514,
       "df": 102,
       "anchors": [
@@ -6493,7 +6517,7 @@
     },
     {
       "term": "nested",
-      "specificity_x1024": 595588,
+      "specificity_x1024": 595944,
       "count": 178,
       "df": 56,
       "anchors": [
@@ -6517,7 +6541,7 @@
     },
     {
       "term": "new",
-      "specificity_x1024": 951480,
+      "specificity_x1024": 952560,
       "count": 540,
       "df": 169,
       "anchors": [
@@ -6541,7 +6565,7 @@
     },
     {
       "term": "next",
-      "specificity_x1024": 636718,
+      "specificity_x1024": 637332,
       "count": 307,
       "df": 130,
       "anchors": [
@@ -6565,8 +6589,8 @@
     },
     {
       "term": "nobody",
-      "specificity_x1024": 532062,
-      "count": 167,
+      "specificity_x1024": 535584,
+      "count": 168,
       "df": 61,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -6575,11 +6599,11 @@
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/commands/spec/ac_add.rs",
+        "apps/cli/src/commands/git_flow.rs",
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/pipeline/close_pipeline.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "apps/rt/src/commands/spec/ac_amend.rs",
-        "apps/cli/src/commands/git_flow.rs",
         "apps/rt/src/commands/pipeline/close_gates.rs",
         "apps/rt/src/commands/review/qa_run/mod.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
@@ -6589,9 +6613,9 @@
     },
     {
       "term": "none",
-      "specificity_x1024": 1501022,
-      "count": 1319,
-      "df": 247,
+      "specificity_x1024": 1499900,
+      "count": 1325,
+      "df": 248,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "packages/core/src/domain/model/event.rs",
@@ -6613,9 +6637,9 @@
     },
     {
       "term": "nothing",
-      "specificity_x1024": 1665568,
-      "count": 1168,
-      "df": 211,
+      "specificity_x1024": 1664748,
+      "count": 1179,
+      "df": 213,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/event/work_branch.rs",
@@ -6626,8 +6650,8 @@
         "apps/rt/src/commands/glossary_coverage.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
-        "apps/rt/src/commands/review/qa_run/mod.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/commands/review/qa_run/mod.rs",
         "apps/rt/src/commands/review/finding_collect.rs",
         "apps/rt/src/commands/work_unit_open.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
@@ -6637,9 +6661,9 @@
     },
     {
       "term": "null",
-      "specificity_x1024": 695400,
-      "count": 244,
-      "df": 80,
+      "specificity_x1024": 694820,
+      "count": 245,
+      "df": 81,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/event/emit_pipeline.rs",
@@ -6661,7 +6685,7 @@
     },
     {
       "term": "number",
-      "specificity_x1024": 693690,
+      "specificity_x1024": 694260,
       "count": 285,
       "df": 106,
       "anchors": [
@@ -6685,9 +6709,9 @@
     },
     {
       "term": "old",
-      "specificity_x1024": 608850,
-      "count": 225,
-      "df": 89,
+      "specificity_x1024": 608392,
+      "count": 226,
+      "df": 90,
       "anchors": [
         "apps/rt/src/commands/spec/ac_amend.rs",
         "apps/rt/src/hooks/write/boundary_gate.rs",
@@ -6709,14 +6733,14 @@
     },
     {
       "term": "operator",
-      "specificity_x1024": 630518,
-      "count": 203,
-      "df": 64,
+      "specificity_x1024": 643136,
+      "count": 208,
+      "df": 65,
       "anchors": [
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/shared/work_kind.rs",
-        "apps/rt/src/hooks/write/work_branch_gate.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/review/pr_door.rs",
@@ -6733,7 +6757,7 @@
     },
     {
       "term": "option",
-      "specificity_x1024": 867384,
+      "specificity_x1024": 867888,
       "count": 252,
       "df": 53,
       "anchors": [
@@ -6757,8 +6781,8 @@
     },
     {
       "term": "optional",
-      "specificity_x1024": 537070,
-      "count": 215,
+      "specificity_x1024": 540000,
+      "count": 216,
       "df": 102,
       "anchors": [
         "apps/rt/src/commands/review/qa_run/mod.rs",
@@ -6781,7 +6805,7 @@
     },
     {
       "term": "orchestrator",
-      "specificity_x1024": 979920,
+      "specificity_x1024": 980640,
       "count": 360,
       "df": 88,
       "anchors": [
@@ -6805,7 +6829,7 @@
     },
     {
       "term": "order",
-      "specificity_x1024": 1119844,
+      "specificity_x1024": 1121208,
       "count": 682,
       "df": 184,
       "anchors": [
@@ -6829,9 +6853,9 @@
     },
     {
       "term": "origin",
-      "specificity_x1024": 745822,
-      "count": 167,
-      "df": 26,
+      "specificity_x1024": 731196,
+      "count": 171,
+      "df": 29,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/work_unit_open.rs",
@@ -6853,7 +6877,7 @@
     },
     {
       "term": "otel",
-      "specificity_x1024": 632552,
+      "specificity_x1024": 632848,
       "count": 148,
       "df": 29,
       "anchors": [
@@ -6877,9 +6901,9 @@
     },
     {
       "term": "output",
-      "specificity_x1024": 979166,
-      "count": 527,
-      "df": 157,
+      "specificity_x1024": 988968,
+      "count": 534,
+      "df": 158,
       "anchors": [
         "packages/core/src/domain/economy/reader.rs",
         "apps/rt/src/hooks/task/context_budget_gate.rs",
@@ -6901,9 +6925,9 @@
     },
     {
       "term": "outside",
-      "specificity_x1024": 541200,
-      "count": 200,
-      "df": 89,
+      "specificity_x1024": 541092,
+      "count": 201,
+      "df": 90,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
         "apps/rt/src/hooks/write/boundary_gate.rs",
@@ -6925,9 +6949,9 @@
     },
     {
       "term": "override",
-      "specificity_x1024": 576666,
-      "count": 181,
-      "df": 61,
+      "specificity_x1024": 596736,
+      "count": 192,
+      "df": 64,
       "anchors": [
         "packages/core/src/io/workspace.rs",
         "apps/cli/src/commands/install_grammars.rs",
@@ -6936,20 +6960,20 @@
         "apps/rt/src/commands/statusline/segment.rs",
         "apps/rt/src/commands/statusline/theme.rs",
         "packages/core/src/domain/ast/queries.rs",
+        "packages/core/src/domain/config.rs",
         "apps/rt/src/commands/review/qa_run/runner.rs",
         "apps/scan/src/classify.rs",
         "apps/rt/src/commands/wave/wave_collapse.rs",
+        "apps/cli/src/commands/git_flow.rs",
         "apps/dashboard/src-tauri/src/spec_views.rs",
         "apps/rt/src/commands/maint/cli.rs",
-        "apps/rt/src/hooks/write/size_gate.rs",
-        "apps/rt/src/shared/context.rs",
-        "apps/dashboard/src/features/specs/SpecWavesTab/index.tsx"
+        "apps/rt/src/hooks/write/size_gate.rs"
       ],
       "source": "both"
     },
     {
       "term": "parent",
-      "specificity_x1024": 1461426,
+      "specificity_x1024": 1462788,
       "count": 681,
       "df": 124,
       "anchors": [
@@ -6973,7 +6997,7 @@
     },
     {
       "term": "parse",
-      "specificity_x1024": 1252622,
+      "specificity_x1024": 1253988,
       "count": 683,
       "df": 160,
       "anchors": [
@@ -6997,9 +7021,9 @@
     },
     {
       "term": "parsed",
-      "specificity_x1024": 491436,
-      "count": 198,
-      "df": 103,
+      "specificity_x1024": 493600,
+      "count": 200,
+      "df": 104,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "packages/core/src/domain/spec/touched_functions.rs",
@@ -7021,7 +7045,7 @@
     },
     {
       "term": "parser",
-      "specificity_x1024": 553518,
+      "specificity_x1024": 553900,
       "count": 191,
       "df": 77,
       "anchors": [
@@ -7045,7 +7069,7 @@
     },
     {
       "term": "partialeq",
-      "specificity_x1024": 674212,
+      "specificity_x1024": 674696,
       "count": 242,
       "df": 84,
       "anchors": [
@@ -7069,7 +7093,7 @@
     },
     {
       "term": "pass",
-      "specificity_x1024": 1123518,
+      "specificity_x1024": 1124692,
       "count": 587,
       "df": 150,
       "anchors": [
@@ -7093,8 +7117,8 @@
     },
     {
       "term": "passes",
-      "specificity_x1024": 490282,
-      "count": 173,
+      "specificity_x1024": 493464,
+      "count": 174,
       "df": 81,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -7104,10 +7128,10 @@
         "apps/rt/src/hooks/write/boundary_gate.rs",
         "apps/rt/src/commands/scan_claude.rs",
         "apps/translate/src/main.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/event/emit_pipeline.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
         "apps/rt/src/commands/review/dependency_precheck.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/pipeline/close_gates.rs",
         "apps/rt/src/commands/pipeline/close_pipeline.rs",
@@ -7117,7 +7141,7 @@
     },
     {
       "term": "patterns",
-      "specificity_x1024": 692506,
+      "specificity_x1024": 692868,
       "count": 181,
       "df": 41,
       "anchors": [
@@ -7141,7 +7165,7 @@
     },
     {
       "term": "pending",
-      "specificity_x1024": 900250,
+      "specificity_x1024": 900804,
       "count": 277,
       "df": 59,
       "anchors": [
@@ -7165,7 +7189,7 @@
     },
     {
       "term": "pid",
-      "specificity_x1024": 505470,
+      "specificity_x1024": 505644,
       "count": 87,
       "df": 10,
       "anchors": [
@@ -7184,7 +7208,7 @@
     },
     {
       "term": "pipeline",
-      "specificity_x1024": 2537024,
+      "specificity_x1024": 2540160,
       "count": 1568,
       "df": 187,
       "anchors": [
@@ -7208,7 +7232,7 @@
     },
     {
       "term": "placeholder",
-      "specificity_x1024": 548490,
+      "specificity_x1024": 548772,
       "count": 141,
       "df": 39,
       "anchors": [
@@ -7232,9 +7256,9 @@
     },
     {
       "term": "plan",
-      "specificity_x1024": 3445848,
-      "count": 1548,
-      "df": 119,
+      "specificity_x1024": 3426388,
+      "count": 1549,
+      "df": 120,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
@@ -7256,17 +7280,17 @@
     },
     {
       "term": "platform",
-      "specificity_x1024": 554162,
-      "count": 161,
-      "df": 53,
+      "specificity_x1024": 556156,
+      "count": 163,
+      "df": 54,
       "anchors": [
         "packages/core/src/io/fs/mod.rs",
         "apps/rt/src/commands/maint/worktree_gc.rs",
         "apps/rt/src/shared/proc.rs",
         "apps/rt/src/hooks/task/stop_gate.rs",
+        "packages/core/src/domain/config.rs",
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/work_unit_open.rs",
-        "packages/core/src/domain/config.rs",
         "packages/core/src/domain/skill/frontmatter.rs",
         "apps/rt/src/util/platform.rs",
         "packages/core/src/lib.rs",
@@ -7280,7 +7304,7 @@
     },
     {
       "term": "plugin",
-      "specificity_x1024": 605706,
+      "specificity_x1024": 606020,
       "count": 157,
       "df": 40,
       "anchors": [
@@ -7304,7 +7328,7 @@
     },
     {
       "term": "plus",
-      "specificity_x1024": 516608,
+      "specificity_x1024": 517120,
       "count": 256,
       "df": 137,
       "anchors": [
@@ -7328,7 +7352,7 @@
     },
     {
       "term": "port",
-      "specificity_x1024": 540624,
+      "specificity_x1024": 540960,
       "count": 168,
       "df": 60,
       "anchors": [
@@ -7352,7 +7376,7 @@
     },
     {
       "term": "pre",
-      "specificity_x1024": 608494,
+      "specificity_x1024": 608972,
       "count": 239,
       "df": 99,
       "anchors": [
@@ -7376,7 +7400,7 @@
     },
     {
       "term": "prefix",
-      "specificity_x1024": 959928,
+      "specificity_x1024": 960816,
       "count": 444,
       "df": 123,
       "anchors": [
@@ -7400,7 +7424,7 @@
     },
     {
       "term": "present",
-      "specificity_x1024": 636900,
+      "specificity_x1024": 637560,
       "count": 330,
       "df": 148,
       "anchors": [
@@ -7424,7 +7448,7 @@
     },
     {
       "term": "pretooluse",
-      "specificity_x1024": 533390,
+      "specificity_x1024": 533676,
       "count": 143,
       "df": 44,
       "anchors": [
@@ -7448,14 +7472,16 @@
     },
     {
       "term": "private",
-      "specificity_x1024": 510208,
-      "count": 128,
-      "df": 36,
+      "specificity_x1024": 561132,
+      "count": 143,
+      "df": 38,
       "anchors": [
         "packages/core/src/platform/project_seed.rs",
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/shared/context.rs",
+        "apps/rt/src/hooks/write/scan_clean_gate.rs",
         "packages/core/src/platform/git_exclude.rs",
+        "apps/rt/src/commands/event/base_gate.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/scan_claude.rs",
         "apps/rt/src/commands/scan_guards/list.rs",
@@ -7464,17 +7490,15 @@
         "apps/rt/src/commands/glossary_coverage.rs",
         "apps/rt/src/commands/maint/upsert.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
-        "apps/rt/src/hooks/write/post_edit.rs",
-        "packages/core/src/io/claude_paths.rs",
-        "packages/core/src/platform/error.rs"
+        "apps/rt/src/hooks/write/post_edit.rs"
       ],
       "source": "both"
     },
     {
       "term": "probe",
-      "specificity_x1024": 626444,
-      "count": 182,
-      "df": 53,
+      "specificity_x1024": 624396,
+      "count": 183,
+      "df": 54,
       "anchors": [
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/commands/maint/worktree_gc.rs",
@@ -7496,9 +7520,9 @@
     },
     {
       "term": "process",
-      "specificity_x1024": 759684,
-      "count": 354,
-      "df": 124,
+      "specificity_x1024": 756860,
+      "count": 355,
+      "df": 125,
       "anchors": [
         "apps/rt/src/commands/review/qa_run/runner.rs",
         "apps/rt/src/shared/context.rs",
@@ -7520,7 +7544,7 @@
     },
     {
       "term": "projection",
-      "specificity_x1024": 633006,
+      "specificity_x1024": 633420,
       "count": 207,
       "df": 67,
       "anchors": [
@@ -7544,9 +7568,9 @@
     },
     {
       "term": "projects",
-      "specificity_x1024": 733146,
-      "count": 213,
-      "df": 53,
+      "specificity_x1024": 730168,
+      "count": 214,
+      "df": 54,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/economy/otel/collector.rs",
@@ -7568,7 +7592,7 @@
     },
     {
       "term": "prompt",
-      "specificity_x1024": 1627024,
+      "specificity_x1024": 1628192,
       "count": 584,
       "df": 84,
       "anchors": [
@@ -7592,7 +7616,7 @@
     },
     {
       "term": "proof",
-      "specificity_x1024": 976390,
+      "specificity_x1024": 976892,
       "count": 251,
       "df": 39,
       "anchors": [
@@ -7616,7 +7640,7 @@
     },
     {
       "term": "prose",
-      "specificity_x1024": 643500,
+      "specificity_x1024": 643896,
       "count": 198,
       "df": 59,
       "anchors": [
@@ -7639,8 +7663,32 @@
       "source": "both"
     },
     {
+      "term": "provider",
+      "specificity_x1024": 541448,
+      "count": 106,
+      "df": 16,
+      "anchors": [
+        "apps/rt/src/shared/branch_state.rs",
+        "packages/core/src/platform/git_provider.rs",
+        "apps/rt/src/commands/git_settle.rs",
+        "apps/rt/src/commands/review/pr_door.rs",
+        "apps/cli/src/commands/git_flow.rs",
+        "apps/rt/src/commands/git_delete.rs",
+        "packages/core/src/domain/config.rs",
+        "apps/dashboard/src/lib/i18n.ts",
+        "apps/rt/src/commands/doctor/doctor.rs",
+        "apps/rt/src/commands/statusline/segment.rs",
+        "apps/dashboard/src/components/ui/tooltip/index.tsx",
+        "apps/rt/src/commands/agent/render/mod.rs",
+        "apps/rt/src/commands/review/cli.rs",
+        "apps/rt/src/commands/wave/wave_scaffold.rs",
+        "apps/rt/src/hooks/bash/pr_body_gate.rs"
+      ],
+      "source": "both"
+    },
+    {
       "term": "prune",
-      "specificity_x1024": 652320,
+      "specificity_x1024": 652608,
       "count": 144,
       "df": 25,
       "anchors": [
@@ -7664,7 +7712,7 @@
     },
     {
       "term": "pure",
-      "specificity_x1024": 624122,
+      "specificity_x1024": 624748,
       "count": 313,
       "df": 140,
       "anchors": [
@@ -7688,7 +7736,7 @@
     },
     {
       "term": "query",
-      "specificity_x1024": 1357486,
+      "specificity_x1024": 1358444,
       "count": 479,
       "df": 81,
       "anchors": [
@@ -7712,7 +7760,7 @@
     },
     {
       "term": "rank",
-      "specificity_x1024": 1019250,
+      "specificity_x1024": 1019700,
       "count": 225,
       "df": 25,
       "anchors": [
@@ -7736,7 +7784,7 @@
     },
     {
       "term": "rather",
-      "specificity_x1024": 734760,
+      "specificity_x1024": 735696,
       "count": 468,
       "df": 193,
       "anchors": [
@@ -7760,8 +7808,8 @@
     },
     {
       "term": "raw",
-      "specificity_x1024": 665874,
-      "count": 297,
+      "specificity_x1024": 668712,
+      "count": 298,
       "df": 118,
       "anchors": [
         "apps/scan/src/dictionary.rs",
@@ -7784,9 +7832,9 @@
     },
     {
       "term": "reading",
-      "specificity_x1024": 509014,
-      "count": 187,
-      "df": 88,
+      "specificity_x1024": 511812,
+      "count": 189,
+      "df": 89,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/event/work_branch.rs",
@@ -7808,7 +7856,7 @@
     },
     {
       "term": "reads",
-      "specificity_x1024": 854710,
+      "specificity_x1024": 855980,
       "count": 635,
       "df": 221,
       "anchors": [
@@ -7832,9 +7880,9 @@
     },
     {
       "term": "real",
-      "specificity_x1024": 1078230,
-      "count": 635,
-      "df": 177,
+      "specificity_x1024": 1077804,
+      "count": 637,
+      "df": 178,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
@@ -7844,8 +7892,8 @@
         "apps/rt/src/hooks/bash/rtk_rewrite.rs",
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/spec/scope_decompose.rs",
-        "apps/rt/src/commands/wave/wave_scaffold.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/commands/wave/wave_scaffold.rs",
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
@@ -7856,9 +7904,9 @@
     },
     {
       "term": "reason",
-      "specificity_x1024": 1455804,
-      "count": 654,
-      "df": 119,
+      "specificity_x1024": 1442772,
+      "count": 657,
+      "df": 121,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "packages/core/src/domain/spec/contract.rs",
@@ -7880,9 +7928,9 @@
     },
     {
       "term": "recorded",
-      "specificity_x1024": 845640,
-      "count": 324,
-      "df": 95,
+      "specificity_x1024": 843700,
+      "count": 325,
+      "df": 96,
       "anchors": [
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -7904,7 +7952,7 @@
     },
     {
       "term": "records",
-      "specificity_x1024": 598728,
+      "specificity_x1024": 599184,
       "count": 228,
       "df": 94,
       "anchors": [
@@ -7928,9 +7976,9 @@
     },
     {
       "term": "red",
-      "specificity_x1024": 1310930,
-      "count": 337,
-      "df": 39,
+      "specificity_x1024": 1304680,
+      "count": 338,
+      "df": 40,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/pipeline/close_pipeline.rs",
@@ -7952,7 +8000,7 @@
     },
     {
       "term": "redirect",
-      "specificity_x1024": 908868,
+      "specificity_x1024": 909224,
       "count": 178,
       "df": 16,
       "anchors": [
@@ -7976,7 +8024,7 @@
     },
     {
       "term": "ref",
-      "specificity_x1024": 1040172,
+      "specificity_x1024": 1040760,
       "count": 294,
       "df": 50,
       "anchors": [
@@ -8000,7 +8048,7 @@
     },
     {
       "term": "refs",
-      "specificity_x1024": 543978,
+      "specificity_x1024": 544260,
       "count": 141,
       "df": 40,
       "anchors": [
@@ -8024,7 +8072,7 @@
     },
     {
       "term": "refusal",
-      "specificity_x1024": 783300,
+      "specificity_x1024": 783720,
       "count": 210,
       "df": 44,
       "anchors": [
@@ -8048,7 +8096,7 @@
     },
     {
       "term": "refused",
-      "specificity_x1024": 648610,
+      "specificity_x1024": 648980,
       "count": 185,
       "df": 51,
       "anchors": [
@@ -8072,8 +8120,8 @@
     },
     {
       "term": "refuses",
-      "specificity_x1024": 645540,
-      "count": 210,
+      "specificity_x1024": 655188,
+      "count": 213,
       "df": 66,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
@@ -8083,11 +8131,11 @@
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/pipeline/close_pipeline.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/commands/event/base_gate.rs",
         "apps/rt/src/commands/git_delete.rs",
         "apps/rt/src/commands/maint/worktree_gc.rs",
         "apps/rt/src/commands/spec/mark_finding.rs",
         "apps/rt/src/commands/checklist/mark_checklist_item.rs",
-        "apps/rt/src/commands/event/base_gate.rs",
         "apps/rt/src/shared/context.rs",
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/pipeline/close_gates.rs"
@@ -8096,7 +8144,7 @@
     },
     {
       "term": "regex",
-      "specificity_x1024": 615450,
+      "specificity_x1024": 615780,
       "count": 165,
       "df": 44,
       "anchors": [
@@ -8120,7 +8168,7 @@
     },
     {
       "term": "registry",
-      "specificity_x1024": 574770,
+      "specificity_x1024": 575092,
       "count": 161,
       "df": 49,
       "anchors": [
@@ -8144,9 +8192,9 @@
     },
     {
       "term": "regression",
-      "specificity_x1024": 538628,
-      "count": 178,
-      "df": 69,
+      "specificity_x1024": 539148,
+      "count": 179,
+      "df": 70,
       "anchors": [
         "apps/rt/src/commands/review/gate_regression_check.rs",
         "packages/core/src/domain/vocabulary/mod.rs",
@@ -8168,7 +8216,7 @@
     },
     {
       "term": "rejected",
-      "specificity_x1024": 546936,
+      "specificity_x1024": 547248,
       "count": 156,
       "df": 51,
       "anchors": [
@@ -8192,7 +8240,7 @@
     },
     {
       "term": "relative",
-      "specificity_x1024": 550710,
+      "specificity_x1024": 551132,
       "count": 211,
       "df": 95,
       "anchors": [
@@ -8216,7 +8264,7 @@
     },
     {
       "term": "relevance",
-      "specificity_x1024": 588078,
+      "specificity_x1024": 588300,
       "count": 111,
       "df": 14,
       "anchors": [
@@ -8239,31 +8287,31 @@
     },
     {
       "term": "remote",
-      "specificity_x1024": 959636,
-      "count": 218,
-      "df": 27,
+      "specificity_x1024": 1037260,
+      "count": 239,
+      "df": 28,
       "anchors": [
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
+        "packages/core/src/platform/git_provider.rs",
         "apps/rt/src/commands/event/base_gate.rs",
         "apps/rt/src/commands/work_unit_open.rs",
         "apps/dashboard/src-tauri/src/git_info.rs",
         "packages/core/src/platform/git_branches.rs",
+        "apps/cli/src/commands/git_flow.rs",
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/git_cli.rs",
         "apps/rt/src/commands/git_delete.rs",
-        "apps/rt/src/commands/event/base_candidates.rs",
-        "apps/rt/src/commands/review/pr_door.rs",
-        "apps/cli/src/commands/git_flow.rs"
+        "apps/rt/src/commands/event/base_candidates.rs"
       ],
       "source": "both"
     },
     {
       "term": "removal",
-      "specificity_x1024": 697620,
+      "specificity_x1024": 697928,
       "count": 154,
       "df": 25,
       "anchors": [
@@ -8287,9 +8335,9 @@
     },
     {
       "term": "removed",
-      "specificity_x1024": 637994,
-      "count": 229,
-      "df": 84,
+      "specificity_x1024": 637560,
+      "count": 230,
+      "df": 85,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -8311,7 +8359,7 @@
     },
     {
       "term": "rename",
-      "specificity_x1024": 828274,
+      "specificity_x1024": 828852,
       "count": 289,
       "df": 79,
       "anchors": [
@@ -8335,7 +8383,7 @@
     },
     {
       "term": "render",
-      "specificity_x1024": 956592,
+      "specificity_x1024": 957600,
       "count": 504,
       "df": 152,
       "anchors": [
@@ -8359,7 +8407,7 @@
     },
     {
       "term": "rendered",
-      "specificity_x1024": 527670,
+      "specificity_x1024": 528060,
       "count": 195,
       "df": 89,
       "anchors": [
@@ -8383,7 +8431,7 @@
     },
     {
       "term": "renders",
-      "specificity_x1024": 499590,
+      "specificity_x1024": 499980,
       "count": 195,
       "df": 98,
       "anchors": [
@@ -8407,9 +8455,9 @@
     },
     {
       "term": "repo",
-      "specificity_x1024": 1163754,
-      "count": 621,
-      "df": 155,
+      "specificity_x1024": 1186180,
+      "count": 635,
+      "df": 156,
       "anchors": [
         "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/git_settle.rs",
@@ -8419,19 +8467,19 @@
         "apps/dashboard/src-tauri/src/git_info.rs",
         "apps/dashboard/src-tauri/src/project_overview.rs",
         "apps/dashboard/src/features/workspace/GitInfoCard/index.tsx",
+        "packages/core/src/platform/git_provider.rs",
         "apps/cli/src/commands/init.rs",
         "apps/dashboard/src/lib/dashboard.ts",
         "apps/rt/src/commands/maint/cli.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/doctor/docs_stale_check.rs",
-        "apps/rt/src/commands/pipeline/verify_pipeline.rs",
-        "apps/rt/src/commands/maint/unhook.rs"
+        "apps/rt/src/commands/pipeline/verify_pipeline.rs"
       ],
       "source": "both"
     },
     {
       "term": "reported",
-      "specificity_x1024": 518760,
+      "specificity_x1024": 519120,
       "count": 180,
       "df": 78,
       "anchors": [
@@ -8455,7 +8503,7 @@
     },
     {
       "term": "reports",
-      "specificity_x1024": 536234,
+      "specificity_x1024": 536628,
       "count": 197,
       "df": 88,
       "anchors": [
@@ -8479,9 +8527,9 @@
     },
     {
       "term": "repository",
-      "specificity_x1024": 1032060,
-      "count": 334,
-      "df": 65,
+      "specificity_x1024": 1076600,
+      "count": 350,
+      "df": 66,
       "anchors": [
         "apps/cli/src/commands/init.rs",
         "packages/core/src/platform/project_seed.rs",
@@ -8490,22 +8538,22 @@
         "apps/rt/src/shared/branch_state.rs",
         "apps/rt/src/commands/git_settle.rs",
         "packages/core/src/platform/git_branches.rs",
+        "apps/rt/src/commands/event/base_gate.rs",
         "apps/rt/src/commands/event/base_candidates.rs",
         "apps/rt/src/commands/maint/worktree_gc.rs",
-        "apps/rt/src/commands/event/base_gate.rs",
         "apps/rt/src/commands/event/work_branch.rs",
         "packages/core/src/io/workspace.rs",
+        "apps/cli/src/commands/git_flow.rs",
         "apps/rt/src/commands/event/event_projections/pr_metrics.rs",
-        "apps/rt/src/commands/review/pr_door.rs",
-        "apps/rt/src/hooks/write/work_branch_gate.rs"
+        "apps/rt/src/commands/review/pr_door.rs"
       ],
       "source": "both"
     },
     {
       "term": "request",
-      "specificity_x1024": 839202,
-      "count": 273,
-      "df": 66,
+      "specificity_x1024": 838440,
+      "count": 274,
+      "df": 67,
       "anchors": [
         "apps/rt/src/hooks/observe/change_request_log.rs",
         "apps/rt/src/commands/feature.rs",
@@ -8527,9 +8575,9 @@
     },
     {
       "term": "resolve",
-      "specificity_x1024": 789878,
-      "count": 463,
-      "df": 176,
+      "specificity_x1024": 788472,
+      "count": 466,
+      "df": 178,
       "anchors": [
         "apps/rt/src/shared/context.rs",
         "apps/cli/src/commands/init.rs",
@@ -8551,8 +8599,8 @@
     },
     {
       "term": "resolved",
-      "specificity_x1024": 578298,
-      "count": 281,
+      "specificity_x1024": 580920,
+      "count": 282,
       "df": 132,
       "anchors": [
         "apps/rt/src/commands/pipeline/resume_bootstrap/post_execute_gate.rs",
@@ -8575,7 +8623,7 @@
     },
     {
       "term": "resolves",
-      "specificity_x1024": 625878,
+      "specificity_x1024": 626516,
       "count": 319,
       "df": 144,
       "anchors": [
@@ -8599,7 +8647,7 @@
     },
     {
       "term": "retry",
-      "specificity_x1024": 522396,
+      "specificity_x1024": 522648,
       "count": 126,
       "df": 31,
       "anchors": [
@@ -8623,7 +8671,7 @@
     },
     {
       "term": "return",
-      "specificity_x1024": 729410,
+      "specificity_x1024": 730108,
       "count": 349,
       "df": 128,
       "anchors": [
@@ -8647,7 +8695,7 @@
     },
     {
       "term": "returns",
-      "specificity_x1024": 967610,
+      "specificity_x1024": 969220,
       "count": 805,
       "df": 239,
       "anchors": [
@@ -8671,7 +8719,7 @@
     },
     {
       "term": "review",
-      "specificity_x1024": 1689320,
+      "specificity_x1024": 1690576,
       "count": 628,
       "df": 90,
       "anchors": [
@@ -8695,7 +8743,7 @@
     },
     {
       "term": "rewrite",
-      "specificity_x1024": 967824,
+      "specificity_x1024": 968352,
       "count": 264,
       "df": 46,
       "anchors": [
@@ -8719,7 +8767,7 @@
     },
     {
       "term": "role",
-      "specificity_x1024": 2208690,
+      "specificity_x1024": 2210436,
       "count": 873,
       "df": 100,
       "anchors": [
@@ -8743,7 +8791,7 @@
     },
     {
       "term": "roles",
-      "specificity_x1024": 776386,
+      "specificity_x1024": 776724,
       "count": 169,
       "df": 24,
       "anchors": [
@@ -8767,9 +8815,9 @@
     },
     {
       "term": "root",
-      "specificity_x1024": 2108886,
-      "count": 1423,
-      "df": 204,
+      "specificity_x1024": 2101824,
+      "count": 1424,
+      "df": 205,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/cli/src/commands/init.rs",
@@ -8791,9 +8839,9 @@
     },
     {
       "term": "round",
-      "specificity_x1024": 830362,
-      "count": 293,
-      "df": 81,
+      "specificity_x1024": 829080,
+      "count": 294,
+      "df": 82,
       "anchors": [
         "apps/rt/src/hooks/write/boundary_gate.rs",
         "apps/rt/src/commands/pipeline/wave_advance.rs",
@@ -8814,8 +8862,32 @@
       "source": "both"
     },
     {
+      "term": "route",
+      "specificity_x1024": 489060,
+      "count": 165,
+      "df": 73,
+      "anchors": [
+        "apps/rt/src/commands/review/finding_collect.rs",
+        "apps/rt/src/commands/spec/mark_finding.rs",
+        "packages/core/src/domain/spec/contract.rs",
+        "apps/rt/src/commands/economy/otel/collector.rs",
+        "apps/rt/src/commands/event/emit_pipeline.rs",
+        "apps/rt/src/commands/wave/wave_scaffold.rs",
+        "apps/scan/src/pagerank.rs",
+        "apps/dashboard/src-tauri/src/lib.rs",
+        "apps/dashboard/src/lib/i18n.ts",
+        "apps/rt/src/commands/pipeline/close_gates.rs",
+        "apps/rt/src/hooks/session/session_knowledge_observer.rs",
+        "apps/rt/src/shared/events/economy.rs",
+        "apps/rt/src/shared/events/writer_ndjson.rs",
+        "apps/dashboard/src/pages/Specs.tsx",
+        "apps/rt/src/commands/agent/digest_adherence_finalize.rs"
+      ],
+      "source": "both"
+    },
+    {
       "term": "rows",
-      "specificity_x1024": 615600,
+      "specificity_x1024": 616032,
       "count": 216,
       "df": 80,
       "anchors": [
@@ -8839,7 +8911,7 @@
     },
     {
       "term": "running",
-      "specificity_x1024": 503766,
+      "specificity_x1024": 504108,
       "count": 171,
       "df": 74,
       "anchors": [
@@ -8863,8 +8935,8 @@
     },
     {
       "term": "runs",
-      "specificity_x1024": 765060,
-      "count": 410,
+      "specificity_x1024": 767748,
+      "count": 411,
       "df": 156,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -8879,15 +8951,15 @@
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/event/emit_pipeline.rs",
         "apps/rt/src/commands/pipeline/verify_pipeline.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/pipeline/close_orchestrate.rs",
-        "apps/rt/src/commands/review/pr_door.rs",
-        "apps/rt/src/commands/review/work_removed.rs"
+        "apps/rt/src/commands/review/pr_door.rs"
       ],
       "source": "both"
     },
     {
       "term": "rust",
-      "specificity_x1024": 581790,
+      "specificity_x1024": 582220,
       "count": 215,
       "df": 89,
       "anchors": [
@@ -8911,9 +8983,9 @@
     },
     {
       "term": "says",
-      "specificity_x1024": 619758,
-      "count": 207,
-      "df": 71,
+      "specificity_x1024": 619476,
+      "count": 209,
+      "df": 73,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/git_settle.rs",
@@ -8935,7 +9007,7 @@
     },
     {
       "term": "scaffold",
-      "specificity_x1024": 857736,
+      "specificity_x1024": 858192,
       "count": 228,
       "df": 43,
       "anchors": [
@@ -8959,8 +9031,8 @@
     },
     {
       "term": "scan",
-      "specificity_x1024": 1794918,
-      "count": 879,
+      "specificity_x1024": 1819160,
+      "count": 890,
       "df": 134,
       "anchors": [
         "packages/core/src/domain/scan.rs",
@@ -8969,9 +9041,9 @@
         "apps/rt/src/commands/scan_claude.rs",
         "apps/mcp/src/lib.rs",
         "apps/rt/src/commands/scan_guards/apply.rs",
+        "apps/rt/src/hooks/write/scan_clean_gate.rs",
         "apps/rt/src/commands/scan_patterns/origin.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
-        "apps/rt/src/hooks/write/scan_clean_gate.rs",
         "apps/rt/src/commands/scan_patterns/apply.rs",
         "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/doctor/doctor.rs",
@@ -8983,7 +9055,7 @@
     },
     {
       "term": "score",
-      "specificity_x1024": 538308,
+      "specificity_x1024": 538536,
       "count": 114,
       "df": 22,
       "anchors": [
@@ -9007,7 +9079,7 @@
     },
     {
       "term": "scratch",
-      "specificity_x1024": 499550,
+      "specificity_x1024": 499756,
       "count": 103,
       "df": 20,
       "anchors": [
@@ -9031,9 +9103,9 @@
     },
     {
       "term": "second",
-      "specificity_x1024": 717204,
-      "count": 354,
-      "df": 136,
+      "specificity_x1024": 717100,
+      "count": 355,
+      "df": 137,
       "anchors": [
         "apps/rt/src/hooks/write/work_branch_gate.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -9055,7 +9127,7 @@
     },
     {
       "term": "sections",
-      "specificity_x1024": 545158,
+      "specificity_x1024": 545436,
       "count": 139,
       "df": 38,
       "anchors": [
@@ -9079,9 +9151,9 @@
     },
     {
       "term": "see",
-      "specificity_x1024": 778716,
-      "count": 446,
-      "df": 171,
+      "specificity_x1024": 777780,
+      "count": 447,
+      "df": 172,
       "anchors": [
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/shared/context.rs",
@@ -9103,7 +9175,7 @@
     },
     {
       "term": "seed",
-      "specificity_x1024": 890214,
+      "specificity_x1024": 890892,
       "count": 339,
       "df": 94,
       "anchors": [
@@ -9127,9 +9199,9 @@
     },
     {
       "term": "self",
-      "specificity_x1024": 633252,
-      "count": 226,
-      "df": 83,
+      "specificity_x1024": 645876,
+      "count": 233,
+      "df": 85,
       "anchors": [
         "apps/rt/src/commands/review/qa_run/mod.rs",
         "packages/core/src/io/claude_paths.rs",
@@ -9151,7 +9223,7 @@
     },
     {
       "term": "separator",
-      "specificity_x1024": 491862,
+      "specificity_x1024": 492156,
       "count": 147,
       "df": 56,
       "anchors": [
@@ -9175,15 +9247,15 @@
     },
     {
       "term": "serde",
-      "specificity_x1024": 2120566,
-      "count": 907,
+      "specificity_x1024": 2124720,
+      "count": 908,
       "df": 112,
       "anchors": [
         "packages/core/src/domain/scan.rs",
         "packages/core/src/domain/model/event.rs",
         "apps/dashboard/src-tauri/src/spec_views.rs",
-        "packages/core/src/view/summary/mod.rs",
         "packages/core/src/domain/config.rs",
+        "packages/core/src/view/summary/mod.rs",
         "packages/core/src/domain/economy/model.rs",
         "apps/mcp/src/lib.rs",
         "packages/core/src/domain/capability/mod.rs",
@@ -9199,8 +9271,8 @@
     },
     {
       "term": "serialize",
-      "specificity_x1024": 945264,
-      "count": 376,
+      "specificity_x1024": 948532,
+      "count": 377,
       "df": 101,
       "anchors": [
         "apps/dashboard/src-tauri/src/spec_views.rs",
@@ -9223,8 +9295,8 @@
     },
     {
       "term": "serializing",
-      "specificity_x1024": 941052,
-      "count": 238,
+      "specificity_x1024": 945484,
+      "count": 239,
       "df": 37,
       "anchors": [
         "packages/core/src/domain/model/event.rs",
@@ -9247,7 +9319,7 @@
     },
     {
       "term": "services",
-      "specificity_x1024": 706116,
+      "specificity_x1024": 706344,
       "count": 114,
       "df": 7,
       "anchors": [
@@ -9263,7 +9335,7 @@
     },
     {
       "term": "session",
-      "specificity_x1024": 2730154,
+      "specificity_x1024": 2732828,
       "count": 1337,
       "df": 134,
       "anchors": [
@@ -9287,7 +9359,7 @@
     },
     {
       "term": "settings",
-      "specificity_x1024": 914414,
+      "specificity_x1024": 914892,
       "count": 239,
       "df": 41,
       "anchors": [
@@ -9311,9 +9383,9 @@
     },
     {
       "term": "shape",
-      "specificity_x1024": 912588,
-      "count": 678,
-      "df": 221,
+      "specificity_x1024": 912540,
+      "count": 681,
+      "df": 222,
       "anchors": [
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/commands/work_unit_open.rs",
@@ -9335,9 +9407,9 @@
     },
     {
       "term": "shared",
-      "specificity_x1024": 789570,
-      "count": 465,
-      "df": 177,
+      "specificity_x1024": 796532,
+      "count": 473,
+      "df": 179,
       "anchors": [
         "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/shared/context.rs",
@@ -9359,9 +9431,9 @@
     },
     {
       "term": "shell",
-      "specificity_x1024": 657422,
-      "count": 191,
-      "df": 53,
+      "specificity_x1024": 655104,
+      "count": 192,
+      "df": 54,
       "anchors": [
         "apps/rt/src/hooks/bash/rtk_rewrite.rs",
         "apps/rt/src/util/platform.rs",
@@ -9383,7 +9455,7 @@
     },
     {
       "term": "short",
-      "specificity_x1024": 518650,
+      "specificity_x1024": 519060,
       "count": 205,
       "df": 100,
       "anchors": [
@@ -9407,7 +9479,7 @@
     },
     {
       "term": "side",
-      "specificity_x1024": 625744,
+      "specificity_x1024": 626336,
       "count": 296,
       "df": 126,
       "anchors": [
@@ -9431,7 +9503,7 @@
     },
     {
       "term": "sidecar",
-      "specificity_x1024": 850038,
+      "specificity_x1024": 850556,
       "count": 259,
       "df": 58,
       "anchors": [
@@ -9455,7 +9527,7 @@
     },
     {
       "term": "signal",
-      "specificity_x1024": 782608,
+      "specificity_x1024": 783264,
       "count": 328,
       "df": 109,
       "anchors": [
@@ -9478,32 +9550,8 @@
       "source": "both"
     },
     {
-      "term": "signals",
-      "specificity_x1024": 486328,
-      "count": 124,
-      "df": 38,
-      "anchors": [
-        "apps/rt/src/commands/spec/scope_decompose.rs",
-        "apps/rt/src/commands/review/gate_regression_check.rs",
-        "apps/rt/src/commands/spec/cli.rs",
-        "apps/rt/src/commands/spec/spec_draft.rs",
-        "apps/rt/src/commands/feature.rs",
-        "packages/core/src/domain/vocabulary/stacks.rs",
-        "apps/cli/src/commands/install_grammars.rs",
-        "apps/rt/src/commands/review/review_spans.rs",
-        "apps/rt/src/commands/pipeline/resume_bootstrap/post_execute_gate.rs",
-        "apps/rt/src/commands/wave/exec_rewave_check.rs",
-        "packages/core/src/domain/scan.rs",
-        "packages/core/src/domain/source_lang.rs",
-        "apps/dashboard/src-tauri/src/lib.rs",
-        "apps/dashboard/src-tauri/src/project_overview.rs",
-        "apps/dashboard/src-tauri/src/projects.rs"
-      ],
-      "source": "both"
-    },
-    {
       "term": "silent",
-      "specificity_x1024": 515844,
+      "specificity_x1024": 516200,
       "count": 178,
       "df": 77,
       "anchors": [
@@ -9527,9 +9575,9 @@
     },
     {
       "term": "silently",
-      "specificity_x1024": 497724,
-      "count": 222,
-      "df": 118,
+      "specificity_x1024": 497700,
+      "count": 225,
+      "df": 120,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
@@ -9551,7 +9599,7 @@
     },
     {
       "term": "sink",
-      "specificity_x1024": 533790,
+      "specificity_x1024": 534060,
       "count": 135,
       "df": 37,
       "anchors": [
@@ -9575,7 +9623,7 @@
     },
     {
       "term": "size",
-      "specificity_x1024": 562542,
+      "specificity_x1024": 562860,
       "count": 159,
       "df": 50,
       "anchors": [
@@ -9599,7 +9647,7 @@
     },
     {
       "term": "skills",
-      "specificity_x1024": 513114,
+      "specificity_x1024": 513380,
       "count": 133,
       "df": 40,
       "anchors": [
@@ -9623,8 +9671,8 @@
     },
     {
       "term": "skip",
-      "specificity_x1024": 1172108,
-      "count": 574,
+      "specificity_x1024": 1175300,
+      "count": 575,
       "df": 134,
       "anchors": [
         "apps/rt/src/commands/review/qa_run/mod.rs",
@@ -9647,8 +9695,8 @@
     },
     {
       "term": "skipped",
-      "specificity_x1024": 586240,
-      "count": 256,
+      "specificity_x1024": 589044,
+      "count": 257,
       "df": 115,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -9671,7 +9719,7 @@
     },
     {
       "term": "slice",
-      "specificity_x1024": 851830,
+      "specificity_x1024": 852396,
       "count": 283,
       "df": 70,
       "anchors": [
@@ -9695,7 +9743,7 @@
     },
     {
       "term": "slug",
-      "specificity_x1024": 1378580,
+      "specificity_x1024": 1379784,
       "count": 602,
       "df": 115,
       "anchors": [
@@ -9719,7 +9767,7 @@
     },
     {
       "term": "snake",
-      "specificity_x1024": 518056,
+      "specificity_x1024": 518288,
       "count": 116,
       "df": 26,
       "anchors": [
@@ -9743,7 +9791,7 @@
     },
     {
       "term": "snapshot",
-      "specificity_x1024": 645740,
+      "specificity_x1024": 646072,
       "count": 166,
       "df": 39,
       "anchors": [
@@ -9767,7 +9815,7 @@
     },
     {
       "term": "sorted",
-      "specificity_x1024": 579282,
+      "specificity_x1024": 579684,
       "count": 201,
       "df": 78,
       "anchors": [
@@ -9791,7 +9839,7 @@
     },
     {
       "term": "span",
-      "specificity_x1024": 574420,
+      "specificity_x1024": 574728,
       "count": 154,
       "df": 44,
       "anchors": [
@@ -9815,9 +9863,9 @@
     },
     {
       "term": "spawn",
-      "specificity_x1024": 577806,
-      "count": 159,
-      "df": 47,
+      "specificity_x1024": 576640,
+      "count": 160,
+      "df": 48,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/hooks/session/session_start_inject.rs",
@@ -9839,7 +9887,7 @@
     },
     {
       "term": "specs",
-      "specificity_x1024": 1040088,
+      "specificity_x1024": 1041072,
       "count": 492,
       "df": 126,
       "anchors": [
@@ -9863,7 +9911,7 @@
     },
     {
       "term": "split",
-      "specificity_x1024": 588966,
+      "specificity_x1024": 589484,
       "count": 259,
       "df": 116,
       "anchors": [
@@ -9887,7 +9935,7 @@
     },
     {
       "term": "src",
-      "specificity_x1024": 1218410,
+      "specificity_x1024": 1219300,
       "count": 445,
       "df": 87,
       "anchors": [
@@ -9911,7 +9959,7 @@
     },
     {
       "term": "stable",
-      "specificity_x1024": 685410,
+      "specificity_x1024": 686092,
       "count": 341,
       "df": 138,
       "anchors": [
@@ -9935,7 +9983,7 @@
     },
     {
       "term": "stack",
-      "specificity_x1024": 688500,
+      "specificity_x1024": 688840,
       "count": 170,
       "df": 34,
       "anchors": [
@@ -9959,7 +10007,7 @@
     },
     {
       "term": "stacks",
-      "specificity_x1024": 606408,
+      "specificity_x1024": 606672,
       "count": 132,
       "df": 24,
       "anchors": [
@@ -9983,8 +10031,8 @@
     },
     {
       "term": "stage",
-      "specificity_x1024": 1738260,
-      "count": 666,
+      "specificity_x1024": 1742204,
+      "count": 667,
       "df": 95,
       "anchors": [
         "apps/rt/src/commands/event/emit_pipeline.rs",
@@ -10007,9 +10055,9 @@
     },
     {
       "term": "stale",
-      "specificity_x1024": 692500,
-      "count": 250,
-      "df": 85,
+      "specificity_x1024": 694512,
+      "count": 252,
+      "df": 86,
       "anchors": [
         "apps/rt/src/commands/doctor/superseded_check.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -10031,9 +10079,9 @@
     },
     {
       "term": "start",
-      "specificity_x1024": 859236,
-      "count": 386,
-      "df": 119,
+      "specificity_x1024": 858256,
+      "count": 388,
+      "df": 120,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "packages/core/src/view/projection/waves.rs",
@@ -10055,7 +10103,7 @@
     },
     {
       "term": "started",
-      "specificity_x1024": 489090,
+      "specificity_x1024": 489364,
       "count": 137,
       "df": 49,
       "anchors": [
@@ -10079,7 +10127,7 @@
     },
     {
       "term": "statement",
-      "specificity_x1024": 909340,
+      "specificity_x1024": 909720,
       "count": 190,
       "df": 21,
       "anchors": [
@@ -10103,7 +10151,7 @@
     },
     {
       "term": "stays",
-      "specificity_x1024": 731916,
+      "specificity_x1024": 732888,
       "count": 486,
       "df": 201,
       "anchors": [
@@ -10127,7 +10175,7 @@
     },
     {
       "term": "std",
-      "specificity_x1024": 749730,
+      "specificity_x1024": 750132,
       "count": 201,
       "df": 44,
       "anchors": [
@@ -10151,7 +10199,7 @@
     },
     {
       "term": "stdout",
-      "specificity_x1024": 643312,
+      "specificity_x1024": 643808,
       "count": 248,
       "df": 96,
       "anchors": [
@@ -10175,7 +10223,7 @@
     },
     {
       "term": "stem",
-      "specificity_x1024": 606908,
+      "specificity_x1024": 607192,
       "count": 142,
       "df": 29,
       "anchors": [
@@ -10199,9 +10247,9 @@
     },
     {
       "term": "still",
-      "specificity_x1024": 1088190,
-      "count": 1017,
-      "df": 256,
+      "specificity_x1024": 1092564,
+      "count": 1023,
+      "df": 257,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -10223,7 +10271,7 @@
     },
     {
       "term": "stop",
-      "specificity_x1024": 811536,
+      "specificity_x1024": 812064,
       "count": 264,
       "df": 66,
       "anchors": [
@@ -10247,7 +10295,7 @@
     },
     {
       "term": "str",
-      "specificity_x1024": 1069330,
+      "specificity_x1024": 1069940,
       "count": 305,
       "df": 51,
       "anchors": [
@@ -10271,7 +10319,7 @@
     },
     {
       "term": "strict",
-      "specificity_x1024": 789750,
+      "specificity_x1024": 790236,
       "count": 243,
       "df": 59,
       "anchors": [
@@ -10295,9 +10343,9 @@
     },
     {
       "term": "string",
-      "specificity_x1024": 1218630,
-      "count": 735,
-      "df": 182,
+      "specificity_x1024": 1213272,
+      "count": 738,
+      "df": 184,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -10312,14 +10360,14 @@
         "apps/dashboard/src-tauri/src/project_overview.rs",
         "apps/rt/src/commands/event/emit_pipeline.rs",
         "apps/rt/src/commands/pipeline/status.rs",
-        "packages/core/src/platform/i18n.rs",
-        "apps/rt/src/commands/doctor/doctor.rs"
+        "packages/core/src/domain/config.rs",
+        "packages/core/src/platform/i18n.rs"
       ],
       "source": "both"
     },
     {
       "term": "strip",
-      "specificity_x1024": 651688,
+      "specificity_x1024": 652112,
       "count": 212,
       "df": 66,
       "anchors": [
@@ -10343,7 +10391,7 @@
     },
     {
       "term": "stub",
-      "specificity_x1024": 605316,
+      "specificity_x1024": 605608,
       "count": 146,
       "df": 31,
       "anchors": [
@@ -10367,7 +10415,7 @@
     },
     {
       "term": "sub",
-      "specificity_x1024": 676500,
+      "specificity_x1024": 677000,
       "count": 250,
       "df": 89,
       "anchors": [
@@ -10391,7 +10439,7 @@
     },
     {
       "term": "subagent",
-      "specificity_x1024": 922112,
+      "specificity_x1024": 922624,
       "count": 256,
       "df": 48,
       "anchors": [
@@ -10415,7 +10463,7 @@
     },
     {
       "term": "submodule",
-      "specificity_x1024": 750798,
+      "specificity_x1024": 751116,
       "count": 159,
       "df": 22,
       "anchors": [
@@ -10439,7 +10487,7 @@
     },
     {
       "term": "subproject",
-      "specificity_x1024": 1752256,
+      "specificity_x1024": 1753472,
       "count": 608,
       "df": 78,
       "anchors": [
@@ -10463,7 +10511,7 @@
     },
     {
       "term": "suffix",
-      "specificity_x1024": 523564,
+      "specificity_x1024": 523896,
       "count": 166,
       "df": 62,
       "anchors": [
@@ -10487,9 +10535,9 @@
     },
     {
       "term": "table",
-      "specificity_x1024": 754974,
-      "count": 279,
-      "df": 89,
+      "specificity_x1024": 756452,
+      "count": 281,
+      "df": 90,
       "anchors": [
         "apps/rt/src/commands/pipeline/dispatch_plan.rs",
         "apps/rt/src/commands/spec/active_specs.rs",
@@ -10511,9 +10559,9 @@
     },
     {
       "term": "taken",
-      "specificity_x1024": 658952,
-      "count": 164,
-      "df": 35,
+      "specificity_x1024": 658020,
+      "count": 165,
+      "df": 36,
       "anchors": [
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/pipeline/close_pipeline.rs",
@@ -10528,14 +10576,14 @@
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/commands/review/cli.rs",
         "apps/rt/src/commands/review/qa_run/runner.rs",
-        "apps/rt/src/commands/agent/render/reference.rs",
-        "apps/rt/src/commands/doctor/docs_stale_check.rs"
+        "apps/cli/src/commands/git_flow.rs",
+        "apps/rt/src/commands/agent/render/reference.rs"
       ],
       "source": "both"
     },
     {
       "term": "task",
-      "specificity_x1024": 1185600,
+      "specificity_x1024": 1186432,
       "count": 416,
       "df": 80,
       "anchors": [
@@ -10559,7 +10607,7 @@
     },
     {
       "term": "tasks",
-      "specificity_x1024": 695904,
+      "specificity_x1024": 696256,
       "count": 176,
       "df": 37,
       "anchors": [
@@ -10583,7 +10631,7 @@
     },
     {
       "term": "tauri",
-      "specificity_x1024": 507204,
+      "specificity_x1024": 507496,
       "count": 146,
       "df": 52,
       "anchors": [
@@ -10607,7 +10655,7 @@
     },
     {
       "term": "telemetry",
-      "specificity_x1024": 792858,
+      "specificity_x1024": 793444,
       "count": 293,
       "df": 89,
       "anchors": [
@@ -10631,7 +10679,7 @@
     },
     {
       "term": "tempdir",
-      "specificity_x1024": 538824,
+      "specificity_x1024": 539088,
       "count": 132,
       "df": 33,
       "anchors": [
@@ -10655,7 +10703,7 @@
     },
     {
       "term": "template",
-      "specificity_x1024": 543126,
+      "specificity_x1024": 543388,
       "count": 131,
       "df": 31,
       "anchors": [
@@ -10679,7 +10727,7 @@
     },
     {
       "term": "templates",
-      "specificity_x1024": 915616,
+      "specificity_x1024": 916032,
       "count": 208,
       "df": 27,
       "anchors": [
@@ -10703,7 +10751,7 @@
     },
     {
       "term": "terminal",
-      "specificity_x1024": 784300,
+      "specificity_x1024": 784760,
       "count": 230,
       "df": 54,
       "anchors": [
@@ -10727,7 +10775,7 @@
     },
     {
       "term": "terms",
-      "specificity_x1024": 1642232,
+      "specificity_x1024": 1643056,
       "count": 412,
       "df": 36,
       "anchors": [
@@ -10751,9 +10799,9 @@
     },
     {
       "term": "tests",
-      "specificity_x1024": 629130,
-      "count": 313,
-      "df": 138,
+      "specificity_x1024": 629256,
+      "count": 314,
+      "df": 139,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/hooks/bash/rtk_rewrite.rs",
@@ -10775,7 +10823,7 @@
     },
     {
       "term": "text",
-      "specificity_x1024": 1052368,
+      "specificity_x1024": 1053536,
       "count": 584,
       "df": 164,
       "anchors": [
@@ -10799,9 +10847,9 @@
     },
     {
       "term": "three",
-      "specificity_x1024": 640460,
-      "count": 310,
-      "df": 131,
+      "specificity_x1024": 648900,
+      "count": 315,
+      "df": 132,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -10822,32 +10870,8 @@
       "source": "both"
     },
     {
-      "term": "threshold",
-      "specificity_x1024": 485856,
-      "count": 112,
-      "df": 28,
-      "anchors": [
-        "apps/rt/src/hooks/task/delegation_advisory.rs",
-        "apps/rt/src/commands/maint/worktree_gc.rs",
-        "apps/rt/src/commands/review/gate_regression_check.rs",
-        "apps/rt/src/hooks/observe/amend_window_inject.rs",
-        "apps/rt/src/commands/doctor/superseded_check.rs",
-        "apps/rt/src/commands/statusline/segment.rs",
-        "packages/core/src/domain/config.rs",
-        "apps/rt/src/commands/doctor/language_audit.rs",
-        "packages/core/src/domain/vocabulary/mod.rs",
-        "apps/rt/src/commands/statusline/theme.rs",
-        "apps/rt/src/hooks/task/tool_use_counter.rs",
-        "apps/rt/src/commands/scan_patterns/list.rs",
-        "packages/core/src/domain/model/event.rs",
-        "apps/dashboard/src/features/workspace/SpecAlertsBand/index.tsx",
-        "apps/dashboard/src/pages/Specs.tsx"
-      ],
-      "source": "both"
-    },
-    {
       "term": "tier",
-      "specificity_x1024": 488360,
+      "specificity_x1024": 488592,
       "count": 116,
       "df": 30,
       "anchors": [
@@ -10871,14 +10895,15 @@
     },
     {
       "term": "time",
-      "specificity_x1024": 552048,
-      "count": 248,
-      "df": 119,
+      "specificity_x1024": 559636,
+      "count": 253,
+      "df": 120,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/dashboard/src-tauri/src/spec_staleness.rs",
         "apps/rt/src/commands/wave/wave_scaffold.rs",
         "packages/core/src/domain/economy/reader.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
@@ -10886,7 +10911,6 @@
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/commands/work_unit_open.rs",
         "packages/core/src/domain/model/view/filter.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/dashboard/src-tauri/src/lib.rs",
         "apps/dashboard/src/lib/types/economy.ts",
         "apps/rt/src/commands/event/event_projections/pr_metrics.rs"
@@ -10895,7 +10919,7 @@
     },
     {
       "term": "timeout",
-      "specificity_x1024": 566766,
+      "specificity_x1024": 566988,
       "count": 111,
       "df": 16,
       "anchors": [
@@ -10919,7 +10943,7 @@
     },
     {
       "term": "timestamp",
-      "specificity_x1024": 550720,
+      "specificity_x1024": 551040,
       "count": 160,
       "df": 53,
       "anchors": [
@@ -10943,7 +10967,7 @@
     },
     {
       "term": "title",
-      "specificity_x1024": 546810,
+      "specificity_x1024": 547140,
       "count": 165,
       "df": 57,
       "anchors": [
@@ -10967,7 +10991,7 @@
     },
     {
       "term": "token",
-      "specificity_x1024": 1433406,
+      "specificity_x1024": 1434732,
       "count": 663,
       "df": 123,
       "anchors": [
@@ -10991,7 +11015,7 @@
     },
     {
       "term": "tokens",
-      "specificity_x1024": 1334106,
+      "specificity_x1024": 1335188,
       "count": 541,
       "df": 104,
       "anchors": [
@@ -11015,7 +11039,7 @@
     },
     {
       "term": "tool",
-      "specificity_x1024": 2196110,
+      "specificity_x1024": 2198028,
       "count": 959,
       "df": 115,
       "anchors": [
@@ -11039,7 +11063,7 @@
     },
     {
       "term": "top",
-      "specificity_x1024": 775846,
+      "specificity_x1024": 776492,
       "count": 323,
       "df": 108,
       "anchors": [
@@ -11063,7 +11087,7 @@
     },
     {
       "term": "total",
-      "specificity_x1024": 927950,
+      "specificity_x1024": 928620,
       "count": 335,
       "df": 85,
       "anchors": [
@@ -11087,7 +11111,7 @@
     },
     {
       "term": "transcript",
-      "specificity_x1024": 645694,
+      "specificity_x1024": 645932,
       "count": 119,
       "df": 13,
       "anchors": [
@@ -11109,8 +11133,8 @@
     },
     {
       "term": "true",
-      "specificity_x1024": 1024608,
-      "count": 624,
+      "specificity_x1024": 1027500,
+      "count": 625,
       "df": 184,
       "anchors": [
         "apps/cli/src/commands/init.rs",
@@ -11133,9 +11157,9 @@
     },
     {
       "term": "two",
-      "specificity_x1024": 1227162,
-      "count": 901,
-      "df": 219,
+      "specificity_x1024": 1225824,
+      "count": 904,
+      "df": 220,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/shared/branch_state.rs",
@@ -11157,7 +11181,7 @@
     },
     {
       "term": "type",
-      "specificity_x1024": 946956,
+      "specificity_x1024": 947832,
       "count": 438,
       "df": 123,
       "anchors": [
@@ -11181,9 +11205,9 @@
     },
     {
       "term": "unit",
-      "specificity_x1024": 2455890,
-      "count": 1153,
-      "df": 125,
+      "specificity_x1024": 2443980,
+      "count": 1155,
+      "df": 126,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/event/work_branch.rs",
@@ -11205,8 +11229,8 @@
     },
     {
       "term": "unknown",
-      "specificity_x1024": 771678,
-      "count": 387,
+      "specificity_x1024": 774448,
+      "count": 388,
       "df": 140,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
@@ -11229,8 +11253,8 @@
     },
     {
       "term": "unreadable",
-      "specificity_x1024": 554856,
-      "count": 244,
+      "specificity_x1024": 557620,
+      "count": 245,
       "df": 116,
       "anchors": [
         "apps/rt/src/commands/spec/scope_decompose.rs",
@@ -11253,9 +11277,9 @@
     },
     {
       "term": "unwrap",
-      "specificity_x1024": 1247580,
-      "count": 478,
-      "df": 95,
+      "specificity_x1024": 1243484,
+      "count": 479,
+      "df": 96,
       "anchors": [
         "apps/cli/src/commands/init.rs",
         "apps/rt/src/commands/scan_patterns/list.rs",
@@ -11277,7 +11301,7 @@
     },
     {
       "term": "usd",
-      "specificity_x1024": 604890,
+      "specificity_x1024": 605124,
       "count": 117,
       "df": 15,
       "anchors": [
@@ -11301,9 +11325,9 @@
     },
     {
       "term": "used",
-      "specificity_x1024": 719226,
-      "count": 513,
-      "df": 214,
+      "specificity_x1024": 720336,
+      "count": 516,
+      "df": 215,
       "anchors": [
         "apps/rt/src/commands/agent/digest_adherence_finalize.rs",
         "apps/rt/src/hooks/write/work_branch_gate.rs",
@@ -11325,8 +11349,8 @@
     },
     {
       "term": "user",
-      "specificity_x1024": 1010972,
-      "count": 526,
+      "specificity_x1024": 1015872,
+      "count": 528,
       "df": 149,
       "anchors": [
         "apps/cli/src/commands/init.rs",
@@ -11349,7 +11373,7 @@
     },
     {
       "term": "uses",
-      "specificity_x1024": 505980,
+      "specificity_x1024": 506520,
       "count": 270,
       "df": 155,
       "anchors": [
@@ -11373,7 +11397,7 @@
     },
     {
       "term": "value",
-      "specificity_x1024": 966588,
+      "specificity_x1024": 967624,
       "count": 518,
       "df": 156,
       "anchors": [
@@ -11397,7 +11421,7 @@
     },
     {
       "term": "vec",
-      "specificity_x1024": 921726,
+      "specificity_x1024": 922332,
       "count": 303,
       "df": 68,
       "anchors": [
@@ -11421,8 +11445,8 @@
     },
     {
       "term": "verbatim",
-      "specificity_x1024": 603402,
-      "count": 237,
+      "specificity_x1024": 606424,
+      "count": 238,
       "df": 99,
       "anchors": [
         "apps/rt/src/commands/feature.rs",
@@ -11445,7 +11469,7 @@
     },
     {
       "term": "version",
-      "specificity_x1024": 866970,
+      "specificity_x1024": 867540,
       "count": 285,
       "df": 68,
       "anchors": [
@@ -11469,7 +11493,7 @@
     },
     {
       "term": "vocabulary",
-      "specificity_x1024": 909114,
+      "specificity_x1024": 909668,
       "count": 277,
       "df": 58,
       "anchors": [
@@ -11493,7 +11517,7 @@
     },
     {
       "term": "walk",
-      "specificity_x1024": 714736,
+      "specificity_x1024": 715232,
       "count": 248,
       "df": 78,
       "anchors": [
@@ -11517,7 +11541,7 @@
     },
     {
       "term": "warn",
-      "specificity_x1024": 1182300,
+      "specificity_x1024": 1183000,
       "count": 350,
       "df": 55,
       "anchors": [
@@ -11541,9 +11565,9 @@
     },
     {
       "term": "way",
-      "specificity_x1024": 517524,
-      "count": 202,
-      "df": 98,
+      "specificity_x1024": 516528,
+      "count": 204,
+      "df": 100,
       "anchors": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/event/work_branch.rs",
@@ -11565,7 +11589,7 @@
     },
     {
       "term": "weak",
-      "specificity_x1024": 587404,
+      "specificity_x1024": 587640,
       "count": 118,
       "df": 18,
       "anchors": [
@@ -11588,34 +11612,10 @@
       "source": "both"
     },
     {
-      "term": "whitespace",
-      "specificity_x1024": 485692,
-      "count": 158,
-      "df": 66,
-      "anchors": [
-        "packages/core/src/domain/spec/contract.rs",
-        "apps/rt/src/hooks/bash/rtk_rewrite.rs",
-        "apps/rt/src/commands/agent/render/sections.rs",
-        "packages/core/src/domain/regression_check/compare.rs",
-        "apps/dashboard/src-tauri/src/telemetry.rs",
-        "apps/rt/src/commands/agent/context_inject.rs",
-        "apps/rt/src/commands/pipeline/close_gates.rs",
-        "apps/rt/src/hooks/bash/lex.rs",
-        "packages/core/src/domain/capability/mod.rs",
-        "apps/rt/src/commands/scan_guards/apply.rs",
-        "apps/rt/src/commands/spec/spec_sections.rs",
-        "apps/rt/src/commands/statusline/theme.rs",
-        "apps/rt/src/hooks/write/post_edit.rs",
-        "apps/rt/src/hooks/write/size_gate.rs",
-        "apps/scan/src/dictionary.rs"
-      ],
-      "source": "both"
-    },
-    {
       "term": "whole",
-      "specificity_x1024": 755048,
-      "count": 388,
-      "df": 146,
+      "specificity_x1024": 760480,
+      "count": 392,
+      "df": 147,
       "anchors": [
         "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/review/ac_negative_check.rs",
@@ -11623,11 +11623,11 @@
         "apps/rt/src/commands/event/work_branch.rs",
         "apps/rt/src/hooks/task/subagent_inject.rs",
         "apps/rt/src/commands/glossary_coverage.rs",
+        "packages/core/src/platform/project_seed.rs",
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
-        "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/review/analyze_validation.rs",
         "apps/rt/src/commands/spec/ac_amend.rs",
         "apps/rt/src/commands/agent/context_inject.rs",
@@ -11637,7 +11637,7 @@
     },
     {
       "term": "window",
-      "specificity_x1024": 1106688,
+      "specificity_x1024": 1107456,
       "count": 384,
       "df": 78,
       "anchors": [
@@ -11661,7 +11661,7 @@
     },
     {
       "term": "windows",
-      "specificity_x1024": 671772,
+      "specificity_x1024": 672216,
       "count": 222,
       "df": 69,
       "anchors": [
@@ -11685,9 +11685,9 @@
     },
     {
       "term": "wins",
-      "specificity_x1024": 507264,
-      "count": 192,
-      "df": 93,
+      "specificity_x1024": 515088,
+      "count": 196,
+      "df": 94,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "packages/core/src/view/projection/card.rs",
@@ -11709,9 +11709,9 @@
     },
     {
       "term": "word",
-      "specificity_x1024": 991692,
-      "count": 326,
-      "df": 68,
+      "specificity_x1024": 990156,
+      "count": 327,
+      "df": 69,
       "anchors": [
         "apps/rt/src/commands/glossary_coverage.rs",
         "apps/dashboard/src-tauri/src/spec_views.rs",
@@ -11733,7 +11733,7 @@
     },
     {
       "term": "words",
-      "specificity_x1024": 565514,
+      "specificity_x1024": 565828,
       "count": 157,
       "df": 48,
       "anchors": [
@@ -11757,8 +11757,8 @@
     },
     {
       "term": "work",
-      "specificity_x1024": 2311502,
-      "count": 1031,
+      "specificity_x1024": 2315808,
+      "count": 1032,
       "df": 118,
       "anchors": [
         "apps/rt/src/commands/event/work_branch.rs",
@@ -11781,7 +11781,7 @@
     },
     {
       "term": "worktree",
-      "specificity_x1024": 1358016,
+      "specificity_x1024": 1358720,
       "count": 352,
       "df": 40,
       "anchors": [
@@ -11805,8 +11805,8 @@
     },
     {
       "term": "write",
-      "specificity_x1024": 1629348,
-      "count": 978,
+      "specificity_x1024": 1636308,
+      "count": 981,
       "df": 181,
       "anchors": [
         "apps/rt/src/commands/wave/wave_scaffold.rs",
@@ -11829,9 +11829,9 @@
     },
     {
       "term": "writes",
-      "specificity_x1024": 690196,
-      "count": 338,
-      "df": 134,
+      "specificity_x1024": 702420,
+      "count": 345,
+      "df": 135,
       "anchors": [
         "packages/core/src/platform/project_seed.rs",
         "apps/rt/src/commands/review/finding_collect.rs",
@@ -11853,12 +11853,12 @@
     },
     {
       "term": "written",
-      "specificity_x1024": 947100,
-      "count": 462,
+      "specificity_x1024": 952128,
+      "count": 464,
       "df": 133,
       "anchors": [
-        "apps/rt/src/commands/scan_patterns/list.rs",
         "packages/core/src/platform/project_seed.rs",
+        "apps/rt/src/commands/scan_patterns/list.rs",
         "apps/rt/src/commands/scan_patterns/apply.rs",
         "apps/rt/src/commands/spec/spec_draft.rs",
         "apps/rt/src/commands/pipeline/wave_done.rs",
@@ -11877,7 +11877,7 @@
     },
     {
       "term": "x1024",
-      "specificity_x1024": 544292,
+      "specificity_x1024": 544488,
       "count": 98,
       "df": 12,
       "anchors": [
@@ -11898,9 +11898,9 @@
     },
     {
       "term": "yields",
-      "specificity_x1024": 512566,
-      "count": 227,
-      "df": 117,
+      "specificity_x1024": 511632,
+      "count": 228,
+      "df": 118,
       "anchors": [
         "apps/dashboard/src-tauri/src/telemetry.rs",
         "apps/dashboard/src-tauri/src/project_overview.rs",
@@ -11922,7 +11922,7 @@
     },
     {
       "term": "zero",
-      "specificity_x1024": 550122,
+      "specificity_x1024": 550676,
       "count": 277,
       "df": 141,
       "anchors": [
