@@ -68,6 +68,7 @@ pub struct GitConfig {
     /// ([`crate::platform::git_branches::branch_catalog`]) and this map only
     /// PRE-SELECTS — see [`preselected_bases`](GitConfig::preselected_bases).
     /// A project that never declares one loses nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub flow: BTreeMap<String, String>,
     /// Branches that refuse a direct commit or merge, BEYOND the remote's
     /// default branch — which is protected whether or not this list exists.
