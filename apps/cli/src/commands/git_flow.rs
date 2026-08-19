@@ -216,7 +216,11 @@ pub fn collect_choices(
 pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path) {
     config.git = GitConfig {
         flow: build_flow(choices.dev_branch.trim(), choices.production.trim()),
-        provider: choices.provider.clone(),
+        // `protected` is NOT written by an install: the remote's default branch
+        // is protected by probe, and this list is the escape hatch a team fills
+        // in by hand. Seeding it would re-create the stale declaration the
+        // probe replaced. Wave 3 removes the prompts that feed `flow` too.
+        ..GitConfig::default()
     };
 
     let cmds = detect_commands(root);
