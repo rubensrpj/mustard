@@ -258,7 +258,7 @@ pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
 fn resolve_work_kind(requested: Option<&str>) -> Option<WorkKind> {
     match requested.map(str::trim).filter(|s| !s.is_empty()) {
         Some(value) => WorkKind::parse(value),
-        None => Some(WorkKind::Feature),
+        None => Some(WorkKind::suggested_default()),
     }
 }
 
@@ -329,11 +329,11 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                     "ok": false,
                     "reason": "unknown-type",
                     "type": opts.work_kind.clone(),
-                    "hint": WorkKind::ALL.map(WorkKind::token).join(", "),
+                    "hint": WorkKind::SUGGESTED.join(", "),
                 });
             };
             let base = match super::event::work_branch::resolve_kind_base(
-                kind,
+                &main,
                 opts.base.as_deref(),
                 &config,
             ) {
@@ -483,7 +483,7 @@ fn unusable_worktree_name(name: &str) -> Option<String> {
             "WorktreeCreate: `name` must be a plain name or a `{{kind}}/{{slug}}` work branch \
              (kinds: {kinds}) — a path separator anywhere else escapes the worktrees \
              directory. Refusing '{name}': {why}.",
-            kinds = WorkKind::ALL.map(WorkKind::token).join(", "),
+            kinds = WorkKind::SUGGESTED.join(", "),
         ))
     };
     if name.contains('\\') {
@@ -1193,7 +1193,8 @@ mod tests {
 
         // Every kind the project knows, asked of WorkKind rather than spelled
         // here — a fourth kind must not need this file edited.
-        for kind in WorkKind::ALL {
+        for token in WorkKind::SUGGESTED {
+            let kind = WorkKind::parse(token).expect("suggested token parses");
             let name = kind.branch_name("another-unit");
             assert!(
                 unusable_worktree_name(&name).is_none(),
