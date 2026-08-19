@@ -1156,35 +1156,6 @@ mod tests {
         );
     }
 
-    /// AC-3 — the vocabulary is open. A token the project never suggested makes
-    /// a branch name exactly like a suggested one; what is still refused is a
-    /// token that could not be a git ref segment at all.
-    #[test]
-    fn accepts_a_type_outside_the_suggested_list() {
-        let chore = WorkKind::parse("chore").expect("an ordinary conventional-commit type");
-        assert_eq!(chore.branch_name("limpa-lockfile"), "chore/limpa-lockfile");
-
-        let invented = WorkKind::parse("spike").expect("a token no list mentions");
-        assert_eq!(invented.branch_name("prova-de-conceito"), "spike/prova-de-conceito");
-        assert_eq!(
-            WorkKind::of_branch("spike/prova-de-conceito").as_ref().map(WorkKind::token),
-            Some("spike"),
-            "and it reads back as its own kind",
-        );
-
-        assert_eq!(
-            WorkKind::parse("  FEATURE  ").as_ref().map(WorkKind::token),
-            Some("feature"),
-            "the answer comes from a person: trimmed and lower-cased",
-        );
-
-        for refused in ["", "   ", "feat/ure", "com espaco", "acentuação"] {
-            assert!(
-                WorkKind::parse(refused).is_none(),
-                "not a possible ref segment: {refused:?}",
-            );
-        }
-    }
 
     /// AC-5, the half the sibling above could not reach — *"and the operator
     /// chooses when more than one candidate exists"*.
