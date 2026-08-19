@@ -64,6 +64,15 @@
 //! Fail-open everywhere `gh` is involved: an absent CLI or an unreachable
 //! provider degrades to an honest `gh_error` field and exit 0. The consent rule
 //! above is the one thing that never degrades — no evidence means ASK.
+//!
+//! ## The WRITE path already left `gh` — this module keeps only reads
+//!
+//! Every pull-request WRITE (create/edit/ready) now goes through the provider
+//! port ([`crate::shared::pr_provider::PrProvider`], spoken by
+//! [`crate::commands::review::pr_publish`]). The `gh pr list`/`view` reads
+//! below (and the [`gh_out`]/[`gh_json`] helpers other modules import) migrate
+//! behind the same port in their own unit; they stay direct shell-outs here
+//! until then.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -124,7 +133,9 @@ pub(crate) fn gh_json(root: &Path, args: &[&str]) -> Result<Value, String> {
 /// The repository root every command here works from: the MAIN checkout when
 /// `root` sits inside a linked worktree, `root` itself otherwise. `mustard.json`
 /// and `.claude/` live there, and so does the repository `gh` must resolve.
-fn project_root(root: &Path) -> PathBuf {
+/// `pub(crate)` because [`super::pr_publish`] resolves the SAME root for the
+/// same reason — one spelling, not two that can drift.
+pub(crate) fn project_root(root: &Path) -> PathBuf {
     main_checkout_root(root).unwrap_or_else(|| root.to_path_buf())
 }
 

@@ -228,6 +228,66 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// The `/mustard:pr` door's OPEN step: open the unit's pull request through
+    /// the provider IN FORCE (`git.provider` declared, else the `origin`
+    /// remote, else the fallback) — the prose names this command, never a
+    /// provider CLI. The title is the body file's first heading. Answers one
+    /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
+    /// `error` field with exit 0, never a panic.
+    #[command(name = "pr-open")]
+    #[command(display_order = 94)]
+    PrOpen {
+        /// The integration base the PR targets (short branch name).
+        #[arg(long)]
+        base: String,
+        /// The work branch the PR is opened FROM (short branch name).
+        #[arg(long)]
+        head: String,
+        /// File whose content becomes the PR body (`<spec>/pr-body.md`); its
+        /// first heading becomes the title. Unreadable ⇒ `ok:false` +
+        /// `error:"body-file-unreadable"`, nothing is opened.
+        #[arg(long = "body-file")]
+        body_file: PathBuf,
+        /// Open as a draft — the parent of a monorepo unit while any submodule
+        /// PR is still open.
+        #[arg(long)]
+        draft: bool,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The push ritual's body re-send: replace the body of pull request
+    /// `--number` with the rewritten `<spec>/pr-body.md`, through the provider
+    /// in force. Same report shape as `pr-open`; failure degrades into the
+    /// `error` field with exit 0.
+    #[command(name = "pr-edit")]
+    #[command(display_order = 95)]
+    PrEdit {
+        /// The PR number whose body is replaced.
+        #[arg(long)]
+        number: u64,
+        /// File whose content becomes the new PR body. Unreadable ⇒ `ok:false`
+        /// + `error:"body-file-unreadable"`, nothing is edited.
+        #[arg(long = "body-file")]
+        body_file: PathBuf,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The finish ritual's un-draft: mark draft pull request `--number` ready
+    /// for review (what requests the code owners), through the provider in
+    /// force. Same report shape as `pr-open`; failure degrades into the
+    /// `error` field with exit 0.
+    #[command(name = "pr-ready")]
+    #[command(display_order = 96)]
+    PrReady {
+        /// The draft PR number to mark ready.
+        #[arg(long)]
+        number: u64,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Seed a spec's `meta.json#findings` from the two producers that already
     /// wrote their discoveries to disk: the reviewer's `review/findings*.md`
     /// (one finding per file) and the `removal` column of `ac-proof.json` (one
@@ -349,6 +409,13 @@ pub fn dispatch(cmd: ReviewCmd) {
         ReviewCmd::PrMerge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }
+        ReviewCmd::PrOpen { base, head, body_file, draft, root } => {
+            review::pr_publish::run_open(&root, &base, &head, &body_file, draft);
+        }
+        ReviewCmd::PrEdit { number, body_file, root } => {
+            review::pr_publish::run_edit(&root, number, &body_file);
+        }
+        ReviewCmd::PrReady { number, root } => review::pr_publish::run_ready(&root, number),
         ReviewCmd::FindingCollect { spec } => review::finding_collect::run(spec.as_deref()),
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

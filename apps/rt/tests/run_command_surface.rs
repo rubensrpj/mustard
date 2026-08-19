@@ -24,7 +24,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 93 declared variants + `help`, which clap generates at build time.
+/// 97 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "ac-add",
     "ac-amend",
@@ -78,8 +78,11 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "pipeline-summary",
     "plan-materialize",
     "plan-prepare",
+    "pr-edit",
     "pr-list",
     "pr-merge",
+    "pr-open",
+    "pr-ready",
     "pr-review",
     "qa-run",
     "rebuild-specs",
