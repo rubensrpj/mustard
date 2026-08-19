@@ -127,8 +127,11 @@ pub fn collect_choices(
     let i18n = existing.i18n();
     let existing_lang = i18n.lang.as_str().to_string();
     let existing_tone = i18n.tone.as_str().to_string();
-    let existing_provider =
-        if existing.git.provider.is_empty() { "github".to_string() } else { existing.git.provider.clone() };
+    // Carried forward VERBATIM, empty included. It used to coerce empty to
+    // "github", which is precisely what would defeat detection: an install
+    // would write the override on every run and the remote would never be
+    // consulted again.
+    let existing_provider = existing.git.provider.clone();
     let existing_dev = existing.git.flow.get("*").cloned();
     let existing_prod =
         existing_dev.as_ref().and_then(|d| existing.git.flow.get(d).cloned());
@@ -173,13 +176,13 @@ pub fn collect_choices(
     let production = existing_prod.unwrap_or_default();
     let dev_branch = existing_dev.unwrap_or_default();
 
-    let providers = ["github", "gitlab", "bitbucket"];
-    let provider_idx = Select::with_theme(&theme)
-        .with_prompt("Git provider")
-        .items(providers)
-        .default(providers.iter().position(|p| *p == existing_provider).unwrap_or(0))
-        .interact()
-        .context("reading git provider")?;
+    // The provider menu is GONE, for the reason the branch prompts went: the
+    // answer is written in the `origin` remote, and freezing it at install time
+    // made every project carry a decision taken before anyone knew the project.
+    // It is detected now (`mustard_core::resolve_provider`), and what survives
+    // in the config is an override for the self-hosted case — which is why an
+    // EXISTING declaration is carried forward untouched here.
+    let provider = existing_provider;
 
     let langs = ["pt-BR", "en-US"];
     let lang_idx = Select::with_theme(&theme)
@@ -200,7 +203,7 @@ pub fn collect_choices(
     Ok(Choices {
         production,
         dev_branch,
-        provider: providers[provider_idx].to_string(),
+        provider,
         spec_lang: langs[lang_idx].to_string(),
         tone: tones[tone_idx].to_string(),
     })
@@ -335,6 +338,43 @@ mod tests {
         assert_eq!(kept.dev_branch, "trunk", "the declared base survives untouched");
     }
 
+    /// AC-3 — the install stops asking who hosts the repository, and stops
+    /// writing an answer nobody gave.
+    ///
+    /// Both halves: an install that asks nothing but still writes `"github"`
+    /// leaves a permanent override behind, and the remote would never be
+    /// consulted again.
+    #[test]
+    fn init_does_not_ask_for_the_provider() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+
+        let probed = facts(Some("dev"), false);
+        let choices = collect_choices(&probed, &ProjectConfig::default(), true)
+            .expect("no prompt to fail");
+        assert!(
+            choices.provider.is_empty(),
+            "nothing was asked, so nothing is answered: {:?}",
+            choices.provider,
+        );
+
+        let mut config = ProjectConfig::default();
+        apply_choices(&mut config, &choices, root);
+        assert!(config.git.provider.is_empty(), "no override was created");
+        let written = serde_json::to_string(&config).expect("serialises");
+        assert!(
+            !written.contains("\"provider\""),
+            "an empty provider is written as NO key: {written}",
+        );
+
+        // An existing override survives — the install stopped creating them, it
+        // did not start deleting them. This is the self-hosted case.
+        let mut declared = ProjectConfig::default();
+        declared.git.provider = "gitlab".to_string();
+        let kept = collect_choices(&probed, &declared, true).expect("no prompt to fail");
+        assert_eq!(kept.provider, "gitlab", "the declared override is untouched");
+    }
+
     #[test]
     fn build_flow_empty_dev_yields_empty_map() {
         assert!(build_flow("", "main").is_empty());
@@ -396,7 +436,11 @@ mod tests {
         // Non-interactive, fresh dir → derived defaults written.
         configure(dir.path(), false).unwrap();
         let cfg = ProjectConfig::load(dir.path());
-        assert_eq!(cfg.git.provider, "github");
+        // The provider is NOT among the derived defaults any more: it is
+        // detected from the remote when it is needed, and what a fresh install
+        // writes is nothing. The commands below still ARE derived — they come
+        // from probing the project, not from asking.
+        assert_eq!(cfg.git.provider, "", "a fresh install writes no override");
         assert_eq!(cfg.build_command.as_deref(), Some("cargo build"));
         assert_eq!(cfg.spec_lang.as_deref(), Some("pt-BR"));
         assert_eq!(cfg.tone.as_deref(), Some("didactic"));

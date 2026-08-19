@@ -566,9 +566,12 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let cfg = mustard_core::ProjectConfig::load(&cfg_root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
     let bases: Vec<String> = flow.bases().to_vec();
-    // The merge gate asks the provider the project DECLARES — this command names
-    // no CLI of its own, exactly like the reading face below.
-    let provider = cfg.git.provider.clone();
+    // The merge gate asks who hosts this repository — RESOLVED, not merely read:
+    // the declared override when there is one, otherwise the `origin` remote.
+    // Reading the raw field would answer an empty string for every project
+    // installed after the install stopped asking, and an empty provider matches
+    // no adapter at all.
+    let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
 
     // The user's contract: bare settle NEVER runs from a base — it is the
     // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
@@ -920,7 +923,7 @@ pub(crate) fn report_at(start: &Path) -> Value {
     let cfg = mustard_core::ProjectConfig::load(&cfg_root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
     let bases: Vec<String> = flow.bases().to_vec();
-    let provider = cfg.git.provider.clone();
+    let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
 
     let mut repos = vec![repo_inventory(&main, ".", &flow, &provider)];
     let submodules = git_out(&main, &["submodule", "status"])

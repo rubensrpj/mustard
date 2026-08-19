@@ -79,13 +79,26 @@ pub struct GitConfig {
     /// small as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<String>,
-    /// Hosting provider — `github`, `gitlab`, or `bitbucket`.
+    /// Hosting provider — an OVERRIDE, empty by default.
+    ///
+    /// Empty means "ask the repository": the provider is detected from the
+    /// `origin` remote's host
+    /// ([`crate::platform::git_provider::resolve_provider`]). It used to be a
+    /// question the install asked and froze, which meant every project carried
+    /// an answer given on the day it was first opened.
+    ///
+    /// It survives as an override — and it WINS over detection — because a
+    /// self-hosted instance is unrecognisable by hostname, and that is the one
+    /// case where only the operator knows. Skipped on serialize so a fresh
+    /// install writes no key at all: writing `"github"` by default would make
+    /// every install a permanent override and detection would never run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
 }
 
 impl Default for GitConfig {
     fn default() -> Self {
-        Self { flow: BTreeMap::new(), protected: Vec::new(), provider: "github".to_string() }
+        Self { flow: BTreeMap::new(), protected: Vec::new(), provider: String::new() }
     }
 }
 
@@ -581,7 +594,10 @@ mod tests {
     fn load_absent_is_default_fail_open() {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig::load(dir.path());
-        assert_eq!(cfg.git.provider, "github");
+        // Empty by DEFAULT now: the provider is a detected fact with an
+        // optional override, and a default of "github" would write that
+        // override on every install.
+        assert_eq!(cfg.git.provider, "");
         assert!(cfg.build_command().is_none());
         assert_eq!(cfg.vcs(), Some("git".to_string()));
     }

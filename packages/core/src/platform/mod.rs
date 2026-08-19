@@ -1,6 +1,7 @@
 pub mod error;
 pub mod git_branches;
 pub mod git_exclude;
+pub mod git_provider;
 pub mod harness;
 pub mod hook_resolve;
 pub mod i18n;
