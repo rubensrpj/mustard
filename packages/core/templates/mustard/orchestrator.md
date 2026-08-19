@@ -19,27 +19,39 @@ Each kind dispatches the `/mustard:<kind>` flow. **Dispatching means LOADING the
 
 ## Dispatch
 
-**A unit opens with ONE question.** The branch is named by what the unit IS — `{kind}/{slug}`, kind ∈ `feature`/`fix`/`hotfix` — so the base is no longer in the name: it FOLLOWS from the kind through `mustard.json#git.flow` (bases = the non-`*` keys ∪ their values) — `feature`/`fix` off the `*` base, `hotfix` off one that is not. Nothing is hardcoded: a `*` base of `develop` yields `develop`. Ask both together:
+**A unit opens with ONE question, asked against a REAL list.** The branch is named by what the unit IS — `{kind}/{slug}` — and neither half is hardcoded any more.
+
+Before asking, get the candidates from git:
+
+```
+mustard-rt run base-candidates
+```
+
+It fetches and returns every branch on `origin`, newest commit first, each row marked `protected` (a direct commit is refused there) and `preselected` (`git.flow` names it — where the cursor opens). `measured:false` means git could not be asked at all: ask without a menu rather than presenting an empty one as complete.
+
+Then ask both together, offering what the repository really has:
 
 ```
 Li seu pedido como: correção de defeito
 
-  tipo:    [fix]   feature   hotfix
-  sai de:  [dev]   main
+  tipo:    [fix]   feature   hotfix   chore   refactor   docs   …ou o seu
+  sai de:  [dev]   main   release/2026-Q3   squad-b/integration
   branch:  fix/o-botao-de-login-quebrou
 ```
 
-The pre-marked `tipo` is the reading you already made above (Bugfix → `fix`, else `feature`): accepting costs one Enter, and a bad name is fixed BEFORE the branch exists, not after. **`hotfix` is a DESTINATION, not a kind of work** — the same change is a fix or a hotfix only by where it lands, and no request text separates them, so it is never inferred and never pre-marked. Picking it moves `sai de` to a non-work base, and the operator may still choose another. `sai de` is not asked at all when ONE candidate base exists — a question with a single answer is ceremony. Ask ONCE per unit; the answer is stored nowhere. Then:
+The pre-marked `tipo` is the reading you already made above (Bugfix → `fix`, else `feature`): accepting costs one Enter, and a bad name is fixed BEFORE the branch exists, not after. **The type is an open label, not a closed set** — the suggestions are the git-flow words plus the conventional-commit ones, and a project that spells its work differently types its own token; anything that can be a git ref segment is accepted. It decides NOTHING beyond the branch's prefix: `hotfix/` no longer moves the base, because the base is now chosen outright.
+
+`sai de` offers the catalogue with the `preselected` row pre-marked, and is not asked at all when the repository has ONE branch — a question with a single answer is ceremony. Ask ONCE per unit; the answer is stored nowhere. Then:
 
 ```
-mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --type {feature|fix|hotfix} --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
+mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --type {tipo} --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-`--type` is the `tipo` answer, `--base` the `sai de` one (omit it and the kind's base is taken). **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed** — a `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither ever goes in `--kind`, which names the EVENT. It VALIDATES before writing: an undeclared `--base` is refused, and so is a `hotfix` off the work base — that contradiction IS the fix/hotfix difference, never coerced.
+`--type` is the `tipo` answer, `--base` the `sai de` one (omit it and the project's primary base is taken). **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed** — a `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither ever goes in `--kind`, which names the EVENT. It VALIDATES before writing: a `--base` the remote does not have is refused, and the refusal LISTS the branches that exist instead of pointing at a configuration file.
 
-That emit IS the **base gate** — the one check before ANALYZE, and every pipeline-opening path crosses it (a read-only answer that opens no pipeline never emits, so it never reaches it). It refuses with exit 2, before anything is written, when the checkout is not one of those bases — a unit is cut FROM a base, never from another unit — or when the base trails `origin`. Each refusal names the command that resolves it (`git checkout {base}`, `git pull --ff-only origin {base}`): run it and re-dispatch, never route around it. A freshly updated base is also the only moment the tree is clean by construction, so a stale census is re-mined right there — `/scan` is not a step you run.
+That emit IS the **base gate** — the one check before ANALYZE, and every pipeline-opening path crosses it (a read-only answer that opens no pipeline never emits, so it never reaches it). It refuses with exit 2, before anything is written, when the base trails `origin`. It no longer refuses a checkout for "not being an integration base": that test read a list written at install time and told the operator a branch that exists is not one. Each refusal names the command that resolves it (`git checkout {base}`, `git pull --ff-only origin {base}`): run it and re-dispatch, never route around it. A freshly updated base is also the only moment the tree is clean by construction, so a stale census is re-mined right there — `/scan` is not a step you run.
 
-**That call is also where the unit is NAMED, and the name it returns is the only one:** the gate derives the canonical slug from `--intent` and echoes it as `spec` — with `renamedFrom` when the `--spec` you passed was not it (the flag is a hint; the derivation decides, so two names can never be born here). Carry that `spec` value into every later step — `spec-draft --slug`, `--spec {slug}`, the spec directory — never the string you typed. `--intent` + `--type` compute the unit's `{kind}/{slug}` branch (echoed as `branch` in the output) from that same name, and fix the `/git` PR target through the flow. **The branch IS the isolation, and it is cut at APPROVAL** — `spec-draft` checks `{kind}/{slug}` out in the MAIN checkout, so the whole unit is authored ON it: `spec.md`, the waves, the ceremony and the code alike. There is no `.claude/spec/` carve-out any more — a spec write on a bare integration base is DENIED like any other write. EXECUTE therefore finds the branch already checked out and reports the unit isolated IN PLACE (`inPlace:true`) instead of cutting anything; `EnterWorktree name=<branch from the output>` still cuts a worktree from a fresh `origin/{base}` when the branch is NOT already out — that is the parallel-work case, several units in flight at once. An old `{base}_{slug}` name still reads as its unit — nothing is renamed. Every path emits — no run is invisible. Read-only requests never branch or open a worktree.
+**That call is also where the unit is NAMED, and the name it returns is the only one:** the gate derives the canonical slug from `--intent` and echoes it as `spec` — with `renamedFrom` when the `--spec` you passed was not it (the flag is a hint; the derivation decides, so two names can never be born here). Carry that `spec` value into every later step — `spec-draft --slug`, `--spec {slug}`, the spec directory — never the string you typed. `--intent` + `--type` compute the unit's `{kind}/{slug}` branch (echoed as `branch` in the output) from that same name, and fix the `/git` PR target, which is the base the unit was actually cut from — recorded at the cut, never re-derived from the prefix. **The branch IS the isolation, and it is cut at APPROVAL** — `spec-draft` checks `{kind}/{slug}` out in the MAIN checkout, so the whole unit is authored ON it: `spec.md`, the waves, the ceremony and the code alike. There is no `.claude/spec/` carve-out any more — a spec write on a bare integration base is DENIED like any other write. EXECUTE therefore finds the branch already checked out and reports the unit isolated IN PLACE (`inPlace:true`) instead of cutting anything; `EnterWorktree name=<branch from the output>` still cuts a worktree from a fresh `origin/{base}` when the branch is NOT already out — that is the parallel-work case, several units in flight at once. An old `{base}_{slug}` name still reads as its unit — nothing is renamed. Every path emits — no run is invisible. Read-only requests never branch or open a worktree.
 
 ## Delegate via Task
 

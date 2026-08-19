@@ -306,7 +306,7 @@ impl BaseFlow {
 
     /// The one derivation, with or without a project to consult.
     fn build(git: &GitConfig, project: Option<PathBuf>) -> Self {
-        let bases: Vec<String> = git.integration_bases().into_iter().collect();
+        let bases: Vec<String> = git.preselected_bases().into_iter().collect();
         let work = git.primary_base();
 
         let mut chain: Vec<String> = Vec::new();

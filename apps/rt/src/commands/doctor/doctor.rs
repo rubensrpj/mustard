@@ -625,7 +625,7 @@ fn check_git_flow(cwd: &Path) -> CheckResult {
         );
     }
     let mut r = CheckResult::ok("git-flow");
-    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
+    let bases: Vec<String> = config.git.preselected_bases().into_iter().collect();
     r.details.push(format!("bases: {}", bases.join(", ")));
     r
 }

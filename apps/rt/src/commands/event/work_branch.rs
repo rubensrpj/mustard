@@ -259,7 +259,7 @@ pub(crate) fn refresh_integration_bases(
     if run_git(vcs, root, &["fetch", "origin"]).is_err() {
         return;
     }
-    for base in config.git.integration_bases() {
+    for base in config.git.preselected_bases() {
         // Best-effort per base — drop the result either way.
         let _ = if current == Some(base.as_str()) {
             run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
@@ -356,7 +356,7 @@ pub(crate) fn recorded_or_derived_base(
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> Result<String, Vec<String>> {
-    let declared = config.git.integration_bases();
+    let declared = config.git.preselected_bases();
     match crate::shared::context::pending_base_for(root, session).filter(|b| declared.contains(b)) {
         Some(recorded) => Ok(recorded),
         None => base_for(Path::new(root), target, config),

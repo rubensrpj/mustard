@@ -781,7 +781,7 @@ mod tests {
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
         cfg.git.flow.insert("dev".into(), "main".into());
-        let bases = cfg.git.integration_bases();
+        let bases = cfg.git.preselected_bases();
         assert!(bases.contains("dev") && bases.contains("main"));
         assert_eq!(bases.len(), 2, "the `*` key is not itself a base: {bases:?}");
 

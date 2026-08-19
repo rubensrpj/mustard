@@ -219,22 +219,27 @@ fn is_format_drive(cmd: &str) -> bool {
     false
 }
 
-/// The project's integration bases (`git.flow`) for the BG07 branch-delete
-/// guard, resolved fail-open.
+/// The project's PROTECTED branches for the BG07 branch-delete guard, resolved
+/// fail-open.
 ///
 /// `bash_safety` receives only the command string, so the root is resolved the
 /// same self-contained way any hook does off a bare command:
 /// [`crate::shared::context::project_dir`] (honours `CLAUDE_PROJECT_DIR`, then
 /// the workspace-anchor walk), then the process-cached config. This is the ONE
 /// spot in the module that reads project state; it is fully fail-open —
-/// [`mustard_core::domain::config::GitConfig::integration_bases`] returns its
-/// documented `{main, master}` fallback when the config is absent/unreadable,
-/// so main/master stay protected and this module hardcodes no branch name.
-fn guard_integration_bases() -> BTreeSet<String> {
+/// [`mustard_core::protected_branches`] returns its documented `{main, master}`
+/// fallback when git cannot be asked, so main/master stay protected and this
+/// module hardcodes no branch name.
+///
+/// It reads PROTECTION and not the promotion map, which is the same swap the
+/// write gate took: a branch `git.flow` merely mentions is not one you may not
+/// delete, and the branch the remote calls default is — whether or not any
+/// configuration names it.
+fn guard_protected_branches() -> BTreeSet<String> {
     let root = crate::shared::context::project_dir();
-    crate::shared::context::project_config_cached(std::path::Path::new(&root))
-        .git
-        .integration_bases()
+    let path = std::path::Path::new(&root);
+    let config = crate::shared::context::project_config_cached(path);
+    mustard_core::protected_branches(path, &config.git)
 }
 
 /// The `bash-safety` gate: deny when any rule matches. Resolves the project's
@@ -242,7 +247,7 @@ fn guard_integration_bases() -> BTreeSet<String> {
 /// — the deterministic, IO-free core the unit tests drive with an explicit base
 /// set.
 pub(super) fn bash_safety(cmd: &str) -> Option<Verdict> {
-    bash_safety_with_bases(cmd, &guard_integration_bases())
+    bash_safety_with_bases(cmd, &guard_protected_branches())
 }
 
 /// The rule engine over an explicit integration-base set. Pure and
@@ -431,7 +436,7 @@ mod tests {
         assert_denied_with_bases("git branch -d develop", "BG07", &flow);
     }
 
-    /// main/master stay protected through the `integration_bases()` fallback set
+    /// main/master stay protected through the `protected_branches` fallback set
     /// (the ONLY place those names are hardcoded — and it lives in core, not
     /// here). This is what an empty / unreadable `git.flow` degrades to.
     #[test]

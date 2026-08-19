@@ -45,6 +45,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "context-slice",
     "dependency-precheck",
     "diagnose-otel",
+    "base-candidates",
     "diff-context",
     "digest-adherence-finalize",
     "docs-stale-check",
