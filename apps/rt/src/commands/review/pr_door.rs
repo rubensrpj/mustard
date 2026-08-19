@@ -64,6 +64,15 @@
 //! Fail-open everywhere `gh` is involved: an absent CLI or an unreachable
 //! provider degrades to an honest `gh_error` field and exit 0. The consent rule
 //! above is the one thing that never degrades — no evidence means ASK.
+//!
+//! ## The WRITE path already left `gh` — this module keeps only reads
+//!
+//! Every pull-request WRITE (create/edit/ready) now goes through the provider
+//! port ([`crate::shared::pr_provider::PrProvider`], spoken by
+//! [`crate::commands::review::pr_publish`]). The `gh pr list`/`view` reads
+//! below (and the [`gh_out`]/[`gh_json`] helpers other modules import) migrate
+//! behind the same port in their own unit; they stay direct shell-outs here
+//! until then.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

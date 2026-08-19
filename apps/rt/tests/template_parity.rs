@@ -126,25 +126,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          named in commands/mustard/close/SKILL.md step 7",
     ),
     (
-        "pr-edit",
-        "the /git push ritual's body re-send (plugin/commands/git.md) moves \
-         off raw `gh pr edit` onto this command in the NEXT wave of this \
-         spec; the redundancy guard drops this row the moment that prose \
-         lands",
-    ),
-    (
-        "pr-open",
-        "the /mustard:pr open step (plugin/commands/pr.md) moves off raw `gh \
-         pr create` onto this command in the NEXT wave of this spec; the \
-         redundancy guard drops this row the moment that prose lands",
-    ),
-    (
-        "pr-ready",
-        "the /git finish ritual's un-draft (plugin/commands/git.md) moves off \
-         raw `gh pr ready` onto this command in the NEXT wave of this spec; \
-         the redundancy guard drops this row the moment that prose lands",
-    ),
-    (
         "rebuild-specs",
         "manual repair tool: regenerates the committed .summary.json sidecars \
          (commands/spec/rebuild_specs.rs module doc); user-invoked only \

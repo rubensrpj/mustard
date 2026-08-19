@@ -6,6 +6,15 @@
 //!
 //! In `--format table` mode a compact 10-15 line executive summary is printed.
 //!
+//! ## This is a READ path — the WRITE path already left `gh`
+//!
+//! Every pull-request WRITE (create/edit/ready) now goes through the provider
+//! port ([`crate::shared::pr_provider::PrProvider`], spoken by
+//! [`crate::commands::review::pr_publish`]) — no prose or module may call the
+//! provider CLI to write a PR any more. The `gh pr view` below is the READ
+//! half, which migrates behind the same port in its own unit; it stays a
+//! direct shell-out here until then.
+//!
 //! ## Fail-open contract
 //!
 //! - `gh` not in PATH → `{"error":"gh-not-found"}`, exit 0.
