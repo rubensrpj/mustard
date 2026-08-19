@@ -20,7 +20,7 @@ use crate::commands::{event};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum EventCmd {
     /// List the branches a unit could be cut from, newest commit first.
-    #[command(display_order = 7)]
+    #[command(display_order = 93)]
     BaseCandidates {
         /// Skip the `git fetch` and list what the clone already knows. The
         /// default refreshes: the whole point is a menu that is true TODAY.
