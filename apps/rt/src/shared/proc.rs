@@ -205,11 +205,55 @@ fn reap(
 /// still reported — the caller surfaces them for the human line). The
 /// idempotence checks live in the callers; this is the raw port-reap.
 pub fn free_port(port: u16) -> Vec<u32> {
-    let pids = listening_pids(port);
+    let own = session_ancestry();
+    let pids: Vec<u32> = listening_pids(port)
+        .into_iter()
+        .filter(|pid| {
+            let protected = own.contains(pid);
+            if protected {
+                // Killing an ancestor kills the session this code runs INSIDE.
+                // Measured in the field (2026-08-19, WSL): the unfiltered lsof
+                // below listed the Claude process — an OTLP CLIENT of the very
+                // port being freed — and this loop SIGTERMed it, ending the
+                // session with exit 143 every few minutes for days.
+                eprintln!("proc: refusing to kill pid {pid} — it is this session's own ancestry");
+            }
+            !protected
+        })
+        .collect();
     for &pid in &pids {
         kill_pid(pid);
     }
     pids
+}
+
+/// The PID of this process and every ancestor above it, read from
+/// `/proc/<pid>/status` `PPid:` links. On Windows (no `/proc`) only the own
+/// PID is returned — the netstat query there already filters to LISTENING
+/// rows, so the ancestry can never appear in the kill list to begin with.
+///
+/// Fail-open: an unreadable link ends the walk with what was collected —
+/// a SHORTER protected set only ever under-protects, never blocks the reap.
+fn session_ancestry() -> std::collections::BTreeSet<u32> {
+    let mut protected = std::collections::BTreeSet::new();
+    let mut pid = std::process::id();
+    for _ in 0..32 {
+        if !protected.insert(pid) || pid <= 1 {
+            break;
+        }
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+            break;
+        };
+        let Some(ppid) = status
+            .lines()
+            .find_map(|l| l.strip_prefix("PPid:"))
+            .and_then(|v| v.trim().parse::<u32>().ok())
+        else {
+            break;
+        };
+        pid = ppid;
+    }
+    protected
 }
 
 /// PIDs listening on `127.0.0.1:<port>`, parsed from a platform query. Empty
@@ -238,9 +282,15 @@ pub(crate) fn listening_pids(port: u16) -> Vec<u32> {
     }
     #[cfg(not(windows))]
     {
-        // `lsof -ti tcp:<port>` prints one PID per line (TCP, no header).
+        // `lsof -ti tcp:<port> -sTCP:LISTEN` prints one PID per line (TCP, no
+        // header) — the state filter is LOAD-BEARING: without it lsof lists
+        // every process with ANY endpoint on the port, which includes the OTLP
+        // CLIENTS shipping telemetry to the collector. The Claude session
+        // itself is such a client, and the unfiltered query is what had this
+        // reap kill the session it ran inside (the Windows branch above always
+        // filtered to LISTENING; only this branch had the hole).
         let out = Command::new("sh")
-            .args(["-c", &format!("lsof -ti tcp:{port}")])
+            .args(["-c", &lsof_listener_query(port)])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -284,6 +334,14 @@ fn parse_netstat_pids(text: &str, port: u16) -> Vec<u32> {
 /// Parse PIDs from `lsof -ti` output — one PID per line. Pure string parse —
 /// unit-testable without spawning `lsof`.
 #[cfg_attr(not(any(unix, test)), allow(dead_code))]
+/// The exact shell query the Unix reap runs. A function so the test can pin
+/// the `-sTCP:LISTEN` state filter — the one token whose absence turns the
+/// reap into a session-killer (see [`free_port`]).
+#[cfg(not(windows))]
+fn lsof_listener_query(port: u16) -> String {
+    format!("lsof -ti tcp:{port} -sTCP:LISTEN")
+}
+
 fn parse_lsof_pids(text: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     for line in text.lines() {
@@ -481,6 +539,26 @@ mod tests {
     fn parse_netstat_empty_on_no_match() {
         assert!(parse_netstat_pids("", 4318).is_empty());
         assert!(parse_netstat_pids("garbage line with no pid", 4318).is_empty());
+    }
+
+    /// The state filter is the whole fix: an unfiltered `lsof -ti tcp:<port>`
+    /// lists the port's CLIENTS too — the Claude session among them — and the
+    /// reap then kills the session it runs inside. This pins the token.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_reap_query_asks_only_for_the_listener() {
+        assert!(lsof_listener_query(4318).contains("-sTCP:LISTEN"));
+    }
+
+    /// The session's own ancestry is never a reap target: the set holds this
+    /// process and walks upward to init, so a pid list that (through any
+    /// future query bug) names an ancestor is filtered before the kill.
+    #[test]
+    fn the_session_ancestry_protects_self_and_parents() {
+        let own = session_ancestry();
+        assert!(own.contains(&std::process::id()), "self is protected");
+        #[cfg(not(windows))]
+        assert!(own.len() >= 2, "at least one ancestor walked: {own:?}");
     }
 
     #[test]
