@@ -736,29 +736,55 @@ mod tests {
         );
 
         // A flow that no longer declares the recorded base ignores it rather
-        // than obeying it — the project may have changed since the cut.
+        // than obeying it — the project may have changed since the cut. With
+        // the record dropped there is nothing left to answer WITH: the prefix
+        // used to supply a fallback and no longer does, so the honest answer is
+        // that the base was never established.
         let moved_on = BaseFlow::of_at(&two_tier(), project);
         assert_eq!(
             moved_on.base_of("hotfix/my-unit").known(),
-            Some("main"),
-            "an undeclared record is dropped, not obeyed",
+            None,
+            "an undeclared record is dropped, and nothing invents a replacement",
         );
 
-        // Nothing is recorded where the flow can still answer: an ordinary unit
-        // and a two-base project both derive, so no sidecar is written for them.
+        // The condition GENERALISED with the change. It used to mean "a hotfix
+        // where the emergency bases are several", because that was the one case
+        // the kind could not resolve. Now the kind resolves NOTHING, so every
+        // unit of a multi-base project records its base — the feature included.
         let two = BaseFlow::of_at(&two_tier(), project);
-        assert!(!two.base_must_be_recorded("hotfix/other"), "one candidate — nothing to remember");
-        assert!(!flow.base_must_be_recorded("feature/other"), "a feature has no choice to make");
-        flow.record_cut_base("feature/other", "dev");
+        assert!(two.base_must_be_recorded("hotfix/other"), "two bases — the pick must survive");
+        assert!(two.base_must_be_recorded("feature/other"), "and a feature makes the same pick");
+
+        // The one project where nothing is remembered is the one where nothing
+        // was chosen: a single declared base leaves no choice to lose.
+        let mut single = GitConfig::default();
+        single.flow.insert("*".to_string(), "main".to_string());
+        let one = BaseFlow::of_at(&single, project);
+        assert!(
+            !one.base_must_be_recorded("feature/other"),
+            "one base — nothing to remember",
+        );
+        one.record_cut_base("feature/other", "main");
         assert!(
             !project.join(".claude").join("spec").join("other").exists(),
             "a derivable base is never frozen into a record",
         );
 
-        // A model with no project consults no record — it answers what the flow
-        // implies, and says so where the flow cannot.
+        // A model with no project consults no record, so it can only say what
+        // the flow leaves undisputed. With three bases declared that is nothing
+        // — for EVERY kind, which is the same generalisation as above.
         let rootless = BaseFlow::of(&git);
-        assert!(matches!(rootless.base_of("hotfix/my-unit"), UnitBase::Ambiguous(_)));
-        assert_eq!(rootless.base_of("feature/my-unit").known(), Some("dev"));
+        for name in ["hotfix/my-unit", "feature/my-unit"] {
+            assert!(
+                matches!(rootless.base_of(name), UnitBase::Ambiguous(_)),
+                "no record and several bases: {name} has no established base",
+            );
+        }
+
+        // …and the single-base project is where it CAN answer without a record,
+        // because there is only one thing the answer could ever have been.
+        let mut single = GitConfig::default();
+        single.flow.insert("*".to_string(), "main".to_string());
+        assert_eq!(BaseFlow::of(&single).base_of("feature/my-unit").known(), Some("main"));
     }
 }

@@ -1018,23 +1018,39 @@ mod tests {
     /// same thing twice.
     #[test]
     fn the_base_comes_from_the_declared_flow_not_from_the_branch_name() {
+        // With two bases declared and nothing recorded, the NAME answers
+        // nothing for any kind — the prefix stopped carrying a base at all.
+        // `base_for` reports the candidates instead of picking one.
         let dev_main = two_tier();
-        assert_eq!(super::base_for(nowhere(), "feature/my-unit", &dev_main).as_deref(), Ok("dev"));
-        assert_eq!(super::base_for(nowhere(), "fix/my-unit", &dev_main).as_deref(), Ok("dev"));
-        assert_eq!(super::base_for(nowhere(), "hotfix/my-unit", &dev_main).as_deref(), Ok("main"));
+        for name in ["feature/my-unit", "fix/my-unit", "hotfix/my-unit"] {
+            assert!(
+                super::base_for(nowhere(), name, &dev_main).is_err(),
+                "the name alone cannot say where {name} came from",
+            );
+        }
 
-        // The SAME names, a different declared flow — every answer follows the
-        // configuration, so nothing was read out of the string.
+        // The SAME names, a different declared flow — the CANDIDATES follow the
+        // configuration, so nothing is read out of the string. That was always
+        // this test's real subject; what changed is that the answer is now a
+        // list to choose from instead of one value derived from the prefix.
         let mut develop_master = mustard_core::ProjectConfig::default();
         develop_master.git.flow.insert("*".to_string(), "develop".to_string());
         develop_master.git.flow.insert("develop".to_string(), "master".to_string());
+        for name in ["feature/my-unit", "hotfix/my-unit"] {
+            assert_eq!(
+                super::base_for(nowhere(), name, &develop_master),
+                Err(vec!["develop".to_string(), "master".to_string()]),
+                "the candidates are THIS project's, with no dev/main literal anywhere",
+            );
+        }
+
+        // And where the project leaves no choice, there is nothing to ask: a
+        // single declared base answers without a record.
+        let mut single = mustard_core::ProjectConfig::default();
+        single.git.flow.insert("*".to_string(), "trunk".to_string());
         assert_eq!(
-            super::base_for(nowhere(), "feature/my-unit", &develop_master).as_deref(),
-            Ok("develop"),
-        );
-        assert_eq!(
-            super::base_for(nowhere(), "hotfix/my-unit", &develop_master).as_deref(),
-            Ok("master"),
+            super::base_for(nowhere(), "feature/my-unit", &single).as_deref(),
+            Ok("trunk"),
         );
 
         // With TWO bases every answer above is derivable, which is why they are
@@ -1047,12 +1063,19 @@ mod tests {
         three.git.flow.insert("qas".to_string(), "main".to_string());
         assert_eq!(
             super::base_for(nowhere(), "hotfix/my-unit", &three),
-            Err(vec!["qas".to_string(), "main".to_string()]),
+            Err(vec!["dev".to_string(), "main".to_string(), "qas".to_string()]),
             "several candidates and nothing recorded — it says so, it does not pick",
         );
-        // …and the ordinary kinds still derive there, so the refusal is scoped
-        // to the one question only the operator ever answered.
-        assert_eq!(super::base_for(nowhere(), "feature/my-unit", &three).as_deref(), Ok("dev"));
+        // …and the ordinary kinds no longer derive there either. The refusal
+        // used to be scoped to the emergency case, because that was the only
+        // question the kind could not answer; with the kind answering nothing,
+        // the scope is every unit of a multi-base project — which is what makes
+        // the operator's pick worth recording in the first place.
+        assert_eq!(
+            super::base_for(nowhere(), "feature/my-unit", &three),
+            Err(vec!["dev".to_string(), "main".to_string(), "qas".to_string()]),
+            "an ordinary unit is asked the same question, and answered the same way",
+        );
     }
 
     /// A name that is nobody's unit still has to be cut from somewhere: the base
@@ -1228,7 +1251,12 @@ mod tests {
         let never_cut = BaseFlow::of_at(&config.git, root).base_of("hotfix/never-cut");
         assert!(never_cut.is_unit(), "it is still this project's unit");
         assert_eq!(never_cut.known(), None, "and its base was never established");
-        assert_eq!(never_cut.candidates(), ["qas", "main"], "naming what it could not choose");
+        assert_eq!(
+            never_cut.candidates(),
+            ["dev", "main", "qas"],
+            "naming what it could not choose — every declared base, now that the \
+             prefix narrows nothing",
+        );
     }
 
     /// The CUT and the DRAFT are two steps of ONE sequence, and the first must
