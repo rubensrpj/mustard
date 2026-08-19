@@ -1786,6 +1786,29 @@ mod tests {
             std_fs::create_dir_all(dest.parent().unwrap()).unwrap();
             std_fs::write(dest, body).unwrap();
         }
+        // The RUNTIME output — what the harness writes while it runs, as opposed
+        // to what `upsert_project` seeds at install time. The eight rules that
+        // cover these directories are derived from the documented catalog, so
+        // they exist whether or not anything here produces them; a fixture that
+        // only seeded left every one of them looking stale the moment the
+        // operator's global gitignore stopped answering for them.
+        //
+        // The names are the real ones this repository carries, so the rule is
+        // proven against the shape it will actually meet.
+        for (name, body) in [
+            (".agent-state/main-context.counter.json", "{}\n"),
+            (".cache/spec-material.json", "{}\n"),
+            (".harness/.last-stop", "0\n"),
+            (".metrics/qa.jsonl", "{}\n"),
+            (".pipeline-states/demo.json", "{}\n"),
+            ("agent-memory/mustard-review.md", "# memory\n"),
+            ("graph/entities.json", "{}\n"),
+            ("plans/2026-08-19-demo.md", "# plan\n"),
+        ] {
+            let dest = root.join(".claude").join(name);
+            std_fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std_fs::write(dest, body).unwrap();
+        }
         // A subproject's own `.claude/`, which a full scan creates: its census,
         // its pattern molds, and the Guards on the untracked local layer beside
         // the client's own instruction file.
@@ -1849,6 +1872,20 @@ mod tests {
     }
 
     /// Which of `paths` git says the single `rule` matches.
+    ///
+    /// **The operator's own git config is shut out, and that is the whole
+    /// point.** `check-ignore` answers from EVERY ignore source at once, so a
+    /// developer whose `~/.config/git/ignore` carries one line about `.claude/`
+    /// gets that line folded into every answer — and the positive half of the
+    /// ratchet ("this rule hides something of OURS") then passes for every rule
+    /// ever written, including a rule that matches nothing. It measured the
+    /// machine instead of the code: green on the author's laptop, red on all
+    /// three CI runners, for eight rules at once.
+    ///
+    /// So the global and system layers are pointed at `/dev/null` and
+    /// `core.excludesFile` is emptied on the command line. What remains is the
+    /// clone-local exclude file carrying the one rule the caller wrote — which
+    /// is what the doc above always claimed this measured.
     fn check_ignore<S: AsRef<str>>(
         probe: &Path,
         exclude: &Path,
@@ -1857,9 +1894,11 @@ mod tests {
     ) -> Vec<String> {
         std_fs::write(exclude, format!("{rule}\n")).unwrap();
         let out = std::process::Command::new("git")
-            .args(["check-ignore", "--no-index", "--"])
+            .args(["-c", "core.excludesFile=", "check-ignore", "--no-index", "--"])
             .args(paths.iter().map(AsRef::as_ref))
             .current_dir(probe)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .output()
             .expect("git check-ignore ran");
         // Exit 1 means "nothing matched" and is not a failure; 128 is.
