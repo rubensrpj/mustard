@@ -153,15 +153,75 @@ pub struct EmitPipelineOpts {
     pub work_kind: Option<String>,
 }
 
-/// The kind a caller that named none gets.
+/// How the unit's kind was decided — echoed in the report next to the kind, so
+/// the caller SEES the origin the same way `renamedFrom` makes a rename
+/// visible instead of leaving it to be inferred.
+const TYPE_FROM_EXPLICIT: &str = "explicit";
+const TYPE_FROM_PAYLOAD: &str = "derived-from-payload-kind";
+
+/// The routing-kind → branch-kind translation the orchestrator publishes as a
+/// table. Routing kinds ONLY: any other token derives nothing, because a
+/// derivation from a word this table never promised is a guess wearing
+/// evidence's clothes.
+fn work_kind_of_flow_kind(flow_kind: &str) -> Option<&'static str> {
+    match flow_kind {
+        "feature" | "task" => Some("feature"),
+        "bugfix" | "tactical-fix" => Some("fix"),
+        _ => None,
+    }
+}
+
+/// Decide the kind when `--type` was OMITTED. Never a silent default — that
+/// default once named a `feature/` branch for a bugfix dispatched exactly as
+/// the orchestrator prescribes (sialia, 2026-08-19): a silent default may not
+/// name a durable artefact. Either the payload's routing kind decides WITH the
+/// hotfix question already closed, or the call is refused:
 ///
-/// Ordinary work is the overwhelming case, and it is the one whose base — the
-/// base ordinary work is cut from — is also what the old base-less behaviour
-/// resolved to, so a caller that never learned the flag keeps its branch cut
-/// exactly where it was cut before. The one kind that must never be reached by
-/// default is the emergency: taking it by accident delivers to production.
-fn default_work_kind() -> WorkKind {
-    WorkKind::suggested_default()
+/// - the base being cut from is the ORDINARY work base → a hotfix may not name
+///   it by definition, so `fix` vs `hotfix` is not a real fork there and the
+///   payload's `kind` is evidence enough (`bugfix`/`tactical-fix` → `fix`,
+///   `feature`/`task` → `feature`);
+/// - any other base admits both readings, and fix-vs-hotfix is the one call
+///   this command is documented never to infer — refused, asking for `--type`.
+fn derive_work_kind(
+    payload_kind: Option<&str>,
+    base_is_ordinary: bool,
+) -> Result<WorkKind, String> {
+    let Some(flow_kind) = payload_kind.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Err(
+            "--type omitted and the --payload carries no routing `kind` to derive it from. \
+             Pass --type explicitly (e.g. --type fix)."
+                .to_string(),
+        );
+    };
+    if !base_is_ordinary {
+        return Err(format!(
+            "--type omitted on a base where both `fix` and `hotfix` are legal readings of \
+             kind={flow_kind:?}. That fork is never inferred — pass --type explicitly.",
+        ));
+    }
+    let Some(token) = work_kind_of_flow_kind(flow_kind) else {
+        return Err(format!(
+            "--type omitted and payload kind={flow_kind:?} is not a routing kind \
+             (feature|bugfix|task|tactical-fix). Pass --type explicitly.",
+        ));
+    };
+    WorkKind::parse(token)
+        .ok_or_else(|| format!("derived type {token:?} failed to parse — a bug, report it"))
+}
+
+/// Whether the base this unit is being cut from is the ordinary work base —
+/// the one place a hotfix is illegal by definition, which is what makes a
+/// derivation there safe. An omitted `--base` resolves TO that base, so it is
+/// ordinary by construction.
+fn cut_base_is_ordinary(opts: &EmitPipelineOpts) -> bool {
+    let Some(requested) = opts.base.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    let project = project_dir();
+    let config = mustard_core::ProjectConfig::load(Path::new(&project));
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, Path::new(&project));
+    requested == flow.work_base()
 }
 
 /// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.
@@ -203,11 +263,12 @@ fn parse_payload_tolerant(raw: &str) -> Result<Value, serde_json::Error> {
 pub fn run(opts: EmitPipelineOpts) {
     // --- VALIDATE — each check exits BEFORE any event is written --------------
     validate_kind_or_exit(&opts.kind);
-    let work_kind = resolve_work_kind_or_exit(&opts);
-    let kind_base = resolve_kind_base_or_exit(&opts, work_kind.as_ref());
+    let payload = parse_payload_or_exit(&opts);
+    let work_kind = resolve_work_kind_or_exit(&opts, &payload);
+    let kind_base =
+        resolve_kind_base_or_exit(&opts, work_kind.as_ref().map(|(kind, _)| kind));
     enforce_base_gate_or_exit(&opts);
     enforce_qa_gate_or_exit(&opts);
-    let payload = parse_payload_or_exit(&opts);
 
     // --- EMIT the primary event (+ any legacy→new alias twin) -----------------
     //
@@ -258,7 +319,7 @@ pub fn run(opts: EmitPipelineOpts) {
         }
         EVENT_PIPELINE_KIND => mark_pending_work_branch(
             &spec,
-            work_kind,
+            work_kind.as_ref().map(|(kind, _)| kind.clone()),
             kind_base.as_deref(),
             opts.intent.as_deref(),
             &sid,
@@ -278,7 +339,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // Remove the terminal-state marker (keyed on the predicate, so it runs for
     // every kind), then echo the one deterministic success line.
     cleanup_terminal_state(&kind, &payload, &spec);
-    echo_success(&kind, &spec, work_branch, minted.and_then(|m| m.renamed_from));
+    echo_success(&kind, &spec, work_branch, minted.and_then(|m| m.renamed_from), work_kind);
 }
 
 /// The process cwd, degrading to the configured project dir (never panics) —
@@ -325,16 +386,36 @@ fn validate_kind_or_exit(kind: &str) {
 /// loudly BEFORE anything is emitted, rather than falling back to the ordinary
 /// unit and cutting an emergency into the ordinary queue. `None` for every
 /// other kind, which cuts nothing.
-fn resolve_work_kind_or_exit(opts: &EmitPipelineOpts) -> Option<WorkKind> {
+fn resolve_work_kind_or_exit(
+    opts: &EmitPipelineOpts,
+    payload: &Value,
+) -> Option<(WorkKind, &'static str)> {
     if opts.kind != EVENT_PIPELINE_KIND {
         return None;
     }
     let Some(requested) = opts.work_kind.as_deref().map(str::trim).filter(|s| !s.is_empty())
     else {
-        return Some(default_work_kind());
+        // No silent default: derive with evidence or refuse (see
+        // [`derive_work_kind`] for the rule and the field incident behind it).
+        let payload_kind = payload.get("kind").and_then(Value::as_str);
+        match derive_work_kind(payload_kind, cut_base_is_ordinary(opts)) {
+            Ok(kind) => {
+                eprintln!(
+                    "emit-pipeline: --type omitted — derived '{}' from payload kind {:?} \
+                     (the base is the ordinary one, so hotfix is excluded by definition)",
+                    kind.token(),
+                    payload_kind.unwrap_or(""),
+                );
+                return Some((kind, TYPE_FROM_PAYLOAD));
+            }
+            Err(msg) => {
+                eprintln!("emit-pipeline: {msg}");
+                std::process::exit(1);
+            }
+        }
     };
     match WorkKind::parse(requested) {
-        Some(kind) => Some(kind),
+        Some(kind) => Some((kind, TYPE_FROM_EXPLICIT)),
         None => {
             eprintln!(
                 "emit-pipeline: unknown --type {requested:?}. Valid types: {}",
@@ -690,6 +771,7 @@ fn echo_success(
     spec: &str,
     work_branch: Option<String>,
     renamed_from: Option<String>,
+    work_kind: Option<(WorkKind, &'static str)>,
 ) {
     let mut done = json!({ "ok": true, "kind": kind, "spec": spec });
     if let Some(branch) = work_branch {
@@ -697,6 +779,13 @@ fn echo_success(
     }
     if let Some(asked) = renamed_from {
         done["renamedFrom"] = json!(asked);
+    }
+    // The kind and WHERE it came from — the same visibility `renamedFrom`
+    // gives the name: an explicit flag reads "explicit", a derivation names
+    // its evidence, and a reader never has to infer which one happened.
+    if let Some((unit_kind, origin)) = work_kind {
+        done["type"] = json!(unit_kind.token());
+        done["typeFrom"] = json!(origin);
     }
     println!("{done}");
 }
@@ -1507,6 +1596,44 @@ mod tests {
     // -----------------------------------------------------------------------
     // Validation + payload parsing (unit-level, no store I/O)
     // -----------------------------------------------------------------------
+
+    /// REGRESSION — the silent default is dead. Dispatching exactly as the
+    /// orchestrator prescribes (`--payload '{"kind":"bugfix"}'`, no `--type`,
+    /// ordinary base) once minted a `feature/` branch for a BUGFIX (sialia,
+    /// 2026-08-19). Now: the routing kind decides — with the hotfix fork
+    /// already closed by the base — or the call is refused. Never `feature`
+    /// out of silence.
+    #[test]
+    fn an_omitted_type_derives_from_the_payload_kind_or_refuses() {
+        // On the ordinary base the payload kind is evidence enough.
+        for (flow_kind, expected) in [
+            ("bugfix", "fix"),
+            ("tactical-fix", "fix"),
+            ("feature", "feature"),
+            ("task", "feature"),
+        ] {
+            let kind = derive_work_kind(Some(flow_kind), true)
+                .unwrap_or_else(|e| panic!("{flow_kind} should derive: {e}"));
+            assert_eq!(kind.token(), expected, "for payload kind {flow_kind:?}");
+        }
+        // No payload kind → refusal that asks for the flag, not a guess.
+        let err = derive_work_kind(None, true).expect_err("nothing to derive from");
+        assert!(err.contains("--type"), "the refusal names the fix: {err}");
+        // A word the table never promised → refusal, not a guess.
+        let err = derive_work_kind(Some("epic"), true).expect_err("not a routing kind");
+        assert!(err.contains("--type"), "{err}");
+    }
+
+    /// The fix-vs-hotfix fork is never inferred: off the ordinary base both
+    /// readings are legal, so an omitted `--type` is refused there even when
+    /// the payload kind would translate cleanly.
+    #[test]
+    fn a_base_that_admits_hotfix_refuses_to_derive() {
+        let err = derive_work_kind(Some("bugfix"), false)
+            .expect_err("ambiguous base must not derive");
+        assert!(err.contains("hotfix"), "the refusal explains the fork: {err}");
+        assert!(err.contains("--type"), "…and names the fix: {err}");
+    }
 
     #[test]
     fn work_type_in_kind_flag_gets_payload_hint() {
