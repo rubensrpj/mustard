@@ -35,7 +35,16 @@ The pre-marked `tipo` is the reading you made above (Bugfix → `fix`, else `fea
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --type {tipo} --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-`--type` is the `tipo` answer, `--base` the `sai de` one (omit it and the primary base is taken). **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed** — a `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither goes in `--kind`, which names the EVENT. A `--base` the remote does not have is refused, and the refusal LISTS the branches that exist instead of pointing at a config file.
+`--type` is the `tipo` answer, `--base` the `sai de` one (omit it and the primary base is taken). **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed** — a `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither goes in `--kind`, which names the EVENT. The translation between the two, with no hole:
+
+| payload `kind` (the FLOW) | `--type` (the BRANCH) |
+|---|---|
+| `feature` | `feature` |
+| `task` | `feature` |
+| `bugfix` | `fix` |
+| `tactical-fix` | `fix` — or `hotfix` when the base is a production one; that fork is YOURS, never inferred |
+
+An OMITTED `--type` is never a silent default: on the ordinary work base (where a hotfix is illegal by definition) the gate derives it from the payload `kind` per this table and the report echoes `type` + `typeFrom: derived-from-payload-kind`; on any other base, or with no routing kind in the payload, the call is REFUSED asking for the flag — a silent default may not name a durable artefact (a branch, a spec directory, an event). A `--base` the remote does not have is refused, and the refusal LISTS the branches that exist instead of pointing at a config file.
 
 That emit IS the **base gate** — the one check before ANALYZE, and every pipeline-opening path crosses it (a read-only answer that opens no pipeline never emits, so it never reaches it). It refuses with exit 2, before anything is written, when the base trails `origin`. It no longer refuses a checkout for "not being an integration base": that test read a list written at install time and told the operator a branch that exists is not one. Each refusal names the command that resolves it (`git checkout {base}`, `git pull --ff-only origin {base}`): run it and re-dispatch, never route around it. A freshly updated base is also the only moment the tree is clean by construction, so a stale census is re-mined right there — `/scan` is not a step you run.
 

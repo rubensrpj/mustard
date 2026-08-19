@@ -86,11 +86,17 @@ pub enum EventCmd {
         /// so via `renamedFrom`.
         #[arg(long)]
         intent: Option<String>,
-        /// What the unit IS: `feature`, `fix` or `hotfix`. On
-        /// `--kind pipeline.kind` it names the auto-branch (`{kind}/{slug}`)
-        /// and, through `git.flow`, the base the unit is cut from. Omitted →
-        /// `feature`. Never inferred from the request: a fix that waits for the
-        /// next release and one that goes to production are the same change.
+        /// What the unit IS — an open label (`feature`, `fix`, `hotfix`,
+        /// `chore`, …). On `--kind pipeline.kind` it names the auto-branch
+        /// (`{kind}/{slug}`). Omitted → NEVER a silent default: it is derived
+        /// from the routing `kind` in `--payload` (`bugfix`/`tactical-fix` →
+        /// `fix`, `feature`/`task` → `feature`) only where the base is the
+        /// ordinary work base — the one place a hotfix is illegal by
+        /// definition — and the report echoes `type` + `typeFrom`; anywhere
+        /// else, or with no routing kind, the call is refused asking for this
+        /// flag. Fix-vs-hotfix is never inferred from the request: a fix that
+        /// waits for the next release and one that goes to production are the
+        /// same change.
         #[arg(long = "type")]
         work_kind: Option<String>,
         /// Integration base the work branch is cut from. When set, it MUST name
