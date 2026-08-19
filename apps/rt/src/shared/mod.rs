@@ -19,6 +19,10 @@
 //! - [`prompt`] — tells a person's prompt apart from the runtime's own notices,
 //!   which reach the session through the same `UserPromptSubmit` channel. One
 //!   owner for the rule, shared by every observer on that trigger.
+//! - [`pr_provider`] — the pull-request ACTIONS (open/edit/ready/view) as a
+//!   port, the acting twin of `branch_state`'s read-only `PrLookup`: callers
+//!   depend on the trait, adapters are the only place a provider and its
+//!   CLI/API are named, and the factory picks by the provider in force.
 //! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
 //!   port, liveness probe) shared by the collector-spawning hook and the
 //!   collector-stopping `run` command, plus [`proc::run_shell_with_deadline`]
@@ -39,6 +43,10 @@ pub mod branch_state;
 pub mod context;
 pub mod events;
 pub mod gate_mode;
+// The bin target sees this port as unreached until the pr/git doors move
+// behind it (next waves) — the allow leaves with the first caller.
+#[allow(dead_code)]
+pub mod pr_provider;
 pub mod proc;
 pub mod prompt;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
