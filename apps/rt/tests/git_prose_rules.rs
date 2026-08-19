@@ -174,7 +174,7 @@ fn git_prose_conditions_gitlink_on_reachability() {
         "the draft never says WHAT blocks it, so no reader can find the sibling PR: {pr_step}",
     );
     assert!(
-        pr_step.contains("gh pr ready"),
+        pr_step.contains("pr-ready"),
         "the prose opens a draft without naming what clears it: {pr_step}",
     );
     // GitHub does not request code owners on a draft. Unsaid, the operator reads
