@@ -617,10 +617,17 @@ mod tests {
     fn both_branch_shapes_resolve_to_one_base_and_one_slug() {
         let flow = BaseFlow::of(&two_tier());
 
-        // The current shape: the base comes from the KIND, through the flow.
-        assert_eq!(flow.base_of("feature/my-unit").known(), Some("dev"));
-        assert_eq!(flow.base_of("fix/my-unit").known(), Some("dev"));
-        assert_eq!(flow.base_of("hotfix/my-unit").known(), Some("main"));
+        // The base no longer comes from the KIND — it is the operator's answer,
+        // recorded at the cut. With two declared bases and nothing recorded,
+        // every kind reads the same way, and that sameness IS the change: the
+        // prefix stopped carrying a base.
+        for name in ["feature/my-unit", "fix/my-unit", "hotfix/my-unit"] {
+            assert!(
+                flow.base_of(name).known().is_none(),
+                "the prefix no longer answers where {name} came from",
+            );
+            assert!(flow.base_of(name).is_unit(), "{name} is still a unit of this project");
+        }
         assert_eq!(flow.slug_of("feature/my-unit").as_deref(), Some("my-unit"));
         assert_eq!(flow.slug_of("hotfix/my-unit").as_deref(), Some("my-unit"));
 
@@ -666,18 +673,28 @@ mod tests {
         let project = dir.path();
         let git = three_tier();
 
-        // Nothing recorded yet: the flow ALONE cannot choose between `qas` and
-        // `main`, and saying "main" here is exactly the silent replacement of
-        // the operator's answer. It must say it does not know.
+        // Nothing recorded yet: the flow ALONE cannot choose, and naming one
+        // here is exactly the silent replacement of the operator's answer. It
+        // must say it does not know.
+        //
+        // The candidate list widened from the emergency bases to ALL of them,
+        // and that follows from the same change: while the kind implied a base,
+        // a `hotfix/` could only have come from an emergency one, so only those
+        // were candidates. With the prefix carrying nothing, every declared base
+        // is equally possible.
         let flow = BaseFlow::of_at(&git, project);
         assert_eq!(
             flow.base_of("hotfix/my-unit"),
-            UnitBase::Ambiguous(vec!["qas".to_string(), "main".to_string()]),
+            UnitBase::Ambiguous(vec![
+                "dev".to_string(),
+                "main".to_string(),
+                "qas".to_string(),
+            ]),
             "several candidates and no record — the answer was never established",
         );
         assert!(flow.base_of("hotfix/my-unit").is_unit(), "it is still a unit of this project");
         assert_eq!(flow.base_of("hotfix/my-unit").known(), None, "and it is not answered");
-        assert_eq!(flow.base_of("hotfix/my-unit").candidates(), ["qas", "main"]);
+        assert_eq!(flow.base_of("hotfix/my-unit").candidates(), ["dev", "main", "qas"]);
 
         // The cut records the MIDDLE base — the operator's pick.
         flow.record_cut_base("hotfix/my-unit", "qas");
