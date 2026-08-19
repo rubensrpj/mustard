@@ -271,7 +271,11 @@ pnpm test                          # same
 
 ```jsonc
 {
-  "git":  { "flow": { "*": "dev", "dev": "main" }, "provider": "github" },
+  // "flow" is OPTIONAL and restricts nothing: it only PRE-SELECTS a base in the
+  // picker. Where a unit may be cut from comes from git (`run base-candidates`);
+  // where a direct commit is refused comes from the remote's default branch plus
+  // whatever "protected" adds. A fresh install writes no "flow".
+  "git":  { "provider": "github" },
   "buildCommand": "cargo build",
   "testCommand":  "cargo test",
   "lintCommand":  "cargo clippy",

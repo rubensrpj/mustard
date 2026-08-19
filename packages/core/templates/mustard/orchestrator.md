@@ -19,17 +19,7 @@ Each kind dispatches the `/mustard:<kind>` flow. **Dispatching means LOADING the
 
 ## Dispatch
 
-**A unit opens with ONE question, asked against a REAL list.** The branch is named by what the unit IS — `{kind}/{slug}` — and neither half is hardcoded any more.
-
-Before asking, get the candidates from git:
-
-```
-mustard-rt run base-candidates
-```
-
-It fetches and returns every branch on `origin`, newest commit first, each row marked `protected` (a direct commit is refused there) and `preselected` (`git.flow` names it — where the cursor opens). `measured:false` means git could not be asked at all: ask without a menu rather than presenting an empty one as complete.
-
-Then ask both together, offering what the repository really has:
+**A unit opens with ONE question, asked against a REAL list.** Get the candidates from git first — `mustard-rt run base-candidates` fetches and returns every branch on `origin`, newest first, each marked `protected` (a direct commit is refused there) and `preselected` (`git.flow` names it — where the cursor opens). `measured:false` means git could not be asked: ask without a menu rather than showing an empty one as complete. Then ask both together:
 
 ```
 Li seu pedido como: correção de defeito
@@ -39,15 +29,13 @@ Li seu pedido como: correção de defeito
   branch:  fix/o-botao-de-login-quebrou
 ```
 
-The pre-marked `tipo` is the reading you already made above (Bugfix → `fix`, else `feature`): accepting costs one Enter, and a bad name is fixed BEFORE the branch exists, not after. **The type is an open label, not a closed set** — the suggestions are the git-flow words plus the conventional-commit ones, and a project that spells its work differently types its own token; anything that can be a git ref segment is accepted. It decides NOTHING beyond the branch's prefix: `hotfix/` no longer moves the base, because the base is now chosen outright.
-
-`sai de` offers the catalogue with the `preselected` row pre-marked, and is not asked at all when the repository has ONE branch — a question with a single answer is ceremony. Ask ONCE per unit; the answer is stored nowhere. Then:
+The pre-marked `tipo` is the reading you made above (Bugfix → `fix`, else `feature`): a bad name is fixed BEFORE the branch exists. **The type is an OPEN label** — the suggestions are conventional, and any token that can be a git ref segment is accepted. It decides nothing beyond the prefix: `hotfix/` no longer moves the base, because the base is chosen outright. `sai de` offers the catalogue with `preselected` pre-marked, and is skipped when the repository has ONE branch. Ask ONCE per unit; the answer is stored nowhere. Then:
 
 ```
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --type {tipo} --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-`--type` is the `tipo` answer, `--base` the `sai de` one (omit it and the project's primary base is taken). **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed** — a `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither ever goes in `--kind`, which names the EVENT. It VALIDATES before writing: a `--base` the remote does not have is refused, and the refusal LISTS the branches that exist instead of pointing at a configuration file.
+`--type` is the `tipo` answer, `--base` the `sai de` one (omit it and the primary base is taken). **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed** — a `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither goes in `--kind`, which names the EVENT. A `--base` the remote does not have is refused, and the refusal LISTS the branches that exist instead of pointing at a config file.
 
 That emit IS the **base gate** — the one check before ANALYZE, and every pipeline-opening path crosses it (a read-only answer that opens no pipeline never emits, so it never reaches it). It refuses with exit 2, before anything is written, when the base trails `origin`. It no longer refuses a checkout for "not being an integration base": that test read a list written at install time and told the operator a branch that exists is not one. Each refusal names the command that resolves it (`git checkout {base}`, `git pull --ff-only origin {base}`): run it and re-dispatch, never route around it. A freshly updated base is also the only moment the tree is clean by construction, so a stale census is re-mined right there — `/scan` is not a step you run.
 
