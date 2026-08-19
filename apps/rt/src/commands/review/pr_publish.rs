@@ -306,7 +306,7 @@ mod tests {
     /// A successful open answers exactly what the create proved — number and
     /// URL — names the provider, and carries no error field at all.
     #[test]
-    fn open_folds_the_created_facts_into_the_report() {
+    fn pr_open_reports_through_the_port() {
         let fake = FakePub::green("github");
         let report = open_report(&fake, &to_open());
         assert_eq!(

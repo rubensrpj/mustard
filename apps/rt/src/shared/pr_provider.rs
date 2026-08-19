@@ -438,7 +438,7 @@ mod tests {
     /// full ref is stripped, GitHub's already-short name passes unchanged,
     /// and a name outside `refs/heads/` is not guessed at.
     #[test]
-    fn short_ref_strips_the_heads_namespace_and_nothing_else() {
+    fn a_full_ref_and_a_short_name_answer_the_same_branch() {
         assert_eq!(short_ref("refs/heads/feature/my-unit"), "feature/my-unit");
         assert_eq!(short_ref("feature/my-unit"), "feature/my-unit");
         assert_eq!(short_ref("refs/tags/v1.0"), "refs/tags/v1.0");
@@ -451,7 +451,7 @@ mod tests {
     /// `all`, which is search-criteria-only) is an unreadable answer, never a
     /// guessed state.
     #[test]
-    fn azure_states_map_onto_the_canonical_vocabulary() {
+    fn azure_states_map_to_the_canonical_vocabulary() {
         assert_eq!(status_from_azure("active"), PrStatus::Open);
         assert_eq!(status_from_azure("notSet"), PrStatus::Open);
         assert_eq!(status_from_azure("completed"), PrStatus::Merged);
@@ -522,7 +522,7 @@ mod tests {
     /// provider — answers the stable token, honest about not having measured
     /// or done anything. The same word `branch_state` uses, on purpose.
     #[test]
-    fn unadapted_providers_answer_the_unsupported_token_on_every_operation() {
+    fn a_provider_without_an_adapter_refuses_honestly() {
         let to_open = PrToOpen {
             title: "t".into(),
             body: "b".into(),
