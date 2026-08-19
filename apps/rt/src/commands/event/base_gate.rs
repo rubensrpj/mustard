@@ -37,13 +37,20 @@
 //!
 //! ## Why the census refresh lives here
 //!
-//! `/scan` rewrites VERSIONED artifacts — the grain model, its dictionary — so
-//! it needs a clean tree to stay its own reviewable commit; that is precisely
-//! what `scan_clean_gate` refuses to let happen on a dirty one. A freshly
-//! updated base, before the first edit, is the one moment in the flow where a
-//! clean tree holds by construction, which is why the refresh is triggered from
-//! this gate instead of from a door the user has to remember. It is
-//! best-effort throughout: a stale census is a worse map, never a blocker.
+//! In a SHARED install `/scan` rewrites VERSIONED artifacts — the grain model,
+//! its dictionary — so it needs a clean tree to stay its own reviewable commit;
+//! that is precisely what `scan_clean_gate` refuses to let happen on a dirty
+//! one. A freshly updated base, before the first edit, is the one moment in the
+//! flow where a clean tree holds by construction, which is why the refresh is
+//! triggered from this gate instead of from a door the user has to remember. It
+//! is best-effort throughout: a stale census is a worse map, never a blocker.
+//!
+//! In a PRIVATE install the census is invisible to the host repository's git,
+//! so there is no commit to keep apart and the tree's state decides nothing —
+//! staleness alone is the whole question. Both readings come from the ONE
+//! predicate [`crate::hooks::write::scan_clean_gate::scan_output_is_versioned`],
+//! shared with the door that refuses, so the automatic path can never start
+//! mining exactly where the user-invoked one is turned away.
 
 use std::path::Path;
 
@@ -51,7 +58,7 @@ use mustard_core::{ProjectConfig, Scan};
 
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
-use crate::hooks::write::scan_clean_gate::tree_is_dirty;
+use crate::hooks::write::scan_clean_gate::{scan_output_is_versioned, tree_is_dirty};
 use crate::util::format_gate_message;
 
 /// The closed set of answers the base gate can return.
@@ -153,10 +160,20 @@ fn commits_behind_remote(project: &Path, base: &str) -> Option<u64> {
 /// Split out of [`refresh_census_if_stale`] so the DECISION is testable without
 /// the grain sidecar binary: the effect needs it, the judgement does not.
 pub(crate) fn census_refresh_due(project: &Path, model: &Path) -> bool {
-    // Only a POSITIVE clean tree qualifies. `None` (no git, unreadable status)
-    // is unmeasured, and a refresh mined over unknown dirt is exactly what
-    // `scan_clean_gate` refuses for the user-invoked door.
-    census_is_stale(project, model) && tree_is_dirty(project) == Some(false)
+    if !census_is_stale(project, model) {
+        return false;
+    }
+    // A private install's census never reaches the host's git, so no state of
+    // the tree can fuse it with the user's work: staleness is the whole
+    // question. Without this, a client repository — dirty nearly always —
+    // would carry a census that silently never refreshed.
+    if !scan_output_is_versioned(project) {
+        return true;
+    }
+    // Shared install: only a POSITIVE clean tree qualifies. `None` (no git,
+    // unreadable status) is unmeasured, and a refresh mined over unknown dirt
+    // is exactly what `scan_clean_gate` refuses for the user-invoked door.
+    tree_is_dirty(project) == Some(false)
 }
 
 /// `true` when the census on disk describes an older tree than the one checked
@@ -389,6 +406,32 @@ mod tests {
             evaluate(repo.path(), &opted_out),
             BaseVerdict::Abstain,
             "an explicit vcs opt-out has no base to be on",
+        );
+    }
+
+    /// The private-install reading of the same decision: the census never
+    /// reaches the host's git, so a dirty tree disqualifies nothing and
+    /// staleness alone decides. Without this the census on a client repository
+    /// silently never refreshed — the tree there is dirty nearly always.
+    #[test]
+    fn a_private_install_refreshes_the_census_on_a_dirty_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo_on(root, "dev");
+        let model = default_model_path(root);
+
+        let info = root.join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(
+            info.join("exclude"),
+            mustard_core::PRIVATE_MARKS.join("\n") + "\n",
+        )
+        .unwrap();
+
+        std::fs::write(root.join("stray.txt"), "x").unwrap();
+        assert!(
+            census_refresh_due(root, &model),
+            "a private census has no commit of its own to keep apart from the dirt",
         );
     }
 
