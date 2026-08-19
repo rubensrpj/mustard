@@ -369,7 +369,7 @@ impl Check for WorkBranchGate {
         let current = current_branch(&vcs, &local);
         let on_protected = current
             .as_deref()
-            .map(|b| is_protected(b, &config))
+            .map(|b| is_protected(Path::new(&local), b, &config))
             .unwrap_or(false);
 
         // 1. No pending work unit signalled for this session.
@@ -619,12 +619,40 @@ mod tests {
         (input, ctx)
     }
 
-    /// Write a `mustard.json` declaring the given `git.flow` so the gate derives
-    /// this project's integration bases from it (agnostic — no hardcoded flow).
+    /// Write a `mustard.json` declaring the given `git.flow`, AND declaring the
+    /// same branches as protected.
+    ///
+    /// The second half used to be free: protection was derived from `git.flow`,
+    /// so naming a branch in the promotion map protected it as a side effect.
+    /// That coupling is what kept the cut point closed, and removing it is this
+    /// unit's whole point — so a fixture that means "this project protects its
+    /// integration branches" now has to SAY so, exactly as a real project does
+    /// through `git.protected`. Derived from the same JSON rather than typed a
+    /// second time, so no caller can drift.
+    ///
+    /// Note what this does NOT do: it never protects the fixture's checkout
+    /// just for being the checkout. A `dev_thing` work branch stays writable,
+    /// which is what `allows_direct_edit_on_dev_work_branch_without_marker`
+    /// asserts.
     fn seed_flow(root: &Path, flow_json: &str) {
+        let flow: serde_json::Value = serde_json::from_str(flow_json).unwrap();
+        let mut protected: Vec<String> = Vec::new();
+        if let Some(map) = flow.as_object() {
+            for (key, value) in map {
+                if key != "*" && !key.is_empty() {
+                    protected.push(key.clone());
+                }
+                if let Some(v) = value.as_str().filter(|v| !v.is_empty()) {
+                    protected.push(v.to_string());
+                }
+            }
+        }
+        protected.sort();
+        protected.dedup();
+        let protected_json = serde_json::to_string(&protected).unwrap();
         std::fs::write(
             root.join("mustard.json"),
-            format!(r#"{{"git":{{"flow":{flow_json}}}}}"#),
+            format!(r#"{{"git":{{"flow":{flow_json},"protected":{protected_json}}}}}"#),
         )
         .unwrap();
     }
@@ -1268,15 +1296,35 @@ mod tests {
         );
     }
 
+    /// Protection stopped following `git.flow` and started following the
+    /// repository. The old assertion here — "`develop` is protected because the
+    /// flow map names it" — is precisely the coupling that forced the cut point
+    /// to stay closed, so it is inverted on purpose: a branch a promotion map
+    /// mentions is NOT protected for that reason alone.
     #[test]
-    fn is_protected_matches_integration_bases_only() {
+    fn is_protected_follows_the_repository_not_the_flow_map() {
+        let dir = tempfile::tempdir().unwrap(); // no repository: the strict fallback
+        let root = dir.path();
         let mut config = ProjectConfig::default();
         config.git.flow.insert("*".into(), "develop".into());
         config.git.flow.insert("develop".into(), "master".into());
-        assert!(is_protected("develop", &config), "bare integration base protected");
-        assert!(is_protected("master", &config), "bare integration base protected");
-        assert!(!is_protected("develop_x", &config), "work branch not protected");
-        assert!(!is_protected("main", &config), "not a base of THIS project");
+
+        assert!(
+            is_protected(root, "main", &config),
+            "unmeasurable degrades to the STRICT reading, whatever the flow says",
+        );
+        assert!(is_protected(root, "master", &config), "same fallback");
+        assert!(
+            !is_protected(root, "develop", &config),
+            "being named by git.flow is no longer a reason to be protected",
+        );
+        assert!(!is_protected(root, "develop_x", &config), "a work branch never is");
+
+        config.git.protected.push("develop".into());
+        assert!(
+            is_protected(root, "develop", &config),
+            "the declared list is the escape hatch that puts it back",
+        );
     }
 
     /// AC-5 (submodule base): a marker consumed while editing a file INSIDE a

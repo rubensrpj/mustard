@@ -368,13 +368,25 @@ pub(crate) fn recorded_or_derived_base(
     }
 }
 
-/// `true` when `branch` is a bare integration branch that must never be
-/// developed on directly — an exact member of `config.git.integration_bases()`
-/// (`dev`, `main`/`master`, `develop`, … whatever `git.flow` declares). The
-/// `{base}_*` work branches (`dev_rubens`, `main_close-gate`, …) are NOT
-/// protected.
-pub(crate) fn is_protected(branch: &str, config: &mustard_core::ProjectConfig) -> bool {
-    config.git.integration_bases().contains(branch)
+/// `true` when `branch` must never be developed on directly.
+///
+/// The membership question moved: it used to be "is this one of the branches
+/// `git.flow` declares?", which made protection and CUT POINT the same closed
+/// list — so opening the cut point would have opened protection with it. It is
+/// now `mustard_core::protected_branches`: the remote's own default branch
+/// (`origin/HEAD`) plus whatever `git.protected` adds. Normally a set of ONE.
+///
+/// Work branches — `feature/x`, `fix/y`, and the older `{base}_*` shape — are
+/// NOT protected, exactly as before. What changed is that `dev` is no longer
+/// protected merely for appearing in a promotion map: a unit may now be cut
+/// from it AND committed on it, which is what a project that promotes through
+/// several branches always needed.
+pub(crate) fn is_protected(
+    root: &Path,
+    branch: &str,
+    config: &mustard_core::ProjectConfig,
+) -> bool {
+    mustard_core::protected_branches(root, &config.git).contains(branch)
 }
 
 /// `true` when the tree HOLDS work that is not this unit's — its HEAD names a
@@ -391,6 +403,7 @@ pub(crate) fn is_protected(branch: &str, config: &mustard_core::ProjectConfig) -
 /// measurements of a position, so neither counts: an unmeasured HEAD keeps
 /// today's cut rather than triggering a refusal the operator did not ask for.
 pub(crate) fn holds_other_work(
+    root: &Path,
     current: Option<&str>,
     target: &str,
     config: &mustard_core::ProjectConfig,
@@ -398,7 +411,7 @@ pub(crate) fn holds_other_work(
     let Some(branch) = current.filter(|b| *b != "HEAD") else {
         return false;
     };
-    branch != target && !is_protected(branch, config)
+    branch != target && !is_protected(root, branch, config)
 }
 
 // ---------------------------------------------------------------------------
@@ -713,7 +726,7 @@ pub(crate) fn busy_checkout(
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> Option<BusyCheckout> {
-    if !holds_other_work(current, target, config) {
+    if !holds_other_work(root, current, target, config) {
         return None;
     }
     let work = checkout_work(root);

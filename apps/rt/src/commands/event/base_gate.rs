@@ -69,7 +69,12 @@ pub(crate) enum BaseVerdict {
     Refuse(String),
 }
 
-/// Judge the current checkout against the project's `git.flow` bases.
+/// Judge the current checkout as a base to cut a unit from.
+///
+/// One question survives: is it up to date with its remote? A unit cut from a
+/// stale base re-does merged work and conflicts on the way back, and NO branch
+/// convention protects against that — which is why this is the check that
+/// stayed when the membership test went.
 ///
 /// `project` is the state root (where `mustard.json` and `.claude/` live) and
 /// also the tree the branch is read from — opening a NEW pipeline from inside
@@ -89,10 +94,22 @@ pub(crate) fn evaluate(project: &Path, config: &ProjectConfig) -> BaseVerdict {
         return BaseVerdict::Abstain;
     };
 
-    let bases = config.git.integration_bases();
-    if !bases.contains(&current) {
-        return BaseVerdict::Refuse(not_a_base_reason(&current, config));
-    }
+    // NO membership test any more. It used to read
+    // `config.git.integration_bases()` and refuse everything outside it, which
+    // meant a branch cut last Tuesday was told it "is not an integration base
+    // of this project" — a sentence about a configuration file, delivered as if
+    // it were a sentence about the repository. In a client repository, where
+    // the operator does not own the branch convention, the only offered way out
+    // was to edit that file per project.
+    //
+    // What is DELIBERATELY given up: the gate no longer distinguishes a base
+    // from another unit's work branch, so it can no longer refuse a unit cut
+    // off another unit. That refusal was only ever possible because the base
+    // set was closed, and a closed set is exactly what made the common case
+    // wrong. Stacking a unit on another branch is legitimate in the flows this
+    // opens up for; the picker shows what each candidate IS, and the choice is
+    // the operator's. The safety that survives is the one no convention can
+    // supply for itself — see below.
     match commits_behind_remote(project, &current) {
         Some(behind) if behind > 0 => BaseVerdict::Refuse(behind_reason(&current, behind)),
         // `None` = unmeasured (offline, no remote-tracking ref): open.
@@ -103,30 +120,6 @@ pub(crate) fn evaluate(project: &Path, config: &ProjectConfig) -> BaseVerdict {
 /// Gate title every refusal carries — the `[Base Gate]` prefix
 /// [`format_gate_message`] renders.
 const GATE: &str = "Base Gate";
-
-/// The refusal for a checkout that is not one of the project's bases. Names
-/// what you are on, the bases that exist, and the checkout that fixes it.
-/// A detached HEAD is spelled out — `rev-parse --abbrev-ref` reports it as the
-/// literal `HEAD`, which reads like a branch name and is not one.
-fn not_a_base_reason(current: &str, config: &ProjectConfig) -> String {
-    let listed: Vec<String> = config.git.integration_bases().into_iter().collect();
-    let primary = config.git.primary_base();
-    let what = if current == "HEAD" {
-        format!("the checkout is a detached HEAD, not an integration base (bases: {})", listed.join(", "))
-    } else {
-        format!(
-            "the checkout '{current}' is not an integration base of this project (bases: {})",
-            listed.join(", ")
-        )
-    };
-    format_gate_message(
-        GATE,
-        &what,
-        "a work unit is cut FROM a base, never from another unit — the spec, the waves \
-         and the code all live on the branch this opens",
-        &format!("git checkout {primary}, then open the pipeline again"),
-    )
-}
 
 /// The refusal for a base that trails its remote, naming the exact pull.
 fn behind_reason(base: &str, behind: u64) -> String {
@@ -264,23 +257,49 @@ mod tests {
         git(root, &["commit", "-m", "init"]);
     }
 
-    /// A checkout that is NOT one of `git.flow`'s bases refuses, and the
-    /// refusal names the bases plus the checkout that resolves it.
+    /// AC-1 — the refusal this test used to assert is GONE, and its absence is
+    /// the feature. A branch the project never declared is an ordinary base:
+    /// `release/2026-Q3` is cut on a Tuesday and works the same afternoon,
+    /// where before it was told it "is not an integration base of this
+    /// project" — a sentence about a configuration file dressed up as a
+    /// sentence about the repository.
     #[test]
-    fn refuses_when_the_checkout_is_not_an_integration_base() {
+    fn accepts_any_real_branch_as_base() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        init_repo_on(root, "dev_some-unit");
+        init_repo_on(root, "release/2026-Q3");
 
-        let BaseVerdict::Refuse(reason) = evaluate(root, &flow_config()) else {
-            panic!("a work branch is not a base — the pipeline must not open here");
-        };
-        assert!(reason.contains("dev_some-unit"), "names where you are: {reason}");
-        assert!(
-            reason.contains("dev") && reason.contains("main"),
-            "lists the project's own bases: {reason}",
+        assert_eq!(
+            evaluate(root, &flow_config()),
+            BaseVerdict::Open("release/2026-Q3".to_string()),
+            "a branch git really has is a base, declared or not",
         );
-        assert!(reason.contains("git checkout dev"), "names the fix: {reason}");
+    }
+
+    /// AC-6 — the compatibility half, and the reason `git.flow` was kept rather
+    /// than deleted: a project that still declares one is not restricted BY it.
+    /// The declaration survives as a hint for where a picker opens; it decides
+    /// nothing here.
+    #[test]
+    fn a_declared_flow_preselects_without_refusing_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo_on(root, "squad-b/integration");
+
+        let config = flow_config(); // declares dev and main, and neither is this
+        assert_eq!(
+            evaluate(root, &config),
+            BaseVerdict::Open("squad-b/integration".to_string()),
+            "an undeclared branch opens exactly like a declared one",
+        );
+
+        #[allow(deprecated)]
+        let declared = config.git.preselected_bases();
+        assert!(
+            declared.contains("dev") && !declared.contains("squad-b/integration"),
+            "the flow still says what it always said — it just no longer refuses: {declared:?}",
+        );
+        assert_eq!(config.git.primary_base(), "dev", "and it still seeds the cursor");
     }
 
     /// Agnostic: a `develop`/`master` project judges against ITS bases — being
