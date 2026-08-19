@@ -258,7 +258,7 @@ pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
 fn resolve_work_kind(requested: Option<&str>) -> Option<WorkKind> {
     match requested.map(str::trim).filter(|s| !s.is_empty()) {
         Some(value) => WorkKind::parse(value),
-        None => Some(WorkKind::Feature),
+        None => Some(WorkKind::suggested_default()),
     }
 }
 
@@ -329,11 +329,11 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                     "ok": false,
                     "reason": "unknown-type",
                     "type": opts.work_kind.clone(),
-                    "hint": WorkKind::ALL.map(WorkKind::token).join(", "),
+                    "hint": WorkKind::SUGGESTED.join(", "),
                 });
             };
             let base = match super::event::work_branch::resolve_kind_base(
-                kind,
+                &main,
                 opts.base.as_deref(),
                 &config,
             ) {
@@ -483,7 +483,7 @@ fn unusable_worktree_name(name: &str) -> Option<String> {
             "WorktreeCreate: `name` must be a plain name or a `{{kind}}/{{slug}}` work branch \
              (kinds: {kinds}) — a path separator anywhere else escapes the worktrees \
              directory. Refusing '{name}': {why}.",
-            kinds = WorkKind::ALL.map(WorkKind::token).join(", "),
+            kinds = WorkKind::SUGGESTED.join(", "),
         ))
     };
     if name.contains('\\') {
@@ -583,20 +583,32 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     let flow = BaseFlow::of_at(&config.git, &main);
     let answer = flow.base_of(&name);
     let is_unit = answer.is_unit();
-    // An emergency whose base nothing recorded: the branch has to be cut from
-    // SOMEWHERE, and there is no honest somewhere. Refuse and name the door that
-    // takes the answer — silently taking the outermost candidate is the
-    // coercion this engine's own `--base` refusal exists to prevent.
-    if is_unit && answer.known().is_none() {
-        return Err(format!(
-            "WorktreeCreate: '{name}' is an emergency unit and nothing recorded which base it \
-             was cut from; this project declares several ({}). Open it through the run face, \
-             which takes the answer: `mustard-rt run work-unit-open --branch {name} --base \
-             <one of them>`.",
-            answer.candidates().join(", "),
-        ));
-    }
-    let unit_base = answer.into_known();
+    // A unit whose base nothing recorded. This used to REFUSE, and refusing was
+    // right while only an emergency could reach it: the kind implied the base
+    // for every other unit, so an unanswered question here meant a genuine
+    // emergency with several candidates and no honest way to choose.
+    //
+    // The kind implies nothing now, so every unit of a multi-base project
+    // arrives unanswered and refusing would close the ordinary door. It falls
+    // back to the project's PRIMARY base instead — the same fallback
+    // `resolve_kind_base` already takes for an omitted `--base`, and two doors
+    // disagreeing about one question is the drift this codebase keeps warning
+    // about. The choice is announced rather than silent, and the run face still
+    // takes an explicit answer.
+    let unit_base = match answer.known() {
+        Some(_) => answer.into_known(),
+        None if is_unit => {
+            let primary = config.git.primary_base();
+            eprintln!(
+                "work-unit-open: nothing recorded which base '{name}' was cut from; using the \
+                 project's primary base '{primary}' (candidates: {}). To be explicit: \
+                 `mustard-rt run work-unit-open --branch {name} --base <one of them>`.",
+                answer.candidates().join(", "),
+            );
+            Some(primary)
+        }
+        None => None,
+    };
 
     // Not a work unit → a mistyped base is refused BEFORE anything else looks
     // at the tree: it is a naming error, and blaming a dirty tree for it would
@@ -773,14 +785,22 @@ mod tests {
         (dir, main)
     }
 
+    /// A mistyped base is still refused loudly — but the refusal now names what
+    /// the REMOTE really has instead of pointing at a configuration file. Same
+    /// loudness, opposite source: that swap is the whole unit.
     #[test]
-    fn strict_base_error_names_flow() {
+    fn strict_base_error_names_the_real_branches() {
         let (_dir, main) = fixture();
         let v = open_at(&WorkUnitOpenOpts { spec: Some("x".into()), base: Some("hml".into()), ..opts(&main) });
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("unknown-base"));
         let err = v["error"].as_str().unwrap_or_default();
-        assert!(err.contains("hml") && err.contains("git.flow"), "{err}");
+        assert!(err.contains("hml"), "names the rejected base: {err}");
+        assert!(err.contains("dev"), "and lists a branch that really exists: {err}");
+        assert!(
+            !err.contains("git.flow"),
+            "and no longer sends the operator to a configuration file: {err}",
+        );
         assert!(!main.join(".claude").join("worktrees").exists(), "nothing created");
     }
 
@@ -1193,7 +1213,8 @@ mod tests {
 
         // Every kind the project knows, asked of WorkKind rather than spelled
         // here — a fourth kind must not need this file edited.
-        for kind in WorkKind::ALL {
+        for token in WorkKind::SUGGESTED {
+            let kind = WorkKind::parse(token).expect("suggested token parses");
             let name = kind.branch_name("another-unit");
             assert!(
                 unusable_worktree_name(&name).is_none(),
@@ -1206,7 +1227,9 @@ mod tests {
         for hostile in [
             "../x",                 // walks up
             "a/b/c",                // a second separator
-            "chore/x",              // an unknown leading token
+            // NOTE: `chore/x` used to sit here as "an unknown leading token".
+            // It is an ordinary unit name now — the vocabulary is open, and the
+            // rule that survives is about the SHAPE, not about the word.
             "feature/a/b",          // a slug carrying a separator of its own
             "feature/",             // no slug at all
             "feature\\x",           // the other platform's separator

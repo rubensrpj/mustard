@@ -1,5 +1,6 @@
 pub mod cli;
 
+pub mod base_candidates;
 pub(crate) mod base_gate;
 pub mod emit_event;
 pub mod emit_phase;

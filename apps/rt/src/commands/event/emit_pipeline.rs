@@ -149,7 +149,7 @@ pub struct EmitPipelineOpts {
     /// one that goes straight to production are the same code change, and the
     /// difference lives in the request nobody wrote down. An absent value is a
     /// caller that did not ask, and takes the ordinary unit
-    /// ([`DEFAULT_WORK_KIND`]) rather than guessing an emergency.
+    /// ([`default_work_kind()`]) rather than guessing an emergency.
     pub work_kind: Option<String>,
 }
 
@@ -160,7 +160,9 @@ pub struct EmitPipelineOpts {
 /// resolved to, so a caller that never learned the flag keeps its branch cut
 /// exactly where it was cut before. The one kind that must never be reached by
 /// default is the emergency: taking it by accident delivers to production.
-const DEFAULT_WORK_KIND: WorkKind = WorkKind::Feature;
+fn default_work_kind() -> WorkKind {
+    WorkKind::suggested_default()
+}
 
 /// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.
 ///
@@ -202,7 +204,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // --- VALIDATE — each check exits BEFORE any event is written --------------
     validate_kind_or_exit(&opts.kind);
     let work_kind = resolve_work_kind_or_exit(&opts);
-    let kind_base = resolve_kind_base_or_exit(&opts, work_kind);
+    let kind_base = resolve_kind_base_or_exit(&opts, work_kind.as_ref());
     enforce_base_gate_or_exit(&opts);
     enforce_qa_gate_or_exit(&opts);
     let payload = parse_payload_or_exit(&opts);
@@ -329,14 +331,14 @@ fn resolve_work_kind_or_exit(opts: &EmitPipelineOpts) -> Option<WorkKind> {
     }
     let Some(requested) = opts.work_kind.as_deref().map(str::trim).filter(|s| !s.is_empty())
     else {
-        return Some(DEFAULT_WORK_KIND);
+        return Some(default_work_kind());
     };
     match WorkKind::parse(requested) {
         Some(kind) => Some(kind),
         None => {
             eprintln!(
                 "emit-pipeline: unknown --type {requested:?}. Valid types: {}",
-                WorkKind::ALL.map(WorkKind::token).join(", ")
+                WorkKind::SUGGESTED.join(", ")
             );
             std::process::exit(1);
         }
@@ -349,11 +351,17 @@ fn resolve_work_kind_or_exit(opts: &EmitPipelineOpts) -> Option<WorkKind> {
 /// loudly (exit 1) BEFORE anything is emitted, never silently coerced (silent
 /// coercion once sent `--base dev` work onto a `main_*` branch in the field).
 /// `None` for every other kind.
-fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<WorkKind>) -> Option<String> {
-    let kind = kind?;
+fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -> Option<String> {
+    // The kind no longer selects the base — it is taken only as the signal that
+    // a unit is being opened at all.
+    kind?;
     let project = project_dir();
     let config = mustard_core::ProjectConfig::load(Path::new(&project));
-    match super::work_branch::resolve_kind_base(kind, opts.base.as_deref(), &config) {
+    match super::work_branch::resolve_kind_base(
+        Path::new(&project),
+        opts.base.as_deref(),
+        &config,
+    ) {
         Ok(b) => Some(b),
         Err(msg) => {
             eprintln!("emit-pipeline: {msg}");
@@ -1553,7 +1561,7 @@ mod tests {
         // ...and it is the name the branch carries.
         assert_eq!(
             compute_work_branch(
-                WorkKind::Feature,
+                WorkKind::suggested_default(),
                 &minted.slug,
                 Some(intent),
                 "sess-abcdef12",

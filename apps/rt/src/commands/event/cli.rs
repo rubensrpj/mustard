@@ -19,6 +19,14 @@ use crate::commands::{event};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum EventCmd {
+    /// List the branches a unit could be cut from, newest commit first.
+    #[command(display_order = 93)]
+    BaseCandidates {
+        /// Skip the `git fetch` and list what the clone already knows. The
+        /// default refreshes: the whole point is a menu that is true TODAY.
+        #[arg(long)]
+        no_fetch: bool,
+    },
     /// Emit an arbitrary named harness event with a key/value payload.
     #[command(display_order = 8)]
     EmitEvent {
@@ -137,6 +145,7 @@ pub enum EventCmd {
 /// Dispatch one `event`-family `run` subcommand.
 pub fn dispatch(cmd: EventCmd) {
     match cmd {
+        EventCmd::BaseCandidates { no_fetch } => event::base_candidates::run(no_fetch),
         EventCmd::EmitEvent {
             event,
             payload,

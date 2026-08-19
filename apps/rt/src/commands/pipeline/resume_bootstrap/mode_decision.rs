@@ -303,7 +303,7 @@ mod tests {
         // this string back.
         let raw = "corrigir botão ..parcelas/";
         let branch =
-            compute_work_branch(WorkKind::Fix, raw, None, "", "", &root.to_string_lossy());
+            compute_work_branch(WorkKind::parse("fix").expect("suggested token parses"), raw, None, "", "", &root.to_string_lossy());
         assert_ne!(
             branch,
             format!("fix/{raw}"),
@@ -366,7 +366,7 @@ mod tests {
         // read. A draft that only looked at what it cut itself found nothing
         // here and derived a second name — on every full run.
         let branch = crate::commands::event::work_branch::compute_work_branch(
-            crate::shared::work_kind::WorkKind::Feature,
+            crate::shared::work_kind::WorkKind::parse("feature").expect("suggested token parses"),
             &minted.slug,
             Some(intent),
             "",

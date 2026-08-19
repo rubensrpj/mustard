@@ -627,16 +627,28 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
          branch is actually cut with: {name_row}",
     );
 
-    // The three rules that make it one question instead of a form.
-    let rules = line_with(seed, "DESTINATION")
-        .expect("the router never says a hotfix is a destination rather than a kind of work");
+    // The rules that make it one question instead of a form.
+    //
+    // The old ratchet demanded the router call `hotfix` a DESTINATION rather
+    // than a kind of work. That sentence existed because the kind DERIVED the
+    // base, so `hotfix` was the only way to say "not the ordinary route". With
+    // the base chosen against a real list, the kind derives nothing and the
+    // distinction has no work left to do — so the ratchet now checks the rule
+    // that replaced it: the vocabulary is open.
+    let rules = line_with(seed, "OPEN label")
+        .expect("the router never says the branch type is an open label");
     assert!(
-        rules.contains("never inferred") || rules.contains("never pre-marked"),
-        "hotfix is named a destination without saying it is therefore never \
-         guessed from the request: {rules}",
+        rules.contains("git ref segment"),
+        "the type is called open without saying what the actual limit is — \
+         anything that can be a ref segment: {rules}",
     );
     assert!(
-        rules.contains("ONE candidate base"),
+        rules.contains("no longer moves the base"),
+        "the router leaves `hotfix/` looking like it still steers where the \
+         unit lands: {rules}",
+    );
+    assert!(
+        rules.contains("ONE branch"),
         "the router asks a question that may have a single possible answer — \
          with one candidate the base is not asked at all: {rules}",
     );
@@ -672,10 +684,17 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // showing `fix/…` after the join, the flow-derived base or the refusals
     // went away.
     let kinds = read("apps/rt/src/shared/work_kind.rs");
+    // `WorkKind` is a newtype over a validated token now, not an enum of three:
+    // the join is what this ratchet cares about, and it is unchanged.
     assert!(
-        kinds.contains("enum WorkKind") && kinds.contains("format!(\"{}/{slug}\", self.token())"),
+        kinds.contains("struct WorkKind") && kinds.contains("format!(\"{}/{slug}\", self.0)"),
         "nothing builds `{{kind}}/{{slug}}` any more, so the name the question \
          showed is not the name the branch gets",
+    );
+    assert!(
+        kinds.contains("SUGGESTED") && !kinds.contains("enum WorkKind"),
+        "the type went back to a closed set, so the question's open vocabulary \
+         promises something the code refuses",
     );
     let branch = read("apps/rt/src/commands/event/work_branch.rs");
     assert!(
@@ -683,15 +702,20 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
         "compute_work_branch spells the join itself instead of taking WorkKind's \
          — two spellings of one name is what this module exists to prevent",
     );
-    // The base is a CONSEQUENCE of the kind, read from the flow.
+    // The base is the OPERATOR's answer, offered from a real catalogue. The two
+    // assertions this replaced demanded the opposite — that the kind imply the
+    // base, and that a hotfix have its own candidate set — and both were only
+    // meaningful while `sai de` chose between two entries in a config file.
+    let catalogue = read("packages/core/src/platform/git_branches.rs");
     assert!(
-        kinds.contains("WorkKind::Feature | WorkKind::Fix => self.work"),
-        "an ordinary unit no longer answers the base ordinary work is cut from",
+        catalogue.contains("pub fn branch_catalog") && catalogue.contains("for-each-ref"),
+        "nothing lists the branches the repository really has, so `sai de` has \
+         no menu to offer",
     );
     assert!(
-        kinds.contains("fn emergency_bases") && kinds.contains("fn emergency_is_ambiguous"),
-        "nothing answers WHICH bases a hotfix may take, so `sai de` cannot know \
-         whether it has one candidate or several",
+        catalogue.contains("pub fn protected_branches"),
+        "nothing answers WHICH branches refuse a direct commit, so the picker \
+         cannot mark the row the operator must not land on",
     );
     // Both refusals the prose promises, read through the messages that carry
     // them: delete either and the operator is silently coerced instead.
@@ -700,14 +724,18 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
         "the gate has no resolver validating the kind/base pair the router sends",
     );
     assert!(
-        branch.contains("não é uma base de integração deste projeto"),
-        "an undeclared --base is no longer refused, so the router's promise that \
-         it is becomes a lie the operator only meets on a wrong branch",
+        branch.contains("não existe no remoto deste repositório"),
+        "a --base the remote does not have is no longer refused, so the router's \
+         promise that it is becomes a lie the operator only meets on a wrong branch",
     );
+    // The hotfix-off-the-work-base refusal is GONE, deliberately, and this
+    // ratchet now guards its absence. It was only ever a contradiction while
+    // the kind implied the base; with the base picked outright, refusing it
+    // would be the tool overruling the operator's own answer.
     assert!(
-        branch.contains("um hotfix não sai de"),
-        "a hotfix cut from the WORK base is no longer refused — that contradiction \
-         IS the difference between a fix and a hotfix",
+        !branch.contains("um hotfix não sai de"),
+        "the hotfix-off-the-work-base refusal came back, but the router no longer \
+         promises it — the operator would be refused for an answer they were asked to give",
     );
     let emit_src = read("apps/rt/src/commands/event/emit_pipeline.rs");
     assert!(

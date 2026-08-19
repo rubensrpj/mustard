@@ -36,6 +36,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "analyze-validation",
     "approve-spec",
     "artifact-update",
+    "base-candidates",
     "capability",
     "change-request",
     "claude-dir-prune",

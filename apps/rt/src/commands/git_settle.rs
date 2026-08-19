@@ -994,9 +994,11 @@ mod tests {
     #[test]
     fn base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix() {
         let flow = settle_flow();
-        // The current shape: the base follows from the unit's KIND.
-        assert_eq!(flow.base_of("fix/fix-thing").known(), Some("dev"));
-        assert_eq!(flow.base_of("hotfix/login").known(), Some("main"));
+        // The base no longer follows from the unit's KIND — it is recorded at
+        // the cut. With several bases declared and nothing recorded, the prefix
+        // answers nothing, and both kinds read the same way.
+        assert_eq!(flow.base_of("fix/fix-thing").known(), None);
+        assert_eq!(flow.base_of("hotfix/login").known(), None);
         // …and a unit still in flight keeps being read by its prefix.
         assert_eq!(flow.base_of("dev_fix-thing").known(), Some("dev"));
         assert_eq!(flow.base_of("worktree-dev_fix-thing").known(), Some("dev"));

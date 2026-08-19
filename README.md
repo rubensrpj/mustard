@@ -271,7 +271,11 @@ O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
 
 ```jsonc
 {
-  "git":  { "flow": { "*": "dev", "dev": "main" }, "provider": "github" },
+  // "flow" é OPCIONAL e não restringe nada: ele apenas pré-seleciona a base
+  // no seletor. De onde uma unidade pode sair vem do git (`run base-candidates`);
+  // onde o commit direto é recusado vem do branch padrão do remoto, mais o que
+  // "protected" acrescentar. Uma instalação nova não grava "flow".
+  "git":  { "provider": "github" },
   "buildCommand": "cargo build",
   "testCommand":  "cargo test",
   "lintCommand":  "cargo clippy",
