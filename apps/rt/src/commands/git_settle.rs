@@ -585,7 +585,18 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             // INSIDE a unit, and a declared list cannot answer it — a project
             // whose install wrote no flow sees `main`/`master` there and calls
             // every real base a work branch.
-            if !flow.base_of(&inv_branch).is_unit() {
+            //
+            // The reading is the project's own RECORD of the unit, the SAME one
+            // `pr list` and `git delete` ask. The shape of the name cannot answer
+            // it: the kind vocabulary is open, so a release line named
+            // `release/2026-Q3` splits into a kind and a slug exactly like
+            // `fix/aba` and this door proceeded as if standing inside a unit.
+            // Two doors reading the same checkout and disagreeing about it is
+            // the drift `BaseFlow` exists to prevent, so there is one predicate,
+            // not two. A unit whose record is not written yet is answered here
+            // as a base — a refusal that names `--unit`, which is the recoverable
+            // direction.
+            if !flow.has_unit_record(&inv_branch) {
                 return json!({
                     "ok": false,
                     "reason": "on-integration-base",
@@ -1105,6 +1116,14 @@ mod tests {
         //    local alike). Two plain file writes are deterministic and touch
         //    nothing shared.
         for unit in ["dev_done", "dev_open"] {
+            // What makes these branches UNITS is the record this project holds
+            // for them, not the shape of their names — the fixture created only
+            // the branch and the worktree, so every door here could be satisfied
+            // by a name that merely looked like a unit, which is how a real
+            // release line ended up being read as one.
+            let slug = unit.strip_prefix("dev_").unwrap_or(unit);
+            std::fs::create_dir_all(main.join(".claude").join("spec").join(slug))
+                .expect("unit record");
             let wt = main.join(".claude").join("worktrees").join(unit);
             let admin = main.join(".git").join("worktrees").join(unit);
             std::fs::write(

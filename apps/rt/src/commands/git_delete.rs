@@ -190,9 +190,18 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
     // from the base the directory is simply not on disk). `git delete` retires a
     // unit from OUTSIDE it, so reading only the working tree refuses every
     // legitimate delete — measured, before the second leg existed.
+    // Three places, because a unit is retired from OUTSIDE it and its record can
+    // be in any of them: the working tree (projects that leave `.claude/spec/`
+    // untracked), the unit's LOCAL branch, and — when the local branch is
+    // already gone but the remote one is not — the unit's REMOTE branch. The
+    // `no-such-unit` check above deliberately accepts a remote-only unit, so
+    // stopping at the local ref here refused exactly the unit that still had a
+    // remote branch and an open PR to retire.
     let has_record = flow.has_unit_record(unit)
         || flow.slug_of(unit).is_some_and(|slug| {
-            git_out(&main, &["cat-file", "-e", &format!("{unit}:.claude/spec/{slug}")]).is_some()
+            let path = format!(".claude/spec/{slug}");
+            git_out(&main, &["cat-file", "-e", &format!("{unit}:{path}")]).is_some()
+                || git_out(&main, &["cat-file", "-e", &format!("origin/{unit}:{path}")]).is_some()
         });
     if !has_record || protected.contains(unit) {
         return json!({

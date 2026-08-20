@@ -303,20 +303,40 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                 // and picking the outermost would cut the emergency somewhere
                 // they did not choose.
                 UnitBase::Ambiguous(candidates) => {
-                    match requested.filter(|req| candidates.iter().any(|c| c == req)) {
+                    // The operator's `--base` is validated against the branches
+                    // this repository REALLY has, never against the declared
+                    // list. `candidates` is `preselected_bases()`, which falls
+                    // back to the hardcoded `{main, master}` when no `git.flow`
+                    // is written — the shape `mustard init` produces today — so
+                    // filtering here refused a base the remote carries and
+                    // answered with a verdict about a configuration file
+                    // ("this project declares several bases") over a repository
+                    // nobody asked about. Existence is the honest test, and it
+                    // is the same one `--base`'s own help text promises.
+                    let real = |req: &&str| {
+                        ref_exists(&main, &format!("refs/heads/{req}"))
+                            || ref_exists(&main, &format!("refs/remotes/origin/{req}"))
+                    };
+                    match requested.filter(real) {
                         Some(req) => (b.to_string(), req.to_string()),
                         None => {
+                            let asked = requested.unwrap_or_default();
                             return json!({
                                 "ok": false,
                                 "reason": "ambiguous-base",
                                 "branch": b,
                                 "candidates": candidates,
-                                "hint": format!(
-                                    "'{b}' is an emergency unit and this project declares \
-                                     several bases it could have been cut from ({}) — pass \
-                                     --base with the one you mean",
-                                    candidates.join(", "),
-                                ),
+                                "hint": if asked.is_empty() {
+                                    format!(
+                                        "nothing recorded which base '{b}' was cut from — pass \
+                                         --base with a branch this repository has"
+                                    )
+                                } else {
+                                    format!(
+                                        "--base '{asked}' names no branch this repository has, \
+                                         locally or on origin — check it with `git branch -a`"
+                                    )
+                                },
                             })
                         }
                     }
