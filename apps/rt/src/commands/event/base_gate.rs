@@ -10,17 +10,19 @@
 //! discover later: a unit cut off another unit cannot be reviewed apart, and a
 //! unit cut off a stale base re-does work that is already merged.
 //!
-//! Three answers, never more ([`BaseVerdict`]):
+//! Two answers, never more ([`BaseVerdict`]):
 //!
-//! 1. **Not an integration base** → `Refuse`. The base set is `git.flow`'s
-//!    non-`*` keys ∪ values
-//!    ([`mustard_core::domain::config::GitConfig::integration_bases`]) — the
-//!    same derivation `work_branch_gate` protects and
-//!    [`super::work_branch::resolve_base`] validates `--base` against, so the
-//!    three can never disagree about what a base IS. Nothing here names a
-//!    branch.
-//! 2. **Behind its remote** → `Refuse`, naming the exact pull to run.
-//! 3. Otherwise → `Open`, and the census refresh fires when it is due.
+//! 1. **Behind its remote** → `Refuse`, naming the exact pull to run.
+//! 2. Otherwise → `Open`, and the census refresh fires when it is due.
+//!
+//! There is no membership answer any more. "Not an integration base" used to be
+//! the first of three, tested against `git.flow`'s declared set — which refused
+//! a branch cut last Tuesday with a sentence about a configuration file, in a
+//! repository whose branch convention the operator does not own. What a base IS
+//! is now measured where it can be: the cut point is every branch git has
+//! ([`mustard_core::branch_catalog`]) and the branches that refuse a direct
+//! commit are [`mustard_core::protected_branches`]. See the `evaluate` body for
+//! what that deliberately gives up.
 //!
 //! ## Abstention is not a pass
 //!
@@ -101,11 +103,11 @@ pub(crate) fn evaluate(project: &Path, config: &ProjectConfig) -> BaseVerdict {
         return BaseVerdict::Abstain;
     };
 
-    // NO membership test any more. It used to read
-    // `config.git.integration_bases()` and refuse everything outside it, which
-    // meant a branch cut last Tuesday was told it "is not an integration base
-    // of this project" — a sentence about a configuration file, delivered as if
-    // it were a sentence about the repository. In a client repository, where
+    // NO membership test any more. It used to read the declared base set and
+    // refuse everything outside it, which meant a branch cut last Tuesday was
+    // told it "is not an integration base of this project" — a sentence about a
+    // configuration file, delivered as if it were a sentence about the
+    // repository. In a client repository, where
     // the operator does not own the branch convention, the only offered way out
     // was to edit that file per project.
     //
@@ -310,7 +312,6 @@ mod tests {
             "an undeclared branch opens exactly like a declared one",
         );
 
-        #[allow(deprecated)]
         let declared = config.git.preselected_bases();
         assert!(
             declared.contains("dev") && !declared.contains("squad-b/integration"),

@@ -1,11 +1,13 @@
 //! `mustard-rt run git-settle` — the EXIT RITUAL of a delivered work unit,
 //! answering "the PR merged; now what?" with the user's exact contract:
 //!
-//! 1. **Runs from the WORK BRANCH** — invoked bare while sitting on an
-//!    integration base (`dev`/`main`) it REFUSES (`on-integration-base`):
-//!    settle is how a unit leaves the stage, not a base-side sweeper. From a
-//!    base it only runs with an explicit `--unit <branch>` (the finish step
-//!    of the dance below).
+//! 1. **Runs from the WORK BRANCH** — invoked bare while the checkout is NOT
+//!    somebody's unit it REFUSES (`on-integration-base`): settle is how a unit
+//!    leaves the stage, not a base-side sweeper. The test is the unit, never a
+//!    declared list of bases — a project whose install wrote no `git.flow`
+//!    would otherwise see its own base as a work branch. From anywhere else it
+//!    only runs with an explicit `--unit <branch>` (the finish step of the
+//!    dance below).
 //! 2. **100% merged or nothing**, measured per REF: EVERY ref that still carries
 //!    the unit — the local head and each `<remote>/<branch>` — must be contained
 //!    in `origin/<base>` now, or covered by the frozen head of a merged pull
@@ -579,7 +581,11 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let unit_branch = match unit {
         Some(u) => u.trim().to_string(),
         None => {
-            if bases.iter().any(|b| b == &inv_branch) {
+            // Measured, not looked up: the question is whether the checkout is
+            // INSIDE a unit, and a declared list cannot answer it — a project
+            // whose install wrote no flow sees `main`/`master` there and calls
+            // every real base a work branch.
+            if !flow.base_of(&inv_branch).is_unit() {
                 return json!({
                     "ok": false,
                     "reason": "on-integration-base",
@@ -620,9 +626,9 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         // do that job — the field incident was a `--root` that did not exist,
         // and the old message let the submodule take the blame for it.
         let hint = if superproject.is_some() {
-            "prefixo não bate com base conhecida — este repo é submódulo: as bases vêm do git.flow em configRoot"
+            "este nome não é o de uma unidade deste repo — é submódulo: o registro da unidade e as bases vêm do configRoot"
         } else {
-            "prefixo não bate com base conhecida — confira git.flow no mustard.json de configRoot"
+            "este nome não é o de uma unidade: nada registrou de qual base ele saiu e nenhum branch do repositório é prefixo dele"
         };
         return json!({
             "ok": false,

@@ -140,14 +140,25 @@ fn remote_names_memo() -> &'static Mutex<HashMap<PathBuf, Option<BTreeSet<String
 /// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
 /// catalogue and `base-candidates` reports as `measured: false`.
 pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
+    with_remote_names(root, |names| names_obey(names, base))
+}
+
+/// Hand `read` the MEMOISED remote branch names of `root`, measuring them on
+/// the first call. The inner `None` is the probe's own "could not measure" and
+/// is passed through untouched — folding it into an empty set is what turns an
+/// offline machine into a repository with no branches.
+///
+/// The memo is never held across `read`: the value is cloned out first, so a
+/// reader is free to ask anything it likes without the non-reentrant lock
+/// deciding whether it deadlocks.
+fn with_remote_names<T>(root: &Path, read: impl FnOnce(Option<&BTreeSet<String>>) -> T) -> T {
     let key = root.to_path_buf();
-    if let Ok(memo) = remote_names_memo().lock() {
-        if let Some(hit) = memo.get(&key) {
-            return names_obey(hit.as_ref(), base);
-        }
+    let hit = remote_names_memo().lock().ok().and_then(|memo| memo.get(&key).cloned());
+    if let Some(names) = hit {
+        return read(names.as_ref());
     }
     let names = mustard_core::remote_branch_names(root);
-    let answer = names_obey(names.as_ref(), base);
+    let answer = read(names.as_ref());
     if let Ok(mut memo) = remote_names_memo().lock() {
         memo.insert(key, names);
     }
@@ -327,7 +338,9 @@ impl UnitBase {
 /// type spells no branch literally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BaseFlow {
-    /// Every declared integration base, in `integration_bases()` order.
+    /// Every base `git.flow` PRE-SELECTS, in
+    /// [`GitConfig::preselected_bases`] order. A hint about where a picker
+    /// opens — it refuses nothing.
     bases: Vec<String>,
     /// The base ordinary work is cut from — `flow["*"]`.
     work: String,
@@ -432,9 +445,11 @@ impl BaseFlow {
     /// Three sources, asked in this order, and the ORDER is the whole point:
     ///
     /// 1. `{base}_{slug}` — a unit still in the pre-kind shape carries its base
-    ///    in the name: the LONGEST declared base `B` with the name starting
-    ///    `"{B}_"`, so a project declaring both `dev` and `dev_release` reads
-    ///    `dev_release_x` as the latter's.
+    ///    in the name: the LONGEST branch `B` with the name starting `"{B}_"`,
+    ///    asked of the declared bases and then of the branches the repository
+    ///    really has ([`legacy_base_of`](Self::legacy_base_of)), so a project
+    ///    carrying both `dev` and `dev_release` reads `dev_release_x` as the
+    ///    latter's — declared or not.
     /// 2. the unit's OWN RECORD ([`recorded_base_of`](Self::recorded_base_of)) —
     ///    what the cut wrote down. It wins over the derivation because it is a
     ///    MEASUREMENT of where the branch really came from, while the derivation
@@ -566,12 +581,43 @@ impl BaseFlow {
     /// The `{base}_` half of a name still in the pre-kind shape. Separate from
     /// [`base_of`](Self::base_of) because the slug reader needs the base it
     /// matched, not the base the unit integrates into.
+    ///
+    /// TWO sources, and the second is why a name is no longer refused for the
+    /// company it keeps: the DECLARED bases first (unchanged — nothing that
+    /// resolved before stops resolving), then, for a rooted model, the branches
+    /// the repository REALLY has. A unit cut as `hml_x` back when `hml` was the
+    /// project's base is still that unit after `mustard.json` stopped naming it,
+    /// and a project whose install wrote no flow at all — which is every project
+    /// the current installer touches — resolves the shape at all.
+    ///
+    /// Longest match on both sides, so a repository carrying `dev` and
+    /// `dev_release` reads `dev_release_x` as the latter's.
+    ///
+    /// An unmeasured probe answers `None`, exactly as an unmatched one does, and
+    /// that sameness is deliberate here: the caller reads `None` as "nobody's
+    /// unit", which costs a non-unit cut, while a positive answer nobody
+    /// measured would cut a UNIT from a base that may not exist.
     fn legacy_base_of(&self, name: &str) -> Option<String> {
-        self.bases
+        let declared = self
+            .bases
             .iter()
             .filter(|b| name.starts_with(&format!("{b}_")))
             .max_by_key(|b| b.len())
-            .cloned()
+            .cloned();
+        if declared.is_some() {
+            return declared;
+        }
+        if !name.contains('_') {
+            return None; // no probe for a name that cannot carry the shape
+        }
+        let project = self.project.as_deref()?;
+        with_remote_names(project, |names| {
+            names?
+                .iter()
+                .filter(|b| name.starts_with(&format!("{b}_")))
+                .max_by_key(|b| b.len())
+                .cloned()
+        })
     }
 
     /// The unit a work branch names — the slug half, whichever shape carries it.

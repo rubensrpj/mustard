@@ -1,9 +1,9 @@
 # Git Flow Reference
 
-> Detail for `/git`: branch flow, base derivation, the worktree contract, and commit scope. Command: `${CLAUDE_PLUGIN_ROOT}/commands/git.md`. Submodule / ephemeral / auto-stash detail: `${CLAUDE_PLUGIN_ROOT}/refs/git/submodule-rules.md`.
+> Detail for `/git`: what a base is and where it is measured, the worktree contract, and commit scope. Command: `${CLAUDE_PLUGIN_ROOT}/commands/git.md`. Submodule / ephemeral / auto-stash detail: `${CLAUDE_PLUGIN_ROOT}/refs/git/submodule-rules.md`.
 
 ## Contents
-- Configuration & flow resolution
+- Configuration — what `git.flow` decides, and what git decides
 - Work branches & the gate
 - Worktree contract
 - The notebook — the porta rule
@@ -20,31 +20,45 @@ Read `mustard.json` from the **project root** via the `Read` tool (not `cat`); m
 { "git": { "flow": { "*": "dev", "dev": "main" }, "submodules": true } }
 ```
 
-**Integration bases** = every non-`*` key ∪ every value of `git.flow` (`{"*":"dev","dev":"main"}` → `dev`, `main`). Agnostic — no hardcoded `dev`/`main`; an empty flow falls back to `main`/`master`.
+**`git.flow` PRE-SELECTS, it does not permit.** Every non-`*` key ∪ every value (`{"*":"dev","dev":"main"}` → `dev`, `main`) is the set a base picker offers FIRST and the promotion map `/mustard:pr open` walks. **It refuses nothing, and the installer writes no flow at all** — a fresh install has an empty map on purpose, and everything below still works.
 
-**Flow resolution** — match the current branch against `flow` keys, exact before glob; `*` is the fallback for anything unlisted. `dev` → `main` (promotion via `/mustard:pr open`); `main` is terminal (no ops).
+Two questions used to be answered with that one list, and answering both with a closed list is what made the first one wrong:
+
+| Question | Where the answer comes from now |
+|----------|--------------------------------|
+| Where may a unit be cut from? | **git** — every branch `origin` really has, newest first (`mustard-rt run base-candidates`). A branch cut last Tuesday is a valid base; no file has to name it. |
+| Where is a direct commit forbidden? | **the protected set** — the remote's own default branch (`git symbolic-ref refs/remotes/origin/HEAD`) ∪ `mustard.json#git.protected`. Normally a set of ONE. |
+| Where does the picker open, and what promotes into what? | `git.flow` — a hint and a promotion map, nothing more. |
+
+Read what is really protected here with `mustard-rt run doctor --only branch-protection`.
+
+**Flow resolution** (promotion only) — match the current branch against `flow` keys, exact before glob; `*` is the fallback for anything unlisted. `dev` → `main` (promotion via `/mustard:pr open`); a branch with no `flow[B]` is terminal and needs an explicit target.
 
 ## Work branches & the gate
 
 Every work unit runs on its own `{kind}/{slug}` branch (e.g. `fix/aba-atividade`). The prefix **records what the unit IS**, which is what an operator reading a branch list needs; the base is no longer in the name and is never parsed back out of it.
 
-| Prefix | What it is | Cut from |
-|--------|------------|----------|
-| `feature/` | new capability | the base ordinary work is cut from — `git.flow`'s `*` key |
-| `fix/` | a correction that travels the ordinary route, with the next release | the same base |
-| `hotfix/` | a correction that does NOT wait for that route | an integration base that is NOT the work base (with several declared, the outermost one is the default and the operator picks — and the pick is **recorded with the unit**, see Step 0) |
+| Prefix | What it is |
+|--------|------------|
+| `feature/` | new capability |
+| `fix/` | a correction that travels the ordinary route, with the next release |
+| `hotfix/` | a correction that does NOT wait for that route |
 
-`hotfix` is a **destination, not a kind of work**: the same code change is a fix or a hotfix depending only on where it lands, so nothing in the request text tells them apart and the harness never infers it — it asks, ONCE per unit, in the router's single pre-marked question (orchestrator rules § Dispatch — kind, base and the resulting branch name together, with the likely answer already marked; the base row is skipped when only one candidate exists). The branch is **auto-created off its base on the first file edit**: the answer rides in as `emit-pipeline --type <kind> [--base <base>]`, and `work_branch_gate` cuts + checks the branch out on the first `Write`/`Edit`. Read-only requests never branch.
+The list is a **suggestion, not a permitted set**: `chore/`, `refactor/`, `docs/` or any token that can be a git ref segment names a unit exactly the same way.
 
-**Old names keep working.** A unit already in flight as `{base}_{slug}` (e.g. `dev_aba-atividade`) is still recognised as that unit and still resolves to its base by longest-match against the declared bases. Nothing is renamed.
+**The prefix does NOT decide the base.** It used to — a table like the one above said `feature` → the `*` base, `hotfix` → the outermost one — and that inference is gone. The base is the OPERATOR's answer, asked ONCE per unit against the real branch list, and `hotfix` is a **destination, not a kind of work**: the same code change is a fix or a hotfix depending only on where it lands, so nothing in the request text tells them apart. The router asks kind and base together in one pre-marked question (orchestrator rules § Dispatch — with the likely answer already marked; the base row is skipped when the repository leaves only one candidate). The branch is **auto-created off the chosen base on the first file edit**: the answer rides in as `emit-pipeline --type <kind> [--base <base>]`, and `work_branch_gate` cuts + checks the branch out on the first `Write`/`Edit`. Read-only requests never branch.
 
-**The gate** (`work_branch_gate`, PreToolUse Write/Edit) judges the LOCAL tree hosting the edit, so a nested worktree on a work branch is never blocked by the main checkout's branch. With no marker, a direct edit on a bare integration base is **denied** — except `.claude/plans/`, harness state authored *before* the unit exists (`.claude/spec/` is NOT carved out: the spec belongs to the unit, so it is written after the branch exists) — while any work branch, in either shape, edits freely.
+An explicit `--base` is validated against the branches the repository really has — a name no branch carries is refused, and the refusal LISTS what is there. It is never refused for missing from `git.flow`.
+
+**Old names keep working.** A unit already in flight as `{base}_{slug}` (e.g. `dev_aba-atividade`) is still recognised as that unit and still resolves to its base by longest-match — first against the pre-selected bases, then against the branches the repository really has, so a unit whose base the flow never named is not orphaned. Nothing is renamed.
+
+**The gate** (`work_branch_gate`, PreToolUse Write/Edit) judges the LOCAL tree hosting the edit, so a nested worktree on a work branch is never blocked by the main checkout's branch. With no marker, a direct edit on a **protected** branch is **denied** — that is the measured set above, not "any branch `git.flow` mentions": a project promoting through `dev` may now both cut from it AND commit on it — except `.claude/plans/`, harness state authored *before* the unit exists (`.claude/spec/` is NOT carved out: the spec belongs to the unit, so it is written after the branch exists). Any work branch, in either shape, edits freely.
 
 With a pending-unit marker the gate asks WHERE the checkout is before it cuts:
 
 | The checkout is on | What happens |
 |--------------------|--------------|
-| a bare integration base — nobody's work | cut `{kind}/{slug}` off the freshly fetched base the kind implies, **in place**, silently |
+| a branch that is nobody's work | cut `{kind}/{slug}` off the freshly fetched base the operator chose, **in place**, silently |
 | THIS unit's branch already | consume the marker, say nothing |
 | a detached / unreadable HEAD | the in-place cut, unchanged — an unmeasured position never triggers a refusal nobody asked for |
 | ANOTHER unit's branch, tree CLEAN | the in-place cut — nothing rides along, and the branch is still cut off its base |
@@ -59,7 +73,7 @@ The last two rows are the whole point. A checkout carries the uncommitted work o
 
 ## Isolation contract — the branch IS the unit; a second unit in parallel is REFUSED, never diverted
 
-Every unit lives on its OWN branch `{kind}/{slug}`, cut in the MAIN checkout at APPROVAL by `spec-draft` — so the whole unit is written on it: `spec.md`, the waves, the ceremony and the code alike. That branch IS the isolation. The prefix is load-bearing in a different way now: `/git` reads the KIND and resolves the PR target through `git.flow` (`feature`/`fix` → the `*` base, `hotfix` → the base that is not it), so the right answer to the opening question yields the right PR target out. A unit still named `{base}_{slug}` is read by its prefix, exactly as before.
+Every unit lives on its OWN branch `{kind}/{slug}`, cut in the MAIN checkout at APPROVAL by `spec-draft` — so the whole unit is written on it: `spec.md`, the waves, the ceremony and the code alike. That branch IS the isolation. The PR target does NOT come from the prefix: `/git` reads the base **recorded with the unit** at the cut, which is the operator's own answer, and falls back to `origin/HEAD` when nothing recorded one — so the right answer to the opening question yields the right PR target out. A unit still named `{base}_{slug}` is read by its prefix, exactly as before.
 
 **A second unit is refused, not accommodated.** When the checkout already holds another unit's branch with uncommitted work, the harness stops and says so: commit or stash that work first. It does not stash on your behalf and it does not open a second workspace for you. Cutting a worktree for the second unit was tried and withdrawn — a fresh worktree receives only what git tracks (no `.env`, no `node_modules`), so making it usable meant linking those directories back to the main checkout, and `git worktree remove` **descends** a Windows directory junction: removing the worktree deleted the main checkout's own directory, with and without `--force`. The harness therefore plants nothing inside a worktree beyond `git submodule update`.
 
@@ -67,9 +81,9 @@ You can still work in parallel — cut a worktree yourself (`git worktree add`, 
 
 **The collector reaps what is ORPHANED.** `worktree-gc` runs at every SessionStart with `--apply` — it removes, it does not report. It never touches a work unit's worktree (any name that reads as a unit — `{kind}/{slug}`, or the older `{base}_…`; that is `git-settle`'s job exclusively), nor the `feature/`, `fix/`, `hotfix/` directories those worktrees sit inside, and never one holding uncommitted or untracked work, whatever its age. For the harness's own scratch trees the name carries the PID of whoever cut it, so "orphan or busy" is a question with an exact answer: owner gone → collected now, not in a week. Age stays only as the fallback for a worktree whose owner cannot be read — unmeasured ownership authorises nothing.
 
-- **Desktop / background CLI** — isolated automatically. A Desktop branch reads as nobody's unit (no kind prefix, no declared base prefix), so `/git` falls back to the primary base (`git.flow["*"]`); pass an explicit `<target>` for any other base.
-- **Foreground CLI** — the branch is already out from approval, so the isolation step DEGRADES rather than cutting twice: `EnterWorktree name={kind}/{slug}` (the `branch` echoed by `emit-pipeline`) answers with the checkout that already holds it (`inPlace:true`, nothing created). `git worktree add` over a branch another tree holds is what git refuses with exit 128 — the degrade is what keeps that from ending the step. When the branch is NOT already out, the plugin's `WorktreeCreate` hook replaces the native cut: a `{kind}/{slug}` name → fresh `origin/{base}` for the base its kind implies (idempotent; attaches an existing branch), landing at `.claude/worktrees/{kind}/{slug}`; a `{base}_` name with a DECLARED base → the same, by its prefix; any other name (the harness's own slug, e.g. `recursing-benz-063389`) → the native default cut, refused while the tree is dirty; an UNDECLARED `{base}_` prefix, an unknown `{kind}`, a second `/`, a `..` or a backslash → loud abort. `mustard-rt run work-unit-open --spec {slug} --type {kind} [--base {base}]` remains the manual face of the same engine (then `EnterWorktree path={path}`), and it is the one that takes an explicit `--base` when a hotfix has several candidates.
-- **Abandoning an UNMERGED unit** — `/git delete <branch>`, run from an integration base. ONE gesture removes the unit whole (open PR, worktree, local branch, remote branch), and it refuses from a work branch, over a bare base, and over a name no ref carries. `/git finish` stays the ritual for MERGED units only.
+- **Desktop / background CLI** — isolated automatically. A Desktop branch reads as nobody's unit (no kind prefix, no `{base}_` prefix naming a real branch), so `/git` falls back to the primary base (`git.flow["*"]`, else `origin/HEAD`); pass an explicit `<target>` for any other base.
+- **Foreground CLI** — the branch is already out from approval, so the isolation step DEGRADES rather than cutting twice: `EnterWorktree name={kind}/{slug}` (the `branch` echoed by `emit-pipeline`) answers with the checkout that already holds it (`inPlace:true`, nothing created). `git worktree add` over a branch another tree holds is what git refuses with exit 128 — the degrade is what keeps that from ending the step. When the branch is NOT already out, the plugin's `WorktreeCreate` hook replaces the native cut: a `{kind}/{slug}` name → fresh `origin/{base}` for the base recorded with the unit, else the project's primary one (idempotent; attaches an existing branch), landing at `.claude/worktrees/{kind}/{slug}`; a `{base}_` name whose prefix names a branch the repository REALLY has → the same, by its prefix, declared or not; any other name — the harness's own slug (`recursing-benz-063389`) and any `x_y` whose `x` is no branch here — → the native default cut, refused while the tree is dirty. Only a name that cannot be a worktree at all aborts: a second `/`, a `..`, a backslash. **A prefix the configuration does not declare is never a refusal, and no message ever tells you to edit `mustard.json` to make a branch acceptable.** `mustard-rt run work-unit-open --spec {slug} --type {kind} [--base {base}]` remains the manual face of the same engine (then `EnterWorktree path={path}`), and it is the one that takes an explicit `--base` when a hotfix has several candidates.
+- **Abandoning an UNMERGED unit** — `/git delete <branch>`, run from OUTSIDE the unit. ONE gesture removes the unit whole (open PR, worktree, local branch, remote branch), and it refuses from inside a unit (`not-on-integration-base`), over a name that is nobody's unit or is protected (`not-a-work-unit`), and over a name no ref carries (`no-such-unit`). `/git finish` stays the ritual for MERGED units only.
 
 ## The notebook — the porta rule
 
@@ -101,19 +115,20 @@ Directions come from `git.flow` — no hardcoded pair. A terminal base (no `flow
 rtk git rev-parse --abbrev-ref HEAD
 ```
 
-Derive the integration bases from `git.flow`, then read `$BASE` off the branch — **from the KIND, not from the name's text**:
+Read `$BASE` off the branch — **from what was RECORDED, never from the kind**:
 
-- the base **recorded with the unit** at the cut (`.claude/spec/{slug}/meta.json#base`, or `.claude/spec/{slug}/.cut-base` before the draft has folded it in) wins over every derivation below — it is a measurement of where the branch really came from, and it is written only where nothing else can still answer;
-- `feature/…` or `fix/…` → the base ordinary work is cut from (`git.flow["*"]`);
-- `hotfix/…` → the base that is NOT that one (with several declared, the outermost — the end of the promotion chain walked from the work base);
-- `{base}_…` (a unit in the older shape) → that prefix, longest match against the declared bases;
-- neither (a Desktop branch, a hand-cut branch, no `mustard.json`) → the primary base (`git.flow["*"]`, else `rtk git symbolic-ref refs/remotes/origin/HEAD` || `main`).
+- the base **recorded with the unit** at the cut (`.claude/spec/{slug}/meta.json#base`, or `.claude/spec/{slug}/.cut-base` before the draft has folded it in) is the answer — it is a measurement of where the branch really came from. It is checked on the way out, and the check asks **whether that branch still exists on `origin`**, never whether `git.flow` lists it: a base that is gone cannot be cut from, and a base the configuration never named is still where the unit came from. An existence nobody could measure (no git, no remote, an unfetched clone) **obeys the record** — discarding a real answer over a silent probe is the same mistake as discarding it over a stale list;
+- `{base}_…` (a unit in the older shape) → that prefix, longest match, against the pre-selected bases and then against the branches the repository really has;
+- nothing recorded and the repository leaves several candidates → the base is **not derivable**, and the harness says so instead of guessing (see below);
+- nobody's unit (a Desktop branch, a hand-cut branch, no `mustard.json`) → the primary base (`git.flow["*"]`, else `rtk git symbolic-ref refs/remotes/origin/HEAD`).
 
-**The operator's pick is DURABLE.** With three or more bases (`dev → qas → main`) a hotfix has several candidates, the operator chooses one, and the branch name — which now says what the unit IS — cannot carry that choice. The answer rides to the cut in the session's pending marker, which is **consumed** there, so the cut writes it into the unit's own directory before clearing it — as `.cut-base`, harness state the draft tolerates, and the draft then folds it into `meta.json#base` (the sidecar that already holds every machine-parseable fact about the unit) and retires the file. The cut may NOT write that sidecar itself: a `meta.json` in the unit's directory is what tells `spec-draft` a spec is already drafted there, so recording the base that way left the unit cut and spec-less. Both doors record it (the hook gate and the cut `spec-draft` takes at approval), so the answer does not depend on which one opened the unit; a reconcile that rewrites the marker to another branch keeps the base line, because what it learned is a branch and not a base. With **nothing recorded and several candidates**, the base is *not derivable*: the harness says so — `work-unit-open` refuses with `ambiguous-base` and asks for `--base`, the `WorktreeCreate` hook aborts naming the candidates — instead of quietly answering the outermost and aiming the unit's pull request somewhere nobody chose. Nothing is recorded where the flow can still answer (a `feature`, a `fix`, any two-base project), so no sidecar gains a key it does not need.
+There is no "the kind implies the base" row any more, in either direction.
+
+**The operator's pick is DURABLE.** Every unit's base is a choice now — the branch name says what the unit IS and cannot carry where it came from — so every unit of a project with more than one candidate records it. The answer rides to the cut in the session's pending marker, which is **consumed** there, so the cut writes it into the unit's own directory before clearing it — as `.cut-base`, harness state the draft tolerates, and the draft then folds it into `meta.json#base` (the sidecar that already holds every machine-parseable fact about the unit) and retires the file. The cut may NOT write that sidecar itself: a `meta.json` in the unit's directory is what tells `spec-draft` a spec is already drafted there, so recording the base that way left the unit cut and spec-less. Both doors record it (the hook gate and the cut `spec-draft` takes at approval), so the answer does not depend on which one opened the unit; a reconcile that rewrites the marker to another branch keeps the base line, because what it learned is a branch and not a base. With **nothing recorded and several candidates**, the base is *not derivable*: `work-unit-open` refuses with `ambiguous-base` and asks for `--base`, and the `WorktreeCreate` hook announces on stderr which base it fell back to — instead of quietly answering the outermost and aiming the unit's pull request somewhere nobody chose. The one project that records nothing is the one with a single candidate, where there was never a choice to lose.
 
 ## Step 0b — branch protection
 
-Before any write op (commit, push, sync): if the current branch **is** a bare integration base → **REFUSE** (`Cannot operate directly on protected branch '<branch>'. Create a work branch first.`). A work branch — `{kind}/…` or the older `{base}_…` — proceeds. **Exception:** `/mustard:pr open` on a base opens a base→base PR (above) and is allowed.
+Before any write op (commit, push, sync): if the current branch is one of the **protected** branches — `origin/HEAD` ∪ `mustard.json#git.protected`, the measured set from the top of this file — → **REFUSE** (`Cannot operate directly on protected branch '<branch>'. Create a work branch first.`). Anything else proceeds, including a branch `git.flow` happens to name: appearing in a promotion map is not a reason to be protected, and a project that promotes through `dev` may commit on it. **Exception:** `/mustard:pr open` on a base opens a base→base PR (above) and is allowed.
 
 ## Commit scope policy — the `add -A` law
 

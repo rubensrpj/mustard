@@ -50,6 +50,21 @@ fn line_with<'a>(body: &'a str, needle: &str) -> Option<&'a str> {
     body.lines().find(|l| l.contains(needle))
 }
 
+/// The PRODUCTION half of a Rust source file — everything before its
+/// `#[cfg(test)]` module.
+///
+/// A negative assertion ("this sentence is gone from the shipped code") must
+/// not be answered by the test that quotes the sentence in order to forbid it,
+/// nor by the doc comment explaining what was removed. Whole-file `contains`
+/// is right for the POSITIVE half and wrong for this one.
+fn production_half(rel: &str) -> String {
+    let body = read(rel);
+    match body.find("#[cfg(test)]") {
+        Some(at) => body[..at].to_string(),
+        None => body,
+    }
+}
+
 /// AC-10 — the CLOSE prose teaches the confirmation pass the pipeline takes.
 ///
 /// The red proof ("this criterion knows how to fail") shipped with prose; the
@@ -1279,3 +1294,219 @@ const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "
 
 /// The names that same paragraph offers as ordinary writing roles.
 const WRITING_ROLE_EXAMPLES: &[&str] = &["backend", "proof", "discovery", "bootstrap"];
+
+/// Nothing refuses an operation because a branch is absent from the
+/// PRE-SELECTED list.
+///
+/// `git.flow` used to answer two questions at once — "where may a unit be cut
+/// from?" and "where is a direct commit forbidden?" — and six places read it to
+/// REFUSE. The installer writes no flow at all, so every one of those refusals
+/// fired on a correct installation, telling the operator that a branch their
+/// project really integrates through "is not an integration base of this
+/// project" and offering an edit to a configuration file as the way out.
+///
+/// This ratchet holds the three command doors to the measured questions: is
+/// this branch somebody's WORK UNIT, and is it PROTECTED. Both are facts the
+/// repository can answer; membership in a list nobody maintains is not.
+#[test]
+fn nothing_refuses_for_absence_from_the_preselected_list() {
+    // --- 1. The sentence, and the exit it offered, are gone -----------------
+    // Read the PRODUCTION half: the tests below each file quote the removed
+    // sentence in order to forbid it, and a negative assertion answered by its
+    // own guard proves nothing.
+    let open = production_half("apps/rt/src/commands/work_unit_open.rs");
+    let pr = production_half("apps/rt/src/commands/review/pr_door.rs");
+    let delete = production_half("apps/rt/src/commands/git_delete.rs");
+    for (name, body) in
+        [("work_unit_open", &open), ("pr_door", &pr), ("git_delete", &delete)]
+    {
+        assert!(
+            !body.contains("is not an integration base of this"),
+            "{name} still pronounces a verdict about a configuration file over a \
+             repository nobody asked about",
+        );
+        assert!(
+            !body.contains("Declare it in mustard.json"),
+            "{name} still offers editing the configuration as the way past a refusal \
+             — the one exit this design removed",
+        );
+    }
+
+    // --- 2. Each door asks the question it really has -----------------------
+    // The refusals survive; what changed is what they measure. Asserting the
+    // measurement by name is what keeps the list from creeping back in as the
+    // test for a question it cannot answer.
+    assert!(
+        pr.contains("mustard_core::protected_branches(&repo, &config.git)")
+            && pr.contains("unit.is_unit() && !protected.contains(&branch)"),
+        "`pr list` no longer refuses on the pair it can measure — the branch IS a \
+         unit, and the protected set does not name it",
+    );
+    assert!(
+        delete.contains("mustard_core::protected_branches(&main, &cfg.git)")
+            && delete.contains("standing_on.is_unit() && !protected.contains(&branch)"),
+        "`git delete` no longer refuses on the measured pair",
+    );
+    assert!(
+        delete.contains("!flow.base_of(unit).is_unit() || protected.contains(unit)"),
+        "`git delete` decides what it may remove by a declared list again, instead \
+         of by whether the name is somebody's work unit",
+    );
+    // The target a refusal names must not end at a literal. `primary_base()`
+    // floors to `main`; `origin/HEAD` is the remote's own answer.
+    for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
+        assert!(
+            body.contains("mustard_core::default_branch("),
+            "{name}'s refusal no longer falls back to origin/HEAD, so the base it \
+             names can be a literal nobody measured",
+        );
+        assert!(
+            !body.contains("primary_base()"),
+            "{name} names the base through `primary_base()` again — it ends at the \
+             hardcoded `main` for every project whose install wrote no flow",
+        );
+    }
+
+    // --- 3. The legacy shape is resolved by the CATALOGUE -------------------
+    let work_kind = read("apps/rt/src/shared/work_kind.rs");
+    assert!(
+        work_kind.contains("fn legacy_base_of") && work_kind.contains("with_remote_names(project"),
+        "the `{{base}}_{{slug}}` shape is read against the declaration alone again, \
+         so a unit whose base the flow never named is orphaned",
+    );
+}
+
+/// The doctor does not ask for a `git.flow` the installer no longer writes, and
+/// reports what is REALLY protected.
+///
+/// The check warned that `git.flow` was empty and prescribed declaring one.
+/// `project_seed` seeds an EMPTY flow on purpose — the project decides later —
+/// so the warning fired on every correct installation, and the claim it made
+/// (`only main/master are protected`) was false in front of
+/// `protected_branches`. A diagnostic that fires on a healthy install teaches
+/// the operator to ignore diagnostics.
+#[test]
+fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
+    let doctor = production_half("apps/rt/src/commands/doctor/doctor.rs");
+
+    // --- 1. The prescription is gone ----------------------------------------
+    assert!(
+        !doctor.contains("git.flow is empty"),
+        "the doctor still reports the shape a correct install has as a finding",
+    );
+    assert!(
+        !doctor.contains("fix: declare the flow in mustard.json"),
+        "the doctor still prescribes declaring a flow to get protection it does not \
+         grant",
+    );
+
+    // --- 2. What replaced it is the measurement -----------------------------
+    assert!(
+        doctor.contains("fn check_branch_protection")
+            && doctor.contains("mustard_core::protected_branches(cwd, &config.git)"),
+        "nothing in the doctor reports the branches that are really protected",
+    );
+    assert!(
+        doctor.contains("\"branch-protection\""),
+        "the check no longer answers to a name that says what it measures",
+    );
+
+    // --- 3. The installer really writes no flow -----------------------------
+    // Without this half the assertions above outlive their reason: they are
+    // right only while an empty flow is the INSTALLED shape.
+    let seed = read("packages/core/src/platform/project_seed.rs");
+    assert!(
+        seed.contains("git.flow starts empty — the project decides"),
+        "the installer seeds a flow again, which would make the removed warning \
+         meaningful and this whole check wrong",
+    );
+}
+
+/// The `/git` reference teaches the MEASURED model, not the erased one.
+///
+/// `/git` orders this file read, so whatever it says IS the model the operator
+/// and the agent work from. It taught integration bases derived from the flow, a
+/// table where the kind decided the base, a PR target resolved through the flow,
+/// and a refusal for standing on an integration base — four mechanisms the code
+/// no longer has.
+#[test]
+fn the_git_reference_teaches_the_measured_model() {
+    let flow = read("plugin/refs/git/git-flow.md");
+
+    // --- 1. The flow is named as a PRE-SELECTION ----------------------------
+    let preselects = line_with(&flow, "PRE-SELECTS")
+        .expect("the reference never says what `git.flow` actually decides");
+    assert!(
+        preselects.contains("refuses nothing"),
+        "the reference names the flow without saying it refuses nothing: {preselects}",
+    );
+    assert!(
+        preselects.contains("installer writes no flow"),
+        "a reader following this file still believes a flow must be declared: \
+         {preselects}",
+    );
+
+    // --- 2. Where each answer really comes from -----------------------------
+    let forbidden = line_with(&flow, "Where is a direct commit forbidden?")
+        .expect("the reference never says where protection is measured");
+    assert!(
+        forbidden.contains("origin/HEAD") && forbidden.contains("git.protected"),
+        "protection is taught without the set that measures it: {forbidden}",
+    );
+    let cut = line_with(&flow, "Where may a unit be cut from?")
+        .expect("the reference never says where the cut point comes from");
+    assert!(
+        cut.contains("every branch") && cut.contains("origin"),
+        "the cut point is still taught as a declared list: {cut}",
+    );
+
+    // --- 3. The kind does NOT decide the base -------------------------------
+    assert!(
+        flow.contains("The prefix does NOT decide the base"),
+        "the reference still lets the kind imply where a unit came from",
+    );
+    assert!(
+        !flow.contains("| `hotfix/` | a correction that does NOT wait for that route | an integration base"),
+        "the kind→base table is back — the inference this design removed",
+    );
+    let step0 = line_with(&flow, "still exists on `origin`")
+        .expect("the reference no longer says what the recorded base is checked against");
+    assert!(
+        step0.contains("recorded with the unit")
+            && step0.contains("never whether `git.flow` lists it"),
+        "the record is taught without WHAT is checked on the way out, which is the \
+         whole repair: {step0}",
+    );
+
+    // --- 4. Protection is not "being on a base" -----------------------------
+    let protection = line_with(&flow, "Cannot operate directly on protected branch")
+        .expect("the reference no longer states the write-op refusal");
+    assert!(
+        protection.contains("origin/HEAD") && protection.contains("git.protected"),
+        "the refusal is still taught as 'you are on an integration base': {protection}",
+    );
+
+    // --- 5. The code really works that way ----------------------------------
+    // Without this half every sentence above outlives its mechanism.
+    let branches = read("packages/core/src/platform/git_branches.rs");
+    assert!(
+        branches.contains("pub fn protected_branches") && branches.contains("pub fn branch_catalog"),
+        "the two measured answers the reference teaches are no longer the ones the \
+         product computes",
+    );
+    let config = read("packages/core/src/domain/config.rs");
+    assert!(
+        config.contains("refuses anything any more"),
+        "`preselected_bases` no longer documents itself as a pre-selection",
+    );
+    assert!(
+        !config.contains("fn integration_bases"),
+        "the deprecated forward is back, and with it the name that says the set \
+         permits something",
+    );
+    let gate = read("apps/rt/src/commands/event/base_gate.rs");
+    assert!(
+        gate.contains("NO membership test any more"),
+        "the base gate judges membership of a declared list again",
+    );
+}

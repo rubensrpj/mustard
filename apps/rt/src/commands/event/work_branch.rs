@@ -116,9 +116,10 @@ pub(crate) fn sanitize_git_ref(raw: &str) -> String {
 /// Compute the auto-branch name for a `pipeline.kind` work-type signal:
 /// `{kind}/{slug}`, sanitised to a valid git ref. The prefix records WHAT the
 /// unit is — a feature, a fix, an emergency — which is what an operator reading
-/// a branch list needs; the integration base is no longer parsed back out of
-/// the name but derived from the kind through `git.flow`
-/// ([`BaseFlow::base_of_kind`]). Slug precedence:
+/// a branch list needs; the base is no longer parsed back out of the name, and
+/// it is not derived from the kind either — it is the operator's own answer,
+/// taken against the real catalogue and recorded with the unit
+/// ([`BaseFlow::base_of`]). Slug precedence:
 /// 1. `--spec` when present (already a slug — at the base gate that is the
 ///    name `emit_pipeline` just MINTED, so this leg carries the canonical one);
 /// 2. else `--intent` through the canonical derivation
@@ -984,7 +985,6 @@ mod tests {
         for token in WorkKind::SUGGESTED {
             let kind = WorkKind::parse(token).expect("suggested token parses");
             let branch = named(kind);
-            #[allow(deprecated)]
             for base in config.git.preselected_bases() {
                 assert!(
                     !branch.starts_with(&format!("{base}_")),

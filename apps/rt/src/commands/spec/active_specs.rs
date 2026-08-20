@@ -423,11 +423,10 @@ fn show_blob(root: &Path, branch: &str, path: &str) -> Option<String> {
 /// checkout — was invisible to it. Two sweeps answering one question drift; one
 /// sweep with two consumers cannot.
 ///
-/// A work branch is one whose name starts with `{base}_` for a base the project
-/// itself declares (`mustard.json#git.flow` via
-/// [`mustard_core::domain::config::GitConfig::integration_bases`]) — the same
-/// question `work-unit-open` and the work-branch gate ask, so no branch name is
-/// hardcoded here either. The branch that is checked out is skipped: its specs
+/// A work branch is one [`crate::shared::work_kind::BaseFlow::base_of`]
+/// recognises — a `{kind}/{slug}` name, or a `{base}_` prefix naming a branch
+/// the project has — the same question `work-unit-open` and the work-branch
+/// gate ask, so no branch name is hardcoded here either. The branch that is checked out is skipped: its specs
 /// ARE the working tree.
 ///
 /// `seen` carries every spec name already accounted for and is extended as

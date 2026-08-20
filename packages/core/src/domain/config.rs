@@ -140,17 +140,6 @@ impl GitConfig {
         bases
     }
 
-    /// The set under its former name.
-    ///
-    /// Kept as a one-line forward so the rename lands in one commit instead of
-    /// rippling through every caller at once; the doc above is the truth about
-    /// what the value MEANS now.
-    #[must_use]
-    #[deprecated(note = "these branches are pre-selected, not permitted — call preselected_bases")]
-    pub fn integration_bases(&self) -> BTreeSet<String> {
-        self.preselected_bases()
-    }
-
     /// The base a picker opens ON: `flow["*"]` when present, else any single
     /// pre-selected base (lexically-least, deterministic), else `main`.
     /// Agnostic — the only literal is the last-resort `main` for a project with
@@ -793,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn integration_bases_derives_from_flow_keys_and_values() {
+    fn preselected_bases_derives_from_flow_keys_and_values() {
         // Standard two-tier flow → {dev, main}.
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
@@ -806,7 +795,7 @@ mod tests {
         let mut single = ProjectConfig::default();
         single.git.flow.insert("*".into(), "main".into());
         assert_eq!(
-            single.git.integration_bases(),
+            single.git.preselected_bases(),
             BTreeSet::from(["main".to_string()]),
         );
 
@@ -815,16 +804,16 @@ mod tests {
         dm.git.flow.insert("*".into(), "develop".into());
         dm.git.flow.insert("develop".into(), "master".into());
         assert_eq!(
-            dm.git.integration_bases(),
+            dm.git.preselected_bases(),
             BTreeSet::from(["develop".to_string(), "master".to_string()]),
         );
     }
 
     #[test]
-    fn integration_bases_empty_flow_falls_back_to_main_master() {
+    fn preselected_bases_empty_flow_falls_back_to_main_master() {
         let cfg = ProjectConfig::default();
         assert_eq!(
-            cfg.git.integration_bases(),
+            cfg.git.preselected_bases(),
             BTreeSet::from(["main".to_string(), "master".to_string()]),
         );
     }

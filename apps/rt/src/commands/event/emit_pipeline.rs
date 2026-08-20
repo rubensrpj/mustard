@@ -11,8 +11,9 @@
 //! - **Unknown kind** → prints an error on stderr and exits with code 1.
 //! - **Invalid JSON payload** → prints an error on stderr and exits with code 1.
 //! - **Unknown `--base` on `pipeline.kind`** → prints an error on stderr and
-//!   exits with code 1, BEFORE any event is written (an explicit base that
-//!   names no integration base is a user/config error, never silently coerced).
+//!   exits with code 1, BEFORE any event is written (an explicit base naming a
+//!   branch the repository does not have is a user error, never silently
+//!   coerced).
 //! - **Write error** → prints a warning on stderr and exits with code 0 (fail-open).
 //!
 //! This matches the pattern used by `emit_phase` and every other harness
@@ -135,15 +136,19 @@ pub struct EmitPipelineOpts {
     /// supersedes a disagreeing `--spec`, and the report says so. Ignored for
     /// every other kind.
     pub intent: Option<String>,
-    /// Integration base branch the work branch is cut from. When explicitly
-    /// set, it MUST name one of the project's `git.flow` integration bases
-    /// (unknown → error, exit 1, before any emit); when omitted, the base
-    /// follows from [`work_kind`](Self::work_kind). Agnostic — the base set is
-    /// derived from `git.flow`, never hardcoded. Ignored for other kinds.
+    /// Base branch the work branch is cut from. When explicitly set, it MUST
+    /// name a branch this repository really has
+    /// (a branch the remote does not have → error, exit 1, before any emit —
+    /// [`super::work_branch::resolve_kind_base`] validates against the real
+    /// catalogue, never against a declaration); when omitted, the project's
+    /// primary base. Agnostic — no branch is spelled here. Ignored for other
+    /// kinds.
     pub base: Option<String>,
-    /// What the unit IS — `feature`, `fix` or `hotfix`. On
-    /// `--kind pipeline.kind` it names the auto-branch (`{kind}/{slug}`) and,
-    /// through the declared flow, decides the base the unit is cut from.
+    /// What the unit IS — `feature`, `fix`, `hotfix`, or any token that can be
+    /// a git ref segment. On `--kind pipeline.kind` it names the auto-branch
+    /// (`{kind}/{slug}`). It does NOT decide the base: the base is the
+    /// operator's own answer, taken against the real catalogue and recorded
+    /// with the unit.
     ///
     /// This is ASKED, never inferred: a fix that waits for the next release and
     /// one that goes straight to production are the same code change, and the
@@ -426,12 +431,12 @@ fn resolve_work_kind_or_exit(
     }
 }
 
-/// Resolve the integration base a `pipeline.kind` unit is cut from — a
-/// CONSEQUENCE of its kind, read from `git.flow`. An EXPLICIT `--base` naming no
-/// integration base (or contradicting the kind) is a user/config error — fail
-/// loudly (exit 1) BEFORE anything is emitted, never silently coerced (silent
-/// coercion once sent `--base dev` work onto a `main_*` branch in the field).
-/// `None` for every other kind.
+/// Resolve the base a `pipeline.kind` unit is cut from — the OPERATOR's answer,
+/// validated against the branches the repository really has, else the project's
+/// primary base. An EXPLICIT `--base` naming a branch that does not exist is a
+/// user error — fail loudly (exit 1) BEFORE anything is emitted, never silently
+/// coerced (silent coercion once sent `--base dev` work onto a `main_*` branch
+/// in the field). `None` for every other kind.
 fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -> Option<String> {
     // The kind no longer selects the base — it is taken only as the signal that
     // a unit is being opened at all.
@@ -453,11 +458,12 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 
 /// BASE gate: `pipeline.kind` is the single pipeline-opening door — the emit the
 /// router runs at dispatch, BEFORE ANALYZE — so it is where the checkout is
-/// judged. Refuses (exit 2, before anything is written) when the tree is not
-/// sitting on one of `git.flow`'s integration bases, or when that base trails
-/// its remote; both refusals name the command that resolves them. See
-/// [`super::base_gate`] for why an unmeasurable checkout ABSTAINS instead of
-/// passing, and why the census refresh rides here.
+/// judged. Refuses (exit 2, before anything is written) when the branch the
+/// tree sits on trails its remote — the ONE refusal left, and it names the pull
+/// that resolves it. There is no "not an integration base" refusal any more.
+/// See [`super::base_gate`] for why a declared list could not answer that
+/// question, why an unmeasurable checkout ABSTAINS instead of passing, and why
+/// the census refresh rides here.
 ///
 /// Every other kind returns immediately: they are transitions INSIDE a unit
 /// that already crossed this gate, and a read-only request that never opens a

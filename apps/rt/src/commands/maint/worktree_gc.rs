@@ -202,7 +202,11 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let config = mustard_core::ProjectConfig::load(repo);
-    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
+    // ROOTED: a unit still in the `{base}_{slug}` shape whose base the flow no
+    // longer declares is resolved by the branches the repository really has,
+    // and this collector DELETES — reading such a worktree as nobody's unit is
+    // how it would reap one.
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, repo);
     let root = paths.claude_dir().join("worktrees");
     let Ok(read) = std::fs::read_dir(&root) else {
         return Vec::new();
