@@ -245,9 +245,15 @@ pub enum ReviewCmd {
         head: String,
         /// File whose content becomes the PR body (`<spec>/pr-body.md`); its
         /// first heading becomes the title. Unreadable ⇒ `ok:false` +
-        /// `error:"body-file-unreadable"`, nothing is opened.
+        /// `error:"body-file-unreadable"`, nothing is opened. Exactly one body
+        /// source: this or `--fill`.
         #[arg(long = "body-file")]
-        body_file: PathBuf,
+        body_file: Option<PathBuf>,
+        /// Derive title/body from the commits `base..head` carries (title =
+        /// newest subject, body = the subject list) — the submodule flow's
+        /// shape, where no `pr-body.md` exists. Exclusive with `--body-file`.
+        #[arg(long)]
+        fill: bool,
         /// Open as a draft — the parent of a monorepo unit while any submodule
         /// PR is still open.
         #[arg(long)]
@@ -409,8 +415,8 @@ pub fn dispatch(cmd: ReviewCmd) {
         ReviewCmd::PrMerge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }
-        ReviewCmd::PrOpen { base, head, body_file, draft, root } => {
-            review::pr_publish::run_open(&root, &base, &head, &body_file, draft);
+        ReviewCmd::PrOpen { base, head, body_file, fill, draft, root } => {
+            review::pr_publish::run_open(&root, &base, &head, body_file.as_deref(), fill, draft);
         }
         ReviewCmd::PrEdit { number, body_file, root } => {
             review::pr_publish::run_edit(&root, number, &body_file);

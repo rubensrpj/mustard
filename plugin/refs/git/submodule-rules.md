@@ -174,18 +174,18 @@ rtk git add -- "<SUB_PATH>" && rtk git commit -m "chore(submodule): bump pointer
 ```
 
 Re-sample first: after the submodule PR merged, its base carries the commit (or the squash of it),
-and that is the SHA the parent must record. Then `rtk gh pr ready` on the parent PR — see the close
+and that is the SHA the parent must record. Then `mustard-rt run pr-ready --number <n>` on the parent PR — see the close
 section.
 
 ## PR per repo — submodules before parent
 
 `/mustard:pr open` opens ONE PR per repo, **submodules FIRST**: the submodule's PR is what lands its commit on its own base, and only then can the parent record a pointer that does not dangle. Until it merges the parent carries a `[pending-bump]`, not a gitlink — and its own PR stays a draft so nothing can merge past that gap.
 
-1. Each submodule ahead of its base (`rtk git -C <SUB_ABS> rev-parse "$SUB_BASE..$SUB_WORK"` non-empty): `( cd "<SUB_ABS>" && rtk gh pr create --base "$SUB_BASE" --head "$SUB_WORK" --fill )`. The `( … )` subshell isolates the `cd`; the "no `cd`" rule targets `git`, not `gh` (which reads the repo from cwd). Existing PR → print its URL.
+1. Each submodule ahead of its base (`rtk git -C <SUB_ABS> rev-parse "$SUB_BASE..$SUB_WORK"` non-empty): `( cd "<SUB_ABS>" && mustard-rt run pr-open --root "<SUB_ABS>" --base "$SUB_BASE" --head "$SUB_WORK" --fill )`. The `( … )` subshell isolates the `cd`; the "no `cd`" rule targets `git`, not `gh` (which reads the repo from cwd). Existing PR → print its URL.
 2. Then the parent — **as a DRAFT while ANY submodule PR from step 1 is still open**:
 
    ```bash
-   rtk gh pr create --base "$BASE" --head <parent-work-branch> --fill \
+   mustard-rt run pr-open --base "$BASE" --head <parent-work-branch> --fill \
      --draft --body "Blocked by <sub PR url>"
    ```
 
@@ -197,7 +197,7 @@ section.
    Two consequences to expect, both documented by GitHub: a draft PR does **not** automatically
    request review from code owners (CODEOWNERS) — those requests fire when the draft is marked
    ready, so silence from reviewers before that is the design, not a misconfiguration; and marking
-   it ready is `rtk gh pr ready [<number>|<url>|<branch>]`, which runs in the close ritual after
+   it ready is `mustard-rt run pr-ready --number <n>`, which runs in the close ritual after
    the bump lands (`--undo` puts it back to draft).
 
    Every submodule PR already merged (or no submodule carries the unit) → open the parent normally,
@@ -214,7 +214,7 @@ A base→base `pr` opens its single PR only — no push, no submodule branches, 
 2. **Then the bump + ready, in the parent — before the parent settles.** The submodule commit now
    lives on its base, so the pointer the commit step left as `[pending-bump]` finally has a
    reachable target. Run the bump step above (re-sample, commit the pointer ALONE, push), then
-   `rtk gh pr ready` on the parent PR — it opened as a draft precisely so it could not merge ahead
+   `mustard-rt run pr-ready --number <n>` on the parent PR — it opened as a draft precisely so it could not merge ahead
    of the submodule, and `ready` is also what requests the code owners. Skipping this leaves the
    super-repo pointing at a work-branch commit that the submodule's branch deletion is about to
    make unreachable.
