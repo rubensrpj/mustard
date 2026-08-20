@@ -174,14 +174,59 @@ fn emit(report: &PrPublishReport) {
     println!("{}", serde_json::to_string_pretty(report).unwrap_or_else(|_| "{}".to_string()));
 }
 
-/// Dispatch `mustard-rt run pr-open`.
-pub fn run_open(root: &Path, base: &str, head: &str, body_file: &Path, draft: bool) {
+/// The title and body `--fill` derives from the commits `base..head` carries —
+/// the shape the submodule flow needs, where no `pr-body.md` ritual exists:
+/// title = the newest commit's subject (a submodule unit usually has one), body
+/// = the whole `git log --oneline` of the range. Answers `Err` with git's own
+/// words when the range cannot be read, so the report names the reason.
+fn fill_from_commits(repo: &Path, base: &str, head: &str) -> Result<(String, String), String> {
+    let out = std::process::Command::new("git")
+        .args(["log", "--format=%s", &format!("{base}..{head}")])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("git-log-failed: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { "git-log-failed".to_string() } else { err });
+    }
+    let subjects: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    let Some(title) = subjects.first().cloned() else {
+        return Err(format!("nothing-to-fill: {base}..{head} carries no commits"));
+    };
+    let body = subjects.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n");
+    Ok((title, body))
+}
+
+/// Dispatch `mustard-rt run pr-open`. Exactly ONE body source: `--body-file`
+/// (the pr-body.md ritual) or `--fill` (title/body from the commits, the
+/// submodule flow's shape) — neither, or both, is refused in the report.
+pub fn run_open(
+    root: &Path,
+    base: &str,
+    head: &str,
+    body_file: Option<&Path>,
+    fill: bool,
+    draft: bool,
+) {
     let repo = project_root(root);
     let provider = provider_for(&repo);
-    let report = match fs::read_to_string(body_file) {
-        Ok(body) => {
+    let sourced = match (body_file, fill) {
+        (Some(_), true) => Err("body-file-and-fill-are-exclusive".to_string()),
+        (None, false) => Err("body-source-missing: pass --body-file or --fill".to_string()),
+        (Some(path), false) => fs::read_to_string(path)
+            .map(|body| (title_from_body(&body, head), body))
+            .map_err(|_| BODY_FILE_UNREADABLE.to_string()),
+        (None, true) => fill_from_commits(&repo, base, head),
+    };
+    let report = match sourced {
+        Ok((title, body)) => {
             let pr = PrToOpen {
-                title: title_from_body(&body, head),
+                title,
                 body,
                 head: head.to_string(),
                 base: base.to_string(),
@@ -189,12 +234,9 @@ pub fn run_open(root: &Path, base: &str, head: &str, body_file: &Path, draft: bo
             };
             open_report(provider.as_ref(), &pr)
         }
-        Err(_) => PrPublishReport::failed(
-            ACTION_OPEN,
-            provider.provider().to_string(),
-            None,
-            BODY_FILE_UNREADABLE.to_string(),
-        ),
+        Err(error) => {
+            PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, error)
+        }
     };
     emit(&report);
 }
@@ -378,6 +420,36 @@ mod tests {
     /// The title comes out of the body document itself: the first heading
     /// sheds its markers, a plain first line serves as-is, and a body with no
     /// usable line falls back to the head branch so the create never starves.
+    #[test]
+    fn fill_reads_title_and_body_from_the_commit_range() {
+        // A real repo: two commits on a branch off the base.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("spawn git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "dev", "."]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "seed"]);
+        git(&["checkout", "-q", "-b", "fix/x"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "first change"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "the newest subject"]);
+
+        let (title, body) = fill_from_commits(root, "dev", "fix/x").expect("range readable");
+        assert_eq!(title, "the newest subject", "title = newest commit subject");
+        assert!(body.contains("- first change") && body.contains("- the newest subject"));
+
+        // An empty range refuses with the range named, never an empty PR.
+        let err = fill_from_commits(root, "fix/x", "fix/x").expect_err("nothing to fill");
+        assert!(err.contains("nothing-to-fill"), "{err}");
+    }
+
     #[test]
     fn the_title_is_read_out_of_the_body_file() {
         assert_eq!(title_from_body("# feat: the unit\n\nprose", "feature/x"), "feat: the unit");

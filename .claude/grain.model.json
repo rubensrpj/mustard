@@ -3,8 +3,8 @@
   "languages": [
     {
       "language": "rust",
-      "files": 473,
-      "loc": 197970
+      "files": 477,
+      "loc": 199955
     },
     {
       "language": "tsx",
@@ -383,7 +383,7 @@
     {
       "dir": "apps/rt",
       "role": "L1",
-      "files": 294
+      "files": 298
     },
     {
       "dir": "apps/dashboard",
@@ -36256,7 +36256,7 @@
     {
       "path": "apps/rt/src/commands/review/cli.rs",
       "language": "rust",
-      "loc": 353,
+      "loc": 420,
       "imports": [
         "clap::Subcommand",
         "crate::commands::review::gate_regression_check::{GateInput, Moment}",
@@ -36520,44 +36520,122 @@
         },
         {
           "kind": "enum_member",
-          "name": "FindingCollect",
+          "name": "PrOpen",
+          "line": 239,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "base",
+          "line": 242,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "head",
           "line": 245,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "spec",
-          "line": 249,
+          "name": "body_file",
+          "line": 250,
           "supertypes": []
         },
         {
-          "kind": "enum_member",
-          "name": "ReviewDispatch",
+          "kind": "field",
+          "name": "draft",
           "line": 254,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "pr",
+          "name": "root",
           "line": 257,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "PrEdit",
+          "line": 265,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "number",
+          "line": 268,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "body_file",
+          "line": 272,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "root",
+          "line": 275,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "PrReady",
+          "line": 283,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "number",
+          "line": 286,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "root",
+          "line": 289,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "FindingCollect",
+          "line": 305,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 260,
+          "line": 309,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "ReviewDispatch",
+          "line": 314,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "pr",
+          "line": 317,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec",
+          "line": 320,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "subproject",
-          "line": 263,
+          "line": 323,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dispatch",
-          "line": 268,
+          "line": 328,
           "supertypes": []
         }
       ]
@@ -38380,6 +38458,230 @@
         }
       ],
       "fan_in": 3
+    },
+    {
+      "path": "apps/rt/src/commands/review/pr_publish.rs",
+      "language": "rust",
+      "loc": 356,
+      "imports": [
+        "crate::commands::review::pr_door::project_root",
+        "crate::shared::pr_provider::{PrOpened, PrView}",
+        "crate::shared::pr_provider::{provider_for, PrProvider, PrToOpen}",
+        "serde::Serialize",
+        "std::cell::RefCell",
+        "std::fs",
+        "std::path::Path",
+        "super::*"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "struct",
+          "name": "PrPublishReport",
+          "line": 62,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ok",
+          "line": 64,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "action",
+          "line": 66,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "provider",
+          "line": 69,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "number",
+          "line": 72,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "url",
+          "line": 75,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "error",
+          "line": 78,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "failed",
+          "line": 85,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "open_report",
+          "line": 100,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "edit_report",
+          "line": 120,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ready_report",
+          "line": 137,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "title_from_body",
+          "line": 158,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "emit",
+          "line": 173,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_open",
+          "line": 178,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_edit",
+          "line": 203,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_ready",
+          "line": 219,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "FakePub",
+          "line": 235,
+          "supertypes": [
+            "PrProvider"
+          ]
+        },
+        {
+          "kind": "field",
+          "name": "name",
+          "line": 236,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "open",
+          "line": 237,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "edit",
+          "line": 238,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ready",
+          "line": 239,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "seen",
+          "line": 240,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "green",
+          "line": 245,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "red",
+          "line": 257,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "provider",
+          "line": 269,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "open",
+          "line": 273,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "edit_body",
+          "line": 281,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "ready",
+          "line": 286,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "view",
+          "line": 291,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "to_open",
+          "line": 296,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_open_reports_through_the_port",
+          "line": 309,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "failures_degrade_into_the_error_field_never_a_panic",
+          "line": 336,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "edit_and_ready_echo_the_number_and_pass_the_body_through",
+          "line": 366,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_title_is_read_out_of_the_body_file",
+          "line": 382,
+          "supertypes": []
+        }
+      ]
     },
     {
       "path": "apps/rt/src/commands/review/review_result.rs",
@@ -40284,7 +40586,7 @@
     {
       "path": "apps/rt/src/commands/review/pr_door.rs",
       "language": "rust",
-      "loc": 870,
+      "loc": 881,
       "imports": [
         "crate::commands::agent::render::reference::files_section_paths",
         "crate::commands::agent::render::skills::build_skills_list",
@@ -40308,448 +40610,448 @@
         {
           "kind": "function",
           "name": "gh_out",
-          "line": 96,
+          "line": 105,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_json",
-          "line": 119,
+          "line": 128,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "project_root",
-          "line": 127,
+          "line": 138,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bases_and_branch",
-          "line": 142,
+          "line": 153,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_of_branch",
-          "line": 155,
+          "line": 166,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_rel_path",
-          "line": 160,
+          "line": 171,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_text_of_unit",
-          "line": 177,
+          "line": 188,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrFacts",
-          "line": 194,
+          "line": 205,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "number",
-          "line": 195,
+          "line": 206,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 197,
+          "line": 208,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_pr",
-          "line": 202,
+          "line": 213,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_subproject",
-          "line": 230,
+          "line": 241,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrEntry",
-          "line": 243,
+          "line": 254,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "number",
-          "line": 244,
+          "line": 255,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "title",
-          "line": 245,
+          "line": 256,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "mergeable",
-          "line": 249,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "draft",
-          "line": 253,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "head",
-          "line": 255,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PrListReport",
           "line": 260,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "ok",
+          "name": "draft",
           "line": 264,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "reason",
+          "name": "head",
           "line": 266,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PrListReport",
+          "line": 271,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ok",
+          "line": 275,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 277,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "branch",
-          "line": 267,
+          "line": 278,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "bases",
-          "line": 268,
+          "line": 279,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "prs",
-          "line": 270,
+          "line": 281,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "gh_error",
-          "line": 272,
+          "line": 283,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "hint",
-          "line": 274,
+          "line": 285,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_entry",
-          "line": 279,
+          "line": 290,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "list_at",
-          "line": 299,
+          "line": 310,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrReviewReport",
-          "line": 348,
+          "line": 359,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "ok",
-          "line": 351,
+          "line": 362,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 353,
+          "line": 364,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "pr",
-          "line": 354,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "head",
-          "line": 355,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "spec",
-          "line": 358,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "spec_path",
-          "line": 363,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "subproject",
           "line": 365,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "patterns",
-          "line": 369,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "recorded",
-          "line": 371,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "verdict",
-          "line": 373,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "review_brief",
-          "line": 384,
-          "supertypes": []
-        },
-        {
-          "kind": "enum",
-          "name": "MergeConsent",
-          "line": 453,
-          "supertypes": []
-        },
-        {
-          "kind": "enum_member",
-          "name": "Proceed",
-          "line": 455,
-          "supertypes": []
-        },
-        {
-          "kind": "enum_member",
-          "name": "Ask",
-          "line": 458,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 458,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "merge_consent",
-          "line": 470,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "recorded_verdict",
-          "line": 488,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PrMergeReport",
-          "line": 525,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "ok",
-          "line": 530,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "action",
-          "line": 533,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 535,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "pr",
-          "line": 536,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
           "name": "head",
-          "line": 538,
+          "line": 366,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 540,
+          "line": 369,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec_path",
+          "line": 374,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "subproject",
+          "line": 376,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "patterns",
+          "line": 380,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "recorded",
+          "line": 382,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "verdict",
-          "line": 542,
+          "line": 384,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "review_brief",
+          "line": 395,
+          "supertypes": []
+        },
+        {
+          "kind": "enum",
+          "name": "MergeConsent",
+          "line": 464,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Proceed",
+          "line": 466,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Ask",
+          "line": 469,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "warning",
+          "name": "reason",
+          "line": 469,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "merge_consent",
+          "line": 481,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "recorded_verdict",
+          "line": 499,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PrMergeReport",
+          "line": 536,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ok",
+          "line": 541,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "action",
           "line": 544,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "reason",
+          "line": 546,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "pr",
+          "line": 547,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "head",
+          "line": 549,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec",
+          "line": 551,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "verdict",
+          "line": 553,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "warning",
+          "line": 555,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "settle",
-          "line": 548,
+          "line": 559,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "hint",
-          "line": 550,
+          "line": 561,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "merge_core",
-          "line": 558,
+          "line": 569,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_merge",
-          "line": 634,
+          "line": 645,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit",
-          "line": 643,
+          "line": 654,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_list",
-          "line": 648,
+          "line": 659,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_review",
-          "line": 653,
+          "line": 664,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_merge",
-          "line": 671,
+          "line": 682,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git",
-          "line": 690,
+          "line": 701,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "repo",
-          "line": 698,
+          "line": 709,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_list_refuses_off_an_integration_base_and_names_it",
-          "line": 715,
+          "line": 726,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_list_rows_keep_the_provider_word_and_sort_by_number",
-          "line": 749,
+          "line": 760,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_without_verdict_warns_and_asks_instead_of_merging",
-          "line": 784,
+          "line": 795,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_consent_asks_for_anything_but_approved",
-          "line": 828,
+          "line": 839,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_reads_the_verdict_review_result_recorded",
-          "line": 846,
+          "line": 857,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "door_flow",
-          "line": 863,
+          "line": 874,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_of_branch_reads_the_unit_out_of_the_head_ref",
-          "line": 873,
+          "line": 884,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_review_brief_names_the_spec_and_records_the_verdict",
-          "line": 888,
+          "line": 899,
           "supertypes": []
         }
       ],
-      "fan_in": 1
+      "fan_in": 2
     },
     {
       "path": "apps/rt/src/commands/review/review_prefetch.rs",
       "language": "rust",
-      "loc": 361,
+      "loc": 370,
       "imports": [
         "serde_json::{json, Value}",
         "std::process::Command",
@@ -40760,115 +41062,115 @@
         {
           "kind": "struct",
           "name": "ReviewPrefetchOpts",
-          "line": 22,
+          "line": 31,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "pr_ref",
-          "line": 24,
+          "line": 33,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "format",
-          "line": 25,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "normalise_pr_ref",
           "line": 34,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "normalise_pr_ref",
+          "line": 43,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "fetch_pr",
-          "line": 59,
+          "line": 68,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "structure_pr",
-          "line": 100,
+          "line": 109,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "render_json",
-          "line": 204,
+          "line": 213,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "render_table",
-          "line": 209,
+          "line": 218,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run",
-          "line": 273,
+          "line": 282,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mock_gh_response",
-          "line": 301,
+          "line": 310,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "structure_pr_extracts_title_and_author",
-          "line": 325,
+          "line": 334,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "structure_pr_extracts_scope",
-          "line": 333,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "structure_pr_extracts_files",
           "line": 342,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "structure_pr_extracts_reviews",
+          "name": "structure_pr_extracts_files",
           "line": 351,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "structure_pr_extracts_reviews",
+          "line": 360,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "normalise_pr_ref_extracts_number_from_url",
-          "line": 361,
+          "line": 370,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "normalise_pr_ref_passthrough_number",
-          "line": 369,
+          "line": 378,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "render_json_is_valid_json",
-          "line": 375,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "render_table_contains_title_and_author",
           "line": 384,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "render_table_summarises_reviews",
+          "name": "render_table_contains_title_and_author",
           "line": 393,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "render_table_summarises_reviews",
+          "line": 402,
           "supertypes": []
         }
       ]
@@ -41180,7 +41482,7 @@
     {
       "path": "apps/rt/src/commands/review/mod.rs",
       "language": "rust",
-      "loc": 14,
+      "loc": 15,
       "imports": [],
       "namespaces": [],
       "declarations": [],
@@ -41384,7 +41686,7 @@
     {
       "path": "apps/rt/src/commands/event/cli.rs",
       "language": "rust",
-      "loc": 175,
+      "loc": 181,
       "imports": [
         "clap::Subcommand",
         "crate::commands::{event}",
@@ -41503,73 +41805,73 @@
         {
           "kind": "field",
           "name": "work_kind",
-          "line": 95,
+          "line": 101,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "base",
-          "line": 102,
+          "line": 108,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "EventProjections",
-          "line": 106,
+          "line": 112,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "view",
-          "line": 111,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "spec",
-          "line": 114,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "wave",
           "line": 117,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "format",
+          "name": "spec",
           "line": 120,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "wave",
+          "line": 123,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "format",
+          "line": 126,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Notebook",
-          "line": 130,
+          "line": 136,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "add",
-          "line": 134,
+          "line": 140,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "unit",
-          "line": 138,
+          "line": 144,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "root",
-          "line": 141,
+          "line": 147,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dispatch",
-          "line": 146,
+          "line": 152,
           "supertypes": []
         }
       ]
@@ -42629,7 +42931,7 @@
     {
       "path": "apps/rt/src/commands/event/emit_pipeline.rs",
       "language": "rust",
-      "loc": 2251,
+      "loc": 2373,
       "imports": [
         "crate::commands::event::work_branch::compute_work_branch",
         "crate::commands::spec::spec_slug",
@@ -42703,494 +43005,518 @@
         },
         {
           "kind": "function",
-          "name": "default_work_kind",
-          "line": 163,
+          "name": "work_kind_of_flow_kind",
+          "line": 166,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "derive_work_kind",
+          "line": 186,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "cut_base_is_ordinary",
+          "line": 217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_payload_tolerant",
-          "line": 179,
+          "line": 239,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run",
-          "line": 203,
+          "line": 263,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "effect_cwd",
-          "line": 287,
+          "line": 348,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unknown_kind_message",
-          "line": 297,
+          "line": 358,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "validate_kind_or_exit",
-          "line": 316,
+          "line": 377,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_work_kind_or_exit",
-          "line": 328,
+          "line": 389,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_kind_base_or_exit",
-          "line": 354,
+          "line": 435,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "enforce_base_gate_or_exit",
-          "line": 384,
+          "line": 465,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "enforce_qa_gate_or_exit",
-          "line": 410,
+          "line": 491,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_payload_or_exit",
-          "line": 429,
+          "line": 510,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "MintedName",
-          "line": 451,
+          "line": 532,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "slug",
-          "line": 453,
+          "line": 534,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "renamed_from",
-          "line": 455,
+          "line": 536,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mint_unit_name_at",
-          "line": 478,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "mint_unit_name",
-          "line": 499,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "emit_primary_and_alias",
-          "line": 523,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "sync_status_transition",
           "line": 559,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "mint_unit_name",
+          "line": 580,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "emit_primary_and_alias",
+          "line": 604,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "sync_status_transition",
+          "line": 640,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "apply_wave_complete",
-          "line": 590,
+          "line": 671,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mark_pending_work_branch",
-          "line": 627,
+          "line": 708,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "finalize_complete",
-          "line": 656,
+          "line": 737,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cleanup_terminal_state",
-          "line": 665,
+          "line": 746,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "echo_success",
-          "line": 688,
+          "line": 769,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed",
-          "line": 716,
+          "line": 805,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_terminal_event",
-          "line": 743,
+          "line": 832,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_wave_failed_twin",
-          "line": 773,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "failed_wave_number",
-          "line": 806,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "wave_spec_path",
-          "line": 841,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "tag_legacy_alias",
           "line": 862,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "failed_wave_number",
+          "line": 895,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "wave_spec_path",
+          "line": 930,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "tag_legacy_alias",
+          "line": 951,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "alias_event",
-          "line": 887,
+          "line": 976,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "state_from_status_word",
-          "line": 945,
+          "line": 1034,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "phase_token_for_stage",
-          "line": 982,
+          "line": 1071,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stage_rank",
-          "line": 1001,
+          "line": 1090,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "meta_path_for",
-          "line": 1015,
+          "line": 1104,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patch_meta_for_transition",
-          "line": 1043,
+          "line": 1132,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patch_meta_complete",
-          "line": 1097,
+          "line": 1186,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_completed_status_if_needed",
-          "line": 1128,
+          "line": 1217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sync_wave_started",
-          "line": 1168,
+          "line": 1257,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sync_parent_started",
-          "line": 1203,
+          "line": 1292,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reconcile_wave_checklist",
-          "line": 1240,
+          "line": 1329,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_wave_start",
-          "line": 1278,
+          "line": 1367,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_parent_progress",
-          "line": 1326,
+          "line": 1415,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_final_wave",
-          "line": 1431,
+          "line": 1520,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_pipeline_complete",
-          "line": 1480,
+          "line": 1569,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_omitted_type_derives_from_the_payload_kind_or_refuses",
+          "line": 1607,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_base_that_admits_hotfix_refuses_to_derive",
+          "line": 1631,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "work_type_in_kind_flag_gets_payload_hint",
-          "line": 1512,
+          "line": 1639,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_base_gate_mints_the_canonical_slug",
-          "line": 1537,
+          "line": 1664,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "known_kinds_list_covers_legacy_and_new_kinds",
-          "line": 1591,
+          "line": 1718,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_maps_legacy_status_terminal_to_outcome",
-          "line": 1623,
+          "line": 1750,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_maps_legacy_phase_to_stage",
-          "line": 1634,
+          "line": 1761,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_returns_none_for_new_kinds",
-          "line": 1643,
+          "line": 1770,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tag_legacy_alias_sets_flag_on_object",
-          "line": 1651,
+          "line": 1778,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "valid_json_payload_parses",
-          "line": 1658,
+          "line": 1785,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "null_payload_when_none",
-          "line": 1665,
+          "line": 1792,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_payload_tolerant_recovers_powershell_escaped_json",
-          "line": 1681,
+          "line": 1808,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_routed",
-          "line": 1706,
+          "line": 1833,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "status_wave_failed_emits_the_wave_failed_twin",
-          "line": 1725,
+          "line": 1852,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_failed_twin_prefers_payload_wave_and_skips_non_failures",
-          "line": 1759,
+          "line": 1886,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "each_kind_appended_once_with_correct_event_name",
-          "line": 1794,
+          "line": 1921,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_scope_payload_round_trips",
-          "line": 1822,
+          "line": 1949,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_task_complete_payload_round_trips",
-          "line": 1849,
+          "line": 1976,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "optional_fields_absent_in_minimal_payload",
-          "line": 1878,
+          "line": 2005,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_no_events_dir",
-          "line": 1895,
+          "line": 2022,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_requires_overall_pass",
-          "line": 1904,
+          "line": 2031,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_only_fail",
-          "line": 1925,
+          "line": 2052,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_overall_skip",
-          "line": 1939,
+          "line": 2066,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_uses_most_recent_event",
-          "line": 1954,
+          "line": 2081,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_error_does_not_propagate_as_nonzero",
-          "line": 1992,
+          "line": 2119,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_bumps_parent_progress",
-          "line": 2016,
+          "line": 2143,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reconcile_wave_checklist_marks_existing_files_only",
-          "line": 2064,
+          "line": 2191,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_advances_parent_stage_to_execute",
-          "line": 2090,
+          "line": 2217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_does_not_regress_later_stage",
-          "line": 2115,
+          "line": 2242,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_start_advances_parent_stage_to_execute",
-          "line": 2141,
+          "line": 2268,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "final_wave_auto_finalizes_when_no_acceptance_criteria",
-          "line": 2178,
+          "line": 2305,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "final_wave_awaits_close_when_acceptance_criteria_present",
-          "line": 2220,
+          "line": 2347,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_spec_meta",
-          "line": 2260,
+          "line": 2387,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stage_transition_patches_meta_stage",
-          "line": 2271,
+          "line": 2398,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "outcome_transition_pins_close_on_terminal",
-          "line": 2301,
+          "line": 2428,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_sets_outcome_completed_and_stage_close",
-          "line": 2326,
+          "line": 2453,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patch_meta_complete_noop_when_spec_missing",
-          "line": 2349,
+          "line": 2476,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "projected_status",
-          "line": 2356,
+          "line": 2483,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_also_emits_completed_status_when_not_terminal",
-          "line": 2370,
+          "line": 2497,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_status_emit_is_idempotent_when_already_completed",
-          "line": 2389,
+          "line": 2516,
           "supertypes": []
         }
       ],
@@ -61516,7 +61842,7 @@
     {
       "path": "apps/rt/src/shared/proc.rs",
       "language": "rust",
-      "loc": 470,
+      "loc": 550,
       "imports": [
         "std::io::Read",
         "std::path::Path",
@@ -61612,90 +61938,490 @@
         },
         {
           "kind": "function",
+          "name": "session_ancestry",
+          "line": 237,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "listening_pids",
-          "line": 217,
+          "line": 261,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_netstat_pids",
-          "line": 262,
+          "line": 312,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "lsof_listener_query",
+          "line": 341,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_lsof_pids",
-          "line": 287,
+          "line": 345,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "kill_pid",
-          "line": 302,
+          "line": 360,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "process_liveness",
-          "line": 344,
+          "line": 402,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_process_alive",
-          "line": 396,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "big_output_exit_3",
-          "line": 416,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "shell_drains_beyond_the_pipe_buffer_and_reports_exit_code",
-          "line": 435,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "shell_reports_timed_out_when_the_deadline_fires_first",
           "line": 454,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "big_output_exit_3",
+          "line": 474,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shell_drains_beyond_the_pipe_buffer_and_reports_exit_code",
+          "line": 493,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shell_reports_timed_out_when_the_deadline_fires_first",
+          "line": 512,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "parse_netstat_pid_from_listening_row",
-          "line": 464,
+          "line": 522,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_netstat_ignores_other_ports_and_states",
-          "line": 471,
+          "line": 529,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_netstat_empty_on_no_match",
-          "line": 481,
+          "line": 539,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_reap_query_asks_only_for_the_listener",
+          "line": 549,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_session_ancestry_protects_self_and_parents",
+          "line": 563,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_lsof_pids_one_per_line_dedup",
-          "line": 487,
+          "line": 571,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_lsof_empty_on_blank",
-          "line": 493,
+          "line": 577,
           "supertypes": []
         }
       ],
       "fan_in": 4
+    },
+    {
+      "path": "apps/rt/src/shared/pr_provider.rs",
+      "language": "rust",
+      "loc": 648,
+      "imports": [
+        "crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED}",
+        "crate::shared::pr_azure::{\n        do_open, do_view_number, pat_from,\n        test_support::{remote, FakeTransport},\n        AzureRemote, PAT_ENV,\n    }",
+        "serde_json::Value",
+        "serde_json::json",
+        "std::path::{Path, PathBuf}",
+        "std::process::Command",
+        "super::*"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "function",
+          "name": "short_ref",
+          "line": 69,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "status_from_azure",
+          "line": 85,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "status_from_github",
+          "line": 99,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PrView",
+          "line": 115,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "number",
+          "line": 117,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 118,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "head",
+          "line": 120,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "base",
+          "line": 122,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "status",
+          "line": 124,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "merge_status",
+          "line": 130,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "draft",
+          "line": 131,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "url",
+          "line": 133,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PrToOpen",
+          "line": 139,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 140,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "body",
+          "line": 141,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "head",
+          "line": 143,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "base",
+          "line": 145,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "draft",
+          "line": 146,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PrOpened",
+          "line": 154,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "number",
+          "line": 155,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "url",
+          "line": 156,
+          "supertypes": []
+        },
+        {
+          "kind": "trait",
+          "name": "PrProvider",
+          "line": 172,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "provider",
+          "line": 175,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "open",
+          "line": 178,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "edit_body",
+          "line": 181,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "ready",
+          "line": 184,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "view",
+          "line": 189,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "gh_out",
+          "line": 204,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "gh_json",
+          "line": 227,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "view_from_github",
+          "line": 238,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "number_from_pr_url",
+          "line": 259,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "GithubPrCli",
+          "line": 268,
+          "supertypes": [
+            "PrProvider"
+          ]
+        },
+        {
+          "kind": "field",
+          "name": "repo",
+          "line": 269,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "new",
+          "line": 275,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "provider",
+          "line": 281,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "open",
+          "line": 285,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "edit_body",
+          "line": 306,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "ready",
+          "line": 310,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "view",
+          "line": 314,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unsupported",
+          "line": 336,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "UnsupportedPr",
+          "line": 345,
+          "supertypes": [
+            "PrProvider"
+          ]
+        },
+        {
+          "kind": "field",
+          "name": "provider",
+          "line": 348,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "provider",
+          "line": 352,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "open",
+          "line": 356,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "edit_body",
+          "line": 360,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "ready",
+          "line": 364,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "view",
+          "line": 368,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "provider_for",
+          "line": 385,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_full_ref_and_a_short_name_answer_the_same_branch",
+          "line": 409,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "azure_states_map_to_the_canonical_vocabulary",
+          "line": 422,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "github_states_map_onto_the_canonical_vocabulary",
+          "line": 434,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "github_view_normalises_refs_and_never_invents_a_merge_status",
+          "line": 447,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_created_pr_number_is_read_out_of_the_url",
+          "line": 482,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_provider_without_an_adapter_refuses_honestly",
+          "line": 493,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_factory_routes_by_the_provider_in_force",
+          "line": 514,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "azure_open_posts_the_pullrequest_contract",
+          "line": 554,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "azure_without_credential_refuses_naming_both_sources",
+          "line": 605,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_azure_response_folds_into_the_normalized_view",
+          "line": 631,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "every_azure_remote_spelling_yields_the_rest_base",
+          "line": 668,
+          "supertypes": []
+        }
+      ],
+      "fan_in": 2
     },
     {
       "path": "apps/rt/src/shared/translate.rs",
@@ -62515,7 +63241,7 @@
           "supertypes": []
         }
       ],
-      "fan_in": 4
+      "fan_in": 6
     },
     {
       "path": "apps/rt/src/shared/prompt.rs",
@@ -62550,10 +63276,339 @@
     {
       "path": "apps/rt/src/shared/mod.rs",
       "language": "rust",
-      "loc": 47,
+      "loc": 61,
       "imports": [],
       "namespaces": [],
       "declarations": []
+    },
+    {
+      "path": "apps/rt/src/shared/pr_azure.rs",
+      "language": "rust",
+      "loc": 617,
+      "imports": [
+        "crate::shared::branch_state::PrStatus",
+        "crate::shared::pr_provider::{\n    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,\n}",
+        "serde_json::Value",
+        "serde_json::{json, Value}",
+        "std::cell::RefCell",
+        "std::collections::BTreeMap",
+        "std::io::Write as _",
+        "std::path::{Path, PathBuf}",
+        "std::process::{Command, Stdio}",
+        "std::time::Duration",
+        "super::*",
+        "super::test_support::{remote, FakeTransport}",
+        "super::{AzureRemote, AzureTransport}"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "function",
+          "name": "base64",
+          "line": 65,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "basic_auth",
+          "line": 84,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "AzureRemote",
+          "line": 96,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "base",
+          "line": 99,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "project",
+          "line": 100,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "repo",
+          "line": 101,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "parse",
+          "line": 117,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "api_pulls",
+          "line": 164,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "https_remote",
+          "line": 173,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "pr_url",
+          "line": 178,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "strip_git",
+          "line": 185,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pat_from",
+          "line": 198,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "credential_fill",
+          "line": 221,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "resolve_pat",
+          "line": 245,
+          "supertypes": []
+        },
+        {
+          "kind": "trait",
+          "name": "AzureTransport",
+          "line": 258,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "call",
+          "line": 259,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "UreqTransport",
+          "line": 272,
+          "supertypes": [
+            "AzureTransport"
+          ]
+        },
+        {
+          "kind": "method",
+          "name": "call",
+          "line": 275,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "view_from_azure",
+          "line": 328,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "do_open",
+          "line": 349,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "do_patch",
+          "line": 373,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "do_view_number",
+          "line": 386,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "do_view_branch",
+          "line": 400,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "git_out",
+          "line": 425,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "AzurePrRest",
+          "line": 442,
+          "supertypes": [
+            "PrProvider"
+          ]
+        },
+        {
+          "kind": "field",
+          "name": "repo",
+          "line": 443,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "transport",
+          "line": 444,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "new",
+          "line": 449,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "context",
+          "line": 457,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "provider",
+          "line": 468,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "open",
+          "line": 472,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "edit_body",
+          "line": 477,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "ready",
+          "line": 482,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "view",
+          "line": 487,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Recorded",
+          "line": 514,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "method",
+          "line": 515,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "url",
+          "line": 516,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "auth",
+          "line": 517,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "body",
+          "line": 518,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "FakeTransport",
+          "line": 525,
+          "supertypes": [
+            "AzureTransport"
+          ]
+        },
+        {
+          "kind": "field",
+          "name": "responses",
+          "line": 526,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "calls",
+          "line": 527,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "of",
+          "line": 531,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "call",
+          "line": 543,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "remote",
+          "line": 564,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "base64_matches_the_rfc_vectors",
+          "line": 579,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_foreign_remote_is_refused",
+          "line": 598,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "edit_body_and_ready_patch_one_field_each",
+          "line": 613,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "view_by_branch_searches_the_full_source_ref",
+          "line": 632,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_transport_failure_travels_verbatim",
+          "line": 672,
+          "supertypes": []
+        }
+      ]
     },
     {
       "path": "apps/rt/src/shared/events/writer_ndjson.rs",
@@ -64148,7 +65203,7 @@
     {
       "path": "apps/rt/tests/run_command_surface.rs",
       "language": "rust",
-      "loc": 502,
+      "loc": 505,
       "imports": [
         "clap::{Command, Subcommand}",
         "mustard_rt::commands::RunCmd",
@@ -64160,73 +65215,73 @@
         {
           "kind": "function",
           "name": "repo_root",
-          "line": 137,
+          "line": 140,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_files",
-          "line": 143,
+          "line": 146,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_run_tokens",
-          "line": 178,
+          "line": 181,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_command_tree",
-          "line": 223,
+          "line": 226,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_subcommand_names_are_locked",
-          "line": 232,
+          "line": 235,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_declared_command_keeps_its_help_slot",
-          "line": 246,
+          "line": 249,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_documented_run_command_exists",
-          "line": 275,
+          "line": 278,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_run_tokens_catches_every_spelling_and_skips_placeholders",
-          "line": 318,
+          "line": 321,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "amendment_path_is_published_and_instructed",
-          "line": 358,
+          "line": 361,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "finish_ritual_names_submodules",
-          "line": 454,
+          "line": 457,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_path_flag_aliases_are_interchangeable",
-          "line": 497,
+          "line": 500,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_dir_flag_aliases_are_interchangeable",
-          "line": 520,
+          "line": 523,
           "supertypes": []
         }
       ]
@@ -65176,6 +66231,30 @@
           "kind": "function",
           "name": "the_draft_call_carries_the_name_the_gate_minted",
           "line": 415,
+          "supertypes": []
+        }
+      ]
+    },
+    {
+      "path": "apps/rt/tests/pr_prose_door.rs",
+      "language": "rust",
+      "loc": 51,
+      "imports": [
+        "std::fs",
+        "std::path::{Path, PathBuf}"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "function",
+          "name": "repo_root",
+          "line": 28,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_pr_doors_never_instruct_a_direct_gh_pr_write",
+          "line": 33,
           "supertypes": []
         }
       ]
@@ -92698,8 +93777,8 @@
     }
   ],
   "graph": {
-    "nodes": 658,
-    "edges": 513,
+    "nodes": 662,
+    "edges": 518,
     "cyclic": true,
     "top_fan_in": [
       {
@@ -92779,6 +93858,10 @@
         "degree": 6
       },
       {
+        "module": "apps/rt/src/shared/branch_state.rs",
+        "degree": 6
+      },
+      {
         "module": "apps/dashboard/src-tauri/src/process_util.rs",
         "degree": 5
       },
@@ -92808,10 +93891,6 @@
       },
       {
         "module": "apps/rt/src/report/mod.rs",
-        "degree": 4
-      },
-      {
-        "module": "apps/rt/src/shared/branch_state.rs",
         "degree": 4
       },
       {
@@ -93220,7 +94299,7 @@
     "layers": [
       {
         "name": "L0",
-        "modules": 415
+        "modules": 416
       },
       {
         "name": "L1",
@@ -93228,11 +94307,11 @@
       },
       {
         "name": "L2",
-        "modules": 55
+        "modules": 56
       },
       {
         "name": "L3",
-        "modules": 38
+        "modules": 39
       },
       {
         "name": "L4",
@@ -93240,7 +94319,7 @@
       },
       {
         "name": "L5",
-        "modules": 6
+        "modules": 7
       },
       {
         "name": "L6",
@@ -93562,6 +94641,11 @@
         "breadth": 2
       },
       {
+        "module": "apps/rt/src/commands/review/pr_publish.rs",
+        "fan_out": 2,
+        "breadth": 2
+      },
+      {
         "module": "apps/rt/src/commands/review/review_dispatch.rs",
         "fan_out": 2,
         "breadth": 2
@@ -93732,6 +94816,11 @@
         "breadth": 1
       },
       {
+        "module": "apps/rt/src/shared/pr_azure.rs",
+        "fan_out": 2,
+        "breadth": 1
+      },
+      {
         "module": "apps/scan/src/dictionary.rs",
         "fan_out": 2,
         "breadth": 1
@@ -93845,16 +94934,6 @@
         "module": "apps/rt/src/commands/doctor/cli.rs",
         "fan_out": 1,
         "breadth": 1
-      },
-      {
-        "module": "apps/rt/src/commands/doctor/docs_stale_check.rs",
-        "fan_out": 1,
-        "breadth": 1
-      },
-      {
-        "module": "apps/rt/src/commands/doctor/superseded_check.rs",
-        "fan_out": 1,
-        "breadth": 1
       }
     ]
   },
@@ -93886,12 +94965,12 @@
     {
       "affix": "Report",
       "kind": "suffix",
-      "count": 36,
-      "common_dir": "apps/rt/src/commands/doctor",
+      "count": 37,
+      "common_dir": "apps/rt/src/commands/review",
       "dirs": [
+        "apps/rt/src/commands/review",
         "apps/rt/src/commands/doctor",
         "apps/rt/src/commands/maint",
-        "apps/rt/src/commands/review",
         "apps/rt/src/commands/spec",
         "apps/dashboard/src/lib",
         "apps/rt/src/commands/pipeline",
@@ -94276,6 +95355,41 @@
       ]
     },
     {
+      "affix": "Pr",
+      "kind": "suffix",
+      "count": 8,
+      "common_dir": "apps/rt/src/shared",
+      "dirs": [
+        "apps/rt/src/shared"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::process::Command",
+        "crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED}",
+        "crate::shared::pr_azure::{\n        do_open, do_view_number, pat_from,\n        test_support::{remote, FakeTransport},\n        AzureRemote, PAT_ENV,\n    }",
+        "crate::shared::work_kind::BaseFlow",
+        "serde_json::Value",
+        "serde_json::json"
+      ]
+    },
+    {
+      "affix": "View",
+      "kind": "suffix",
+      "count": 8,
+      "common_dir": "apps/rt/src/commands/event/event_projections",
+      "dirs": [
+        "apps/rt/src/commands/event/event_projections",
+        "packages/core/src/domain/model/view"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "serde::{Deserialize, Serialize}",
+        "std::path::{Path, PathBuf}"
+      ]
+    },
+    {
       "affix": "Bucket",
       "kind": "suffix",
       "count": 7,
@@ -94318,21 +95432,6 @@
         "packages/core/src/domain/economy"
       ],
       "decl_kind": "enum",
-      "implements": null,
-      "collaborators": [
-        "serde::{Deserialize, Serialize}"
-      ]
-    },
-    {
-      "affix": "View",
-      "kind": "suffix",
-      "count": 7,
-      "common_dir": "apps/rt/src/commands/event/event_projections",
-      "dirs": [
-        "apps/rt/src/commands/event/event_projections",
-        "packages/core/src/domain/model/view"
-      ],
-      "decl_kind": "struct",
       "implements": null,
       "collaborators": [
         "serde::{Deserialize, Serialize}"
@@ -94800,24 +95899,6 @@
       ]
     },
     {
-      "affix": "Pr",
-      "kind": "suffix",
-      "count": 4,
-      "common_dir": "apps/rt/src/shared",
-      "dirs": [
-        "apps/rt/src/shared"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "crate::shared::work_kind::BaseFlow",
-        "serde_json::{json, Value}",
-        "std::collections::{BTreeMap, BTreeSet}",
-        "std::path::Path",
-        "std::process::Command"
-      ]
-    },
-    {
       "affix": "Variant",
       "kind": "suffix",
       "count": 4,
@@ -94952,6 +96033,18 @@
       "decl_kind": "type",
       "implements": null,
       "collaborators": []
+    },
+    {
+      "affix": "Fake",
+      "kind": "prefix",
+      "count": 3,
+      "common_dir": "apps/rt/src/commands/review",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::Path",
+        "std::process::Command"
+      ]
     },
     {
       "affix": "Files",
@@ -95166,6 +96259,25 @@
       ]
     },
     {
+      "affix": "Transport",
+      "kind": "suffix",
+      "count": 3,
+      "common_dir": "apps/rt/src/shared",
+      "dirs": [
+        "apps/rt/src/shared"
+      ],
+      "decl_kind": "struct",
+      "implements": "AzureTransport",
+      "collaborators": [
+        "crate::shared::branch_state::PrStatus",
+        "crate::shared::pr_provider::{\n    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,\n}",
+        "serde_json::Value",
+        "serde_json::{json, Value}",
+        "std::cell::RefCell",
+        "std::collections::BTreeMap"
+      ]
+    },
+    {
       "affix": "Usage",
       "kind": "suffix",
       "count": 3,
@@ -95239,6 +96351,25 @@
       ]
     },
     {
+      "affix": "Azure",
+      "kind": "prefix",
+      "count": 2,
+      "common_dir": "apps/rt/src/shared",
+      "dirs": [
+        "apps/rt/src/shared"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "crate::shared::branch_state::PrStatus",
+        "crate::shared::pr_provider::{\n    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,\n}",
+        "serde_json::Value",
+        "serde_json::{json, Value}",
+        "std::cell::RefCell",
+        "std::collections::BTreeMap"
+      ]
+    },
+    {
       "affix": "Body",
       "kind": "suffix",
       "count": 2,
@@ -95270,6 +96401,20 @@
         "mustard_core::io::fs",
         "serde::Serialize",
         "tempfile::tempdir"
+      ]
+    },
+    {
+      "affix": "Cli",
+      "kind": "suffix",
+      "count": 2,
+      "common_dir": "apps/rt/src/shared",
+      "dirs": [
+        "apps/rt/src/shared"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::process::Command"
       ]
     },
     {
@@ -95400,17 +96545,6 @@
       "decl_kind": "struct",
       "implements": null,
       "collaborators": []
-    },
-    {
-      "affix": "Fake",
-      "kind": "prefix",
-      "count": 2,
-      "common_dir": "apps/rt/src/shared",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "std::process::Command"
-      ]
     },
     {
       "affix": "Flags",
@@ -95823,17 +96957,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Kind slice",
       "roles": [
         "(core)",
-        "State"
+        "Kind"
       ],
       "optional_roles": [
         "Ac",
         "Function",
-        "Kind",
         "Mode",
         "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -95862,12 +96996,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Kind** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -95939,7 +97073,7 @@
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
@@ -96462,68 +97596,6 @@
       "summary": "Vertical slice recurring across 2 entities (Approve, ClaudePaths). Core roles: Error, Report."
     },
     {
-      "name": "Facts+Entry slice",
-      "roles": [
-        "Facts",
-        "Entry"
-      ],
-      "optional_roles": [],
-      "recurrence": 2,
-      "entities": [
-        "Branch",
-        "Pr"
-      ],
-      "confidence": 0.72,
-      "is_slice": true,
-      "steps": [
-        "Adicione o **Facts** para `<Name>` em `apps/rt/src/commands/spec/` (ex.: `active_specs.rs`, modelado em `apps/rt/src/commands/spec/active_specs.rs`).",
-        "Adicione o **Entry** para `<Name>` em `packages/core/src/platform/` (ex.: `git_<name>es.rs`, modelado em `packages/core/src/platform/git_branches.rs`)."
-      ],
-      "exemplars": [
-        {
-          "level": "simples",
-          "entity": "Pr",
-          "roles_present": [
-            "Entry",
-            "Facts"
-          ],
-          "files": [
-            "apps/rt/src/commands/review/pr_door.rs",
-            "apps/rt/src/shared/branch_state.rs"
-          ]
-        },
-        {
-          "level": "complexa",
-          "entity": "Branch",
-          "roles_present": [
-            "Entry",
-            "Facts"
-          ],
-          "files": [
-            "apps/rt/src/commands/spec/active_specs.rs",
-            "apps/rt/src/shared/branch_state.rs",
-            "packages/core/src/platform/git_branches.rs"
-          ]
-        }
-      ],
-      "examples": [
-        {
-          "path": "apps/rt/src/commands/spec/active_specs.rs",
-          "start_line": 86,
-          "snippet": "struct <Name>Facts {\n    /// One-line summary, extracted from the <name>'s `spec.md` blob.\n    resumo: String,\n    /// Wave progress, counted over the <name>'s `wave-N-*` subtrees.\n    progress: Option<WaveProgress>,\n    /// Number of the first wave the <name> still has `Outcome=Active`.\n    first_active_wave: Option<String>,\n}\n",
-          "role": "Facts"
-        },
-        {
-          "path": "packages/core/src/platform/git_branches.rs",
-          "start_line": 65,
-          "snippet": "pub struct <Name>Entry {\n    /// Short name, with no `origin/` prefix (`dev`, `release/2026-Q3`).\n    pub name: String,\n    /// Unix seconds of the <name> tip's commit — what the catalog is ordered\n    /// by, and what a picker shows so a stale <name> is recognisable as one.\n    pub committed_at: i64,\n    /// `true` when this <name> refuses a direct commit, so the picker can mark\n    /// it without asking a second question.\n    pub protected: bool,",
-          "role": "Entry"
-        }
-      ],
-      "exemplar": "Branch",
-      "summary": "Vertical slice recurring across 2 entities (Branch, Pr). Core roles: Facts, Entry."
-    },
-    {
       "name": "Item+Report slice",
       "roles": [
         "Item",
@@ -96891,7 +97963,7 @@
     "top_dirs": [
       {
         "dir": "apps",
-        "code_files": 561,
+        "code_files": 565,
         "other_files": 240
       },
       {
@@ -97031,7 +98103,7 @@
         "count": 1
       }
     ],
-    "code_files_read": 658,
+    "code_files_read": 662,
     "non_utf8_skipped": 0
   },
   "projects": [
@@ -97039,7 +98111,7 @@
       "name": "rt",
       "dir": "apps/rt",
       "kind": "cargo",
-      "code_files": 294,
+      "code_files": 298,
       "frameworks": [
         "mustard-core",
         "serde",
@@ -97527,6 +98599,10 @@
     },
     {
       "name": "From",
+      "implementors": 4
+    },
+    {
+      "name": "PrProvider",
       "implementors": 4
     },
     {

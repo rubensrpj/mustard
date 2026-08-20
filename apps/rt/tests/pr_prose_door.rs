@@ -22,7 +22,11 @@ use std::path::{Path, PathBuf};
 const FORBIDDEN: &[&str] = &["gh pr create", "gh pr edit", "gh pr ready"];
 
 /// The two door files the ratchet guards.
-const DOOR_FILES: &[&str] = &["plugin/commands/pr.md", "plugin/commands/git.md"];
+const DOOR_FILES: &[&str] = &["plugin/commands/pr.md", "plugin/commands/git.md",
+    // The submodule rules shell the same operations from a ref file — the
+    // review that shipped the port found them still naming raw `gh` there,
+    // exactly because this list stopped at the two door files.
+    "plugin/refs/git/submodule-rules.md"];
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {

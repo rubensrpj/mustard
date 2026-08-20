@@ -397,6 +397,24 @@ pub(crate) fn do_view_number(
 /// via `searchCriteria.sourceRefName` with the FULL ref. `status=all` so a
 /// just-completed PR is still viewable, matching what `gh pr view` answers on
 /// GitHub; the first row is the newest, which is the one a door wants.
+/// Percent-encode one query-string VALUE. Without this, a git-legal branch
+/// carrying `+` or `%` is misdecoded server-side and answers a false
+/// `no-pr-for-branch` — a plus sign reads as a space under form decoding.
+/// `/` stays literal: it is legal in a query value and the full ref reads
+/// better in logs.
+fn query_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn do_view_branch(
     remote: &AzureRemote,
     transport: &dyn AzureTransport,
@@ -404,8 +422,9 @@ fn do_view_branch(
     branch: &str,
 ) -> Result<PrView, String> {
     let url = format!(
-        "{}?searchCriteria.sourceRefName={HEADS}{branch}&searchCriteria.status=all&api-version={API_VERSION}",
-        remote.api_pulls()
+        "{}?searchCriteria.sourceRefName={}&searchCriteria.status=all&api-version={API_VERSION}",
+        remote.api_pulls(),
+        query_encode(&format!("{HEADS}{branch}")),
     );
     let doc = transport.call("GET", &url, auth, None)?;
     let rows = doc
@@ -628,6 +647,12 @@ mod tests {
     /// T3 — view(None)'s shape: the current branch is asked for via
     /// `searchCriteria.sourceRefName` with the FULL ref, the first row
     /// answers, and an empty answer is "no PR", distinct from a broken one.
+    #[test]
+    fn a_hostile_branch_name_is_percent_encoded_in_the_search() {
+        assert_eq!(query_encode("refs/heads/hot+fix%2 x"), "refs/heads/hot%2Bfix%252%20x");
+        assert_eq!(query_encode("refs/heads/feature/plain-1.2~ok"), "refs/heads/feature/plain-1.2~ok");
+    }
+
     #[test]
     fn view_by_branch_searches_the_full_source_ref() {
         let remote = remote();
