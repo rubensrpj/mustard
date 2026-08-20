@@ -23,6 +23,10 @@
 //!   port, the acting twin of `branch_state`'s read-only `PrLookup`: callers
 //!   depend on the trait, adapters are the only place a provider and its
 //!   CLI/API are named, and the factory picks by the provider in force.
+//! - [`pr_azure`] — the Azure DevOps adapter behind that port: the Git REST
+//!   API over an injectable transport, the PAT from `AZURE_DEVOPS_EXT_PAT` or
+//!   the git credential vault, every URL derived from the `origin` remote —
+//!   and deliberately no merge operation.
 //! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
 //!   port, liveness probe) shared by the collector-spawning hook and the
 //!   collector-stopping `run` command, plus [`proc::run_shell_with_deadline`]
@@ -43,6 +47,8 @@ pub mod branch_state;
 pub mod context;
 pub mod events;
 pub mod gate_mode;
+// The Azure adapter behind the pr_provider port — reached through the factory.
+pub mod pr_azure;
 // The bin target sees this port as unreached until the pr/git doors move
 // behind it (next waves) — the allow leaves with the first caller.
 #[allow(dead_code)]
