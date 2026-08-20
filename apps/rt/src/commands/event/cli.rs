@@ -86,6 +86,15 @@ pub enum EventCmd {
         /// so via `renamedFrom`.
         #[arg(long)]
         intent: Option<String>,
+        /// The name the OPERATOR chose for this unit. On `--kind pipeline.kind`
+        /// it OUTRANKS the name derived from `--intent`: the derivation is a
+        /// suggestion, and the person who read it and corrected it on purpose
+        /// decides. Canonicalised by that same derivation (spaces, accents and
+        /// slashes collapse into the one slug spelling), so the unit still
+        /// carries a single name; the report echoes `nameFrom`. Distinct from
+        /// `--spec`, which stays a caller's guess and still loses.
+        #[arg(long = "unit-name")]
+        unit_name: Option<String>,
         /// What the unit IS — an open label (`feature`, `fix`, `hotfix`,
         /// `chore`, …). On `--kind pipeline.kind` it names the auto-branch
         /// (`{kind}/{slug}`). Omitted → NEVER a silent default: it is derived
@@ -161,13 +170,23 @@ pub fn dispatch(cmd: EventCmd) {
         EventCmd::EmitPhase { spec, to, from } => {
             event::emit_phase::run(&spec, &to, from.as_deref());
         }
-        EventCmd::EmitPipeline { kind, spec, payload, allow_no_qa, intent, work_kind, base } => {
+        EventCmd::EmitPipeline {
+            kind,
+            spec,
+            payload,
+            allow_no_qa,
+            intent,
+            unit_name,
+            work_kind,
+            base,
+        } => {
             event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
                 spec,
                 payload,
                 allow_no_qa,
                 intent,
+                unit_name,
                 base,
                 work_kind,
             });

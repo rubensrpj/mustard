@@ -355,7 +355,7 @@ mod tests {
         // caller invented. The gate mints the unit's name from the intent.
         let invented = "invented-at-dispatch";
         let intent = "Work unit has one name";
-        let minted = mint_unit_name_at(root, EVENT_PIPELINE_KIND, invented, Some(intent))
+        let minted = mint_unit_name_at(root, EVENT_PIPELINE_KIND, invented, Some(intent), None)
             .expect("the opening door names the unit");
         assert_eq!(minted.renamed_from.as_deref(), Some(invented), "the fixture disagrees on purpose");
 
