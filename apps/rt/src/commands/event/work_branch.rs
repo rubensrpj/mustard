@@ -192,6 +192,25 @@ fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `true` when the remote-tracking ref `refs/remotes/origin/<branch>` exists.
+///
+/// The clone's ONLY record of a branch nobody checked out locally — which is
+/// every branch of a fresh clone but the default one, and therefore the shape
+/// the pick this module carries lands in most often.
+fn remote_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
+    Command::new(vcs)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}"),
+        ])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
 /// to `Err(<stderr|io error>)`. Never panics.
 fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
@@ -214,9 +233,37 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
 }
 
 /// Check out `target`, creating it off `base` when it does not yet exist.
-/// Carries the working-tree changes along (a plain `checkout`, no stash). If
-/// `base` is absent locally, branch off the current HEAD instead. Returns the
-/// git error string on failure.
+/// Carries the working-tree changes along (a plain `checkout`, no stash).
+/// Returns the git error string on failure.
+///
+/// **Where the cut STARTS is a cascade, and each step exists for a shape the
+/// one before it cannot serve:**
+///
+/// 1. the LOCAL head `refs/heads/{base}`, when the clone has one. It is first
+///    because it is the base the operator is actually standing in: a base
+///    carrying commits that were never pushed is still that operator's base,
+///    and starting from the remote instead would silently drop them out of the
+///    unit's history. Staleness is not the reason to skip it — the caller has
+///    just handed this very base to [`refresh_integration_bases`], which
+///    fast-forwards it toward `origin` where git would allow it, and refuses
+///    (keeping it) exactly where those unpushed commits are.
+/// 2. the REMOTE-TRACKING ref `refs/remotes/origin/{base}` — the clone shape,
+///    and the reason this step had to exist. The base is now the operator's
+///    pick out of the REAL catalogue ([`resolve_kind_base`]), which offers
+///    every branch `origin` has; a fresh clone materialises a local head for
+///    exactly ONE of them, so any other pick has no `refs/heads/` entry until
+///    the refresh above creates one — and the refresh is skipped whole whenever
+///    the machine is offline or the repository has no remote to answer.
+///    Cutting from HEAD there would have recorded the operator's answer
+///    ([`crate::shared::work_kind::BaseFlow::record_cut_base`]) over a branch
+///    the unit never came from — every later read, the pull-request target and
+///    `git settle`'s containment check included, asserting a base that was
+///    never the cut point. The sibling door reads the same ref to answer the
+///    same question ([`crate::commands::work_unit_open`]); it reaches for it
+///    FIRST because a worktree is cut fresh with nothing local to preserve,
+///    while this door cuts in place and carries the operator's tree along.
+/// 3. the current HEAD, when NEITHER ref carries the base — an unmeasurable
+///    repository, not a choice. A cut has to come from somewhere.
 pub(crate) fn checkout_work_branch(
     vcs: &str,
     root: &str,
@@ -229,19 +276,22 @@ pub(crate) fn checkout_work_branch(
     if local_branch_exists(vcs, root, base) {
         return run_git(vcs, root, &["checkout", "-b", target, base]);
     }
-    // Base branch not present locally — branch off the current HEAD.
+    if remote_branch_exists(vcs, root, base) {
+        return run_git(vcs, root, &["checkout", "-b", target, &format!("origin/{base}")]);
+    }
+    // Neither ref carries the base — branch off the current HEAD.
     run_git(vcs, root, &["checkout", "-b", target])
 }
 
-/// Refresh the project's integration bases (`git.flow`) to their `origin`
-/// remotes BEFORE a work branch is cut, so the branch is always based on the
-/// latest `dev`/`main`. Fire-and-forget: it returns nothing the caller must
-/// act on, and every git failure is swallowed. Offline, no remote, or a
-/// diverged base never blocks the cut and never panics.
+/// Refresh the bases this cut may start from to their `origin` remotes BEFORE
+/// a work branch is cut, so the branch is always based on the latest of them.
+/// Fire-and-forget: it returns nothing the caller must act on, and every git
+/// failure is swallowed. Offline, no remote, or a diverged base never blocks
+/// the cut and never panics.
 ///
 /// 1. `git fetch origin` — on failure (offline / no remote) RETURN early and
 ///    do nothing else; the branch is still cut from the local base.
-/// 2. For each integration base `B`:
+/// 2. For each base `B`:
 ///    - when `B` is the checked-out branch (`Some(B) == current`) →
 ///      `git merge --ff-only origin/B` fast-forwards it in place;
 ///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
@@ -249,18 +299,35 @@ pub(crate) fn checkout_work_branch(
 ///      checkout.
 ///    Every per-base error (no matching origin ref, a diverged base, a base
 ///    checked out in another worktree, …) is ignored — best-effort, keep going.
+///
+/// **`cut_from` is why the set is no longer the declared flow alone.** The
+/// pre-selected list used to BE the set of bases a cut could start from — the
+/// pick was filtered down to it before it ever reached here — so refreshing the
+/// declared names refreshed every possible starting point. The pick now comes
+/// out of the REAL catalogue, so a base the flow never declared is an ordinary
+/// answer, and leaving it out of this step would cut the unit from whatever
+/// stale local head happened to carry that name. Passing the base the cut is
+/// about to use keeps the guarantee this function exists for — cut from the
+/// latest — pointed at the branch the operator actually chose. A ff-only step,
+/// so a local base carrying unpushed commits is refused and kept, never
+/// rewritten.
 pub(crate) fn refresh_integration_bases(
     vcs: &str,
     root: &str,
     config: &mustard_core::ProjectConfig,
     current: Option<&str>,
+    cut_from: Option<&str>,
 ) {
     // Offline / no remote → nothing to refresh; the branch is cut from the
     // local base as before. Do NOT propagate the error.
     if run_git(vcs, root, &["fetch", "origin"]).is_err() {
         return;
     }
-    for base in config.git.preselected_bases() {
+    let mut bases = config.git.preselected_bases();
+    if let Some(base) = cut_from.map(str::trim).filter(|b| !b.is_empty()) {
+        bases.insert(base.to_string());
+    }
+    for base in bases {
         // Best-effort per base — drop the result either way.
         let _ = if current == Some(base.as_str()) {
             run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
@@ -860,8 +927,9 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         }
     };
 
-    // Refresh from origin FIRST so the unit is cut from the latest base.
-    refresh_integration_bases(&vcs, &root, &config, current.as_deref());
+    // Refresh from origin FIRST so the unit is cut from the latest base — the
+    // base this cut will really use included, declared or not.
+    refresh_integration_bases(&vcs, &root, &config, current.as_deref(), Some(&base));
     match checkout_work_branch(&vcs, &root, &target, &base) {
         Ok(()) => {
             // The marker that carried the operator's answer is about to be
@@ -1326,12 +1394,23 @@ mod tests {
         // which is every project the current installer touches. Both carry the
         // same two real branches, so in both the operator had the same real
         // choice, and in both the whole path must carry it.
+        //
+        // And both in the CLONE shape: the picked base exists only as
+        // `refs/remotes/origin/release/2026-Q3`, with no local head, which is
+        // what a `git clone` leaves for every branch but the default one. The
+        // section above cannot show this — it checked the release line out to
+        // create it, so a local head was sitting there and the cut could reach
+        // the pick without ever consulting the remote-tracking ref.
         for flow in [Some(r#"{"*":"dev"}"#), None] {
             let dir = tempfile::tempdir().expect("tempdir");
             let root = dir.path();
             let root_s = root.to_string_lossy().to_string();
             seed_repo_declaring(root, flow);
             let label = flow.unwrap_or("no flow at all");
+            assert!(
+                !super::local_branch_exists("git", &root_s, "release/2026-Q3"),
+                "{label}: the fixture IS the clone shape — no local head carries the pick",
+            );
 
             // The gate that decides whether the answer is WRITTEN DOWN asks the
             // catalogue: two branches here, so there was something to choose —
@@ -1358,7 +1437,7 @@ mod tests {
             let head = git_rev(root, "HEAD");
             assert_eq!(
                 head,
-                git_rev(root, "release/2026-Q3"),
+                git_rev(root, "origin/release/2026-Q3"),
                 "{label}: the branch is cut from the base the operator chose",
             );
             assert_ne!(head, git_rev(root, "dev"), "{label}: and not from the derivation");
@@ -1368,11 +1447,139 @@ mod tests {
                 "{label}: every later read still answers the operator's pick",
             );
         }
+
+        // ── and now a REAL clone, with a remote that ANSWERS ─────────────────
+        //
+        // Everything above runs against a repository with no remote at all, so
+        // `refresh_integration_bases` fetches, fails, and returns having done
+        // nothing — which is one road through the cut, not the ordinary one. A
+        // machine that is online takes the other: the fetch succeeds, and the
+        // refresh is what has to reach the picked base, because that step used
+        // to iterate the DECLARED flow alone. Both roads have to land on the
+        // commit the operator chose, and only a real remote drives this one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bare = seed_real_origin(dir.path());
+
+        // (a) the clone as `git clone` leaves it: one local head, `dev`.
+        let fresh = dir.path().join("fresh");
+        clone_project(&bare, &fresh);
+        let fresh_s = fresh.to_string_lossy().to_string();
+        assert!(
+            !super::local_branch_exists("git", &fresh_s, "release/2026-Q3"),
+            "a clone carries a local head for the default branch alone",
+        );
+        let sid = "sess-real-clone";
+        crate::shared::context::set_pending_branch(
+            &fresh_s,
+            sid,
+            "fix/erro-no-boleto",
+            Some("release/2026-Q3"),
+        );
+        let outcome = super::cut_pending_work_branch(&fresh, sid);
+        assert_eq!(
+            outcome,
+            super::CutOutcome::Cut("fix/erro-no-boleto".to_string()),
+            "{outcome:?}",
+        );
+        assert_eq!(
+            git_rev(&fresh, "HEAD"),
+            git_rev(&fresh, "origin/release/2026-Q3"),
+            "the clone cuts from the tip the remote really carries for the pick",
+        );
+        assert_ne!(git_rev(&fresh, "HEAD"), git_rev(&fresh, "dev"), "not the derivation");
+
+        // (b) the same clone, except the operator already has a local
+        //     `release/2026-Q3` sitting one commit BEHIND. The pick is honoured
+        //     either way — the question this half settles is WHICH commit, and a
+        //     cut that stops at the stale local head lands on the wrong one.
+        let stale = dir.path().join("stale");
+        clone_project(&bare, &stale);
+        let stale_s = stale.to_string_lossy().to_string();
+        git(&stale, &["branch", "release/2026-Q3", "origin/release/2026-Q3~1"]);
+        let behind = git_rev(&stale, "release/2026-Q3");
+        assert_ne!(
+            behind,
+            git_rev(&stale, "origin/release/2026-Q3"),
+            "the fixture really does park the local head behind the remote",
+        );
+        crate::shared::context::set_pending_branch(
+            &stale_s,
+            sid,
+            "fix/erro-no-boleto",
+            Some("release/2026-Q3"),
+        );
+        let outcome = super::cut_pending_work_branch(&stale, sid);
+        assert_eq!(
+            outcome,
+            super::CutOutcome::Cut("fix/erro-no-boleto".to_string()),
+            "{outcome:?}",
+        );
+        assert_eq!(
+            git_rev(&stale, "HEAD"),
+            git_rev(&stale, "origin/release/2026-Q3"),
+            "the pick is cut from the LATEST of it, exactly as a declared base is",
+        );
+        assert_ne!(git_rev(&stale, "HEAD"), behind, "…and not from the stale local head");
+    }
+
+    /// A bare `origin` carrying `dev` and a TWO-commit `release/2026-Q3`, built
+    /// through a throwaway seed checkout and returned by path.
+    ///
+    /// Two commits on the release line so `origin/release/2026-Q3~1` names a
+    /// real earlier point — the tip a clone that never refreshed would be
+    /// sitting on. Returns the bare repository, which is what a clone needs.
+    fn seed_real_origin(root: &std::path::Path) -> std::path::PathBuf {
+        let bare = root.join("origin.git");
+        let seed = root.join("seed");
+        std::fs::create_dir_all(&bare).expect("bare dir");
+        std::fs::create_dir_all(&seed).expect("seed dir");
+        git(&bare, &["init", "--bare", "-b", "dev", "."]);
+        git(&seed, &["init", "-b", "dev", "."]);
+        git(&seed, &["config", "user.email", "t@example.com"]);
+        git(&seed, &["config", "user.name", "t"]);
+        std::fs::write(seed.join("f.txt"), "on dev").expect("seed");
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-m", "dev"]);
+        git(&seed, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
+        git(&seed, &["push", "-u", "origin", "dev"]);
+        git(&seed, &["checkout", "-b", "release/2026-Q3"]);
+        for body in ["release one", "release two"] {
+            std::fs::write(seed.join("f.txt"), body).expect("seed");
+            git(&seed, &["add", "-A"]);
+            git(&seed, &["commit", "-m", body]);
+        }
+        git(&seed, &["push", "-u", "origin", "release/2026-Q3"]);
+        bare
+    }
+
+    /// `git clone` of `bare` into `dest`, installed as a project that declares
+    /// NO flow — which is what the current installer leaves behind.
+    fn clone_project(bare: &std::path::Path, dest: &std::path::Path) {
+        let parent = dest.parent().expect("dest parent");
+        git(
+            parent,
+            &["clone", bare.to_string_lossy().as_ref(), dest.to_string_lossy().as_ref()],
+        );
+        git(dest, &["config", "user.email", "t@example.com"]);
+        git(dest, &["config", "user.name", "t"]);
+        std::fs::write(dest.join("mustard.json"), "{}").expect("cfg");
+        std::fs::create_dir_all(dest.join(".claude")).expect("claude dir");
+        std::fs::write(dest.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
+            .expect("ignore");
     }
 
     /// A repository carrying `dev` and a `release/2026-Q3` line, with the
     /// remote-tracking refs that make BOTH measurable — the catalogue an
     /// operator would be offered.
+    ///
+    /// **In the CLONE shape**, deliberately: the release line is created,
+    /// published into `refs/remotes/origin/`, and then its LOCAL head is
+    /// deleted. That is exactly what an operator's clone looks like — `git
+    /// clone` materialises `refs/heads/` for the default branch alone, and
+    /// every other branch of the catalogue exists there as a remote-tracking
+    /// ref only. A fixture that leaves the local head behind cannot tell a cut
+    /// that honours the pick from one that merely found a branch of that name
+    /// lying around locally.
     ///
     /// `flow` is written verbatim as `git.flow`; `None` writes a `mustard.json`
     /// with no `git` key at all, which is what the current installer leaves.
@@ -1400,6 +1607,8 @@ mod tests {
         for branch in ["dev", "release/2026-Q3"] {
             git(root, &["update-ref", &format!("refs/remotes/origin/{branch}"), branch]);
         }
+        // …and now it is a CLONE: the picked base lives on the remote only.
+        git(root, &["branch", "-D", "release/2026-Q3"]);
     }
 
     /// The CUT and the DRAFT are two steps of ONE sequence, and the first must

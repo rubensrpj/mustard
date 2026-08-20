@@ -667,6 +667,23 @@ impl BaseFlow {
     /// that sameness is deliberate here: the caller reads `None` as "nobody's
     /// unit", which costs a non-unit cut, while a positive answer nobody
     /// measured would cut a UNIT from a base that may not exist.
+    ///
+    /// **One name the catalogue leg refuses**, and refusing it is what keeps
+    /// this leg from doing the damage [`is_declared_base`](Self::is_declared_base)
+    /// exists to prevent: a branch the REMOTE ITSELF CARRIES that this project
+    /// holds no unit for. Branch names carry no mark separating a base from a
+    /// unit, so a project whose integration line is spelled `hml_prod` —
+    /// undeclared, like every branch of a project the current installer touched
+    /// — matches `hml` on the catalogue and read as "the unit `prod`":
+    /// `git delete` offered to remove the integration line, and `pr list`
+    /// refused to run from it. The two facts together are what tell them apart.
+    /// A branch that is already ON the remote is one of the project's own; a
+    /// unit of THIS harness has a directory under `.claude/spec/` naming it, and
+    /// a name the remote has never seen cannot be a branch of the project at all
+    /// — it is the unit about to be cut, which is how the worktree door reaches
+    /// here. Being wrong in the "somebody's unit" direction destroys a branch
+    /// and in the other direction costs a refusal, so where nothing distinguishes
+    /// them the refusal wins.
     fn legacy_base_of(&self, name: &str) -> Option<String> {
         let declared = self
             .bases
@@ -682,11 +699,16 @@ impl BaseFlow {
         }
         let project = self.project.as_deref()?;
         with_remote_names(project, |names| {
-            names?
+            let names = names?;
+            let base = names
                 .iter()
                 .filter(|b| name.starts_with(&format!("{b}_")))
-                .max_by_key(|b| b.len())
-                .cloned()
+                .max_by_key(|b| b.len())?
+                .clone();
+            let slug = name.strip_prefix(&format!("{base}_"))?.trim();
+            let holds_a_unit =
+                !slug.is_empty() && unit_dir(project, slug).is_some_and(|dir| dir.is_dir());
+            (holds_a_unit || !names.contains(name)).then_some(base)
         })
     }
 
@@ -1076,5 +1098,55 @@ mod tests {
             ["dev", "main", "qas"],
             "…and the derivation takes over, naming what it could not choose between",
         );
+    }
+
+    /// An integration line whose NAME carries an underscore is not somebody's
+    /// unit, and the catalogue leg of the legacy reader must not turn it into
+    /// one.
+    ///
+    /// `hml_prod` in a project that declares no flow — every project the current
+    /// installer touches — matches `hml` on the catalogue, so reading the name
+    /// alone answered "the unit `prod`": `git delete` would have offered to
+    /// remove the integration line and `pr list` would have refused to run from
+    /// it, which is exactly the damage `is_declared_base` was added to prevent,
+    /// arriving through the other door. Both kinds of real unit still resolve —
+    /// the one this harness already cut and drafted, and the one that does not
+    /// exist on the remote yet because it is about to be cut.
+    #[test]
+    fn an_underscored_base_is_not_mistaken_for_a_legacy_unit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        if !seed_remote_refs(project, &["hml", "hml_prod", "hml_minha-unidade"]) {
+            return; // no usable git here — nothing here is measurable at all
+        }
+        // The project declares nothing, so `hml_prod` is undeclared exactly as
+        // the release line of any freshly installed project is.
+        let flow = BaseFlow::of_at(&GitConfig::default(), project);
+
+        assert_eq!(
+            flow.base_of("hml_prod"),
+            UnitBase::NotAUnit,
+            "a branch the remote carries, that no unit of this project names, is a BASE",
+        );
+        assert_eq!(flow.slug_of("hml_prod"), None, "…so it has no slug to be retired under");
+
+        // A name the remote has never seen is the unit about to be cut — the
+        // shape the worktree door hands over.
+        assert_eq!(
+            flow.base_of("hml_ainda-nao-empurrada").known(),
+            Some("hml"),
+            "a name no branch carries is nobody's base — it is the unit being opened",
+        );
+
+        // …and the unit this harness really cut in that shape still reads,
+        // pushed or not, because its directory names it.
+        std::fs::create_dir_all(project.join(".claude").join("spec").join("minha-unidade"))
+            .expect("unit dir");
+        assert_eq!(
+            flow.base_of("hml_minha-unidade").known(),
+            Some("hml"),
+            "a unit whose directory this project holds resolves by its name, declared or not",
+        );
+        assert_eq!(flow.slug_of("hml_minha-unidade").as_deref(), Some("minha-unidade"));
     }
 }
