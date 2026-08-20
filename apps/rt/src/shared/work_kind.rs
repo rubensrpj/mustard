@@ -36,7 +36,9 @@
 //! on. A second spelling in either face is how two consumers that must agree
 //! about a branch stop agreeing.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use mustard_core::domain::config::GitConfig;
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -92,6 +94,74 @@ pub(crate) fn cut_base_in(dir: &Path) -> Option<String> {
 /// could not be removed is still redundant, never wrong.
 pub(crate) fn clear_cut_base_in(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(CUT_BASE_FILE));
+}
+
+/// Process-wide memo of [`mustard_core::remote_branch_names`], keyed by the
+/// root it was measured in. `None` inside the entry is the probe's own "could
+/// not measure", memoised like any other answer.
+///
+/// One `git for-each-ref` is cheap; asking it once per BRANCH is not, and that
+/// is what the repository-wide sweeps do — [`crate::shared::branch_state`]
+/// resolves EVERY ref through [`BaseFlow::base_of`], so an unmemoised probe
+/// turns one spawn into one per unit branch that has a record.
+///
+/// Same shape and same lifetime as the config memo in
+/// [`crate::shared::context`]: `mustard-rt` is a one-shot process, so
+/// "process-wide" is "for this dispatch", and a repository does not gain or
+/// lose branches inside one.
+fn remote_names_memo() -> &'static Mutex<HashMap<PathBuf, Option<BTreeSet<String>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<BTreeSet<String>>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `true` when `base` is a branch the remote STILL has — and `true` as well
+/// when its existence could NOT be measured.
+///
+/// The one spelling of the question both readers of a recorded base ask
+/// ([`BaseFlow::recorded_base_of`] for the unit's durable record,
+/// [`crate::commands::event::work_branch::recorded_or_derived_base`] for the
+/// pending marker), so the cut and every later read agree about which recorded
+/// bases still count.
+///
+/// **What it measures, and what it used to.** The test used to be membership in
+/// `git.flow`'s declared set, which refuses a base the operator really picked
+/// out of the real catalogue for the sole reason that a file written at install
+/// time does not list it. Existence is the fact the protection was always
+/// after: a base that no longer exists cannot be cut from, and one that exists
+/// can — whoever declared it.
+///
+/// **Why unmeasured obeys.** A recorded base is a MEASUREMENT of a person's
+/// answer, taken against the real catalogue at cut time. Dropping it because
+/// the probe stayed silent — no git, no remote, a clone whose refs were never
+/// fetched — refuses a real choice on the strength of a source that said
+/// nothing, which is the very defect the membership test was. An empty answer
+/// counts as silence too: a repository with no remote-tracking refs cannot
+/// testify about the remote, the same reading
+/// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
+/// catalogue and `base-candidates` reports as `measured: false`.
+pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
+    let key = root.to_path_buf();
+    if let Ok(memo) = remote_names_memo().lock() {
+        if let Some(hit) = memo.get(&key) {
+            return names_obey(hit.as_ref(), base);
+        }
+    }
+    let names = mustard_core::remote_branch_names(root);
+    let answer = names_obey(names.as_ref(), base);
+    if let Ok(mut memo) = remote_names_memo().lock() {
+        memo.insert(key, names);
+    }
+    answer
+}
+
+/// The reading of one probe result: measured and naming `base` → obey;
+/// measured and NOT naming it → drop; unmeasured (`None`, or an empty listing)
+/// → obey. See [`base_still_on_remote`], which is where the reasoning lives.
+fn names_obey(names: Option<&BTreeSet<String>>, base: &str) -> bool {
+    match names {
+        Some(names) if !names.is_empty() => names.contains(base),
+        _ => true,
+    }
 }
 
 /// What a work unit IS — the closed set the branch prefix names.
@@ -420,8 +490,8 @@ impl BaseFlow {
     }
 
     /// The base recorded FOR THIS UNIT, `None` when nothing was recorded, when
-    /// this model has no project to consult, or when what was recorded no longer
-    /// names a declared base.
+    /// this model has no project to consult, or when what was recorded is a
+    /// branch the remote no longer has.
     ///
     /// TWO places, one answer, in the order the answer travels: the sidecar
     /// (`meta.json#base`, its durable home once the draft has folded it) and
@@ -430,9 +500,13 @@ impl BaseFlow {
     /// and never drafted still answers, and one that was drafted answers from
     /// the single file every other machine-parseable fact about it lives in.
     ///
-    /// The declared-base filter matters: `git.flow` may have changed since the
-    /// cut, and answering with a branch the project no longer declares is worse
-    /// than falling back to the derivation — the same posture
+    /// The check on the way out matters, and WHAT it checks matters more: the
+    /// repository may have moved on since the cut, and answering with a branch
+    /// that is gone is worse than falling back to the derivation. So the record
+    /// is measured against the branches the remote really has
+    /// ([`base_still_on_remote`]) — never against `git.flow`, which would drop
+    /// the answer of every operator who picked a base the install never
+    /// declared. The same posture, through the same helper,
     /// [`crate::commands::event::work_branch::recorded_or_derived_base`] takes
     /// with the marker.
     fn recorded_base_of(&self, name: &str) -> Option<String> {
@@ -443,7 +517,7 @@ impl BaseFlow {
             .and_then(|meta| meta.base)
             .or_else(|| cut_base_in(&dir))?;
         let recorded = recorded.trim().to_string();
-        self.bases.contains(&recorded).then_some(recorded)
+        base_still_on_remote(project, &recorded).then_some(recorded)
     }
 
     /// Write down the base a unit was ACTUALLY cut from, in the cut's own record
@@ -765,16 +839,16 @@ mod tests {
             "the answer survives the fold — one home at a time, never none",
         );
 
-        // A flow that no longer declares the recorded base ignores it rather
-        // than obeying it — the project may have changed since the cut. With
-        // the record dropped there is nothing left to answer WITH: the prefix
-        // used to supply a fallback and no longer does, so the honest answer is
-        // that the base was never established.
+        // A flow that no longer declares the recorded base OBEYS it anyway.
+        // The configuration is not the test: `qas` is where this unit really
+        // came from, and a `mustard.json` edited afterwards cannot move a cut
+        // that already happened. What DOES retire a record is the branch itself
+        // disappearing — see `a_vanished_recorded_base_is_ignored`.
         let moved_on = BaseFlow::of_at(&two_tier(), project);
         assert_eq!(
             moved_on.base_of("hotfix/my-unit").known(),
-            None,
-            "an undeclared record is dropped, and nothing invents a replacement",
+            Some("qas"),
+            "the operator's answer outlives a flow that never mentioned it",
         );
 
         // The condition GENERALISED with the change. It used to mean "a hotfix
@@ -816,5 +890,67 @@ mod tests {
         let mut single = GitConfig::default();
         single.flow.insert("*".to_string(), "main".to_string());
         assert_eq!(BaseFlow::of(&single).base_of("feature/my-unit").known(), Some("main"));
+    }
+
+    /// A repository whose REMOTE really has `branches` — the refs the existence
+    /// probe reads. `false` when git is unusable here, so a caller can skip
+    /// instead of asserting against a probe that measured nothing.
+    fn seed_remote_refs(root: &Path, branches: &[&str]) -> bool {
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q", "-b", "dev", "."]) {
+            return false;
+        }
+        let _ = git(&["config", "user.email", "t@t.t"]);
+        let _ = git(&["config", "user.name", "t"]);
+        if !git(&["commit", "-q", "--allow-empty", "-m", "seed"]) {
+            return false;
+        }
+        branches.iter().all(|b| git(&["update-ref", &format!("refs/remotes/origin/{b}"), "HEAD"]))
+    }
+
+    /// A recorded base that VANISHED from the remote is ignored, and the
+    /// derivation takes over — while one the CONFIGURATION never declared is
+    /// obeyed.
+    ///
+    /// The two halves are one subject: this is the protection the old
+    /// declared-list filter was reaching for, pointed at something the question
+    /// can actually be asked of. `git.flow` cannot say whether a branch still
+    /// exists; the refs can. So the record is dropped in the one case that
+    /// justifies dropping it — the repository answered, and did not name it.
+    #[test]
+    fn a_vanished_recorded_base_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        if !seed_remote_refs(project, &["dev", "qas", "main", "release/2026-Q3"]) {
+            return; // no usable git here — nothing here is measurable at all
+        }
+        let git = three_tier();
+        let flow = BaseFlow::of_at(&git, project);
+
+        // A pick no `git.flow` ever declared, which the remote really has.
+        flow.record_cut_base("hotfix/na-linha-de-release", "release/2026-Q3");
+        assert_eq!(
+            BaseFlow::of_at(&git, project).base_of("hotfix/na-linha-de-release").known(),
+            Some("release/2026-Q3"),
+            "an existing branch is the operator's answer, declared or not",
+        );
+
+        // A pick that is GONE — the release line was merged and deleted.
+        flow.record_cut_base("hotfix/na-linha-extinta", "release/2025-Q1");
+        let vanished = BaseFlow::of_at(&git, project).base_of("hotfix/na-linha-extinta");
+        assert!(vanished.is_unit(), "it is still this project's unit");
+        assert_eq!(vanished.known(), None, "a base that no longer exists cannot be cut from");
+        assert_eq!(
+            vanished.candidates(),
+            ["dev", "main", "qas"],
+            "…and the derivation takes over, naming what it could not choose between",
+        );
     }
 }

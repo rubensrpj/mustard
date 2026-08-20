@@ -64,7 +64,9 @@ pub use platform::project_seed::{
 // resolved through `git rev-parse --git-path info/exclude` (never the literal
 // `.git/info/exclude`, which is absent in a submodule or a linked worktree).
 // See `platform/git_exclude.rs`.
-pub use platform::git_branches::{branch_catalog, default_branch, protected_branches, BranchEntry};
+pub use platform::git_branches::{
+    branch_catalog, default_branch, protected_branches, remote_branch_names, BranchEntry,
+};
 pub use platform::git_provider::{detect_provider, provider_of_url, resolve_provider};
 pub use platform::git_exclude::{
     ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,

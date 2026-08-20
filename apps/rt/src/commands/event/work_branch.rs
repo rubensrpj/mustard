@@ -337,10 +337,24 @@ pub(crate) fn slug_of_work_branch(
 /// project declaring several emergency bases leaves a hotfix a real choice, and
 /// the branch name — which now says what the unit IS, not where it came from —
 /// cannot carry which one was picked. Deriving anyway would cut the emergency
-/// from a base the operator did not choose, silently. A recorded base that no
-/// longer names a declared base is ignored rather than obeyed: the flow may
-/// have changed since the marker was written, and cutting from a branch the
-/// project no longer declares is worse than falling back to the derivation.
+/// from a base the operator did not choose, silently.
+///
+/// **The recorded base is checked, and the check asks whether it EXISTS.** The
+/// protection is real and stays: the repository may have moved on since the
+/// marker was written, and cutting from a branch that is gone is worse than
+/// falling back to the derivation. What it must never go back to asking is
+/// whether the recorded name appears in `git.flow`'s declared set — that test
+/// refuses a base the operator picked out of the REAL catalogue
+/// ([`resolve_kind_base`], which validates against git and not against a
+/// declaration) for the sole reason that a file written at `mustard init` does
+/// not list it, and `git.flow` refuses nothing any more
+/// ([`mustard_core::domain::config::GitConfig::preselected_bases`]). Existence
+/// is measurable; membership in a list nobody maintains measures nothing. The
+/// reading is [`crate::shared::work_kind::base_still_on_remote`], shared with
+/// the unit's durable record so both readings of a pick agree — and an
+/// existence nobody could measure OBEYS the pick, because discarding a real
+/// answer over a silent probe is the same mistake pointed at a different
+/// source.
 ///
 /// The `Err` is the third state, handed to the caller instead of resolved
 /// behind its back: an emergency whose pick nothing carries has no base a
@@ -356,8 +370,9 @@ pub(crate) fn recorded_or_derived_base(
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> Result<String, Vec<String>> {
-    let declared = config.git.preselected_bases();
-    match crate::shared::context::pending_base_for(root, session).filter(|b| declared.contains(b)) {
+    let recorded = crate::shared::context::pending_base_for(root, session)
+        .filter(|b| crate::shared::work_kind::base_still_on_remote(Path::new(root), b));
+    match recorded {
         Some(recorded) => Ok(recorded),
         None => base_for(Path::new(root), target, config),
     }
@@ -1227,6 +1242,73 @@ mod tests {
             ["dev", "main", "qas"],
             "naming what it could not choose — every declared base, now that the \
              prefix narrows nothing",
+        );
+    }
+
+    /// The pick travels from the REAL catalogue to the branch actually cut —
+    /// even when no configuration ever declared it.
+    ///
+    /// The picker offers every branch `origin` has, so `release/2026-Q3` is a
+    /// legitimate answer in a project whose `git.flow` names only `dev`, `qas`
+    /// and `main`. That answer used to be thrown away one step later:
+    /// [`super::recorded_or_derived_base`] read it back out of the marker,
+    /// tested it for membership in the declared set, and let the derivation
+    /// replace it — so the unit was cut from `dev`, and every later read agreed
+    /// with the wrong base. The gate ACCEPTED the pick and the cut ignored it,
+    /// which is why a test that stops at the door certifies nothing.
+    ///
+    /// Driven end to end in a real repository, deliberately: the defect lives
+    /// between the marker and the checkout, and neither half alone meets it.
+    #[test]
+    fn the_recorded_base_survives_to_the_cut() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        seed_three_tier_repo(root);
+
+        // A release line no `git.flow` mentions, at a commit of its own — and
+        // the remote-tracking refs that make its existence MEASURABLE, which is
+        // what the check now asks about.
+        git(root, &["checkout", "-b", "release/2026-Q3", "main"]);
+        std::fs::write(root.join("f.txt"), "on the release line").expect("seed");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "release"]);
+        git(root, &["checkout", "dev"]);
+        for branch in ["dev", "qas", "main", "release/2026-Q3"] {
+            git(root, &["update-ref", &format!("refs/remotes/origin/{branch}"), branch]);
+        }
+
+        // The operator picks the release line out of the catalogue.
+        let sid = "sess-release-pick";
+        crate::shared::context::set_pending_branch(
+            &root_s,
+            sid,
+            "fix/erro-no-boleto",
+            Some("release/2026-Q3"),
+        );
+
+        let outcome = super::cut_pending_work_branch(root, sid);
+        assert_eq!(
+            outcome,
+            super::CutOutcome::Cut("fix/erro-no-boleto".to_string()),
+            "{outcome:?}",
+        );
+        let head = git_rev(root, "HEAD");
+        assert_eq!(
+            head,
+            git_rev(root, "release/2026-Q3"),
+            "the branch is cut from the base the operator chose, undeclared or not",
+        );
+        assert_ne!(head, git_rev(root, "dev"), "…and not from the derivation that replaced it");
+
+        // The marker is spent, and every later read still answers the pick —
+        // the unit's own record carries it from here.
+        assert!(crate::shared::context::pending_base_for(&root_s, sid).is_none());
+        let config = mustard_core::ProjectConfig::load(root);
+        assert_eq!(
+            super::base_for(root, "fix/erro-no-boleto", &config).as_deref(),
+            Ok("release/2026-Q3"),
+            "the pull-request target follows the operator, not the declaration",
         );
     }
 

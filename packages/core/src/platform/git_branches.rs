@@ -16,7 +16,13 @@
 //! | Question | Answered by | Shape |
 //! |---|---|---|
 //! | where may a unit be cut from? | [`branch_catalog`] — git, after a fetch | OPEN |
+//! | does this branch still exist? | [`remote_branch_names`] — git, local refs | OPEN |
 //! | where is a direct commit forbidden? | [`protected_branches`] | CLOSED |
+//!
+//! The middle row is the same source as the first, narrowed and made free: a
+//! base a unit was really cut from is checked for EXISTENCE, and the check is
+//! asked often enough (once per cut, once per hook invocation) that it must not
+//! touch the network.
 //!
 //! Opening the first is only safe because the second stays closed. They are one
 //! module so that can never drift into two.
@@ -140,6 +146,64 @@ pub fn protected_branches(root: &Path, config: &GitConfig) -> BTreeSet<String> {
     out
 }
 
+/// Every branch `origin` really has, as `(short name, tip unix seconds)`,
+/// newest commit first — read from the LOCAL remote-tracking refs, with no
+/// fetch and no round trip of any kind.
+///
+/// The module's ONE parse of `for-each-ref` output. [`branch_catalog`]
+/// annotates what this returns and [`remote_branch_names`] narrows it to names,
+/// so the two answers can never disagree about which refs count as branches.
+///
+/// `None` when git could not be asked — no git, not a repository, an
+/// unreadable invocation. That is "not measured", and it is deliberately kept
+/// apart from `Some(empty)`, which is a repository that answered and named
+/// nothing.
+fn origin_refs(root: &Path) -> Option<Vec<(String, i64)>> {
+    let listing = git_out(
+        root,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)\t%(committerdate:unix)",
+            "refs/remotes/origin",
+        ],
+    )?;
+    Some(
+        listing
+            .lines()
+            .filter_map(|line| {
+                let (raw, when) = line.split_once('\t')?;
+                let name = raw.strip_prefix("origin/")?;
+                // `origin/HEAD` is a pointer at another row, not a branch of
+                // its own — listing it would offer the same branch twice under
+                // two names.
+                if name.is_empty() || name == "HEAD" {
+                    return None;
+                }
+                Some((name.to_string(), when.trim().parse().unwrap_or(0)))
+            })
+            .collect(),
+    )
+}
+
+/// The NAMES of every branch on `origin` — the reading for the one question
+/// *"does this branch still exist?"*.
+///
+/// Free by construction: local refs only, no `fetch` and no `ls-remote`. That
+/// is a requirement of the callers, not an optimisation — the recorded-base
+/// check runs on the cut path AND inside a `PreToolUse` hook, so a round trip
+/// here would be paid on every file write of every session. The refs are as
+/// fresh as the last fetch, which is what the question needs: a branch deleted
+/// on the remote weeks ago is already gone from them once anything has pruned.
+///
+/// `None` is *"could not measure"*, never *"there are none"* — see
+/// [`origin_refs`]. A caller that folds the two together turns an offline
+/// machine into a repository with no branches.
+#[must_use]
+pub fn remote_branch_names(root: &Path) -> Option<BTreeSet<String>> {
+    Some(origin_refs(root)?.into_iter().map(|(name, _)| name).collect())
+}
+
 /// Every branch on `origin`, newest commit first, annotated with what a picker
 /// needs to render a row.
 ///
@@ -156,37 +220,17 @@ pub fn branch_catalog(root: &Path, config: &GitConfig, fetch: bool) -> Vec<Branc
     if fetch {
         let _ = git_out(root, &["fetch", "--prune", "origin"]);
     }
-    let protected = protected_branches(root, config);
-    #[allow(deprecated)]
-    let preselected = config.preselected_bases();
-    let Some(listing) = git_out(
-        root,
-        &[
-            "for-each-ref",
-            "--sort=-committerdate",
-            "--format=%(refname:short)\t%(committerdate:unix)",
-            "refs/remotes/origin",
-        ],
-    ) else {
+    let Some(refs) = origin_refs(root) else {
         return Vec::new();
     };
-    listing
-        .lines()
-        .filter_map(|line| {
-            let (raw, when) = line.split_once('\t')?;
-            let name = raw.strip_prefix("origin/")?;
-            // `origin/HEAD` is a pointer at another row, not a branch of its
-            // own — listing it would offer the same branch twice under two
-            // names.
-            if name.is_empty() || name == "HEAD" {
-                return None;
-            }
-            Some(BranchEntry {
-                name: name.to_string(),
-                committed_at: when.trim().parse().unwrap_or(0),
-                protected: protected.contains(name),
-                preselected: preselected.contains(name),
-            })
+    let protected = protected_branches(root, config);
+    let preselected = config.preselected_bases();
+    refs.into_iter()
+        .map(|(name, committed_at)| BranchEntry {
+            protected: protected.contains(&name),
+            preselected: preselected.contains(&name),
+            name,
+            committed_at,
         })
         .collect()
 }
@@ -329,5 +373,38 @@ mod tests {
             catalog.iter().find(|b| b.name == "release/2026-Q3").expect("release listed");
         assert!(!release.protected, "an ordinary branch is not protected");
         assert!(!release.preselected, "and being undeclared does not exclude it");
+    }
+
+    /// The existence probe answers about the REMOTE, and answers `None` where
+    /// it could not look — the distinction its callers turn a recorded base on.
+    #[test]
+    fn the_name_probe_separates_absent_from_unmeasured() {
+        assert_eq!(
+            remote_branch_names(Path::new("/no/such/repository")),
+            None,
+            "a place git cannot answer for is UNMEASURED, never a branchless repository",
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let up = tmp.path().join("up");
+        std::fs::create_dir_all(&up).unwrap();
+        if !upstream(&up) {
+            return;
+        }
+        if !git(&up, &["checkout", "-q", "-b", "release/2026-Q3"]) {
+            return;
+        }
+        let _ = git(&up, &["commit", "-q", "--allow-empty", "-m", "later"]);
+        let _ = git(&up, &["checkout", "-q", "trunk"]);
+        let clone = tmp.path().join("clone");
+        if !git(tmp.path(), &["clone", "-q", &up.to_string_lossy(), "clone"]) {
+            return;
+        }
+
+        let names = remote_branch_names(&clone).expect("a clone is measurable");
+        assert!(names.contains("release/2026-Q3"), "a branch no config declares exists: {names:?}");
+        assert!(names.contains("trunk"), "and so does the default one: {names:?}");
+        assert!(!names.contains("HEAD"), "origin/HEAD is a pointer, not a branch: {names:?}");
+        assert!(!names.contains("release/2025-Q1"), "one nobody cut does not: {names:?}");
     }
 }
