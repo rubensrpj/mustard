@@ -3,11 +3,12 @@
 //! pull-request STATUS query ([`crate::shared::branch_state::PrLookup`]).
 //!
 //! The trait is what every caller depends on; no consumer ever names a provider
-//! or its CLI. The adapters below are the ONLY place a provider and its
-//! CLI/API are spelled — which is what an adapter IS. A provider with no
-//! adapter answers the stable token [`PR_UNSUPPORTED`], never a fabricated
-//! "absent": an unimplemented operation is an unmeasured state, not a measured
-//! result.
+//! or its CLI. The adapters — [`GithubPrCli`] below, and the REST-speaking
+//! [`crate::shared::pr_azure::AzurePrRest`] in its sibling module — are the
+//! ONLY places a provider and its CLI/API are spelled, which is what an
+//! adapter IS. A provider with no adapter answers the stable token
+//! [`PR_UNSUPPORTED`], never a fabricated "absent": an unimplemented operation
+//! is an unmeasured state, not a measured result.
 //!
 //! ## What the port normalises — and what it refuses to
 //!
@@ -47,11 +48,12 @@ use crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED};
 
 /// The provider token [`GithubPrCli`] adapts, as `resolve_provider` spells it.
 const PROVIDER_GITHUB: &str = "github";
-/// The provider token [`AzurePrRest`] will adapt, as `resolve_provider`
-/// spells it (`dev.azure.com` / `visualstudio.com` remotes, or declared).
-const PROVIDER_AZURE: &str = "azure";
+/// The provider token [`crate::shared::pr_azure::AzurePrRest`] adapts, as
+/// `resolve_provider` spells it (`dev.azure.com` / `visualstudio.com`
+/// remotes, or declared).
+pub(crate) const PROVIDER_AZURE: &str = "azure";
 /// The full-ref namespace Azure prefixes branch names with.
-const HEADS: &str = "refs/heads/";
+pub(crate) const HEADS: &str = "refs/heads/";
 
 // ---------------------------------------------------------------------------
 // Normalisation — the port's own vocabulary
@@ -324,7 +326,7 @@ impl PrProvider for GithubPrCli {
 }
 
 // ---------------------------------------------------------------------------
-// Azure — an honest skeleton, and the answer for every unadapted provider
+// The answer for every unadapted provider
 // ---------------------------------------------------------------------------
 
 /// The one answer of an operation nobody implemented: the stable token
@@ -333,45 +335,6 @@ impl PrProvider for GithubPrCli {
 /// success and never a measured-looking absence.
 fn unsupported<T>() -> Result<T, String> {
     Err(PR_UNSUPPORTED.to_string())
-}
-
-/// The Azure DevOps adapter — a SKELETON that answers [`PR_UNSUPPORTED`] on
-/// every operation until the REST client is implemented (next unit, with a
-/// real credential to measure against).
-///
-/// What the implementation will hold to, verified against the official
-/// `GitPullRequest` contract of the Azure DevOps REST reference (7.1):
-///
-/// - `sourceRefName` / `targetRefName` are FULL refs (`refs/heads/x`) —
-///   normalised through [`short_ref`] before they leave the adapter.
-/// - `status` (`PullRequestStatus`) stores `active`, `completed`, `abandoned`
-///   or `notSet` (`all` is a search criterion only) — mapped through
-///   [`status_from_azure`].
-/// - `mergeStatus` (`PullRequestAsyncStatus`) has six values — `notSet`,
-///   `queued`, `conflicts`, `succeeded`, `rejectedByPolicy`, `failure` — and
-///   travels VERBATIM in [`PrView::merge_status`].
-pub(crate) struct AzurePrRest;
-
-impl PrProvider for AzurePrRest {
-    fn provider(&self) -> &str {
-        PROVIDER_AZURE
-    }
-
-    fn open(&self, _pr: &PrToOpen) -> Result<PrOpened, String> {
-        unsupported()
-    }
-
-    fn edit_body(&self, _number: u64, _body: &str) -> Result<(), String> {
-        unsupported()
-    }
-
-    fn ready(&self, _number: u64) -> Result<(), String> {
-        unsupported()
-    }
-
-    fn view(&self, _number: Option<u64>) -> Result<PrView, String> {
-        unsupported()
-    }
 }
 
 /// The adapter for a provider this module has no adapter FOR (`gitlab`,
@@ -424,7 +387,7 @@ pub(crate) fn provider_for(root: &Path) -> Box<dyn PrProvider> {
     let provider = mustard_core::resolve_provider(root, &cfg.git.provider);
     match provider.as_str() {
         PROVIDER_GITHUB => Box::new(GithubPrCli::new(root)),
-        PROVIDER_AZURE => Box::new(AzurePrRest),
+        PROVIDER_AZURE => Box::new(crate::shared::pr_azure::AzurePrRest::new(root)),
         _ => Box::new(UnsupportedPr { provider }),
     }
 }
@@ -432,6 +395,11 @@ pub(crate) fn provider_for(root: &Path) -> Box<dyn PrProvider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::pr_azure::{
+        do_open, do_view_number, pat_from,
+        test_support::{remote, FakeTransport},
+        AzureRemote, PAT_ENV,
+    };
     use serde_json::json;
 
     /// The port speaks the short name whatever a provider handed it: Azure's
@@ -518,9 +486,9 @@ mod tests {
         assert_eq!(number_from_pr_url(""), None);
     }
 
-    /// Every operation of the Azure skeleton — and of the adapter-less
-    /// provider — answers the stable token, honest about not having measured
-    /// or done anything. The same word `branch_state` uses, on purpose.
+    /// Every operation of an adapter-less provider answers the stable token,
+    /// honest about not having measured or done anything. The same word
+    /// `branch_state` uses, on purpose.
     #[test]
     fn a_provider_without_an_adapter_refuses_honestly() {
         let to_open = PrToOpen {
@@ -531,14 +499,12 @@ mod tests {
             draft: false,
         };
         let token = || PR_UNSUPPORTED.to_string();
-        for provider in [&AzurePrRest as &dyn PrProvider, &UnsupportedPr { provider: "gitlab".into() }] {
-            assert_eq!(provider.open(&to_open), Err(token()));
-            assert_eq!(provider.edit_body(1, "body"), Err(token()));
-            assert_eq!(provider.ready(1), Err(token()));
-            assert_eq!(provider.view(Some(1)), Err(token()));
-        }
-        assert_eq!(AzurePrRest.provider(), "azure");
-        assert_eq!(UnsupportedPr { provider: "gitlab".into() }.provider(), "gitlab");
+        let provider = UnsupportedPr { provider: "gitlab".into() };
+        assert_eq!(provider.open(&to_open), Err(token()));
+        assert_eq!(provider.edit_body(1, "body"), Err(token()));
+        assert_eq!(provider.ready(1), Err(token()));
+        assert_eq!(provider.view(Some(1)), Err(token()));
+        assert_eq!(provider.provider(), "gitlab");
     }
 
     /// The factory picks by the provider IN FORCE — the declared setting wins
@@ -562,11 +528,181 @@ mod tests {
         declare("azure");
         let azure = provider_for(root);
         assert_eq!(azure.provider(), "azure");
-        assert_eq!(azure.view(Some(1)), Err(PR_UNSUPPORTED.to_string()), "skeleton, honestly");
+        // The tempdir has no `origin`, so the REAL Azure adapter refuses at
+        // remote derivation — deterministically, before any network.
+        let refusal = azure.view(Some(1)).expect_err("no origin remote to derive from");
+        assert!(refusal.starts_with("azure-remote-"), "stable token: {refusal}");
 
         declare("gitlab");
         let other = provider_for(root);
         assert_eq!(other.provider(), "gitlab", "the report can still name who was asked-for");
         assert_eq!(other.ready(1), Err(PR_UNSUPPORTED.to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // The Azure adapter's AC-pinned tests. The adapter lives in
+    // `crate::shared::pr_azure`; these four run against it through the fake
+    // transport its `test_support` exposes — the spec's acceptance criteria
+    // name THESE exact paths.
+    // -----------------------------------------------------------------------
+
+    /// Open POSTs the `GitPullRequest` create contract — FULL refs built from
+    /// the port's short names, title/description/isDraft — and the answered
+    /// URL is DERIVED from the remote: the response's own `url` field (a REST
+    /// API address, not the web page) is ignored on purpose.
+    #[test]
+    fn azure_open_posts_the_pullrequest_contract() {
+        let remote = remote();
+        let create_url = format!("{}?api-version=7.1", remote.api_pulls());
+        let fake = FakeTransport::of(&[(
+            "POST",
+            &create_url,
+            json!({
+                "pullRequestId": 42,
+                "url": "https://dev.azure.com/suzano/_apis/git/NOT-THE-WEB-URL",
+            }),
+        )]);
+        let pr = PrToOpen {
+            title: "the unit".into(),
+            body: "why and what".into(),
+            head: "feature/my-unit".into(),
+            base: "dev".into(),
+            draft: true,
+        };
+
+        let opened = do_open(&remote, &fake, "Basic Zzo=", &pr).expect("create succeeds");
+        assert_eq!(opened.number, 42);
+        assert_eq!(
+            opened.url, "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/42",
+            "derived from the remote, never read from the response",
+        );
+
+        let calls = fake.calls.borrow();
+        let call = calls.first().expect("one request");
+        assert_eq!(call.auth, "Basic Zzo=");
+        assert_eq!(
+            call.body,
+            Some(json!({
+                "sourceRefName": "refs/heads/feature/my-unit",
+                "targetRefName": "refs/heads/dev",
+                "title": "the unit",
+                "description": "why and what",
+                "isDraft": true,
+            })),
+            "short names became full refs; the draft flag travelled",
+        );
+        drop(calls);
+
+        // A response without an id is a parse error, never PR 0.
+        let broken = FakeTransport::of(&[("POST", &create_url, json!({ "status": "active" }))]);
+        assert_eq!(do_open(&remote, &broken, "a", &pr), Err("parse-error".to_string()));
+    }
+
+    /// The credential precedence: the env override wins when non-blank, the
+    /// git vault answers otherwise, and the refusal NAMES both sources so the
+    /// operator knows the two ways to fix it.
+    #[test]
+    fn azure_without_credential_refuses_naming_both_sources() {
+        let url = "https://dev.azure.com/suzano/florestal/_git/portal";
+        assert_eq!(
+            pat_from(Some("env-pat".into()), || Some("vault-pat".into()), url),
+            Ok("env-pat".to_string()),
+            "the env var is the deliberate override",
+        );
+        assert_eq!(
+            pat_from(Some("  ".into()), || Some("vault-pat".into()), url),
+            Ok("vault-pat".to_string()),
+            "a blank env var is not a credential",
+        );
+        assert_eq!(pat_from(None, || Some("vault-pat".into()), url), Ok("vault-pat".to_string()));
+
+        let refusal = pat_from(None, || None, url).expect_err("no source, no credential");
+        assert!(refusal.starts_with("azure-credential-missing"), "stable token: {refusal}");
+        assert!(refusal.contains(PAT_ENV), "names the env source: {refusal}");
+        assert!(refusal.contains("git credential"), "names the vault source: {refusal}");
+        assert!(refusal.contains(url), "names the remote the vault was asked for: {refusal}");
+    }
+
+    /// An Azure `GitPullRequest` document folds into the port's normalised
+    /// [`PrView`]: full refs come out short, the status word is reduced to
+    /// the canonical vocabulary, `mergeStatus` travels verbatim, and the URL
+    /// is derived.
+    #[test]
+    fn an_azure_response_folds_into_the_normalized_view() {
+        let remote = remote();
+        let view_url = format!("{}/9?api-version=7.1", remote.api_pulls());
+        let fake = FakeTransport::of(&[(
+            "GET",
+            &view_url,
+            json!({
+                "pullRequestId": 9,
+                "title": "the unit",
+                "status": "active",
+                "mergeStatus": "conflicts",
+                "sourceRefName": "refs/heads/feature/my-unit",
+                "targetRefName": "refs/heads/dev",
+                "isDraft": false,
+            }),
+        )]);
+        let view = do_view_number(&remote, &fake, "a", 9).expect("view succeeds");
+        assert_eq!(
+            view,
+            PrView {
+                number: 9,
+                title: "the unit".into(),
+                head: "feature/my-unit".into(),
+                base: "dev".into(),
+                status: PrStatus::Open,
+                merge_status: Some("conflicts".into()),
+                draft: false,
+                url: "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/9".into(),
+            }
+        );
+    }
+
+    /// The three spellings of an Azure remote all derive the SAME facts: the
+    /// REST base, the https remote the credential is asked for, and the PR
+    /// web URL. The host family (dev.azure.com vs visualstudio.com) stays
+    /// whatever the remote itself spoke.
+    #[test]
+    fn every_azure_remote_spelling_yields_the_rest_base() {
+        let modern = [
+            "https://dev.azure.com/suzano/florestal/_git/portal",
+            "https://suzano@dev.azure.com/suzano/florestal/_git/portal",
+            "git@ssh.dev.azure.com:v3/suzano/florestal/portal",
+            "ssh://git@ssh.dev.azure.com/v3/suzano/florestal/portal",
+        ];
+        for url in modern {
+            let remote = AzureRemote::parse(url).unwrap_or_else(|| panic!("{url:?} parses"));
+            assert_eq!(
+                remote.api_pulls(),
+                "https://dev.azure.com/suzano/florestal/_apis/git/repositories/portal/pullrequests",
+                "for {url:?}",
+            );
+            assert_eq!(
+                remote.https_remote(),
+                "https://dev.azure.com/suzano/florestal/_git/portal",
+                "for {url:?}",
+            );
+            assert_eq!(
+                remote.pr_url(7),
+                "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/7",
+                "for {url:?}",
+            );
+        }
+
+        let legacy = [
+            "https://suzano.visualstudio.com/florestal/_git/portal",
+            "https://suzano.visualstudio.com/DefaultCollection/florestal/_git/portal",
+            "suzano@vs-ssh.visualstudio.com:v3/suzano/florestal/portal",
+        ];
+        for url in legacy {
+            let remote = AzureRemote::parse(url).unwrap_or_else(|| panic!("{url:?} parses"));
+            assert_eq!(
+                remote.https_remote(),
+                "https://suzano.visualstudio.com/florestal/_git/portal",
+                "for {url:?}",
+            );
+        }
     }
 }
