@@ -30,6 +30,7 @@
 //! that records every request — the same design as `branch_state`'s `FakePr`.
 //! No test ever touches the network.
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -37,6 +38,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE};
 use crate::shared::pr_provider::{
     short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,
 };
@@ -421,18 +423,163 @@ fn do_view_branch(
     auth: &str,
     branch: &str,
 ) -> Result<PrView, String> {
+    let rows = evidence_rows(remote, transport, auth, branch)?;
+    let row = rows.first().ok_or_else(|| format!("no-pr-for-branch: {branch}"))?;
+    view_from_azure(remote, row)
+}
+
+// ---------------------------------------------------------------------------
+// The evidence read — what the exit ritual's pruning verdict stands on
+// ---------------------------------------------------------------------------
+
+/// GET every pull request whose head is `branch`, whatever its status — the
+/// rows [`evidence_from_rows`] reduces and [`do_view_branch`] takes the newest
+/// of. ONE spelling of the search URL, so the two consumers can never drift.
+/// A document without a `value` array could not be read — `parse-error`,
+/// never an empty (which would read as a measured absence).
+pub(crate) fn evidence_rows(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    branch: &str,
+) -> Result<Vec<Value>, String> {
     let url = format!(
         "{}?searchCriteria.sourceRefName={}&searchCriteria.status=all&api-version={API_VERSION}",
         remote.api_pulls(),
         query_encode(&format!("{HEADS}{branch}")),
     );
     let doc = transport.call("GET", &url, auth, None)?;
-    let rows = doc
-        .get("value")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "parse-error".to_string())?;
-    let row = rows.first().ok_or_else(|| format!("no-pr-for-branch: {branch}"))?;
-    view_from_azure(remote, row)
+    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
+}
+
+/// Reduce the search rows to the evidence a pruning decision needs: the
+/// strongest status wins (merged > open > closed — the same refusal to let
+/// row order decide as `branch_state`'s GitHub reduction), an empty answer is
+/// a MEASURED absence, and every `completed` row contributes the head its
+/// merge froze.
+///
+/// The frozen head is `lastMergeSourceCommit.commitId` — per the
+/// `GitPullRequest` REST contract the source-branch commit the completed
+/// merge actually consumed, recorded on the pull request at completion. It is
+/// the Azure twin of GitHub's `headRefOid`: a commit pushed to the branch
+/// AFTER the merge is beyond it, which is exactly what lets `git-settle`
+/// refuse to prune a branch that moved.
+pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
+    let status_of =
+        |row: &Value| status_from_azure(row.get("status").and_then(Value::as_str).unwrap_or_default());
+    let statuses: Vec<PrStatus> = rows.iter().map(status_of).collect();
+    let status = if statuses.contains(&PrStatus::Merged) {
+        PrStatus::Merged
+    } else if statuses.contains(&PrStatus::Open) {
+        PrStatus::Open
+    } else if statuses.contains(&PrStatus::Closed) {
+        PrStatus::Closed
+    } else if statuses.is_empty() {
+        PrStatus::Absent
+    } else {
+        // Rows arrived but no status word could be read: an unreadable
+        // answer, never a measured absence.
+        PrStatus::Unknown(PR_UNREADABLE)
+    };
+    let merged_heads: BTreeSet<String> = rows
+        .iter()
+        .filter(|row| status_of(row) == PrStatus::Merged)
+        .filter_map(|row| {
+            row.get("lastMergeSourceCommit").and_then(|c| c.get("commitId")).and_then(Value::as_str)
+        })
+        .filter(|head| !head.is_empty())
+        .map(str::to_string)
+        .collect();
+    PrEvidence { status, merged_heads }
+}
+
+/// The [`crate::shared::branch_state::PrLookup`] answer for an Azure branch:
+/// resolve the context, run ONE search, reduce it purely. Every failure
+/// degrades to [`PrStatus::Unknown`] with a stable reason — an unreachable
+/// REST API is an unmeasured state, never a measured "no PR" — because a
+/// measured absence is one of the answers that AUTHORISES the exit ritual to
+/// prune a branch.
+pub(crate) fn evidence_of(repo: &Path, branch: &str) -> PrEvidence {
+    let unknown = |reason: &'static str| PrEvidence {
+        status: PrStatus::Unknown(reason),
+        merged_heads: BTreeSet::new(),
+    };
+    let adapter = AzurePrRest::new(repo);
+    let Ok((remote, auth)) = adapter.context() else {
+        // No recognisable remote or no credential: nothing was asked — the
+        // same bucket the GitHub adapter files an unauthenticated `gh` under.
+        return unknown(PR_CLI_FAILED);
+    };
+    match evidence_rows(&remote, adapter.transport.as_ref(), &auth, branch) {
+        Ok(rows) => evidence_from_rows(&rows),
+        Err(reason) if reason == "parse-error" => unknown(PR_UNREADABLE),
+        Err(_) => unknown(PR_CLI_FAILED),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The prefetch reads — what review-prefetch composes its document from
+// ---------------------------------------------------------------------------
+
+/// GET PR `number` VERBATIM — the raw `GitPullRequest` document, for the one
+/// consumer (review-prefetch) that needs fields the port's [`PrView`] does
+/// not carry (`description`, `createdBy`).
+pub(crate) fn fetch_pr(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    number: u64,
+) -> Result<Value, String> {
+    let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
+    transport.call("GET", &url, auth, None)
+}
+
+/// GET the comment THREADS of PR `number` — where the human conversation
+/// lives on Azure (there is no flat comment list like GitHub's).
+pub(crate) fn fetch_threads(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    number: u64,
+) -> Result<Vec<Value>, String> {
+    let url = format!("{}/{number}/threads?api-version={API_VERSION}", remote.api_pulls());
+    let doc = transport.call("GET", &url, auth, None)?;
+    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
+}
+
+/// GET the REVIEWERS of PR `number` — each row carries the reviewer's `vote`,
+/// the Azure spelling of a review verdict.
+pub(crate) fn fetch_reviewers(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    number: u64,
+) -> Result<Vec<Value>, String> {
+    let url = format!("{}/{number}/reviewers?api-version={API_VERSION}", remote.api_pulls());
+    let doc = transport.call("GET", &url, auth, None)?;
+    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
+}
+
+/// The three documents `review-prefetch`'s Azure route composes from, fetched
+/// in ONE resolution of the remote + credential. Diff counters and file lists
+/// are deliberately absent: the local git already has them, identically on
+/// every provider — the port's own long-standing decision.
+pub(crate) struct AzurePrefetch {
+    pub(crate) pr: Value,
+    pub(crate) threads: Vec<Value>,
+    pub(crate) reviewers: Vec<Value>,
+}
+
+/// Fetch an [`AzurePrefetch`] over the real transport.
+pub(crate) fn prefetch(repo: &Path, number: u64) -> Result<AzurePrefetch, String> {
+    let adapter = AzurePrRest::new(repo);
+    let (remote, auth) = adapter.context()?;
+    let transport = adapter.transport.as_ref();
+    Ok(AzurePrefetch {
+        pr: fetch_pr(&remote, transport, &auth, number)?,
+        threads: fetch_threads(&remote, transport, &auth, number)?,
+        reviewers: fetch_reviewers(&remote, transport, &auth, number)?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -689,6 +836,103 @@ mod tests {
             Err("parse-error".to_string()),
             "a document without `value` could not be read — never 'no PR'",
         );
+    }
+
+    /// T1 — the evidence reduction: merged beats open beats closed, an empty
+    /// answer is a MEASURED absence, and only the completed rows contribute
+    /// their frozen heads (`lastMergeSourceCommit.commitId`). Rows whose
+    /// status word cannot be read are an unreadable answer, never an absence.
+    #[test]
+    fn azure_evidence_reduces_states_and_merged_heads() {
+        let row = |status: &str, head: &str| {
+            json!({ "status": status, "lastMergeSourceCommit": { "commitId": head } })
+        };
+
+        let empty = evidence_from_rows(&[]);
+        assert_eq!(empty.status, PrStatus::Absent, "an empty answer is a measurement");
+        assert!(empty.merged_heads.is_empty());
+
+        assert_eq!(evidence_from_rows(&[row("abandoned", "")]).status, PrStatus::Closed);
+        assert_eq!(
+            evidence_from_rows(&[row("abandoned", ""), row("active", "")]).status,
+            PrStatus::Open,
+            "open beats closed",
+        );
+
+        let landed = evidence_from_rows(&[
+            row("abandoned", "x1"),
+            row("completed", "m1"),
+            row("active", "x2"),
+            row("completed", "m2"),
+        ]);
+        assert_eq!(landed.status, PrStatus::Merged, "merged wins whatever the row order");
+        assert_eq!(
+            landed.merged_heads,
+            ["m1".to_string(), "m2".to_string()].into_iter().collect::<BTreeSet<String>>(),
+            "EVERY completed row contributes its frozen head; the others contribute none",
+        );
+
+        let unreadable = evidence_from_rows(&[json!({ "title": "no status word" })]);
+        assert_eq!(
+            unreadable.status,
+            PrStatus::Unknown(PR_UNREADABLE),
+            "rows that could not be read are never a measured absence",
+        );
+    }
+
+    /// T1 — the evidence read asks the SAME search `do_view_branch` asks
+    /// (`searchCriteria.sourceRefName` + `status=all`), so a just-completed
+    /// PR still answers — which is the read that authorises a prune.
+    #[test]
+    fn evidence_rows_search_the_full_source_ref_with_status_all() {
+        let remote = remote();
+        let search_url = format!(
+            "{}?searchCriteria.sourceRefName=refs/heads/dev_x&searchCriteria.status=all&api-version=7.1",
+            remote.api_pulls()
+        );
+        let fake = FakeTransport::of(&[(
+            "GET",
+            &search_url,
+            json!({ "count": 1, "value": [
+                { "status": "completed", "lastMergeSourceCommit": { "commitId": "frozen" } },
+            ]}),
+        )]);
+        let rows = evidence_rows(&remote, &fake, "a", "dev_x").expect("search answers");
+        let evidence = evidence_from_rows(&rows);
+        assert_eq!(evidence.status, PrStatus::Merged);
+        assert_eq!(
+            evidence.merged_heads,
+            ["frozen".to_string()].into_iter().collect::<BTreeSet<String>>(),
+        );
+
+        let broken = FakeTransport::of(&[("GET", &search_url, json!({ "count": 0 }))]);
+        assert_eq!(
+            evidence_rows(&remote, &broken, "a", "dev_x"),
+            Err("parse-error".to_string()),
+            "a document without `value` could not be read — never an empty answer",
+        );
+    }
+
+    /// T1 — the prefetch fetchers address the PR's own sub-resources and
+    /// answer their `value` arrays; the raw PR document travels verbatim.
+    #[test]
+    fn prefetch_fetchers_address_the_pr_subresources() {
+        let remote = remote();
+        let pr_url = format!("{}/7?api-version=7.1", remote.api_pulls());
+        let threads_url = format!("{}/7/threads?api-version=7.1", remote.api_pulls());
+        let reviewers_url = format!("{}/7/reviewers?api-version=7.1", remote.api_pulls());
+        let fake = FakeTransport::of(&[
+            ("GET", &pr_url, json!({ "pullRequestId": 7, "description": "why" })),
+            ("GET", &threads_url, json!({ "value": [{ "status": "active" }] })),
+            ("GET", &reviewers_url, json!({ "value": [{ "vote": 10 }] })),
+        ]);
+
+        let pr = fetch_pr(&remote, &fake, "a", 7).expect("pr answers");
+        assert_eq!(pr["description"], json!("why"), "the raw document travels verbatim");
+        let threads = fetch_threads(&remote, &fake, "a", 7).expect("threads answer");
+        assert_eq!(threads, vec![json!({ "status": "active" })]);
+        let reviewers = fetch_reviewers(&remote, &fake, "a", 7).expect("reviewers answer");
+        assert_eq!(reviewers, vec![json!({ "vote": 10 })]);
     }
 
     /// A transport failure travels to the caller untouched — the operations
