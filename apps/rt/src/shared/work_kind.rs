@@ -59,6 +59,24 @@ fn unit_dir(project: &Path, slug: &str) -> Option<PathBuf> {
     Some(ClaudePaths::for_project(project).ok()?.spec_dir().join(slug))
 }
 
+/// `true` when `rev` carries `path` in its tree — `git cat-file -e <rev>:<path>`.
+///
+/// The question a working-tree `stat` cannot answer: a unit's record is
+/// committed ON the unit's branch, so from the base, or from a linked worktree
+/// whose main checkout is elsewhere, the directory is simply not on disk while
+/// the ref carries it perfectly well.
+///
+/// `false` on any failure — an unknown ref, a path the tree does not carry, git
+/// missing entirely. The callers that matter here are asking whether they may
+/// destroy something, so an unanswerable probe must not read as a yes.
+fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
+    let root = project.to_string_lossy().to_string();
+    std::process::Command::new("git")
+        .args(["-C", &root, "cat-file", "-e", &format!("{rev}:{path}")])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
 /// The cut's OWN record of the base, inside the unit's directory.
 ///
 /// **Why a file of its own, and why this name.** The answer's durable home is
@@ -764,7 +782,29 @@ impl BaseFlow {
         let Some(slug) = self.slug_of(branch) else {
             return false;
         };
-        !slug.is_empty() && unit_dir(project, &slug).is_some_and(|dir| dir.is_dir())
+        if slug.is_empty() {
+            return false;
+        }
+        if unit_dir(project, &slug).is_some_and(|dir| dir.is_dir()) {
+            return true;
+        }
+        // **The working tree is not the only place the record lives, and reading
+        // only it inverted two doors.** The unit's directory is authored ON the
+        // unit's branch, while every door that asks this question runs from
+        // somewhere else: from the base, where the branch's files are not
+        // checked out, or from a linked worktree, whose checkout IS the unit
+        // while `project` points at the main one. Both answered `false` for a
+        // real unit, and both then did the opposite of what they promise —
+        // `git delete` destroyed the worktree the caller was standing in
+        // instead of refusing, and `git settle` refused the very position its
+        // own hint prescribes.
+        //
+        // So the question is asked of git too, in the two refs that can carry
+        // it. This is ONE reading shared by all three doors on purpose: a weak
+        // reading guarding while a strong one permits is how a destructive
+        // command ends up more permissive than the check in front of it.
+        let path = format!(".claude/spec/{slug}");
+        ["", "origin/"].iter().any(|prefix| ref_carries(project, &format!("{prefix}{branch}"), &path))
     }
 }
 
