@@ -819,6 +819,7 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     0xf6f4a99e0f560462,
     0xf974485d773315ce,
     0xaf69d2c72ddafb6c,
+    0x8b2ba8712b354c05,
 ];
 
 /// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
