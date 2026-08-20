@@ -343,8 +343,20 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
         // and the remote's own default (`origin/HEAD`) is the last resort, so
         // the refusal ends with something the operator can type without this
         // module ever spelling a branch name of its own.
-        let target =
-            unit.known().map(str::to_string).or_else(|| mustard_core::default_branch(&repo));
+        // Three sources, in the order their authority runs out. The unit's own
+        // record is a measurement of where this branch really came from. Next,
+        // when — and only when — the project DECLARES a flow, its primary base
+        // is the project's own stated answer: naming `origin/HEAD` there sent a
+        // unit that integrates into `dev` off to `main`, a regression measured
+        // in a repo whose flow says exactly that. With no flow declared there is
+        // nothing to state, and the remote's own default is the last resort, so
+        // this module never spells a branch name of its own.
+        let declared = !config.git.declared_bases().is_empty();
+        let target = unit
+            .known()
+            .map(str::to_string)
+            .or_else(|| declared.then(|| config.git.primary_base()))
+            .or_else(|| mustard_core::default_branch(&repo));
         let hint = match &target {
             Some(base) => format!(
                 "`pr list` asks about a BASE, not about one unit — switch to `{base}` \

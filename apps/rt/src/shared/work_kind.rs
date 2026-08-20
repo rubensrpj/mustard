@@ -171,22 +171,46 @@ pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
     if with_remote_names(root, |names| names_obey(names, base)) {
         return true;
     }
-    // A local head is measured directly: it is not in the remote-tracking
-    // catalogue and never will be until someone pushes it.
-    local_head_exists(root, base)
+    // **A local head counts only if it was NEVER pushed.** Two very different
+    // branches look identical in the remote-tracking catalogue — both absent:
+    //
+    //   never pushed          a real branch, living only on this machine
+    //   deleted upstream      merged and retired; cutting from it is the
+    //                         "base that no longer exists" this probe exists
+    //                         to refuse
+    //
+    // `git fetch --prune` prunes remote-tracking refs, never local heads, so a
+    // plain "does refs/heads/<base> exist?" obeys the retired branch and
+    // reopens exactly what AC-2 forbids. The upstream configuration separates
+    // them and is measured, not guessed: a branch that was pushed carries
+    // `branch.<name>.remote`, and one that never left this machine does not.
+    // Absent upstream ⇒ never pushed ⇒ a real local base, obey. Upstream set
+    // but gone from the catalogue ⇒ retired upstream ⇒ ignore.
+    local_head_exists(root, base) && !has_upstream(root, base)
 }
 
 /// `true` when `refs/heads/<branch>` resolves in `root`.
-///
-/// `false` on any failure, which is safe here only because the caller treats an
-/// unmeasured remote as OBEY — this leg answers after that one, so a silent git
-/// never turns into a dropped record.
 fn local_head_exists(root: &Path, branch: &str) -> bool {
     let dir = root.to_string_lossy().to_string();
     std::process::Command::new("git")
         .args(["-C", &dir, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
         .output()
         .is_ok_and(|out| out.status.success())
+}
+
+/// `true` when `branch` has an upstream configured — the durable mark that it
+/// was pushed at least once, and therefore that its absence from the
+/// remote-tracking catalogue means RETIRED rather than never-published.
+///
+/// `false` on any failure, which is the safe reading for the only caller: an
+/// unanswerable probe must not turn a local base into a retired one and drop a
+/// record the operator really made.
+fn has_upstream(root: &Path, branch: &str) -> bool {
+    let dir = root.to_string_lossy().to_string();
+    std::process::Command::new("git")
+        .args(["-C", &dir, "config", "--get", &format!("branch.{branch}.remote")])
+        .output()
+        .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
 }
 
 /// Hand `read` the MEMOISED remote branch names of `root`, measuring them on

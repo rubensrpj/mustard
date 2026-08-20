@@ -1366,8 +1366,18 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
              a unit",
         );
     }
-    // The target a refusal names must not end at a literal. `primary_base()`
-    // floors to `main`; `origin/HEAD` is the remote's own answer.
+    // The target a refusal names must not end at a LITERAL nobody measured.
+    //
+    // The first shape of this check forbade `primary_base()` outright, and that
+    // was too blunt in a way that locked in a regression: `primary_base()` only
+    // floors to the hardcoded `main` when NO flow is declared — with a flow it
+    // returns the project's own stated base. Forbidding it wholesale sent a unit
+    // that integrates into `dev` off to `main`, measured in a repo whose flow
+    // says exactly that, and the ratchet then held the wrong answer in place.
+    //
+    // So what is required is the ORDER, not the absence of a source: the
+    // declared base is consulted only behind a declared-flow guard, and
+    // `origin/HEAD` remains the last resort.
     for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
         assert!(
             body.contains("mustard_core::default_branch("),
@@ -1375,9 +1385,10 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
              names can be a literal nobody measured",
         );
         assert!(
-            !body.contains("primary_base()"),
-            "{name} names the base through `primary_base()` again — it ends at the \
-             hardcoded `main` for every project whose install wrote no flow",
+            !body.contains("primary_base()") || body.contains("declared_bases().is_empty()"),
+            "{name} names the base through `primary_base()` with no declared-flow \
+             guard — unguarded it ends at the hardcoded `main` for every project \
+             whose install wrote no flow",
         );
     }
 

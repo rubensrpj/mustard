@@ -120,9 +120,15 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
     if flow.has_unit_record(&branch) && !protected.contains(&branch) {
         // The unit's OWN record answers where to go back to; `origin/HEAD` is
         // the last resort, so nothing here spells a branch name of its own.
+        // Same three sources, same order, as `pr list`: the unit's own record,
+        // then the DECLARED primary base when the project states one — naming
+        // `origin/HEAD` there sends a unit that integrates into `dev` off to
+        // `main` — and only then the remote's own default.
+        let declared = !cfg.git.declared_bases().is_empty();
         let target = standing_on
             .known()
             .map(str::to_string)
+            .or_else(|| declared.then(|| cfg.git.primary_base()))
             .or_else(|| mustard_core::default_branch(&main));
         let hint = match &target {
             Some(base) => format!(
