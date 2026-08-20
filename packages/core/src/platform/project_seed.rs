@@ -327,7 +327,7 @@ pub fn footprint() -> Vec<FootprintEntry> {
     out.extend(
         INJECTABLE_SEEDS
             .iter()
-            .map(|(name, _)| seeded(&format!(".claude/mustard/{name}"))),
+            .map(|(name, _, _)| seeded(&format!(".claude/mustard/{name}"))),
     );
     out.push(seeded(CLAUDE_GITIGNORE_PATH));
     out.push(anchored(MUSTARD_JSON_RULE, MUSTARD_JSON));
@@ -785,8 +785,67 @@ fn parse_json_object(raw: &str) -> Map<String, Value> {
 // ---------------------------------------------------------------------------
 
 /// The injectable instruction files seeded under `.claude/mustard/`:
-/// `(basename, compiled-in body)`.
-const INJECTABLE_SEEDS: &[(&str, &str)] = &[("orchestrator.md", ORCHESTRATOR_MD)];
+/// `(basename, compiled-in body, fingerprints of every SUPERSEDED seed)`.
+const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] =
+    &[("orchestrator.md", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS)];
+
+/// Every superseded version of the orchestrator seed, as a content
+/// fingerprint ([`seed_fingerprint`]) — generated from this repository's own
+/// history and RATCHETED by `the_fingerprint_catalog_covers_every_history`:
+/// editing the template without appending the superseded fingerprint here
+/// fails that test, so the catalog cannot silently fall behind.
+///
+/// Why it exists: the merge posture ("an existing file is preserved") could
+/// not tell an operator's customisation from a stale seed nobody ever
+/// touched. Measured in the field (2026-08-20, a corporate install): the
+/// delivered orchestrator was byte-identical to the seed of a year-old
+/// commit, `upsert` reported it PRESERVED, and the very prose defect the
+/// current seed fixes stayed in force — with the version stamp bumped, which
+/// silenced the drift notice on top. An untouched seed is Mustard's own
+/// text; only an operator's EDIT earns preservation.
+const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
+    0x1c5e2e706274fc17,
+    0x0fb06c788d11566b,
+    0x5f1d81459b0bd9c9,
+    0xf652575f9c6dec0d,
+    0x9ec6ba629370387e,
+    0xb50cf760d5dc530f,
+    0xbda422538680f39f,
+    0xb143a25ee6a8af4c,
+    0x6300f1e26568e3ad,
+    0x7d7f76c448b623d9,
+    0xde3bd4287222de6a,
+    0x37a94f2e5ca2dab6,
+    0xf6f4a99e0f560462,
+    0xf974485d773315ce,
+    0xaf69d2c72ddafb6c,
+];
+
+/// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
+/// catalog speaks. Normalised so a Windows checkout answers the same as a
+/// Unix one for the same seed.
+fn seed_fingerprint(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.replace("\r\n", "\n").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// What the merge does with an EXISTING injectable: refresh a stale seed the
+/// operator never touched, preserve everything else. Pure, so the rule is
+/// testable apart from the filesystem.
+fn injectable_merge_outcome(existing: &str, seed: &str, prior: &[u64]) -> SeedOutcome {
+    let fp = seed_fingerprint(existing);
+    if fp == seed_fingerprint(seed) {
+        return SeedOutcome::Preserved; // already the current seed
+    }
+    if prior.contains(&fp) {
+        return SeedOutcome::Updated; // a stale seed nobody edited — refresh
+    }
+    SeedOutcome::Preserved // the operator's own text
+}
 
 /// Seed the injectable instruction files into `.claude/mustard/`.
 ///
@@ -805,9 +864,22 @@ pub fn seed_injectable_files(
     let dest_dir = claude_dir.join("mustard");
     fs::create_dir_all(&dest_dir)?;
     let mut out = Vec::with_capacity(INJECTABLE_SEEDS.len());
-    for (name, body) in INJECTABLE_SEEDS {
+    for (name, body, prior) in INJECTABLE_SEEDS {
         let dest = dest_dir.join(name);
-        out.push(((*name).to_string(), seed_static_file(&dest, body, overwrite)?));
+        let outcome = match fs::read_to_string(&dest) {
+            Ok(existing) if !overwrite => {
+                match injectable_merge_outcome(&existing, body, prior) {
+                    SeedOutcome::Updated => {
+                        fs::write_atomic(&dest, body.as_bytes())?;
+                        SeedOutcome::Updated
+                    }
+                    other => other,
+                }
+            }
+            // Absent, unreadable, or overwrite mode: the original posture.
+            _ => seed_static_file(&dest, body, overwrite)?,
+        };
+        out.push(((*name).to_string(), outcome));
     }
     Ok(out)
 }
@@ -1567,7 +1639,7 @@ mod tests {
     #[test]
     fn the_footprint_is_derived_from_the_seeds_it_hides() {
         let rules = footprint_rules();
-        for (name, _) in INJECTABLE_SEEDS {
+        for (name, _, _) in INJECTABLE_SEEDS {
             let expected = format!(".claude/mustard/{name}");
             assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
@@ -1615,6 +1687,72 @@ mod tests {
         assert_eq!(seen.len(), rules.len(), "duplicate rule: {rules:?}");
         for rule in &rules {
             assert!(!rule.contains('\\'), "not a git rule: {rule}");
+        }
+    }
+
+    /// A stale seed nobody edited is REFRESHED; the operator's own text is
+    /// preserved; the current seed is left alone. The rule, apart from disk.
+    #[test]
+    fn an_untouched_stale_seed_refreshes_and_an_edit_survives() {
+        let seed = "# new seed\n";
+        let stale = "# old seed\n";
+        let prior = &[seed_fingerprint(stale)];
+        assert_eq!(injectable_merge_outcome(stale, seed, prior), SeedOutcome::Updated);
+        assert_eq!(injectable_merge_outcome(seed, seed, prior), SeedOutcome::Preserved);
+        assert_eq!(
+            injectable_merge_outcome("# the operator wrote this\n", seed, prior),
+            SeedOutcome::Preserved,
+        );
+        // CRLF answers as its LF twin — a Windows checkout is the same seed.
+        assert_eq!(injectable_merge_outcome("# old seed\r\n", seed, prior), SeedOutcome::Updated);
+    }
+
+    /// RATCHET — every historical version of the orchestrator template must be
+    /// in the fingerprint catalog (or BE the current seed). Editing the
+    /// template without appending the superseded fingerprint makes this red,
+    /// so the refresh above can never silently stop recognising a stale seed.
+    /// Skips (not passes vacuously) where the repository history is absent —
+    /// a crates.io build or a shallow CI clone has nothing to walk.
+    #[test]
+    fn the_fingerprint_catalog_covers_every_history() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%H", "--follow", "--", "packages/core/templates/mustard/orchestrator.md"])
+            .current_dir(&repo_root)
+            .output();
+        let Ok(log) = log else { return };
+        if !log.status.success() {
+            return;
+        }
+        let commits: Vec<String> =
+            String::from_utf8_lossy(&log.stdout).split_whitespace().map(str::to_string).collect();
+        if commits.len() < 2 {
+            return; // shallow clone — nothing meaningful to ratchet
+        }
+        let current = seed_fingerprint(ORCHESTRATOR_MD);
+        for commit in commits {
+            for path in [
+                "packages/core/templates/mustard/orchestrator.md",
+                "templates/mustard/orchestrator.md",
+                "plugin/templates/mustard/orchestrator.md",
+            ] {
+                let show = std::process::Command::new("git")
+                    .args(["show", &format!("{commit}:{path}")])
+                    .current_dir(&repo_root)
+                    .output();
+                let Ok(show) = show else { continue };
+                if !show.status.success() {
+                    continue;
+                }
+                let fp = seed_fingerprint(&String::from_utf8_lossy(&show.stdout));
+                assert!(
+                    fp == current || PRIOR_ORCHESTRATOR_FINGERPRINTS.contains(&fp),
+                    "the seed at {commit} (fingerprint {fp:#018x}) is in neither the catalog \
+                     nor the current seed — append the superseded fingerprint to \
+                     PRIOR_ORCHESTRATOR_FINGERPRINTS",
+                );
+                break;
+            }
         }
     }
 
