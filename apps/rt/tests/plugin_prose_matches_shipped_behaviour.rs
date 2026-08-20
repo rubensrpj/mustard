@@ -328,7 +328,7 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     // Without this half the sentence is a template nobody is served.
     let project_seed = read("packages/core/src/platform/project_seed.rs");
     assert!(
-        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD)"),
+        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS)"),
         "nothing seeds orchestrator.md any more, so the rule reaches no window",
     );
     let config = read("packages/core/src/domain/config.rs");
