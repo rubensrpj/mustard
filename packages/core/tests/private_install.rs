@@ -38,7 +38,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use mustard_core::{
-    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED,
+    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD,
+    SETTINGS_SEED,
 };
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,7 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         vec![
             ".claude/settings.json",
             ".claude/mustard/orchestrator.md",
+            ".claude/mustard/dispatch.md",
             ".claude/.gitignore",
             "mustard.json",
         ],
@@ -215,6 +217,7 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         read(&root.join(".claude/mustard/orchestrator.md")),
         Some(ORCHESTRATOR_MD.to_string()),
     );
+    assert_eq!(read(&root.join(".claude/mustard/dispatch.md")), Some(DISPATCH_MD.to_string()));
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
 
@@ -307,6 +310,7 @@ fn ac11_private_install_refuses_when_it_cannot_hide() {
         ".claude/settings.json",
         ".claude/settings.local.json",
         ".claude/mustard/orchestrator.md",
+        ".claude/mustard/dispatch.md",
         ".claude/.gitignore",
         ".claude",
         "mustard.json",

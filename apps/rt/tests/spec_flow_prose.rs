@@ -430,7 +430,7 @@ fn the_draft_call_carries_the_name_the_gate_minted() {
 
     // The page that MINTS it must say the report is the source, or the two ends
     // of the hand-off name different things.
-    let router = read("packages/core/templates/mustard/orchestrator.md");
+    let router = read("packages/core/templates/mustard/dispatch.md");
     let gate = line_with(&router, "That call is also where the unit is NAMED")
         .expect("the router never says the base gate names the unit");
     assert!(

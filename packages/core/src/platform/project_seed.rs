@@ -53,7 +53,7 @@ use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
 use crate::platform::error::{Error, Result};
 use crate::platform::git_exclude;
-use crate::platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
+use crate::platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
 
 // ---------------------------------------------------------------------------
 // Install mode + the footprint it hides
@@ -786,8 +786,10 @@ fn parse_json_object(raw: &str) -> Map<String, Value> {
 
 /// The injectable instruction files seeded under `.claude/mustard/`:
 /// `(basename, compiled-in body, fingerprints of every SUPERSEDED seed)`.
-const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] =
-    &[("orchestrator.md", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS)];
+const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
+    ("orchestrator.md", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS),
+    ("dispatch.md", DISPATCH_MD, PRIOR_DISPATCH_FINGERPRINTS),
+];
 
 /// Every superseded version of the orchestrator seed, as a content
 /// fingerprint ([`seed_fingerprint`]) — generated from this repository's own
@@ -820,7 +822,17 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     0xf974485d773315ce,
     0xaf69d2c72ddafb6c,
     0x8b2ba8712b354c05,
+    // The one-file router, superseded by the two-event split: everything from
+    // `## Dispatch` moved to `dispatch.md` on `sessionStart`, because one hook
+    // response carries at most 10,000 characters of `additionalContext`.
+    0x4d0554c664812c77,
 ];
+
+/// Superseded versions of the `dispatch.md` seed. Empty on purpose: the file
+/// was born with the two-event split, so no project has ever received an
+/// earlier one. It grows the same way the orchestrator catalog does — the
+/// ratchet below reads this file's own history.
+const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[];
 
 /// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
 /// catalog speaks. Normalised so a Windows checkout answers the same as a
@@ -985,22 +997,49 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 // mustard.json
 // ---------------------------------------------------------------------------
 
-/// The default `mustard.json#inject` declarations: the orchestrator rides
-/// every session's first prompt, once per session. Written in the same casing
-/// the docs use; the config accessor lowercases `on` at read time.
+/// The default `mustard.json#inject` declarations: the router, in its two
+/// halves, on two DIFFERENT events. Written in the same casing the docs use;
+/// the config accessor lowercases `on` at read time.
+///
+/// **Why two events and not two entries on one.** A hook's `additionalContext`
+/// is capped at 10,000 characters; past that the harness saves the overflow to
+/// a file and hands the window a preview plus a path, so the text stops being
+/// in force even though nothing was truncated mid-sentence. The session hooks
+/// fold every injectable of ONE event into a single `additionalContext` (the
+/// dispatcher fold is last-writer-wins, so a second `Inject` on the same event
+/// would be dropped) — so two entries on `userPromptSubmit` would share one
+/// ceiling and buy nothing. Two events are two hook invocations, each with its
+/// own response and its own ceiling: § Intent Routing rides `userPromptSubmit`,
+/// § Dispatch rides `sessionStart` (and re-delivers after `/clear` or a
+/// compaction, which is when a window loses it).
 ///
 /// The didactic response style used to ride `sessionStart` here; it is now the
 /// `mustard-didactic` plugin output-style (survives `/clear` natively), so it
-/// no longer needs a per-project injectable. [`migrate_response_style_inject`]
-/// retires the stale entry from projects installed before the move.
+/// no longer needs a per-project injectable. [`retire_response_style_inject`]
+/// retires the stale entry from projects installed before the move, and
+/// [`backfill_dispatch_inject`] adds the second half to projects installed
+/// before the split.
 #[must_use]
 pub fn default_inject_entries() -> Vec<Injectable> {
-    vec![Injectable {
-        on: "userPromptSubmit".to_string(),
-        file: ".claude/mustard/orchestrator.md".to_string(),
-        once: true,
-    }]
+    vec![
+        Injectable {
+            on: "userPromptSubmit".to_string(),
+            file: ORCHESTRATOR_INJECT_FILE.to_string(),
+            once: true,
+        },
+        Injectable {
+            on: "sessionStart".to_string(),
+            file: DISPATCH_INJECT_FILE.to_string(),
+            once: true,
+        },
+    ]
 }
+
+/// Declared path of the router's first half (§ Intent Routing).
+const ORCHESTRATOR_INJECT_FILE: &str = ".claude/mustard/orchestrator.md";
+
+/// Declared path of the router's second half (§ Dispatch).
+const DISPATCH_INJECT_FILE: &str = ".claude/mustard/dispatch.md";
 
 /// Create or minimally update the project-root `mustard.json` through
 /// [`ProjectConfig`] (the single owner).
@@ -1094,7 +1133,9 @@ pub struct MigrationOutcome {
 /// unreadable file or a failed write degrades to "not migrated", never an
 /// error. It also retires the legacy response-style injectable (the
 /// `sessionStart` → `.claude/mustard/response-style.md` entry and its file),
-/// now shipped as the `mustard-didactic` plugin output-style.
+/// now shipped as the `mustard-didactic` plugin output-style, and backfills the
+/// router's `sessionStart` half into projects installed before the two-event
+/// split ([`backfill_dispatch_inject`]).
 pub fn migrate_orchestrator_footprint(root: &Path, claude_dir: &Path) -> MigrationOutcome {
     let mut outcome = MigrationOutcome::default();
 
@@ -1121,6 +1162,16 @@ pub fn migrate_orchestrator_footprint(root: &Path, claude_dir: &Path) -> Migrati
         outcome
             .migrated
             .push("mustard.json (response-style → output-style)".to_string());
+    }
+
+    // One-file router → two-event split. A project installed before the split
+    // declares only the `userPromptSubmit` half; without this it would keep
+    // seeding `dispatch.md` to disk and never DELIVER it, which is strictly
+    // worse than the over-budget file it replaced. Idempotent + fail-open.
+    if backfill_dispatch_inject(root) {
+        outcome
+            .migrated
+            .push("mustard.json (dispatch injectable on sessionStart)".to_string());
     }
 
     // (b) the root CLAUDE.md — give the file back to the user.
@@ -1170,6 +1221,39 @@ fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
     changed
 }
 
+/// Give a project installed BEFORE the two-event split its missing half: add
+/// the `sessionStart` → `.claude/mustard/dispatch.md` entry when the project
+/// still declares the orchestrator half and does not declare this one.
+///
+/// Deliberately conditional on the orchestrator entry being present, so an
+/// operator who removed the router from their `inject` list is not handed it
+/// back — this migration completes a router the project already declares, it
+/// does not re-impose one it dropped. A project whose `inject` is empty is not
+/// touched here either: [`upsert_mustard_json`] already backfills that case
+/// with the full defaults.
+///
+/// Returns `true` when the entry was added. Idempotent — a project already
+/// split (or a fresh one) returns `false`. Fail-open: an unwritable config
+/// degrades to `false`, never an error.
+fn backfill_dispatch_inject(root: &Path) -> bool {
+    if !ProjectConfig::exists(root) {
+        return false;
+    }
+    let mut config = ProjectConfig::load(root);
+    let declares = |file: &str| config.inject.iter().any(|e| e.file == file);
+    if !declares(ORCHESTRATOR_INJECT_FILE) || declares(DISPATCH_INJECT_FILE) {
+        return false;
+    }
+    let Some(dispatch) = default_inject_entries()
+        .into_iter()
+        .find(|e| e.file == DISPATCH_INJECT_FILE)
+    else {
+        return false;
+    };
+    config.inject.push(dispatch);
+    config.write(root).is_ok()
+}
+
 /// Remove the Mustard-owned lines from a root `CLAUDE.md` body: the exact
 /// [`SCAN_MAP_IMPORT_LINE`] and any line starting with
 /// [`ORCHESTRATOR_BREADCRUMB_PREFIX`]. Line-terminator-preserving — every
@@ -1214,6 +1298,7 @@ mod tests {
             vec![
                 ".claude/settings.json",
                 ".claude/mustard/orchestrator.md",
+                ".claude/mustard/dispatch.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -1273,6 +1358,7 @@ mod tests {
             vec![
                 ".claude/settings.json",
                 ".claude/mustard/orchestrator.md",
+                ".claude/mustard/dispatch.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -1478,9 +1564,13 @@ mod tests {
 
         let report = upsert_project(root, None, InstallMode::Shared).unwrap();
 
-        // The stale inject entry is gone; only the orchestrator entry remains.
+        // The stale inject entry is gone; the router's two halves remain.
         let config = ProjectConfig::load(root);
-        assert_eq!(config.inject.len(), 1, "response-style entry retired: {:?}", config.inject);
+        assert!(
+            !config.inject.iter().any(|e| e.file.ends_with("response-style.md")),
+            "response-style entry retired: {:?}",
+            config.inject,
+        );
         assert_eq!(config.inject[0].file, ".claude/mustard/orchestrator.md");
         // The orphaned instruction file is deleted.
         assert!(
@@ -1493,6 +1583,71 @@ mod tests {
             "migration reported: {:?}",
             report.migrated
         );
+    }
+
+    /// A project installed BEFORE the two-event split gains the second half.
+    ///
+    /// Without this the split is a regression for every existing install:
+    /// `dispatch.md` lands on disk (the seed is unconditional) while
+    /// `mustard.json` declares only the `userPromptSubmit` half, so the § Dispatch
+    /// rules are delivered to nobody — strictly worse than the over-budget
+    /// single file they replaced.
+    #[test]
+    fn migration_backfills_the_dispatch_half_on_a_pre_split_project() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
+        )
+        .unwrap();
+
+        let report = upsert_project(root, None, InstallMode::Shared).unwrap();
+
+        let config = ProjectConfig::load(root);
+        let dispatch = config
+            .inject
+            .iter()
+            .find(|e| e.file == DISPATCH_INJECT_FILE)
+            .expect("the second half was not declared");
+        assert_eq!(dispatch.on, "sessionStart", "the halves must not share an event");
+        assert!(
+            report.migrated.iter().any(|m| m.contains("dispatch")),
+            "migration reported: {:?}",
+            report.migrated,
+        );
+
+        // Idempotent: a second upsert adds nothing and reports nothing.
+        let again = upsert_project(root, None, InstallMode::Shared).unwrap();
+        assert_eq!(
+            ProjectConfig::load(root).inject.len(),
+            config.inject.len(),
+            "the backfill ran twice",
+        );
+        assert!(
+            !again.migrated.iter().any(|m| m.contains("dispatch")),
+            "an already-split project must report no migration: {:?}",
+            again.migrated,
+        );
+    }
+
+    /// An operator who removed the router from `inject` is not handed it back.
+    /// The backfill completes a declared router; it does not re-impose one.
+    #[test]
+    fn migration_does_not_reimpose_a_router_the_operator_dropped() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","inject":[{"on":"sessionStart","file":"docs/my-rules.md","once":false}]}"#,
+        )
+        .unwrap();
+
+        upsert_project(root, None, InstallMode::Shared).unwrap();
+
+        let config = ProjectConfig::load(root);
+        assert_eq!(config.inject.len(), 1, "curated inject list untouched: {:?}", config.inject);
+        assert_eq!(config.inject[0].file, "docs/my-rules.md");
     }
 
     #[test]
@@ -1708,52 +1863,105 @@ mod tests {
         assert_eq!(injectable_merge_outcome("# old seed\r\n", seed, prior), SeedOutcome::Updated);
     }
 
-    /// RATCHET — every historical version of the orchestrator template must be
-    /// in the fingerprint catalog (or BE the current seed). Editing the
+    /// RATCHET — every historical version of an injectable template must be in
+    /// that seed's fingerprint catalog (or BE the current seed). Editing a
     /// template without appending the superseded fingerprint makes this red,
     /// so the refresh above can never silently stop recognising a stale seed.
     /// Skips (not passes vacuously) where the repository history is absent —
     /// a crates.io build or a shallow CI clone has nothing to walk.
+    ///
+    /// Driven off [`INJECTABLE_SEEDS`], so a new injectable is covered the day
+    /// it is declared instead of the day someone remembers a second list.
     #[test]
     fn the_fingerprint_catalog_covers_every_history() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let log = std::process::Command::new("git")
-            .args(["log", "--format=%H", "--follow", "--", "packages/core/templates/mustard/orchestrator.md"])
-            .current_dir(&repo_root)
-            .output();
-        let Ok(log) = log else { return };
-        if !log.status.success() {
-            return;
-        }
-        let commits: Vec<String> =
-            String::from_utf8_lossy(&log.stdout).split_whitespace().map(str::to_string).collect();
-        if commits.len() < 2 {
-            return; // shallow clone — nothing meaningful to ratchet
-        }
-        let current = seed_fingerprint(ORCHESTRATOR_MD);
-        for commit in commits {
-            for path in [
-                "packages/core/templates/mustard/orchestrator.md",
-                "templates/mustard/orchestrator.md",
-                "plugin/templates/mustard/orchestrator.md",
-            ] {
-                let show = std::process::Command::new("git")
-                    .args(["show", &format!("{commit}:{path}")])
-                    .current_dir(&repo_root)
-                    .output();
-                let Ok(show) = show else { continue };
-                if !show.status.success() {
-                    continue;
-                }
-                let fp = seed_fingerprint(&String::from_utf8_lossy(&show.stdout));
-                assert!(
-                    fp == current || PRIOR_ORCHESTRATOR_FINGERPRINTS.contains(&fp),
-                    "the seed at {commit} (fingerprint {fp:#018x}) is in neither the catalog \
-                     nor the current seed — append the superseded fingerprint to \
-                     PRIOR_ORCHESTRATOR_FINGERPRINTS",
-                );
-                break;
+        for (name, body, prior) in INJECTABLE_SEEDS {
+            // Historical homes of the seed tree, newest first.
+            let homes = [
+                format!("packages/core/templates/mustard/{name}"),
+                format!("templates/mustard/{name}"),
+                format!("plugin/templates/mustard/{name}"),
+            ];
+            let log = std::process::Command::new("git")
+                .args(["log", "--format=%H", "--follow", "--", &homes[0]])
+                .current_dir(&repo_root)
+                .output();
+            let Ok(log) = log else { return };
+            if !log.status.success() {
+                return;
             }
+            let commits: Vec<String> = String::from_utf8_lossy(&log.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+            if commits.len() < 2 {
+                continue; // shallow clone, or a seed born this commit
+            }
+            let current = seed_fingerprint(body);
+            for commit in commits {
+                for path in &homes {
+                    let show = std::process::Command::new("git")
+                        .args(["show", &format!("{commit}:{path}")])
+                        .current_dir(&repo_root)
+                        .output();
+                    let Ok(show) = show else { continue };
+                    if !show.status.success() {
+                        continue;
+                    }
+                    let fp = seed_fingerprint(&String::from_utf8_lossy(&show.stdout));
+                    assert!(
+                        fp == current || prior.contains(&fp),
+                        "the {name} seed at {commit} (fingerprint {fp:#018x}) is in neither the \
+                         catalog nor the current seed — append the superseded fingerprint to \
+                         that seed's PRIOR_* list",
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The router is delivered in TWO halves on TWO events, and both halves
+    /// fit the ceiling one hook response carries.
+    ///
+    /// This is the ratchet the one-file router never had. `additionalContext`
+    /// is capped at 10,000 characters per hook response; the overflow is not
+    /// cut mid-sentence — the harness writes it to a file and hands the window
+    /// a preview plus a path, which is worse for a router than a truncation
+    /// would be visible: it silently stops being in force. Since the session
+    /// hooks fold every injectable of ONE event into a single payload, the
+    /// split only buys a second ceiling while the two entries sit on DIFFERENT
+    /// events — so that is what is asserted, not merely that two files exist.
+    #[test]
+    fn the_router_rides_two_events_so_neither_half_overflows() {
+        let entries = default_inject_entries();
+        let orchestrator = entries
+            .iter()
+            .find(|e| e.file == ORCHESTRATOR_INJECT_FILE)
+            .expect("the router's first half is not declared at all");
+        let dispatch = entries
+            .iter()
+            .find(|e| e.file == DISPATCH_INJECT_FILE)
+            .expect("the router's second half is not declared — it would be seeded, never delivered");
+        assert_ne!(
+            orchestrator.on, dispatch.on,
+            "both halves ride `{}`, so the composer folds them into ONE \
+             additionalContext and they share one 10,000-character ceiling — the \
+             split buys nothing",
+            orchestrator.on,
+        );
+
+        // Each half, alone in its own hook response, must fit with margin for
+        // the siblings that ride the same event (the terrain census and the
+        // advisories on `sessionStart`, the pipeline banner on a prompt).
+        for (name, body, _) in INJECTABLE_SEEDS {
+            let chars = body.chars().count();
+            assert!(
+                chars <= 9_500,
+                "{name} is {chars} characters; a hook response carries 10,000 of \
+                 additionalContext and the overflow becomes a file path instead of \
+                 text in force",
+            );
         }
     }
 

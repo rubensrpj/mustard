@@ -27,8 +27,25 @@ pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 
 /// The orchestrator-rules injectable (`.claude/mustard/orchestrator.md`) —
 /// spliced into the agent's window per `mustard.json#inject`, canonically on
-/// `userPromptSubmit` once per session.
+/// `userPromptSubmit` once per session. Carries the router's FIRST half:
+/// intent routing, delegation, phases, locating code, efficiency.
 pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestrator.md");
+
+/// The dispatch-rules injectable (`.claude/mustard/dispatch.md`) — the
+/// router's SECOND half: the question a unit opens with, the base gate, and
+/// the naming. Declared on `sessionStart`, deliberately a different event from
+/// [`ORCHESTRATOR_MD`].
+///
+/// The split is structural, not editorial. A hook's `additionalContext` is
+/// capped at 10,000 characters and the overflow is saved to a file the window
+/// only receives as a preview plus a path — so an over-budget router stops
+/// being IN FORCE, which is the one thing a router may not stop being. The
+/// composer folds every injectable of ONE event into a single
+/// `additionalContext` (`hooks::session::*_inject` — the dispatcher fold is
+/// last-writer-wins), so two entries on the same event share one ceiling and a
+/// second `Inject` would be dropped. Two events are two hook invocations, each
+/// with its own response and its own ceiling.
+pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md");
 
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
 /// (caches, pipeline states, per-spec event logs, worktrees).
@@ -50,6 +67,22 @@ mod tests {
         assert!(
             ORCHESTRATOR_MD.starts_with("# Orchestrator Rules"),
             "orchestrator seed keeps its marker heading"
+        );
+        assert!(
+            DISPATCH_MD.starts_with("# Dispatch Rules"),
+            "dispatch seed keeps its marker heading"
+        );
+        // The two halves are one router split across two events; each must
+        // still be the half it claims to be, or the split moved prose into a
+        // file nobody's event delivers.
+        assert!(
+            DISPATCH_MD.contains("## Dispatch") && !ORCHESTRATOR_MD.contains("## Dispatch"),
+            "the dispatch section must live in exactly one of the two halves"
+        );
+        assert!(
+            ORCHESTRATOR_MD.contains("## Intent Routing")
+                && !DISPATCH_MD.contains("## Intent Routing"),
+            "intent routing must live in exactly one of the two halves"
         );
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }

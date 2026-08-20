@@ -17,6 +17,11 @@
       "on": "userPromptSubmit",
       "file": ".claude/mustard/orchestrator.md",
       "once": true
+    },
+    {
+      "on": "sessionStart",
+      "file": ".claude/mustard/dispatch.md",
+      "once": true
     }
   ],
   "runtime": {

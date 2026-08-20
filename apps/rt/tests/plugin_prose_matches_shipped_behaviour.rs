@@ -497,11 +497,14 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 1. The shipped seed no longer teaches the deleted carve-out -------
     // The compiled-in seed is what `upsert` lays down in every project, so this
     // reads the text that actually ships.
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    // The isolation paragraph rides the router's SECOND half (`dispatch.md`,
+    // § Dispatch) since the two-event split — read the seed that carries it,
+    // or this ratchet asserts the absence of a sentence from the wrong file.
+    let seed = mustard_core::DISPATCH_MD;
     for deleted in ["writes IN-PLACE", "carves out `.claude/spec/`"] {
         assert!(
             !seed.contains(deleted),
-            "the orchestrator seed still teaches `{deleted}` — the carve-out wave 2 removed",
+            "the dispatch seed still teaches `{deleted}` — the carve-out wave 2 removed",
         );
     }
 
@@ -510,7 +513,7 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // The needle carries the SHAPE, so a return to the base-prefixed name — or
     // any other spelling of the join — moves this anchor off the paragraph.
     let branch_line = line_with(seed, "compute the unit's `{kind}/{slug}` branch")
-        .expect("the orchestrator seed no longer says where the unit's branch comes from");
+        .expect("the dispatch seed no longer says where the unit's branch comes from");
     assert!(
         branch_line.contains("cut at APPROVAL"),
         "the paragraph never says WHEN the branch is cut: {branch_line}",
@@ -543,12 +546,12 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 3. This repository's delivered copy has not drifted ---------------
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered = read(".claude/mustard/dispatch.md");
     let delivered_line = line_with(&delivered, "compute the unit's `{kind}/{slug}` branch")
         .expect("the delivered injectable no longer says where the unit's branch comes from");
     assert_eq!(
         delivered_line, branch_line,
-        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
+        "the delivered .claude/mustard/dispatch.md drifted from the seed — \
          re-seed it, or this project reads the behaviour it just deleted",
     );
 
@@ -617,8 +620,9 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
 #[test]
 fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 1. The shipped seed asks ONE pre-marked question ------------------
-    // The compiled-in seed is what `upsert` lays down in every project.
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    // The compiled-in seed is what `upsert` lays down in every project. The
+    // question lives in the router's SECOND half since the two-event split.
+    let seed = mustard_core::DISPATCH_MD;
 
     let kind_row = line_with(seed, "  tipo:")
         .expect("the router seed shows no `tipo` row — the kind is never asked");
@@ -684,12 +688,12 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 2. This repository's delivered copy has not drifted ---------------
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered = read(".claude/mustard/dispatch.md");
     for row in ["  tipo:", "  branch:", "run emit-pipeline --kind pipeline.kind"] {
         assert_eq!(
             line_with(&delivered, row),
             line_with(seed, row),
-            "the delivered .claude/mustard/orchestrator.md drifted from the seed \
+            "the delivered .claude/mustard/dispatch.md drifted from the seed \
              at `{row}` — re-seed it, or this project asks the old question",
         );
     }
@@ -884,8 +888,8 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
 /// and duplicating it here would assert the wrong thing twice.
 #[test]
 fn router_asks_the_base_before_the_type() {
-    let seed = mustard_core::ORCHESTRATOR_MD;
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let seed = mustard_core::DISPATCH_MD;
+    let delivered = read(".claude/mustard/dispatch.md");
 
     for (label, body) in [("the seed", seed), ("the delivered copy", delivered.as_str())] {
         let base = line_index(body, "  sai de:")
@@ -932,7 +936,7 @@ fn router_asks_the_base_before_the_type() {
 /// dropped was `hotfix`, the row's whole reason for existing.
 #[test]
 fn router_forbids_pairing_and_pins_hotfix() {
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    let seed = mustard_core::DISPATCH_MD;
 
     let rule = line_with(seed, "INDEPENDENT fields")
         .expect("the router never says the rows are independent fields");
@@ -1018,7 +1022,7 @@ fn router_forbids_pairing_and_pins_hotfix() {
 /// a deliberate correction and a silent invention must never read alike.
 #[test]
 fn router_offers_the_name_for_correction() {
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    let seed = mustard_core::DISPATCH_MD;
 
     // --- 1. The row is a field, not a read-out ----------------------------
     let name_row = line_with(seed, "  branch:")
@@ -1093,13 +1097,13 @@ fn router_offers_the_name_for_correction() {
 /// nothing compared it.
 #[test]
 fn delivered_copy_matches_the_seed_at_the_base_row() {
-    let seed = mustard_core::ORCHESTRATOR_MD;
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let seed = mustard_core::DISPATCH_MD;
+    let delivered = read(".claude/mustard/dispatch.md");
     for row in ["  sai de:", "  tipo:", "  branch:", "--unit-name {name}", "INDEPENDENT fields"] {
         assert_eq!(
             line_with(&delivered, row),
             line_with(seed, row),
-            "the delivered .claude/mustard/orchestrator.md drifted from the seed at \
+            "the delivered .claude/mustard/dispatch.md drifted from the seed at \
              `{row}` — re-seed it, or this project asks the old question",
         );
     }
