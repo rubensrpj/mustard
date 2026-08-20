@@ -29,10 +29,13 @@ pub enum DoctorCmd {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
-        /// Run a specific named check in isolation: `skill-discovery`,
-        /// `wave-integrity`, `claude-paths` (W3.T3.4), `workspace-leaks`
-        /// (W3.T3.8), `i1` (W3.T3.9), or `superseded` (prune candidates —
-        /// terminal / stale-anchored specs the maintainer can archive).
+        /// Run a specific named check in isolation: `wave-integrity`,
+        /// `claude-paths`, `workspace-leaks`, `i1`, `status-consistency`,
+        /// `superseded` (prune candidates — terminal / stale-anchored specs the
+        /// maintainer can archive), `capability-drift`, `guards-scaffold`, or
+        /// `branch-protection` (which branches this repository REALLY refuses a
+        /// direct write on — the measured set, not what `git.flow` declares).
+        /// An unknown name exits 1 after printing the list above.
         #[arg(long)]
         check: Option<String>,
         /// Output format: `text` (default) or `json`.

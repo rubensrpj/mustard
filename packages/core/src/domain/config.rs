@@ -116,12 +116,41 @@ impl GitConfig {
     /// [`crate::platform::git_branches::protected_branches`]. Nothing here
     /// refuses anything any more.
     ///
+    /// ONE reading is neither of those two, and it is named here because it is
+    /// the only one that still consults this set and can end in a refusal: a
+    /// branch this set names is not somebody's WORK UNIT, so `git delete`
+    /// declines to remove a project's own `release/2026-Q3` — whose name splits
+    /// into a kind and a slug exactly like `feature/aba` — the way it declines
+    /// `main`. That refuses the operator no base and no cut; it stops the
+    /// harness from mistaking a branch the project ITSELF called a base for a
+    /// disposable unit.
+    ///
     /// Examples: `{"*":"dev","dev":"main"}` → `{dev, main}`; `{"*":"main"}` →
     /// `{main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`.
     /// An empty / absent flow falls back to `{main, master}` — the ONLY place a
     /// branch name is hardcoded, and only as a last resort.
     #[must_use]
     pub fn preselected_bases(&self) -> BTreeSet<String> {
+        let bases = self.declared_bases();
+        if bases.is_empty() {
+            return ["main", "master"].iter().map(|s| (*s).to_string()).collect();
+        }
+        bases
+    }
+
+    /// What the project REALLY declares — [`preselected_bases`] without its
+    /// last-resort `{main, master}`, so an empty / absent flow yields an empty
+    /// set instead of two names this repository may not carry.
+    ///
+    /// This is the one a REPORT reads. The fallback exists to keep a derivation
+    /// from having no answer at all; printing it to an operator states that the
+    /// project pre-selects `main` and `master` when it pre-selects nothing, and
+    /// the installer writes no flow — so that is what every fresh install would
+    /// otherwise be told about itself.
+    ///
+    /// [`preselected_bases`]: GitConfig::preselected_bases
+    #[must_use]
+    pub fn declared_bases(&self) -> BTreeSet<String> {
         let mut bases: BTreeSet<String> = BTreeSet::new();
         for (key, value) in &self.flow {
             let key = key.trim();
@@ -132,10 +161,6 @@ impl GitConfig {
             if !value.is_empty() {
                 bases.insert(value.to_string());
             }
-        }
-        if bases.is_empty() {
-            bases.insert("main".to_string());
-            bases.insert("master".to_string());
         }
         bases
     }

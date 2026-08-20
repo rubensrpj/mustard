@@ -722,15 +722,19 @@ fn mark_pending_work_branch(
     let kind = work_kind?;
     let project = project_dir();
     let branch = super::work_branch::compute_work_branch(kind, spec, intent, sid, ts, &project);
-    // The base rides along ONLY where the cut could not re-derive it: an
-    // emergency in a project that declares several candidates is a choice the
-    // branch name — which now says what the unit IS — cannot carry. Recording it
-    // everywhere would instead freeze a derivable answer into a marker that can
-    // go stale between the emit and the first edit.
+    // The base rides along wherever the operator had a choice to make: the
+    // branch name — which now says what the unit IS — cannot carry it, so a
+    // pick nothing writes down is a pick lost. Where the repository offers a
+    // single branch there was nothing to choose, and freezing that into a
+    // marker would only give it something to go stale about.
     let config = mustard_core::ProjectConfig::load(Path::new(&project));
-    // ONE spelling of "the flow cannot re-derive this" — the same predicate the
-    // cut asks before writing the answer into the unit's record.
-    let recorded = kind_base.filter(|_| BaseFlow::of(&config.git).base_must_be_recorded(&branch));
+    // ONE spelling of "there was a choice here" — the same predicate the cut
+    // asks before writing the answer into the unit's record. ROOTED, because
+    // the question is answered by the branches this repository really has: a
+    // rootless model could only count the declared flow, which is exactly the
+    // reading that used to drop the pick of every single-base project.
+    let recorded = kind_base
+        .filter(|_| BaseFlow::of_at(&config.git, Path::new(&project)).base_must_be_recorded(&branch));
     crate::shared::context::set_pending_branch(&project, sid, &branch, recorded);
     Some(branch)
 }

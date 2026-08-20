@@ -4,9 +4,11 @@
 //! Complements `run_command_surface.rs` (which locks the clap tree itself):
 //!
 //! - **FORWARD** — every `mustard-rt run <name>` a product file instructs must
-//!   resolve to a registered subcommand. A template pointing at a name that no
+//!   resolve to a registered subcommand, and every long flag typed on it must
+//!   be one that command really declares. A template pointing at a name that no
 //!   longer exists does not break the build — the command silently VANISHES at
-//!   runtime. This walk turns that into a test failure.
+//!   runtime; one typing a flag clap never registered dies with `error:
+//!   unexpected argument` and exit 2. This walk turns both into a test failure.
 //! - **REVERSE** — every registered subcommand must have at least one static
 //!   product caller (prose instruction or spawned argv), or a justified entry
 //!   in [`RUNTIME_WHITELIST`]. A command nobody calls is dark surface: it
@@ -223,11 +225,19 @@ fn is_token_byte(b: u8) -> bool {
     b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
 }
 
-/// Extract every `run <name>` instruction reachable through one of the
-/// [`CALLER_PREFIXES`], normalizing the two two-token rewrite forms
+/// One `mustard-rt run …` instruction as a product file spells it.
+struct RunInvocation {
+    /// The registered subcommand name, after the two-token collapse.
+    name: String,
+    /// Every long flag typed on THAT invocation, without its `--`.
+    flags: Vec<String>,
+}
+
+/// Extract every `run <name> [--flag …]` instruction reachable through one of
+/// the [`CALLER_PREFIXES`], normalizing the two two-token rewrite forms
 /// (`metrics wave-status` and `scan spec`, collapsed by `main.rs` argv
 /// pre-routing) to their registered single-token names.
-fn extract_run_names(text: &str) -> Vec<String> {
+fn extract_run_invocations(text: &str) -> Vec<RunInvocation> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     for prefix in CALLER_PREFIXES {
@@ -244,6 +254,10 @@ fn extract_run_names(text: &str) -> Vec<String> {
             }
             let first = &text[start..end];
             let mut name = first.to_string();
+            // Where THIS command's arguments begin — after the second token
+            // when the two-token form was collapsed, so `scan spec --entity`
+            // reads `--entity` as `scan-spec`'s and not as a stray word.
+            let mut args_from = end;
             if end < bytes.len() && bytes[end] == b' ' {
                 let second_start = end + 1;
                 let mut second_end = second_start;
@@ -252,16 +266,66 @@ fn extract_run_names(text: &str) -> Vec<String> {
                 }
                 if second_end > second_start && bytes[second_start].is_ascii_lowercase() {
                     match (first, &text[second_start..second_end]) {
-                        ("metrics", "wave-status") => name = "metrics-wave-status".to_string(),
-                        ("scan", "spec") => name = "scan-spec".to_string(),
+                        ("metrics", "wave-status") => {
+                            name = "metrics-wave-status".to_string();
+                            args_from = second_end;
+                        }
+                        ("scan", "spec") => {
+                            name = "scan-spec".to_string();
+                            args_from = second_end;
+                        }
                         _ => {}
                     }
                 }
             }
-            out.push(name);
+            let flags = long_flags_of(&text[args_from..]);
+            out.push(RunInvocation { name, flags });
         }
     }
     out
+}
+
+/// The long flags of ONE invocation, read from the text that follows its name.
+///
+/// The sweep stops at the first byte that cannot still belong to the same
+/// command — a newline, a closing backtick, a pipe, a chain operator, a
+/// redirection — so a second command sharing the line never lends its flags to
+/// the first. Every slice boundary lands on an ASCII byte, so prose full of
+/// em-dashes is walked without ever cutting a character in half.
+fn long_flags_of(rest: &str) -> Vec<String> {
+    let bytes = rest.as_bytes();
+    let stop = bytes
+        .iter()
+        .position(|b| matches!(b, b'\n' | b'`' | b'|' | b'&' | b';' | b'<' | b'>'))
+        .unwrap_or(bytes.len());
+    let seg = &rest[..stop];
+    let sb = seg.as_bytes();
+    let mut flags = Vec::new();
+    let mut i = 0;
+    while i + 2 < sb.len() {
+        let opens = sb[i] == b'-'
+            && sb[i + 1] == b'-'
+            && sb[i + 2].is_ascii_lowercase()
+            && (i == 0 || !(sb[i - 1].is_ascii_alphanumeric() || sb[i - 1] == b'-'));
+        if !opens {
+            i += 1;
+            continue;
+        }
+        let flag_start = i + 2;
+        let mut flag_end = flag_start;
+        while flag_end < sb.len() && is_token_byte(sb[flag_end]) {
+            flag_end += 1;
+        }
+        flags.push(seg[flag_start..flag_end].to_string());
+        i = flag_end;
+    }
+    flags
+}
+
+/// The names half of [`extract_run_invocations`], for the callers that ask only
+/// which commands a file instructs.
+fn extract_run_names(text: &str) -> Vec<String> {
+    extract_run_invocations(text).into_iter().map(|inv| inv.name).collect()
 }
 
 /// The files whose `run <name>` instructions the FORWARD check validates.
@@ -366,6 +430,52 @@ fn forward_every_instructed_run_name_is_registered() {
         "product files instruct `mustard-rt run` names the CLI does not \
          register - the call dies silently at runtime. Fix the file or \
          register the command:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every long flag a product file types on a `mustard-rt run <name>`
+/// instruction must be one that command really declares.
+///
+/// The NAME half of this ratchet has always been checked; the flag half was
+/// blind, and that blindness shipped: a reference `/git` orders read told the
+/// agent to run `doctor --only branch-protection`, a flag clap answers with
+/// `error: unexpected argument '--only' found` and exit 2. An instruction that
+/// dies on its own arguments is exactly as broken as one naming a command that
+/// does not exist, and nothing in the repository could tell.
+///
+/// An unregistered NAME is skipped here — that is the other test's finding, and
+/// reporting it twice buries the flag it was asked about.
+#[test]
+fn forward_every_instructed_flag_is_declared() {
+    let root = repo_root();
+    let tree = run_command_tree();
+    let mut offenders = Vec::new();
+    for file in forward_corpus(&root) {
+        let text = read_lossy(&file);
+        for inv in extract_run_invocations(&text) {
+            let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
+                continue;
+            };
+            let declared: BTreeSet<&str> = cmd
+                .get_arguments()
+                .filter_map(clap::Arg::get_long)
+                .chain(["help"])
+                .collect();
+            for flag in inv.flags {
+                if !declared.contains(flag.as_str()) {
+                    let shown = file.strip_prefix(&root).unwrap_or(&file);
+                    offenders
+                        .push(format!("{} -> `run {} --{flag}`", shown.display(), inv.name));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "product files type `mustard-rt run` flags the CLI does not declare - \
+         the call aborts with `error: unexpected argument`, exit 2, before doing \
+         anything. Fix the file or declare the flag:\n{}",
         offenders.join("\n")
     );
 }

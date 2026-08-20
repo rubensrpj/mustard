@@ -102,7 +102,11 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
     };
     let cfg = mustard_core::ProjectConfig::load(&main);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &main);
-    let bases: Vec<String> = flow.bases().to_vec();
+    // The DECLARED set, echoed in the refusals below purely as context. Not
+    // `preselected_bases`, whose `{main, master}` fallback would report two
+    // branches a project without a flow may not have — and every project the
+    // current installer touches is one.
+    let bases: Vec<String> = cfg.git.declared_bases().into_iter().collect();
 
     // The branch of the INVOCATION, not of the main checkout: called from
     // inside the unit's own worktree the two disagree, and it is the caller's
@@ -293,6 +297,66 @@ mod tests {
         let loose = delete_at(root, "dev_abandoned");
         assert_eq!(loose["ok"], json!(true), "an undeclared base is still outside the unit: {loose}");
         assert!(!branch_exists(root, "dev_abandoned"), "the unit was retired from it");
+    }
+
+    /// AC-3 — a declared integration base whose NAME carries a slash
+    /// (`release/2026-Q3`) parses into a first segment that reads as a kind and
+    /// a second that reads as a slug, exactly like `feature/aba` does. So the
+    /// project's own release line answered "somebody's work unit", and both
+    /// doors acted on that answer: this one OFFERED to delete it, and `pr list`
+    /// REFUSED to run from it.
+    ///
+    /// Behaviour, not source text: every assertion below is a command's own
+    /// report plus what the repository looks like afterwards.
+    #[test]
+    fn a_slashed_integration_base_is_never_deleted_and_never_refused() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"release/2026-Q3"}}}"#,
+        )
+        .expect("cfg");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+        git(root, &["branch", "release/2026-Q3"]);
+        git(root, &["branch", "feature/na-linha"]);
+
+        // Standing ON the slashed base, the PR door does not refuse. `gh` is
+        // absent here, which is reported as `ghError` — never as a refusal.
+        git(root, &["checkout", "release/2026-Q3"]);
+        let listed = crate::commands::review::pr_door::list_at(root);
+        assert!(
+            listed.ok,
+            "`pr list` refused from the project's own base: {:?} / {:?}",
+            listed.reason, listed.hint
+        );
+        assert_eq!(listed.branch, "release/2026-Q3");
+
+        // …and the base itself is not deletable, from there or anywhere: a base
+        // is nobody's unit, whatever the shape of its name.
+        let refused = delete_at(root, "release/2026-Q3");
+        assert_eq!(
+            refused["ok"],
+            json!(false),
+            "the declared release line was accepted for deletion: {refused}"
+        );
+        assert_eq!(refused["reason"], json!("not-a-work-unit"));
+        assert!(
+            branch_exists(root, "release/2026-Q3"),
+            "the project's release line was deleted"
+        );
+
+        // A REAL unit still goes, from that same slashed base — the door works
+        // while standing on it, which is the other half of the criterion.
+        let done = delete_at(root, "feature/na-linha");
+        assert_eq!(done["ok"], json!(true), "report: {done}");
+        assert_eq!(done["action"], json!("deleted"));
+        assert!(!branch_exists(root, "feature/na-linha"), "the unit's branch survived");
     }
 
     /// From the base the unit goes whole: the local branch is deleted, and the

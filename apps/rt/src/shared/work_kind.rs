@@ -175,6 +175,27 @@ fn names_obey(names: Option<&BTreeSet<String>>, base: &str) -> bool {
     }
 }
 
+/// `Some(true)` when the repository at `root` really offers MORE THAN ONE
+/// branch to cut from, `Some(false)` when it offers exactly one, and `None`
+/// when nothing could be measured.
+///
+/// This is "was there a choice to make?", asked of the catalogue the operator
+/// was actually shown ([`mustard_core::branch_catalog`] reads the same refs) —
+/// not of the declared flow. A project declaring a single base still carries
+/// every branch `origin` has, and the picker offers all of them, so counting
+/// the DECLARATION answered a question nobody asked: it reported "nothing was
+/// chosen" about a repository where the operator had just chosen.
+///
+/// Same probe and same memo as [`base_still_on_remote`], so the two halves of
+/// one pick — whether it is written down, and whether it is still obeyed — read
+/// the identical set of refs.
+fn catalogue_offers_a_choice(root: &Path) -> Option<bool> {
+    with_remote_names(root, |names| match names {
+        Some(names) if !names.is_empty() => Some(names.len() > 1),
+        _ => None,
+    })
+}
+
 /// What a work unit IS — the closed set the branch prefix names.
 ///
 /// [`Hotfix`](WorkKind::parse("hotfix").expect("suggested token parses")) is NOT a third kind of work: the same code
@@ -471,6 +492,9 @@ impl BaseFlow {
     /// the merged-ancestry check included.
     pub(crate) fn base_of(&self, branch: &str) -> UnitBase {
         let name = branch_of_name(branch);
+        if self.is_declared_base(name) {
+            return UnitBase::NotAUnit;
+        }
         let Some(kind) = WorkKind::of_branch(name) else {
             return match self.legacy_base_of(name) {
                 Some(base) => UnitBase::Known(base),
@@ -487,21 +511,67 @@ impl BaseFlow {
         }
     }
 
-    /// `true` when the base of `branch` cannot be re-derived, so the cut must
-    /// write it down or the operator's answer is lost.
+    /// `true` when `name` is one of the branches this project's `git.flow`
+    /// names — so it is an integration BASE, and nobody's work unit.
     ///
-    /// It used to mean "a hotfix in a project with several emergency bases" —
-    /// the one case where the kind's implied base was not unique. With the kind
-    /// no longer implying anything, the condition GENERALISES: every unit's
-    /// base is a choice, so every unit records it, unless the project declares
-    /// exactly one base and there was nothing to choose.
+    /// The kind vocabulary is open, so `{kind}/{slug}` is a shape and not a
+    /// list: `release/2026-Q3` splits into a first segment that parses as a kind
+    /// and a second that parses as a slug, exactly like `feature/aba` does.
+    /// Reading names alone therefore made a project's own release line answer
+    /// "somebody's unit" — and the two doors that ask this question acted on it:
+    /// `git delete` offered to REMOVE the release line, and `pr list` refused to
+    /// run from it.
+    ///
+    /// This is the one reading of the declared set that is not a permission.
+    /// It refuses the operator nothing — a base is still cut from freely, and a
+    /// base nobody declared is still a perfectly good base. All it does is stop
+    /// the harness from mistaking a branch the project ITSELF called a base for
+    /// a disposable unit, which is the only direction of this question where
+    /// being wrong destroys something.
+    fn is_declared_base(&self, name: &str) -> bool {
+        self.bases.iter().any(|b| b == name)
+    }
+
+    /// `true` when the operator had a real choice of base, so the cut must write
+    /// their answer down or it is lost.
+    ///
+    /// **TWO sources of a choice, and either one is enough.**
+    ///
+    /// 1. The DECLARED set cannot land on one answer (`bases().len() != 1`) —
+    ///    so [`base_of`](Self::base_of)'s derivation would come back
+    ///    [`Ambiguous`](UnitBase::Ambiguous) and the answer has nowhere else to
+    ///    live. Unchanged, and it must stay: this is the leg `settle`'s
+    ///    `ambiguous-base` hint depends on when it sends the operator to
+    ///    `work-unit-open --base …` to write exactly this down.
+    /// 2. The CATALOGUE really offered more than one branch
+    ///    ([`catalogue_offers_a_choice`]) — which the first leg cannot see. The
+    ///    picker offers every branch `origin` has, declared or not, so in a
+    ///    project declaring ONE base and carrying five branches the operator
+    ///    chose from five while the count reported "nothing to choose": the
+    ///    answer was dropped before it was ever written, and every later read
+    ///    re-derived the single declared base instead. That is this spec's
+    ///    defect one step earlier than the filter it removed — same closed list,
+    ///    same discarded pick.
+    ///
+    /// So this only ever records MORE than the count alone did. A rootless model
+    /// has no catalogue to ask and keeps leg 1 by itself; an unmeasurable one
+    /// (no git, no remote, an unfetched clone) reads the same way, because a
+    /// probe that said nothing must not be the thing that decides an answer was
+    /// worth keeping.
     ///
     /// The one spelling of that condition, shared by the emitter that records
-    /// the pick in the pending marker, by both doors that cut the branch, and by
-    /// [`base_of`](Self::base_of) itself — three consumers that must agree about
-    /// when an answer exists to be remembered.
+    /// the pick in the pending marker and by the record the cut leaves in the
+    /// unit's own directory ([`record_cut_base`](Self::record_cut_base)), which
+    /// is what [`base_of`](Self::base_of) reads back — consumers that must agree
+    /// about when an answer exists to be remembered.
     pub(crate) fn base_must_be_recorded(&self, branch: &str) -> bool {
-        WorkKind::of_branch(branch).is_some() && self.bases().len() != 1
+        if WorkKind::of_branch(branch).is_none() {
+            return false;
+        }
+        if self.bases().len() != 1 {
+            return true;
+        }
+        self.project.as_deref().and_then(catalogue_offers_a_choice).unwrap_or(false)
     }
 
     /// The base recorded FOR THIS UNIT, `None` when nothing was recorded, when
@@ -628,6 +698,9 @@ impl BaseFlow {
     /// exact drift this module exists to prevent.
     pub(crate) fn slug_of(&self, branch: &str) -> Option<String> {
         let name = branch_of_name(branch);
+        if self.is_declared_base(name) {
+            return None;
+        }
         if let Some(kind) = WorkKind::of_branch(name) {
             let slug = name.strip_prefix(&format!("{}/", kind.token()))?.trim();
             return (!slug.is_empty()).then(|| slug.to_string());
@@ -905,14 +978,19 @@ mod tests {
         assert!(two.base_must_be_recorded("hotfix/other"), "two bases — the pick must survive");
         assert!(two.base_must_be_recorded("feature/other"), "and a feature makes the same pick");
 
-        // The one project where nothing is remembered is the one where nothing
-        // was chosen: a single declared base leaves no choice to lose.
+        // …and where NOTHING can be measured — this `project` is a bare
+        // directory, not a repository — the declared count is the last resort,
+        // so a single declared base still reads as "nothing was chosen". That
+        // is the FALLBACK and not the rule: given a real catalogue the question
+        // is asked of the branches that exist, which is what lets a
+        // single-base project keep the operator's pick
+        // (`the_recorded_base_survives_to_the_cut_in_any_project`).
         let mut single = GitConfig::default();
         single.flow.insert("*".to_string(), "main".to_string());
         let one = BaseFlow::of_at(&single, project);
         assert!(
             !one.base_must_be_recorded("feature/other"),
-            "one base — nothing to remember",
+            "one declared base and no catalogue to ask — nothing to remember",
         );
         one.record_cut_base("feature/other", "main");
         assert!(

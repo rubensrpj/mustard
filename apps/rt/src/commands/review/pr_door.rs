@@ -279,9 +279,13 @@ pub(crate) struct PrListReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
     pub branch: String,
-    /// What `git.flow` PRE-SELECTS — reported so the operator sees the hint the
-    /// project declares. It decides nothing here: the refusal below is measured
-    /// against the unit and the protected set, never against this list.
+    /// What `git.flow` really DECLARES — reported so the operator sees the hint
+    /// the project wrote down, and EMPTY when it wrote none (the installer
+    /// writes no flow). It decides nothing here: the refusal below is measured
+    /// against the unit and the protected set, never against this list — and it
+    /// is [`mustard_core::ProjectConfig`]'s declared set rather than its
+    /// pre-selected one, so a report never names the `{main, master}` fallback
+    /// as branches this repository has.
     pub bases: Vec<String>,
     /// Sorted by number, so two runs over the same state print the same bytes.
     pub prs: Vec<PrEntry>,
@@ -326,8 +330,8 @@ fn pr_entry(row: &Value) -> Option<PrEntry> {
 pub(crate) fn list_at(root: &Path) -> PrListReport {
     let repo = project_root(root);
     let (flow, branch) = bases_and_branch(&repo);
-    let bases: Vec<String> = flow.bases().to_vec();
     let config = mustard_core::ProjectConfig::load(&repo);
+    let bases: Vec<String> = config.git.declared_bases().into_iter().collect();
     let unit = flow.base_of(&branch);
     let protected = mustard_core::protected_branches(&repo, &config.git);
     if unit.is_unit() && !protected.contains(&branch) {

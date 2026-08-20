@@ -1257,10 +1257,19 @@ mod tests {
     /// with the wrong base. The gate ACCEPTED the pick and the cut ignored it,
     /// which is why a test that stops at the door certifies nothing.
     ///
+    /// **In ANY project**, which is the half a three-base fixture cannot show.
+    /// Whether the answer is written down at all was decided by COUNTING the
+    /// declared bases, so a project declaring exactly one was ruled to have
+    /// offered no choice — and the pick was dropped before any of the checks
+    /// above ever saw it. The picker offers the branches the repository REALLY
+    /// has, so that count answered a question nobody asked. The last section
+    /// drives the same end-to-end path through a one-base project and a project
+    /// declaring no flow at all.
+    ///
     /// Driven end to end in a real repository, deliberately: the defect lives
     /// between the marker and the checkout, and neither half alone meets it.
     #[test]
-    fn the_recorded_base_survives_to_the_cut() {
+    fn the_recorded_base_survives_to_the_cut_in_any_project() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let root_s = root.to_string_lossy().to_string();
@@ -1310,6 +1319,87 @@ mod tests {
             Ok("release/2026-Q3"),
             "the pull-request target follows the operator, not the declaration",
         );
+
+        // ── and now the projects a three-base fixture never reaches ──────────
+        //
+        // One declaring exactly ONE base, and one declaring NO flow at all —
+        // which is every project the current installer touches. Both carry the
+        // same two real branches, so in both the operator had the same real
+        // choice, and in both the whole path must carry it.
+        for flow in [Some(r#"{"*":"dev"}"#), None] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            let root_s = root.to_string_lossy().to_string();
+            seed_repo_declaring(root, flow);
+            let label = flow.unwrap_or("no flow at all");
+
+            // The gate that decides whether the answer is WRITTEN DOWN asks the
+            // catalogue: two branches here, so there was something to choose —
+            // whatever the declaration counts.
+            let config = mustard_core::ProjectConfig::load(root);
+            assert!(
+                BaseFlow::of_at(&config.git, root).base_must_be_recorded("fix/erro-no-boleto"),
+                "{label}: the repository offered two branches — the pick must be remembered",
+            );
+
+            let sid = "sess-any-project";
+            crate::shared::context::set_pending_branch(
+                &root_s,
+                sid,
+                "fix/erro-no-boleto",
+                Some("release/2026-Q3"),
+            );
+            let outcome = super::cut_pending_work_branch(root, sid);
+            assert_eq!(
+                outcome,
+                super::CutOutcome::Cut("fix/erro-no-boleto".to_string()),
+                "{label}: {outcome:?}",
+            );
+            let head = git_rev(root, "HEAD");
+            assert_eq!(
+                head,
+                git_rev(root, "release/2026-Q3"),
+                "{label}: the branch is cut from the base the operator chose",
+            );
+            assert_ne!(head, git_rev(root, "dev"), "{label}: and not from the derivation");
+            assert_eq!(
+                super::base_for(root, "fix/erro-no-boleto", &config).as_deref(),
+                Ok("release/2026-Q3"),
+                "{label}: every later read still answers the operator's pick",
+            );
+        }
+    }
+
+    /// A repository carrying `dev` and a `release/2026-Q3` line, with the
+    /// remote-tracking refs that make BOTH measurable — the catalogue an
+    /// operator would be offered.
+    ///
+    /// `flow` is written verbatim as `git.flow`; `None` writes a `mustard.json`
+    /// with no `git` key at all, which is what the current installer leaves.
+    fn seed_repo_declaring(root: &std::path::Path, flow: Option<&str>) {
+        let cfg = match flow {
+            Some(flow) => format!(r#"{{"git":{{"flow":{flow}}}}}"#),
+            None => "{}".to_string(),
+        };
+        std::fs::write(root.join("mustard.json"), cfg).expect("cfg");
+        std::fs::create_dir_all(root.join(".claude")).expect("claude dir");
+        std::fs::write(root.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
+            .expect("ignore");
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(root.join("f.txt"), "on dev").expect("seed");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "dev"]);
+        git(root, &["checkout", "-b", "release/2026-Q3"]);
+        std::fs::write(root.join("f.txt"), "on the release line").expect("seed");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "release"]);
+        git(root, &["checkout", "dev"]);
+        for branch in ["dev", "release/2026-Q3"] {
+            git(root, &["update-ref", &format!("refs/remotes/origin/{branch}"), branch]);
+        }
     }
 
     /// The CUT and the DRAFT are two steps of ONE sequence, and the first must

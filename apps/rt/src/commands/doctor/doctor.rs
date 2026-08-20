@@ -641,11 +641,17 @@ fn check_branch_protection(cwd: &Path) -> CheckResult {
     }
     let mut r = CheckResult::ok("branch-protection");
     r.details.push(format!("protected: {}", protected.join(", ")));
-    let preselected: Vec<String> = config.git.preselected_bases().into_iter().collect();
-    r.details.push(format!(
-        "pre-selected bases (where a picker opens — refuses nothing): {}",
-        preselected.join(", ")
-    ));
+    let declared: Vec<String> = config.git.declared_bases().into_iter().collect();
+    r.details.push(if declared.is_empty() {
+        "pre-selected bases: none declared — the picker opens on the primary base and \
+         offers every branch `origin` has"
+            .to_string()
+    } else {
+        format!(
+            "pre-selected bases (where a picker opens — refuses nothing): {}",
+            declared.join(", ")
+        )
+    });
     r
 }
 

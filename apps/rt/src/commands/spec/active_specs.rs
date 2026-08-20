@@ -457,7 +457,12 @@ fn scan_work_branches(
     let current = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
     let config = mustard_core::ProjectConfig::load(root);
-    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
+    // ROOTED, and that is what makes the sentence above true: `legacy_base_of`
+    // bails on a model with no project, so a rootless one could only ever match
+    // a `{base}_` prefix the flow DECLARES — which is the closed-list reading
+    // this design removed, and no reading at all on the projects whose install
+    // wrote no flow.
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
 
     let git_read = |args: &[&str]| git_out(root, args);
     let Some(enumerated) = BranchEnumerator::try_sweep(&git_read, &flow) else {
