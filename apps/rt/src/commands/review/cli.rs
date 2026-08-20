@@ -109,15 +109,17 @@ pub enum ReviewCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Prefetch a GitHub Pull Request into a structured JSON document.
+    /// Prefetch a Pull Request into a structured JSON document, through the
+    /// provider IN FORCE.
     ///
-    /// Shell-outs to `gh pr view --json ...` and re-emits a clean structure
-    /// ready for the LLM to consume. `--format table` prints a compact
-    /// executive summary (title, author, scope, comments, review states).
-    /// Fail-open: if `gh` is not in the PATH, emits `{"error":"gh-not-found"}`.
+    /// GitHub shells out to `gh pr view --json ...`; Azure composes the SAME
+    /// document from the REST reads (PR + threads + reviewers) plus the local
+    /// git diff. `--format table` prints a compact executive summary (title,
+    /// author, scope, comments, review states). Fail-open: a provider that
+    /// could not answer emits `{"error":"..."}` and exits 0.
     #[command(display_order = 51)]
     ReviewPrefetch {
-        /// PR reference: a number (`123`) or GitHub URL.
+        /// PR reference: a number (`123`) or the PR's web URL.
         pr_ref: Option<String>,
         /// Output format: `json` (default) or `table`.
         #[arg(long, default_value = "json")]
@@ -394,7 +396,7 @@ pub fn dispatch(cmd: ReviewCmd) {
             findings_file.as_deref(),
         ),
         ReviewCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
-        ReviewCmd::ReviewPrefetch { pr_ref, format, root: _ } => {
+        ReviewCmd::ReviewPrefetch { pr_ref, format, root } => {
             let pr_ref = pr_ref.unwrap_or_default();
             if pr_ref.is_empty() {
                 println!("{}",
@@ -402,7 +404,7 @@ pub fn dispatch(cmd: ReviewCmd) {
                         .unwrap_or_default()
                 );
             } else {
-                review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format });
+                review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
             }
         }
         ReviewCmd::AcNegativeCheck { spec, confirm, removal, from } => {
