@@ -1089,10 +1089,28 @@ mod tests {
         // 1. The remote points at the TEMPLATE's origin until told otherwise.
         let own_origin = dir.path().join("origin.git");
         git(&main, &["remote", "set-url", "origin", own_origin.to_string_lossy().as_ref()]);
-        // 2. Each worktree registration likewise. `repair` takes the NEW path.
+        // 2. Each worktree's TWO pointer files are rewritten to the clone —
+        //    directly, never via `git worktree repair`. The clone's pointers
+        //    still name the TEMPLATE, so a repair here follows them and writes
+        //    into the template's own `.git/worktrees/` — every test process's
+        //    clones racing on ONE shared directory, which is exactly the
+        //    intermittent `git … failed` this suite carried (4 tests flaky in
+        //    parallel, 30/30 single-threaded, measured 2026-08-19 on CI and
+        //    local alike). Two plain file writes are deterministic and touch
+        //    nothing shared.
         for unit in ["dev_done", "dev_open"] {
             let wt = main.join(".claude").join("worktrees").join(unit);
-            git(&main, &["worktree", "repair", wt.to_string_lossy().as_ref()]);
+            let admin = main.join(".git").join("worktrees").join(unit);
+            std::fs::write(
+                wt.join(".git"),
+                format!("gitdir: {}\n", admin.to_string_lossy().replace('\\', "/")),
+            )
+            .expect("rewire worktree gitfile");
+            std::fs::write(
+                admin.join("gitdir"),
+                format!("{}\n", wt.join(".git").to_string_lossy().replace('\\', "/")),
+            )
+            .expect("rewire admin gitdir");
         }
         (dir, main)
     }
