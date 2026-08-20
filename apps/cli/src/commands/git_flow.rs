@@ -19,7 +19,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use dialoguer::theme::ColorfulTheme;
-use dialoguer::{Input, Select};
+use dialoguer::Select;
 use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale, Tone};
 
 /// Facts probed from the repository, all fail-open.
@@ -127,18 +127,22 @@ pub fn collect_choices(
     let i18n = existing.i18n();
     let existing_lang = i18n.lang.as_str().to_string();
     let existing_tone = i18n.tone.as_str().to_string();
-    let existing_provider =
-        if existing.git.provider.is_empty() { "github".to_string() } else { existing.git.provider.clone() };
+    // Carried forward VERBATIM, empty included. It used to coerce empty to
+    // "github", which is precisely what would defeat detection: an install
+    // would write the override on every run and the remote would never be
+    // consulted again.
+    let existing_provider = existing.git.provider.clone();
     let existing_dev = existing.git.flow.get("*").cloned();
     let existing_prod =
         existing_dev.as_ref().and_then(|d| existing.git.flow.get(d).cloned());
 
     if !(interactive && console_is_tty()) {
+        // Preserve what the project already declared; invent nothing. The old
+        // code fell back to the probed default branch and to a `dev`/`develop`
+        // guess, which is how a fresh install acquired a flow nobody asked for.
         return Ok(Choices {
-            production: existing_prod.unwrap_or_else(|| facts.default_branch.clone()),
-            dev_branch: existing_dev
-                .or_else(|| facts.dev_branch().map(String::from))
-                .unwrap_or_default(),
+            production: existing_prod.unwrap_or_default(),
+            dev_branch: existing_dev.unwrap_or_default(),
             provider: existing_provider,
             spec_lang: existing_lang,
             tone: existing_tone,
@@ -154,29 +158,31 @@ pub fn collect_choices(
         );
     }
 
-    let production: String = Input::with_theme(&theme)
-        .with_prompt("Production branch")
-        .default(existing_prod.unwrap_or_else(|| facts.default_branch.clone()))
-        .interact_text()
-        .context("reading production branch")?;
+    // The two branch prompts are GONE. They asked the operator to declare, at
+    // install time, which branches the project promotes through — and that
+    // answer then decided both where a unit could be cut from and where a
+    // direct commit was refused, for the whole life of the install. In a client
+    // repository the answer was wrong within a week: branches appear, release
+    // lines are cut, and nobody re-runs `mustard init` to tell us.
+    //
+    // Both questions are asked of git now, at the moment they matter:
+    // `run base-candidates` lists what really exists when a unit opens, and
+    // `protected_branches` reads the remote's own default branch. Nothing here
+    // needs an answer any more, so nothing here asks for one.
+    //
+    // `existing_prod` / `existing_dev` are still READ above: a project that
+    // already declared a flow keeps it, because it still pre-selects a row in
+    // the picker. What stops is CREATING one.
+    let production = existing_prod.unwrap_or_default();
+    let dev_branch = existing_dev.unwrap_or_default();
 
-    let dev_default = existing_dev
-        .or_else(|| facts.dev_branch().map(String::from))
-        .unwrap_or_default();
-    let dev_branch: String = Input::with_theme(&theme)
-        .with_prompt("Development branch (shared, leave empty to skip)")
-        .allow_empty(true)
-        .default(dev_default)
-        .interact_text()
-        .context("reading development branch")?;
-
-    let providers = ["github", "gitlab", "bitbucket"];
-    let provider_idx = Select::with_theme(&theme)
-        .with_prompt("Git provider")
-        .items(providers)
-        .default(providers.iter().position(|p| *p == existing_provider).unwrap_or(0))
-        .interact()
-        .context("reading git provider")?;
+    // The provider menu is GONE, for the reason the branch prompts went: the
+    // answer is written in the `origin` remote, and freezing it at install time
+    // made every project carry a decision taken before anyone knew the project.
+    // It is detected now (`mustard_core::resolve_provider`), and what survives
+    // in the config is an override for the self-hosted case — which is why an
+    // EXISTING declaration is carried forward untouched here.
+    let provider = existing_provider;
 
     let langs = ["pt-BR", "en-US"];
     let lang_idx = Select::with_theme(&theme)
@@ -197,7 +203,7 @@ pub fn collect_choices(
     Ok(Choices {
         production,
         dev_branch,
-        provider: providers[provider_idx].to_string(),
+        provider,
         spec_lang: langs[lang_idx].to_string(),
         tone: tones[tone_idx].to_string(),
     })
@@ -216,6 +222,17 @@ pub fn collect_choices(
 pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path) {
     config.git = GitConfig {
         flow: build_flow(choices.dev_branch.trim(), choices.production.trim()),
+        // `protected` is NOT written by an install: the remote's default branch
+        // is protected by probe, and this list is the escape hatch a team fills
+        // in by hand. Seeding it would re-create the stale declaration the
+        // probe replaced.
+        //
+        // Every field is named rather than filled by `..Default::default()`.
+        // The struct-update shorthand silently dropped `provider` here when the
+        // `protected` field was added — the operator's answer was discarded and
+        // nothing complained until a test asked. A field added later should
+        // break the build, not the behaviour.
+        protected: Vec::new(),
         provider: choices.provider.clone(),
     };
 
@@ -276,6 +293,86 @@ mod tests {
             has_submodules: submodules,
             remote_branches: dev.map(|d| vec![d.to_string()]).unwrap_or_default(),
         }
+    }
+
+    /// AC-5 — the install stops asking which branches the project promotes
+    /// through, and stops writing an answer nobody gave.
+    ///
+    /// Both halves are asserted, because either one alone would pass while the
+    /// feature was half-done: a run that asks nothing but still seeds a flow
+    /// from probed facts leaves the same stale declaration behind, and that
+    /// declaration is what used to refuse real branches.
+    #[test]
+    fn init_does_not_ask_for_branches() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // A repository whose probe WOULD have supplied both answers: a default
+        // branch and a `dev` line the old code guessed from. Neither is used.
+        let probed = facts(Some("dev"), false);
+        let fresh = ProjectConfig::default();
+        let choices = collect_choices(&probed, &fresh, true).expect("no prompt to fail");
+        assert!(
+            choices.production.is_empty() && choices.dev_branch.is_empty(),
+            "nothing was asked, so nothing is answered: production={:?} dev={:?}",
+            choices.production,
+            choices.dev_branch,
+        );
+
+        // …and what lands on disk carries no `git.flow` key at all — not an
+        // empty object, no key, so a reader cannot mistake it for a decision.
+        let mut config = fresh;
+        apply_choices(&mut config, &choices, root);
+        assert!(config.git.flow.is_empty(), "no flow was created");
+        let written = serde_json::to_string(&config).expect("serialises");
+        assert!(
+            !written.contains("\"flow\""),
+            "an empty flow is written as NO key: {written}",
+        );
+
+        // A project that already declared one keeps it — the install stopped
+        // creating flows, it did not start deleting them.
+        let mut existing = ProjectConfig::default();
+        existing.git.flow.insert("*".to_string(), "trunk".to_string());
+        let kept = collect_choices(&probed, &existing, true).expect("no prompt to fail");
+        assert_eq!(kept.dev_branch, "trunk", "the declared base survives untouched");
+    }
+
+    /// AC-3 — the install stops asking who hosts the repository, and stops
+    /// writing an answer nobody gave.
+    ///
+    /// Both halves: an install that asks nothing but still writes `"github"`
+    /// leaves a permanent override behind, and the remote would never be
+    /// consulted again.
+    #[test]
+    fn init_does_not_ask_for_the_provider() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+
+        let probed = facts(Some("dev"), false);
+        let choices = collect_choices(&probed, &ProjectConfig::default(), true)
+            .expect("no prompt to fail");
+        assert!(
+            choices.provider.is_empty(),
+            "nothing was asked, so nothing is answered: {:?}",
+            choices.provider,
+        );
+
+        let mut config = ProjectConfig::default();
+        apply_choices(&mut config, &choices, root);
+        assert!(config.git.provider.is_empty(), "no override was created");
+        let written = serde_json::to_string(&config).expect("serialises");
+        assert!(
+            !written.contains("\"provider\""),
+            "an empty provider is written as NO key: {written}",
+        );
+
+        // An existing override survives — the install stopped creating them, it
+        // did not start deleting them. This is the self-hosted case.
+        let mut declared = ProjectConfig::default();
+        declared.git.provider = "gitlab".to_string();
+        let kept = collect_choices(&probed, &declared, true).expect("no prompt to fail");
+        assert_eq!(kept.provider, "gitlab", "the declared override is untouched");
     }
 
     #[test]
@@ -339,7 +436,11 @@ mod tests {
         // Non-interactive, fresh dir → derived defaults written.
         configure(dir.path(), false).unwrap();
         let cfg = ProjectConfig::load(dir.path());
-        assert_eq!(cfg.git.provider, "github");
+        // The provider is NOT among the derived defaults any more: it is
+        // detected from the remote when it is needed, and what a fresh install
+        // writes is nothing. The commands below still ARE derived — they come
+        // from probing the project, not from asking.
+        assert_eq!(cfg.git.provider, "", "a fresh install writes no override");
         assert_eq!(cfg.build_command.as_deref(), Some("cargo build"));
         assert_eq!(cfg.spec_lang.as_deref(), Some("pt-BR"));
         assert_eq!(cfg.tone.as_deref(), Some("didactic"));

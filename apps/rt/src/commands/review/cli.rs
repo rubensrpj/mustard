@@ -109,15 +109,17 @@ pub enum ReviewCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Prefetch a GitHub Pull Request into a structured JSON document.
+    /// Prefetch a Pull Request into a structured JSON document, through the
+    /// provider IN FORCE.
     ///
-    /// Shell-outs to `gh pr view --json ...` and re-emits a clean structure
-    /// ready for the LLM to consume. `--format table` prints a compact
-    /// executive summary (title, author, scope, comments, review states).
-    /// Fail-open: if `gh` is not in the PATH, emits `{"error":"gh-not-found"}`.
+    /// GitHub shells out to `gh pr view --json ...`; Azure composes the SAME
+    /// document from the REST reads (PR + threads + reviewers) plus the local
+    /// git diff. `--format table` prints a compact executive summary (title,
+    /// author, scope, comments, review states). Fail-open: a provider that
+    /// could not answer emits `{"error":"..."}` and exits 0.
     #[command(display_order = 51)]
     ReviewPrefetch {
-        /// PR reference: a number (`123`) or GitHub URL.
+        /// PR reference: a number (`123`) or the PR's web URL.
         pr_ref: Option<String>,
         /// Output format: `json` (default) or `table`.
         #[arg(long, default_value = "json")]
@@ -228,6 +230,72 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// The `/mustard:pr` door's OPEN step: open the unit's pull request through
+    /// the provider IN FORCE (`git.provider` declared, else the `origin`
+    /// remote, else the fallback) — the prose names this command, never a
+    /// provider CLI. The title is the body file's first heading. Answers one
+    /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
+    /// `error` field with exit 0, never a panic.
+    #[command(name = "pr-open")]
+    #[command(display_order = 94)]
+    PrOpen {
+        /// The integration base the PR targets (short branch name).
+        #[arg(long)]
+        base: String,
+        /// The work branch the PR is opened FROM (short branch name).
+        #[arg(long)]
+        head: String,
+        /// File whose content becomes the PR body (`<spec>/pr-body.md`); its
+        /// first heading becomes the title. Unreadable ⇒ `ok:false` +
+        /// `error:"body-file-unreadable"`, nothing is opened. Exactly one body
+        /// source: this or `--fill`.
+        #[arg(long = "body-file")]
+        body_file: Option<PathBuf>,
+        /// Derive title/body from the commits `base..head` carries (title =
+        /// newest subject, body = the subject list) — the submodule flow's
+        /// shape, where no `pr-body.md` exists. Exclusive with `--body-file`.
+        #[arg(long)]
+        fill: bool,
+        /// Open as a draft — the parent of a monorepo unit while any submodule
+        /// PR is still open.
+        #[arg(long)]
+        draft: bool,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The push ritual's body re-send: replace the body of pull request
+    /// `--number` with the rewritten `<spec>/pr-body.md`, through the provider
+    /// in force. Same report shape as `pr-open`; failure degrades into the
+    /// `error` field with exit 0.
+    #[command(name = "pr-edit")]
+    #[command(display_order = 95)]
+    PrEdit {
+        /// The PR number whose body is replaced.
+        #[arg(long)]
+        number: u64,
+        /// File whose content becomes the new PR body. Unreadable ⇒ `ok:false`
+        /// + `error:"body-file-unreadable"`, nothing is edited.
+        #[arg(long = "body-file")]
+        body_file: PathBuf,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// The finish ritual's un-draft: mark draft pull request `--number` ready
+    /// for review (what requests the code owners), through the provider in
+    /// force. Same report shape as `pr-open`; failure degrades into the
+    /// `error` field with exit 0.
+    #[command(name = "pr-ready")]
+    #[command(display_order = 96)]
+    PrReady {
+        /// The draft PR number to mark ready.
+        #[arg(long)]
+        number: u64,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Seed a spec's `meta.json#findings` from the two producers that already
     /// wrote their discoveries to disk: the reviewer's `review/findings*.md`
     /// (one finding per file) and the `removal` column of `ac-proof.json` (one
@@ -328,7 +396,7 @@ pub fn dispatch(cmd: ReviewCmd) {
             findings_file.as_deref(),
         ),
         ReviewCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
-        ReviewCmd::ReviewPrefetch { pr_ref, format, root: _ } => {
+        ReviewCmd::ReviewPrefetch { pr_ref, format, root } => {
             let pr_ref = pr_ref.unwrap_or_default();
             if pr_ref.is_empty() {
                 println!("{}",
@@ -336,7 +404,7 @@ pub fn dispatch(cmd: ReviewCmd) {
                         .unwrap_or_default()
                 );
             } else {
-                review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format });
+                review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
             }
         }
         ReviewCmd::AcNegativeCheck { spec, confirm, removal, from } => {
@@ -349,6 +417,13 @@ pub fn dispatch(cmd: ReviewCmd) {
         ReviewCmd::PrMerge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }
+        ReviewCmd::PrOpen { base, head, body_file, fill, draft, root } => {
+            review::pr_publish::run_open(&root, &base, &head, body_file.as_deref(), fill, draft);
+        }
+        ReviewCmd::PrEdit { number, body_file, root } => {
+            review::pr_publish::run_edit(&root, number, &body_file);
+        }
+        ReviewCmd::PrReady { number, root } => review::pr_publish::run_ready(&root, number),
         ReviewCmd::FindingCollect { spec } => review::finding_collect::run(spec.as_deref()),
         ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });

@@ -211,17 +211,54 @@ fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                // A unit's worktree is never collected here — that is the exit
-                // ritual's job exclusively. Since a unit is named `{kind}/{slug}`
-                // its worktree sits one level DOWN, and the entry seen at this
-                // level is the bare kind directory holding it: a container, not a
-                // worktree, and collecting it would delete every unit inside.
-                !crate::shared::work_kind::WorkKind::is_container_segment(n)
-                    && !is_unit_worktree_name(n, &flow)
-            })
+            // A unit's worktree is never collected here — that is the exit
+            // ritual's job exclusively. Since a unit is named `{kind}/{slug}`
+            // its worktree sits one level DOWN, and the entry seen at this level
+            // is the bare kind directory holding it: a container, not a
+            // worktree, and collecting it would delete every unit inside.
+            //
+            // Told apart by STRUCTURE, not by the name. It used to ask whether
+            // the name was one of three known kind tokens, and that stopped
+            // working the moment the vocabulary opened: with any token a
+            // possible kind, a plainly-named worktree (`my-unit`) reads as a
+            // container and the collector collects NOTHING. Every git worktree
+            // carries a `.git` entry and a mere holding directory does not, so
+            // one `exists` answers the question for any vocabulary, invented
+            // tokens included.
+            if holds_unit_worktrees(p) {
+                return false;
+            }
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !is_unit_worktree_name(n, &flow))
         })
         .collect()
+}
+
+/// `true` when `dir` is a kind CONTAINER — the bare `feature/` or `spike/`
+/// directory a `{kind}/{slug}` worktree sits inside — rather than a worktree.
+///
+/// Asked of the CHILDREN, which is the only phrasing that survives an open
+/// vocabulary. The predicate used to be "is the name one of three known kind
+/// tokens", and that broke the day any token could be a kind: a plainly-named
+/// worktree (`agent-good`, `pr-1234`) then read as a container and the
+/// collector collected nothing at all.
+///
+/// A container's children are worktrees, and every git worktree carries a
+/// `.git` entry; a worktree's own children are source directories, which do
+/// not. So one level of looking answers it for `feature/` and for `spike/`
+/// alike, with no list to keep current.
+///
+/// Unreadable ⇒ `false`, and that is the safe direction here: the entry then
+/// merely enters the candidate list, where the removal proof still has to clear
+/// it before anything is deleted.
+fn holds_unit_worktrees(dir: &Path) -> bool {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    read.flatten().any(|child| {
+        child.file_type().is_ok_and(|t| t.is_dir()) && child.path().join(".git").exists()
+    })
 }
 
 /// The removal-proof scratch checkouts of THIS repository still sitting in the

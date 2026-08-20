@@ -508,7 +508,10 @@ impl PrLookup for LocalOnlyPr {
 /// The adapter for the provider declared in `mustard.json#git.provider`.
 ///
 /// This is the ONE place in the module where a provider and its CLI are named —
-/// which is what an adapter IS. A provider without an adapter here answers
+/// which is what an adapter IS. GitHub is asked through `gh` below; Azure is
+/// routed to the REST-speaking [`crate::shared::pr_azure::evidence_of`], the
+/// same search + reduction over the injectable transport that module already
+/// proves. A provider without an adapter on either side answers
 /// [`PrStatus::Unknown`], never [`PrStatus::Absent`]: an unimplemented query is
 /// an unmeasured state, not a measured "no PR".
 pub(crate) struct ProviderPrCli<'a> {
@@ -577,6 +580,11 @@ impl<'a> ProviderPrCli<'a> {
 impl PrLookup for ProviderPrCli<'_> {
     fn evidence_of(&self, branch: &str) -> PrEvidence {
         let unknown = |reason| PrEvidence { status: PrStatus::Unknown(reason), merged_heads: BTreeSet::new() };
+        if self.provider.eq_ignore_ascii_case(crate::shared::pr_provider::PROVIDER_AZURE) {
+            // Azure speaks REST, not a CLI — same port, same evidence shape,
+            // reduced in `pr_azure` where its fake transport can prove it.
+            return crate::shared::pr_azure::evidence_of(self.repo, branch);
+        }
         if !self.provider.eq_ignore_ascii_case(PROVIDER_GITHUB) {
             return unknown(PR_UNSUPPORTED);
         }
@@ -1374,6 +1382,22 @@ refs/tags/v1.0_dev aaa7
         assert_eq!(value["units"][0]["pr"]["status"], json!("unknown"));
         assert_eq!(value["units"][0]["pr"]["reason"], json!(PR_CLI_FAILED));
         assert_eq!(value["awaitingPrune"], json!([]), "nothing unmeasured is ever prunable");
+    }
+
+    /// T2 — the azure provider is no longer unsupported: `evidence_of` routes
+    /// it to the REST adapter in `pr_azure`. With no `origin` to derive a
+    /// remote from, the adapter refuses at context resolution —
+    /// deterministically, before any network — and the refusal is an
+    /// UNMEASURED state (never a measured absence, never the unsupported
+    /// token), with no fabricated evidence riding along.
+    #[test]
+    fn an_azure_provider_is_asked_through_the_adapter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let azure = ProviderPrCli::new(dir.path(), "azure").evidence_of("dev_anything");
+        assert_eq!(azure.status, PrStatus::Unknown(PR_CLI_FAILED), "asked, could not answer");
+        assert_ne!(azure.status, PrStatus::Unknown(PR_UNSUPPORTED), "azure IS adapted now");
+        assert_ne!(azure.status, PrStatus::Absent, "a refusal is never a measured no-PR");
+        assert!(azure.merged_heads.is_empty(), "no evidence was fabricated either");
     }
 
     /// The remaining situations of the table, so all eight are pinned by a test

@@ -28,6 +28,12 @@
 //! - AC-4 — the regression guard: a shared install writes the same paths and
 //!   the same bytes it wrote before the mode existed.
 
+#[cfg(unix)]
+// Unix-only: the AC-11 fixture seals a directory with mode 0o555, an API and a
+// semantic Windows does not have (an NTFS read-only directory still accepts new
+// files, so the same seal would refuse nothing there).
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -252,19 +258,39 @@ fn ac4_shared_install_is_byte_identical_to_today() {
 /// no repository at all is a different thing — there is nobody for a footprint
 /// to be visible to — and the second half asserts that it still installs.
 ///
-/// The unwritable exclude file is provoked by making its path a DIRECTORY, which
-/// is portable; a permission bit is not, since a Windows administrator and a
-/// POSIX root both walk straight through one.
+/// The unwritable exclude file is provoked by sealing its parent directory
+/// (mode 0o555), which keeps the rename-into-the-directory failing while the
+/// exclude file itself stays readable — so `git status` still answers and the
+/// clean-tree assertion below measures something. Unix-only, twice over: the
+/// permission API does not exist on Windows, and the equivalent NTFS read-only
+/// attribute on a directory does not refuse new files anyway, so the failure
+/// cannot be provoked there at all. (A POSIX root would also walk through the
+/// seal — the test runs as an ordinary user, which CI is.)
 #[test]
+#[cfg(unix)]
 fn ac11_private_install_refuses_when_it_cannot_hide() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
+    // Make the exclude file UNWRITABLE by sealing its directory, not by turning
+    // the path into a directory.
+    //
+    // The old fixture created `.git/info/exclude` AS a directory, which does
+    // make the write fail — and also makes `git status` fail outright: git 2.55
+    // answers `fatal: cannot use .git/info/exclude as an exclude file` (exit
+    // 128) for the whole command. The last assertion below then measured
+    // nothing, because git could not answer at all. Sealing the parent keeps
+    // the rename-into-the-directory failing (which is what `write_atomic`
+    // does) while leaving a readable exclude file, so `git status` still works
+    // and the assertion means what it says.
     let exclude = exclude_file(root);
-    if exclude.exists() {
-        std::fs::remove_file(&exclude).expect("clear the exclude file");
+    let info_dir = exclude.parent().expect("exclude lives in a directory").to_path_buf();
+    std::fs::create_dir_all(&info_dir).expect("the info directory exists");
+    if !exclude.exists() {
+        std::fs::write(&exclude, "").expect("seed an empty exclude file");
     }
-    std::fs::create_dir_all(&exclude).expect("make the exclude path unwritable-as-a-file");
+    let sealed = std::fs::Permissions::from_mode(0o555);
+    std::fs::set_permissions(&info_dir, sealed).expect("seal the info directory");
 
     let err = upsert_project(root, Some("9.9.9"), InstallMode::Private)
         .expect_err("an install that cannot hide must not report success");
@@ -293,11 +319,16 @@ fn ac11_private_install_refuses_when_it_cannot_hide() {
         "the host repository must have nothing to report after a refused install",
     );
 
+    // Unseal before the tempdir is dropped: a read-only directory cannot be
+    // removed, and the failure would surface far from here.
+    let _ = std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o755));
+
     // The negative control, and it is what makes the refusal a decision rather
     // than a broken code path: the same repository, with a healthy exclude file,
     // installs. Without it this test would also pass if `--private` had simply
     // stopped working.
-    std::fs::remove_dir(&exclude).expect("restore the exclude path");
+    // The seal is already lifted above; the exclude file is an ordinary
+    // writable file again, so the control needs no repair beyond that.
     let report = upsert_project(root, Some("9.9.9"), InstallMode::Private)
         .expect("a repository whose exclude file is writable installs privately");
     assert!(report.private, "the control really installed privately: {report:?}");

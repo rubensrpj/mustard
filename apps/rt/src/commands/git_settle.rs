@@ -566,9 +566,12 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let cfg = mustard_core::ProjectConfig::load(&cfg_root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
     let bases: Vec<String> = flow.bases().to_vec();
-    // The merge gate asks the provider the project DECLARES — this command names
-    // no CLI of its own, exactly like the reading face below.
-    let provider = cfg.git.provider.clone();
+    // The merge gate asks who hosts this repository — RESOLVED, not merely read:
+    // the declared override when there is one, otherwise the `origin` remote.
+    // Reading the raw field would answer an empty string for every project
+    // installed after the install stopped asking, and an empty provider matches
+    // no adapter at all.
+    let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
 
     // The user's contract: bare settle NEVER runs from a base — it is the
     // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
@@ -920,7 +923,7 @@ pub(crate) fn report_at(start: &Path) -> Value {
     let cfg = mustard_core::ProjectConfig::load(&cfg_root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
     let bases: Vec<String> = flow.bases().to_vec();
-    let provider = cfg.git.provider.clone();
+    let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
 
     let mut repos = vec![repo_inventory(&main, ".", &flow, &provider)];
     let submodules = git_out(&main, &["submodule", "status"])
@@ -994,9 +997,11 @@ mod tests {
     #[test]
     fn base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix() {
         let flow = settle_flow();
-        // The current shape: the base follows from the unit's KIND.
-        assert_eq!(flow.base_of("fix/fix-thing").known(), Some("dev"));
-        assert_eq!(flow.base_of("hotfix/login").known(), Some("main"));
+        // The base no longer follows from the unit's KIND — it is recorded at
+        // the cut. With several bases declared and nothing recorded, the prefix
+        // answers nothing, and both kinds read the same way.
+        assert_eq!(flow.base_of("fix/fix-thing").known(), None);
+        assert_eq!(flow.base_of("hotfix/login").known(), None);
         // …and a unit still in flight keeps being read by its prefix.
         assert_eq!(flow.base_of("dev_fix-thing").known(), Some("dev"));
         assert_eq!(flow.base_of("worktree-dev_fix-thing").known(), Some("dev"));
@@ -1084,10 +1089,28 @@ mod tests {
         // 1. The remote points at the TEMPLATE's origin until told otherwise.
         let own_origin = dir.path().join("origin.git");
         git(&main, &["remote", "set-url", "origin", own_origin.to_string_lossy().as_ref()]);
-        // 2. Each worktree registration likewise. `repair` takes the NEW path.
+        // 2. Each worktree's TWO pointer files are rewritten to the clone —
+        //    directly, never via `git worktree repair`. The clone's pointers
+        //    still name the TEMPLATE, so a repair here follows them and writes
+        //    into the template's own `.git/worktrees/` — every test process's
+        //    clones racing on ONE shared directory, which is exactly the
+        //    intermittent `git … failed` this suite carried (4 tests flaky in
+        //    parallel, 30/30 single-threaded, measured 2026-08-19 on CI and
+        //    local alike). Two plain file writes are deterministic and touch
+        //    nothing shared.
         for unit in ["dev_done", "dev_open"] {
             let wt = main.join(".claude").join("worktrees").join(unit);
-            git(&main, &["worktree", "repair", wt.to_string_lossy().as_ref()]);
+            let admin = main.join(".git").join("worktrees").join(unit);
+            std::fs::write(
+                wt.join(".git"),
+                format!("gitdir: {}\n", admin.to_string_lossy().replace('\\', "/")),
+            )
+            .expect("rewire worktree gitfile");
+            std::fs::write(
+                admin.join("gitdir"),
+                format!("{}\n", wt.join(".git").to_string_lossy().replace('\\', "/")),
+            )
+            .expect("rewire admin gitdir");
         }
         (dir, main)
     }

@@ -60,28 +60,68 @@ pub const BUILD_COMMAND_FALLBACK: &str = "<build command>";
 #[serde(default)]
 pub struct GitConfig {
     /// Branch promotion map: `"*" → dev`, `dev → production`.
+    ///
+    /// **Optional, and no longer a constraint.** It used to be the ONLY
+    /// definition of "which branches may a unit be cut from", which made the
+    /// answer as old as the install: a branch created after `mustard init` was
+    /// refused for existing. A unit is now cut from any branch git really has
+    /// ([`crate::platform::git_branches::branch_catalog`]) and this map only
+    /// PRE-SELECTS — see [`preselected_bases`](GitConfig::preselected_bases).
+    /// A project that never declares one loses nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub flow: BTreeMap<String, String>,
-    /// Hosting provider — `github`, `gitlab`, or `bitbucket`.
+    /// Branches that refuse a direct commit or merge, BEYOND the remote's
+    /// default branch — which is protected whether or not this list exists.
+    ///
+    /// The escape hatch for a team that also protects `develop` or a
+    /// `release/*` line. Empty for almost every project, which is why it is
+    /// skipped on serialize: an install writes no key, and the file stays as
+    /// small as it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<String>,
+    /// Hosting provider — an OVERRIDE, empty by default.
+    ///
+    /// Empty means "ask the repository": the provider is detected from the
+    /// `origin` remote's host
+    /// ([`crate::platform::git_provider::resolve_provider`]). It used to be a
+    /// question the install asked and froze, which meant every project carried
+    /// an answer given on the day it was first opened.
+    ///
+    /// It survives as an override — and it WINS over detection — because a
+    /// self-hosted instance is unrecognisable by hostname, and that is the one
+    /// case where only the operator knows. Skipped on serialize so a fresh
+    /// install writes no key at all: writing `"github"` by default would make
+    /// every install a permanent override and detection would never run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
 }
 
 impl Default for GitConfig {
     fn default() -> Self {
-        Self { flow: BTreeMap::new(), provider: "github".to_string() }
+        Self { flow: BTreeMap::new(), protected: Vec::new(), provider: String::new() }
     }
 }
 
 impl GitConfig {
-    /// The set of **integration base branches** this project promotes through,
-    /// derived from [`flow`](GitConfig::flow): every non-`*` key ∪ every value.
+    /// The branches this project's `git.flow` names — the ones a base picker
+    /// offers FIRST, derived from [`flow`](GitConfig::flow): every non-`*` key
+    /// ∪ every value.
+    ///
+    /// **Read the name carefully: these are PRE-SELECTED, not permitted.** The
+    /// set used to answer two questions at once — "where may a unit be cut
+    /// from?" and "where is a direct commit forbidden?" — and answering both
+    /// with one closed list is what made the first question refuse branches
+    /// that exist. The questions are now apart: cutting reads git
+    /// ([`crate::platform::git_branches::branch_catalog`]) and forbidding reads
+    /// [`crate::platform::git_branches::protected_branches`]. Nothing here
+    /// refuses anything any more.
     ///
     /// Examples: `{"*":"dev","dev":"main"}` → `{dev, main}`; `{"*":"main"}` →
     /// `{main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`.
     /// An empty / absent flow falls back to `{main, master}` — the ONLY place a
-    /// branch name is hardcoded, and only as a last resort. The rest is fully
-    /// agnostic: the base set is whatever `git.flow` declares for the project.
+    /// branch name is hardcoded, and only as a last resort.
     #[must_use]
-    pub fn integration_bases(&self) -> BTreeSet<String> {
+    pub fn preselected_bases(&self) -> BTreeSet<String> {
         let mut bases: BTreeSet<String> = BTreeSet::new();
         for (key, value) in &self.flow {
             let key = key.trim();
@@ -100,16 +140,28 @@ impl GitConfig {
         bases
     }
 
-    /// The **primary** integration base: `flow["*"]` when present, else any
-    /// single integration base (lexically-least, deterministic), else `main`.
+    /// The set under its former name.
+    ///
+    /// Kept as a one-line forward so the rename lands in one commit instead of
+    /// rippling through every caller at once; the doc above is the truth about
+    /// what the value MEANS now.
+    #[must_use]
+    #[deprecated(note = "these branches are pre-selected, not permitted — call preselected_bases")]
+    pub fn integration_bases(&self) -> BTreeSet<String> {
+        self.preselected_bases()
+    }
+
+    /// The base a picker opens ON: `flow["*"]` when present, else any single
+    /// pre-selected base (lexically-least, deterministic), else `main`.
     /// Agnostic — the only literal is the last-resort `main` for a project with
-    /// no `git.flow`.
+    /// no `git.flow`. A DEFAULT for the cursor, never a restriction on what the
+    /// operator may pick instead.
     #[must_use]
     pub fn primary_base(&self) -> String {
         if let Some(star) = self.flow.get("*").map(|s| s.trim()).filter(|s| !s.is_empty()) {
             return star.to_string();
         }
-        self.integration_bases()
+        self.preselected_bases()
             .into_iter()
             .next()
             .unwrap_or_else(|| "main".to_string())
@@ -542,7 +594,10 @@ mod tests {
     fn load_absent_is_default_fail_open() {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig::load(dir.path());
-        assert_eq!(cfg.git.provider, "github");
+        // Empty by DEFAULT now: the provider is a detected fact with an
+        // optional override, and a default of "github" would write that
+        // override on every install.
+        assert_eq!(cfg.git.provider, "");
         assert!(cfg.build_command().is_none());
         assert_eq!(cfg.vcs(), Some("git".to_string()));
     }
@@ -743,7 +798,7 @@ mod tests {
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
         cfg.git.flow.insert("dev".into(), "main".into());
-        let bases = cfg.git.integration_bases();
+        let bases = cfg.git.preselected_bases();
         assert!(bases.contains("dev") && bases.contains("main"));
         assert_eq!(bases.len(), 2, "the `*` key is not itself a base: {bases:?}");
 

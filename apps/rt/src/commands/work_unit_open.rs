@@ -258,7 +258,7 @@ pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
 fn resolve_work_kind(requested: Option<&str>) -> Option<WorkKind> {
     match requested.map(str::trim).filter(|s| !s.is_empty()) {
         Some(value) => WorkKind::parse(value),
-        None => Some(WorkKind::Feature),
+        None => Some(WorkKind::suggested_default()),
     }
 }
 
@@ -329,11 +329,11 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                     "ok": false,
                     "reason": "unknown-type",
                     "type": opts.work_kind.clone(),
-                    "hint": WorkKind::ALL.map(WorkKind::token).join(", "),
+                    "hint": WorkKind::SUGGESTED.join(", "),
                 });
             };
             let base = match super::event::work_branch::resolve_kind_base(
-                kind,
+                &main,
                 opts.base.as_deref(),
                 &config,
             ) {
@@ -377,6 +377,12 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         .map(|s| parse_worktrees(&s))
         .unwrap_or_default();
     if let Some(e) = entries.iter().find(|e| e.branch == target) {
+        // Even with nothing to cut, the CALLER's base answer is still worth
+        // writing down: git-settle's ambiguous-base hint sends the operator
+        // to THIS command to record it, and an early return that skipped the
+        // record made that hint a circle (measured 2026-08-19: ok:true, then
+        // the same refusal again). A no-op unless the flow cannot re-derive.
+        flow.record_cut_base(&target, &base);
         return json!({
             "ok": true,
             "path": e.path,
@@ -397,6 +403,9 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
     // A worktree is still cut whenever the branch is NOT already out — that is
     // the parallel-work case, and it keeps several units in flight at once.
     if let Some(path) = checkout_holding_branch(&main, &target) {
+        // Same record as above: in-place is the DEFAULT arrangement now, and
+        // it was the one place the base answer silently evaporated.
+        flow.record_cut_base(&target, &base);
         return json!({
             "ok": true,
             "path": path,
@@ -483,7 +492,7 @@ fn unusable_worktree_name(name: &str) -> Option<String> {
             "WorktreeCreate: `name` must be a plain name or a `{{kind}}/{{slug}}` work branch \
              (kinds: {kinds}) — a path separator anywhere else escapes the worktrees \
              directory. Refusing '{name}': {why}.",
-            kinds = WorkKind::ALL.map(WorkKind::token).join(", "),
+            kinds = WorkKind::SUGGESTED.join(", "),
         ))
     };
     if name.contains('\\') {
@@ -583,20 +592,32 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     let flow = BaseFlow::of_at(&config.git, &main);
     let answer = flow.base_of(&name);
     let is_unit = answer.is_unit();
-    // An emergency whose base nothing recorded: the branch has to be cut from
-    // SOMEWHERE, and there is no honest somewhere. Refuse and name the door that
-    // takes the answer — silently taking the outermost candidate is the
-    // coercion this engine's own `--base` refusal exists to prevent.
-    if is_unit && answer.known().is_none() {
-        return Err(format!(
-            "WorktreeCreate: '{name}' is an emergency unit and nothing recorded which base it \
-             was cut from; this project declares several ({}). Open it through the run face, \
-             which takes the answer: `mustard-rt run work-unit-open --branch {name} --base \
-             <one of them>`.",
-            answer.candidates().join(", "),
-        ));
-    }
-    let unit_base = answer.into_known();
+    // A unit whose base nothing recorded. This used to REFUSE, and refusing was
+    // right while only an emergency could reach it: the kind implied the base
+    // for every other unit, so an unanswered question here meant a genuine
+    // emergency with several candidates and no honest way to choose.
+    //
+    // The kind implies nothing now, so every unit of a multi-base project
+    // arrives unanswered and refusing would close the ordinary door. It falls
+    // back to the project's PRIMARY base instead — the same fallback
+    // `resolve_kind_base` already takes for an omitted `--base`, and two doors
+    // disagreeing about one question is the drift this codebase keeps warning
+    // about. The choice is announced rather than silent, and the run face still
+    // takes an explicit answer.
+    let unit_base = match answer.known() {
+        Some(_) => answer.into_known(),
+        None if is_unit => {
+            let primary = config.git.primary_base();
+            eprintln!(
+                "work-unit-open: nothing recorded which base '{name}' was cut from; using the \
+                 project's primary base '{primary}' (candidates: {}). To be explicit: \
+                 `mustard-rt run work-unit-open --branch {name} --base <one of them>`.",
+                answer.candidates().join(", "),
+            );
+            Some(primary)
+        }
+        None => None,
+    };
 
     // Not a work unit → a mistyped base is refused BEFORE anything else looks
     // at the tree: it is a naming error, and blaming a dirty tree for it would
@@ -773,14 +794,22 @@ mod tests {
         (dir, main)
     }
 
+    /// A mistyped base is still refused loudly — but the refusal now names what
+    /// the REMOTE really has instead of pointing at a configuration file. Same
+    /// loudness, opposite source: that swap is the whole unit.
     #[test]
-    fn strict_base_error_names_flow() {
+    fn strict_base_error_names_the_real_branches() {
         let (_dir, main) = fixture();
         let v = open_at(&WorkUnitOpenOpts { spec: Some("x".into()), base: Some("hml".into()), ..opts(&main) });
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("unknown-base"));
         let err = v["error"].as_str().unwrap_or_default();
-        assert!(err.contains("hml") && err.contains("git.flow"), "{err}");
+        assert!(err.contains("hml"), "names the rejected base: {err}");
+        assert!(err.contains("dev"), "and lists a branch that really exists: {err}");
+        assert!(
+            !err.contains("git.flow"),
+            "and no longer sends the operator to a configuration file: {err}",
+        );
         assert!(!main.join(".claude").join("worktrees").exists(), "nothing created");
     }
 
@@ -863,6 +892,31 @@ mod tests {
             !main.join(".claude").join("worktrees").join("dev_inplace").exists(),
             "no worktree is added over a branch another tree holds",
         );
+
+        // The base the caller answered is RECORDED even though nothing was
+        // cut — settle's ambiguous-base hint sends the operator here to write
+        // exactly this down, and the early return used to skip it (measured
+        // 2026-08-19: ok:true, then the same refusal again). The fixture's
+        // flow declares two bases, so the answer is not derivable and the
+        // record is due.
+        std::fs::write(
+            main.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("declare an ambiguous two-tier flow");
+        // A `{kind}/{slug}` branch — the shape whose base is NOT derivable
+        // (the flow above declares two bases), so the record is due.
+        git(&main, &["checkout", "-b", "fix/inplace"]);
+        let again = open_at(&WorkUnitOpenOpts {
+            branch: Some("fix/inplace".into()),
+            base: Some("dev".into()),
+            ..opts(&main)
+        });
+        assert_eq!(again["inPlace"], json!(true), "{again}");
+        let record = main.join(".claude").join("spec").join("inplace").join(".cut-base");
+        let body = std::fs::read_to_string(&record).expect("the in-place return records the base");
+        assert_eq!(body.trim(), "dev", "the caller's answer, written where settle reads");
+        git(&main, &["checkout", "dev_inplace"]);
 
         // The hook face: the same answer, as the path EnterWorktree enters. A
         // non-zero exit here would abort the isolation altogether.
@@ -1193,7 +1247,8 @@ mod tests {
 
         // Every kind the project knows, asked of WorkKind rather than spelled
         // here — a fourth kind must not need this file edited.
-        for kind in WorkKind::ALL {
+        for token in WorkKind::SUGGESTED {
+            let kind = WorkKind::parse(token).expect("suggested token parses");
             let name = kind.branch_name("another-unit");
             assert!(
                 unusable_worktree_name(&name).is_none(),
@@ -1206,7 +1261,9 @@ mod tests {
         for hostile in [
             "../x",                 // walks up
             "a/b/c",                // a second separator
-            "chore/x",              // an unknown leading token
+            // NOTE: `chore/x` used to sit here as "an unknown leading token".
+            // It is an ordinary unit name now — the vocabulary is open, and the
+            // rule that survives is about the SHAPE, not about the word.
             "feature/a/b",          // a slug carrying a separator of its own
             "feature/",             // no slug at all
             "feature\\x",           // the other platform's separator

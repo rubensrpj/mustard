@@ -775,7 +775,7 @@ fn cut_work_branch(project_root: &Path) -> Result<Option<String>, String> {
             let said = translate("workbranch.base.unknown", config.i18n().lang)
                 .replace("{target}", &target)
                 .replace("{candidates}", &candidates.join(", "));
-            if current.as_deref().is_some_and(|b| is_protected(b, &config)) {
+            if current.as_deref().is_some_and(|b| is_protected(project_root, b, &config)) {
                 // Same split as a failed checkout, for the same reason: the tree
                 // sits on an integration base, so drafting here would leave the
                 // spec, its waves and its proof on the base instead of in the
@@ -790,7 +790,7 @@ fn cut_work_branch(project_root: &Path) -> Result<Option<String>, String> {
         CutOutcome::Failed { target, current, error } => {
             let config = mustard_core::ProjectConfig::load(project_root);
             let at = current.as_deref().unwrap_or("?");
-            if current.as_deref().is_some_and(|b| is_protected(b, &config)) {
+            if current.as_deref().is_some_and(|b| is_protected(project_root, b, &config)) {
                 Err(format!(
                     "'{at}' is an integration base and checking out '{target}' failed ({error}); \
                      drafting here would leave the spec, its waves and its proof on the base \
