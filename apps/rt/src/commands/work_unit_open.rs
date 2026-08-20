@@ -377,6 +377,12 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
         .map(|s| parse_worktrees(&s))
         .unwrap_or_default();
     if let Some(e) = entries.iter().find(|e| e.branch == target) {
+        // Even with nothing to cut, the CALLER's base answer is still worth
+        // writing down: git-settle's ambiguous-base hint sends the operator
+        // to THIS command to record it, and an early return that skipped the
+        // record made that hint a circle (measured 2026-08-19: ok:true, then
+        // the same refusal again). A no-op unless the flow cannot re-derive.
+        flow.record_cut_base(&target, &base);
         return json!({
             "ok": true,
             "path": e.path,
@@ -397,6 +403,9 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
     // A worktree is still cut whenever the branch is NOT already out — that is
     // the parallel-work case, and it keeps several units in flight at once.
     if let Some(path) = checkout_holding_branch(&main, &target) {
+        // Same record as above: in-place is the DEFAULT arrangement now, and
+        // it was the one place the base answer silently evaporated.
+        flow.record_cut_base(&target, &base);
         return json!({
             "ok": true,
             "path": path,
@@ -883,6 +892,31 @@ mod tests {
             !main.join(".claude").join("worktrees").join("dev_inplace").exists(),
             "no worktree is added over a branch another tree holds",
         );
+
+        // The base the caller answered is RECORDED even though nothing was
+        // cut — settle's ambiguous-base hint sends the operator here to write
+        // exactly this down, and the early return used to skip it (measured
+        // 2026-08-19: ok:true, then the same refusal again). The fixture's
+        // flow declares two bases, so the answer is not derivable and the
+        // record is due.
+        std::fs::write(
+            main.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("declare an ambiguous two-tier flow");
+        // A `{kind}/{slug}` branch — the shape whose base is NOT derivable
+        // (the flow above declares two bases), so the record is due.
+        git(&main, &["checkout", "-b", "fix/inplace"]);
+        let again = open_at(&WorkUnitOpenOpts {
+            branch: Some("fix/inplace".into()),
+            base: Some("dev".into()),
+            ..opts(&main)
+        });
+        assert_eq!(again["inPlace"], json!(true), "{again}");
+        let record = main.join(".claude").join("spec").join("inplace").join(".cut-base");
+        let body = std::fs::read_to_string(&record).expect("the in-place return records the base");
+        assert_eq!(body.trim(), "dev", "the caller's answer, written where settle reads");
+        git(&main, &["checkout", "dev_inplace"]);
 
         // The hook face: the same answer, as the path EnterWorktree enters. A
         // non-zero exit here would abort the isolation altogether.
