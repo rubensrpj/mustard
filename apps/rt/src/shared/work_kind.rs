@@ -731,6 +731,41 @@ impl BaseFlow {
         let slug = name.strip_prefix(&format!("{base}_"))?.trim();
         (!slug.is_empty()).then(|| slug.to_string())
     }
+
+    /// `true` when this project holds a RECORD proving `branch` is one of ITS
+    /// work units — the unit's own directory under `.claude/spec/`.
+    ///
+    /// **Why a record and not the name.** Two answers were tried here and both
+    /// destroyed something. The name's SHAPE cannot answer it: the kind
+    /// vocabulary is open by design, so `release/2026-Q3` splits into a kind and
+    /// a slug exactly like `fix/aba` does, and a project's own release line
+    /// therefore read as somebody's disposable unit. The DECLARED set cannot
+    /// answer it either: `mustard init` no longer writes `git.flow`, so
+    /// [`GitConfig::preselected_bases`] degrades to the hardcoded
+    /// `{main, master}` — that guard protected two literals and nothing else,
+    /// and `git delete` was measured removing a real release line from the
+    /// remote in a project shaped exactly the way the installer writes them.
+    ///
+    /// A branch this harness CUT has a directory; a branch the project has
+    /// always had does not. That is evidence the project itself recorded, and it
+    /// is what the two doors that may destroy or refuse must read.
+    ///
+    /// **`false` is the safe answer, and it is deliberate.** No project to
+    /// consult, an unreadable path, a name that parses to no slug, or a slug
+    /// with no directory all answer `false` — for an irreversible action,
+    /// absence of evidence must REFUSE rather than permit. A caller that only
+    /// wants to know what a name looks like should keep asking
+    /// [`base_of`](Self::base_of); this question is for the callers where being
+    /// wrong costs a branch.
+    pub(crate) fn has_unit_record(&self, branch: &str) -> bool {
+        let Some(project) = self.project.as_deref() else {
+            return false;
+        };
+        let Some(slug) = self.slug_of(branch) else {
+            return false;
+        };
+        !slug.is_empty() && unit_dir(project, &slug).is_some_and(|dir| dir.is_dir())
+    }
 }
 
 #[cfg(test)]

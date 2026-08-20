@@ -1332,26 +1332,40 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
         );
     }
 
-    // --- 2. Each door asks the question it really has -----------------------
-    // The refusals survive; what changed is what they measure. Asserting the
-    // measurement by name is what keeps the list from creeping back in as the
-    // test for a question it cannot answer.
-    assert!(
-        pr.contains("mustard_core::protected_branches(&repo, &config.git)")
-            && pr.contains("unit.is_unit() && !protected.contains(&branch)"),
-        "`pr list` no longer refuses on the pair it can measure — the branch IS a \
-         unit, and the protected set does not name it",
-    );
-    assert!(
-        delete.contains("mustard_core::protected_branches(&main, &cfg.git)")
-            && delete.contains("standing_on.is_unit() && !protected.contains(&branch)"),
-        "`git delete` no longer refuses on the measured pair",
-    );
-    assert!(
-        delete.contains("!flow.base_of(unit).is_unit() || protected.contains(unit)"),
-        "`git delete` decides what it may remove by a declared list again, instead \
-         of by whether the name is somebody's work unit",
-    );
+    // --- 2. Neither door may decide by the pre-selected list -----------------
+    //
+    // This block used to assert the PRESENCE of the exact expressions each door
+    // was written with. That is not a criterion: it certifies code presence, not
+    // effectiveness, and it was measured GREEN while reporting "git delete
+    // decides what it may remove by a declared list again" — with the shipped
+    // code deleting a real `release/2026-Q3` from the remote. A presence
+    // assertion can only ever pin the line it was written against, defect
+    // included.
+    //
+    // What is asserted here now is an ABSENCE, which cannot certify a defect:
+    // the pre-selected list must not appear in either door at all. The positive
+    // half — that the right branches are refused and the right ones deleted — is
+    // proven by driving the doors and reading the refs afterwards, in
+    // `git_delete::tests::a_slashed_integration_base_is_never_deleted_and_never_refused`.
+    for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
+        // The CALL form, never the bare name: both files legitimately explain in
+        // prose why they do not use it, and a check that cannot tell a call from
+        // a comment forbids writing down the reason.
+        for forbidden in ["preselected_bases()", "flow.bases()"] {
+            assert!(
+                !body.contains(forbidden),
+                "{name} consults `{forbidden}` again. With no `git.flow` written — what \
+                 the installer produces today — that set is the hardcoded {{main, master}}, \
+                 so the door would decide by two literals and nothing else",
+            );
+        }
+        assert!(
+            body.contains("has_unit_record"),
+            "{name} no longer asks the project for its RECORD of the unit, so it is back \
+             to deciding by the shape of a name — and `release/2026-Q3` has the shape of \
+             a unit",
+        );
+    }
     // The target a refusal names must not end at a literal. `primary_base()`
     // floors to `main`; `origin/HEAD` is the remote's own answer.
     for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {

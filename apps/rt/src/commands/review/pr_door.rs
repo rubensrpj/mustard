@@ -334,7 +334,10 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     let bases: Vec<String> = config.git.declared_bases().into_iter().collect();
     let unit = flow.base_of(&branch);
     let protected = mustard_core::protected_branches(&repo, &config.git);
-    if unit.is_unit() && !protected.contains(&branch) {
+    // The project's own RECORD of the unit, not the name's shape: an undeclared
+    // base like `release/2026-Q3` splits into a kind and a slug exactly like a
+    // unit branch does, and `pr list` was measured refusing to run from it.
+    if flow.has_unit_record(&branch) && !protected.contains(&branch) {
         // Name the base rather than the rule. The unit's OWN record answers
         // first — it is a measurement of where the branch really came from —
         // and the remote's own default (`origin/HEAD`) is the last resort, so
@@ -768,8 +771,14 @@ mod tests {
         assert_eq!(on_base.branch, "dev");
         assert!(on_base.bases.contains(&"dev".to_string()), "bases: {:?}", on_base.bases);
 
-        // On a work branch: refused, and the refusal NAMES the base.
+        // On a work branch: refused, and the refusal NAMES the base. What makes
+        // it a work branch is the project's RECORD of the unit, not the shape of
+        // the name — the fixture used to create only the branch, so this case
+        // was satisfied by anything that merely looked like a unit, which is how
+        // a real release line ended up being refused here.
         git(root, &["checkout", "-b", "dev_some-unit"]);
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("some-unit"))
+            .expect("unit record");
         let off_base = list_at(root);
         assert!(!off_base.ok, "a work branch must be refused");
         assert_eq!(off_base.reason, Some("not-on-integration-base"));
