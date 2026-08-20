@@ -157,8 +157,36 @@ fn remote_names_memo() -> &'static Mutex<HashMap<PathBuf, Option<BTreeSet<String
 /// testify about the remote, the same reading
 /// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
 /// catalogue and `base-candidates` reports as `measured: false`.
+/// **Local heads count too, and leaving them out re-created the defect.** The
+/// door that accepts the pick ([`crate::commands::work_unit_open`]) validates it
+/// as `refs/heads/<b>` OR `refs/remotes/origin/<b>` — a base that was never
+/// pushed is a real branch someone can cut from. This probe read only the
+/// remote-tracking side, so such a pick was accepted, written into the unit's
+/// record, and then DISCARDED here on the next read, with the caller answering
+/// "nothing recorded" about a record sitting on disk. Two halves of one question
+/// measuring different things is the shape this whole unit exists to remove, so
+/// they ask the same thing: does this branch still exist, anywhere this
+/// repository can see?
 pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
-    with_remote_names(root, |names| names_obey(names, base))
+    if with_remote_names(root, |names| names_obey(names, base)) {
+        return true;
+    }
+    // A local head is measured directly: it is not in the remote-tracking
+    // catalogue and never will be until someone pushes it.
+    local_head_exists(root, base)
+}
+
+/// `true` when `refs/heads/<branch>` resolves in `root`.
+///
+/// `false` on any failure, which is safe here only because the caller treats an
+/// unmeasured remote as OBEY — this leg answers after that one, so a silent git
+/// never turns into a dropped record.
+fn local_head_exists(root: &Path, branch: &str) -> bool {
+    let dir = root.to_string_lossy().to_string();
+    std::process::Command::new("git")
+        .args(["-C", &dir, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Hand `read` the MEMOISED remote branch names of `root`, measuring them on
