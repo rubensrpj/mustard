@@ -1,5 +1,7 @@
 //! `enrichment_gap` — measure the AGENT-WRITTEN half of the census, and say
-//! once, on stderr, how much of it is still missing.
+//! in ONE stderr line how much of it is still missing. One line per
+//! pipeline-opening emit, for as long as the gap stands — not once per session:
+//! a notice that fell silent while the gap persisted would read as "closed".
 //!
 //! The scan has two halves. The DETERMINISTIC half is `grain.model.json`, and
 //! [`super::base_gate::refresh_census_if_stale`] already re-mines it from this
