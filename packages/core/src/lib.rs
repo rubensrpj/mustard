@@ -56,9 +56,10 @@ pub use platform::hook_resolve::{
 pub use platform::project_seed::{
     carries_private_marks, default_inject_entries, detect_install_mode, footprint,
     footprint_pathspecs, footprint_rules, is_written_footprint, migrate_orchestrator_footprint,
-    record_written_path, retire_planted_plugin_enablement, seed_gitignore, seed_injectable_files,
-    seed_settings, upsert_project, worktree_is_clean, FootprintEntry, InstallMode,
-    MigrationOutcome, RecordOutcome, SeedOutcome, UpsertReport, CLAUDE_LOCAL_MD, CLAUDE_MD,
+    record_version_stamp, record_written_path, retire_planted_plugin_enablement, seed_gitignore,
+    seed_injectable_files, seed_settings, upsert_project, worktree_is_clean, FootprintEntry,
+    InstallMode, MigrationOutcome, RecordOutcome, SeedOutcome, UpsertReport, CLAUDE_LOCAL_MD,
+    CLAUDE_MD,
     PRIVATE_MARKS,
 };
 // Clone-local git exclude — the layer a private install hides its footprint in,
@@ -66,13 +67,16 @@ pub use platform::project_seed::{
 // `.git/info/exclude`, which is absent in a submodule or a linked worktree).
 // See `platform/git_exclude.rs`.
 pub use platform::git_branches::{
-    branch_catalog, default_branch, protected_branches, remote_branch_names, BranchEntry,
+    branch_catalog, current_branch, default_branch, protected_branches, remote_branch_names,
+    BranchEntry,
 };
 pub use platform::git_provider::{detect_provider, provider_of_url, resolve_provider};
 pub use platform::git_exclude::{
     ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,
 };
-pub use platform::harness::harness_version;
+pub use platform::harness::{
+    harness_version, installed_harness_version, installed_harness_version_from, is_behind,
+};
 pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
 
 pub use domain::model::view::{

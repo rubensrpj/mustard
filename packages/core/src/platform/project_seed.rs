@@ -496,6 +496,12 @@ pub struct UpsertReport {
     /// unreadable or unwritable exclude file). Reported, never an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_unavailable: Option<String>,
+    /// What became of the version stamp in a repository that TRACKS
+    /// `mustard.json` (see [`RecordOutcome`]). Absent — and byte-identical to
+    /// the shape before the field existed — on the ordinary run that left git
+    /// nothing to see.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<RecordOutcome>,
 }
 
 /// `skip_serializing_if` predicate for the additive booleans above — a `false`
@@ -548,7 +554,11 @@ impl UpsertReport {
 ///    `runtime`, `version`) when absent; when present only `version` is
 ///    re-stamped (and only when `version` is `Some`), an empty `inject` is
 ///    backfilled, and an absent `runtime` is filled — everything else is
-///    preserved verbatim.
+///    preserved verbatim;
+/// 6. the stamp's own footprint ([`record_version_stamp`]) — in a repository
+///    that TRACKS `mustard.json`, an install that found a clean tree records
+///    the line it just wrote instead of leaving the file dirty. A tree that
+///    already carried the operator's work is left entirely alone.
 ///
 /// `version` is supplied by the caller because the core does not own a
 /// product version: the CLI passes its crate version (the canonical
@@ -576,6 +586,10 @@ pub fn upsert_project(
     mode: InstallMode,
 ) -> Result<UpsertReport> {
     let installed_before = ProjectConfig::exists(root);
+    // Sampled BEFORE anything is written: the only moment at which "the
+    // operator's work" and "what this run is about to write" can still be told
+    // apart. Read by step 6.
+    let found_clean = worktree_is_clean(root);
 
     let mut report = UpsertReport {
         installed_before,
@@ -624,6 +638,12 @@ pub fn upsert_project(
     // 5. The single project-root mustard.json.
     let outcome = upsert_mustard_json(root, version)?;
     report.record(MUSTARD_JSON, outcome);
+
+    // 6. …and, where the host repository TRACKS that file, the install's own
+    //    stamp is recorded rather than left dirty for the next command to
+    //    misattribute. Reported, never fatal.
+    let stamp = record_version_stamp(root, found_clean);
+    report.stamp = (stamp != RecordOutcome::Nothing).then_some(stamp);
 
     Ok(report)
 }
@@ -1109,11 +1129,13 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
 /// finishes its own job instead of leaving it: it records the path when the
 /// tree it FOUND was clean, and says what it did in every other case.
 ///
-/// Not serializable, unlike the report types beside it: nothing rides it in
-/// JSON today, and its governing mold (`core-outcome-pattern`) shows the same
-/// shape in `SeedOutcome` and `MigrationOutcome` — the REPORT earns the derive,
-/// never the state it holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Serializable because it really is carried in JSON: [`UpsertReport`] rides it
+/// as its `stamp` field, the way `SeedOutcome` rides that same report.
+/// `camelCase` matches every other key the report emits. (It briefly carried
+/// the derive with no consumer at all, which a review rightly called
+/// speculative — the consumer arrived with the install half of this mechanism.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RecordOutcome {
     /// Nothing was left for git to see: the path is IGNORED (a private install
     /// hid it behind an exclude rule) or the write did not change a byte. The
@@ -1223,6 +1245,22 @@ pub fn record_written_path(
             RecordOutcome::Unavailable
         }
     }
+}
+
+/// The commit subject an install's version stamp carries. Tool-neutral by
+/// intent: it names what changed, never what wrote it.
+const STAMP_COMMIT_SUBJECT: &str = "chore: update project config version stamp";
+
+/// Record the `mustard.json#version` stamp an install just wrote.
+///
+/// A thin wrapper over [`record_written_path`] and nothing more — the stamp was
+/// the first case of the general problem (the product writes a versioned file
+/// and leaves it dirty for the next command to blame on the operator), and the
+/// base gate's census is the second. Two copies of this logic would be two
+/// policies for one question, so there is one.
+#[must_use]
+pub fn record_version_stamp(root: &Path, found_clean: Option<bool>) -> RecordOutcome {
+    record_written_path(root, &[MUSTARD_JSON], STAMP_COMMIT_SUBJECT, found_clean)
 }
 
 /// Undo [`stage_path`] after a refused commit. Best-effort by design: if this

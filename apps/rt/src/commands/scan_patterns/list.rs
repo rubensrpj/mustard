@@ -7,7 +7,11 @@
 //! resolves the cluster's real hand-written exemplars (generated/vendored code
 //! never teaches convention), attributes them to the subprojects they actually
 //! live in, and proposes one `{subproject-basename}-{role}-pattern` mold per
-//! house that holds enough of them. Machine-authored molds stay FRESH by
+//! house that holds enough of them. The houses come from `projects[]` (the
+//! build manifests) and, ONLY when that list names none, from `skeleton[]` (the
+//! mined architectural units) — a repository whose single manifest sits at the
+//! root has no house of the first kind and would otherwise teach nothing at
+//! all. Machine-authored molds stay FRESH by
 //! DELETION, not by refresh: [`super::sweep`] removes every `source: scan` mold
 //! before any authoring runs, so by the time this worklist is built every
 //! proposal is a create. A hand-edited or `source: manual` mold survives the
@@ -82,6 +86,15 @@ struct Model {
     /// symmetric. Measured on a real workspace: filtering on it would have
     /// killed 11 of 38 live molds.
     conventions: Vec<Convention>,
+    /// The miner's ARCHITECTURAL units — one row per `{first}/{second}` path
+    /// segment pair, biggest first, truncated at 25 by `build_skeleton`. Read
+    /// only as the FALLBACK owner list ([`collect_inner`]): `projects[]` comes
+    /// from build manifests, so a repository with a single root manifest offers
+    /// no house at all and every cluster dies ownerless, while this list still
+    /// names `src/sira`, `src/mlplan`, `src/core`. Additive — an older model
+    /// without the key degrades to an empty vec, which is the same empty owner
+    /// list as before.
+    skeleton: Vec<Skel>,
 }
 
 /// One mined convention slice — only the role membership and how many entities
@@ -156,6 +169,21 @@ struct Proj {
     name: String,
     dir: String,
 }
+
+/// One `skeleton[]` row — a mined architectural unit, keyed by its directory.
+/// Only `dir` is consumed here; the row's `role`/`files` are census signals the
+/// ownership question has no use for.
+#[derive(Deserialize)]
+struct Skel {
+    #[serde(default)]
+    dir: String,
+}
+
+/// The `skeleton[]` bucket `build_skeleton` gives modules that live at the
+/// repository ROOT (a path with no directory segment). It is a label, not a
+/// directory, so it can never own a mold — `root.join("(root)")` is a path that
+/// does not exist, and the root is the one house molds are never authored for.
+const SKELETON_ROOT: &str = "(root)";
 
 /// One mold-candidate worklist entry, serialised to the JSON the orchestrator
 /// hands (per subproject) to the `mustard-patterns` agent. Crate-visible so
@@ -573,10 +601,40 @@ fn collect_inner(root: &Path) -> (Vec<Candidate>, Vec<Rejection>) {
         return (Vec::new(), rejected);
     };
 
-    // Subprojects with a non-empty dir, longest dir first so `common_dir` is
-    // attributed to its most-specific owner (the root unit, dir "", is excluded —
+    // Subprojects with a non-empty dir (the root unit, dir "", is excluded —
     // molds are never authored for the workspace root).
-    let mut projects: Vec<&Proj> = model.projects.iter().filter(|p| !p.dir.is_empty()).collect();
+    let manifest_units: Vec<&Proj> =
+        model.projects.iter().filter(|p| !p.dir.is_empty()).collect();
+
+    // …and when the manifests named NO house at all, the skeleton's houses
+    // stand in. A repository with a single root `package.json` has exactly one
+    // manifest unit — the root — which the filter above removes, leaving every
+    // exemplar ownerless and the worklist empty: measured in the field, 34 of
+    // 47 mined clusters dropped as `no_owner` while the same model carried 25
+    // skeleton units. The branch is taken ONLY on that empty list, so a
+    // workspace whose manifests answer keeps today's output byte for byte and
+    // there is no prior behaviour to regress. Owned here because these rows are
+    // synthesised, not borrowed from the model; declared before `projects` so
+    // it outlives the references into it.
+    let skeleton_units: Vec<Proj> = if manifest_units.is_empty() {
+        model
+            .skeleton
+            .iter()
+            .filter(|s| !s.dir.is_empty() && s.dir != SKELETON_ROOT)
+            .map(|s| Proj { name: basename(&s.dir).to_string(), dir: s.dir.clone() })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Longest dir first so `common_dir` is attributed to its most-specific
+    // owner — which is also what keeps a skeleton's aggregate entry (`src`)
+    // from stealing the files of the unit below it (`src/sira`).
+    let mut projects: Vec<&Proj> = if manifest_units.is_empty() {
+        skeleton_units.iter().collect()
+    } else {
+        manifest_units
+    };
     projects.sort_by(|a, b| b.dir.len().cmp(&a.dir.len()).then(a.dir.cmp(&b.dir)));
 
     // Module paths sorted once — every exemplar scan reads this in a stable order.
@@ -1214,6 +1272,106 @@ mod tests {
         assert_eq!(c.implements.as_deref(), Some("BaseService"));
         // Only the two matching hand-written files are exemplars (README excluded).
         assert_eq!(c.exemplars, vec!["apps/api/services/OrderService.ts", "apps/api/services/UserService.ts"]);
+    }
+
+    /// A repository with ONE build manifest, at the root. `projects[]` carries
+    /// only the root unit, which the owner list drops — so before the skeleton
+    /// fallback every cluster died `no_owner` and the whole worklist came back
+    /// empty (measured in the field: 34 of 47 clusters, on a 1085-file backend
+    /// whose model listed 25 skeleton units). The skeleton names the real
+    /// houses, and `basename` already gives the slug its prefix — no new naming
+    /// rule is involved.
+    #[test]
+    fn skeleton_houses_own_clusters_when_no_manifest_unit_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"backend","dir":""}],
+              "skeleton": [
+                {"dir":"src/sira","role":"L1","files":180},
+                {"dir":"src","role":"L2","files":12},
+                {"dir":"(root)","role":"L0","files":3}
+              ],
+              "roles": [{"affix":"Service","kind":"suffix","count":111,
+                         "common_dir":"src/sira/service","decl_kind":"class"}],
+              "modules": [
+                {"path":"src/sira/service/UserService.ts"},
+                {"path":"src/sira/service/OrderService.ts"},
+                {"path":"src/sira/service/PlanService.ts"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert_eq!(got.len(), 1, "the skeleton's house teaches exactly one cluster");
+        let c = &got[0];
+        assert_eq!(c.subproject, "src/sira", "the mined unit owns it, not the aggregate `src`");
+        assert_eq!(c.slug, "sira-service");
+        assert_eq!(c.mold_path, "src/sira/.claude/skills/sira-service-pattern/SKILL.md");
+    }
+
+    /// The fallback is not a second opinion: one manifest unit with a non-empty
+    /// dir and the skeleton is never read. The `Handler` cluster below lives in
+    /// a skeleton house and in no manifest house, so it must still drop
+    /// `no_owner` — which is exactly the output a monorepo has today.
+    #[test]
+    fn skeleton_fallback_stays_out_when_manifest_units_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"api","dir":"apps/api"}],
+              "skeleton": [{"dir":"src/sira","role":"L1","files":180}],
+              "roles": [
+                {"affix":"Service","kind":"suffix","count":5,
+                 "common_dir":"apps/api/services","decl_kind":"class"},
+                {"affix":"Handler","kind":"suffix","count":4,
+                 "common_dir":"src/sira/handlers","decl_kind":"class"}
+              ],
+              "modules": [
+                {"path":"apps/api/services/UserService.ts"},
+                {"path":"apps/api/services/OrderService.ts"},
+                {"path":"src/sira/handlers/AuthHandler.ts"},
+                {"path":"src/sira/handlers/CartHandler.ts"}
+              ]
+            }"#,
+        );
+        let slugs: Vec<String> = collect(root).into_iter().map(|c| c.slug).collect();
+        assert_eq!(slugs, vec!["api-service"], "only the manifest house teaches");
+        let ownerless: Vec<String> = collect_rejected(root)
+            .into_iter()
+            .filter(|r| r.reason == "no_owner")
+            .map(|r| r.affix)
+            .collect();
+        assert_eq!(ownerless, vec!["Handler"], "the skeleton house was never consulted");
+    }
+
+    /// Fail-open all the way down: a model written before `skeleton[]` existed
+    /// and with no manifest house either yields the empty worklist and prints
+    /// `[]` — the same silent skip Guards performs, never an error.
+    #[test]
+    fn no_skeleton_degrades_to_empty_worklist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_model(
+            root,
+            r#"{
+              "projects": [{"name":"backend","dir":""}],
+              "roles": [{"affix":"Service","kind":"suffix","count":9,
+                         "common_dir":"src/sira/service","decl_kind":"class"}],
+              "modules": [
+                {"path":"src/sira/service/UserService.ts"},
+                {"path":"src/sira/service/OrderService.ts"}
+              ]
+            }"#,
+        );
+        let got = collect(root);
+        assert!(got.is_empty(), "no house to own it, yet {} candidate(s) appeared", got.len());
+        assert_eq!(serde_json::to_string(&got).unwrap(), "[]");
+        // `run` prints and returns — the command's exit is 0 whatever happened.
+        run(root, false, None);
     }
 
     /// AC-5 — the same normalised filter the prompt renderer already used,
