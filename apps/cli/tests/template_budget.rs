@@ -46,6 +46,28 @@ const DESCRIPTION_CHAR_CAP: usize = 1_536;
 /// second event, not a rewrite that says less.
 const INJECTABLE_CHAR_CAP: usize = 9_500;
 
+/// The real ceiling: characters one HOOK RESPONSE may carry.
+const HOOK_RESPONSE_CAP: usize = 10_000;
+
+/// Room the per-event budget leaves for everything the hook composes ALONGSIDE
+/// its injectables — the terrain census, the version-drift advisory, the
+/// pending-prune advisory, and the blank line between each block.
+///
+/// **Why a per-EVENT budget exists at all.** The per-file cap above answers
+/// "does this document fit?", and that was never the binding question: a hook
+/// returns ONE string, and `SessionStart` folds the census plus every injectable
+/// of that event plus two advisories into it. Measured on the real hook, a
+/// repository with about 50 subprojects pushed the composed payload to 10,079
+/// characters while every individual file still passed its own check — a green
+/// ratchet over a reachable failure, which is the exact defect shape this
+/// project keeps finding.
+///
+/// The census used to be the unbounded term; it is now capped at a known number
+/// of rows (`TERRAIN_ROWS_CAP`), which is what makes this reserve a fact rather
+/// than a hope. 2,000 characters covers the capped census with room for both
+/// advisories.
+const COMPOSED_SIBLING_RESERVE: usize = 2_000;
+
 /// The `plugin/` tree — home of the command/ref corpus.
 fn plugin_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin")
@@ -185,4 +207,60 @@ fn injectable_templates_fit_the_additional_context_cap() {
         "injectable templates over the additionalContext budget:\n{}",
         violations.join("\n"),
     );
+}
+
+/// AC-1 — the budget is measured PER EVENT, summing every injectable the same
+/// hook returns, not per file.
+///
+/// The per-file check above cannot see the binding constraint. A hook answers
+/// with ONE `additionalContext` string: `SessionStart` folds the terrain census,
+/// every injectable declared on that event and two advisories into it, and the
+/// harness caps the result at 10,000 characters. Two documents of 6,000 each
+/// pass the per-file cap and blow the response.
+///
+/// Measured before this test existed: a repository with roughly 50 subprojects
+/// composed a 10,079-character `SessionStart` payload while both injectables sat
+/// comfortably under 9,500. The ratchet was green over a reachable failure.
+#[test]
+fn event_budget_sums_every_injectable_of_the_same_hook() {
+    use std::collections::BTreeMap;
+
+    let dir = core_templates_dir().join("mustard");
+    let mut per_event: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+
+    for entry in mustard_core::platform::project_seed::default_inject_entries() {
+        // The declared path is project-relative (`.claude/mustard/x.md`); the
+        // SEED that fills it lives in the templates tree under the same name.
+        let name = Path::new(&entry.file)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let path = dir.join(&name);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("declared injectable {} has no seed at {}: {e}", entry.file, path.display())
+        });
+        let slot = per_event.entry(entry.on.clone()).or_insert((0, Vec::new()));
+        slot.0 += text.chars().count();
+        slot.1.push(format!("{name} ({} chars)", text.chars().count()));
+    }
+
+    assert!(!per_event.is_empty(), "no injectables are declared — the router reaches nobody");
+
+    let budget = HOOK_RESPONSE_CAP - COMPOSED_SIBLING_RESERVE;
+    let mut violations = Vec::new();
+    for (event, (total, files)) in &per_event {
+        // Blank line between blocks, plus one for the census the hook prepends.
+        let composed = total + files.len().saturating_mul(2);
+        if composed > budget {
+            violations.push(format!(
+                "{event}: {composed} characters across {} injectable(s) [{}] — budget {budget} \
+                 ({HOOK_RESPONSE_CAP} per hook response minus {COMPOSED_SIBLING_RESERVE} for the \
+                 census and the advisories the same hook composes). Each file fits on its own; \
+                 the RESPONSE does not. Move one onto another event — never compress.",
+                files.len(),
+                files.join(", "),
+            ));
+        }
+    }
+    assert!(violations.is_empty(), "hook responses over budget:\n{}", violations.join("\n"));
 }

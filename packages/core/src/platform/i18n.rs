@@ -321,6 +321,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("orient.census.files_suffix", Locale::PtBr) => " · {count} arquivos",
         ("orient.census.files_suffix", Locale::EnUs) => " · {count} files",
+        ("orient.census.truncated", Locale::PtBr) => {
+            "\n- (+{count} subprojetos não listados — o censo completo está em `.claude/grain.model.json`)"
+        }
+        ("orient.census.truncated", Locale::EnUs) => {
+            "\n- (+{count} subprojects not listed — the full census is in `.claude/grain.model.json`)"
+        }
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {

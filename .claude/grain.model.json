@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 477,
-      "loc": 203356
+      "loc": 203465
     },
     {
       "language": "tsx",
@@ -24131,7 +24131,7 @@
     {
       "path": "apps/rt/src/commands/git_settle.rs",
       "language": "rust",
-      "loc": 2329,
+      "loc": 2438,
       "imports": [
         "crate::shared::branch_state::{\n    self, BranchEnumerator, GitReachability, PrEvidence, PrLookup, ProviderPrCli,\n    StateClassifier,\n}",
         "serde_json::{json, Value}",
@@ -24258,248 +24258,260 @@
         },
         {
           "kind": "function",
+          "name": "sole_branch_containing",
+          "line": 567,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "settle_at",
-          "line": 554,
+          "line": 593,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "report_at",
-          "line": 929,
+          "line": 981,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "repo_inventory",
-          "line": 963,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "run",
-          "line": 991,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "git",
-          "line": 1001,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "settle_flow",
-          "line": 1007,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix",
           "line": 1015,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "run",
+          "line": 1043,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "git",
+          "line": 1053,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_merged_unit_with_no_recorded_base_is_settled_by_containment",
+          "line": 1070,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "settle_flow",
+          "line": 1121,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix",
+          "line": 1129,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "parse_worktrees_keeps_only_harness_owned_entries_sorted",
-          "line": 1031,
+          "line": 1145,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_worktrees_reports_a_detached_checkout_by_its_head",
-          "line": 1056,
+          "line": 1170,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fixture",
-          "line": 1097,
+          "line": 1211,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "build_fixture",
-          "line": 1149,
+          "line": 1263,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_fixture_is_cloned_from_the_shared_template",
-          "line": 1193,
+          "line": 1307,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_cloned_fixture_is_independent_of_its_template",
-          "line": 1223,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "fixture_with_submodule",
-          "line": 1261,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "contract_refuses_on_base_blocks_unmerged_and_settles_merged_unit",
           "line": 1337,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "fixture_with_submodule",
+          "line": 1375,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "contract_refuses_on_base_blocks_unmerged_and_settles_merged_unit",
+          "line": 1451,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "a_blocked_exit_leaves_the_remote_branch_alone",
-          "line": 1384,
+          "line": 1498,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "in_place_unit_settles_by_checking_out_base_and_deleting_branch",
-          "line": 1432,
+          "line": 1546,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "in_place_merged_unit_is_reported_pending",
-          "line": 1478,
+          "line": 1592,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "report_lists_delivered_units_and_never_a_freshly_cut_one",
-          "line": 1517,
+          "line": 1631,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_doc_states_no_unmeasured_merge_method",
-          "line": 1562,
+          "line": 1676,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_submodule_paths_keeps_initialized_entries_sorted",
-          "line": 1623,
+          "line": 1737,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_submodule_paths_survives_the_trim_its_caller_applies",
-          "line": 1642,
+          "line": 1756,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_resolves_bases_from_superproject",
-          "line": 1663,
+          "line": 1777,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "no_base_prefix_names_root_and_known_bases",
-          "line": 1677,
+          "line": 1791,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "not_a_git_repo_echoes_the_path_it_tried",
-          "line": 1693,
+          "line": 1807,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_reports_every_repo_of_the_unit",
-          "line": 1710,
+          "line": 1824,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_submodule_still_appears_in_the_report",
-          "line": 1736,
+          "line": 1850,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_inside_a_submodule_reports_the_parent_too",
-          "line": 1760,
+          "line": 1874,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_refuses_when_a_ref_moved_after_merge",
-          "line": 1800,
+          "line": 1914,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gitlink_only_dirt",
-          "line": 1863,
+          "line": 1977,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "block_the_advance",
-          "line": 1941,
+          "line": 2055,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_waits_for_the_base_to_advance",
-          "line": 1958,
+          "line": 2072,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_authorisation_reads_the_base_advance_not_unit_ancestry",
-          "line": 2028,
+          "line": 2142,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_dirty_tree_the_advance_does_not_touch_still_fast_forwards",
-          "line": 2092,
+          "line": 2206,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_refused_advance_separates_divergence_from_dirt",
-          "line": 2133,
+          "line": 2247,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "base_behind_downgrades_ok",
-          "line": 2199,
+          "line": 2313,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "untracked_scratch_does_not_block_the_advance",
-          "line": 2243,
+          "line": 2357,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "single_repo_unit_reports_itself_complete",
-          "line": 2260,
+          "line": 2374,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_base_ahead_of_origin_authorises_the_prune",
-          "line": 2286,
+          "line": 2400,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "in_place_unit",
-          "line": 2341,
+          "line": 2455,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_refused_prune_restores_the_unit_branch",
-          "line": 2374,
+          "line": 2488,
           "supertypes": []
         }
       ],
@@ -97511,17 +97523,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+Report slice",
+      "name": "tipo base+State slice",
       "roles": [
         "(core)",
-        "Report"
+        "State"
       ],
       "optional_roles": [
         "Ac",
         "Function",
         "Kind",
         "Mode",
-        "State",
+        "Report",
         "Term",
         "View"
       ],
@@ -97550,12 +97562,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
+        "Adicione o **State** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -97608,12 +97620,6 @@
           "role": "tipo base"
         },
         {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
-        },
-        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -97624,10 +97630,16 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
+        },
+        {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
