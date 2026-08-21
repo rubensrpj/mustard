@@ -61,7 +61,12 @@ const MIN_EXEMPLARS: usize = 2;
 /// PRODUCTION convention, so a cluster whose `common_dir` sits under one of
 /// these is discarded. Mirrors the SKILL's `tests/`, `fixtures/`, `__tests__/`,
 /// `spec/` set (plus the singular `test`).
-const TEST_SEGMENTS: &[&str] = &["tests", "test", "fixtures", "__tests__", "spec", "specs", "__mocks__", "mocks"];
+///
+/// `pub(crate)` because the OTHER half of the same enrich —
+/// [`crate::commands::scan_guards::list`], which walks for pending `## Guards`
+/// — asks the identical question and must not answer it from a second list.
+/// Two lists would diverge the first time someone added a segment to one.
+pub(crate) const TEST_SEGMENTS: &[&str] = &["tests", "test", "fixtures", "__tests__", "spec", "specs", "__mocks__", "mocks"];
 
 /// The slice of `grain.model.json` this projection reads. Additive `#[serde(default)]`
 /// throughout so an older/newer model shape keeps deserialising — the JSON is the

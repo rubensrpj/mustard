@@ -497,11 +497,20 @@ pub struct UpsertReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_unavailable: Option<String>,
     /// What became of the version stamp in a repository that TRACKS
-    /// `mustard.json` (see [`StampOutcome`]). Absent — and byte-identical to
+    /// `mustard.json` (see [`RecordOutcome`]). Absent — and byte-identical to
     /// the shape before the field existed — on the ordinary run that left git
     /// nothing to see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stamp: Option<StampOutcome>,
+    pub stamp: Option<RecordOutcome>,
+    /// The branch the stamp commit landed on, when one was made.
+    ///
+    /// The `mustard init` face says this in prose; `run upsert` answers in JSON
+    /// and said nothing at all, so its callers could not tell that the bootstrap
+    /// door had just committed to the branch they were standing on. Naming it is
+    /// what keeps an auto-commit a STATED outcome on both faces. Absent unless a
+    /// commit was really made, so an ordinary run stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp_branch: Option<String>,
 }
 
 /// `skip_serializing_if` predicate for the additive booleans above — a `false`
@@ -643,7 +652,12 @@ pub fn upsert_project(
     //    stamp is recorded rather than left dirty for the next command to
     //    misattribute. Reported, never fatal.
     let stamp = record_version_stamp(root, found_clean);
-    report.stamp = (stamp != StampOutcome::Nothing).then_some(stamp);
+    report.stamp = (stamp != RecordOutcome::Nothing).then_some(stamp);
+    // Name where the commit landed — the JSON face's half of the same promise
+    // the `mustard init` prose makes. Only when one was actually made.
+    if stamp == RecordOutcome::Recorded {
+        report.stamp_branch = crate::platform::git_branches::current_branch(root);
+    }
 
     Ok(report)
 }
@@ -1115,42 +1129,47 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
 }
 
 // ---------------------------------------------------------------------------
-// The version stamp's own footprint
+// Recording what the product itself wrote
 // ---------------------------------------------------------------------------
 
-/// The commit subject the install writes when it records its own stamp.
+/// What a writer did about a path IT wrote into a working tree the host
+/// repository VERSIONS.
 ///
-/// Deliberately plain: it describes the line that changed and names no tool.
-/// The commit lands in the OPERATOR's history, next to their own work.
-const STAMP_COMMIT_SUBJECT: &str = "chore: update project config version stamp";
-
-/// What an install did about the version stamp it had just written into a
-/// `mustard.json` the host repository VERSIONS.
+/// Whenever the product rewrites a tracked artifact of its own — the install's
+/// `mustard.json#version` stamp, the base gate's deterministic census — the
+/// write lands as an uncommitted change nobody asked for. The very next command
+/// that guards on a clean tree then refuses, attributing the change to another
+/// unit of the operator's work, when the writer was the product. So the writer
+/// finishes its own job instead of leaving it: it records the path when the
+/// tree it FOUND was clean, and says what it did in every other case.
 ///
-/// Every run re-stamps `mustard.json#version`, and where that file is tracked
-/// the write lands as an uncommitted change nobody asked for. The very next
-/// command that guards on a clean tree then refuses — attributing the change to
-/// another unit of the operator's work, when the writer was the installer. So
-/// the install finishes its own job instead of leaving it: it records the stamp
-/// when the tree it FOUND was clean, and says what it did in every other case.
-///
-/// Serialized because it rides in [`UpsertReport`], the runtime's JSON answer;
-/// `camelCase` matches every other key that report emits.
+/// Serializable because it really is carried in JSON: [`UpsertReport`] rides it
+/// as its `stamp` field, the way `SeedOutcome` rides that same report.
+/// `camelCase` matches every other key the report emits. (It briefly carried
+/// the derive with no consumer at all, which a review rightly called
+/// speculative — the consumer arrived with the install half of this mechanism.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum StampOutcome {
-    /// Nothing was left for git to see: the file is untracked (a private
-    /// install hid it) or the stamp did not change a byte. The ordinary case.
+pub enum RecordOutcome {
+    /// Nothing was left for git to see: the path is IGNORED (a private install
+    /// hid it behind an exclude rule) or the write did not change a byte. The
+    /// ordinary case.
+    ///
+    /// Untracked alone does NOT qualify, and equating the two was a real
+    /// defect: a shared install's FIRST mine writes a path git has never seen,
+    /// no ignore rule covers it, and `git status` reports it as `??` — so a
+    /// writer that returned `Nothing` there left the very dirt this type exists
+    /// to remove, while announcing the opposite.
     Nothing,
-    /// The stamp was the install's own change and it is now committed — the
-    /// tree the install found clean is clean again.
+    /// The write was the product's own change and it is now committed — the
+    /// tree the writer found clean is clean again.
     Recorded,
-    /// The install found the operator's work already in the tree and recorded
-    /// nothing. Their change is never swept into an installer's commit, and the
-    /// stamp is left for them to commit with it.
+    /// The writer found the operator's work already in the tree and recorded
+    /// nothing. Their change is never swept into the product's commit, and the
+    /// written path is left for them to commit with it.
     TreeNotClean,
     /// Git could not answer, or refused the commit (no identity configured, a
-    /// hook that declined). The stamp is left where it landed. Reported, never
+    /// hook that declined). The write is left where it landed. Reported, never
     /// an error.
     Unavailable,
 }
@@ -1159,43 +1178,140 @@ pub enum StampOutcome {
 /// modified or untracked path. `None` when git could not answer at all (absent
 /// binary, no repository).
 ///
-/// Sampled by an installer BEFORE it writes anything, so [`record_version_stamp`]
-/// can tell its own change apart from the operator's. Never panics.
+/// Sampled by a writer BEFORE it writes anything, so [`record_written_path`]
+/// can tell the product's own change apart from the operator's. Never panics.
 #[must_use]
 pub fn worktree_is_clean(root: &Path) -> Option<bool> {
     porcelain(root, &[]).map(|status| status.is_empty())
 }
 
-/// Record the version stamp this install just wrote, so an install never leaves
-/// a versioned file dirty for the next command to blame on the operator.
+/// Record `paths` — repo-relative paths the product itself just wrote — so the
+/// product never leaves a versioned file dirty for the next command to blame on
+/// the operator. `subject` is the commit subject the caller wants in the
+/// operator's history.
 ///
-/// `found_clean` is [`worktree_is_clean`] sampled before the install wrote
-/// anything — `None` when git could not answer then either.
+/// `found_clean` is [`worktree_is_clean`] sampled before the write — `None`
+/// when git could not answer then either.
 ///
-/// Only ever commits the ONE path: an install that found other work in the tree
-/// records nothing at all, and even on a clean tree the commit carries a
-/// pathspec, so nothing an install created beside the stamp can ride along.
+/// **A slice, not one path, because a writer is rarely a single file.** The
+/// scan writes its model AND the dictionary sidecar beside it; recording one
+/// left the other modified, so the tree stayed dirty under a message announcing
+/// it clean. The caller lists everything IT wrote and nothing else — the commit
+/// still carries pathspecs, so nothing written beside them can ride along.
+///
 /// Fail-open throughout — every failure degrades to
-/// [`StampOutcome::Unavailable`] and the stamp simply stays uncommitted.
+/// [`RecordOutcome::Unavailable`] and the writes simply stay uncommitted.
 #[must_use]
-pub fn record_version_stamp(root: &Path, found_clean: Option<bool>) -> StampOutcome {
-    // A path the host repository does not track cannot be dirty — the private
-    // install's exclude rule already made the stamp invisible.
-    if git_exclude::tracked_paths(root, &[MUSTARD_JSON.to_string()]).is_empty() {
-        return StampOutcome::Nothing;
+pub fn record_written_path(
+    root: &Path,
+    paths: &[&str],
+    subject: &str,
+    found_clean: Option<bool>,
+) -> RecordOutcome {
+    // Untracked splits in two, and only ONE half is invisible to git. Under a
+    // private install an exclude rule hides the write, so there is nothing to
+    // record. On a shared install's first mine the path is equally untracked
+    // but nothing hides it: `git status` reports `??` and the next gate refuses
+    // on it, so it has to be recorded like any other — it just needs the index
+    // step a never-seen path cannot skip.
+    //
+    // Judged per path: a set can mix a tracked model with a never-committed
+    // sidecar, and folding that into one answer would mis-handle whichever half
+    // lost the vote.
+    let visible: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|p| {
+            !(git_exclude::tracked_paths(root, &[(*p).to_string()]).is_empty()
+                && is_ignored(root, p))
+        })
+        .collect();
+    if visible.is_empty() {
+        return RecordOutcome::Nothing;
     }
-    let Some(status) = porcelain(root, &[MUSTARD_JSON]) else {
-        return StampOutcome::Unavailable;
+    let Some(status) = porcelain(root, &visible) else {
+        return RecordOutcome::Unavailable;
     };
     if status.is_empty() {
-        return StampOutcome::Nothing; // re-run over a settled project.
+        return RecordOutcome::Nothing; // a re-write that changed no byte.
     }
     match found_clean {
-        Some(true) if commit_path(root, MUSTARD_JSON) => StampOutcome::Recorded,
-        Some(true) => StampOutcome::Unavailable,
-        Some(false) => StampOutcome::TreeNotClean,
-        None => StampOutcome::Unavailable,
+        Some(false) => RecordOutcome::TreeNotClean,
+        None => RecordOutcome::Unavailable,
+        // Staging is safe here and ONLY here: the tree was found clean, so the
+        // index holds nothing of the operator's for the commit to sweep up. A
+        // tracked path would not need it — `git commit -- <path>` reaches a
+        // modified file on its own — but the set may hold a never-seen one, and
+        // that one cannot be committed without it.
+        Some(true) => {
+            if !stage_path(root, &visible) {
+                return RecordOutcome::Unavailable;
+            }
+            if commit_path(root, &visible, subject) {
+                return RecordOutcome::Recorded;
+            }
+            // The commit was refused (no identity, a declining hook, gpg). Put
+            // the index back where it was found: leaving these staged would let
+            // the operator's very next `git commit` sweep the product's write
+            // into THEIR commit — the exact swap this whole function exists to
+            // prevent, arriving through the failure path instead.
+            unstage(root, &visible);
+            RecordOutcome::Unavailable
+        }
     }
+}
+
+/// The commit subject an install's version stamp carries. Tool-neutral by
+/// intent: it names what changed, never what wrote it.
+const STAMP_COMMIT_SUBJECT: &str = "chore: update project config version stamp";
+
+/// Record the `mustard.json#version` stamp an install just wrote.
+///
+/// A thin wrapper over [`record_written_path`] and nothing more — the stamp was
+/// the first case of the general problem (the product writes a versioned file
+/// and leaves it dirty for the next command to blame on the operator), and the
+/// base gate's census is the second. Two copies of this logic would be two
+/// policies for one question, so there is one.
+#[must_use]
+pub fn record_version_stamp(root: &Path, found_clean: Option<bool>) -> RecordOutcome {
+    record_written_path(root, &[MUSTARD_JSON], STAMP_COMMIT_SUBJECT, found_clean)
+}
+
+/// Undo [`stage_path`] after a refused commit. Best-effort by design: if this
+/// too fails there is nothing further to try, and the outcome already says the
+/// write was not recorded.
+fn unstage(root: &Path, paths: &[&str]) {
+    let mut args: Vec<&str> = vec!["reset", "-q", "--"];
+    args.extend(paths);
+    let _ = Command::new("git").args(&args).current_dir(root).output();
+}
+
+/// Whether git would ignore `path` — an ignore rule, or the clone-local exclude
+/// file a private install writes into. One probe answers both: `check-ignore`
+/// reads `.gitignore` and `info/exclude` alike.
+///
+/// `false` when git could not answer: an unmeasured path is treated as VISIBLE,
+/// which costs at worst a recorded commit, where the opposite error costs the
+/// dirty tree this whole path exists to prevent.
+fn is_ignored(root: &Path, path: &str) -> bool {
+    Command::new("git")
+        .args(["check-ignore", "-q", "--", path])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Stage `paths` alone. Only ever called on a tree that was found CLEAN, where
+/// the index has nothing of the operator's to disturb — and always paired with
+/// [`unstage`] on the failure path that follows.
+fn stage_path(root: &Path, paths: &[&str]) -> bool {
+    let mut args: Vec<&str> = vec!["add", "--"];
+    args.extend(paths);
+    Command::new("git")
+        .args(&args)
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// `git status --porcelain` for `root`, optionally narrowed to `pathspecs`.
@@ -1212,12 +1328,15 @@ fn porcelain(root: &Path, pathspecs: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Commit `path` alone, with [`STAMP_COMMIT_SUBJECT`]. `false` on any refusal —
-/// no git, no identity configured, a hook that declined — and nothing is left
-/// staged, because the pathspec form of `git commit` never touches the index.
-fn commit_path(root: &Path, path: &str) -> bool {
+/// Commit `paths` alone, with `subject`. `false` on any refusal — no git, no
+/// identity configured, a hook that declined. The pathspec form never sweeps a
+/// file outside `paths`; what a refusal may leave behind is whatever
+/// [`stage_path`] put in the index, which the caller undoes.
+fn commit_path(root: &Path, paths: &[&str], subject: &str) -> bool {
+    let mut args: Vec<&str> = vec!["commit", "-m", subject, "--"];
+    args.extend(paths);
     Command::new("git")
-        .args(["commit", "-m", STAMP_COMMIT_SUBJECT, "--", path])
+        .args(&args)
         .current_dir(root)
         .output()
         .is_ok_and(|out| out.status.success())
@@ -1437,6 +1556,147 @@ fn strip_mustard_root_lines(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A shared install's FIRST mine writes a path git has never seen and no
+    /// ignore rule covers. Treating "untracked" as "invisible" left it sitting
+    /// as `??` while the writer announced the tree was clean — the exact dirt
+    /// this function exists to remove, now announced as removed.
+    #[test]
+    fn a_first_write_of_an_unignored_path_is_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        let clean = super::worktree_is_clean(root);
+        assert_eq!(clean, Some(true), "fixture must start clean");
+
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/model.json"), "{}\n").unwrap();
+
+        let outcome = super::record_written_path(root, &[".claude/model.json"], "chore: model", clean);
+        assert_eq!(outcome, super::RecordOutcome::Recorded);
+        assert_eq!(
+            super::porcelain(root, &[]).as_deref(),
+            Some(""),
+            "a first mine must leave the tree clean, not `?? .claude/`",
+        );
+    }
+
+    /// The other half of the same split: a path an exclude rule hides really is
+    /// invisible to git, so there is nothing to record and nothing to say.
+    #[test]
+    fn an_ignored_path_is_left_alone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        std::fs::write(root.join(".gitignore"), "secret.json\n").unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "ignore"]);
+        let clean = super::worktree_is_clean(root);
+
+        std::fs::write(root.join("secret.json"), "{}\n").unwrap();
+
+        assert_eq!(
+            super::record_written_path(root, &["secret.json"], "chore: secret", clean),
+            super::RecordOutcome::Nothing,
+        );
+    }
+
+    /// A writer is rarely one file. The scan writes its model AND the
+    /// dictionary sidecar; recording only the first left the second modified,
+    /// so the tree stayed dirty under a message announcing it clean.
+    #[test]
+    fn every_written_path_is_recorded_not_just_the_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/model.json"), "{}\n").unwrap();
+        std::fs::write(root.join(".claude/dict.json"), "{}\n").unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "artifacts"]);
+        let clean = super::worktree_is_clean(root);
+        assert_eq!(clean, Some(true), "fixture must start clean");
+
+        // What a real re-mine does: BOTH artifacts move.
+        std::fs::write(root.join(".claude/model.json"), "{\"v\":2}\n").unwrap();
+        std::fs::write(root.join(".claude/dict.json"), "{\"v\":2}\n").unwrap();
+
+        let outcome = super::record_written_path(
+            root,
+            &[".claude/model.json", ".claude/dict.json"],
+            "chore: census",
+            clean,
+        );
+        assert_eq!(outcome, super::RecordOutcome::Recorded);
+        assert_eq!(
+            super::porcelain(root, &[]).as_deref(),
+            Some(""),
+            "the sidecar must be recorded too, or the tree is still dirty",
+        );
+    }
+
+    /// A refused commit must not leave the product's write sitting in the
+    /// index: the operator's very next `git commit` would sweep it into THEIR
+    /// commit — the swap this whole function exists to prevent, arriving
+    /// through the failure path.
+    #[test]
+    fn a_refused_commit_leaves_nothing_staged() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        // A pre-commit hook that always declines is the cheapest honest way to
+        // make `git commit` fail without breaking anything else.
+        let hooks = root.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let clean = super::worktree_is_clean(root);
+        std::fs::write(root.join("new.json"), "{}\n").unwrap();
+
+        assert_eq!(
+            super::record_written_path(root, &["new.json"], "chore: new", clean),
+            super::RecordOutcome::Unavailable,
+        );
+        let status = super::porcelain(root, &[]).unwrap_or_default();
+        assert!(
+            !status.starts_with('A'),
+            "the write must be left where it landed, never staged: {status:?}",
+        );
+    }
+
+    /// Git that cannot answer never becomes a silent success.
+    #[test]
+    fn outside_a_repository_the_write_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("f.json"), "{}\n").unwrap();
+        assert_eq!(
+            super::record_written_path(root, &["f.json"], "chore: f", Some(true)),
+            super::RecordOutcome::Unavailable,
+        );
+    }
+
+    fn run_git(root: &std::path::Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+    }
+
+    fn seed_repo(root: &std::path::Path) {
+        run_git(root, &["init", "--initial-branch=main"]);
+        run_git(root, &["config", "user.email", "t@example.com"]);
+        run_git(root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "seed"]);
+    }
 
     /// AC-3 — the migration recognises an equivalent spelling of the router's
     /// declared path.

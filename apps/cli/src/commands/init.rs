@@ -311,10 +311,10 @@ pub fn init_with_templates(
 /// the operator's work, and refusing there would hand the dirty tree back in
 /// the commonest case of all), and naming the branch is what keeps it a stated
 /// outcome rather than a silent one.
-fn report_stamp(outcome: mustard_core::StampOutcome, root: &std::path::Path) {
+fn report_stamp(outcome: mustard_core::RecordOutcome, root: &std::path::Path) {
     match outcome {
-        mustard_core::StampOutcome::Nothing => {}
-        mustard_core::StampOutcome::Recorded => {
+        mustard_core::RecordOutcome::Nothing => {}
+        mustard_core::RecordOutcome::Recorded => {
             match mustard_core::current_branch(root) {
                 Some(branch) => println!(
                     "  committed mustard.json on '{branch}' — the version stamp this install wrote"
@@ -324,7 +324,7 @@ fn report_stamp(outcome: mustard_core::StampOutcome, root: &std::path::Path) {
                 }
             }
         }
-        mustard_core::StampOutcome::TreeNotClean => {
+        mustard_core::RecordOutcome::TreeNotClean => {
             println!(
                 "  mustard.json carries a new version stamp, left UNCOMMITTED: this tree already"
             );
@@ -332,7 +332,7 @@ fn report_stamp(outcome: mustard_core::StampOutcome, root: &std::path::Path) {
                 "  held your own changes, and they are never swept into an install's commit"
             );
         }
-        mustard_core::StampOutcome::Unavailable => {
+        mustard_core::RecordOutcome::Unavailable => {
             println!(
                 "  mustard.json carries a new version stamp, left uncommitted (git could not record it)"
             );

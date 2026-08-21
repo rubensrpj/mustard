@@ -23,6 +23,7 @@ use mustard_core::io::fs;
 use serde_json::{json, Value};
 
 use crate::commands::scan_claude::GUARDS_PENDING_OPEN;
+use crate::commands::scan_patterns::list::TEST_SEGMENTS;
 
 /// Directories never descended into — mirrors `docs_stale_check::IGNORE_DIRS`
 /// so the walk stays cheap and never explodes into build/vendor trees.
@@ -122,6 +123,16 @@ fn walk(dir: &Path, root: &Path, owned: &str, out: &mut PendingScaffolds, depth:
             if IGNORE_DIRS.contains(&name) {
                 continue;
             }
+            // Test terrain is not a subproject to enrich. A fixture tree exists
+            // so the miner has something to READ in the crate's own tests, and
+            // the instruction file inside it is a prop — guards authored for it
+            // would teach nothing and are counted as debt on every session
+            // start. The sibling walk (the mold worklist) already discards it;
+            // this one used to descend, and 6 of the 14 pendings it reported
+            // here were props.
+            if is_test_segment(name) {
+                continue;
+            }
             // Hidden dirs are skipped (build caches, VCS); `.claude` holds no
             // CLAUDE.md of its own, so excluding all dot-dirs is safe here.
             if name.starts_with('.') {
@@ -132,6 +143,17 @@ fn walk(dir: &Path, root: &Path, owned: &str, out: &mut PendingScaffolds, depth:
             classify(&entry.path, root, out);
         }
     }
+}
+
+/// Whether a directory NAME is one of the conventional test/fixture segments.
+///
+/// The list is [`TEST_SEGMENTS`], owned by the mold worklist — the other half of
+/// the same enrich — so the two halves can never disagree about what test
+/// terrain is. Case-insensitive because a `Tests/` directory is the same
+/// terrain; every segment in the list is ASCII, so the ASCII comparison is the
+/// whole answer and costs no allocation inside the walk.
+fn is_test_segment(name: &str) -> bool {
+    TEST_SEGMENTS.iter().any(|seg| name.eq_ignore_ascii_case(seg))
 }
 
 /// Classify a `CLAUDE.md`: pushes a [`Pending`] entry iff the file carries the
@@ -293,6 +315,47 @@ mod tests {
         assert_eq!(p.subproject, "apps/rt");
         assert_eq!(p.kind, "rust");
         assert_eq!(p.frameworks, vec!["serde".to_string(), "clap".to_string()]);
+    }
+
+    /// AC-1 — a fixture tree is not a subproject. Every conventional test
+    /// segment stops the walk, so the props under it never reach the worklist
+    /// and never inflate the pending-guards count the session-start notice
+    /// prints. Measured in this repository before the fix: 6 of 14 pendings
+    /// were fixtures under `apps/scan/tests/fixtures/`.
+    #[test]
+    fn guards_walk_skips_test_terrain() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // One real subproject — the control inside the test.
+        let real = root.join("apps").join("rt");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("CLAUDE.md"), pending_block("rust", "serde")).unwrap();
+
+        // A prop under EVERY segment the mold worklist already discards, each
+        // nested the way a real fixture is (`<crate>/tests/fixtures/<proj>`).
+        for segment in TEST_SEGMENTS {
+            let prop = root.join("apps").join("scan").join(segment).join("php_laravel");
+            std::fs::create_dir_all(&prop).unwrap();
+            std::fs::write(prop.join("CLAUDE.md"), pending_block("php", "laravel/framework"))
+                .unwrap();
+        }
+        // …and one spelled with a capital, which is the same terrain.
+        let capitalised = root.join("apps").join("scan").join("Tests").join("graph_go");
+        std::fs::create_dir_all(&capitalised).unwrap();
+        std::fs::write(capitalised.join("CLAUDE.md"), pending_block("go", "(none)")).unwrap();
+
+        let census = collect_pending(root);
+        assert_eq!(
+            census.entries.iter().map(|p| p.subproject.as_str()).collect::<Vec<_>>(),
+            vec!["apps/rt"],
+            "only the production subproject is pending work",
+        );
+        assert!(
+            census.errors.is_empty(),
+            "a directory that is never descended is not an error either: {:?}",
+            census.errors,
+        );
     }
 
     #[test]

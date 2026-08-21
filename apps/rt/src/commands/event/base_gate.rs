@@ -47,6 +47,12 @@
 //! triggered from this gate instead of from a door the user has to remember. It
 //! is best-effort throughout: a stale census is a worse map, never a blocker.
 //!
+//! And it FINISHES that commit rather than announcing it: on a tree the refresh
+//! itself found clean, the re-mined census is recorded on the spot
+//! ([`record_census`]). Leaving it dirty made the next unit's branch cut refuse,
+//! attributing the write to another unit of the operator's work — one manual
+//! commit per pipeline opened.
+//!
 //! In a PRIVATE install the census is invisible to the host repository's git,
 //! so there is no commit to keep apart and the tree's state decides nothing —
 //! staleness alone is the whole question. Both readings come from the ONE
@@ -56,7 +62,9 @@
 
 use std::path::Path;
 
-use mustard_core::{ProjectConfig, Scan};
+use mustard_core::{
+    record_written_path, worktree_is_clean, ProjectConfig, RecordOutcome, Scan,
+};
 
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
@@ -165,11 +173,19 @@ pub(crate) fn census_refresh_due(project: &Path, model: &Path) -> bool {
     if !census_is_stale(project, model) {
         return false;
     }
-    // A private install's census never reaches the host's git, so no state of
-    // the tree can fuse it with the user's work: staleness is the whole
-    // question. Without this, a client repository — dirty nearly always —
-    // would carry a census that silently never refreshed.
-    if !scan_output_is_versioned(project) {
+    // A census git cannot see never fuses with the user's work, so staleness is
+    // the whole question there. Without this, a client repository — dirty
+    // nearly always — would carry a census that silently never refreshed.
+    //
+    // The question is asked of the FILES, not of the install mode. The mode
+    // predicate reads "private install ⇒ invisible", and this very repository
+    // falsifies it: it carries both private marks in `info/exclude` AND a
+    // tracked census. Under the coarse answer the gate re-mined on a dirty tree
+    // and then had to leave the versioned result uncommitted — the debt-
+    // admission this whole unit exists to delete. `record_written_path` already
+    // judges per path; this now asks the same fact of the same paths, so the
+    // two halves of one decision can no longer disagree.
+    if !census_is_visible_to_git(project, model) {
         return true;
     }
     // Shared install: only a POSITIVE clean tree qualifies. `None` (no git,
@@ -217,6 +233,12 @@ fn census_is_stale(project: &Path, model: &Path) -> bool {
 ///
 /// Fail-open at every step, and loud on stderr rather than on stdout: this runs
 /// inside `emit-pipeline`, whose one JSON line is byte-compared by gates.
+///
+/// The refresh RECORDS itself. Where the census is versioned, re-mining it used
+/// to leave the file dirty and say so — a task handed to the operator that the
+/// product never finished, and that the next unit's branch cut then refused,
+/// blaming the write on another unit of their work. The tree is sampled before
+/// the miner runs, so the refresh can tell its own change apart from theirs.
 pub(crate) fn refresh_census_if_stale(project: &Path) {
     let model = default_model_path(project);
     if !census_refresh_due(project, &model) {
@@ -234,14 +256,121 @@ pub(crate) fn refresh_census_if_stale(project: &Path) {
         );
         return;
     }
+    // Sampled BEFORE the miner writes a byte: the only moment at which the
+    // operator's work and what this refresh is about to write can still be told
+    // apart. Read by `record_census` below.
+    let found_clean = worktree_is_clean(project);
     match Scan::locate().scan(project, &model) {
-        Ok(()) => eprintln!(
-            "base-gate: census refreshed ({}) — it is uncommitted work on a clean base, so \
-             it can still be committed apart from this unit",
-            model.display()
-        ),
+        Ok(()) => {
+            let path = model.display();
+            match record_census(project, &model, found_clean) {
+                RecordOutcome::Recorded => eprintln!(
+                    "base-gate: census refreshed ({path}) and recorded on this base — the tree \
+                     is clean again"
+                ),
+                RecordOutcome::Nothing => eprintln!(
+                    "base-gate: census refreshed ({path}) — this repository's git has nothing \
+                     to see"
+                ),
+                RecordOutcome::TreeNotClean => eprintln!(
+                    "base-gate: census refreshed ({path}) — the tree already carried your work, \
+                     so it was left for you to commit alongside it"
+                ),
+                RecordOutcome::Unavailable => eprintln!(
+                    "base-gate: census refreshed ({path}) — git would not record it, so it \
+                     stays uncommitted"
+                ),
+            }
+        }
         Err(e) => eprintln!("base-gate: census refresh failed ({e}); the previous model stands"),
     }
+}
+
+/// The commit subject the gate writes when it records a census it re-mined.
+///
+/// Deliberately plain: it describes the file that changed and names no tool.
+/// The commit lands in the OPERATOR's history, next to their own work.
+const CENSUS_COMMIT_SUBJECT: &str = "chore: refresh the deterministic project census";
+
+/// The scan's second versioned artifact, written beside the model on every run.
+/// Named here because the recording has to cover everything the miner wrote:
+/// leaving it out left the tree dirty under a message claiming it was clean.
+const GRAIN_DICTIONARY: &str = "grain.dictionary.json";
+
+/// Record the census this gate just re-mined, through the ONE mechanism the
+/// product uses for every artifact it writes into a tree the host repository
+/// versions ([`record_written_path`]).
+///
+/// Split out of [`refresh_census_if_stale`] for the same reason
+/// [`census_refresh_due`] is: the RECORDING is testable without the grain
+/// sidecar binary — the effect needs it, the bookkeeping does not.
+/// Whether git would SEE the census — asked of the files, not of the install
+/// mode.
+///
+/// Visible means "no ignore rule hides it", which is the same fact
+/// [`record_written_path`] judges when it decides whether a write is worth
+/// recording. Tracked would be the wrong question: a first mine is untracked by
+/// definition and still shows up as `??`, so answering "invisible" there would
+/// re-mine onto a dirty tree and leave exactly the dirt this unit removes.
+///
+/// Not the install mode either. That predicate reads "private install ⇒
+/// invisible", and this very repository falsifies it: it carries private marks
+/// in `info/exclude` AND a tracked census. Under the coarse answer the gate
+/// re-mined on a dirty tree and then had to leave the versioned result
+/// uncommitted — the debt-admission this unit exists to delete.
+///
+/// Unmeasured (no git, no repository) reads as INVISIBLE, the direction the
+/// mode predicate also took: a census nobody can see is one staleness alone
+/// should decide.
+fn census_is_visible_to_git(project: &Path, model: &Path) -> bool {
+    [model.to_path_buf(), model.with_file_name(GRAIN_DICTIONARY)]
+        .iter()
+        .filter_map(|p| p.strip_prefix(project).ok())
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .any(|rel| !path_is_ignored(project, &rel))
+}
+
+/// `true` when git would ignore `rel` — an ignore rule or the clone-local
+/// exclude file a private install writes into; `check-ignore` reads both.
+/// `false` when git could not answer, so an unmeasured path counts as visible
+/// and the stricter clean-tree requirement applies.
+fn path_is_ignored(project: &Path, rel: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["check-ignore", "-q", "--", rel])
+        .current_dir(project)
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// A scan writes TWO artifacts, not one: the model and its byte-stable
+/// `grain.dictionary.json` sidecar beside it. Recording only the model left the
+/// sidecar modified, so the tree stayed dirty and the next branch cut still
+/// refused — while this gate printed that the tree was clean again. Both go in,
+/// derived from the model path the same way the rest of the runtime derives the
+/// sidecar (`scan.rs` uses `with_file_name` for exactly this).
+fn record_census(project: &Path, model: &Path, found_clean: Option<bool>) -> RecordOutcome {
+    // Each pathspec is DERIVED from a path that was really written, so no
+    // pathspec can name a file the scan did not touch. Forward-slashed: a git
+    // pathspec is not a Windows path.
+    // Only paths that actually EXIST. `git add -- <a> <missing>` aborts
+    // wholesale (`fatal: pathspec did not match any files`), so naming an
+    // absent sidecar would take the model down with it and leave the tree dirty
+    // — the outcome this function exists to prevent, reached by being thorough.
+    let mut paths: Vec<String> = Vec::with_capacity(2);
+    for written in [model.to_path_buf(), model.with_file_name(GRAIN_DICTIONARY)] {
+        if !written.is_file() {
+            continue;
+        }
+        let Ok(rel) = written.strip_prefix(project) else {
+            return RecordOutcome::Unavailable;
+        };
+        paths.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    if paths.is_empty() {
+        return RecordOutcome::Nothing; // the miner wrote nothing to record.
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, found_clean)
 }
 
 #[cfg(test)]
@@ -413,12 +542,22 @@ mod tests {
         );
     }
 
-    /// The private-install reading of the same decision: the census never
-    /// reaches the host's git, so a dirty tree disqualifies nothing and
-    /// staleness alone decides. Without this the census on a client repository
-    /// silently never refreshed — the tree there is dirty nearly always.
+    /// The hidden-census reading of the same decision: a census no git can see
+    /// has no commit of its own to keep apart from the dirt, so a dirty tree
+    /// disqualifies nothing and staleness alone decides. Without this the
+    /// census on a client repository silently never refreshed — the tree there
+    /// is dirty nearly always.
+    ///
+    /// The fixture excludes the CENSUS, not merely the two marks that DETECT a
+    /// private install (`settings.local.json`, `CLAUDE.local.md`). A real
+    /// private install excludes both census artifacts, and writing only the
+    /// marks modelled an install that does not exist: the census stayed plainly
+    /// visible while the test asserted it was hidden. That gap is why the
+    /// decision now asks whether git can SEE these files instead of which mode
+    /// the install is in — this repository carries the marks AND a tracked
+    /// census, and the coarse answer sent it down the wrong branch.
     #[test]
-    fn a_private_install_refreshes_the_census_on_a_dirty_tree() {
+    fn a_hidden_census_refreshes_on_a_dirty_tree() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         init_repo_on(root, "dev");
@@ -426,16 +565,40 @@ mod tests {
 
         let info = root.join(".git").join("info");
         std::fs::create_dir_all(&info).unwrap();
-        std::fs::write(
-            info.join("exclude"),
-            mustard_core::PRIVATE_MARKS.join("\n") + "\n",
-        )
-        .unwrap();
+        let mut rules: Vec<String> =
+            mustard_core::PRIVATE_MARKS.iter().map(|m| (*m).to_string()).collect();
+        rules.push(".claude/grain.model.json".to_string());
+        rules.push(".claude/grain.dictionary.json".to_string());
+        std::fs::write(info.join("exclude"), rules.join("\n") + "\n").unwrap();
 
         std::fs::write(root.join("stray.txt"), "x").unwrap();
         assert!(
             census_refresh_due(root, &model),
-            "a private census has no commit of its own to keep apart from the dirt",
+            "a census git cannot see has no commit of its own to keep apart from the dirt",
+        );
+    }
+
+    /// …and the counter-case the old mode predicate got wrong. Private marks
+    /// present, census NOT excluded — this repository's own shape. The census
+    /// is visible, so a dirty tree must postpone the re-mine rather than mine
+    /// into it and leave a versioned file uncommitted.
+    #[test]
+    fn a_visible_census_postpones_the_refresh_on_a_dirty_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo_on(root, "dev");
+        let model = default_model_path(root);
+
+        let info = root.join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("exclude"), mustard_core::PRIVATE_MARKS.join("\n") + "\n")
+            .unwrap();
+
+        std::fs::write(root.join("stray.txt"), "x").unwrap();
+        assert!(
+            !census_refresh_due(root, &model),
+            "the marks say `private` but nothing hides the census: mining here would leave \
+             a versioned file dirty, which is the debt this unit removes",
         );
     }
 
@@ -476,6 +639,116 @@ mod tests {
             !census_refresh_due(root, &model),
             "a model newer than HEAD is not stale: {}",
             model.display(),
+        );
+    }
+
+    /// `git status --porcelain` for `root` — the tree as the NEXT command's
+    /// clean-tree guard will read it.
+    fn porcelain(root: &Path) -> String {
+        let out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(root)
+            .output()
+            .expect("git status");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repo on `dev` whose `.claude/grain.model.json` is TRACKED and
+    /// committed — the shape this repository has, and the only one where a
+    /// census refresh can dirty anything at all. Returns the model path.
+    /// The fixture tracks BOTH artifacts a scan writes, because the real miner
+    /// writes both. Tracking only the model made the AC-2 test a false
+    /// positive: it passed while the field run left the dictionary sidecar
+    /// modified and the tree dirty.
+    fn repo_tracking_the_census(root: &Path) -> std::path::PathBuf {
+        init_repo_on(root, "dev");
+        let model = default_model_path(root);
+        std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
+        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[]}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "track the census"]);
+        assert_eq!(porcelain(root), "", "the fixture must start clean");
+        model
+    }
+
+    /// Everything a scan writes, as the miner would — model AND sidecar.
+    fn remine(model: &Path) {
+        std::fs::write(model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+        std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[\"wave\"]}\n").unwrap();
+    }
+
+    /// AC-2 — the refresh finishes its own job. Re-mining a VERSIONED census on
+    /// a tree the gate found clean leaves the tree clean again, with no manual
+    /// commit in between.
+    ///
+    /// This is the defect the installer's version stamp had, with another file:
+    /// the write landed, the gate announced it as work the operator could
+    /// "commit apart", and the next unit's branch cut refused — five times in
+    /// one session.
+    #[test]
+    fn census_refresh_leaves_the_tree_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+
+        // Sampled BEFORE the write, exactly as `refresh_census_if_stale` does.
+        let found_clean = worktree_is_clean(root);
+        assert_eq!(found_clean, Some(true), "the fixture tree is clean");
+
+        // The miner's effect, without the grain binary — BOTH artifacts move.
+        remine(&model);
+        assert_ne!(porcelain(root), "", "the re-mined census really did dirty the tree");
+
+        assert_eq!(
+            record_census(root, &model, found_clean),
+            RecordOutcome::Recorded,
+            "a census the gate itself wrote on a clean base is the gate's to record",
+        );
+        assert_eq!(
+            porcelain(root),
+            "",
+            "the next unit's branch cut must find nothing to blame on the operator",
+        );
+    }
+
+    /// AC-3 — and it never finishes SOMEONE ELSE's. A tree that already carried
+    /// the operator's work is left entirely alone: nothing is committed, and
+    /// their change is neither swept into a commit of ours nor staged.
+    #[test]
+    fn census_refresh_never_commits_over_the_operators_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        // The operator's work, present BEFORE the gate looks.
+        std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
+        let found_clean = worktree_is_clean(root);
+        assert_eq!(found_clean, Some(false), "the tree already carried their work");
+
+        std::fs::write(&model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+
+        assert_eq!(
+            record_census(root, &model, found_clean),
+            RecordOutcome::TreeNotClean,
+            "with the operator's work in the tree the gate records nothing",
+        );
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "no commit was written at all",
+        );
+        let status = porcelain(root);
+        assert!(
+            status.contains("theirs.txt"),
+            "their file is untouched and still theirs to commit: {status}",
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("theirs.txt")).unwrap(),
+            "mine, not yours\n",
+            "and its bytes were never rewritten",
         );
     }
 }

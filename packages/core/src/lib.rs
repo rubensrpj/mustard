@@ -56,9 +56,10 @@ pub use platform::hook_resolve::{
 pub use platform::project_seed::{
     carries_private_marks, default_inject_entries, detect_install_mode, footprint,
     footprint_pathspecs, footprint_rules, is_written_footprint, migrate_orchestrator_footprint,
-    record_version_stamp, retire_planted_plugin_enablement, seed_gitignore, seed_injectable_files,
-    seed_settings, upsert_project, worktree_is_clean, FootprintEntry, InstallMode,
-    MigrationOutcome, SeedOutcome, StampOutcome, UpsertReport, CLAUDE_LOCAL_MD, CLAUDE_MD,
+    record_version_stamp, record_written_path, retire_planted_plugin_enablement, seed_gitignore,
+    seed_injectable_files, seed_settings, upsert_project, worktree_is_clean, FootprintEntry,
+    InstallMode, MigrationOutcome, RecordOutcome, SeedOutcome, UpsertReport, CLAUDE_LOCAL_MD,
+    CLAUDE_MD,
     PRIVATE_MARKS,
 };
 // Clone-local git exclude — the layer a private install hides its footprint in,
