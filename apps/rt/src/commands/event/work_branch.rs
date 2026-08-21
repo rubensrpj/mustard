@@ -50,13 +50,53 @@ use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind, CUT_BASE_FILE};
 /// The hotfix-versus-work-base refusal is gone with the inference that made it
 /// meaningful. `hotfix/` is a prefix on a name now; where the unit lands is the
 /// base the operator picked, and picking is the whole feature.
+/// The branch the checkout is standing on — `None` when git cannot say, or when
+/// `HEAD` is detached and the answer would be the literal `HEAD`.
+///
+/// The last MEASURED step of the default chain: a repository whose `origin/HEAD`
+/// is unreadable still has a branch under the operator's feet, and it exists,
+/// which is the whole property that matters. Only after this does the chain
+/// reach a literal.
+fn current_branch_of(root: &Path) -> Option<String> {
+    let dir = root.to_string_lossy().to_string();
+    let out = std::process::Command::new("git")
+        .args(["-C", &dir, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty() && name != "HEAD").then_some(name)
+}
+
 pub(crate) fn resolve_kind_base(
     root: &Path,
     requested: Option<&str>,
     config: &mustard_core::ProjectConfig,
 ) -> Result<String, String> {
     let Some(requested) = requested.map(str::trim).filter(|b| !b.is_empty()) else {
-        return Ok(config.git.primary_base());
+        // **The default must be a branch that EXISTS, not a literal.**
+        // `primary_base()` floors to the hardcoded `main` when no `git.flow` is
+        // written — the shape the installer produces today — so with no `--base`
+        // this recorded `main` in a repository that has no `main`. It used to
+        // pass through unchallenged; once the reader started checking existence,
+        // the invented name was correctly dropped and the write gate DENIED the
+        // first edit of every such project. Measured A/B on one fixture: the
+        // baseline cut the branch, this denied it.
+        //
+        // So the default is asked of git — `origin/HEAD`, the remote's own
+        // answer — and the declared primary is used only when the project
+        // states one. A default nobody can check out is not a default.
+        // Order: what the project STATES, then what the remote states, then the
+        // branch the operator is standing on — each a name that exists — and the
+        // literal only when nothing at all could be measured.
+        if !config.git.declared_bases().is_empty() {
+            return Ok(config.git.primary_base());
+        }
+        return Ok(mustard_core::default_branch(root)
+            .or_else(|| current_branch_of(root))
+            .unwrap_or_else(|| config.git.primary_base()));
     };
     let catalog = mustard_core::branch_catalog(root, &config.git, false);
     if catalog.is_empty() || catalog.iter().any(|b| b.name == requested) {
@@ -1242,6 +1282,42 @@ mod tests {
             super::resolve_kind_base(root, Some("dev"), &config).as_deref(),
             Ok("dev"),
             "and the work base is an ordinary answer for ANY kind — the old contradiction is gone",
+        );
+    }
+
+    /// With NO flow declared and NO `--base`, the default is the remote's own
+    /// answer — never the literal `main`.
+    ///
+    /// This is the shape `mustard init` produces today, and it had no test at
+    /// all. `primary_base()` floors to the hardcoded `main` there, so the gate
+    /// recorded a branch the repository does not have; once the reader began
+    /// checking existence, that invented name was correctly dropped and the
+    /// write gate DENIED the first edit of every such project. Measured A/B on
+    /// one fixture: the baseline cut the branch, the wave denied it. A default
+    /// nobody can check out is not a default.
+    #[test]
+    fn with_no_flow_and_no_answer_the_default_is_the_remote_own_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_repo_declaring(root, None);
+
+        let config = mustard_core::ProjectConfig::load(root);
+        assert!(
+            config.git.declared_bases().is_empty(),
+            "fixture must be the installer's shape: no flow declared",
+        );
+        let answer = super::resolve_kind_base(root, None, &config);
+        assert_ne!(
+            answer.as_deref(),
+            Ok("main"),
+            "the default is the hardcoded literal again — in a repository that has \
+             no `main`, that name is recorded and then dropped, and the first edit \
+             is denied",
+        );
+        assert_eq!(
+            answer.as_deref(),
+            Ok("dev"),
+            "the default must be the branch `origin/HEAD` really names",
         );
     }
 
