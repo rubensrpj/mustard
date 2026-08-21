@@ -43,6 +43,7 @@
 //!   (the CLI prints didactic lines, the runtime prints the JSON report).
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1091,6 +1092,117 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
     }
     config.write(root)?;
     Ok(SeedOutcome::Updated)
+}
+
+// ---------------------------------------------------------------------------
+// Recording what the product itself wrote
+// ---------------------------------------------------------------------------
+
+/// What a writer did about a path IT wrote into a working tree the host
+/// repository VERSIONS.
+///
+/// Whenever the product rewrites a tracked artifact of its own — the install's
+/// `mustard.json#version` stamp, the base gate's deterministic census — the
+/// write lands as an uncommitted change nobody asked for. The very next command
+/// that guards on a clean tree then refuses, attributing the change to another
+/// unit of the operator's work, when the writer was the product. So the writer
+/// finishes its own job instead of leaving it: it records the path when the
+/// tree it FOUND was clean, and says what it did in every other case.
+///
+/// Serializable because a caller may ride it in a JSON report; `camelCase`
+/// matches every other key those reports emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordOutcome {
+    /// Nothing was left for git to see: the path is untracked (a private
+    /// install hid it) or the write did not change a byte. The ordinary case.
+    Nothing,
+    /// The write was the product's own change and it is now committed — the
+    /// tree the writer found clean is clean again.
+    Recorded,
+    /// The writer found the operator's work already in the tree and recorded
+    /// nothing. Their change is never swept into the product's commit, and the
+    /// written path is left for them to commit with it.
+    TreeNotClean,
+    /// Git could not answer, or refused the commit (no identity configured, a
+    /// hook that declined). The write is left where it landed. Reported, never
+    /// an error.
+    Unavailable,
+}
+
+/// Whether the repository containing `root` has NOTHING to report — no staged,
+/// modified or untracked path. `None` when git could not answer at all (absent
+/// binary, no repository).
+///
+/// Sampled by a writer BEFORE it writes anything, so [`record_written_path`]
+/// can tell the product's own change apart from the operator's. Never panics.
+#[must_use]
+pub fn worktree_is_clean(root: &Path) -> Option<bool> {
+    porcelain(root, &[]).map(|status| status.is_empty())
+}
+
+/// Record `path` — a repo-relative path the product itself just wrote — so the
+/// product never leaves a versioned file dirty for the next command to blame on
+/// the operator. `subject` is the commit subject the caller wants in the
+/// operator's history.
+///
+/// `found_clean` is [`worktree_is_clean`] sampled before the write — `None`
+/// when git could not answer then either.
+///
+/// Only ever commits the ONE path: a writer that found other work in the tree
+/// records nothing at all, and even on a clean tree the commit carries a
+/// pathspec, so nothing written beside it can ride along. Fail-open throughout
+/// — every failure degrades to [`RecordOutcome::Unavailable`] and the write
+/// simply stays uncommitted.
+#[must_use]
+pub fn record_written_path(
+    root: &Path,
+    path: &str,
+    subject: &str,
+    found_clean: Option<bool>,
+) -> RecordOutcome {
+    // A path the host repository does not track cannot be dirty — under a
+    // private install the exclude rule already made the write invisible.
+    if git_exclude::tracked_paths(root, &[path.to_string()]).is_empty() {
+        return RecordOutcome::Nothing;
+    }
+    let Some(status) = porcelain(root, &[path]) else {
+        return RecordOutcome::Unavailable;
+    };
+    if status.is_empty() {
+        return RecordOutcome::Nothing; // a re-write that changed no byte.
+    }
+    match found_clean {
+        Some(true) if commit_path(root, path, subject) => RecordOutcome::Recorded,
+        Some(true) => RecordOutcome::Unavailable,
+        Some(false) => RecordOutcome::TreeNotClean,
+        None => RecordOutcome::Unavailable,
+    }
+}
+
+/// `git status --porcelain` for `root`, optionally narrowed to `pathspecs`.
+/// `None` when git could not answer — which is NOT the same as an empty answer,
+/// so this cannot reuse `git_exclude`'s helper (that one folds empty stdout into
+/// `None`, and empty stdout is exactly what "clean" looks like here).
+fn porcelain(root: &Path, pathspecs: &[&str]) -> Option<String> {
+    let mut args: Vec<&str> = vec!["status", "--porcelain"];
+    if !pathspecs.is_empty() {
+        args.push("--");
+        args.extend(pathspecs);
+    }
+    let out = Command::new("git").args(&args).current_dir(root).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Commit `path` alone, with `subject`. `false` on any refusal — no git, no
+/// identity configured, a hook that declined — and nothing is left staged: the
+/// pathspec form of `git commit` never touches the index.
+fn commit_path(root: &Path, path: &str, subject: &str) -> bool {
+    Command::new("git")
+        .args(["commit", "-m", subject, "--", path])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 // ---------------------------------------------------------------------------
