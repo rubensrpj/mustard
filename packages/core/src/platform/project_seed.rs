@@ -502,6 +502,15 @@ pub struct UpsertReport {
     /// nothing to see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamp: Option<RecordOutcome>,
+    /// The branch the stamp commit landed on, when one was made.
+    ///
+    /// The `mustard init` face says this in prose; `run upsert` answers in JSON
+    /// and said nothing at all, so its callers could not tell that the bootstrap
+    /// door had just committed to the branch they were standing on. Naming it is
+    /// what keeps an auto-commit a STATED outcome on both faces. Absent unless a
+    /// commit was really made, so an ordinary run stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp_branch: Option<String>,
 }
 
 /// `skip_serializing_if` predicate for the additive booleans above — a `false`
@@ -644,6 +653,11 @@ pub fn upsert_project(
     //    misattribute. Reported, never fatal.
     let stamp = record_version_stamp(root, found_clean);
     report.stamp = (stamp != RecordOutcome::Nothing).then_some(stamp);
+    // Name where the commit landed — the JSON face's half of the same promise
+    // the `mustard init` prose makes. Only when one was actually made.
+    if stamp == RecordOutcome::Recorded {
+        report.stamp_branch = crate::platform::git_branches::current_branch(root);
+    }
 
     Ok(report)
 }

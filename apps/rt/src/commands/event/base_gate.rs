@@ -173,11 +173,19 @@ pub(crate) fn census_refresh_due(project: &Path, model: &Path) -> bool {
     if !census_is_stale(project, model) {
         return false;
     }
-    // A private install's census never reaches the host's git, so no state of
-    // the tree can fuse it with the user's work: staleness is the whole
-    // question. Without this, a client repository — dirty nearly always —
-    // would carry a census that silently never refreshed.
-    if !scan_output_is_versioned(project) {
+    // A census git cannot see never fuses with the user's work, so staleness is
+    // the whole question there. Without this, a client repository — dirty
+    // nearly always — would carry a census that silently never refreshed.
+    //
+    // The question is asked of the FILES, not of the install mode. The mode
+    // predicate reads "private install ⇒ invisible", and this very repository
+    // falsifies it: it carries both private marks in `info/exclude` AND a
+    // tracked census. Under the coarse answer the gate re-mined on a dirty tree
+    // and then had to leave the versioned result uncommitted — the debt-
+    // admission this whole unit exists to delete. `record_written_path` already
+    // judges per path; this now asks the same fact of the same paths, so the
+    // two halves of one decision can no longer disagree.
+    if !census_is_visible_to_git(project, model) {
         return true;
     }
     // Shared install: only a POSITIVE clean tree qualifies. `None` (no git,
@@ -296,6 +304,44 @@ const GRAIN_DICTIONARY: &str = "grain.dictionary.json";
 /// Split out of [`refresh_census_if_stale`] for the same reason
 /// [`census_refresh_due`] is: the RECORDING is testable without the grain
 /// sidecar binary — the effect needs it, the bookkeeping does not.
+/// Whether git would SEE the census — asked of the files, not of the install
+/// mode.
+///
+/// Visible means "no ignore rule hides it", which is the same fact
+/// [`record_written_path`] judges when it decides whether a write is worth
+/// recording. Tracked would be the wrong question: a first mine is untracked by
+/// definition and still shows up as `??`, so answering "invisible" there would
+/// re-mine onto a dirty tree and leave exactly the dirt this unit removes.
+///
+/// Not the install mode either. That predicate reads "private install ⇒
+/// invisible", and this very repository falsifies it: it carries private marks
+/// in `info/exclude` AND a tracked census. Under the coarse answer the gate
+/// re-mined on a dirty tree and then had to leave the versioned result
+/// uncommitted — the debt-admission this unit exists to delete.
+///
+/// Unmeasured (no git, no repository) reads as INVISIBLE, the direction the
+/// mode predicate also took: a census nobody can see is one staleness alone
+/// should decide.
+fn census_is_visible_to_git(project: &Path, model: &Path) -> bool {
+    [model.to_path_buf(), model.with_file_name(GRAIN_DICTIONARY)]
+        .iter()
+        .filter_map(|p| p.strip_prefix(project).ok())
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .any(|rel| !path_is_ignored(project, &rel))
+}
+
+/// `true` when git would ignore `rel` — an ignore rule or the clone-local
+/// exclude file a private install writes into; `check-ignore` reads both.
+/// `false` when git could not answer, so an unmeasured path counts as visible
+/// and the stricter clean-tree requirement applies.
+fn path_is_ignored(project: &Path, rel: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["check-ignore", "-q", "--", rel])
+        .current_dir(project)
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
 /// A scan writes TWO artifacts, not one: the model and its byte-stable
 /// `grain.dictionary.json` sidecar beside it. Recording only the model left the
 /// sidecar modified, so the tree stayed dirty and the next branch cut still
@@ -306,12 +352,22 @@ fn record_census(project: &Path, model: &Path, found_clean: Option<bool>) -> Rec
     // Each pathspec is DERIVED from a path that was really written, so no
     // pathspec can name a file the scan did not touch. Forward-slashed: a git
     // pathspec is not a Windows path.
+    // Only paths that actually EXIST. `git add -- <a> <missing>` aborts
+    // wholesale (`fatal: pathspec did not match any files`), so naming an
+    // absent sidecar would take the model down with it and leave the tree dirty
+    // — the outcome this function exists to prevent, reached by being thorough.
     let mut paths: Vec<String> = Vec::with_capacity(2);
     for written in [model.to_path_buf(), model.with_file_name(GRAIN_DICTIONARY)] {
+        if !written.is_file() {
+            continue;
+        }
         let Ok(rel) = written.strip_prefix(project) else {
             return RecordOutcome::Unavailable;
         };
         paths.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    if paths.is_empty() {
+        return RecordOutcome::Nothing; // the miner wrote nothing to record.
     }
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, found_clean)
@@ -486,12 +542,22 @@ mod tests {
         );
     }
 
-    /// The private-install reading of the same decision: the census never
-    /// reaches the host's git, so a dirty tree disqualifies nothing and
-    /// staleness alone decides. Without this the census on a client repository
-    /// silently never refreshed — the tree there is dirty nearly always.
+    /// The hidden-census reading of the same decision: a census no git can see
+    /// has no commit of its own to keep apart from the dirt, so a dirty tree
+    /// disqualifies nothing and staleness alone decides. Without this the
+    /// census on a client repository silently never refreshed — the tree there
+    /// is dirty nearly always.
+    ///
+    /// The fixture excludes the CENSUS, not merely the two marks that DETECT a
+    /// private install (`settings.local.json`, `CLAUDE.local.md`). A real
+    /// private install excludes both census artifacts, and writing only the
+    /// marks modelled an install that does not exist: the census stayed plainly
+    /// visible while the test asserted it was hidden. That gap is why the
+    /// decision now asks whether git can SEE these files instead of which mode
+    /// the install is in — this repository carries the marks AND a tracked
+    /// census, and the coarse answer sent it down the wrong branch.
     #[test]
-    fn a_private_install_refreshes_the_census_on_a_dirty_tree() {
+    fn a_hidden_census_refreshes_on_a_dirty_tree() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         init_repo_on(root, "dev");
@@ -499,16 +565,40 @@ mod tests {
 
         let info = root.join(".git").join("info");
         std::fs::create_dir_all(&info).unwrap();
-        std::fs::write(
-            info.join("exclude"),
-            mustard_core::PRIVATE_MARKS.join("\n") + "\n",
-        )
-        .unwrap();
+        let mut rules: Vec<String> =
+            mustard_core::PRIVATE_MARKS.iter().map(|m| (*m).to_string()).collect();
+        rules.push(".claude/grain.model.json".to_string());
+        rules.push(".claude/grain.dictionary.json".to_string());
+        std::fs::write(info.join("exclude"), rules.join("\n") + "\n").unwrap();
 
         std::fs::write(root.join("stray.txt"), "x").unwrap();
         assert!(
             census_refresh_due(root, &model),
-            "a private census has no commit of its own to keep apart from the dirt",
+            "a census git cannot see has no commit of its own to keep apart from the dirt",
+        );
+    }
+
+    /// …and the counter-case the old mode predicate got wrong. Private marks
+    /// present, census NOT excluded — this repository's own shape. The census
+    /// is visible, so a dirty tree must postpone the re-mine rather than mine
+    /// into it and leave a versioned file uncommitted.
+    #[test]
+    fn a_visible_census_postpones_the_refresh_on_a_dirty_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo_on(root, "dev");
+        let model = default_model_path(root);
+
+        let info = root.join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("exclude"), mustard_core::PRIVATE_MARKS.join("\n") + "\n")
+            .unwrap();
+
+        std::fs::write(root.join("stray.txt"), "x").unwrap();
+        assert!(
+            !census_refresh_due(root, &model),
+            "the marks say `private` but nothing hides the census: mining here would leave \
+             a versioned file dirty, which is the debt this unit removes",
         );
     }
 
