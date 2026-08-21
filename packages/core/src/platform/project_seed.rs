@@ -1109,13 +1109,20 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
 /// finishes its own job instead of leaving it: it records the path when the
 /// tree it FOUND was clean, and says what it did in every other case.
 ///
-/// Serializable because a caller may ride it in a JSON report; `camelCase`
-/// matches every other key those reports emit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Not serializable, unlike its report-carrying siblings: nothing rides it in
+/// JSON today, and `rt-outcome-pattern` keeps serde off an outcome — the report
+/// type is what earns the derive, never the state it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordOutcome {
-    /// Nothing was left for git to see: the path is untracked (a private
-    /// install hid it) or the write did not change a byte. The ordinary case.
+    /// Nothing was left for git to see: the path is IGNORED (a private install
+    /// hid it behind an exclude rule) or the write did not change a byte. The
+    /// ordinary case.
+    ///
+    /// Untracked alone does NOT qualify, and equating the two was a real
+    /// defect: a shared install's FIRST mine writes a path git has never seen,
+    /// no ignore rule covers it, and `git status` reports it as `??` — so a
+    /// writer that returned `Nothing` there left the very dirt this type exists
+    /// to remove, while announcing the opposite.
     Nothing,
     /// The write was the product's own change and it is now committed — the
     /// tree the writer found clean is clean again.
@@ -1161,9 +1168,14 @@ pub fn record_written_path(
     subject: &str,
     found_clean: Option<bool>,
 ) -> RecordOutcome {
-    // A path the host repository does not track cannot be dirty — under a
-    // private install the exclude rule already made the write invisible.
-    if git_exclude::tracked_paths(root, &[path.to_string()]).is_empty() {
+    // Untracked splits in two, and only ONE half is invisible to git. Under a
+    // private install an exclude rule hides the write, so there is nothing to
+    // record. On a shared install's first mine the path is equally untracked
+    // but nothing hides it: `git status` reports `??` and the next gate refuses
+    // on it, so it has to be recorded like any other — it just needs the index
+    // step a never-seen path cannot skip.
+    let untracked = git_exclude::tracked_paths(root, &[path.to_string()]).is_empty();
+    if untracked && is_ignored(root, path) {
         return RecordOutcome::Nothing;
     }
     let Some(status) = porcelain(root, &[path]) else {
@@ -1173,11 +1185,41 @@ pub fn record_written_path(
         return RecordOutcome::Nothing; // a re-write that changed no byte.
     }
     match found_clean {
+        // Staging is safe here and ONLY here: the tree was found clean, so the
+        // index holds nothing of the operator's for the commit to sweep up. A
+        // tracked path skips it — `git commit -- <path>` reaches a modified
+        // file on its own, and not touching the index is the stronger promise.
+        Some(true) if untracked && !stage_path(root, path) => RecordOutcome::Unavailable,
         Some(true) if commit_path(root, path, subject) => RecordOutcome::Recorded,
         Some(true) => RecordOutcome::Unavailable,
         Some(false) => RecordOutcome::TreeNotClean,
         None => RecordOutcome::Unavailable,
     }
+}
+
+/// Whether git would ignore `path` — an ignore rule, or the clone-local exclude
+/// file a private install writes into. One probe answers both: `check-ignore`
+/// reads `.gitignore` and `info/exclude` alike.
+///
+/// `false` when git could not answer: an unmeasured path is treated as VISIBLE,
+/// which costs at worst a recorded commit, where the opposite error costs the
+/// dirty tree this whole path exists to prevent.
+fn is_ignored(root: &Path, path: &str) -> bool {
+    Command::new("git")
+        .args(["check-ignore", "-q", "--", path])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Stage `path` alone. Only ever called on a tree that was found CLEAN, where
+/// the index has nothing of the operator's to disturb.
+fn stage_path(root: &Path, path: &str) -> bool {
+    Command::new("git")
+        .args(["add", "--", path])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// `git status --porcelain` for `root`, optionally narrowed to `pathspecs`.
@@ -1419,6 +1461,79 @@ fn strip_mustard_root_lines(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A shared install's FIRST mine writes a path git has never seen and no
+    /// ignore rule covers. Treating "untracked" as "invisible" left it sitting
+    /// as `??` while the writer announced the tree was clean — the exact dirt
+    /// this function exists to remove, now announced as removed.
+    #[test]
+    fn a_first_write_of_an_unignored_path_is_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        let clean = super::worktree_is_clean(root);
+        assert_eq!(clean, Some(true), "fixture must start clean");
+
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/model.json"), "{}\n").unwrap();
+
+        let outcome = super::record_written_path(root, ".claude/model.json", "chore: model", clean);
+        assert_eq!(outcome, super::RecordOutcome::Recorded);
+        assert_eq!(
+            super::porcelain(root, &[]).as_deref(),
+            Some(""),
+            "a first mine must leave the tree clean, not `?? .claude/`",
+        );
+    }
+
+    /// The other half of the same split: a path an exclude rule hides really is
+    /// invisible to git, so there is nothing to record and nothing to say.
+    #[test]
+    fn an_ignored_path_is_left_alone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        std::fs::write(root.join(".gitignore"), "secret.json\n").unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "ignore"]);
+        let clean = super::worktree_is_clean(root);
+
+        std::fs::write(root.join("secret.json"), "{}\n").unwrap();
+
+        assert_eq!(
+            super::record_written_path(root, "secret.json", "chore: secret", clean),
+            super::RecordOutcome::Nothing,
+        );
+    }
+
+    /// Git that cannot answer never becomes a silent success.
+    #[test]
+    fn outside_a_repository_the_write_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("f.json"), "{}\n").unwrap();
+        assert_eq!(
+            super::record_written_path(root, "f.json", "chore: f", Some(true)),
+            super::RecordOutcome::Unavailable,
+        );
+    }
+
+    fn run_git(root: &std::path::Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+    }
+
+    fn seed_repo(root: &std::path::Path) {
+        run_git(root, &["init", "--initial-branch=main"]);
+        run_git(root, &["config", "user.email", "t@example.com"]);
+        run_git(root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "seed"]);
+    }
 
     /// AC-3 — the migration recognises an equivalent spelling of the router's
     /// declared path.
