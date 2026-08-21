@@ -64,9 +64,17 @@ const HOOK_RESPONSE_CAP: usize = 10_000;
 ///
 /// The census used to be the unbounded term; it is now capped at a known number
 /// of rows (`TERRAIN_ROWS_CAP`), which is what makes this reserve a fact rather
-/// than a hope. 2,000 characters covers the capped census with room for both
-/// advisories.
-const COMPOSED_SIBLING_RESERVE: usize = 2_000;
+/// than a hope: 16 rows at roughly 45 characters each, plus the header and the
+/// truncation line, is about 950; the two advisories add some 400 more.
+///
+/// **The count below is of the file AS CHECKED OUT, line endings included.** A
+/// Windows checkout carries CRLF, which costs one character per line — 34 for
+/// the larger injectable. The first version of this budget left 5 characters of
+/// margin and passed locally while failing CI on Windows only, which is the
+/// worst shape a ratchet can have: green where it is written, red where nobody
+/// is looking. The reserve is sized so the margin survives the platform that
+/// pays the most, not the one that pays the least.
+const COMPOSED_SIBLING_RESERVE: usize = 1_600;
 
 /// The `plugin/` tree — home of the command/ref corpus.
 fn plugin_dir() -> PathBuf {
