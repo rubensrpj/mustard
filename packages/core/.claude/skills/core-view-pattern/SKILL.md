@@ -1,6 +1,6 @@
 ---
 name: core-view-pattern
-description: Use when adding or refactoring a typed ViewModel under the view module that other crates render against.
+description: Use when adding or refactoring a `*View` / view-row struct that other crates render — the typed ViewModel a projection folds out of the event stream.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,26 +17,25 @@ metadata:
 
 ## Purpose
 
-`view/` holds the typed ViewModels the rt and dashboard crates render — one cohesive shape per file, so "how we surface acceptance criteria" changes touch `quality.rs` alone. `SpecView` is the rich per-spec drill-down shape, `WaveView` is one wave row, `TimelineNode` is one timeline row; each is folded from the event stream, which is why each has a zero-value constructor (`SpecView::empty`, `WaveView::queued`, `QualityRollup::empty`) that returns a coherent empty shape rather than an error. Absence is encoded as an absent `Option` or a zero counter — the module docs are explicit that a literal `"unknown"` string would mislead, and `WorkspaceSummary::tokens_saved_today` stays optional precisely to distinguish "no data" from "zero". Every field carries a doc comment naming the event or payload field it is projected from.
+The `view/` modules are the surface other crates (rt, dashboard) render against: each file owns one cohesive shape, so a change to "how we surface waves" touches `wave.rs` alone. A view struct is a flat record of pre-computed fields — the projection does the work once so the UI never re-parses a payload. The three exemplars share a discipline about emptiness: a view with no evidence is a coherent zeroed value produced by a named constructor (`SpecView::empty`, `WaveView::queued`), never an `Err` and never a `"unknown"` string. Where a list view would pay for the heavy collections, a lean sibling exists beside the rich one (`SpecSummary` next to `SpecView`) with a `From<&SpecView>` projection between them.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 3
 
-- Standard derive on the exemplars: `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. Drop `Eq` when a field is `f64` — `WorkspaceSummary` is `PartialEq` only and says so in its doc comment.
-- Each file opens with a module doc naming the UI surface it backs (`SpecDrillDown > Ondas`, `Visão Geral`, …) and any deliberate absence (no `Unknown` variant).
-- Late-added or optional fields are `#[serde(default, skip_serializing_if = "Option::is_none")]` (`TimelineNode::input`, `tokens_in`, `parent_id`) or plain `#[serde(default)]` (`SpecSummary::children_count`) so payloads written before the field existed still deserialise.
-- Lean siblings exist for list views (`SpecSummary` next to `SpecView`) and are produced by `impl From<&SpecView>`, documenting which fields the projection cannot fill.
-- Constructors and predicates are `#[must_use]`; `is_empty()` style predicates express "no evidence yet" instead of returning an error.
-- Cross-cutting enums (`Phase`, `Scope`) live in `view/mod.rs`; per-shape types live in their own file and are re-exported from `mod.rs` through an explicit `pub use x::{…};` list.
-- Tests sit in `#[cfg(test)] mod tests` at the bottom of the same file and assert the empty constructor and the `From` projection.
+- `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]` on every view struct read here; `Eq` is dropped when a field is `f64` and the struct doc says why (`WorkspaceSummary.events_per_minute`).
+- All fields `pub`, each with a `///` naming the event or payload that produces it and what `None` means; absence is `Option<…>` or a zero counter, never a sentinel string.
+- Fields added after the shape shipped carry `#[serde(default, skip_serializing_if = "Option::is_none")]` (see the W5 hints on `TimelineNode`) so older payloads keep deserialising and unchanged JSON stays byte-identical.
+- The module doc opens with `//! [`TypeName`] — one line about what it backs`, naming the UI surface it feeds (`Backs `SpecDrillDown > Timeline``).
+- Zero-value constructors are `#[must_use] pub fn` returning `Self` with every collection `Vec::new()` and every unknown `None`; emptiness predicates (`SpecView::is_empty`) are inherent, `#[must_use]`, and documented with the caller that needs them.
+- `domain/model/` stays pure — no filesystem, no logging, no panic; tests sit at the bottom of the same file asserting the empty constructor and any `From` projection.
 
 ## How to apply
 
-A new shape gets its own file under `view/`: module doc first, then the types, then the tests. Register it in `view/mod.rs` with `mod x;` and an explicit `pub use x::{…};` — the re-export list is the module's public surface. Reuse `Phase` / `Scope` from `mod.rs` and `SpecState` from `spec.rs` instead of re-declaring a local variant. Keep this folder pure: no filesystem, no logging, no `fs` import — the fold that fills the view lives outside `domain/model/`. Adding a field is safe only when it is `#[serde(default)]`; renaming or reshaping an existing one is a migration for every consumer.
+One view family per file under `packages/core/src/domain/model/view/`; a new file is declared as a private `mod x;` in `mod.rs` and every public type is listed in that file's explicit `pub use` block. Shared cross-cutting enums (`Phase`, `Scope`) are imported with `use super::…` rather than redeclared. Treat the struct as a published contract: change a field name or its meaning only with a migration, add new optional fields defaulted, and give the lean/rich split its `From` impl instead of duplicating the fold.
 
 ## Examples
 
 - Ref: packages/core/src/domain/model/view/spec.rs — `SpecView::empty`, `SpecSummary`, `impl From<&SpecView> for SpecSummary`.
-- Ref: packages/core/src/domain/model/view/wave.rs — `WaveView::queued` and the per-field event provenance comments.
-- Ref: packages/core/src/domain/model/view/timeline.rs — `TimelineNode` with the pre-extracted, skip-serialising hint fields.
+- Ref: packages/core/src/domain/model/view/wave.rs — `WaveView::queued` as the fresh-row constructor.
+- Ref: packages/core/src/domain/model/view/timeline.rs — `TimelineNode` with defaulted, skip-serialised late-added hint fields.

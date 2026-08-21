@@ -1,6 +1,6 @@
 ---
 name: dashboard-check-pattern
-description: Use when adding or refactoring a health/detection check surface under apps/dashboard/src/lib that wraps a Tauri command and normalises its report.
+description: Use when adding or refactoring a diagnostic `*Check` surface in src/lib that wraps a Tauri probe command and normalises its raw payload.
 paths:
   - apps/dashboard/src/lib/**
 tags: [add, refactor]
@@ -17,24 +17,25 @@ metadata:
 
 ## Purpose
 
-A check surface answers "is this installed / is this healthy / is this stale" for one project path, and in this dashboard it is always a small `src/lib` module that owns the `invoke()` call and exports a normalised report. `doctor.ts` wraps `doctor_status` (which shells out to `mustard-rt run doctor --json`) into `DoctorStatus { overall, checks, error }`; `projects.ts` wraps `detect_project_mustard`, `artifact_update_check` and `is_mustard_repo` into `ProjectDetection` and `ArtifactDriftReport`. Both files state in their header that components must not call `invoke()` directly and must import from here. The defining habit is that a failed check is *data*, not an exception: a missing binary, an unparseable report or a non-Mustard repo comes back as `error: "..."`, `installed: false` or an empty item list, so the badge renders a tooltip instead of crashing the sidebar.
+A check surface is a `src/lib/<domain>.ts` module that owns one family of read-only diagnostic commands: installation health (`doctor.ts`), per-project detection and artifact drift (`projects.ts`). Each module is the single import site for those `invoke()` calls, so components never reach the backend themselves. The distinguishing work of this role is normalisation: the Rust side answers in snake_case with open-ended status strings, and the module maps that onto a narrow, camelCase, exported shape before anything renders. Because a probe runs against machines that may not have the binary or the manifest, the modules encode the failure inside the returned value rather than letting it surface as a rejected promise.
 
 ## Convention
 
 Folder: apps/dashboard/src/lib/** · Extension: .ts · Files of this role in this subproject: 2
 
-- One module per surface, opening with a header comment that names the command, sketches the JSON it returns, and repeats the "components import from here, never `invoke()`" rule.
-- Public report types are exported interfaces: an item type (`DoctorCheck { name, status, message, details }`, `ArtifactDrift`) plus an envelope carrying the roll-up (`DoctorStatus.overall`/`error`, `ArtifactDriftReport.total`/`stale`/`items`).
-- When the wire needs normalising or renaming, both files declare a NON-exported `Raw*` twin mirroring the payload verbatim (`RawDoctorStatus`, `RawArtifactDrift` with `artifact_id`, `local_version`) and map it inside an `async` wrapper — the mapping is the only place casing changes.
-- Straight pass-throughs stay synchronous one-liners returning the invoke promise (`detectProjectMustard`, `isMustardRepo`); only the mapping wrappers are `async` (`doctorStatus`, `artifactUpdateCheck`, `artifactUpdateApply`).
-- Loose wire strings are narrowed by a small local `normalise*` function with an explicit fallback member (`normaliseStatus` falls back to `"warn"`), never by a cast; see dashboard-status-pattern for the union types themselves.
-- The "could not run at all" case is modelled explicitly — `DoctorStatus.error` is documented as populated only when the subprocess produced no parseable report, paired with empty `checks`.
+- One module per diagnostic family, opening with a header comment that names the wave/spec, describes the shape it parses, and states the rule both exemplars carry verbatim: components MUST NOT call `invoke()` directly — they import from here.
+- Command names stay snake_case (`doctor_status`, `artifact_update_check`, `artifact_update_apply`, `is_mustard_repo`, `detect_project_mustard`); the exported TypeScript wrapper is the camelCase spelling of the same name (`doctorStatus`, `artifactUpdateCheck`). Arguments go over in camelCase (`projectPath`, `path`) and Rust serde maps them — do not rename them.
+- The raw wire shape is a NON-exported `Raw*` interface with the backend's field names (`RawDoctorCheck`/`RawDoctorStatus`, `RawArtifactDrift`/`RawArtifactDriftReport`/`RawArtifactUpdateOutcome`); the exported interface is the normalised one. The wrapper is `async`, `await invoke<Raw…>(…)`, then maps field by field.
+- Narrowing is total and never throws: `normaliseStatus`/`normaliseOverall` in `doctor.ts` fold any unrecognised string onto the cautious side (`"warn"`), and missing arrays default (`c.details ?? []`). Unknown input must not become a healthy value.
+- Failure is carried in the payload, not thrown: `DoctorStatus.error: string | null` is populated when the subprocess could not produce a parseable report, and an empty `checks` paired with an `error` is the explicit signal for the badge. Forward compatibility is bought by widening where variants may grow (`ArtifactDrift.status: "up-to-date" | "stale" | "unknown" | "tracked" | string`).
+- Wrappers that need no mapping stay a single-expression `return invoke<T>("cmd", { … });` (`isMustardRepo`, `detectProjectMustard`, `uninstallMustard`); only the ones with a snake_case→camelCase gap become `async`.
+- Related surfaces inside one module are separated by a banner comment block that explains the backend command and how the dashboard consumes it (the artifact-drift block in `projects.ts`).
 
 ## How to apply
 
-Add the check to the existing module when it belongs to the same surface (`projects.ts` already holds detection, drift and repo-identity checks); create a new `src/lib/<surface>.ts` with the same header only for a genuinely new surface. Declare the exported report types first, add a private `Raw*` twin if the payload needs renaming or narrowing, then export the thin wrapper taking the project path as its first argument (`projectPath` in camelCase — serde maps it). Consume it from `src/hooks` with a `useQuery` (see `useArtifactDrift`, `useIsMustardRepo`), and render the "not installed" outcome as an empty/neutral state rather than an error toast.
+Add a new probe to the existing module when it belongs to the same family; create `src/lib/<domain>.ts` only for a new one, and copy the header comment including the no-direct-`invoke` sentence. Declare the exported result shape first, the `Raw*` mirror second, the normalisers third, the wrapper last. Anything expensive or side-effecting (a subprocess, a network call) must be documented as such so callers only fire it behind an explicit user action. Consumers bind the wrapper through a `use<Domain>` hook in `src/hooks` — see the use mold for the query shape. Status vocabularies declared here follow the status mold.
 
 ## Examples
 
-- Ref: apps/dashboard/src/lib/doctor.ts — `DoctorCheck`/`DoctorStatus`, the `Raw*` twins, `normaliseStatus`, and the fail-soft `error` field.
-- Ref: apps/dashboard/src/lib/projects.ts — `ProjectDetection`, `ArtifactDriftReport`, and the snake_case→camelCase mapping in `artifactUpdateCheck`.
+- Ref: apps/dashboard/src/lib/doctor.ts — `DoctorCheck`/`DoctorStatus` with the unexported `Raw*` mirrors, the two `normalise*` helpers, and `error: string | null`.
+- Ref: apps/dashboard/src/lib/projects.ts — `artifactUpdateCheck` mapping `RawArtifactDriftReport` onto camelCase `ArtifactDriftReport`, beside the one-line `isMustardRepo` wrapper.

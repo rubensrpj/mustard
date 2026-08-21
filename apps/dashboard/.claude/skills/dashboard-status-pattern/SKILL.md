@@ -1,6 +1,6 @@
 ---
 name: dashboard-status-pattern
-description: Use when adding or refactoring a `*Status` type or a status field under apps/dashboard/src/lib that mirrors a lifecycle/health value coming from the Rust backend.
+description: Use when adding or refactoring a status/verdict string union in src/lib that mirrors a backend enum and drives the dashboard's badges and dots.
 paths:
   - apps/dashboard/src/lib/**
 tags: [add, refactor]
@@ -17,25 +17,26 @@ metadata:
 
 ## Purpose
 
-Status values are the dashboard's colour and copy drivers — a badge, a dot, a tooltip — so `src/lib` types them as narrowly as the backend allows and no narrower. `doctor.ts` exports `DoctorOverall` and `DoctorCheckStatus` as closed unions because the doctor report has a fixed vocabulary; `projects.ts` types `ArtifactDrift.status` as `"up-to-date" | "stale" | "unknown" | "tracked" | string` because the artifact tool may add variants; `dashboard.ts` exports the closed `SpecBucket` while leaving open-ended pipeline statuses as `status: string` with the allowed values written in a doc comment. The narrowing itself never happens with a cast: `doctor.ts` runs the wire strings through `normaliseStatus`/`normaliseOverall`, which fall back to `"warn"` for anything unknown, so a backend that ships a new variant degrades to a visible warning instead of an impossible state. Spelling always matches the serde output exactly, because these strings are compared, not parsed.
+Status vocabularies are the small closed unions the whole UI branches on: a doctor check is `ok | warn | fail | skip`, a spec lands in the `active | completed | cancelled` bucket, a dependency is `major | minor | patch | up-to-date`, a plan is `stale | fresh | unknown`. They are declared in `src/lib` next to the shape that carries them, spelled exactly as the backend serialises them, and consumed by mapping the union onto colour or copy. The hard part these files get right is the boundary: the backend can grow a variant the front-end has never heard of, so each module says explicitly what happens then — and none of them guesses a healthy value.
 
 ## Convention
 
 Folder: apps/dashboard/src/lib/** · Extension: .ts · Files of this role in this subproject: 3
 
-- Closed vocabularies are `export type XStatus = "ok" | "warn" | ...` string-literal unions — the three files read use no TypeScript `enum`.
-- Member spelling copies the wire verbatim, including kebab-case (`"up-to-date"`) and the serde rename in force on the Rust side; the doc comment names the Rust type when there is one.
-- Open-ended backend vocabularies stay `status: string` with the values enumerated in a `/** queued | in_progress | completed | failed */` comment (`SpecWave`, `SpecCard`, `SessionRow.status`), or use the explicit `... | string` escape hatch (`ArtifactDrift.status`) — do not invent a closed union the backend has not promised.
-- Narrowing lives in a small non-exported `normalise*(s: string)` inside the same lib module, with a named fallback member and a private `Raw*` interface holding the loose shape; components never narrow.
-- The envelope carries both the roll-up and the per-item status (`DoctorStatus.overall` + `DoctorCheck.status`), so the UI can colour the badge without folding the list itself.
-- Consumers switch on the union (badge colour, tooltip layout) and the union member set is the switch's totality guarantee — keep it exhaustive rather than adding a `default` that hides new variants.
+- Declared as `export type <Domain>Status = "…" | "…"` (or `<Domain>Overall`, `<Domain>Bucket`, `<Domain>Severity`, or a `verdict` field union) — string literals, lowercase or kebab-case, matching the Rust serde spelling. `DoctorOverall`/`DoctorCheckStatus` in `doctor.ts`, `SpecBucket` and `DepSeverity` in `dashboard.ts`, the `status` union on `ArtifactDrift` in `projects.ts`.
+- The union sits immediately above or beside the interface whose field it types (`DoctorCheck.status: DoctorCheckStatus`), in the same module as the wrapper that returns it — not in a shared "types" grab bag.
+- Unknown variants are handled one of two documented ways: a `normalise*` helper folds anything unrecognised onto the cautious value (`doctor.ts` maps unknown to `"warn"`, never `"ok"`), or the union is widened with `| string` where the backend list is expected to grow (`ArtifactDrift.status: "up-to-date" | "stale" | "unknown" | "tracked" | string`). Neither throws.
+- Where absence is meaningful, the union carries an explicit third state rather than defaulting to the bad one — `Staleness.verdict: "stale" | "fresh" | "unknown"` pairs with a `reason: string` and its doc spells out that unknown is "NOT an invented stale".
+- Nullable status-adjacent fields are `| null` with a doc saying what the UI should render for null (`tokens_saved_today` — "render '—' not '0'"); status fields themselves are non-optional.
+- Where the backend's status is still an open `string` on the wire, the field stays `status: string` with a comment listing the known values and their casing (`SpecWave.status` — "queued | in_progress | completed | failed"), instead of a union that would lie about exhaustiveness.
+- Consumers map the union through a `Record<Union, string>` const (the `DOT` map in `components/page/BaseRow`) or an exhaustive `switch`; the mapping lives with the component, not in the type module.
 
 ## How to apply
 
-Declare the status type in the `src/lib` module that owns the command returning it, right above the record that uses it, and export it so hooks and components can annotate. If the Tauri command returns a loose `string`, add the private `Raw*` interface plus a `normalise*` with an explicit fallback and map it inside the async wrapper; if the backend genuinely owns an open vocabulary, keep `string` and document the values instead of guessing. When the value mirrors a Rust enum in `packages/core`, note the serde rename rule in the doc comment so a future rename lands on both sides in one commit.
+Put the union in the `src/lib` module that owns the command returning it, next to its interface, and copy the backend spelling character for character. Decide the unknown-variant policy in the same edit: add a `normalise*` helper that folds to the cautious value, or widen with `| string` and say why in a comment. Give absence its own member with a `reason` field when the UI must explain itself. Then map the union to colour/copy at the component. Rendering atoms that need their own visual status vocabulary (`RowStatus` in `components/page/BaseRow`) keep it local to the component — do not reuse a wire status union as a style enum.
 
 ## Examples
 
-- Ref: apps/dashboard/src/lib/doctor.ts — `DoctorOverall`/`DoctorCheckStatus` unions plus `normaliseOverall`/`normaliseStatus` with the `"warn"` fallback.
-- Ref: apps/dashboard/src/lib/projects.ts — `ArtifactDrift.status` with the deliberate `| string` escape hatch.
-- Ref: apps/dashboard/src/lib/dashboard.ts — closed `SpecBucket` alongside documented open-ended `status: string` fields.
+- Ref: apps/dashboard/src/lib/doctor.ts — `DoctorOverall` / `DoctorCheckStatus` plus the `normaliseOverall` / `normaliseStatus` folds to `"warn"`.
+- Ref: apps/dashboard/src/lib/dashboard.ts — `SpecBucket`, `DepSeverity`, and the documented `Staleness.verdict` with its explicit `"unknown"`.
+- Ref: apps/dashboard/src/lib/projects.ts — `ArtifactDrift.status` widened with `| string` for variants the backend may add.

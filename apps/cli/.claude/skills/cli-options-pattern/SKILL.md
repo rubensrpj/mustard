@@ -1,6 +1,6 @@
 ---
 name: cli-options-pattern
-description: Use when adding or refactoring the flag struct of a `mustard` subcommand — the `*Options` bag that lives next to its command function under apps/cli/src/commands/.
+description: Use when adding or refactoring a `mustard` subcommand's flag struct (`*Options`) under apps/cli/src/commands/, so the new command exposes its flags as a plain owned struct the clap layer fills in.
 paths:
   - apps/cli/src/commands/**
 tags: [add, refactor]
@@ -17,36 +17,32 @@ metadata:
 
 ## Purpose
 
-Every `mustard` subcommand carries its flags in a plain data struct named after the command, declared in the same module as the function that consumes it. The struct is deliberately free of any argument-parsing attributes: `clap` derive lives one layer up, on the `Commands` enum in `apps/cli/src/cli.rs`, and the dispatcher builds the `*Options` literal from the parsed variant with field-init shorthand. That split is what lets the library be driven without a process `argv` — the Tauri backend and the unit tests call `init::init(&path, &InitOptions { .. })` directly, and `main.rs` stays a thin shell. Because the struct is inert data, the command function owns every default and every interpretation of a flag (`!options.yes` becomes "interactive", `options.font.as_deref().unwrap_or(DEFAULT_FONT)` resolves the font family). A new subcommand that skips the struct and threads loose booleans through the signature breaks both the reuse and the test entry point.
+Each `mustard` subcommand owns a small `*Options` struct that names the flags it accepts, and nothing else. The struct is deliberately argv-blind: `clap` lives one layer up in `apps/cli/src/cli.rs`, where the `Commands` enum carries the `#[arg(...)]` attributes and `dispatch` builds the struct literal by hand. That split is what lets the command functions be a reusable library — the Tauri backend and the unit tests call `init_with_templates(&project, &templates, &InitOptions { yes: true, .. })` with no process `argv` in sight. Keeping the struct plain also keeps the flag surface reviewable in one glance: three fields, three doc lines, one derive attribute. A new subcommand that skips the struct and passes loose booleans breaks both callers, because the signature stops being stable when a flag is added.
 
 ## Convention
 
 Folder: apps/cli/src/commands/** · Extension: .rs · Files of this role in this subproject: 4
 
-Reading the four members (`add`, `config`, `init`, `install_nerd_font`) shows the shape is uniform:
+Beyond the census facts, what the files themselves show:
 
-- One module per subcommand, file named in `snake_case` after it (`install-nerd-font` → `install_nerd_font.rs`), declared in `commands/mod.rs` as `pub mod <name>;`.
-- Each file opens with a `//!` module header explaining what the subcommand does and why — all four have one, from `config.rs`'s seven lines to `init.rs`'s fifty.
-- The struct sits directly above (or near) the entry function, prefixed by the doc line `/// Flags accepted by `mustard <subcommand>`.` — identical wording in all four.
-- Derive set is exactly `#[derive(Debug, Default, Clone)]` in all four — no `Serialize`, no `clap::Args`, no `PartialEq`.
-- Name is `<Command>Options` in `UpperCamelCase`: `AddOptions`, `ConfigOptions`, `InitOptions`, `InstallNerdFontOptions`.
-- Fields are all `pub`, each with its own `///` line, and are either `bool` (`force`, `yes`, `dry_run`) or `Option<String>` when a value has a fallback the command resolves (`font`). No field carries an attribute.
-- The entry function is `pub fn <module_name>(<path>: &Path, options: &<Command>Options) -> anyhow::Result<()>` — options **borrowed**, never moved. The `&Path` first parameter is kept even when unused: `install_nerd_font` takes `_project_path: &Path` rather than dropping it.
-- Everything else in the module is private `fn` (or `pub(crate)` for a shared constant like `DEFAULT_FONT`); only the struct and the entry point are `pub`. `init.rs` adds one extra `pub fn init_with_templates(..)` so an environment concern (template resolution) can be injected by tests.
-- Tests live in a bottom `#[cfg(test)] mod tests` in the same file — `add.rs` and `init.rs` do; the wrapper-thin `config.rs` has none. They construct the bag with struct-update syntax: `&InitOptions { yes: true, ..InitOptions::default() }` or `&AddOptions::default()`. `unwrap`/`expect` appear only inside that `#[cfg(test)]` module.
-
-Boundary worth knowing: `InstallGrammarsArgs` (dispatched in `cli.rs`) is the one flag bag off this shape — `Args` suffix, passed by value. A new subcommand should follow the four `Options` members, not it.
+- **Name and place.** The struct is the subcommand in UpperCamelCase plus the `Options` suffix (`AddOptions`, `ConfigOptions`, `InitOptions`, `InstallNerdFontOptions`), declared in the same module as its command function, immediately after the `use` block and before any private helper type.
+- **Derive set.** All four carry exactly `#[derive(Debug, Default, Clone)]` — no `clap` derive, no `serde` attributes. The derived `Default` is what tests rely on to build a partial literal and fill the rest with the struct-update shorthand.
+- **Doc habits.** All four are introduced by the same one-line doc comment, ``/// Flags accepted by `mustard <subcommand>`.``, and every field carries its own `///` line stating the flag's effect ("Overwrite files that already exist in `.claude/`.", "Accept defaults without prompting.").
+- **Fields.** Every field is `pub` and a plain owned type — `bool` for a switch, `Option<String>` for a valued flag. Defaults are resolved inside the command function (`options.font.as_deref().unwrap_or(DEFAULT_FONT)`), never encoded as a non-`Default` field type.
+- **Entry signature.** The command function takes the target path first and the options last, borrowed: `pub fn config(project_path: &Path, options: &ConfigOptions) -> Result<()>`. `add` slots its positional argument between the two (`cwd: &Path, template_spec: &str, options: &AddOptions`). The return is `anyhow::Result<()>` in all four.
+- **Test placement.** Unit tests sit in a `#[cfg(test)] mod tests` at the bottom of the same file and construct the struct directly — `&AddOptions::default()` in `add.rs`, a full literal in `install_nerd_font.rs`. There is no separate `tests/` file for these commands.
+- **One sibling deviates:** `install_grammars.rs` uses `InstallGrammarsArgs` taken by value with a `run` entry point. Follow the four `*Options` files, not that outlier.
 
 ## How to apply
 
-A new subcommand gets a new file `apps/cli/src/commands/<name>.rs`, a `pub mod <name>;` line in `commands/mod.rs`, and three things inside: the `//!` header, the `<Command>Options` struct, and `pub fn <name>(&Path, &<Command>Options) -> Result<()>`.
+A new subcommand gets its own file in `apps/cli/src/commands/`, registered with a `pub mod` line in `apps/cli/src/commands/mod.rs`. Open the file with a `//!` module doc that explains what the command does and why (the existing modules use it to record the reasoning, not just the summary), then declare the `*Options` struct with the derive set and per-field doc lines above, then the `pub fn` entry point taking `&Path` first and `&YourOptions` last.
 
-Then wire it in `apps/cli/src/cli.rs`: add a variant to the `Commands` enum where all the `#[arg(..)]` attributes live (`#[arg(short, long)]` for `force`, `#[arg(short = 'y', long)]` for `yes`, `#[arg(long = "dry-run")]` for `dry_run` — reuse those exact spellings so the surface stays consistent), import the pair `use crate::commands::<name>::{self, <Command>Options};`, and add a `dispatch` arm that destructures the variant into the struct literal.
+Wire it in `apps/cli/src/cli.rs`: add a variant to `Commands` whose fields mirror the struct field-for-field with `#[arg(...)]` attributes (`#[arg(short, long)]` for `force`, `#[arg(short = 'y', long)]` for `yes`, `#[arg(long = "dry-run")]` for `dry_run`), import the struct beside its module (`use crate::commands::foo::{self, FooOptions};`), and add the `match` arm that builds the literal and calls the function.
 
-Do not put parsing attributes, defaults, or logic on the struct: it is data. Resolve defaults in the command body. Do not take `options` by value. Keep helpers private, keep `unwrap`/`expect` out of non-test code, and put the unit tests in the same file rather than a separate `tests/` module.
+Must not: put `clap` or `serde` attributes on the `*Options` struct; take it by value; make a field private or add a constructor when a public field would do; drop the `Default` derive; read `std::env::args` from inside `commands/`. Per the subproject guards, no `unwrap`/`expect` outside `#[cfg(test)]` — surface failures as `anyhow` errors with `.with_context(...)`.
 
 ## Examples
 
-- Ref: `apps/cli/src/commands/init.rs` — the largest member: three-field `InitOptions`, the `init` / `init_with_templates` split, and tests that build it with `..InitOptions::default()`.
-- Ref: `apps/cli/src/commands/add.rs` — single-flag `AddOptions { force }`, threaded into a helper as a plain `force: bool` parameter rather than passing the whole bag down.
-- Ref: `apps/cli/src/cli.rs` — where the `clap` derive actually lives and where each `*Options` literal is assembled in `dispatch`.
+- Ref: apps/cli/src/commands/config.rs — the minimal form: one `yes: bool` field and a two-line entry function that forwards `!options.yes` as `interactive`.
+- Ref: apps/cli/src/commands/init.rs — three flags (`force`, `yes`, `dry_run`), each consumed at a distinct decision point (`decide_existing_action`, the dry-run early return), plus the split entry point (`init` / `init_with_templates`) that keeps environment resolution out of the logic.
+- Ref: apps/cli/src/commands/install_nerd_font.rs — the valued-flag shape: `font: Option<String>` with the default resolved in the function body, and tests that build the struct literal directly.

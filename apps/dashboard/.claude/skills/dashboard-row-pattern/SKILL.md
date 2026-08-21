@@ -1,6 +1,6 @@
 ---
 name: dashboard-row-pattern
-description: Use when adding or refactoring a `*Row` record type that backs one line of a dashboard list, either a Tauri wire projection in src/lib or a per-project fan-out result in src/hooks.
+description: Use when adding or refactoring a `*Row` record — a wire projection in src/lib or a per-project fan-out result in src/hooks — for the dashboard's list views.
 paths:
   - apps/dashboard/src/hooks/**
   - apps/dashboard/src/lib/**
@@ -18,25 +18,26 @@ metadata:
 
 ## Purpose
 
-A `*Row` names exactly one line of a rendered list, and the dashboard writes it in two places for two reasons. In `src/lib/dashboard.ts` a row is the TypeScript mirror of a Rust struct (`SpecRow`, `KnowledgeRow`, `SessionRow`), declared immediately above the `fetch*` wrapper that returns `Promise<Row[]>`, so the wire contract and its caller are one screen apart. In `src/hooks/` a row is the per-project bundle a `useQueries` fan-out produces (`ProjectDetectionRow`, `ArtifactDriftRow`), pairing the identity with `data | undefined`, `isLoading` and `error` so the list component renders each line independently of its siblings. The distinction matters for field casing: the wire rows keep serde's snake_case verbatim (renaming them breaks deserialisation), while the fan-out rows are dashboard-owned and camelCase. Three of the four files of this role were read for this mold.
+A `*Row` is one line of a list the dashboard renders, and the codebase uses the suffix for two provenances that must not be mixed. Wire rows live in `src/lib/dashboard.ts` and mirror a Rust struct field-for-field — `SpecRow`, `KnowledgeRow`, `SessionRow` — so their field names are the serde contract. Fan-out rows live in `src/hooks/use*.ts` and are assembled in TypeScript from one query per project — `ArtifactDriftRow`, `ProjectDetectionRow` — so they carry query state (`isLoading`, `error`) alongside possibly-absent data. Both are declared next to the function that produces them, which is how a reader finds the row's owner without a search.
 
 ## Convention
 
 Folder: apps/dashboard/src/hooks/**, apps/dashboard/src/lib/** · Extension: .ts · Files of this role in this subproject: 4
 
-- Always `export interface XRow`, exported even when only one component consumes it, so hooks and components can annotate against it.
-- Wire rows live in `src/lib/dashboard.ts` with snake_case fields matching the Rust struct 1:1 (`started_at`, `event_count`, `tool_breakdown`), absent values typed `T | null`, and fields added later marked optional with a comment saying "optional for backwards compatibility".
-- Wire rows sit directly above their fetcher: `export function fetchSpecs(repoPath: string): Promise<SpecRow[]> { return invoke<SpecRow[]>("dashboard_specs", { repoPath }); }` — the invoke args stay camelCase (`repoPath`, `specName`) and serde maps them.
-- Per-field `/** ... */` docs explain the *meaning*, not the type — e.g. `SessionRow.is_unknown_bucket` documents that the attribution leak is labelled, not dropped.
-- Fan-out rows live in the hook file that produces them, carry the identity (`path` or the whole `ProjectEntry`) plus `report`/`detection` as `T | undefined`, `isLoading: boolean` and `error: unknown`, and are built by mapping the projects array against the `useQueries` results with `q?.isLoading ?? false` fallbacks.
-- When the backend spelling has to change for the UI, do it through a private `Raw*` interface and an explicit mapping in the wrapper (`projects.ts`), never by renaming fields on the exported row.
+- Exported `interface <Domain>Row` in every exemplar, declared directly above its producer: `SpecRow` above `fetchSpecs`, `SessionRow` above `fetchSessions`, `ArtifactDriftRow` above `useArtifactDrift`, `ProjectDetectionRow` above `useProjectDetections`.
+- Wire rows keep the backend's snake_case field names verbatim (`started_at`, `is_unknown_bucket`, `tool_breakdown`) and never get camelCased at the type — the rename, when it happens, is done explicitly in a `Raw*` mapping wrapper, not by renaming the DTO.
+- Absent values are `| null` on wire rows; `?` is reserved for fields the backend is rolling out additively, and those carry a comment saying so ("Optional for backwards compatibility"). Nested row types get their own named interface (`SessionToolCount`) rather than an inline object literal.
+- Fan-out rows are camelCase and follow a fixed shape: the identity (`path` or the whole `project: ProjectEntry`), the payload as `T | undefined`, `isLoading: boolean`, `error: unknown`. They are filled defensively — `q?.data`, `q?.isLoading ?? false` — so a failed or missing query degrades the row instead of breaking the list.
+- A fan-out hook returns either a 1:1 array aligned with the projects array (`useProjectDetections`, documented so callers can index without re-zipping) or a `Record<path, Row>` map (`useArtifactDrift`); both key their queries on `project.path` so cache identity follows the project.
+- Fields whose units, nullability or provenance are not self-evident carry a `/** … */` line — `SessionRow` documents what each count measures and why the `unknown` bucket is surfaced rather than dropped.
+- Removed rows leave a comment explaining what replaced them (the note above `fetchSpecs` about the retired `fetchSessionDetail` DTOs), so the next reader does not resurrect them.
 
 ## How to apply
 
-For a new backend list, declare the row in `src/lib/dashboard.ts` next to a section comment naming the spec that introduced it, mirror the Rust struct field-for-field, then add the `fetch*`/`dashboardX` wrapper below it and a `useQuery` hook in `src/hooks`. For a new per-project fan-out, declare the row at the top of the hook file, mirror `useProjectDetections` (aligned array) or `useArtifactDrift` (record keyed by path), and let failures collapse into `undefined` data so one bad project never breaks the list. Components consume the exported row type and render an empty state when the array is empty — the commands are fail-open.
+Decide the provenance first. A projection the backend returns goes into `src/lib/dashboard.ts` immediately above its `invoke` wrapper, with snake_case fields matching the Rust struct and `| null` for absences. A row assembled from a per-project fan-out goes into the hook file that builds it, above the hook, with the identity + `undefined` payload + `isLoading` + `error` shape. Either way export the interface, doc the non-obvious fields, and let components consume it through the `use*` hook rather than re-declaring a local shape.
 
 ## Examples
 
-- Ref: apps/dashboard/src/lib/dashboard.ts — `SpecRow`, `KnowledgeRow`, `SessionRow` and their `fetch*` wrappers.
-- Ref: apps/dashboard/src/hooks/useProjectDetections.ts — `ProjectDetectionRow` aligned 1:1 with the projects array.
-- Ref: apps/dashboard/src/hooks/useArtifactDrift.ts — `ArtifactDriftRow` returned as `Record<string, ArtifactDriftRow>`.
+- Ref: apps/dashboard/src/lib/dashboard.ts — `SpecRow`, `KnowledgeRow`, `SessionRow` (+ `SessionToolCount`) each above their `fetch*` wrapper.
+- Ref: apps/dashboard/src/hooks/useProjectDetections.ts — `ProjectDetectionRow` and the 1:1 aligned `useQueries` fan-out.
+- Ref: apps/dashboard/src/hooks/useArtifactDrift.ts — `ArtifactDriftRow` returned as a `Record<path, Row>`, degrading to `undefined` when the report is unavailable.

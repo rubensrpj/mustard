@@ -1,6 +1,6 @@
 ---
 name: rt-observer-pattern
-description: Use when adding or refactoring an `*Observer` hook module that records telemetry or state as a pure side effect, never a verdict.
+description: Use when adding or refactoring a side-effect hook module (`*Observer`) under apps/rt/src/hooks/, so the new module records or emits without ever returning a verdict.
 paths:
   - apps/rt/src/hooks/**
 tags: [add, refactor]
@@ -17,29 +17,32 @@ metadata:
 
 ## Purpose
 
-An observer exists to record, never to decide. The crate guard is explicit: observers under `hooks/observe`, `hooks/session` and `hooks/task` are side-effect-only, `observe()` returns `()` and runs fire-and-forget, and a blocking decision must live in a `Check`. That constraint shapes everything else — an observer cannot report a failure, so every IO step is best-effort, and it cannot ask a caller to retry, so the facts it needs must be checked before it writes. The approval-marker family shows the mature form: a numbered list of facts in the module doc, one early return per fact, and a single best-effort write when all of them hold.
+An observer is the half of the hook contract that cannot say no. `observe()` returns `()` and runs fire-and-forget, which is exactly why the subproject guard puts every blocking decision in a `Check` and leaves telemetry, markers and advisories here. That asymmetry buys two things: an observer may do genuinely risky work (spawn, write, walk the spec tree) without ever endangering the session, and the ones that mint security-bearing evidence — the approval markers — can be fail-closed on doubt while staying fail-open on IO, because the worst case of a missed record is that the downstream gate refuses.
 
 ## Convention
 
 Folder: apps/rt/src/hooks/** · Extension: .rs · Files of this role in this subproject: 17
 
-Reading the three approval doors adds:
+Beyond the census facts, what the exemplars show:
 
-- The file is `<thing>_observer.rs` and the type a unit struct `pub struct <Thing>Observer;` implementing `Observer` from `mustard_core::domain::model::contract` with `fn observe(&self, input: &HookInput, ctx: &Ctx)`. No return value, no `Result`.
-- The module doc states the trigger it rides, then enumerates the facts that must ALL hold before anything is recorded, numbered and titled. The body mirrors that list one-to-one with `let Some(x) = ... else { return; }` / `if !pred { return; }`.
-- Predicate ORDER is a documented decision when the observer runs on every event: `picker_approval_observer` checks facts 2, 1 then 3 and explains that the two pure string tests settle the majority without touching the filesystem — order decides cost, not verdict.
-- Shared predicates are imported from a sibling observer rather than re-spelled: `use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};`. Where the sibling's rule must NOT apply, the doc says why.
-- The project root comes from `ctx.project_dir_or_cwd(input)`; harness payload fields are read defensively through `input.raw.get(...).and_then(Value::as_str)` with `.filter(|s| !s.trim().is_empty())`.
-- Writes are best-effort and atomic: `let _ = mustard_core::io::fs::write_atomic(&path, body.as_bytes());`. Shared state files are read-modify-written so a sibling's keys survive, and the composed body goes through the single shared composer (`marker_body`) so provenance reads back identically from every door.
-- Pure decision logic is factored into an associated function taking plain values (`DelegationAdvisory::decide(files, edited, pipeline_active, is_subagent, depth, mode, threshold)`) so it can be unit-tested without disk or env.
-- Tests live at the bottom of the same file: unit tests for the pure predicate, then integration tests over a `tempfile::tempdir()` project seeding `.claude/spec/<slug>/meta.json`, plus a "no project root must not panic" case whose comment says survival is the contract.
+- **Name and shape.** File `<concern>_observer.rs`, `pub struct <Concern>Observer;` (unit struct) and `impl Observer for … { fn observe(&self, input: &HookInput, ctx: &Ctx) }`. A few in-family advisories keep the contract under another name (`DelegationAdvisory`, `ChangeRequestLog`) and say so in the header doc.
+- **Guard clauses, cheapest first.** `if ctx.trigger != Some(Trigger::X) { return; }`, then the tool-name match, then the payload extraction via `let Some(x) = … else { return; }`. `picker_approval_observer` documents ordering the pure string tests before the filesystem reads because it sees every prompt.
+- **Project root.** `let cwd = ctx.project_dir_or_cwd(input);` — or, when the observer WRITES state, the `Option` form (`common::project_dir_opt(input)`, returning early on `None`) so nothing materialises under the process cwd during `cargo test`.
+- **Effects only, through existing writers.** Marker files via `crate::shared::context::{approval_marker_path, marker_body}`, events via `crate::shared::events::route::emit` or by calling the canonical emitter `crate::commands::event::emit_pipeline::run` module-qualified, state via `mustard_core::io::fs::write_atomic` after a read-modify-write that preserves sibling keys. Advisories go to `eprintln!`, because an observer cannot return a verdict.
+- **Idempotency before writing.** `already_signalled(...)`, `already_approved(...)` — "a wave starts exactly once, even with parallel children".
+- **Shared predicates, imported not re-spelled.** The three approval doors reuse `is_full_plan` / `already_approved` from `approval_marker_observer` so they cannot drift apart.
+- **Doc weight sits in the header.** A `//!` block explaining why the observer exists, what counts as a positive observation, and every branch that records nothing — the approval observers enumerate the facts that must ALL hold.
+- **Registration.** One `Module` entry in `apps/rt/src/registry.rs` with `check: None, observer: Some(Box::new(X))` and the `applies_to` list; a module that is both (`PostEdit`) fills both fields, and the dispatcher runs the observer before the check.
+- **Tests.** `#[cfg(test)] mod tests` at the bottom using `tempfile::tempdir`, asserting the artefact written (the marker, the counter file, the NDJSON row), plus a "must not panic with no project root" case.
 
 ## How to apply
 
-Put a new observer in the `hooks/` subfolder that matches its trigger — `observe/` for tool-result and approval events, `session/` for lifecycle, `task/` for subagent dispatch — named `<thing>_observer.rs` with a matching unit struct. Write the numbered fact list in the module doc first, then implement it as early returns in the same order (cheapest first if the trigger is hot, and say so). Import shared predicates from the sibling that owns them. Make every write best-effort and atomic, and preserve keys you do not own. If a decision is worth testing, extract it as a pure function over plain values. Never return a verdict, never `unwrap`, never let a missing project root produce a panic.
+Create `hooks/<family>/<concern>_observer.rs` with the header doc, the unit struct, and `impl Observer`. Open `observe` with the trigger and tool guards, resolve the root, run the cheap predicates before any IO, check idempotency, then perform the effect through the shared writer for that artefact. Add the `pub mod` line in the family `mod.rs` and one `Module` entry in `registry.rs` explaining in a comment what it records and why it never blocks.
+
+Must not: return or imply a verdict from `observe` (put the decision in a `Check`); write to stdout — the dispatcher owns the single JSON write, so advisories go to stderr; panic or `unwrap` outside `#[cfg(test)]`; write state when no valid project root was resolved; re-implement a predicate a sibling observer already owns.
 
 ## Examples
 
-- Ref: `apps/rt/src/hooks/observe/approval_marker_observer.rs` — the shared predicates (`active_spec`, `is_full_plan`, `already_approved`) the sibling doors import.
-- Ref: `apps/rt/src/hooks/observe/plan_approval_observer.rs` — the minimal two-fact door with a conservative payload recognizer.
-- Ref: `apps/rt/src/hooks/observe/picker_approval_observer.rs` — documented cheapest-first ordering and the deliberate divergence from the sibling's spec resolution.
+- Ref: apps/rt/src/hooks/observe/approval_marker_observer.rs — the fail-closed evidence recorder: three facts that must all hold, shared predicates, and a stderr notice when only the last one fails.
+- Ref: apps/rt/src/hooks/observe/picker_approval_observer.rs — the same marker from a third trigger, with the pure string tests ordered before the filesystem reads.
+- Ref: apps/rt/src/hooks/observe/plan_approval_observer.rs — the minimal shape: two facts, then the best-effort marker write.

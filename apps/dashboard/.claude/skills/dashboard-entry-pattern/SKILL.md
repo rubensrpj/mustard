@@ -1,6 +1,6 @@
 ---
 name: dashboard-entry-pattern
-description: Use when adding or refactoring an `*Entry` record that represents one item of a JSON-file-backed collection under apps/dashboard/src/lib.
+description: Use when adding or refactoring an `*Entry` record — one member of a catalog or registry list the dashboard renders — under src/lib.
 paths:
   - apps/dashboard/src/lib/**
 tags: [add, refactor]
@@ -17,23 +17,24 @@ metadata:
 
 ## Purpose
 
-An `*Entry` in `src/lib/` is one record of a collection that lives in a JSON file, not a projection of the event database. `FrictionEntry` is one row of `.claude/.metrics/friction.json` surfaced by the `dashboard_friction` command; `ProjectEntry` is one row of the `projects.json` registry persisted through `@tauri-apps/plugin-store`. Both are declared in the very module that reads and writes the collection, so the accessor and the record never drift apart. Both document every field inline, because the fields encode measurement semantics (`retry_count` is "measured hook-level retries") or identity semantics (`path` doubles as the entry's identity). Use `*Row` instead when the record is a rendered projection of backend state — that is a different role with a different mold.
+An `*Entry` is one member of a list the user curates or browses: the registered projects in the sidebar, the measured friction records on the Knowledge page. It differs from a `*Row` (a projection rendered as a table row) in that an entry is a catalog record with its own identity, and its lifetime is owned by whoever holds the list — the zustand store for `ProjectEntry`, the backing JSON file for `FrictionEntry`. Both exemplars declare the interface right next to the code that owns the list, export it so consumers can type their own state, and document every field whose meaning is not obvious from its name.
 
 ## Convention
 
 Folder: apps/dashboard/src/lib/** · Extension: .ts · Files of this role in this subproject: 2
 
-- `export interface XEntry { ... }` declared in the same file as the code that loads/persists the collection — `FrictionEntry` sits above `fetchFriction`, `ProjectEntry` above `useProjectsStore`.
-- Field casing follows the record's origin: `FrictionEntry` keeps the Rust serde snake_case (`retry_count`, `api_calls`, `updated_at`) because it crosses the Tauri boundary; `ProjectEntry` uses camelCase (`addedAt`) because the dashboard itself writes the file.
-- Missing data is an explicit `T | null` field (`source: string | null`, `prescription: string | null`), never an omitted key.
-- Every field carries a `/** ... */` line, and the interface carries a block comment saying where the collection lives and how it is surfaced.
-- One field is the stable identity and the collection code keys on it — `projects-store.ts` dedupes on `p.path === path` for add and filters on it for remove; do not introduce a synthetic id alongside it.
+- Exported `interface <Domain>Entry`, declared immediately above the thing that produces it: `FrictionEntry` sits directly above `fetchFriction` in `dashboard.ts`, `ProjectEntry` directly above the `ProjectsState` interface that holds `ProjectEntry[]` in `projects-store.ts`.
+- Field naming follows the record's origin, and the two exemplars differ on purpose: `ProjectEntry` is born in TypeScript and persisted through `@tauri-apps/plugin-store`, so it uses camelCase (`addedAt`); `FrictionEntry` mirrors a backend payload through a Tauri command, so it keeps the wire's snake_case (`retry_count`, `api_calls`, `updated_at`). Pick by origin, never mix within one interface.
+- Absent data is spelled `| null` explicitly in both, not an optional `?` — the UI branches on the null, so the field must always be present.
+- Each entry declares its identity in a doc comment where it is not the obvious `id` (`ProjectEntry.path` — "Absolute filesystem path. Doubles as the entry's identity").
+- The surrounding state interface stays unexported (`ProjectsState` in `projects-store.ts`); only the entry type crosses the module boundary.
+- The store that owns an entry list selects by slice (`useProjectsStore((s) => s.projects)`), persists through a small best-effort helper that swallows failures, and treats the in-memory list as authoritative for the session.
 
 ## How to apply
 
-Add the interface to the `src/lib` module that owns the file-backed collection (create the module only when the collection is new), export it, and keep the reader/mutator in the same file: an `invoke()` wrapper for a backend-owned file, or a zustand `create<...>()` store when the dashboard owns the file. For a store, follow `projects-store.ts`: lazily resolve the plugin-store handle, treat every persistence failure as best-effort (swallow it, keep the in-memory list authoritative), and select via slices — never destructure the whole store. Hooks in `src/hooks` then consume the exported entry type; components import from the lib module, never `invoke()` directly.
+Add the interface to the `src/lib/*.ts` module that owns the list — the store file when the record is created and persisted in the front-end, `dashboard.ts` when it arrives from a Tauri command and sits above its `fetch*` wrapper. Export it, doc the non-obvious fields, and keep nullable fields as `| null`. If the record is a projection the backend produces for a table view rather than a curated catalog, name it `*Row` and follow the row mold instead.
 
 ## Examples
 
-- Ref: apps/dashboard/src/lib/dashboard.ts — `FrictionEntry` with per-field docs, directly above `fetchFriction`.
-- Ref: apps/dashboard/src/lib/projects-store.ts — `ProjectEntry` with `path` as identity, plus the plugin-store persistence and the slice-selection convention in the header.
+- Ref: apps/dashboard/src/lib/projects-store.ts — `ProjectEntry` (camelCase, plugin-store persisted) above the unexported `ProjectsState`.
+- Ref: apps/dashboard/src/lib/dashboard.ts — `FrictionEntry` (snake_case wire fields, nullable measured counters) directly above `fetchFriction`.
