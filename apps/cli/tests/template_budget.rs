@@ -13,9 +13,20 @@
 //! 1. A command/skill `description` is truncated at **1,536 characters** in the
 //!    skill listing. Past that, the trigger text is cut mid-sentence and the
 //!    command mis-triggers.
-//! 2. An injectable spliced as `additionalContext` is truncated at **10,000
-//!    characters** by the harness — past that it is cut mid-sentence, silently.
-//!    9,500 leaves margin for the composition separator + siblings.
+//! 2. An injectable spliced as `additionalContext` is capped at **10,000
+//!    characters** per hook response. The overflow is NOT cut mid-sentence:
+//!    `code.claude.com/docs/en/hooks` says hook output past the limit "is saved
+//!    to a file and replaced with a preview and file path". That is why the cap
+//!    still binds, and it is a different reason than the one this comment used
+//!    to give — an injectable over budget does not lose a clause, it stops
+//!    being TEXT IN FORCE and becomes a pointer the model may or may not open.
+//!    For a router injected on every prompt, that is the whole failure.
+//!    9,500 leaves margin for the composition separator + siblings: the hooks
+//!    fold every injectable of ONE event into a single `additionalContext`
+//!    (the dispatcher fold is last-writer-wins), alongside the terrain census
+//!    and the advisories. A document that outgrows the budget is SPLIT across
+//!    two events — two hook invocations, two ceilings — never compressed to fit
+//!    (see `packages/core/templates/mustard/{orchestrator,dispatch}.md`).
 //!
 //! Everything else (command / ref body size) is governed by structure
 //! (progressive disclosure) and human review, not a numeric tripwire — and
@@ -29,8 +40,10 @@ use std::path::{Path, PathBuf};
 const DESCRIPTION_CHAR_CAP: usize = 1_536;
 
 /// Character cap per injectable template (`templates/mustard/*.md`). The real
-/// `additionalContext` ceiling is 10,000 characters; 9,500 leaves margin for
-/// the composition separator + any sibling block injected in the same hook.
+/// `additionalContext` ceiling is 10,000 characters per hook response; 9,500
+/// leaves margin for the composition separator + any sibling block injected in
+/// the same hook. The remedy for a template that outgrows it is a SPLIT onto a
+/// second event, not a rewrite that says less.
 const INJECTABLE_CHAR_CAP: usize = 9_500;
 
 /// The `plugin/` tree — home of the command/ref corpus.
@@ -133,10 +146,12 @@ fn command_descriptions_fit_the_listing_cap() {
 }
 
 /// Every injectable template must fit the `additionalContext` payload with
-/// margin: the harness caps that payload at 10,000 characters, and an
-/// injectable that exceeds it would be truncated mid-sentence at runtime —
-/// silently. 9,500 leaves room for the composition separators and any sibling
-/// block injected in the same hook response.
+/// margin: the harness caps that payload at 10,000 characters per hook
+/// response, and the overflow is saved to a FILE the window receives only as a
+/// preview plus a path — so an injectable over budget silently stops being in
+/// force, which for a router injected every prompt is the whole point of it.
+/// 9,500 leaves room for the composition separators and any sibling block
+/// injected in the same hook response.
 #[test]
 fn injectable_templates_fit_the_additional_context_cap() {
     let dir = core_templates_dir().join("mustard");
@@ -157,7 +172,10 @@ fn injectable_templates_fit_the_additional_context_cap() {
         let chars = text.chars().count();
         if chars > INJECTABLE_CHAR_CAP {
             violations.push(format!(
-                "{}: {chars} characters (cap {INJECTABLE_CHAR_CAP} — the harness truncates additionalContext at 10,000)",
+                "{}: {chars} characters (cap {INJECTABLE_CHAR_CAP} — a hook response \
+                 carries 10,000 characters of additionalContext; the overflow becomes a \
+                 file path instead of text in force. SPLIT it onto a second event, do \
+                 not compress it)",
                 path.display()
             ));
         }

@@ -50,6 +50,36 @@ fn line_with<'a>(body: &'a str, needle: &str) -> Option<&'a str> {
     body.lines().find(|l| l.contains(needle))
 }
 
+/// The PRODUCTION half of a Rust source file — everything before its
+/// `#[cfg(test)]` module.
+///
+/// A negative assertion ("this sentence is gone from the shipped code") must
+/// not be answered by the test that quotes the sentence in order to forbid it,
+/// nor by the doc comment explaining what was removed. Whole-file `contains`
+/// is right for the POSITIVE half and wrong for this one.
+fn production_half(rel: &str) -> String {
+    let body = read(rel);
+    match body.find("#[cfg(test)]") {
+        Some(at) => body[..at].to_string(),
+        None => body,
+    }
+}
+
+/// Where that line SITS — the only way to assert an order between two rows.
+/// `line_with` answers whether a row exists, which is what let a re-ordering
+/// of the unit's question pass every ratchet it had.
+fn line_index(body: &str, needle: &str) -> Option<usize> {
+    body.lines().position(|l| l.contains(needle))
+}
+
+/// The options a `  label:` row of the unit's question OFFERS, in order, with
+/// the label stripped — columns are separated by three or more spaces, so a
+/// single-space phrase like `…ou o seu` stays ONE entry instead of three.
+fn offered_options<'a>(row: &'a str, label: &str) -> Vec<&'a str> {
+    let (_, rest) = row.split_once(label).unwrap_or(("", row));
+    rest.split("   ").map(str::trim).filter(|s| !s.is_empty()).collect()
+}
+
 /// AC-10 — the CLOSE prose teaches the confirmation pass the pipeline takes.
 ///
 /// The red proof ("this criterion knows how to fail") shipped with prose; the
@@ -482,11 +512,14 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 1. The shipped seed no longer teaches the deleted carve-out -------
     // The compiled-in seed is what `upsert` lays down in every project, so this
     // reads the text that actually ships.
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    // The isolation paragraph rides the router's SECOND half (`dispatch.md`,
+    // § Dispatch) since the two-event split — read the seed that carries it,
+    // or this ratchet asserts the absence of a sentence from the wrong file.
+    let seed = mustard_core::DISPATCH_MD;
     for deleted in ["writes IN-PLACE", "carves out `.claude/spec/`"] {
         assert!(
             !seed.contains(deleted),
-            "the orchestrator seed still teaches `{deleted}` — the carve-out wave 2 removed",
+            "the dispatch seed still teaches `{deleted}` — the carve-out wave 2 removed",
         );
     }
 
@@ -495,7 +528,7 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // The needle carries the SHAPE, so a return to the base-prefixed name — or
     // any other spelling of the join — moves this anchor off the paragraph.
     let branch_line = line_with(seed, "compute the unit's `{kind}/{slug}` branch")
-        .expect("the orchestrator seed no longer says where the unit's branch comes from");
+        .expect("the dispatch seed no longer says where the unit's branch comes from");
     assert!(
         branch_line.contains("cut at APPROVAL"),
         "the paragraph never says WHEN the branch is cut: {branch_line}",
@@ -528,12 +561,12 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 3. This repository's delivered copy has not drifted ---------------
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered = read(".claude/mustard/dispatch.md");
     let delivered_line = line_with(&delivered, "compute the unit's `{kind}/{slug}` branch")
         .expect("the delivered injectable no longer says where the unit's branch comes from");
     assert_eq!(
         delivered_line, branch_line,
-        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
+        "the delivered .claude/mustard/dispatch.md drifted from the seed — \
          re-seed it, or this project reads the behaviour it just deleted",
     );
 
@@ -602,8 +635,9 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
 #[test]
 fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 1. The shipped seed asks ONE pre-marked question ------------------
-    // The compiled-in seed is what `upsert` lays down in every project.
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    // The compiled-in seed is what `upsert` lays down in every project. The
+    // question lives in the router's SECOND half since the two-event split.
+    let seed = mustard_core::DISPATCH_MD;
 
     let kind_row = line_with(seed, "  tipo:")
         .expect("the router seed shows no `tipo` row — the kind is never asked");
@@ -669,12 +703,12 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 2. This repository's delivered copy has not drifted ---------------
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered = read(".claude/mustard/dispatch.md");
     for row in ["  tipo:", "  branch:", "run emit-pipeline --kind pipeline.kind"] {
         assert_eq!(
             line_with(&delivered, row),
             line_with(seed, row),
-            "the delivered .claude/mustard/orchestrator.md drifted from the seed \
+            "the delivered .claude/mustard/dispatch.md drifted from the seed \
              at `{row}` — re-seed it, or this project asks the old question",
         );
     }
@@ -852,6 +886,242 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
         "the reconcile drops the operator's recorded base again while it \
          corrects the branch — the retried cut then has nothing to read",
     );
+}
+
+/// The question asks WHERE the unit starts before WHAT it is called.
+///
+/// The ratchet above demands both rows EXIST and says nothing about their
+/// order, so shipping `tipo` above `sai de` broke no test — and a type read
+/// first makes the base look like its consequence, which is the implication
+/// this product removed the day the base began being chosen against a real
+/// catalogue.
+///
+/// Prose-only, deliberately: the row order is a RENDERING decision and no
+/// emitter can be asked whether the block was drawn in it. The mechanism half
+/// — that the base is MEASURED rather than derived from the type — is already
+/// ratcheted by `router_prose_teaches_the_kind_named_branch_and_its_one_question`,
+/// and duplicating it here would assert the wrong thing twice.
+#[test]
+fn router_asks_the_base_before_the_type() {
+    let seed = mustard_core::DISPATCH_MD;
+    let delivered = read(".claude/mustard/dispatch.md");
+
+    for (label, body) in [("the seed", seed), ("the delivered copy", delivered.as_str())] {
+        let base = line_index(body, "  sai de:")
+            .unwrap_or_else(|| panic!("{label} shows no `sai de` row — the base is never asked"));
+        let kind = line_index(body, "  tipo:")
+            .unwrap_or_else(|| panic!("{label} shows no `tipo` row — the type is never asked"));
+        assert!(
+            base < kind,
+            "{label} shows `tipo` above `sai de`, so the base reads as a consequence \
+             of the type — the implication a real catalogue removed",
+        );
+    }
+
+    // Both rows still open on a pre-marked answer: an Enter accepts, and the
+    // re-order must not cost the operator a decision it never used to cost.
+    for (row, marked) in [("  sai de:", "[dev]"), ("  tipo:", "[fix]")] {
+        let line = line_with(seed, row).unwrap_or_else(|| panic!("no `{row}` row"));
+        assert!(
+            line.contains(marked),
+            "`{row}` lists its options without PRE-MARKING one, so the re-ordered \
+             question costs two decisions instead of two Enters: {line}",
+        );
+    }
+
+    // Say WHY, or the order is a coincidence the next editor tidies away.
+    let why = line_with(seed, "`sai de` FIRST")
+        .expect("the router never says the base is asked first — nothing stops a re-order");
+    assert!(
+        why.contains("before what it is CALLED"),
+        "the order is stated without its reason: the operator settles where the unit \
+         STARTS before what it is called: {why}",
+    );
+}
+
+/// The rows are independent fields, the surface has a ceiling, and `hotfix`
+/// survives it.
+///
+/// Two silences in the router produced one defect. "Ask both together" never
+/// said the fields are INDEPENDENT, so the question came back as pre-paired
+/// options (`fix saindo de dev` / `hotfix saindo de main`) — the cartesian
+/// product of two choices, which has no row at all for a `hotfix` cut from the
+/// ordinary base. And the prose never named the surface's ceiling of four
+/// options, so the renderer dropped a suggestion to fit — and the one it
+/// dropped was `hotfix`, the row's whole reason for existing.
+#[test]
+fn router_forbids_pairing_and_pins_hotfix() {
+    let seed = mustard_core::DISPATCH_MD;
+
+    let rule = line_with(seed, "INDEPENDENT fields")
+        .expect("the router never says the rows are independent fields");
+    assert!(
+        rule.contains("cartesian product"),
+        "independence is asserted without naming what pairing actually hands back — \
+         the product of two choices, in which one combination has no row: {rule}",
+    );
+    assert!(
+        rule.contains("4 options"),
+        "the prose never names the ceiling of the question surface, so the reader \
+         discovers it by getting it wrong in front of the operator: {rule}",
+    );
+    assert!(
+        rule.contains("PINNED"),
+        "nothing forbids dropping `hotfix` to fit the ceiling — the exact suggestion \
+         that fell out last time: {rule}",
+    );
+
+    // The block obeys its own rule: four options plus the free field, `hotfix`
+    // among them, and no row spelling a pair.
+    let kind_row = line_with(seed, "  tipo:").expect("the router seed shows no `tipo` row");
+    let offered = offered_options(kind_row, "tipo:");
+    let (free, options) = offered
+        .split_last()
+        .expect("the `tipo` row offers nothing at all");
+    assert!(
+        free.starts_with('…'),
+        "the `tipo` row does not end in the free field, so a type the list omits \
+         cannot be typed: {kind_row}",
+    );
+    assert!(
+        options.len() <= 4,
+        "the `tipo` row offers {} options over a surface that takes 4 — the renderer \
+         will drop one, and the prose does not get to choose which: {kind_row}",
+        options.len(),
+    );
+    assert!(
+        options.contains(&"hotfix"),
+        "`hotfix` is not among the offered types, so an emergency cannot be named \
+         from the question: {kind_row}",
+    );
+    let base_row = line_with(seed, "  sai de:").expect("the router seed shows no `sai de` row");
+    let base_offered = offered_options(base_row, "sai de:");
+    let (base_free, base_options) = base_offered
+        .split_last()
+        .expect("the `sai de` row offers nothing at all");
+    assert!(
+        base_free.starts_with('…'),
+        "the `sai de` row has no free field, so a catalogue longer than the ceiling \
+         hides the branches that did not fit: {base_row}",
+    );
+    assert!(
+        base_options.len() <= 4,
+        "the `sai de` row offers {} options over a surface that takes 4: {base_row}",
+        base_options.len(),
+    );
+    for row in [kind_row, base_row] {
+        assert!(
+            !row.contains("saindo de"),
+            "a row of the question spells a PAIR, which is the defect itself — the \
+             operator who wants `hotfix` off the ordinary base finds no line: {row}",
+        );
+    }
+
+    // The code half: the chooser's suggestions are where a renderer takes its
+    // four from, so `hotfix` has to survive that truncation there too.
+    let kinds = read("apps/rt/src/shared/work_kind.rs");
+    assert!(
+        kinds.contains("[\"feature\", \"fix\", \"hotfix\", \"chore\""),
+        "`hotfix` fell past the fourth SUGGESTED token, so anything taking the first \
+         four to fit the surface drops it — exactly the pin the prose promises",
+    );
+}
+
+/// The name is OFFERED for correction, and the correction reaches the gate.
+///
+/// "A unit has one name" was written against the CALLER that invented one in
+/// silence, and it silenced the OPERATOR too — the only person who knows what
+/// the unit should be called. So the `branch` row stops being a notice and
+/// becomes a field: suggestion plus edit. The signal that carries the edit is
+/// deliberately distinct from `--spec` (still a guess, still losing), because
+/// a deliberate correction and a silent invention must never read alike.
+#[test]
+fn router_offers_the_name_for_correction() {
+    let seed = mustard_core::DISPATCH_MD;
+
+    // --- 1. The row is a field, not a read-out ----------------------------
+    let name_row = line_with(seed, "  branch:")
+        .expect("the question never shows the name the branch is about to get");
+    assert!(
+        name_row.contains("[fix/"),
+        "the suggested name is not pre-marked, so accepting it costs a decision \
+         instead of an Enter: {name_row}",
+    );
+    assert!(
+        name_row.contains('…'),
+        "the `branch` row is shown as a notice — nothing tells the operator the name \
+         can be corrected, which is the whole point of showing it: {name_row}",
+    );
+
+    // --- 2. …and editing it edits `tipo` + name in ONE string -------------
+    let field = line_with(seed, "CORRECTABLE field")
+        .expect("the router never says the `branch` row is a correctable field");
+    for taught in ["ONE string", "first `/`", "no third", "silence still means derived"] {
+        assert!(
+            field.contains(taught),
+            "the paragraph omits `{taught}` — it must say that the edit is `tipo` + \
+             name together, how it splits, that there is no free-standing third name, \
+             and what an untouched row means: {field}",
+        );
+    }
+
+    // --- 3. The correction REACHES the gate, and only when it happened -----
+    let append = line_with(seed, "--unit-name {name}")
+        .expect("the dispatch never shows how the operator's correction is passed");
+    assert!(
+        append.contains("ONLY when"),
+        "the flag is shown unconditionally, so a derived name is announced as the \
+         operator's and `nameFrom` lies on every unit: {append}",
+    );
+    let flag = line_with(seed, "`--unit-name` is the operator's correction")
+        .expect("the router never explains what `--unit-name` outranks");
+    for taught in ["only when", "--spec", "nameFrom", "derived-from-intent", "operator"] {
+        assert!(
+            flag.contains(taught),
+            "the flag paragraph omits `{taught}` — it must say when it is passed, that \
+             `--spec` still loses, and which values report WHO named the unit: {flag}",
+        );
+    }
+
+    // --- 4. The code really takes the signal and really reports the source --
+    let cli = read("apps/rt/src/commands/event/cli.rs");
+    assert!(
+        cli.contains("#[arg(long = \"unit-name\")]"),
+        "`--unit-name` is not a flag of emit-pipeline, so the router's corrected \
+         dispatch fails on a name the operator was invited to give",
+    );
+    let emit_src = read("apps/rt/src/commands/event/emit_pipeline.rs");
+    assert!(
+        emit_src.contains("\"derived-from-intent\"") && emit_src.contains("\"operator\""),
+        "the gate no longer names WHO chose the unit's name, so the two cases the \
+         explicit signal exists to separate become indistinguishable again",
+    );
+    assert!(
+        emit_src.contains("done[\"nameFrom\"]"),
+        "the report stopped emitting `nameFrom`, so the router promises a field no \
+         reader ever receives",
+    );
+}
+
+/// This repository's delivered copy carries the re-ordered question too.
+///
+/// `seed_injectable_files` refreshes a stale seed nobody edited and PRESERVES
+/// everything else, so a template edited alone leaves this project asking the
+/// old question with the new binary. The sibling ratchet compares `tipo`,
+/// `branch` and the emit line; the base row was the one the re-order moved, and
+/// nothing compared it.
+#[test]
+fn delivered_copy_matches_the_seed_at_the_base_row() {
+    let seed = mustard_core::DISPATCH_MD;
+    let delivered = read(".claude/mustard/dispatch.md");
+    for row in ["  sai de:", "  tipo:", "  branch:", "--unit-name {name}", "INDEPENDENT fields"] {
+        assert_eq!(
+            line_with(&delivered, row),
+            line_with(seed, row),
+            "the delivered .claude/mustard/dispatch.md drifted from the seed at \
+             `{row}` — re-seed it, or this project asks the old question",
+        );
+    }
 }
 
 /// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
@@ -1279,3 +1549,300 @@ const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "
 
 /// The names that same paragraph offers as ordinary writing roles.
 const WRITING_ROLE_EXAMPLES: &[&str] = &["backend", "proof", "discovery", "bootstrap"];
+
+/// Nothing refuses an operation because a branch is absent from the
+/// PRE-SELECTED list.
+///
+/// `git.flow` used to answer two questions at once — "where may a unit be cut
+/// from?" and "where is a direct commit forbidden?" — and six places read it to
+/// REFUSE. The installer writes no flow at all, so every one of those refusals
+/// fired on a correct installation, telling the operator that a branch their
+/// project really integrates through "is not an integration base of this
+/// project" and offering an edit to a configuration file as the way out.
+///
+/// This ratchet holds the three command doors to the measured questions: is
+/// this branch somebody's WORK UNIT, and is it PROTECTED. Both are facts the
+/// repository can answer; membership in a list nobody maintains is not.
+#[test]
+fn nothing_refuses_for_absence_from_the_preselected_list() {
+    // --- 1. The sentence, and the exit it offered, are gone -----------------
+    // Read the PRODUCTION half: the tests below each file quote the removed
+    // sentence in order to forbid it, and a negative assertion answered by its
+    // own guard proves nothing.
+    let open = production_half("apps/rt/src/commands/work_unit_open.rs");
+    let pr = production_half("apps/rt/src/commands/review/pr_door.rs");
+    let delete = production_half("apps/rt/src/commands/git_delete.rs");
+    for (name, body) in
+        [("work_unit_open", &open), ("pr_door", &pr), ("git_delete", &delete)]
+    {
+        assert!(
+            !body.contains("is not an integration base of this"),
+            "{name} still pronounces a verdict about a configuration file over a \
+             repository nobody asked about",
+        );
+        assert!(
+            !body.contains("Declare it in mustard.json"),
+            "{name} still offers editing the configuration as the way past a refusal \
+             — the one exit this design removed",
+        );
+    }
+
+    // --- 2. Neither door may decide by the pre-selected list -----------------
+    //
+    // This block used to assert the PRESENCE of the exact expressions each door
+    // was written with. That is not a criterion: it certifies code presence, not
+    // effectiveness, and it was measured GREEN while reporting "git delete
+    // decides what it may remove by a declared list again" — with the shipped
+    // code deleting a real `release/2026-Q3` from the remote. A presence
+    // assertion can only ever pin the line it was written against, defect
+    // included.
+    //
+    // What is asserted here now is an ABSENCE, which cannot certify a defect:
+    // the pre-selected list must not appear in either door at all. The positive
+    // half — that the right branches are refused and the right ones deleted — is
+    // proven by driving the doors and reading the refs afterwards, in
+    // `git_delete::tests::a_slashed_integration_base_is_never_deleted_and_never_refused`.
+    for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
+        // The CALL form, never the bare name: both files legitimately explain in
+        // prose why they do not use it, and a check that cannot tell a call from
+        // a comment forbids writing down the reason.
+        for forbidden in ["preselected_bases()", "flow.bases()"] {
+            assert!(
+                !body.contains(forbidden),
+                "{name} consults `{forbidden}` again. With no `git.flow` written — what \
+                 the installer produces today — that set is the hardcoded {{main, master}}, \
+                 so the door would decide by two literals and nothing else",
+            );
+        }
+        assert!(
+            body.contains("has_unit_record"),
+            "{name} no longer asks the project for its RECORD of the unit, so it is back \
+             to deciding by the shape of a name — and `release/2026-Q3` has the shape of \
+             a unit",
+        );
+    }
+    // The target a refusal names must not end at a LITERAL nobody measured.
+    //
+    // The first shape of this check forbade `primary_base()` outright, and that
+    // was too blunt in a way that locked in a regression: `primary_base()` only
+    // floors to the hardcoded `main` when NO flow is declared — with a flow it
+    // returns the project's own stated base. Forbidding it wholesale sent a unit
+    // that integrates into `dev` off to `main`, measured in a repo whose flow
+    // says exactly that, and the ratchet then held the wrong answer in place.
+    //
+    // So what is required is the ORDER, not the absence of a source: the
+    // declared base is consulted only behind a declared-flow guard, and
+    // `origin/HEAD` remains the last resort.
+    for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
+        assert!(
+            body.contains("mustard_core::default_branch("),
+            "{name}'s refusal no longer falls back to origin/HEAD, so the base it \
+             names can be a literal nobody measured",
+        );
+        assert!(
+            !body.contains("primary_base()") || body.contains("declared_bases().is_empty()"),
+            "{name} names the base through `primary_base()` with no declared-flow \
+             guard — unguarded it ends at the hardcoded `main` for every project \
+             whose install wrote no flow",
+        );
+    }
+
+    // --- 3. The legacy shape is resolved by the CATALOGUE -------------------
+    let work_kind = read("apps/rt/src/shared/work_kind.rs");
+    assert!(
+        work_kind.contains("fn legacy_base_of") && work_kind.contains("with_remote_names(project"),
+        "the `{{base}}_{{slug}}` shape is read against the declaration alone again, \
+         so a unit whose base the flow never named is orphaned",
+    );
+}
+
+/// The doctor does not ask for a `git.flow` the installer no longer writes, and
+/// reports what is REALLY protected.
+///
+/// The check warned that `git.flow` was empty and prescribed declaring one.
+/// `project_seed` seeds an EMPTY flow on purpose — the project decides later —
+/// so the warning fired on every correct installation, and the claim it made
+/// (`only main/master are protected`) was false in front of
+/// `protected_branches`. A diagnostic that fires on a healthy install teaches
+/// the operator to ignore diagnostics.
+#[test]
+fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
+    let doctor = production_half("apps/rt/src/commands/doctor/doctor.rs");
+
+    // --- 1. The prescription is gone ----------------------------------------
+    assert!(
+        !doctor.contains("git.flow is empty"),
+        "the doctor still reports the shape a correct install has as a finding",
+    );
+    assert!(
+        !doctor.contains("fix: declare the flow in mustard.json"),
+        "the doctor still prescribes declaring a flow to get protection it does not \
+         grant",
+    );
+
+    // --- 2. What replaced it is the measurement, RUN not read ----------------
+    //
+    // This half used to grep `doctor.rs` for the function name and the call it
+    // makes — the practice AC-3 forbids by name, and for the reason five review
+    // rounds kept demonstrating: a source-substring assertion certifies that a
+    // line is present, never that the behaviour holds. So the check is executed
+    // against a real project in the installed shape (no `git.flow` written) and
+    // the assertions are about its OUTPUT.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git")
+    };
+    // A REAL origin, because the thing under test is what the doctor measures.
+    // Without a remote it answers, correctly, that `origin/HEAD` is unreadable
+    // and protection fell back to its literals — an honest answer to a
+    // different question, and asserting against it would pin the fallback
+    // instead of the measurement.
+    let upstream = dir.path().join("upstream.git");
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&upstream)
+        .output()
+        .expect("bare origin");
+    git(&["init", "."]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    git(&["checkout", "-b", "producao"]);
+    std::fs::write(root.join("mustard.json"), r#"{"git":{"provider":"github"}}"#).expect("cfg");
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "seed"]);
+    git(&["remote", "add", "origin", &upstream.to_string_lossy()]);
+    git(&["push", "-q", "-u", "origin", "producao"]);
+    git(&["remote", "set-head", "origin", "producao"]);
+
+    // `doctor` has no `--root`: it reads the project from the working directory,
+    // so the test must STAND in the temp project rather than name it.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "doctor", "--check", "branch-protection"])
+        .current_dir(root)
+        .output()
+        .expect("doctor runs");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "`doctor --check branch-protection` does not run — the name the operator is \
+         told to type is not the name the binary answers to: {said}",
+    );
+    assert!(
+        !said.contains("git.flow") || !said.to_lowercase().contains("declare"),
+        "the doctor still asks a correct install to declare a flow: {said}",
+    );
+    assert!(
+        said.contains("producao"),
+        "the doctor does not report the branch it really protects — with no flow \
+         written, protection rests on the remote's own default: {said}",
+    );
+
+    // --- 3. The installer really writes no flow -----------------------------
+    // Without this half the assertions above outlive their reason: they are
+    // right only while an empty flow is the INSTALLED shape.
+    let seed = read("packages/core/src/platform/project_seed.rs");
+    assert!(
+        seed.contains("git.flow starts empty — the project decides"),
+        "the installer seeds a flow again, which would make the removed warning \
+         meaningful and this whole check wrong",
+    );
+}
+
+/// The `/git` reference teaches the MEASURED model, not the erased one.
+///
+/// `/git` orders this file read, so whatever it says IS the model the operator
+/// and the agent work from. It taught integration bases derived from the flow, a
+/// table where the kind decided the base, a PR target resolved through the flow,
+/// and a refusal for standing on an integration base — four mechanisms the code
+/// no longer has.
+#[test]
+fn the_git_reference_teaches_the_measured_model() {
+    let flow = read("plugin/refs/git/git-flow.md");
+
+    // --- 1. The flow is named as a PRE-SELECTION ----------------------------
+    let preselects = line_with(&flow, "PRE-SELECTS")
+        .expect("the reference never says what `git.flow` actually decides");
+    assert!(
+        preselects.contains("refuses nothing"),
+        "the reference names the flow without saying it refuses nothing: {preselects}",
+    );
+    assert!(
+        preselects.contains("installer writes no flow"),
+        "a reader following this file still believes a flow must be declared: \
+         {preselects}",
+    );
+
+    // --- 2. Where each answer really comes from -----------------------------
+    let forbidden = line_with(&flow, "Where is a direct commit forbidden?")
+        .expect("the reference never says where protection is measured");
+    assert!(
+        forbidden.contains("origin/HEAD") && forbidden.contains("git.protected"),
+        "protection is taught without the set that measures it: {forbidden}",
+    );
+    let cut = line_with(&flow, "Where may a unit be cut from?")
+        .expect("the reference never says where the cut point comes from");
+    assert!(
+        cut.contains("every branch") && cut.contains("origin"),
+        "the cut point is still taught as a declared list: {cut}",
+    );
+
+    // --- 3. The kind does NOT decide the base -------------------------------
+    assert!(
+        flow.contains("The prefix does NOT decide the base"),
+        "the reference still lets the kind imply where a unit came from",
+    );
+    assert!(
+        !flow.contains("| `hotfix/` | a correction that does NOT wait for that route | an integration base"),
+        "the kind→base table is back — the inference this design removed",
+    );
+    let step0 = line_with(&flow, "still exists on `origin`")
+        .expect("the reference no longer says what the recorded base is checked against");
+    assert!(
+        step0.contains("recorded with the unit")
+            && step0.contains("never whether `git.flow` lists it"),
+        "the record is taught without WHAT is checked on the way out, which is the \
+         whole repair: {step0}",
+    );
+
+    // --- 4. Protection is not "being on a base" -----------------------------
+    let protection = line_with(&flow, "Cannot operate directly on protected branch")
+        .expect("the reference no longer states the write-op refusal");
+    assert!(
+        protection.contains("origin/HEAD") && protection.contains("git.protected"),
+        "the refusal is still taught as 'you are on an integration base': {protection}",
+    );
+
+    // --- 5. The code really works that way ----------------------------------
+    // Without this half every sentence above outlives its mechanism.
+    let branches = read("packages/core/src/platform/git_branches.rs");
+    assert!(
+        branches.contains("pub fn protected_branches") && branches.contains("pub fn branch_catalog"),
+        "the two measured answers the reference teaches are no longer the ones the \
+         product computes",
+    );
+    let config = read("packages/core/src/domain/config.rs");
+    assert!(
+        config.contains("refuses anything any more"),
+        "`preselected_bases` no longer documents itself as a pre-selection",
+    );
+    assert!(
+        !config.contains("fn integration_bases"),
+        "the deprecated forward is back, and with it the name that says the set \
+         permits something",
+    );
+    let gate = read("apps/rt/src/commands/event/base_gate.rs");
+    assert!(
+        gate.contains("NO membership test any more"),
+        "the base gate judges membership of a declared list again",
+    );
+}

@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 477,
-      "loc": 200685
+      "loc": 200818
     },
     {
       "language": "tsx",
@@ -16742,7 +16742,7 @@
     {
       "path": "packages/core/src/platform/project_seed.rs",
       "language": "rust",
-      "loc": 1769,
+      "loc": 1902,
       "imports": [
         "crate::domain::command_detect::detect_commands",
         "crate::domain::config::{Injectable, ProjectConfig, Runtime}",
@@ -17021,218 +17021,242 @@
         },
         {
           "kind": "function",
+          "name": "seed_fingerprint",
+          "line": 827,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "injectable_merge_outcome",
+          "line": 839,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "seed_injectable_files",
-          "line": 801,
+          "line": 860,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_gitignore",
-          "line": 835,
+          "line": 907,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_ignore_patterns",
-          "line": 877,
+          "line": 949,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_static_file",
-          "line": 894,
+          "line": 966,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "default_inject_entries",
-          "line": 924,
+          "line": 996,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "upsert_mustard_json",
-          "line": 941,
+          "line": 1013,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "MigrationOutcome",
-          "line": 1001,
+          "line": 1073,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "migrated",
-          "line": 1005,
+          "line": 1077,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "foreign_claude_md",
-          "line": 1008,
+          "line": 1080,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migrate_orchestrator_footprint",
-          "line": 1025,
+          "line": 1097,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "retire_response_style_inject",
-          "line": 1077,
+          "line": 1149,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "strip_mustard_root_lines",
-          "line": 1105,
+          "line": 1177,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fresh_upsert_creates_everything",
-          "line": 1131,
+          "line": 1203,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fresh_upsert_without_version_stamps_none",
-          "line": 1179,
+          "line": 1251,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "upsert_is_idempotent_second_run_preserves_all",
-          "line": 1188,
+          "line": 1260,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "merge_preserves_user_files_and_backfills_missing",
-          "line": 1212,
+          "line": 1284,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "existing_config_without_version_argument_keeps_its_version",
-          "line": 1258,
+          "line": 1330,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "empty_inject_is_backfilled_on_existing_config",
-          "line": 1275,
+          "line": 1347,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seeding_over_an_existing_ignore_adds_the_missing_lines",
-          "line": 1305,
+          "line": 1377,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_fresh_ignore_is_the_seed_verbatim",
-          "line": 1350,
+          "line": 1422,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_removes_planted_orchestrator_and_root_lines",
-          "line": 1368,
+          "line": 1440,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_retires_legacy_response_style_injectable",
-          "line": 1392,
+          "line": 1464,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_preserves_foreign_claude_md_and_is_byte_preserving",
-          "line": 1426,
+          "line": 1498,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "retire_removes_only_the_planted_placeholder_pair",
-          "line": 1463,
+          "line": 1535,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "retire_preserves_a_user_authored_mustard_marketplace",
-          "line": 1484,
+          "line": 1556,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "retire_drops_emptied_containers",
-          "line": 1500,
+          "line": 1572,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "report_serializes_deterministically_without_volatile_fields",
-          "line": 1518,
+          "line": 1590,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_settings_destination_and_its_reported_name_agree",
-          "line": 1543,
+          "line": 1615,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_footprint_is_derived_from_the_seeds_it_hides",
-          "line": 1568,
+          "line": 1640,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_untouched_stale_seed_refreshes_and_an_edit_survives",
+          "line": 1696,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_fingerprint_catalog_covers_every_history",
+          "line": 1717,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "no_rule_reaches_a_depth_that_is_not_ours",
-          "line": 1645,
+          "line": 1783,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_private_marks_are_rules_an_install_writes",
-          "line": 1687,
+          "line": 1825,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "detect_install_mode_degrades_to_shared_without_a_repository",
-          "line": 1708,
+          "line": 1846,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "install_and_work",
-          "line": 1753,
+          "line": 1891,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_files",
-          "line": 1842,
+          "line": 1980,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "probe_repo",
-          "line": 1861,
+          "line": 1999,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "check_ignore",
-          "line": 1889,
+          "line": 2027,
           "supertypes": []
         }
       ]

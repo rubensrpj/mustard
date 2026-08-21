@@ -162,6 +162,7 @@ impl Observer for WaveCompleteObserver {
                 payload: Some(json!({ "wave": wave }).to_string()),
                 allow_no_qa: false,
                 intent: None,
+                unit_name: None,
                 base: None,
                 work_kind: None,
             },

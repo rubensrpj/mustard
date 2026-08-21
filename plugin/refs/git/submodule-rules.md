@@ -17,7 +17,7 @@
 
 ## Work branch per repo — a submodule never commits onto its base
 
-The unit materialises in EVERY repo it touches: the parent (cut by `work_branch_gate` on the first edit) and each dirty submodule (cut by `/git` at commit time). The NAME travels unchanged — a unit is `{kind}/{slug}` everywhere — while the BASE is per repo: the parent's comes from its kind through `mustard.json#git.flow`, a submodule's is its OWN default branch (a submodule is an independent repo, need not share the parent's flow). A unit still in the older `{base}_{slug}` shape is the one case where the name differs per repo: its prefix records THAT repo's base, so it is re-prefixed on the way in.
+The unit materialises in EVERY repo it touches: the parent (cut by `work_branch_gate` on the first edit) and each dirty submodule (cut by `/git` at commit time). The NAME travels unchanged — a unit is `{kind}/{slug}` everywhere — while the BASE is per repo: the parent's is the base RECORDED with the unit at its cut (the operator's own answer — never derived from the kind), a submodule's is its OWN default branch (a submodule is an independent repo, need not share the parent's flow). A unit still in the older `{base}_{slug}` shape is the one case where the name differs per repo: its prefix records THAT repo's base, so it is re-prefixed on the way in.
 
 Resolve a submodule's base + work branch (`<SUB_ABS>` absolute, via `git -C`, never `cd`):
 

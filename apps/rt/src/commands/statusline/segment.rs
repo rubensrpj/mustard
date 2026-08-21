@@ -533,8 +533,8 @@ mod tests {
     /// the project configured, derived from the project's OWN bases.
     ///
     /// The agnosticism half is two-sided against the production region only
-    /// (this test's own fixture necessarily spells a base): the code names
-    /// `integration_bases`, and carries no base spelling of its own. The first
+    /// (this test's own fixture necessarily spells a base): the code reads the
+    /// project's own bases, and carries no base spelling of its own. The first
     /// assertion alone would pass in a file that also hardcoded one.
     #[test]
     fn statusline_names_units_awaiting_prune() {

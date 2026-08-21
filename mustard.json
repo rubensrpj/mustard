@@ -17,6 +17,11 @@
       "on": "userPromptSubmit",
       "file": ".claude/mustard/orchestrator.md",
       "once": true
+    },
+    {
+      "on": "sessionStart",
+      "file": ".claude/mustard/dispatch.md",
+      "once": true
     }
   ],
   "runtime": {
@@ -24,5 +29,5 @@
     "os": "linux",
     "arch": "x86_64"
   },
-  "version": "0.1.36"
+  "version": "0.1.37"
 }

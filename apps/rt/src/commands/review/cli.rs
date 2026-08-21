@@ -177,8 +177,9 @@ pub enum ReviewCmd {
     /// The `/mustard:pr` door's LIST step: every open pull request of the base
     /// the checkout is standing on, with its number, title, the provider's own
     /// mergeable word, whether it is a draft and the head branch its unit lives
-    /// on. Runs ONLY from a `git.flow` integration base — from a work branch it
-    /// refuses and names the base to switch to. Fail-open on `gh`.
+    /// on. It asks about a BASE, so it refuses only from INSIDE a work unit —
+    /// and the refusal names the base to switch to. A branch is never refused
+    /// for missing from `git.flow`. Fail-open on `gh`.
     #[command(name = "pr-list")]
     #[command(display_order = 86)]
     PrList {

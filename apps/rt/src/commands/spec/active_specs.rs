@@ -423,11 +423,10 @@ fn show_blob(root: &Path, branch: &str, path: &str) -> Option<String> {
 /// checkout — was invisible to it. Two sweeps answering one question drift; one
 /// sweep with two consumers cannot.
 ///
-/// A work branch is one whose name starts with `{base}_` for a base the project
-/// itself declares (`mustard.json#git.flow` via
-/// [`mustard_core::domain::config::GitConfig::integration_bases`]) — the same
-/// question `work-unit-open` and the work-branch gate ask, so no branch name is
-/// hardcoded here either. The branch that is checked out is skipped: its specs
+/// A work branch is one [`crate::shared::work_kind::BaseFlow::base_of`]
+/// recognises — a `{kind}/{slug}` name, or a `{base}_` prefix naming a branch
+/// the project has — the same question `work-unit-open` and the work-branch
+/// gate ask, so no branch name is hardcoded here either. The branch that is checked out is skipped: its specs
 /// ARE the working tree.
 ///
 /// `seen` carries every spec name already accounted for and is extended as
@@ -458,7 +457,12 @@ fn scan_work_branches(
     let current = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
     let config = mustard_core::ProjectConfig::load(root);
-    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
+    // ROOTED, and that is what makes the sentence above true: `legacy_base_of`
+    // bails on a model with no project, so a rootless one could only ever match
+    // a `{base}_` prefix the flow DECLARES — which is the closed-list reading
+    // this design removed, and no reading at all on the projects whose install
+    // wrote no flow.
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
 
     let git_read = |args: &[&str]| git_out(root, args);
     let Some(enumerated) = BranchEnumerator::try_sweep(&git_read, &flow) else {

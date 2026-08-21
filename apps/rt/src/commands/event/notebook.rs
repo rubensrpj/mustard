@@ -103,7 +103,10 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
     // head ref with: a loose split on the first `_` would accept ANY prefix, so
     // `--unit feature_x` would silently open the notebook of a spec called `x`.
     let config = mustard_core::ProjectConfig::load(&project);
-    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
+    // ROOTED: a unit still in the `{base}_{slug}` shape whose base the flow no
+    // longer declares is resolved by the branches the repository really has —
+    // otherwise its own notebook answers `no-unit`.
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, &project);
     let bases: Vec<String> = flow.bases().to_vec();
     let Some(slug) = flow.slug_of(&branch) else {
         return json!({

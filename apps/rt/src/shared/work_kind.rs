@@ -36,7 +36,9 @@
 //! on. A second spelling in either face is how two consumers that must agree
 //! about a branch stop agreeing.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use mustard_core::domain::config::GitConfig;
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -55,6 +57,24 @@ fn branch_of_name(name: &str) -> &str {
 /// project root fails the `ClaudePaths` guard.
 fn unit_dir(project: &Path, slug: &str) -> Option<PathBuf> {
     Some(ClaudePaths::for_project(project).ok()?.spec_dir().join(slug))
+}
+
+/// `true` when `rev` carries `path` in its tree — `git cat-file -e <rev>:<path>`.
+///
+/// The question a working-tree `stat` cannot answer: a unit's record is
+/// committed ON the unit's branch, so from the base, or from a linked worktree
+/// whose main checkout is elsewhere, the directory is simply not on disk while
+/// the ref carries it perfectly well.
+///
+/// `false` on any failure — an unknown ref, a path the tree does not carry, git
+/// missing entirely. The callers that matter here are asking whether they may
+/// destroy something, so an unanswerable probe must not read as a yes.
+fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
+    let root = project.to_string_lossy().to_string();
+    std::process::Command::new("git")
+        .args(["-C", &root, "cat-file", "-e", &format!("{rev}:{path}")])
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// The cut's OWN record of the base, inside the unit's directory.
@@ -92,6 +112,173 @@ pub(crate) fn cut_base_in(dir: &Path) -> Option<String> {
 /// could not be removed is still redundant, never wrong.
 pub(crate) fn clear_cut_base_in(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(CUT_BASE_FILE));
+}
+
+/// Process-wide memo of [`mustard_core::remote_branch_names`], keyed by the
+/// root it was measured in. `None` inside the entry is the probe's own "could
+/// not measure", memoised like any other answer.
+///
+/// One `git for-each-ref` is cheap; asking it once per BRANCH is not, and that
+/// is what the repository-wide sweeps do — [`crate::shared::branch_state`]
+/// resolves EVERY ref through [`BaseFlow::base_of`], so an unmemoised probe
+/// turns one spawn into one per unit branch that has a record.
+///
+/// Same shape and same lifetime as the config memo in
+/// [`crate::shared::context`]: `mustard-rt` is a one-shot process, so
+/// "process-wide" is "for this dispatch", and a repository does not gain or
+/// lose branches inside one.
+fn remote_names_memo() -> &'static Mutex<HashMap<PathBuf, Option<BTreeSet<String>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<BTreeSet<String>>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop the memoised remote branch names for `root`.
+///
+/// The memo answers "which branches does `origin` have?" from the refs on disk,
+/// and a `git fetch` is precisely the thing that changes that answer mid-run.
+/// Without this the first probe of a dispatch freezes the pre-fetch picture, so
+/// a branch that only MATERIALISES during the fetch reads as absent for the rest
+/// of the same dispatch — and the reader that consults it drops the operator's
+/// recorded base for a branch that does exist. Call it right after any fetch
+/// that can add or prune remote-tracking refs.
+pub(crate) fn forget_remote_names(root: &Path) {
+    if let Ok(mut memo) = remote_names_memo().lock() {
+        memo.remove(root);
+    }
+}
+
+/// `true` when `base` is a branch the remote STILL has — and `true` as well
+/// when its existence could NOT be measured.
+///
+/// The one spelling of the question both readers of a recorded base ask
+/// ([`BaseFlow::recorded_base_of`] for the unit's durable record,
+/// [`crate::commands::event::work_branch::recorded_or_derived_base`] for the
+/// pending marker), so the cut and every later read agree about which recorded
+/// bases still count.
+///
+/// **What it measures, and what it used to.** The test used to be membership in
+/// `git.flow`'s declared set, which refuses a base the operator really picked
+/// out of the real catalogue for the sole reason that a file written at install
+/// time does not list it. Existence is the fact the protection was always
+/// after: a base that no longer exists cannot be cut from, and one that exists
+/// can — whoever declared it.
+///
+/// **Why unmeasured obeys.** A recorded base is a MEASUREMENT of a person's
+/// answer, taken against the real catalogue at cut time. Dropping it because
+/// the probe stayed silent — no git, no remote, a clone whose refs were never
+/// fetched — refuses a real choice on the strength of a source that said
+/// nothing, which is the very defect the membership test was. An empty answer
+/// counts as silence too: a repository with no remote-tracking refs cannot
+/// testify about the remote, the same reading
+/// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
+/// catalogue and `base-candidates` reports as `measured: false`.
+/// **Local heads count too, and leaving them out re-created the defect.** The
+/// door that accepts the pick ([`crate::commands::work_unit_open`]) validates it
+/// as `refs/heads/<b>` OR `refs/remotes/origin/<b>` — a base that was never
+/// pushed is a real branch someone can cut from. This probe read only the
+/// remote-tracking side, so such a pick was accepted, written into the unit's
+/// record, and then DISCARDED here on the next read, with the caller answering
+/// "nothing recorded" about a record sitting on disk. Two halves of one question
+/// measuring different things is the shape this whole unit exists to remove, so
+/// they ask the same thing: does this branch still exist, anywhere this
+/// repository can see?
+pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
+    if with_remote_names(root, |names| names_obey(names, base)) {
+        return true;
+    }
+    // **A local head counts only if it was NEVER pushed.** Two very different
+    // branches look identical in the remote-tracking catalogue — both absent:
+    //
+    //   never pushed          a real branch, living only on this machine
+    //   deleted upstream      merged and retired; cutting from it is the
+    //                         "base that no longer exists" this probe exists
+    //                         to refuse
+    //
+    // `git fetch --prune` prunes remote-tracking refs, never local heads, so a
+    // plain "does refs/heads/<base> exist?" obeys the retired branch and
+    // reopens exactly what AC-2 forbids. The upstream configuration separates
+    // them and is measured, not guessed: a branch that was pushed carries
+    // `branch.<name>.remote`, and one that never left this machine does not.
+    // Absent upstream ⇒ never pushed ⇒ a real local base, obey. Upstream set
+    // but gone from the catalogue ⇒ retired upstream ⇒ ignore.
+    local_head_exists(root, base) && !has_upstream(root, base)
+}
+
+/// `true` when `refs/heads/<branch>` resolves in `root`.
+fn local_head_exists(root: &Path, branch: &str) -> bool {
+    let dir = root.to_string_lossy().to_string();
+    std::process::Command::new("git")
+        .args(["-C", &dir, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// `true` when `branch` has an upstream configured — the durable mark that it
+/// was pushed at least once, and therefore that its absence from the
+/// remote-tracking catalogue means RETIRED rather than never-published.
+///
+/// `false` on any failure, which is the safe reading for the only caller: an
+/// unanswerable probe must not turn a local base into a retired one and drop a
+/// record the operator really made.
+fn has_upstream(root: &Path, branch: &str) -> bool {
+    let dir = root.to_string_lossy().to_string();
+    std::process::Command::new("git")
+        .args(["-C", &dir, "config", "--get", &format!("branch.{branch}.remote")])
+        .output()
+        .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
+}
+
+/// Hand `read` the MEMOISED remote branch names of `root`, measuring them on
+/// the first call. The inner `None` is the probe's own "could not measure" and
+/// is passed through untouched — folding it into an empty set is what turns an
+/// offline machine into a repository with no branches.
+///
+/// The memo is never held across `read`: the value is cloned out first, so a
+/// reader is free to ask anything it likes without the non-reentrant lock
+/// deciding whether it deadlocks.
+fn with_remote_names<T>(root: &Path, read: impl FnOnce(Option<&BTreeSet<String>>) -> T) -> T {
+    let key = root.to_path_buf();
+    let hit = remote_names_memo().lock().ok().and_then(|memo| memo.get(&key).cloned());
+    if let Some(names) = hit {
+        return read(names.as_ref());
+    }
+    let names = mustard_core::remote_branch_names(root);
+    let answer = read(names.as_ref());
+    if let Ok(mut memo) = remote_names_memo().lock() {
+        memo.insert(key, names);
+    }
+    answer
+}
+
+/// The reading of one probe result: measured and naming `base` → obey;
+/// measured and NOT naming it → drop; unmeasured (`None`, or an empty listing)
+/// → obey. See [`base_still_on_remote`], which is where the reasoning lives.
+fn names_obey(names: Option<&BTreeSet<String>>, base: &str) -> bool {
+    match names {
+        Some(names) if !names.is_empty() => names.contains(base),
+        _ => true,
+    }
+}
+
+/// `Some(true)` when the repository at `root` really offers MORE THAN ONE
+/// branch to cut from, `Some(false)` when it offers exactly one, and `None`
+/// when nothing could be measured.
+///
+/// This is "was there a choice to make?", asked of the catalogue the operator
+/// was actually shown ([`mustard_core::branch_catalog`] reads the same refs) —
+/// not of the declared flow. A project declaring a single base still carries
+/// every branch `origin` has, and the picker offers all of them, so counting
+/// the DECLARATION answered a question nobody asked: it reported "nothing was
+/// chosen" about a repository where the operator had just chosen.
+///
+/// Same probe and same memo as [`base_still_on_remote`], so the two halves of
+/// one pick — whether it is written down, and whether it is still obeyed — read
+/// the identical set of refs.
+fn catalogue_offers_a_choice(root: &Path) -> Option<bool> {
+    with_remote_names(root, |names| match names {
+        Some(names) if !names.is_empty() => Some(names.len() > 1),
+        _ => None,
+    })
 }
 
 /// What a work unit IS — the closed set the branch prefix names.
@@ -257,7 +444,9 @@ impl UnitBase {
 /// type spells no branch literally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BaseFlow {
-    /// Every declared integration base, in `integration_bases()` order.
+    /// Every base `git.flow` PRE-SELECTS, in
+    /// [`GitConfig::preselected_bases`] order. A hint about where a picker
+    /// opens — it refuses nothing.
     bases: Vec<String>,
     /// The base ordinary work is cut from — `flow["*"]`.
     work: String,
@@ -362,9 +551,11 @@ impl BaseFlow {
     /// Three sources, asked in this order, and the ORDER is the whole point:
     ///
     /// 1. `{base}_{slug}` — a unit still in the pre-kind shape carries its base
-    ///    in the name: the LONGEST declared base `B` with the name starting
-    ///    `"{B}_"`, so a project declaring both `dev` and `dev_release` reads
-    ///    `dev_release_x` as the latter's.
+    ///    in the name: the LONGEST branch `B` with the name starting `"{B}_"`,
+    ///    asked of the declared bases and then of the branches the repository
+    ///    really has ([`legacy_base_of`](Self::legacy_base_of)), so a project
+    ///    carrying both `dev` and `dev_release` reads `dev_release_x` as the
+    ///    latter's — declared or not.
     /// 2. the unit's OWN RECORD ([`recorded_base_of`](Self::recorded_base_of)) —
     ///    what the cut wrote down. It wins over the derivation because it is a
     ///    MEASUREMENT of where the branch really came from, while the derivation
@@ -386,6 +577,9 @@ impl BaseFlow {
     /// the merged-ancestry check included.
     pub(crate) fn base_of(&self, branch: &str) -> UnitBase {
         let name = branch_of_name(branch);
+        if self.is_declared_base(name) {
+            return UnitBase::NotAUnit;
+        }
         let Some(kind) = WorkKind::of_branch(name) else {
             return match self.legacy_base_of(name) {
                 Some(base) => UnitBase::Known(base),
@@ -402,26 +596,72 @@ impl BaseFlow {
         }
     }
 
-    /// `true` when the base of `branch` cannot be re-derived, so the cut must
-    /// write it down or the operator's answer is lost.
+    /// `true` when `name` is one of the branches this project's `git.flow`
+    /// names — so it is an integration BASE, and nobody's work unit.
     ///
-    /// It used to mean "a hotfix in a project with several emergency bases" —
-    /// the one case where the kind's implied base was not unique. With the kind
-    /// no longer implying anything, the condition GENERALISES: every unit's
-    /// base is a choice, so every unit records it, unless the project declares
-    /// exactly one base and there was nothing to choose.
+    /// The kind vocabulary is open, so `{kind}/{slug}` is a shape and not a
+    /// list: `release/2026-Q3` splits into a first segment that parses as a kind
+    /// and a second that parses as a slug, exactly like `feature/aba` does.
+    /// Reading names alone therefore made a project's own release line answer
+    /// "somebody's unit" — and the two doors that ask this question acted on it:
+    /// `git delete` offered to REMOVE the release line, and `pr list` refused to
+    /// run from it.
+    ///
+    /// This is the one reading of the declared set that is not a permission.
+    /// It refuses the operator nothing — a base is still cut from freely, and a
+    /// base nobody declared is still a perfectly good base. All it does is stop
+    /// the harness from mistaking a branch the project ITSELF called a base for
+    /// a disposable unit, which is the only direction of this question where
+    /// being wrong destroys something.
+    fn is_declared_base(&self, name: &str) -> bool {
+        self.bases.iter().any(|b| b == name)
+    }
+
+    /// `true` when the operator had a real choice of base, so the cut must write
+    /// their answer down or it is lost.
+    ///
+    /// **TWO sources of a choice, and either one is enough.**
+    ///
+    /// 1. The DECLARED set cannot land on one answer (`bases().len() != 1`) —
+    ///    so [`base_of`](Self::base_of)'s derivation would come back
+    ///    [`Ambiguous`](UnitBase::Ambiguous) and the answer has nowhere else to
+    ///    live. Unchanged, and it must stay: this is the leg `settle`'s
+    ///    `ambiguous-base` hint depends on when it sends the operator to
+    ///    `work-unit-open --base …` to write exactly this down.
+    /// 2. The CATALOGUE really offered more than one branch
+    ///    ([`catalogue_offers_a_choice`]) — which the first leg cannot see. The
+    ///    picker offers every branch `origin` has, declared or not, so in a
+    ///    project declaring ONE base and carrying five branches the operator
+    ///    chose from five while the count reported "nothing to choose": the
+    ///    answer was dropped before it was ever written, and every later read
+    ///    re-derived the single declared base instead. That is this spec's
+    ///    defect one step earlier than the filter it removed — same closed list,
+    ///    same discarded pick.
+    ///
+    /// So this only ever records MORE than the count alone did. A rootless model
+    /// has no catalogue to ask and keeps leg 1 by itself; an unmeasurable one
+    /// (no git, no remote, an unfetched clone) reads the same way, because a
+    /// probe that said nothing must not be the thing that decides an answer was
+    /// worth keeping.
     ///
     /// The one spelling of that condition, shared by the emitter that records
-    /// the pick in the pending marker, by both doors that cut the branch, and by
-    /// [`base_of`](Self::base_of) itself — three consumers that must agree about
-    /// when an answer exists to be remembered.
+    /// the pick in the pending marker and by the record the cut leaves in the
+    /// unit's own directory ([`record_cut_base`](Self::record_cut_base)), which
+    /// is what [`base_of`](Self::base_of) reads back — consumers that must agree
+    /// about when an answer exists to be remembered.
     pub(crate) fn base_must_be_recorded(&self, branch: &str) -> bool {
-        WorkKind::of_branch(branch).is_some() && self.bases().len() != 1
+        if WorkKind::of_branch(branch).is_none() {
+            return false;
+        }
+        if self.bases().len() != 1 {
+            return true;
+        }
+        self.project.as_deref().and_then(catalogue_offers_a_choice).unwrap_or(false)
     }
 
     /// The base recorded FOR THIS UNIT, `None` when nothing was recorded, when
-    /// this model has no project to consult, or when what was recorded no longer
-    /// names a declared base.
+    /// this model has no project to consult, or when what was recorded is a
+    /// branch the remote no longer has.
     ///
     /// TWO places, one answer, in the order the answer travels: the sidecar
     /// (`meta.json#base`, its durable home once the draft has folded it) and
@@ -430,9 +670,13 @@ impl BaseFlow {
     /// and never drafted still answers, and one that was drafted answers from
     /// the single file every other machine-parseable fact about it lives in.
     ///
-    /// The declared-base filter matters: `git.flow` may have changed since the
-    /// cut, and answering with a branch the project no longer declares is worse
-    /// than falling back to the derivation — the same posture
+    /// The check on the way out matters, and WHAT it checks matters more: the
+    /// repository may have moved on since the cut, and answering with a branch
+    /// that is gone is worse than falling back to the derivation. So the record
+    /// is measured against the branches the remote really has
+    /// ([`base_still_on_remote`]) — never against `git.flow`, which would drop
+    /// the answer of every operator who picked a base the install never
+    /// declared. The same posture, through the same helper,
     /// [`crate::commands::event::work_branch::recorded_or_derived_base`] takes
     /// with the marker.
     fn recorded_base_of(&self, name: &str) -> Option<String> {
@@ -443,7 +687,7 @@ impl BaseFlow {
             .and_then(|meta| meta.base)
             .or_else(|| cut_base_in(&dir))?;
         let recorded = recorded.trim().to_string();
-        self.bases.contains(&recorded).then_some(recorded)
+        base_still_on_remote(project, &recorded).then_some(recorded)
     }
 
     /// Write down the base a unit was ACTUALLY cut from, in the cut's own record
@@ -492,12 +736,65 @@ impl BaseFlow {
     /// The `{base}_` half of a name still in the pre-kind shape. Separate from
     /// [`base_of`](Self::base_of) because the slug reader needs the base it
     /// matched, not the base the unit integrates into.
+    ///
+    /// TWO sources, and the second is why a name is no longer refused for the
+    /// company it keeps: the DECLARED bases first (unchanged — nothing that
+    /// resolved before stops resolving), then, for a rooted model, the branches
+    /// the repository REALLY has. A unit cut as `hml_x` back when `hml` was the
+    /// project's base is still that unit after `mustard.json` stopped naming it,
+    /// and a project whose install wrote no flow at all — which is every project
+    /// the current installer touches — resolves the shape at all.
+    ///
+    /// Longest match on both sides, so a repository carrying `dev` and
+    /// `dev_release` reads `dev_release_x` as the latter's.
+    ///
+    /// An unmeasured probe answers `None`, exactly as an unmatched one does, and
+    /// that sameness is deliberate here: the caller reads `None` as "nobody's
+    /// unit", which costs a non-unit cut, while a positive answer nobody
+    /// measured would cut a UNIT from a base that may not exist.
+    ///
+    /// **One name the catalogue leg refuses**, and refusing it is what keeps
+    /// this leg from doing the damage [`is_declared_base`](Self::is_declared_base)
+    /// exists to prevent: a branch the REMOTE ITSELF CARRIES that this project
+    /// holds no unit for. Branch names carry no mark separating a base from a
+    /// unit, so a project whose integration line is spelled `hml_prod` —
+    /// undeclared, like every branch of a project the current installer touched
+    /// — matches `hml` on the catalogue and read as "the unit `prod`":
+    /// `git delete` offered to remove the integration line, and `pr list`
+    /// refused to run from it. The two facts together are what tell them apart.
+    /// A branch that is already ON the remote is one of the project's own; a
+    /// unit of THIS harness has a directory under `.claude/spec/` naming it, and
+    /// a name the remote has never seen cannot be a branch of the project at all
+    /// — it is the unit about to be cut, which is how the worktree door reaches
+    /// here. Being wrong in the "somebody's unit" direction destroys a branch
+    /// and in the other direction costs a refusal, so where nothing distinguishes
+    /// them the refusal wins.
     fn legacy_base_of(&self, name: &str) -> Option<String> {
-        self.bases
+        let declared = self
+            .bases
             .iter()
             .filter(|b| name.starts_with(&format!("{b}_")))
             .max_by_key(|b| b.len())
-            .cloned()
+            .cloned();
+        if declared.is_some() {
+            return declared;
+        }
+        if !name.contains('_') {
+            return None; // no probe for a name that cannot carry the shape
+        }
+        let project = self.project.as_deref()?;
+        with_remote_names(project, |names| {
+            let names = names?;
+            let base = names
+                .iter()
+                .filter(|b| name.starts_with(&format!("{b}_")))
+                .max_by_key(|b| b.len())?
+                .clone();
+            let slug = name.strip_prefix(&format!("{base}_"))?.trim();
+            let holds_a_unit =
+                !slug.is_empty() && unit_dir(project, slug).is_some_and(|dir| dir.is_dir());
+            (holds_a_unit || !names.contains(name)).then_some(base)
+        })
     }
 
     /// The unit a work branch names — the slug half, whichever shape carries it.
@@ -508,6 +805,9 @@ impl BaseFlow {
     /// exact drift this module exists to prevent.
     pub(crate) fn slug_of(&self, branch: &str) -> Option<String> {
         let name = branch_of_name(branch);
+        if self.is_declared_base(name) {
+            return None;
+        }
         if let Some(kind) = WorkKind::of_branch(name) {
             let slug = name.strip_prefix(&format!("{}/", kind.token()))?.trim();
             return (!slug.is_empty()).then(|| slug.to_string());
@@ -515,6 +815,63 @@ impl BaseFlow {
         let base = self.legacy_base_of(name)?;
         let slug = name.strip_prefix(&format!("{base}_"))?.trim();
         (!slug.is_empty()).then(|| slug.to_string())
+    }
+
+    /// `true` when this project holds a RECORD proving `branch` is one of ITS
+    /// work units — the unit's own directory under `.claude/spec/`.
+    ///
+    /// **Why a record and not the name.** Two answers were tried here and both
+    /// destroyed something. The name's SHAPE cannot answer it: the kind
+    /// vocabulary is open by design, so `release/2026-Q3` splits into a kind and
+    /// a slug exactly like `fix/aba` does, and a project's own release line
+    /// therefore read as somebody's disposable unit. The DECLARED set cannot
+    /// answer it either: `mustard init` no longer writes `git.flow`, so
+    /// [`GitConfig::preselected_bases`] degrades to the hardcoded
+    /// `{main, master}` — that guard protected two literals and nothing else,
+    /// and `git delete` was measured removing a real release line from the
+    /// remote in a project shaped exactly the way the installer writes them.
+    ///
+    /// A branch this harness CUT has a directory; a branch the project has
+    /// always had does not. That is evidence the project itself recorded, and it
+    /// is what the two doors that may destroy or refuse must read.
+    ///
+    /// **`false` is the safe answer, and it is deliberate.** No project to
+    /// consult, an unreadable path, a name that parses to no slug, or a slug
+    /// with no directory all answer `false` — for an irreversible action,
+    /// absence of evidence must REFUSE rather than permit. A caller that only
+    /// wants to know what a name looks like should keep asking
+    /// [`base_of`](Self::base_of); this question is for the callers where being
+    /// wrong costs a branch.
+    pub(crate) fn has_unit_record(&self, branch: &str) -> bool {
+        let Some(project) = self.project.as_deref() else {
+            return false;
+        };
+        let Some(slug) = self.slug_of(branch) else {
+            return false;
+        };
+        if slug.is_empty() {
+            return false;
+        }
+        if unit_dir(project, &slug).is_some_and(|dir| dir.is_dir()) {
+            return true;
+        }
+        // **The working tree is not the only place the record lives, and reading
+        // only it inverted two doors.** The unit's directory is authored ON the
+        // unit's branch, while every door that asks this question runs from
+        // somewhere else: from the base, where the branch's files are not
+        // checked out, or from a linked worktree, whose checkout IS the unit
+        // while `project` points at the main one. Both answered `false` for a
+        // real unit, and both then did the opposite of what they promise —
+        // `git delete` destroyed the worktree the caller was standing in
+        // instead of refusing, and `git settle` refused the very position its
+        // own hint prescribes.
+        //
+        // So the question is asked of git too, in the two refs that can carry
+        // it. This is ONE reading shared by all three doors on purpose: a weak
+        // reading guarding while a strong one permits is how a destructive
+        // command ends up more permissive than the check in front of it.
+        let path = format!(".claude/spec/{slug}");
+        ["", "origin/"].iter().any(|prefix| ref_carries(project, &format!("{prefix}{branch}"), &path))
     }
 }
 
@@ -765,16 +1122,16 @@ mod tests {
             "the answer survives the fold — one home at a time, never none",
         );
 
-        // A flow that no longer declares the recorded base ignores it rather
-        // than obeying it — the project may have changed since the cut. With
-        // the record dropped there is nothing left to answer WITH: the prefix
-        // used to supply a fallback and no longer does, so the honest answer is
-        // that the base was never established.
+        // A flow that no longer declares the recorded base OBEYS it anyway.
+        // The configuration is not the test: `qas` is where this unit really
+        // came from, and a `mustard.json` edited afterwards cannot move a cut
+        // that already happened. What DOES retire a record is the branch itself
+        // disappearing — see `a_vanished_recorded_base_is_ignored`.
         let moved_on = BaseFlow::of_at(&two_tier(), project);
         assert_eq!(
             moved_on.base_of("hotfix/my-unit").known(),
-            None,
-            "an undeclared record is dropped, and nothing invents a replacement",
+            Some("qas"),
+            "the operator's answer outlives a flow that never mentioned it",
         );
 
         // The condition GENERALISED with the change. It used to mean "a hotfix
@@ -785,14 +1142,19 @@ mod tests {
         assert!(two.base_must_be_recorded("hotfix/other"), "two bases — the pick must survive");
         assert!(two.base_must_be_recorded("feature/other"), "and a feature makes the same pick");
 
-        // The one project where nothing is remembered is the one where nothing
-        // was chosen: a single declared base leaves no choice to lose.
+        // …and where NOTHING can be measured — this `project` is a bare
+        // directory, not a repository — the declared count is the last resort,
+        // so a single declared base still reads as "nothing was chosen". That
+        // is the FALLBACK and not the rule: given a real catalogue the question
+        // is asked of the branches that exist, which is what lets a
+        // single-base project keep the operator's pick
+        // (`the_recorded_base_survives_to_the_cut_in_any_project`).
         let mut single = GitConfig::default();
         single.flow.insert("*".to_string(), "main".to_string());
         let one = BaseFlow::of_at(&single, project);
         assert!(
             !one.base_must_be_recorded("feature/other"),
-            "one base — nothing to remember",
+            "one declared base and no catalogue to ask — nothing to remember",
         );
         one.record_cut_base("feature/other", "main");
         assert!(
@@ -816,5 +1178,117 @@ mod tests {
         let mut single = GitConfig::default();
         single.flow.insert("*".to_string(), "main".to_string());
         assert_eq!(BaseFlow::of(&single).base_of("feature/my-unit").known(), Some("main"));
+    }
+
+    /// A repository whose REMOTE really has `branches` — the refs the existence
+    /// probe reads. `false` when git is unusable here, so a caller can skip
+    /// instead of asserting against a probe that measured nothing.
+    fn seed_remote_refs(root: &Path, branches: &[&str]) -> bool {
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q", "-b", "dev", "."]) {
+            return false;
+        }
+        let _ = git(&["config", "user.email", "t@t.t"]);
+        let _ = git(&["config", "user.name", "t"]);
+        if !git(&["commit", "-q", "--allow-empty", "-m", "seed"]) {
+            return false;
+        }
+        branches.iter().all(|b| git(&["update-ref", &format!("refs/remotes/origin/{b}"), "HEAD"]))
+    }
+
+    /// A recorded base that VANISHED from the remote is ignored, and the
+    /// derivation takes over — while one the CONFIGURATION never declared is
+    /// obeyed.
+    ///
+    /// The two halves are one subject: this is the protection the old
+    /// declared-list filter was reaching for, pointed at something the question
+    /// can actually be asked of. `git.flow` cannot say whether a branch still
+    /// exists; the refs can. So the record is dropped in the one case that
+    /// justifies dropping it — the repository answered, and did not name it.
+    #[test]
+    fn a_vanished_recorded_base_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        if !seed_remote_refs(project, &["dev", "qas", "main", "release/2026-Q3"]) {
+            return; // no usable git here — nothing here is measurable at all
+        }
+        let git = three_tier();
+        let flow = BaseFlow::of_at(&git, project);
+
+        // A pick no `git.flow` ever declared, which the remote really has.
+        flow.record_cut_base("hotfix/na-linha-de-release", "release/2026-Q3");
+        assert_eq!(
+            BaseFlow::of_at(&git, project).base_of("hotfix/na-linha-de-release").known(),
+            Some("release/2026-Q3"),
+            "an existing branch is the operator's answer, declared or not",
+        );
+
+        // A pick that is GONE — the release line was merged and deleted.
+        flow.record_cut_base("hotfix/na-linha-extinta", "release/2025-Q1");
+        let vanished = BaseFlow::of_at(&git, project).base_of("hotfix/na-linha-extinta");
+        assert!(vanished.is_unit(), "it is still this project's unit");
+        assert_eq!(vanished.known(), None, "a base that no longer exists cannot be cut from");
+        assert_eq!(
+            vanished.candidates(),
+            ["dev", "main", "qas"],
+            "…and the derivation takes over, naming what it could not choose between",
+        );
+    }
+
+    /// An integration line whose NAME carries an underscore is not somebody's
+    /// unit, and the catalogue leg of the legacy reader must not turn it into
+    /// one.
+    ///
+    /// `hml_prod` in a project that declares no flow — every project the current
+    /// installer touches — matches `hml` on the catalogue, so reading the name
+    /// alone answered "the unit `prod`": `git delete` would have offered to
+    /// remove the integration line and `pr list` would have refused to run from
+    /// it, which is exactly the damage `is_declared_base` was added to prevent,
+    /// arriving through the other door. Both kinds of real unit still resolve —
+    /// the one this harness already cut and drafted, and the one that does not
+    /// exist on the remote yet because it is about to be cut.
+    #[test]
+    fn an_underscored_base_is_not_mistaken_for_a_legacy_unit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        if !seed_remote_refs(project, &["hml", "hml_prod", "hml_minha-unidade"]) {
+            return; // no usable git here — nothing here is measurable at all
+        }
+        // The project declares nothing, so `hml_prod` is undeclared exactly as
+        // the release line of any freshly installed project is.
+        let flow = BaseFlow::of_at(&GitConfig::default(), project);
+
+        assert_eq!(
+            flow.base_of("hml_prod"),
+            UnitBase::NotAUnit,
+            "a branch the remote carries, that no unit of this project names, is a BASE",
+        );
+        assert_eq!(flow.slug_of("hml_prod"), None, "…so it has no slug to be retired under");
+
+        // A name the remote has never seen is the unit about to be cut — the
+        // shape the worktree door hands over.
+        assert_eq!(
+            flow.base_of("hml_ainda-nao-empurrada").known(),
+            Some("hml"),
+            "a name no branch carries is nobody's base — it is the unit being opened",
+        );
+
+        // …and the unit this harness really cut in that shape still reads,
+        // pushed or not, because its directory names it.
+        std::fs::create_dir_all(project.join(".claude").join("spec").join("minha-unidade"))
+            .expect("unit dir");
+        assert_eq!(
+            flow.base_of("hml_minha-unidade").known(),
+            Some("hml"),
+            "a unit whose directory this project holds resolves by its name, declared or not",
+        );
+        assert_eq!(flow.slug_of("hml_minha-unidade").as_deref(), Some("minha-unidade"));
     }
 }

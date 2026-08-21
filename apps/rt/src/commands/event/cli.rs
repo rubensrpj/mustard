@@ -86,6 +86,15 @@ pub enum EventCmd {
         /// so via `renamedFrom`.
         #[arg(long)]
         intent: Option<String>,
+        /// The name the OPERATOR chose for this unit. On `--kind pipeline.kind`
+        /// it OUTRANKS the name derived from `--intent`: the derivation is a
+        /// suggestion, and the person who read it and corrected it on purpose
+        /// decides. Canonicalised by that same derivation (spaces, accents and
+        /// slashes collapse into the one slug spelling), so the unit still
+        /// carries a single name; the report echoes `nameFrom`. Distinct from
+        /// `--spec`, which stays a caller's guess and still loses.
+        #[arg(long = "unit-name")]
+        unit_name: Option<String>,
         /// What the unit IS — an open label (`feature`, `fix`, `hotfix`,
         /// `chore`, …). On `--kind pipeline.kind` it names the auto-branch
         /// (`{kind}/{slug}`). Omitted → NEVER a silent default: it is derived
@@ -99,11 +108,12 @@ pub enum EventCmd {
         /// same change.
         #[arg(long = "type")]
         work_kind: Option<String>,
-        /// Integration base the work branch is cut from. When set, it MUST name
-        /// one of the project's `git.flow` integration bases (unknown → error
-        /// telling you to declare it), and a `hotfix` may not name the base
-        /// ordinary work is cut from; when omitted, the base follows from
-        /// `--type`. Agnostic — derived from `git.flow`, never hardcoded.
+        /// Base branch the work branch is cut from — the OPERATOR's own
+        /// answer, taken against the branches this repository REALLY has. When
+        /// set, it MUST name one of them (a name no branch carries → error, and
+        /// the error LISTS what is there); it is never refused for missing from
+        /// `git.flow`, which refuses nothing. When omitted, the project's
+        /// primary base. The `--type` does not decide it, in either direction.
         #[arg(long)]
         base: Option<String>,
     },
@@ -161,13 +171,23 @@ pub fn dispatch(cmd: EventCmd) {
         EventCmd::EmitPhase { spec, to, from } => {
             event::emit_phase::run(&spec, &to, from.as_deref());
         }
-        EventCmd::EmitPipeline { kind, spec, payload, allow_no_qa, intent, work_kind, base } => {
+        EventCmd::EmitPipeline {
+            kind,
+            spec,
+            payload,
+            allow_no_qa,
+            intent,
+            unit_name,
+            work_kind,
+            base,
+        } => {
             event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
                 spec,
                 payload,
                 allow_no_qa,
                 intent,
+                unit_name,
                 base,
                 work_kind,
             });

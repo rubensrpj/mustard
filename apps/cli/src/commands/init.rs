@@ -19,11 +19,15 @@
 //!      plansDirectory …); plugin enablement is NOT planted (user-scope
 //!      choice) and the broken pair an older build wrote is retired
 //!      (`mustard_core::retire_planted_plugin_enablement`);
-//!    - `mustard/*.md` — the injectable instruction files (orchestrator rules,
-//!      response style); the session hooks splice them into the agent's window
-//!      per `mustard.json#inject` — **no `CLAUDE.md` is planted anymore** (a
-//!      planted orchestrator drowned in large root files; injection always
-//!      lands);
+//!    - `mustard/*.md` — the injectable instruction files: the router's two
+//!      halves, `orchestrator.md` (intent routing) on `userPromptSubmit` and
+//!      `dispatch.md` (the unit's question, the base gate, the naming) on
+//!      `sessionStart`. Two events because ONE hook response carries at most
+//!      10,000 characters of `additionalContext` and the session hooks fold
+//!      every injectable of one event into a single payload; the session hooks
+//!      splice them into the agent's window per `mustard.json#inject` — **no
+//!      `CLAUDE.md` is planted anymore** (a planted orchestrator drowned in
+//!      large root files; injection always lands);
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!    - migration: a legacy Mustard-planted `.claude/CLAUDE.md` (identified by
 //!      its `# Orchestrator Rules` marker) is deleted, and the Mustard import
@@ -1189,17 +1193,27 @@ mod tests {
         assert!(cfg.get("git").is_some(), "git-flow block written");
         assert_eq!(cfg.get("specLang").and_then(|v| v.as_str()), Some("pt-BR"));
         assert_eq!(cfg.get("tone").and_then(|v| v.as_str()), Some("didactic"));
-        // The default inject declaration is seeded (orchestrator on the first
-        // prompt, once). The response style is a plugin output-style now, not a
-        // per-project injectable.
+        // The default inject declarations are seeded: the router's two halves,
+        // on two DIFFERENT events. One hook response carries 10,000 characters
+        // of `additionalContext` and the composer folds every injectable of one
+        // event into a single payload — so a shared event would give the two
+        // halves one ceiling, which is the defect the split removed. The
+        // response style is a plugin output-style now, not a per-project
+        // injectable.
         let inject = cfg.get("inject").and_then(|v| v.as_array()).expect("inject seeded");
-        assert_eq!(inject.len(), 1, "one default inject entry: {inject:?}");
+        assert_eq!(inject.len(), 2, "the router's two halves: {inject:?}");
         assert_eq!(
             inject[0].get("file").and_then(|v| v.as_str()),
             Some(".claude/mustard/orchestrator.md")
         );
         assert_eq!(inject[0].get("on").and_then(|v| v.as_str()), Some("userPromptSubmit"));
         assert_eq!(inject[0].get("once").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            inject[1].get("file").and_then(|v| v.as_str()),
+            Some(".claude/mustard/dispatch.md")
+        );
+        assert_eq!(inject[1].get("on").and_then(|v| v.as_str()), Some("sessionStart"));
+        assert_eq!(inject[1].get("once").and_then(|v| v.as_bool()), Some(true));
         assert!(
             !claude.join("mustard.json").exists(),
             "no .claude/mustard.json — config lives only at the project root"

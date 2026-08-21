@@ -25,11 +25,11 @@
 //!   directories. WARN with install hint (`mustard install-nerd-font`) when
 //!   absent. Powerline statusline themes require this; without it the
 //!   transition glyphs render as tofu.
-//! - **git-flow** — `mustard.json#git.flow` is declared. WARN when empty:
-//!   every base-derived behavior (work-branch protection, the auto-branch
-//!   base, `/git` PR targets) then falls back to `{main, master}`, so a
-//!   project integrating on any other branch (`dev`, `develop`) gets NO
-//!   protection there and edits land on it silently.
+//! - **branch-protection** — which branches this repository REALLY refuses a
+//!   direct commit on, measured through `mustard_core::protected_branches`
+//!   (`origin/HEAD` ∪ `mustard.json#git.protected`). WARN only when
+//!   `origin/HEAD` is unreadable, because protection then rests on literals
+//!   this project may not use at all.
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
@@ -594,39 +594,64 @@ fn lsp_check(project_dir: &Path) -> CheckResult {
 }
 
 // ---------------------------------------------------------------------------
-// Check: git-flow
+// Check: branch-protection
 // ---------------------------------------------------------------------------
 
-/// Warn when `mustard.json#git.flow` is empty. The flow is the single source
-/// every base-derived behavior reads: `work_branch_gate` protection, the
-/// base the auto-branch `{kind}/{slug}` is cut from, `/git` PR targets. An
-/// empty flow silently
-/// degrades all of them to the `{main, master}` fallback — a project whose
-/// integration branch is anything else (`dev`, `develop`) gets no protection
-/// there and no auto-branching. Skip when there is no `mustard.json` at the
-/// project root (not a mustard project).
-fn check_git_flow(cwd: &Path) -> CheckResult {
+/// Report which branches this repository REALLY protects, and warn only when
+/// nothing could be measured.
+///
+/// This check used to warn that `mustard.json#git.flow` was empty and prescribe
+/// declaring one. Two things were wrong with it, and both were load-bearing.
+/// The installer writes NO flow — `project_seed` seeds an empty map on purpose,
+/// so the project decides later — which made the warning fire on every correct
+/// installation. And the claim it made, that only `{main, master}` are then
+/// protected, is false in front of [`mustard_core::protected_branches`], which
+/// measures the remote's own default branch (`origin/HEAD`) plus whatever
+/// `git.protected` adds. A diagnostic that fires on a healthy install and
+/// describes the wrong mechanism teaches the operator to ignore diagnostics.
+///
+/// So it reports the MEASUREMENT. The one condition that still earns a warning
+/// is the one the fallback exists for: `origin/HEAD` was unreadable (no remote,
+/// a clone that never fetched), so protection fell back to literals this project
+/// may not use at all. Skip when there is no `mustard.json` at the project root
+/// (not a mustard project).
+fn check_branch_protection(cwd: &Path) -> CheckResult {
     if !cwd.join("mustard.json").is_file() {
-        return CheckResult::skip("git-flow", "no mustard.json at project root");
+        return CheckResult::skip("branch-protection", "no mustard.json at project root");
     }
     let config = mustard_core::ProjectConfig::load(cwd);
-    if config.git.flow.is_empty() {
+    let protected: Vec<String> =
+        mustard_core::protected_branches(cwd, &config.git).into_iter().collect();
+    if mustard_core::default_branch(cwd).is_none() {
         return CheckResult::warn(
-            "git-flow",
+            "branch-protection",
             vec![
-                "git.flow is empty — only the fallback bases (main/master) are protected; \
-                 any other integration branch (e.g. dev) accepts direct edits and never \
-                 auto-branches"
-                    .to_string(),
-                "fix: declare the flow in mustard.json, e.g. \
-                 \"git\": {\"flow\": {\"*\": \"dev\", \"dev\": \"main\"}}"
+                format!(
+                    "origin/HEAD is unreadable here, so protection fell back to its \
+                     literals: {}. Whatever branch this project really integrates on is \
+                     NOT protected until the remote answers.",
+                    protected.join(", ")
+                ),
+                "fix: `git remote set-head origin -a` (or one `git fetch origin`) so the \
+                 default branch is measurable; name any additional branch in \
+                 mustard.json#git.protected"
                     .to_string(),
             ],
         );
     }
-    let mut r = CheckResult::ok("git-flow");
-    let bases: Vec<String> = config.git.preselected_bases().into_iter().collect();
-    r.details.push(format!("bases: {}", bases.join(", ")));
+    let mut r = CheckResult::ok("branch-protection");
+    r.details.push(format!("protected: {}", protected.join(", ")));
+    let declared: Vec<String> = config.git.declared_bases().into_iter().collect();
+    r.details.push(if declared.is_empty() {
+        "pre-selected bases: none declared — the picker opens on the primary base and \
+         offers every branch `origin` has"
+            .to_string()
+    } else {
+        format!(
+            "pre-selected bases (where a picker opens — refuses nothing): {}",
+            declared.join(", ")
+        )
+    });
     r
 }
 
@@ -1342,11 +1367,11 @@ pub fn run(opts: DoctorOpts) {
         let result = match check_name.as_str() {
             "wave-integrity" => check_wave_integrity(&claude_dir),
             "status-consistency" => check_status_consistency(&claude_dir),
-            "git-flow" => check_git_flow(&cwd),
+            "branch-protection" => check_branch_protection(&cwd),
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, git-flow"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, branch-protection"
                 );
                 std::process::exit(1);
             }
@@ -1372,9 +1397,10 @@ pub fn run(opts: DoctorOpts) {
         check_wave_integrity(&claude_dir),
         // W2 spec-status-consistency — always in the full run.
         check_status_consistency(&claude_dir),
-        // Empty git.flow silently disables base protection — always in the
-        // full run (field case: sialia editing straight on `dev`).
-        check_git_flow(&cwd),
+        // What is really protected, measured — always in the full run: a
+        // protection resting on the unmeasured fallback is invisible until it
+        // fails to stop a commit.
+        check_branch_protection(&cwd),
     ];
 
     if opts.residue {
@@ -1931,44 +1957,57 @@ mod tests {
         assert!(!is_timestamp_expired("", u128::MAX, 1));
     }
 
-    // --- git-flow tests ---
+    // --- branch-protection tests ---
 
+    /// An empty `git.flow` is what the installer WRITES, so it can never be the
+    /// warning. What warns is the unmeasured probe — no remote here, so
+    /// `origin/HEAD` says nothing and protection rests on its literals.
     #[test]
-    fn git_flow_empty_flow_warns() {
+    fn branch_protection_warns_only_when_origin_head_is_unreadable() {
         let dir = tempdir().unwrap();
         write_file(
             &dir.path().join("mustard.json"),
             r#"{"git":{"flow":{},"provider":"github","submodules":false}}"#,
         );
-        let result = check_git_flow(dir.path());
+        let result = check_branch_protection(dir.path());
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
         assert!(
-            result.details.iter().any(|d| d.contains("git.flow is empty")),
-            "expected the empty-flow warning, got: {:?}",
+            result.details.iter().any(|d| d.contains("origin/HEAD")),
+            "the warning must name what could not be measured, got: {:?}",
+            result.details
+        );
+        assert!(
+            !result.details.iter().any(|d| d.contains("git.flow is empty")),
+            "an empty flow is the installed shape — it is not a finding: {:?}",
             result.details
         );
     }
 
+    /// A declared `git.flow` does not make the check pass either: the reading
+    /// is the same one, and a flow that names `dev` and `main` protects neither
+    /// by declaring them.
     #[test]
-    fn git_flow_declared_flow_is_ok_and_lists_bases() {
+    fn branch_protection_reports_the_measured_set_not_the_declared_one() {
         let dir = tempdir().unwrap();
         write_file(
             &dir.path().join("mustard.json"),
             r#"{"git":{"flow":{"*":"dev","dev":"main"},"provider":"github","submodules":false}}"#,
         );
-        let result = check_git_flow(dir.path());
-        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+        let result = check_branch_protection(dir.path());
+        // No remote in a bare temp dir ⇒ unmeasured ⇒ the same warning as
+        // above. The declaration changed nothing, which IS the assertion.
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
         assert!(
-            result.details.iter().any(|d| d.contains("dev") && d.contains("main")),
-            "expected the derived bases in the detail, got: {:?}",
+            result.details.iter().any(|d| d.contains("origin/HEAD")),
+            "declaring a flow does not answer what is protected: {:?}",
             result.details
         );
     }
 
     #[test]
-    fn git_flow_missing_mustard_json_skips() {
+    fn branch_protection_missing_mustard_json_skips() {
         let dir = tempdir().unwrap();
-        let result = check_git_flow(dir.path());
+        let result = check_branch_protection(dir.path());
         assert_eq!(result.status, Status::Skip, "{:?}", result.details);
     }
 
