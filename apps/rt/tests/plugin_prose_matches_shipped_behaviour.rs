@@ -50,6 +50,21 @@ fn line_with<'a>(body: &'a str, needle: &str) -> Option<&'a str> {
     body.lines().find(|l| l.contains(needle))
 }
 
+/// Where that line SITS — the only way to assert an order between two rows.
+/// `line_with` answers whether a row exists, which is what let a re-ordering
+/// of the unit's question pass every ratchet it had.
+fn line_index(body: &str, needle: &str) -> Option<usize> {
+    body.lines().position(|l| l.contains(needle))
+}
+
+/// The options a `  label:` row of the unit's question OFFERS, in order, with
+/// the label stripped — columns are separated by three or more spaces, so a
+/// single-space phrase like `…ou o seu` stays ONE entry instead of three.
+fn offered_options<'a>(row: &'a str, label: &str) -> Vec<&'a str> {
+    let (_, rest) = row.split_once(label).unwrap_or(("", row));
+    rest.split("   ").map(str::trim).filter(|s| !s.is_empty()).collect()
+}
+
 /// AC-10 — the CLOSE prose teaches the confirmation pass the pipeline takes.
 ///
 /// The red proof ("this criterion knows how to fail") shipped with prose; the
@@ -482,11 +497,14 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 1. The shipped seed no longer teaches the deleted carve-out -------
     // The compiled-in seed is what `upsert` lays down in every project, so this
     // reads the text that actually ships.
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    // The isolation paragraph rides the router's SECOND half (`dispatch.md`,
+    // § Dispatch) since the two-event split — read the seed that carries it,
+    // or this ratchet asserts the absence of a sentence from the wrong file.
+    let seed = mustard_core::DISPATCH_MD;
     for deleted in ["writes IN-PLACE", "carves out `.claude/spec/`"] {
         assert!(
             !seed.contains(deleted),
-            "the orchestrator seed still teaches `{deleted}` — the carve-out wave 2 removed",
+            "the dispatch seed still teaches `{deleted}` — the carve-out wave 2 removed",
         );
     }
 
@@ -495,7 +513,7 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // The needle carries the SHAPE, so a return to the base-prefixed name — or
     // any other spelling of the join — moves this anchor off the paragraph.
     let branch_line = line_with(seed, "compute the unit's `{kind}/{slug}` branch")
-        .expect("the orchestrator seed no longer says where the unit's branch comes from");
+        .expect("the dispatch seed no longer says where the unit's branch comes from");
     assert!(
         branch_line.contains("cut at APPROVAL"),
         "the paragraph never says WHEN the branch is cut: {branch_line}",
@@ -528,12 +546,12 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 3. This repository's delivered copy has not drifted ---------------
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered = read(".claude/mustard/dispatch.md");
     let delivered_line = line_with(&delivered, "compute the unit's `{kind}/{slug}` branch")
         .expect("the delivered injectable no longer says where the unit's branch comes from");
     assert_eq!(
         delivered_line, branch_line,
-        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
+        "the delivered .claude/mustard/dispatch.md drifted from the seed — \
          re-seed it, or this project reads the behaviour it just deleted",
     );
 
@@ -602,8 +620,9 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
 #[test]
 fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 1. The shipped seed asks ONE pre-marked question ------------------
-    // The compiled-in seed is what `upsert` lays down in every project.
-    let seed = mustard_core::ORCHESTRATOR_MD;
+    // The compiled-in seed is what `upsert` lays down in every project. The
+    // question lives in the router's SECOND half since the two-event split.
+    let seed = mustard_core::DISPATCH_MD;
 
     let kind_row = line_with(seed, "  tipo:")
         .expect("the router seed shows no `tipo` row — the kind is never asked");
@@ -669,12 +688,12 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 2. This repository's delivered copy has not drifted ---------------
     // `seed_injectable_files` PRESERVES an existing file on merge, so editing
     // the template does not update an already-seeded project.
-    let delivered = read(".claude/mustard/orchestrator.md");
+    let delivered = read(".claude/mustard/dispatch.md");
     for row in ["  tipo:", "  branch:", "run emit-pipeline --kind pipeline.kind"] {
         assert_eq!(
             line_with(&delivered, row),
             line_with(seed, row),
-            "the delivered .claude/mustard/orchestrator.md drifted from the seed \
+            "the delivered .claude/mustard/dispatch.md drifted from the seed \
              at `{row}` — re-seed it, or this project asks the old question",
         );
     }
@@ -852,6 +871,242 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
         "the reconcile drops the operator's recorded base again while it \
          corrects the branch — the retried cut then has nothing to read",
     );
+}
+
+/// The question asks WHERE the unit starts before WHAT it is called.
+///
+/// The ratchet above demands both rows EXIST and says nothing about their
+/// order, so shipping `tipo` above `sai de` broke no test — and a type read
+/// first makes the base look like its consequence, which is the implication
+/// this product removed the day the base began being chosen against a real
+/// catalogue.
+///
+/// Prose-only, deliberately: the row order is a RENDERING decision and no
+/// emitter can be asked whether the block was drawn in it. The mechanism half
+/// — that the base is MEASURED rather than derived from the type — is already
+/// ratcheted by `router_prose_teaches_the_kind_named_branch_and_its_one_question`,
+/// and duplicating it here would assert the wrong thing twice.
+#[test]
+fn router_asks_the_base_before_the_type() {
+    let seed = mustard_core::DISPATCH_MD;
+    let delivered = read(".claude/mustard/dispatch.md");
+
+    for (label, body) in [("the seed", seed), ("the delivered copy", delivered.as_str())] {
+        let base = line_index(body, "  sai de:")
+            .unwrap_or_else(|| panic!("{label} shows no `sai de` row — the base is never asked"));
+        let kind = line_index(body, "  tipo:")
+            .unwrap_or_else(|| panic!("{label} shows no `tipo` row — the type is never asked"));
+        assert!(
+            base < kind,
+            "{label} shows `tipo` above `sai de`, so the base reads as a consequence \
+             of the type — the implication a real catalogue removed",
+        );
+    }
+
+    // Both rows still open on a pre-marked answer: an Enter accepts, and the
+    // re-order must not cost the operator a decision it never used to cost.
+    for (row, marked) in [("  sai de:", "[dev]"), ("  tipo:", "[fix]")] {
+        let line = line_with(seed, row).unwrap_or_else(|| panic!("no `{row}` row"));
+        assert!(
+            line.contains(marked),
+            "`{row}` lists its options without PRE-MARKING one, so the re-ordered \
+             question costs two decisions instead of two Enters: {line}",
+        );
+    }
+
+    // Say WHY, or the order is a coincidence the next editor tidies away.
+    let why = line_with(seed, "`sai de` FIRST")
+        .expect("the router never says the base is asked first — nothing stops a re-order");
+    assert!(
+        why.contains("before what it is CALLED"),
+        "the order is stated without its reason: the operator settles where the unit \
+         STARTS before what it is called: {why}",
+    );
+}
+
+/// The rows are independent fields, the surface has a ceiling, and `hotfix`
+/// survives it.
+///
+/// Two silences in the router produced one defect. "Ask both together" never
+/// said the fields are INDEPENDENT, so the question came back as pre-paired
+/// options (`fix saindo de dev` / `hotfix saindo de main`) — the cartesian
+/// product of two choices, which has no row at all for a `hotfix` cut from the
+/// ordinary base. And the prose never named the surface's ceiling of four
+/// options, so the renderer dropped a suggestion to fit — and the one it
+/// dropped was `hotfix`, the row's whole reason for existing.
+#[test]
+fn router_forbids_pairing_and_pins_hotfix() {
+    let seed = mustard_core::DISPATCH_MD;
+
+    let rule = line_with(seed, "INDEPENDENT fields")
+        .expect("the router never says the rows are independent fields");
+    assert!(
+        rule.contains("cartesian product"),
+        "independence is asserted without naming what pairing actually hands back — \
+         the product of two choices, in which one combination has no row: {rule}",
+    );
+    assert!(
+        rule.contains("4 options"),
+        "the prose never names the ceiling of the question surface, so the reader \
+         discovers it by getting it wrong in front of the operator: {rule}",
+    );
+    assert!(
+        rule.contains("PINNED"),
+        "nothing forbids dropping `hotfix` to fit the ceiling — the exact suggestion \
+         that fell out last time: {rule}",
+    );
+
+    // The block obeys its own rule: four options plus the free field, `hotfix`
+    // among them, and no row spelling a pair.
+    let kind_row = line_with(seed, "  tipo:").expect("the router seed shows no `tipo` row");
+    let offered = offered_options(kind_row, "tipo:");
+    let (free, options) = offered
+        .split_last()
+        .expect("the `tipo` row offers nothing at all");
+    assert!(
+        free.starts_with('…'),
+        "the `tipo` row does not end in the free field, so a type the list omits \
+         cannot be typed: {kind_row}",
+    );
+    assert!(
+        options.len() <= 4,
+        "the `tipo` row offers {} options over a surface that takes 4 — the renderer \
+         will drop one, and the prose does not get to choose which: {kind_row}",
+        options.len(),
+    );
+    assert!(
+        options.contains(&"hotfix"),
+        "`hotfix` is not among the offered types, so an emergency cannot be named \
+         from the question: {kind_row}",
+    );
+    let base_row = line_with(seed, "  sai de:").expect("the router seed shows no `sai de` row");
+    let base_offered = offered_options(base_row, "sai de:");
+    let (base_free, base_options) = base_offered
+        .split_last()
+        .expect("the `sai de` row offers nothing at all");
+    assert!(
+        base_free.starts_with('…'),
+        "the `sai de` row has no free field, so a catalogue longer than the ceiling \
+         hides the branches that did not fit: {base_row}",
+    );
+    assert!(
+        base_options.len() <= 4,
+        "the `sai de` row offers {} options over a surface that takes 4: {base_row}",
+        base_options.len(),
+    );
+    for row in [kind_row, base_row] {
+        assert!(
+            !row.contains("saindo de"),
+            "a row of the question spells a PAIR, which is the defect itself — the \
+             operator who wants `hotfix` off the ordinary base finds no line: {row}",
+        );
+    }
+
+    // The code half: the chooser's suggestions are where a renderer takes its
+    // four from, so `hotfix` has to survive that truncation there too.
+    let kinds = read("apps/rt/src/shared/work_kind.rs");
+    assert!(
+        kinds.contains("[\"feature\", \"fix\", \"hotfix\", \"chore\""),
+        "`hotfix` fell past the fourth SUGGESTED token, so anything taking the first \
+         four to fit the surface drops it — exactly the pin the prose promises",
+    );
+}
+
+/// The name is OFFERED for correction, and the correction reaches the gate.
+///
+/// "A unit has one name" was written against the CALLER that invented one in
+/// silence, and it silenced the OPERATOR too — the only person who knows what
+/// the unit should be called. So the `branch` row stops being a notice and
+/// becomes a field: suggestion plus edit. The signal that carries the edit is
+/// deliberately distinct from `--spec` (still a guess, still losing), because
+/// a deliberate correction and a silent invention must never read alike.
+#[test]
+fn router_offers_the_name_for_correction() {
+    let seed = mustard_core::DISPATCH_MD;
+
+    // --- 1. The row is a field, not a read-out ----------------------------
+    let name_row = line_with(seed, "  branch:")
+        .expect("the question never shows the name the branch is about to get");
+    assert!(
+        name_row.contains("[fix/"),
+        "the suggested name is not pre-marked, so accepting it costs a decision \
+         instead of an Enter: {name_row}",
+    );
+    assert!(
+        name_row.contains('…'),
+        "the `branch` row is shown as a notice — nothing tells the operator the name \
+         can be corrected, which is the whole point of showing it: {name_row}",
+    );
+
+    // --- 2. …and editing it edits `tipo` + name in ONE string -------------
+    let field = line_with(seed, "CORRECTABLE field")
+        .expect("the router never says the `branch` row is a correctable field");
+    for taught in ["ONE string", "first `/`", "no third", "silence still means derived"] {
+        assert!(
+            field.contains(taught),
+            "the paragraph omits `{taught}` — it must say that the edit is `tipo` + \
+             name together, how it splits, that there is no free-standing third name, \
+             and what an untouched row means: {field}",
+        );
+    }
+
+    // --- 3. The correction REACHES the gate, and only when it happened -----
+    let append = line_with(seed, "--unit-name {name}")
+        .expect("the dispatch never shows how the operator's correction is passed");
+    assert!(
+        append.contains("ONLY when"),
+        "the flag is shown unconditionally, so a derived name is announced as the \
+         operator's and `nameFrom` lies on every unit: {append}",
+    );
+    let flag = line_with(seed, "`--unit-name` is the operator's correction")
+        .expect("the router never explains what `--unit-name` outranks");
+    for taught in ["only when", "--spec", "nameFrom", "derived-from-intent", "operator"] {
+        assert!(
+            flag.contains(taught),
+            "the flag paragraph omits `{taught}` — it must say when it is passed, that \
+             `--spec` still loses, and which values report WHO named the unit: {flag}",
+        );
+    }
+
+    // --- 4. The code really takes the signal and really reports the source --
+    let cli = read("apps/rt/src/commands/event/cli.rs");
+    assert!(
+        cli.contains("#[arg(long = \"unit-name\")]"),
+        "`--unit-name` is not a flag of emit-pipeline, so the router's corrected \
+         dispatch fails on a name the operator was invited to give",
+    );
+    let emit_src = read("apps/rt/src/commands/event/emit_pipeline.rs");
+    assert!(
+        emit_src.contains("\"derived-from-intent\"") && emit_src.contains("\"operator\""),
+        "the gate no longer names WHO chose the unit's name, so the two cases the \
+         explicit signal exists to separate become indistinguishable again",
+    );
+    assert!(
+        emit_src.contains("done[\"nameFrom\"]"),
+        "the report stopped emitting `nameFrom`, so the router promises a field no \
+         reader ever receives",
+    );
+}
+
+/// This repository's delivered copy carries the re-ordered question too.
+///
+/// `seed_injectable_files` refreshes a stale seed nobody edited and PRESERVES
+/// everything else, so a template edited alone leaves this project asking the
+/// old question with the new binary. The sibling ratchet compares `tipo`,
+/// `branch` and the emit line; the base row was the one the re-order moved, and
+/// nothing compared it.
+#[test]
+fn delivered_copy_matches_the_seed_at_the_base_row() {
+    let seed = mustard_core::DISPATCH_MD;
+    let delivered = read(".claude/mustard/dispatch.md");
+    for row in ["  sai de:", "  tipo:", "  branch:", "--unit-name {name}", "INDEPENDENT fields"] {
+        assert_eq!(
+            line_with(&delivered, row),
+            line_with(seed, row),
+            "the delivered .claude/mustard/dispatch.md drifted from the seed at \
+             `{row}` — re-seed it, or this project asks the old question",
+        );
+    }
 }
 
 /// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no

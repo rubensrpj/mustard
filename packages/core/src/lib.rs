@@ -70,7 +70,7 @@ pub use platform::git_exclude::{
     ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,
 };
 pub use platform::harness::harness_version;
-pub use platform::seeds::{CLAUDE_GITIGNORE, ORCHESTRATOR_MD, SETTINGS_SEED};
+pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
 
 pub use domain::model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,

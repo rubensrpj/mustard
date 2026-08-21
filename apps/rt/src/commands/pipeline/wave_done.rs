@@ -56,6 +56,7 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
         payload: Some(json!({ "wave": wave, "duration_ms": duration_ms.unwrap_or(0) }).to_string()),
         allow_no_qa: false,
         intent: None,
+        unit_name: None,
         base: None,
         work_kind: None,
     });
