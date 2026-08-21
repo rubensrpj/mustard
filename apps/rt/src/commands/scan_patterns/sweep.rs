@@ -87,6 +87,32 @@ pub(crate) fn sweep(root: &Path) -> SweepReport {
     report
 }
 
+/// Every mold [`sweep`] WOULD delete, without deleting anything — the same walk
+/// and the same `source:` test, read-only.
+///
+/// Exists because the enrich pass's write set is not the worklist. The worklist
+/// (`scan-patterns-list`) names molds that do NOT exist yet; the pass opens by
+/// deleting every generated mold that DOES. Measuring only the worklist read
+/// "this pass writes nothing" in a repository whose molds are all authored —
+/// and obeying that answer deleted tracked files on a dirty tree.
+///
+/// Paths are `root`-relative and forward-slashed, sorted, like [`SweepReport`].
+pub(crate) fn generated_molds(root: &Path) -> Vec<String> {
+    let mut molds: Vec<PathBuf> = Vec::new();
+    collect_molds(root, &mut molds);
+    let mut out: Vec<String> = molds
+        .into_iter()
+        .filter(|skill_md| {
+            std::fs::read_to_string(skill_md)
+                .map(|t| super::origin::is_mustard_generated(&t))
+                .unwrap_or(false)
+        })
+        .map(|skill_md| rel_display(root, &skill_md))
+        .collect();
+    out.sort();
+    out
+}
+
 /// Recursively collect `*-pattern/SKILL.md` paths, pruning heavy/VCS dirs.
 fn collect_molds(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

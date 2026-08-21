@@ -19,8 +19,8 @@
 //!
 //! ## Decide, then print
 //!
-//! [`measure`] is pure: it reads, it never prints, and it returns an
-//! [`EnrichmentGap`]. [`report_if_stale`] is the whole effect. The split mirrors
+//! [`measure_with_targets`] is pure: it reads, it never prints, and it returns
+//! the gap plus its write set. [`report_if_stale`] is the whole effect. The split mirrors
 //! [`super::base_gate::census_refresh_due`] vs `refresh_census_if_stale` in the
 //! sibling module, and it is what makes the judgement testable with no output to
 //! capture.
@@ -33,11 +33,20 @@
 //!
 //! ## Reporting is where this module stops
 //!
-//! Authoring Guards and molds REWRITES versioned files, so closing the gap needs
-//! a clean tree — the premise [`crate::hooks::write::scan_clean_gate`] refuses to
-//! let a rewrite skip — and a commit it can keep to itself. It is therefore a
-//! work unit of its OWN, dispatched by the flow once the current unit closes,
-//! and not something a gate opening a different unit may start.
+//! Whether closing the gap needs a work unit of its OWN is MEASURED, not
+//! assumed. Where the pass would rewrite versioned files it needs a clean tree
+//! — the premise [`crate::hooks::write::scan_clean_gate`] refuses to let a
+//! rewrite skip — and a commit it can keep to itself, so it is dispatched by
+//! the flow once the current unit closes and never started by a gate opening a
+//! different unit. Where an install HIDES the pass's output from git none of
+//! that holds: nothing versioned is rewritten, so there is no commit to keep
+//! apart and the pass can simply run.
+//!
+//! The measurement is the write set of BOTH halves — every pending subproject's
+//! instruction file, every mold the worklist proposes, and every generated mold
+//! the sweep would delete first. Any versioned target keeps the strict reading;
+//! stating the strict one unconditionally, as this doc once did, was the claim
+//! the gate then contradicted in its own output.
 //!
 //! Fail-open throughout: no census, an unreadable directory, an unparseable
 //! model — each is an EMPTY gap and a silent return, never an error, never a
@@ -59,6 +68,21 @@ pub const ENRICHMENT_STALE_TAG: &str = "base-gate: enrichment stale";
 /// Enough to recognise WHICH gap this is; short enough that a workspace with
 /// forty pending molds still emits one readable line.
 const MAX_NAMED: usize = 3;
+
+/// Where the enrichment would WRITE, per half — never printed, only measured.
+/// Kept apart from [`EnrichmentGap`] because the two answer different
+/// questions: that one is WHAT is missing, this one is WHERE closing it lands,
+/// and only the second decides what the pass costs.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct EnrichmentGapPaths {
+    /// Where the Guards half would write — EVERY pending subproject's
+    /// instruction file, because the pass splices every one of them.
+    guards: Vec<String>,
+    /// Where the mold half would write. Every proposed mold, because the pass
+    /// sweeps and re-authors all of them: one tracked mold makes the whole pass
+    /// a rewrite of versioned files.
+    molds: Vec<String>,
+}
 
 /// What the agent-written half of the census is still missing.
 ///
@@ -93,49 +117,97 @@ impl EnrichmentGap {
 /// reuses; missing molds come from the worklist `scan-patterns-list` projects
 /// off the model. A third copy of either would drift from the other two exactly
 /// the way silent copies do — the reason those two are already shared.
-pub(crate) fn measure(project: &Path) -> EnrichmentGap {
+///
+/// Returns the gap AND where closing it would land, from ONE pass over both
+/// collectors.
+///
+/// One pass because both are real work — `scan-patterns-list` alone measured
+/// 30-40 ms on this repository — and this runs on every pipeline-opening emit.
+/// Reading the paths from the same entries that produced the gap also makes it
+/// impossible for the two to disagree about which subprojects are pending.
+pub(crate) fn measure_with_targets(project: &Path) -> (EnrichmentGap, EnrichmentGapPaths) {
     // No Wave-1 census ⇒ nothing ever seeded a Guards scaffold and no cluster
     // was ever proposed, so "the enrichment is behind" would be a claim about a
     // pass that never ran. Same silence `doctor --check guards-scaffold` keeps
     // for the same reason.
     if !default_model_path(project).is_file() {
-        return EnrichmentGap::default();
+        return (EnrichmentGap::default(), EnrichmentGapPaths::default());
     }
+    // The Guards file name is resolved by the ONE helper `collect_pending` uses
+    // for the same question — under a private install that is
+    // `CLAUDE.local.md`, and asking about `CLAUDE.md` instead would measure a
+    // file the pass never touches.
+    let owned = crate::shared::context::guards_file_name(project);
+    let pending = crate::commands::scan_guards::list::collect_pending(project).entries;
+    // EVERY pending subproject, never just the first. The pass splices all of
+    // them, so one of them being tracked makes the pass a rewrite of versioned
+    // files — exactly the rule the mold half already followed. Probing only the
+    // first made the advice depend on SORT ORDER: an ignored subproject that
+    // happened to sort first flipped the whole prescription, and the line then
+    // sent an agent to rewrite a tracked `CLAUDE.md` in place, with no clean
+    // tree and no commit.
+    let guards: Vec<String> =
+        pending.iter().map(|p| format!("{}/{owned}", p.subproject)).collect();
     let mut pending_guards: Vec<String> =
-        crate::commands::scan_guards::list::collect_pending(project)
-            .entries
-            .into_iter()
-            .map(|pending| pending.subproject)
-            .collect();
+        pending.into_iter().map(|pending| pending.subproject).collect();
     pending_guards.sort();
     pending_guards.dedup();
 
-    let mut missing_molds: Vec<String> = crate::commands::scan_patterns::list::collect(project)
-        .into_iter()
-        .map(|candidate| candidate.slug)
-        .collect();
+    let candidates = crate::commands::scan_patterns::list::collect(project);
+    // The mold write set is NOT the worklist. The worklist names molds that do
+    // not exist yet; the pass OPENS by deleting every generated mold that does
+    // (`scan-patterns-sweep`, step 0 of the flow). Measuring only the worklist
+    // answered "this pass writes nothing" in a repository whose molds are all
+    // authored — and obeying that answer deletes tracked files on a dirty tree.
+    // Both sets are targets: what will be created, and what will be swept.
+    let mut molds: Vec<String> = candidates.iter().map(|c| c.mold_path.clone()).collect();
+    molds.extend(crate::commands::scan_patterns::sweep::generated_molds(project));
+    molds.sort();
+    molds.dedup();
+    let mut missing_molds: Vec<String> = candidates.into_iter().map(|c| c.slug).collect();
     missing_molds.sort();
     missing_molds.dedup();
 
-    EnrichmentGap { pending_guards, missing_molds }
+    (EnrichmentGap { pending_guards, missing_molds }, EnrichmentGapPaths { guards, molds })
 }
 
-/// Print the one-line notice when [`measure`] finds a gap, and nothing at all
+/// Print the one-line notice when [`measure_with_targets`] finds a gap, and nothing at all
 /// when it does not. The whole effect of this module.
 ///
 /// stderr, never stdout — see the module doc.
 pub(crate) fn report_if_stale(project: &Path) {
-    let gap = measure(project);
+    let (gap, targets) = measure_with_targets(project);
     if gap.is_empty() {
         return;
     }
-    eprintln!("{}", gap_line(&gap));
+    eprintln!("{}", gap_line(&gap, enrichment_is_versioned(project, &targets)));
+}
+
+/// Whether the pass would rewrite anything the host repository VERSIONS.
+///
+/// **Asked of every half, and ANY versioned target is enough.** The pass has
+/// two, and they can differ: under this project's own install the Guards go to
+/// an excluded `CLAUDE.local.md` while 37 `{role}-pattern` molds are tracked —
+/// and the mold sweep DELETES and re-authors every one of them. Measuring only
+/// the Guards half announced "rewrites nothing versioned" while prescribing a
+/// pass that rewrites 37 tracked files, which is the more dangerous direction
+/// of the two errors.
+///
+/// Unmeasured counts as VERSIONED — the stricter advice costs a needless unit
+/// at worst, where the opposite would send someone to rewrite versioned files
+/// in place.
+fn enrichment_is_versioned(project: &Path, targets: &EnrichmentGapPaths) -> bool {
+    let visible = |rel: &String| !super::base_gate::path_is_ignored(project, rel);
+    targets.guards.iter().any(visible) || targets.molds.iter().any(visible)
 }
 
 /// Render the notice for a NON-empty gap. Split from [`report_if_stale`] so the
 /// wording is testable without capturing a stream, and deterministic: both
 /// halves arrive sorted, so the same gap always renders the same bytes.
-fn gap_line(gap: &EnrichmentGap) -> String {
+///
+/// `versioned` chooses the PRESCRIPTION, never the gap: the missing prose is
+/// missing either way, and only what it costs to write differs.
+fn gap_line(gap: &EnrichmentGap, versioned: bool) -> String {
     let mut clauses: Vec<String> = Vec::new();
     if !gap.pending_guards.is_empty() {
         let count = gap.pending_guards.len();
@@ -153,11 +225,19 @@ fn gap_line(gap: &EnrichmentGap) -> String {
             named(&gap.missing_molds)
         ));
     }
-    format!(
-        "{ENRICHMENT_STALE_TAG} — {}; the enrich pass rewrites versioned files, so it is a \
-         work unit of its OWN on a clean tree — dispatch it once the current unit closes",
-        clauses.join(" and "),
-    )
+    // The prescription, and ONLY the prescription, follows the measurement.
+    // Saying "own unit, clean tree, dispatch it later" where the pass writes
+    // nothing git tracks asked the operator to REMEMBER to schedule something
+    // that needs no scheduling — a notice that reappears forever and can only
+    // be answered by a chore that was never owed.
+    let prescription = if versioned {
+        "the enrich pass rewrites versioned files, so it is a work unit of its OWN on a clean \
+         tree — dispatch it once the current unit closes"
+    } else {
+        "this install hides the enrich pass's output from git, so it rewrites nothing versioned \
+         — no unit, no clean tree, no commit: dispatch it right here, now"
+    };
+    format!("{ENRICHMENT_STALE_TAG} — {}; {prescription}", clauses.join(" and "))
 }
 
 /// The first [`MAX_NAMED`] names, then how many were left unsaid. Never the
@@ -217,11 +297,11 @@ mod tests {
             }"#,
         );
 
-        let gap = measure(root);
+        let gap = measure_with_targets(root).0;
         assert_eq!(gap.missing_molds, vec!["api-service".to_string()], "{gap:?}");
         assert!(gap.pending_guards.is_empty(), "no CLAUDE.md on disk to be pending: {gap:?}");
         assert!(!gap.is_empty(), "an unauthored mold IS the gap");
-        let line = gap_line(&gap);
+        let line = gap_line(&gap, true);
         assert!(line.starts_with(ENRICHMENT_STALE_TAG), "the line carries the tag: {line}");
         assert!(line.contains("api-service"), "and names what is missing: {line}");
     }
@@ -236,16 +316,190 @@ mod tests {
         write_model(root, "{}"); // a census with no role to propose a mold for
         seed_pending_guards(root, "apps/rt");
 
-        let gap = measure(root);
+        let gap = measure_with_targets(root).0;
         assert_eq!(gap.pending_guards, vec!["apps/rt".to_string()], "{gap:?}");
         assert!(gap.missing_molds.is_empty(), "an empty model proposes no mold: {gap:?}");
-        let line = gap_line(&gap);
+        let line = gap_line(&gap, true);
         assert!(line.contains("apps/rt"), "the line names the subproject: {line}");
         assert!(
             line.contains("work unit of its OWN"),
             "and says closing it is a unit of its own: {line}"
         );
         assert!(!line.contains('\n'), "exactly one line — gates read stderr too: {line}");
+    }
+
+    /// AC-4 — the MEASUREMENT, driven against a real repository instead of a
+    /// hardcoded bool. One tracked target among several ignored ones must keep
+    /// the strict prescription.
+    ///
+    /// This is the case that shipped twice. First the Guards half was not
+    /// measured at all; then it was measured by `.first()` alone, so an ignored
+    /// subproject that happened to SORT FIRST flipped the whole advice and the
+    /// line sent an agent to rewrite a tracked instruction file in place — the
+    /// one thing `scan_clean_gate` exists to refuse. Both slipped through
+    /// because every test passed the deciding bool in by hand.
+    #[test]
+    fn one_tracked_target_among_ignored_ones_keeps_the_strict_advice() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--initial-branch=dev"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        // `aignored/` sorts BEFORE `apps/` — the ordering that produced the bug.
+        std::fs::write(root.join(".gitignore"), "aignored/\n").unwrap();
+        write_model(root, "{}");
+        seed_pending_guards(root, "aignored/sub");
+        seed_pending_guards(root, "apps/rt");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        let (gap, targets) = measure_with_targets(root);
+        assert_eq!(
+            gap.pending_guards,
+            vec!["aignored/sub".to_string(), "apps/rt".to_string()],
+            "both subprojects are pending: {gap:?}",
+        );
+        assert_eq!(targets.guards.len(), 2, "every pending target is measured: {targets:?}");
+        assert!(
+            enrichment_is_versioned(root, &targets),
+            "apps/rt's instruction file is tracked, so the pass DOES rewrite versioned \
+             files — whatever sorts first: {targets:?}",
+        );
+        assert!(
+            gap_line(&gap, enrichment_is_versioned(root, &targets))
+                .contains("work unit of its OWN"),
+            "and the line must keep asking for a unit",
+        );
+    }
+
+    /// AC-5 — an ALREADY-AUTHORED tracked mold still makes the pass a rewrite
+    /// of versioned files, because the pass opens by DELETING it.
+    ///
+    /// This is the third escape, and the subtlest: the worklist names molds
+    /// that do not exist yet, so a repository whose molds are all authored has
+    /// an empty worklist — and measuring only the worklist answered "this pass
+    /// writes nothing" while `scan-patterns-sweep` was about to delete every
+    /// one of them. Reproduced with the real binary: the line said "dispatch it
+    /// right here, now" and obeying it deleted a tracked file on a dirty tree.
+    #[test]
+    fn an_authored_tracked_mold_still_counts_as_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--initial-branch=dev"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        // The Guards half is hidden, so ONLY the mold half can keep the strict
+        // reading — which is the shape this project's own install has.
+        std::fs::write(root.join(".gitignore"), "**/CLAUDE.md\n").unwrap();
+        write_model(root, "{}"); // an empty census proposes NO mold
+        seed_pending_guards(root, "apps/rt");
+        // …but a generated mold already sits on disk, tracked, and the sweep
+        // deletes exactly this.
+        let mold = root.join("apps/api/.claude/skills/api-service-pattern");
+        std::fs::create_dir_all(&mold).unwrap();
+        std::fs::write(
+            mold.join("SKILL.md"),
+            "---\nname: api-service-pattern\nsource: scan\n---\n\n## Purpose\n",
+        )
+        .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        let (gap, targets) = measure_with_targets(root);
+        assert!(gap.missing_molds.is_empty(), "the worklist is empty: {gap:?}");
+        assert!(
+            targets.molds.iter().any(|m| m.contains("api-service-pattern")),
+            "the mold the sweep would DELETE is a target too: {targets:?}",
+        );
+        assert!(
+            enrichment_is_versioned(root, &targets),
+            "deleting a tracked mold IS rewriting versioned files: {targets:?}",
+        );
+    }
+
+    /// The other side of the same measurement: when every target really is
+    /// hidden, the relaxed advice is the honest one.
+    #[test]
+    fn every_target_ignored_relaxes_the_advice() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--initial-branch=dev"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        std::fs::write(root.join(".gitignore"), "**/CLAUDE.md\n").unwrap();
+        write_model(root, "{}");
+        seed_pending_guards(root, "apps/rt");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        let (gap, targets) = measure_with_targets(root);
+        assert!(!gap.is_empty(), "the gap is real: {gap:?}");
+        assert!(
+            !enrichment_is_versioned(root, &targets),
+            "every target is hidden, so nothing versioned is rewritten: {targets:?}",
+        );
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let _ = std::process::Command::new("git").args(args).current_dir(root).output();
+    }
+
+    /// AC-1 — where the enrichment's output is hidden from git, the notice must
+    /// not ask for a unit, a clean tree or a commit. None of the three is real
+    /// there: the pass rewrites nothing versioned, so it can run on the spot.
+    ///
+    /// This is the failure the line had in the field. It reappeared at every
+    /// unit opening, forever, asking the operator to REMEMBER to schedule work
+    /// that needed no scheduling — and the Guards it named were written inline
+    /// in one pass, with no branch and no commit, exactly as this wording now
+    /// says they can be.
+    #[test]
+    fn a_hidden_enrichment_asks_for_no_ceremony() {
+        let gap = EnrichmentGap {
+            pending_guards: vec!["apps/rt".to_string()],
+            missing_molds: Vec::new(),
+        };
+        let line = gap_line(&gap, false);
+
+        assert!(line.contains("apps/rt"), "the gap is still named: {line}");
+        assert!(
+            line.ends_with(
+                "this install hides the enrich pass's output from git, so it rewrites nothing \
+                 versioned — no unit, no clean tree, no commit: dispatch it right here, now"
+            ),
+            "the prescription must be to run it on the spot: {line}",
+        );
+        // The demanding phrases, matched whole. A bare `contains("clean tree")`
+        // would trip on this very sentence's own "no clean tree" — the negative
+        // has to name what the line would DEMAND, not a word it may mention.
+        for ceremony in ["work unit of its OWN", "once the current unit closes"] {
+            assert!(
+                !line.contains(ceremony),
+                "{ceremony:?} is false when nothing versioned is rewritten: {line}",
+            );
+        }
+        assert!(!line.contains('\n'), "exactly one line — gates read stderr too: {line}");
+    }
+
+    /// AC-2 — and where the output IS versioned nothing moves: the pass really
+    /// does rewrite files the repository tracks, so every requirement in the
+    /// original wording stands, word for word.
+    #[test]
+    fn a_versioned_enrichment_still_asks_for_its_own_unit() {
+        let gap = EnrichmentGap {
+            pending_guards: Vec::new(),
+            missing_molds: vec!["api-service".to_string()],
+        };
+        let line = gap_line(&gap, true);
+
+        assert!(
+            line.ends_with(
+                "the enrich pass rewrites versioned files, so it is a work unit of its OWN on \
+                 a clean tree — dispatch it once the current unit closes"
+            ),
+            "the versioned wording must not have drifted: {line}",
+        );
+        assert!(line.contains("api-service"), "and it still names the gap: {line}");
     }
 
     /// Without a census the pass that seeds scaffolds never ran, so the gap is
@@ -257,7 +511,7 @@ mod tests {
         let root = dir.path();
         seed_pending_guards(root, "apps/rt");
 
-        let gap = measure(root);
+        let gap = measure_with_targets(root).0;
         assert!(gap.is_empty(), "no grain.model.json ⇒ nothing measurable: {gap:?}");
         // And the reporter prints nothing for it — fail-open all the way out.
         report_if_stale(root);

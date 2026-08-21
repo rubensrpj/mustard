@@ -68,7 +68,7 @@ use mustard_core::{
 
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
-use crate::hooks::write::scan_clean_gate::{scan_output_is_versioned, tree_is_dirty};
+use crate::hooks::write::scan_clean_gate::tree_is_dirty;
 use crate::util::format_gate_message;
 
 /// The closed set of answers the base gate can return.
@@ -334,7 +334,7 @@ fn census_is_visible_to_git(project: &Path, model: &Path) -> bool {
 /// exclude file a private install writes into; `check-ignore` reads both.
 /// `false` when git could not answer, so an unmeasured path counts as visible
 /// and the stricter clean-tree requirement applies.
-fn path_is_ignored(project: &Path, rel: &str) -> bool {
+pub(crate) fn path_is_ignored(project: &Path, rel: &str) -> bool {
     std::process::Command::new("git")
         .args(["check-ignore", "-q", "--", rel])
         .current_dir(project)
