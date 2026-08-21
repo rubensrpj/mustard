@@ -1,6 +1,6 @@
 ---
 name: core-state-pattern
-description: Use when adding or refactoring a `*State` type in the view model layer that must express where something is without letting a consumer guess.
+description: Use when adding or refactoring a `*State` type that encodes where something is in its lifecycle and must reject illegal combinations at construction.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,25 +17,25 @@ metadata:
 
 ## Purpose
 
-A `*State` type answers "where is this, exactly" with no room for inference. `SpecState` (`view/spec.rs`) is the canonical one: it factors what a flat status enum used to conflate into three orthogonal axes — `Stage` (pipeline position), `Outcome` (terminal disposition) and `Flags` (qualifiers that can apply at any stage) — so a spec can be `Execute` *and* `blocked` without losing either fact. It is built through `SpecState::new`, which rejects the three combinations the type system alone cannot forbid and returns a module-local `StateError`; the crate-wide `Error` is not used here because `domain/model/` is pure and side-effect-free. `SegmentState` (`view/workspace.rs`) is the small sibling — three explicit values (`Completed` / `Active` / `Future`) with no `Default`, so the UI never has to compute "is this past the current phase?".
+A `*State` is the canonical answer to "where is this thing right now", and in this folder it is designed so a UI never has to guess. `SpecState` is the reference: it factors what a single flat enum used to conflate into three independent concerns — `Stage` (position), `Outcome` (terminal disposition) and `Flags` (orthogonal qualifiers) — and then makes the illegal combinations unconstructible through a validating constructor. `SegmentState` is the small end of the same idea: three explicit render values (`Completed`, `Active`, `Future`) with no `Default`, so every construction site states which one it means. Neither exemplar has an `Unknown` variant: absence is modelled by the earliest meaningful state or by the row simply not existing.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 2
 
-- `SpecState` derives `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize`; `SegmentState` is a `Copy` enum with `#[serde(rename_all = "lowercase")]`. Both exemplars serialise, because these types are the contract other crates render against.
-- `Flags` is a struct of `#[serde(default)] bool` fields with `Default` derived, so an on-disk header carrying only `### Stage:` / `### Outcome:` deserialises cleanly.
-- Neither exemplar has an `Unknown` variant. Absence resolves to the earliest meaningful position instead — `SpecView::empty` starts at `Stage::Plan` + `Outcome::Active`.
-- Free-form input is parsed by an associated `parse(raw: &str)` that trims, lowercases, accepts the documented legacy synonyms (`approved` → `Plan`, `orphan` → `Abandoned`), and yields `Option<Self>` (or an all-false `Flags`) for unrecognised text.
-- Validation errors are a local `thiserror` enum (`StateError`) with one `#[error("…")]` per rejected combination, and `new` documents each under `# Errors`.
-- `status_kebab()` is the single mapping from state to the dashboard's status column; flags win over stage there.
-- Tests live in `#[cfg(test)] mod tests` at the bottom of the file and assert both directions: the legal triple constructs, and each illegal one returns its specific `StateError`.
+- A composite state is a `pub struct` with `pub` fields deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize`; a positional state is a field-less `pub enum` that also derives `Copy` and carries `#[serde(rename_all = "kebab-case")]` (or `"lowercase"`) so it round-trips with the on-disk spec header.
+- Construction goes through `pub fn new(...) -> Result<Self, StateError>`, which returns a typed error for each illegal triple; the doc comment carries a `# Errors` section listing every variant it can return.
+- The error enum is module-local: `#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)] pub enum StateError` in the same file. `spec.rs` states the reason explicitly — the model layer is pure, so it does not borrow the crate-wide `platform::error::Error`, which is reserved for side-effecting operations.
+- Orthogonal qualifiers become a separate `Flags` struct of `#[serde(default)] pub …: bool` fields with a `Default` derive and a tolerant `parse(raw: &str) -> Self` that ignores unknown tokens — never new variants on the position enum.
+- Read predicates are inherent and `#[must_use]`: `is_active`, `is_terminal`, and a `const fn status_kebab(&self) -> &'static str` for the single wire word the dashboard column reads.
+- Tests live at the bottom of the same file and cover each rejection path plus the legal counter-example (`state_new_rejects_terminal_outcome_off_close` asserts both directions).
 
 ## How to apply
 
-A new state axis belongs inside the existing composite — a new `Flags` bool, or a new `Stage`/`Outcome` variant — never as a parallel status string threaded through call sites. Add the variant or field, extend `SpecState::new` with the invariant it implies, add the matching `StateError` variant, extend `status_kebab()`, and add a test that proves the illegal combination is rejected while the legal one still constructs. Re-export the new name from `view/mod.rs`. Since these types are the public serde shape rendered by rt and the dashboard, renaming a field or a serde word is a migration, not a refactor.
+Put the state in the `view/` module that owns the entity it describes (`spec.rs` for spec lifecycle, `workspace.rs` for a per-segment render state), then re-export it by name from `packages/core/src/domain/model/view/mod.rs`. Prefer widening `Flags` over adding a variant when the new information is orthogonal to position. When you do add a variant, mark the enum `#[non_exhaustive]` as `Stage`/`Outcome` already are, keep the existing serde words unchanged, and add the parse synonyms plus a test in the same commit — other crates deserialize these types, so the shape is a public contract.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/spec.rs — `Stage` / `Outcome` / `Flags` / `SpecState::new` / `StateError`.
-- Ref: packages/core/src/domain/model/view/workspace.rs — `SegmentState` and its "three explicit variants, no Default" test.
+- Ref: packages/core/src/domain/model/view/spec.rs — `SpecState::new` rejecting three illegal triples, `StateError`, `Flags::parse`, `status_kebab`.
+- Ref: packages/core/src/domain/model/view/workspace.rs — `SegmentState`, three explicit values and a test that pins explicit construction.
+- Ref: packages/core/src/domain/model/view/mod.rs — where the type is re-exported for other crates.

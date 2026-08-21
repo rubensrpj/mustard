@@ -1,6 +1,6 @@
 ---
 name: core-status-pattern
-description: Use when adding or refactoring a closed classification enum (status, kind, filter) in the view model layer so consumers never re-parse a raw string.
+description: Use when adding or refactoring a `*Status` enum in the view layer that records where a wave, criterion or filtered list stands.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,25 +17,28 @@ metadata:
 
 ## Purpose
 
-These enums exist so a renderer picks an icon, colour or filter without re-parsing the raw event name or status string. `AcStatus` classifies an acceptance criterion, `WaveStatus` the lifecycle of one wave, `TimelineKind` a raw event name, and `filter.rs` carries the argument-side enums (`TimeWindow`, `SpecStatusFilter`). None of them has an `"unknown"` string escape hatch: the "nothing yet" and "not classified" cases are explicit variants (`AcStatus::Pending`, `WaveStatus::Queued`, `TimelineKind::Other`), and the raw event still survives verbatim in `TimelineNode::payload_summary`. Conversions are associated functions — `parse(raw)` is tolerant and returns `Option<Self>`, `classify(event)` is total and falls back to `Other`. `WaveStatus::Dropped` documents why a variant gets added at all: four states could not distinguish a deliberate decision from an omission.
+A `*Status` is the deliberate, closed set of positions a thing can occupy: five for a wave, four for an acceptance criterion, three for a spec-list filter. The exemplars are explicit that no `Unknown` variant exists — an absent wave is simply absent from the returned `Vec`, and "no `qa.result` event yet" is its own named variant (`Pending`), never a grey fallback. New variants earn their place by the distinction they buy: `WaveStatus::Dropped` was added because the previous four could not tell a decision (work let go on purpose) from an omission (a wave still waiting its turn), and its doc says exactly that. Filter enums in the same folder are the neutral end of the role — they default to "no restriction" rather than to a state.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 4
 
-- Derive set on the exemplars: `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]` plus a `#[serde(rename_all = "…")]` — `lowercase` in `quality.rs` and `timeline.rs`, `kebab-case` in `wave.rs`. Match the file you are editing rather than picking a style.
-- `filter.rs` enums additionally derive `Default` and mark the neutral variant with `#[default]` (`TimeWindow::Today`, `SpecStatusFilter::Any`).
-- Every variant carries a doc comment naming the exact producing event or accepted string (`/// Matching pipeline.wave.failed event or fix-loop cap hit.`).
-- `parse` trims, lowercases, and accepts documented synonyms (`"ok"`/`"success"` → `Pass`, `"error"` → `Fail`); unknown input yields `None` so the caller decides, never a silent default.
-- Predicates are `#[must_use] pub const fn` built on `matches!` — `WaveStatus::is_running`, `is_terminal`.
-- Tests are in `#[cfg(test)] mod tests` at the file bottom; `wave.rs` additionally pins the exact JSON words for all five variants, proving a new variant is additive and the existing wire words are byte-identical.
+The census tallies four because `timeline.rs` carries a variant literally named `Status` inside `TimelineKind`. The three files that declare a `*Status` type of *this* role, and the three this mold describes, are `wave.rs`, `quality.rs` and `filter.rs`; `TimelineKind` belongs to the `kind` role and is taught by `core-kind-pattern`, which loads on the same glob.
+
+- Field-less `pub enum` with a serde rename pinning the wire word — `#[serde(rename_all = "kebab-case")]` on `WaveStatus`, `"lowercase"` on `AcStatus`; the derive set for those two is `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize`.
+- Filter enums add `Default` with `#[default]` on the neutral variant (`SpecStatusFilter::Any`, `TimeWindow::Today`) and drop derives they do not need — `SpecStatusFilter` is not `Copy` and carries no rename.
+- Free-form input is parsed by `#[must_use] pub fn parse(raw: &str) -> Option<Self>`, case-insensitive on `raw.trim().to_ascii_lowercase()`, accepting legacy synonyms in the same match arm (`"fail" | "failed" | "error"`), and returning `None` for anything unknown. `AcStatus` is the only one of the three that has such a `parse`, because it is the only one fed a raw string (`qa.result.payload.criteria[].status`): a `WaveStatus` is folded from typed events, and the filter enums arrive already deserialised from the frontend.
+- Read predicates are `#[must_use] pub const fn` over `self` by value, implemented with `matches!` — `WaveStatus::is_running` / `is_terminal` are the pair to copy — with a doc explaining which variants count and why. `AcStatus` and the filter enums carry none; add one only when a consumer would otherwise re-spell the variant list.
+- Every variant has a `///` naming the event or payload value that puts it in that state (`WaveStatus::Completed` reads "Matching `pipeline.wave.complete` event present."), or, on a filter enum, the restriction it applies. The closed model is spelled out in the *module* doc — `wave.rs`'s `//!` header lists all five states and says why there is no `Unknown` — while the enum's own doc stays a one-liner.
+- Tests at the bottom of the same file cover the synonym table, each predicate, and — for an added variant — that the existing wire words serialise byte-identically (`dropped_serialises_as_kebab_case_without_touching_the_other_words`).
 
 ## How to apply
 
-Add the variant with a doc line naming what produces it, then extend `parse`/`classify` and every `is_*` predicate in the same edit. Add two tests: one that round-trips the new word through serde and `parse`, and one that asserts the pre-existing words did not change — that second test is what makes the change safe for the crates already rendering this enum. Keep the serde rename style of the file. Re-export the name from `view/mod.rs`. Do not introduce an `Unknown` variant; model the missing case explicitly and let the raw string survive elsewhere on the row.
+Put the status in the `view/` module that owns the entity (`wave.rs`, `quality.rs`) or in `filter.rs` when it is a query argument rather than a ViewModel, then re-export it by name from `packages/core/src/domain/model/view/mod.rs`. These enums are a serde contract other crates render against: additions must be serde-additive, must not renumber or rename existing words, and must state in the variant doc the distinction that justified them. Do not add an `Unknown`/`Other` variant here. A grey fallback is earned only by a `kind` enum that has to classify an *open* input — `TimelineKind`, which must turn any event name in the log into a row; the other kind in this folder, `WorkspaceAlertKind`, is chosen by its producer and has no catch-all either. `core-kind-pattern` loads on the same glob and draws that line from its side.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/quality.rs — `AcStatus::parse` with its synonym table.
-- Ref: packages/core/src/domain/model/view/wave.rs — `WaveStatus`, the `const fn` predicates, and the kebab-case wire-word test.
-- Ref: packages/core/src/domain/model/view/filter.rs — `TimeWindow` / `SpecStatusFilter` with `Default` + `#[default]`.
+- Ref: packages/core/src/domain/model/view/wave.rs — `WaveStatus`, `is_running` / `is_terminal`, the five-state module doc, and the additive-serialisation test.
+- Ref: packages/core/src/domain/model/view/quality.rs — `AcStatus::parse` with its synonym table and the `Pending` variant.
+- Ref: packages/core/src/domain/model/view/filter.rs — `SpecStatusFilter` / `TimeWindow` as defaulted, unrestricted query arguments.
+- Ref: packages/core/src/domain/model/view/timeline.rs — the fourth file the census counts here: `TimelineKind::Status` is a variant name, not a `*Status` type of this role.

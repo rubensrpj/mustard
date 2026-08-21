@@ -1,6 +1,6 @@
 ---
 name: core-id-pattern
-description: Use when adding or refactoring an identifier newtype in the economy domain so a reader signature cannot silently accept the wrong string.
+description: Use when adding or refactoring an `*Id` newtype in the economy layer so an identifier cannot be swapped for another at a call site.
 paths:
   - packages/core/src/domain/economy/**
 tags: [add, refactor]
@@ -17,24 +17,25 @@ metadata:
 
 ## Purpose
 
-`SpecId`, `WaveId` and `AgentId` — together with `ProjectPath` — are transparent newtypes declared in `economy/scope.rs`. The module doc gives the reason directly: stronger types at the API boundary stop accidental swaps, because a spec id passed where a wave id was expected used to compile fine against three `String` parameters. Every record in `economy/model.rs` stores the typed id (`SavingsRecord::spec_id`, `WaveCost::wave_id`, `ContextCostFrame::agent_id`), and `economy/reader.rs` re-wraps raw strings at the boundary where it folds the event stream — `spec_id: SpecId(spec.to_string())`. They also compose into `EconomyScope`, the single selector every reader function takes.
+The economy layer threads several identifiers through the same signatures — project root, spec slug, wave slug, agent role — and the newtypes exist so a spec id passed where a wave id was expected stops compiling. `scope.rs` is the single home for them: it declares `ProjectPath`, `SpecId`, `WaveId` and `AgentId` and the `EconomyScope` selector that composes them, while `model.rs` and `reader.rs` consume the newtypes and never a bare `String`. The wire format is unaffected because every newtype is `#[serde(transparent)]` — stronger types at the API boundary, an unchanged JSON payload.
 
 ## Convention
 
 Folder: packages/core/src/domain/economy/** · Extension: .rs · Files of this role in this subproject: 3
 
-- One-line tuple struct with a public field: `pub struct SpecId(pub String);`, declared in `economy/scope.rs` alongside its siblings, each with a doc comment giving a concrete example value and naming the sibling it must not be confused with.
-- Derive set on all three id newtypes: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]` plus `#[serde(transparent)]`, so the wire format stays a bare string. The `newtypes_serialize_transparently` test in `scope.rs` pins that.
-- Exactly two inherent methods: `new(id: impl Into<String>) -> Self` and `#[must_use] as_str(&self) -> &str` (`ProjectPath` uses `as_path(&self) -> &Path` for the same role). No `Display`, no `Deref` — nothing that would let a bare `String` flow in implicitly.
-- Optional attribution on a record is `Option<SpecId>` with `#[serde(default)]`, so a payload that never knew the dimension still parses.
-- `EconomyScope` is `#[non_exhaustive]` and composes the ids into `Project` / `Spec` / `Wave` / `AllProjects` / `Windowed` variants; readers call `into_parts()` once at entry and match on the base selector.
+- One-field tuple structs with a public inner value: `pub struct SpecId(pub String);`, declared together in `scope.rs`.
+- `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]` plus `#[serde(transparent)]`; `Hash`/`Eq` are there because the ids key the multi-project fan-out maps.
+- Two inherent methods and no more: `pub fn new(id: impl Into<String>) -> Self` and a borrowing accessor marked `#[must_use]` (`as_str` for the string ids, `as_path` for `ProjectPath`).
+- The doc comment states what the id *is* (with a concrete example value such as `"wave-1-core-economy"`) and why the newtype exists — "so it cannot be confused with a `WaveId` or `AgentId`".
+- Record and roll-up structs take the newtype directly (`AgentCost.agent_id: AgentId`, `SpecCost.spec_id: SpecId`) and use `#[serde(default)] Option<Id>` when the attribution is unknown, never an empty string.
+- A test in `scope.rs` pins the transparent representation (`SpecId::new("abc")` serialises to `"abc"` and round-trips).
 
 ## How to apply
 
-Declare a new identifier dimension in `economy/scope.rs` next to the existing three, copying the derive set, the `#[serde(transparent)]` attribute and the two-method surface. Then thread it through: add the `EconomyScope` variant or field it selects on, add it to the model records as `Option<…>` with `#[serde(default)]` so existing payloads keep parsing, and convert at the boundary in `reader.rs` where the raw string is first read. Add a serde round-trip test proving the JSON is still a bare string. Do not accept the raw `String` deeper than the boundary, and do not widen the surface with conversions that erase the type distinction the newtype exists for.
+Declare the new id in `packages/core/src/domain/economy/scope.rs` alongside the existing four, then use it in `model.rs` record fields and in `reader.rs` signatures — do not accept a `String` at any economy entry point and convert inside. If the new id selects a slice of the cost universe, add the matching `EconomyScope` variant in the same file (the enum is `#[non_exhaustive]`, so consumers keep a wildcard arm) and thread it through `into_parts` rather than adding another parameter to every reader.
 
 ## Examples
 
-- Ref: packages/core/src/domain/economy/scope.rs — `SpecId` / `WaveId` / `AgentId` / `ProjectPath` and `EconomyScope`.
-- Ref: packages/core/src/domain/economy/model.rs — `SavingsRecord` / `ContextCostFrame` / `WaveCost` storing typed ids.
-- Ref: packages/core/src/domain/economy/reader.rs — boundary re-wrapping (`spec_id: SpecId(spec.to_string())`) and `scope_filters`.
+- Ref: packages/core/src/domain/economy/scope.rs — `SpecId` / `WaveId` / `AgentId` / `ProjectPath` and the transparent-serialisation test.
+- Ref: packages/core/src/domain/economy/model.rs — `SavingsRecord` and `ContextCostFrame` carrying the newtypes, `Option<…>` for unknown attribution.
+- Ref: packages/core/src/domain/economy/reader.rs — reader signatures importing the ids from `super::scope`.
