@@ -129,13 +129,41 @@ pub(crate) fn report_if_stale(project: &Path) {
     if gap.is_empty() {
         return;
     }
-    eprintln!("{}", gap_line(&gap));
+    eprintln!("{}", gap_line(&gap, enrichment_is_versioned(project)));
+}
+
+/// Whether the enrichment's own output is something the host repository
+/// VERSIONS — the fact that decides whether the pass needs a unit of its own.
+///
+/// Asked of the file the Guards half writes into. Under a private install that
+/// file is hidden behind an exclude rule, so the pass rewrites nothing git
+/// tracks: there is no commit to keep apart, therefore no clean tree to require
+/// and no unit to open. Under a shared install it is an ordinary versioned file
+/// and every one of those requirements is real.
+///
+/// Unmeasured (no git, no repository) counts as VERSIONED — the direction that
+/// keeps the stricter advice, which costs a needless unit at worst, where the
+/// opposite error would tell someone to rewrite versioned files in place.
+fn enrichment_is_versioned(project: &Path) -> bool {
+    // The file the Guards pass really writes, resolved by the ONE helper
+    // `collect_pending` uses for the same question — under a private install
+    // that is `CLAUDE.local.md`, and asking about `CLAUDE.md` instead would
+    // measure a file the pass never touches.
+    let owned = crate::shared::context::guards_file_name(project);
+    !std::process::Command::new("git")
+        .args(["check-ignore", "-q", "--", owned])
+        .current_dir(project)
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Render the notice for a NON-empty gap. Split from [`report_if_stale`] so the
 /// wording is testable without capturing a stream, and deterministic: both
 /// halves arrive sorted, so the same gap always renders the same bytes.
-fn gap_line(gap: &EnrichmentGap) -> String {
+///
+/// `versioned` chooses the PRESCRIPTION, never the gap: the missing prose is
+/// missing either way, and only what it costs to write differs.
+fn gap_line(gap: &EnrichmentGap, versioned: bool) -> String {
     let mut clauses: Vec<String> = Vec::new();
     if !gap.pending_guards.is_empty() {
         let count = gap.pending_guards.len();
@@ -153,11 +181,19 @@ fn gap_line(gap: &EnrichmentGap) -> String {
             named(&gap.missing_molds)
         ));
     }
-    format!(
-        "{ENRICHMENT_STALE_TAG} — {}; the enrich pass rewrites versioned files, so it is a \
-         work unit of its OWN on a clean tree — dispatch it once the current unit closes",
-        clauses.join(" and "),
-    )
+    // The prescription, and ONLY the prescription, follows the measurement.
+    // Saying "own unit, clean tree, dispatch it later" where the pass writes
+    // nothing git tracks asked the operator to REMEMBER to schedule something
+    // that needs no scheduling — a notice that reappears forever and can only
+    // be answered by a chore that was never owed.
+    let prescription = if versioned {
+        "the enrich pass rewrites versioned files, so it is a work unit of its OWN on a clean \
+         tree — dispatch it once the current unit closes"
+    } else {
+        "this install hides the enrich pass's output from git, so it rewrites nothing versioned \
+         — no unit, no clean tree, no commit: dispatch it right here, now"
+    };
+    format!("{ENRICHMENT_STALE_TAG} — {}; {prescription}", clauses.join(" and "))
 }
 
 /// The first [`MAX_NAMED`] names, then how many were left unsaid. Never the
@@ -221,7 +257,7 @@ mod tests {
         assert_eq!(gap.missing_molds, vec!["api-service".to_string()], "{gap:?}");
         assert!(gap.pending_guards.is_empty(), "no CLAUDE.md on disk to be pending: {gap:?}");
         assert!(!gap.is_empty(), "an unauthored mold IS the gap");
-        let line = gap_line(&gap);
+        let line = gap_line(&gap, true);
         assert!(line.starts_with(ENRICHMENT_STALE_TAG), "the line carries the tag: {line}");
         assert!(line.contains("api-service"), "and names what is missing: {line}");
     }
@@ -239,13 +275,71 @@ mod tests {
         let gap = measure(root);
         assert_eq!(gap.pending_guards, vec!["apps/rt".to_string()], "{gap:?}");
         assert!(gap.missing_molds.is_empty(), "an empty model proposes no mold: {gap:?}");
-        let line = gap_line(&gap);
+        let line = gap_line(&gap, true);
         assert!(line.contains("apps/rt"), "the line names the subproject: {line}");
         assert!(
             line.contains("work unit of its OWN"),
             "and says closing it is a unit of its own: {line}"
         );
         assert!(!line.contains('\n'), "exactly one line — gates read stderr too: {line}");
+    }
+
+    /// AC-1 — where the enrichment's output is hidden from git, the notice must
+    /// not ask for a unit, a clean tree or a commit. None of the three is real
+    /// there: the pass rewrites nothing versioned, so it can run on the spot.
+    ///
+    /// This is the failure the line had in the field. It reappeared at every
+    /// unit opening, forever, asking the operator to REMEMBER to schedule work
+    /// that needed no scheduling — and the Guards it named were written inline
+    /// in one pass, with no branch and no commit, exactly as this wording now
+    /// says they can be.
+    #[test]
+    fn a_hidden_enrichment_asks_for_no_ceremony() {
+        let gap = EnrichmentGap {
+            pending_guards: vec!["apps/rt".to_string()],
+            missing_molds: Vec::new(),
+        };
+        let line = gap_line(&gap, false);
+
+        assert!(line.contains("apps/rt"), "the gap is still named: {line}");
+        assert!(
+            line.ends_with(
+                "this install hides the enrich pass's output from git, so it rewrites nothing \
+                 versioned — no unit, no clean tree, no commit: dispatch it right here, now"
+            ),
+            "the prescription must be to run it on the spot: {line}",
+        );
+        // The demanding phrases, matched whole. A bare `contains("clean tree")`
+        // would trip on this very sentence's own "no clean tree" — the negative
+        // has to name what the line would DEMAND, not a word it may mention.
+        for ceremony in ["work unit of its OWN", "once the current unit closes"] {
+            assert!(
+                !line.contains(ceremony),
+                "{ceremony:?} is false when nothing versioned is rewritten: {line}",
+            );
+        }
+        assert!(!line.contains('\n'), "exactly one line — gates read stderr too: {line}");
+    }
+
+    /// AC-2 — and where the output IS versioned nothing moves: the pass really
+    /// does rewrite files the repository tracks, so every requirement in the
+    /// original wording stands, word for word.
+    #[test]
+    fn a_versioned_enrichment_still_asks_for_its_own_unit() {
+        let gap = EnrichmentGap {
+            pending_guards: Vec::new(),
+            missing_molds: vec!["api-service".to_string()],
+        };
+        let line = gap_line(&gap, true);
+
+        assert!(
+            line.ends_with(
+                "the enrich pass rewrites versioned files, so it is a work unit of its OWN on \
+                 a clean tree — dispatch it once the current unit closes"
+            ),
+            "the versioned wording must not have drifted: {line}",
+        );
+        assert!(line.contains("api-service"), "and it still names the gap: {line}");
     }
 
     /// Without a census the pass that seeds scaffolds never ran, so the gap is
