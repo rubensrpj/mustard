@@ -19,8 +19,8 @@
 //!
 //! ## Decide, then print
 //!
-//! [`measure`] is pure: it reads, it never prints, and it returns an
-//! [`EnrichmentGap`]. [`report_if_stale`] is the whole effect. The split mirrors
+//! [`measure_with_targets`] is pure: it reads, it never prints, and it returns
+//! the gap plus its write set. [`report_if_stale`] is the whole effect. The split mirrors
 //! [`super::base_gate::census_refresh_due`] vs `refresh_census_if_stale` in the
 //! sibling module, and it is what makes the judgement testable with no output to
 //! capture.
@@ -33,11 +33,20 @@
 //!
 //! ## Reporting is where this module stops
 //!
-//! Authoring Guards and molds REWRITES versioned files, so closing the gap needs
-//! a clean tree — the premise [`crate::hooks::write::scan_clean_gate`] refuses to
-//! let a rewrite skip — and a commit it can keep to itself. It is therefore a
-//! work unit of its OWN, dispatched by the flow once the current unit closes,
-//! and not something a gate opening a different unit may start.
+//! Whether closing the gap needs a work unit of its OWN is MEASURED, not
+//! assumed. Where the pass would rewrite versioned files it needs a clean tree
+//! — the premise [`crate::hooks::write::scan_clean_gate`] refuses to let a
+//! rewrite skip — and a commit it can keep to itself, so it is dispatched by
+//! the flow once the current unit closes and never started by a gate opening a
+//! different unit. Where an install HIDES the pass's output from git none of
+//! that holds: nothing versioned is rewritten, so there is no commit to keep
+//! apart and the pass can simply run.
+//!
+//! The measurement is the write set of BOTH halves — every pending subproject's
+//! instruction file, every mold the worklist proposes, and every generated mold
+//! the sweep would delete first. Any versioned target keeps the strict reading;
+//! stating the strict one unconditionally, as this doc once did, was the claim
+//! the gate then contradicted in its own output.
 //!
 //! Fail-open throughout: no census, an unreadable directory, an unparseable
 //! model — each is an EMPTY gap and a silent return, never an error, never a
@@ -108,12 +117,9 @@ impl EnrichmentGap {
 /// reuses; missing molds come from the worklist `scan-patterns-list` projects
 /// off the model. A third copy of either would drift from the other two exactly
 /// the way silent copies do — the reason those two are already shared.
-pub(crate) fn measure(project: &Path) -> EnrichmentGap {
-    measure_with_targets(project).0
-}
-
-/// [`measure`] plus WHERE closing the gap would land, from the SAME single pass
-/// over both collectors.
+///
+/// Returns the gap AND where closing it would land, from ONE pass over both
+/// collectors.
 ///
 /// One pass because both are real work — `scan-patterns-list` alone measured
 /// 30-40 ms on this repository — and this runs on every pipeline-opening emit.
@@ -148,7 +154,16 @@ pub(crate) fn measure_with_targets(project: &Path) -> (EnrichmentGap, Enrichment
     pending_guards.dedup();
 
     let candidates = crate::commands::scan_patterns::list::collect(project);
-    let molds: Vec<String> = candidates.iter().map(|c| c.mold_path.clone()).collect();
+    // The mold write set is NOT the worklist. The worklist names molds that do
+    // not exist yet; the pass OPENS by deleting every generated mold that does
+    // (`scan-patterns-sweep`, step 0 of the flow). Measuring only the worklist
+    // answered "this pass writes nothing" in a repository whose molds are all
+    // authored — and obeying that answer deletes tracked files on a dirty tree.
+    // Both sets are targets: what will be created, and what will be swept.
+    let mut molds: Vec<String> = candidates.iter().map(|c| c.mold_path.clone()).collect();
+    molds.extend(crate::commands::scan_patterns::sweep::generated_molds(project));
+    molds.sort();
+    molds.dedup();
     let mut missing_molds: Vec<String> = candidates.into_iter().map(|c| c.slug).collect();
     missing_molds.sort();
     missing_molds.dedup();
@@ -282,7 +297,7 @@ mod tests {
             }"#,
         );
 
-        let gap = measure(root);
+        let gap = measure_with_targets(root).0;
         assert_eq!(gap.missing_molds, vec!["api-service".to_string()], "{gap:?}");
         assert!(gap.pending_guards.is_empty(), "no CLAUDE.md on disk to be pending: {gap:?}");
         assert!(!gap.is_empty(), "an unauthored mold IS the gap");
@@ -301,7 +316,7 @@ mod tests {
         write_model(root, "{}"); // a census with no role to propose a mold for
         seed_pending_guards(root, "apps/rt");
 
-        let gap = measure(root);
+        let gap = measure_with_targets(root).0;
         assert_eq!(gap.pending_guards, vec!["apps/rt".to_string()], "{gap:?}");
         assert!(gap.missing_molds.is_empty(), "an empty model proposes no mold: {gap:?}");
         let line = gap_line(&gap, true);
@@ -354,6 +369,51 @@ mod tests {
             gap_line(&gap, enrichment_is_versioned(root, &targets))
                 .contains("work unit of its OWN"),
             "and the line must keep asking for a unit",
+        );
+    }
+
+    /// AC-5 — an ALREADY-AUTHORED tracked mold still makes the pass a rewrite
+    /// of versioned files, because the pass opens by DELETING it.
+    ///
+    /// This is the third escape, and the subtlest: the worklist names molds
+    /// that do not exist yet, so a repository whose molds are all authored has
+    /// an empty worklist — and measuring only the worklist answered "this pass
+    /// writes nothing" while `scan-patterns-sweep` was about to delete every
+    /// one of them. Reproduced with the real binary: the line said "dispatch it
+    /// right here, now" and obeying it deleted a tracked file on a dirty tree.
+    #[test]
+    fn an_authored_tracked_mold_still_counts_as_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--initial-branch=dev"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        // The Guards half is hidden, so ONLY the mold half can keep the strict
+        // reading — which is the shape this project's own install has.
+        std::fs::write(root.join(".gitignore"), "**/CLAUDE.md\n").unwrap();
+        write_model(root, "{}"); // an empty census proposes NO mold
+        seed_pending_guards(root, "apps/rt");
+        // …but a generated mold already sits on disk, tracked, and the sweep
+        // deletes exactly this.
+        let mold = root.join("apps/api/.claude/skills/api-service-pattern");
+        std::fs::create_dir_all(&mold).unwrap();
+        std::fs::write(
+            mold.join("SKILL.md"),
+            "---\nname: api-service-pattern\nsource: scan\n---\n\n## Purpose\n",
+        )
+        .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        let (gap, targets) = measure_with_targets(root);
+        assert!(gap.missing_molds.is_empty(), "the worklist is empty: {gap:?}");
+        assert!(
+            targets.molds.iter().any(|m| m.contains("api-service-pattern")),
+            "the mold the sweep would DELETE is a target too: {targets:?}",
+        );
+        assert!(
+            enrichment_is_versioned(root, &targets),
+            "deleting a tracked mold IS rewriting versioned files: {targets:?}",
         );
     }
 
@@ -451,7 +511,7 @@ mod tests {
         let root = dir.path();
         seed_pending_guards(root, "apps/rt");
 
-        let gap = measure(root);
+        let gap = measure_with_targets(root).0;
         assert!(gap.is_empty(), "no grain.model.json ⇒ nothing measurable: {gap:?}");
         // And the reporter prints nothing for it — fail-open all the way out.
         report_if_stale(root);

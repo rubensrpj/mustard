@@ -68,7 +68,7 @@ use mustard_core::{
 
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
-use crate::hooks::write::scan_clean_gate::{scan_output_is_versioned, tree_is_dirty};
+use crate::hooks::write::scan_clean_gate::tree_is_dirty;
 use crate::util::format_gate_message;
 
 /// The closed set of answers the base gate can return.
