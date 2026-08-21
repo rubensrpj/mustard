@@ -30,6 +30,11 @@
 //! `--spec` that disagrees is superseded, never silently preferred: the report
 //! carries `spec` (the name that won) plus `renamedFrom` (the one that did
 //! not).
+//!
+//! `--unit-name` is the one signal that OUTRANKS that derivation: the operator
+//! read the derived name and corrected it on purpose. It runs through the SAME
+//! derivation, so the unit still has one name with one spelling, and the report
+//! says which side named it (`nameFrom`).
 
 use crate::shared::context::{project_dir, session_id};
 use crate::shared::work_kind::{BaseFlow, WorkKind};
@@ -136,6 +141,17 @@ pub struct EmitPipelineOpts {
     /// supersedes a disagreeing `--spec`, and the report says so. Ignored for
     /// every other kind.
     pub intent: Option<String>,
+    /// The name the OPERATOR chose for this unit — the one signal that beats
+    /// the derivation (see [`mint_unit_name_at`]). Only consulted on
+    /// `--kind pipeline.kind`. Unlike `--spec`, which is a caller's guess and
+    /// still loses, this is a deliberate correction: the operator read the
+    /// derived name and said the unit is called something else. It is
+    /// canonicalised through the same
+    /// [`canonical_for_project`](crate::commands::spec::spec_slug::canonical_for_project)
+    /// the intent goes through, so a name typed with spaces, accents or a
+    /// slash becomes the one slug format the branch, the events and the spec
+    /// directory share. Ignored for every other kind.
+    pub unit_name: Option<String>,
     /// Base branch the work branch is cut from. When explicitly set, it MUST
     /// name a branch this repository really has
     /// (a branch the remote does not have → error, exit 1, before any emit —
@@ -163,6 +179,12 @@ pub struct EmitPipelineOpts {
 /// visible instead of leaving it to be inferred.
 const TYPE_FROM_EXPLICIT: &str = "explicit";
 const TYPE_FROM_PAYLOAD: &str = "derived-from-payload-kind";
+
+/// WHO named the unit — echoed as `nameFrom` beside the name that won, the same
+/// visibility `typeFrom` gives the kind: a reader SEES whether the derivation
+/// or the operator decided, instead of inferring it from the spelling.
+const NAME_FROM_DERIVATION: &str = "derived-from-intent";
+const NAME_FROM_OPERATOR: &str = "operator";
 
 /// The routing-kind → branch-kind translation the orchestrator publishes as a
 /// table. Routing kinds ONLY: any other token derives nothing, because a
@@ -344,7 +366,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // Remove the terminal-state marker (keyed on the predicate, so it runs for
     // every kind), then echo the one deterministic success line.
     cleanup_terminal_state(&kind, &payload, &spec);
-    echo_success(&kind, &spec, work_branch, minted.and_then(|m| m.renamed_from), work_kind);
+    echo_success(&kind, &spec, work_branch, minted.as_ref(), work_kind);
 }
 
 /// The process cwd, degrading to the configured project dir (never panics) —
@@ -540,6 +562,9 @@ pub(crate) struct MintedName {
     pub(crate) slug: String,
     /// The `--spec` the caller passed, when it was not the minted name.
     pub(crate) renamed_from: Option<String>,
+    /// Which side named it — [`NAME_FROM_DERIVATION`] (the intent) or
+    /// [`NAME_FROM_OPERATOR`] (an explicit `--unit-name`).
+    pub(crate) name_from: &'static str,
 }
 
 /// Mint the unit's canonical name for `--kind pipeline.kind`.
@@ -559,26 +584,50 @@ pub(crate) struct MintedName {
 /// preferring the caller's spelling silently is precisely how the two names
 /// were born. What is not on the table is silence.
 ///
-/// `None` — there is nothing to mint: another kind, or no `--intent` to mint
-/// FROM (a caller naming a unit that already exists). The run is then
-/// byte-identical to before.
+/// **`unit_name` is the other side of that same line.** The rule above was
+/// written against a CALLER that invents a name in passing — and silence is
+/// exactly what disqualifies it. An operator who reads the derived name and
+/// corrects it on purpose is the opposite of silence, so the explicit signal
+/// WINS: the derivation is a suggestion, and the person naming the unit
+/// outranks it. The two cases never blur, because they arrive on different
+/// flags: `--spec` still loses, `--unit-name` still wins. The chosen name runs
+/// through the same `canonical_for_project` the intent does, so winning the
+/// name never means gaining a second spelling of it.
+///
+/// `None` — there is nothing to mint: another kind, or neither an `--intent` to
+/// mint FROM nor a `--unit-name` to mint AS (a caller naming a unit that
+/// already exists). The run is then byte-identical to before.
 pub(crate) fn mint_unit_name_at(
     project: &Path,
     kind: &str,
     spec: &str,
     intent: Option<&str>,
+    unit_name: Option<&str>,
 ) -> Option<MintedName> {
     if kind != EVENT_PIPELINE_KIND {
         return None;
     }
-    let intent = intent.map(str::trim).filter(|s| !s.is_empty())?;
-    let slug = crate::commands::spec::spec_slug::canonical_for_project(intent, project);
-    if slug.trim().is_empty() {
-        return None;
-    }
+    // The operator's correction, canonicalised by the SAME derivation the
+    // intent goes through — one name, and one spelling of that name.
+    let chosen = unit_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|name| crate::commands::spec::spec_slug::canonical_for_project(name, project))
+        .filter(|slug| !slug.trim().is_empty());
+    let (slug, name_from) = match chosen {
+        Some(slug) => (slug, NAME_FROM_OPERATOR),
+        None => {
+            let intent = intent.map(str::trim).filter(|s| !s.is_empty())?;
+            let derived = crate::commands::spec::spec_slug::canonical_for_project(intent, project);
+            if derived.trim().is_empty() {
+                return None;
+            }
+            (derived, NAME_FROM_DERIVATION)
+        }
+    };
     let asked = spec.trim();
     let renamed_from = (!asked.is_empty() && asked != slug).then(|| asked.to_string());
-    Some(MintedName { slug, renamed_from })
+    Some(MintedName { slug, renamed_from, name_from })
 }
 
 /// [`mint_unit_name_at`] against the process's project root, announcing a
@@ -590,10 +639,19 @@ fn mint_unit_name(opts: &EmitPipelineOpts) -> Option<MintedName> {
         &opts.kind,
         &opts.spec,
         opts.intent.as_deref(),
+        opts.unit_name.as_deref(),
     )?;
     if let Some(asked) = minted.renamed_from.as_deref() {
+        // Name the SOURCE, not just the winner: "the operator said so" and
+        // "derived from your request" are different answers to the reader's
+        // next question, and a single generic line would hide which happened.
+        let source = if minted.name_from == NAME_FROM_OPERATOR {
+            "chosen by the operator via --unit-name"
+        } else {
+            "minted from --intent"
+        };
         eprintln!(
-            "emit-pipeline: this unit is named '{}' — minted from --intent, and it names the \
+            "emit-pipeline: this unit is named '{}' — {source}, and it names the \
              branch, the events and the spec directory alike. The requested --spec '{asked}' is \
              NOT used: a unit has one name.",
             minted.slug
@@ -774,21 +832,28 @@ fn cleanup_terminal_state(kind: &str, payload: &Value, spec: &str) {
 /// `spec` is the name the unit ACTUALLY carries from here on — the minted one
 /// when the gate named it ([`mint_unit_name_at`]) — and `renamedFrom` appears
 /// only when that differs from the `--spec` the caller asked for, so a reader
-/// can SEE the rename instead of inferring it. Both keys are omitted when they
-/// have nothing to say, which keeps every other call byte-identical.
+/// can SEE the rename instead of inferring it. `nameFrom` says which side named
+/// it — the derivation or the operator's `--unit-name`. Those keys are omitted
+/// when they have nothing to say, which keeps every other call byte-identical.
 fn echo_success(
     kind: &str,
     spec: &str,
     work_branch: Option<String>,
-    renamed_from: Option<String>,
+    minted: Option<&MintedName>,
     work_kind: Option<(WorkKind, &'static str)>,
 ) {
     let mut done = json!({ "ok": true, "kind": kind, "spec": spec });
     if let Some(branch) = work_branch {
         done["branch"] = json!(branch);
     }
-    if let Some(asked) = renamed_from {
-        done["renamedFrom"] = json!(asked);
+    if let Some(name) = minted {
+        if let Some(asked) = name.renamed_from.as_deref() {
+            done["renamedFrom"] = json!(asked);
+        }
+        // WHERE the winning name came from — a fixed token (no timestamp, no
+        // path), present only when a name was actually minted, so every call
+        // that never named a unit stays byte-identical.
+        done["nameFrom"] = json!(name.name_from);
     }
     // The kind and WHERE it came from — the same visibility `renamedFrom`
     // gives the name: an explicit flag reads "explicit", a derivation names
@@ -1690,6 +1755,7 @@ mod tests {
             EVENT_PIPELINE_KIND,
             "invented-at-dispatch",
             Some(intent),
+            None,
         )
         .expect("an intent at the opening door always names the unit");
 
@@ -1711,16 +1777,108 @@ mod tests {
         assert_eq!(minted.renamed_from.as_deref(), Some("invented-at-dispatch"));
 
         // A `--spec` that already agrees is not a rename.
-        let agreeing = mint_unit_name_at(project, EVENT_PIPELINE_KIND, &minted.slug, Some(intent))
-            .expect("still minted");
+        let agreeing =
+            mint_unit_name_at(project, EVENT_PIPELINE_KIND, &minted.slug, Some(intent), None)
+                .expect("still minted");
         assert!(agreeing.renamed_from.is_none(), "nothing was renamed");
 
         // Nothing to mint FROM (a caller naming an existing unit), and nothing
         // to mint FOR (any other kind) — both leave `--spec` untouched.
-        assert!(mint_unit_name_at(project, EVENT_PIPELINE_KIND, "existing-unit", None).is_none());
         assert!(
-            mint_unit_name_at(project, EVENT_PIPELINE_WAVE_START, "existing-unit", Some(intent))
-                .is_none(),
+            mint_unit_name_at(project, EVENT_PIPELINE_KIND, "existing-unit", None, None).is_none()
+        );
+        assert!(
+            mint_unit_name_at(
+                project,
+                EVENT_PIPELINE_WAVE_START,
+                "existing-unit",
+                Some(intent),
+                None,
+            )
+            .is_none(),
+        );
+    }
+
+    /// The operator's correction WINS; the caller's guess still loses.
+    ///
+    /// Both sides in one test, because the pair is the rule: `--unit-name` is
+    /// an explicit correction and outranks the derivation, while `--spec` stays
+    /// the silent guess that created the two-names defect and is still
+    /// superseded — visibly, through `renamedFrom`. The chosen name goes
+    /// through the SAME derivation, so winning does not buy a second spelling.
+    #[test]
+    fn operator_name_wins_over_the_derivation() {
+        use crate::commands::spec::spec_slug;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        std::fs::write(
+            project.join("mustard.json"),
+            r#"{"lang":"pt-BR","git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+
+        let intent = "Work unit has one name";
+        let derived = spec_slug::canonical_for_project(intent, project);
+
+        // --- WITH the signal: the operator names the unit --------------------
+        let typed = "Nome Corrigido/Pelo Operário";
+        let chosen = mint_unit_name_at(
+            project,
+            EVENT_PIPELINE_KIND,
+            "invented-at-dispatch",
+            Some(intent),
+            Some(typed),
+        )
+        .expect("an explicit name always names the unit");
+        assert_ne!(chosen.slug, derived, "the operator outranks the derivation");
+        // ONE spelling: spaces, an accent and a slash all collapse through the
+        // same derivation the intent goes through.
+        assert_eq!(chosen.slug, spec_slug::canonical_for_project(typed, project));
+        assert!(
+            chosen
+                .slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "the typed name was canonicalised, not carried verbatim: {}",
+            chosen.slug,
+        );
+        assert_eq!(chosen.name_from, NAME_FROM_OPERATOR);
+        assert_eq!(chosen.renamed_from.as_deref(), Some("invented-at-dispatch"));
+
+        // No `--intent` to derive from is no obstacle: the operator named it.
+        let alone = mint_unit_name_at(project, EVENT_PIPELINE_KIND, "", None, Some(typed))
+            .expect("the operator alone names the unit");
+        assert_eq!(alone.slug, chosen.slug);
+        assert_eq!(alone.name_from, NAME_FROM_OPERATOR);
+
+        // A blank value is not a choice — the derivation still names it.
+        let blank = mint_unit_name_at(
+            project,
+            EVENT_PIPELINE_KIND,
+            "invented-at-dispatch",
+            Some(intent),
+            Some("   "),
+        )
+        .expect("still minted from the intent");
+        assert_eq!(blank.slug, derived);
+        assert_eq!(blank.name_from, NAME_FROM_DERIVATION);
+
+        // --- WITHOUT it: nothing changed ------------------------------------
+        let silent = mint_unit_name_at(
+            project,
+            EVENT_PIPELINE_KIND,
+            "invented-at-dispatch",
+            Some(intent),
+            None,
+        )
+        .expect("the opening door still names the unit");
+        assert_eq!(silent.slug, derived, "a disagreeing --spec still loses");
+        assert_eq!(silent.name_from, NAME_FROM_DERIVATION);
+        assert_eq!(
+            silent.renamed_from.as_deref(),
+            Some("invented-at-dispatch"),
+            "and the supersession is still REPORTED",
         );
     }
 
