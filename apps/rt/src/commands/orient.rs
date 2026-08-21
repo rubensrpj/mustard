@@ -184,10 +184,10 @@ pub fn compute_orientation(root: &Path) -> Orientation {
 ///
 /// Bounding the only unbounded term is what makes the sum predictable, so the
 /// per-event budget can be asserted at all. 24 rows is well past what an
-/// ordinary repository has (this one has 7) and costs about 1,100 characters.
+/// ordinary repository has (this one has 7) and costs about 950 characters.
 /// What is cut is NAMED — see the truncation line in [`render_terrain`] — because
 /// a census that silently stops listing reads as a complete list.
-const TERRAIN_ROWS_CAP: usize = 24;
+const TERRAIN_ROWS_CAP: usize = 16;
 
 #[must_use]
 pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> {
@@ -271,7 +271,7 @@ mod tests {
             census.chars().count(),
         );
         assert!(
-            census.contains("176"),
+            census.contains(&(200 - super::TERRAIN_ROWS_CAP).to_string()),
             "the census truncated without saying how many rows it left out, which \
              reads as a complete list: {census}",
         );
