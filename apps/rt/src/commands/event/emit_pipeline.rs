@@ -508,6 +508,12 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) {
         super::base_gate::BaseVerdict::Abstain => {}
         super::base_gate::BaseVerdict::Open(_) => {
             super::base_gate::refresh_census_if_stale(root);
+            // The census refresh only re-mines the DETERMINISTIC half. The
+            // agent-written half — Guards prose, `{role}-pattern` molds — is
+            // measured here and reported on stderr, unconditionally: a gap born
+            // at install time survives any number of fresh censuses, so gating
+            // the notice on the refresh would hide the common case.
+            super::enrichment_gap::report_if_stale(root);
         }
     }
 }
