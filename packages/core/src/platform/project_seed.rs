@@ -826,6 +826,10 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     // `## Dispatch` moved to `dispatch.md` on `sessionStart`, because one hook
     // response carries at most 10,000 characters of `additionalContext`.
     0x4d0554c664812c77,
+    // `## Locating code` said nothing about the base gate's enrichment signal,
+    // so a router reading `base-gate: enrichment stale` on stderr had no rule
+    // for it and the half-authored census stayed half-authored.
+    0x56c5942670aa83aa,
 ];
 
 /// Superseded versions of the `dispatch.md` seed. Empty on purpose: the file

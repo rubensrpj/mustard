@@ -209,8 +209,11 @@ fn census_is_stale(project: &Path, model: &Path) -> bool {
 
 /// Re-mine `<project>/.claude/grain.model.json` when [`census_refresh_due`]
 /// says so. Deterministic census only — the `--full` pass that rewrites every
-/// `scan-map.md` and each subproject's `## Guards` stays with the explicit
-/// `/scan`, which is where a human reviews that much rewriting.
+/// `scan-map.md` and each subproject's `## Guards` stays with the FLOW, which
+/// dispatches it as a work unit of its own once this gate reports the gap
+/// ([`super::enrichment_gap`]). It is not an explicit door the user types: that
+/// one was sealed, and rewriting versioned files needs a clean tree and a commit
+/// apart, which is a unit, not a side effect of opening another one.
 ///
 /// Fail-open at every step, and loud on stderr rather than on stdout: this runs
 /// inside `emit-pipeline`, whose one JSON line is byte-compared by gates.
