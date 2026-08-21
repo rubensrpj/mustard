@@ -66,8 +66,9 @@ const MAX_NAMED: usize = 3;
 /// and only the second decides what the pass costs.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct EnrichmentGapPaths {
-    /// Where the Guards half would write — the instruction file the pass owns.
-    pub(crate) guards: Option<String>,
+    /// Where the Guards half would write — EVERY pending subproject's
+    /// instruction file, because the pass splices every one of them.
+    pub(crate) guards: Vec<String>,
     /// Where the mold half would write. Every proposed mold, because the pass
     /// sweeps and re-authors all of them: one tracked mold makes the whole pass
     /// a rewrite of versioned files.
@@ -108,30 +109,51 @@ impl EnrichmentGap {
 /// off the model. A third copy of either would drift from the other two exactly
 /// the way silent copies do — the reason those two are already shared.
 pub(crate) fn measure(project: &Path) -> EnrichmentGap {
+    measure_with_targets(project).0
+}
+
+/// [`measure`] plus WHERE closing the gap would land, from the SAME single pass
+/// over both collectors.
+///
+/// One pass because both are real work — `scan-patterns-list` alone measured
+/// 30-40 ms on this repository — and this runs on every pipeline-opening emit.
+/// Reading the paths from the same entries that produced the gap also makes it
+/// impossible for the two to disagree about which subprojects are pending.
+pub(crate) fn measure_with_targets(project: &Path) -> (EnrichmentGap, EnrichmentGapPaths) {
     // No Wave-1 census ⇒ nothing ever seeded a Guards scaffold and no cluster
     // was ever proposed, so "the enrichment is behind" would be a claim about a
     // pass that never ran. Same silence `doctor --check guards-scaffold` keeps
     // for the same reason.
     if !default_model_path(project).is_file() {
-        return EnrichmentGap::default();
+        return (EnrichmentGap::default(), EnrichmentGapPaths::default());
     }
+    // The Guards file name is resolved by the ONE helper `collect_pending` uses
+    // for the same question — under a private install that is
+    // `CLAUDE.local.md`, and asking about `CLAUDE.md` instead would measure a
+    // file the pass never touches.
+    let owned = crate::shared::context::guards_file_name(project);
+    let pending = crate::commands::scan_guards::list::collect_pending(project).entries;
+    // EVERY pending subproject, never just the first. The pass splices all of
+    // them, so one of them being tracked makes the pass a rewrite of versioned
+    // files — exactly the rule the mold half already followed. Probing only the
+    // first made the advice depend on SORT ORDER: an ignored subproject that
+    // happened to sort first flipped the whole prescription, and the line then
+    // sent an agent to rewrite a tracked `CLAUDE.md` in place, with no clean
+    // tree and no commit.
+    let guards: Vec<String> =
+        pending.iter().map(|p| format!("{}/{owned}", p.subproject)).collect();
     let mut pending_guards: Vec<String> =
-        crate::commands::scan_guards::list::collect_pending(project)
-            .entries
-            .into_iter()
-            .map(|pending| pending.subproject)
-            .collect();
+        pending.into_iter().map(|pending| pending.subproject).collect();
     pending_guards.sort();
     pending_guards.dedup();
 
-    let mut missing_molds: Vec<String> = crate::commands::scan_patterns::list::collect(project)
-        .into_iter()
-        .map(|candidate| candidate.slug)
-        .collect();
+    let candidates = crate::commands::scan_patterns::list::collect(project);
+    let molds: Vec<String> = candidates.iter().map(|c| c.mold_path.clone()).collect();
+    let mut missing_molds: Vec<String> = candidates.into_iter().map(|c| c.slug).collect();
     missing_molds.sort();
     missing_molds.dedup();
 
-    EnrichmentGap { pending_guards, missing_molds }
+    (EnrichmentGap { pending_guards, missing_molds }, EnrichmentGapPaths { guards, molds })
 }
 
 /// Print the one-line notice when [`measure`] finds a gap, and nothing at all
@@ -139,45 +161,11 @@ pub(crate) fn measure(project: &Path) -> EnrichmentGap {
 ///
 /// stderr, never stdout — see the module doc.
 pub(crate) fn report_if_stale(project: &Path) {
-    let gap = measure(project);
+    let (gap, targets) = measure_with_targets(project);
     if gap.is_empty() {
         return;
     }
-    let targets = enrichment_targets(project);
     eprintln!("{}", gap_line(&gap, enrichment_is_versioned(project, &targets)));
-}
-
-/// Whether the enrichment's own output is something the host repository
-/// VERSIONS — the fact that decides whether the pass needs a unit of its own.
-///
-/// Asked of the file the Guards half writes into. Under a private install that
-/// file is hidden behind an exclude rule, so the pass rewrites nothing git
-/// tracks: there is no commit to keep apart, therefore no clean tree to require
-/// and no unit to open. Under a shared install it is an ordinary versioned file
-/// and every one of those requirements is real.
-///
-/// Unmeasured (no git, no repository) counts as VERSIONED — the direction that
-/// keeps the stricter advice, which costs a needless unit at worst, where the
-/// opposite error would tell someone to rewrite versioned files in place.
-/// Where the enrichment would WRITE, per half — the paths whose visibility
-/// decides the prescription. Collected from the same two projections the gap
-/// itself is measured from, so a path here is always one the pass really writes.
-fn enrichment_targets(project: &Path) -> EnrichmentGapPaths {
-    // The Guards file is resolved by the ONE helper `collect_pending` uses for
-    // the same question — under a private install that is `CLAUDE.local.md`,
-    // and asking about `CLAUDE.md` instead would measure a file the pass never
-    // touches. Per-subproject, not the bare root name: an ANCHORED exclude rule
-    // hides `apps/rt/CLAUDE.local.md` while saying nothing about the root one.
-    let owned = crate::shared::context::guards_file_name(project);
-    let guards = crate::commands::scan_guards::list::collect_pending(project)
-        .entries
-        .first()
-        .map(|pending| format!("{}/{owned}", pending.subproject));
-    let molds: Vec<String> = crate::commands::scan_patterns::list::collect(project)
-        .into_iter()
-        .map(|candidate| candidate.mold_path)
-        .collect();
-    EnrichmentGapPaths { guards, molds }
 }
 
 /// Whether the pass would rewrite anything the host repository VERSIONS.
@@ -323,6 +311,77 @@ mod tests {
             "and says closing it is a unit of its own: {line}"
         );
         assert!(!line.contains('\n'), "exactly one line — gates read stderr too: {line}");
+    }
+
+    /// AC-4 — the MEASUREMENT, driven against a real repository instead of a
+    /// hardcoded bool. One tracked target among several ignored ones must keep
+    /// the strict prescription.
+    ///
+    /// This is the case that shipped twice. First the Guards half was not
+    /// measured at all; then it was measured by `.first()` alone, so an ignored
+    /// subproject that happened to SORT FIRST flipped the whole advice and the
+    /// line sent an agent to rewrite a tracked instruction file in place — the
+    /// one thing `scan_clean_gate` exists to refuse. Both slipped through
+    /// because every test passed the deciding bool in by hand.
+    #[test]
+    fn one_tracked_target_among_ignored_ones_keeps_the_strict_advice() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--initial-branch=dev"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        // `aignored/` sorts BEFORE `apps/` — the ordering that produced the bug.
+        std::fs::write(root.join(".gitignore"), "aignored/\n").unwrap();
+        write_model(root, "{}");
+        seed_pending_guards(root, "aignored/sub");
+        seed_pending_guards(root, "apps/rt");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        let (gap, targets) = measure_with_targets(root);
+        assert_eq!(
+            gap.pending_guards,
+            vec!["aignored/sub".to_string(), "apps/rt".to_string()],
+            "both subprojects are pending: {gap:?}",
+        );
+        assert_eq!(targets.guards.len(), 2, "every pending target is measured: {targets:?}");
+        assert!(
+            enrichment_is_versioned(root, &targets),
+            "apps/rt's instruction file is tracked, so the pass DOES rewrite versioned \
+             files — whatever sorts first: {targets:?}",
+        );
+        assert!(
+            gap_line(&gap, enrichment_is_versioned(root, &targets))
+                .contains("work unit of its OWN"),
+            "and the line must keep asking for a unit",
+        );
+    }
+
+    /// The other side of the same measurement: when every target really is
+    /// hidden, the relaxed advice is the honest one.
+    #[test]
+    fn every_target_ignored_relaxes_the_advice() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--initial-branch=dev"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        std::fs::write(root.join(".gitignore"), "**/CLAUDE.md\n").unwrap();
+        write_model(root, "{}");
+        seed_pending_guards(root, "apps/rt");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        let (gap, targets) = measure_with_targets(root);
+        assert!(!gap.is_empty(), "the gap is real: {gap:?}");
+        assert!(
+            !enrichment_is_versioned(root, &targets),
+            "every target is hidden, so nothing versioned is rewritten: {targets:?}",
+        );
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let _ = std::process::Command::new("git").args(args).current_dir(root).output();
     }
 
     /// AC-1 — where the enrichment's output is hidden from git, the notice must
