@@ -551,6 +551,45 @@ fn pass_is_ok(action: &str, base_advanced: bool) -> bool {
 /// The settle pass — the testable core of [`run`]. `unit` = the work branch to
 /// settle; `None` reads it from the invocation directory's HEAD (and REFUSES
 /// when that is an integration base). Never panics.
+/// The ONE branch that already contains `unit`, when exactly one does and it is
+/// not itself somebody's work unit.
+///
+/// Containment is the strongest evidence there is that a unit belongs to a base:
+/// git can prove the commits are in there, which is more than a note written at
+/// cut time can ever claim. It answers `None` on ambiguity BY DESIGN — several
+/// containing branches means the question really is open, and the caller's
+/// refusal is then the honest response rather than a guess dressed as a
+/// measurement.
+///
+/// Both sides of the catalogue are read (`--contains` locally and on the remote)
+/// and the `origin/` prefix is stripped, so a base that exists only as a
+/// remote-tracking ref answers exactly like a local one.
+fn sole_branch_containing(
+    root: &Path,
+    unit: &str,
+    flow: &crate::shared::work_kind::BaseFlow,
+) -> Option<String> {
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for args in [
+        vec!["branch", "--format=%(refname:short)", "--contains", unit],
+        vec!["branch", "-r", "--format=%(refname:short)", "--contains", unit],
+    ] {
+        let Some(out) = git_out(root, &args) else { continue };
+        for line in out.lines() {
+            let name = line.trim().trim_start_matches("origin/").trim();
+            if name.is_empty() || name == unit || name.contains("HEAD") {
+                continue;
+            }
+            // A sibling unit that happens to contain these commits is not a base.
+            if flow.has_unit_record(name) {
+                continue;
+            }
+            found.insert(name.to_string());
+        }
+    }
+    (found.len() == 1).then(|| found.into_iter().next().unwrap_or_default())
+}
+
 pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let Some(main) = main_checkout_root(start) else {
         // Echo the path that failed: the field incident behind this message was
@@ -607,11 +646,24 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             inv_branch.clone()
         }
     };
-    let answer = flow.base_of(&unit_branch);
-    // The unit is REAL and its base was never established — a different refusal
-    // from "this name is nobody's unit", and the operator's next move is
-    // different too. Telling them the prefix does not match a known base would
-    // send them to `git.flow`, where the answer was never missing.
+    let mut answer = flow.base_of(&unit_branch);
+    // **Before refusing for a missing RECORD, ask git.** A unit that is already
+    // contained in exactly one branch was demonstrably merged there, and that is
+    // a measurement — strictly better evidence than the note somebody was
+    // supposed to write at cut time. Refusing here sent the operator to
+    // `work-unit-open --base …` to re-open a unit whose work is already IN the
+    // base, which is ceremony asking them to re-state a fact the repository can
+    // prove. Field incident 2026-08-21: two units merged through the PR door and
+    // the exit ritual declined to prune either, because both were cut before the
+    // change that records the base existed.
+    //
+    // Only an UNAMBIGUOUS answer counts: several containing branches, or none,
+    // leave the question genuinely open and the refusal below stands.
+    if answer.is_unit() && answer.known().is_none() {
+        if let Some(measured) = sole_branch_containing(&main, &unit_branch, &flow) {
+            answer = crate::shared::work_kind::UnitBase::Known(measured);
+        }
+    }
     if answer.is_unit() && answer.known().is_none() {
         return json!({
             "ok": false,
@@ -1001,6 +1053,68 @@ mod tests {
     fn git(dir: &Path, args: &[&str]) {
         let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
         assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A unit whose base nothing RECORDED is still settled when git can prove
+    /// which branch already contains it — and still refused when more than one
+    /// does.
+    ///
+    /// Field incident 2026-08-21: two units went through the pull-request door,
+    /// merged, and the exit ritual declined to prune either — both were cut
+    /// before the change that records the base existed, so the note it looks for
+    /// was never written. Sending the operator to re-open a unit whose work is
+    /// already IN the base asks them to re-state a fact the repository can
+    /// prove. Containment IS the measurement; the record is only a note about
+    /// one.
+    #[test]
+    fn a_merged_unit_with_no_recorded_base_is_settled_by_containment() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        std::fs::write(root.join("f.txt"), "seed").expect("seed");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+
+        // A unit, its record, and its work — merged into dev, with NOTHING
+        // saying which base it came from.
+        git(root, &["checkout", "-b", "hotfix/urgente"]);
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("urgente"))
+            .expect("unit record");
+        std::fs::write(root.join("f.txt"), "work").expect("work");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "work"]);
+        git(root, &["checkout", "dev"]);
+        git(root, &["merge", "--no-ff", "-m", "merge", "hotfix/urgente"]);
+
+        let flow = crate::shared::work_kind::BaseFlow::of_at(
+            &mustard_core::ProjectConfig::load(root).git,
+            root,
+        );
+        assert!(
+            flow.base_of("hotfix/urgente").known().is_none(),
+            "fixture must reproduce the incident: nothing recorded the base",
+        );
+        assert_eq!(
+            super::sole_branch_containing(root, "hotfix/urgente", &flow).as_deref(),
+            Some("dev"),
+            "git can prove the unit is contained in dev — that is the base",
+        );
+
+        // …and ambiguity still refuses: a second base containing it leaves the
+        // question genuinely open, and guessing there would be a measurement in
+        // name only.
+        git(root, &["checkout", "-b", "release/2026-Q4"]);
+        git(root, &["checkout", "dev"]);
+        assert_eq!(
+            super::sole_branch_containing(root, "hotfix/urgente", &flow),
+            None,
+            "two containing branches must not be answered with a guess",
+        );
     }
 
     /// The base model of a project declaring the ordinary two-tier flow.
