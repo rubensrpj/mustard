@@ -1425,15 +1425,71 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
          grant",
     );
 
-    // --- 2. What replaced it is the measurement -----------------------------
-    assert!(
-        doctor.contains("fn check_branch_protection")
-            && doctor.contains("mustard_core::protected_branches(cwd, &config.git)"),
-        "nothing in the doctor reports the branches that are really protected",
+    // --- 2. What replaced it is the measurement, RUN not read ----------------
+    //
+    // This half used to grep `doctor.rs` for the function name and the call it
+    // makes — the practice AC-3 forbids by name, and for the reason five review
+    // rounds kept demonstrating: a source-substring assertion certifies that a
+    // line is present, never that the behaviour holds. So the check is executed
+    // against a real project in the installed shape (no `git.flow` written) and
+    // the assertions are about its OUTPUT.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git")
+    };
+    // A REAL origin, because the thing under test is what the doctor measures.
+    // Without a remote it answers, correctly, that `origin/HEAD` is unreadable
+    // and protection fell back to its literals — an honest answer to a
+    // different question, and asserting against it would pin the fallback
+    // instead of the measurement.
+    let upstream = dir.path().join("upstream.git");
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&upstream)
+        .output()
+        .expect("bare origin");
+    git(&["init", "."]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    git(&["checkout", "-b", "producao"]);
+    std::fs::write(root.join("mustard.json"), r#"{"git":{"provider":"github"}}"#).expect("cfg");
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "seed"]);
+    git(&["remote", "add", "origin", &upstream.to_string_lossy()]);
+    git(&["push", "-q", "-u", "origin", "producao"]);
+    git(&["remote", "set-head", "origin", "producao"]);
+
+    // `doctor` has no `--root`: it reads the project from the working directory,
+    // so the test must STAND in the temp project rather than name it.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "doctor", "--check", "branch-protection"])
+        .current_dir(root)
+        .output()
+        .expect("doctor runs");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        doctor.contains("\"branch-protection\""),
-        "the check no longer answers to a name that says what it measures",
+        out.status.success(),
+        "`doctor --check branch-protection` does not run — the name the operator is \
+         told to type is not the name the binary answers to: {said}",
+    );
+    assert!(
+        !said.contains("git.flow") || !said.to_lowercase().contains("declare"),
+        "the doctor still asks a correct install to declare a flow: {said}",
+    );
+    assert!(
+        said.contains("producao"),
+        "the doctor does not report the branch it really protects — with no flow \
+         written, protection rests on the remote's own default: {said}",
     );
 
     // --- 3. The installer really writes no flow -----------------------------

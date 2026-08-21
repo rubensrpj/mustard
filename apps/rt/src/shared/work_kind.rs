@@ -132,6 +132,21 @@ fn remote_names_memo() -> &'static Mutex<HashMap<PathBuf, Option<BTreeSet<String
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Drop the memoised remote branch names for `root`.
+///
+/// The memo answers "which branches does `origin` have?" from the refs on disk,
+/// and a `git fetch` is precisely the thing that changes that answer mid-run.
+/// Without this the first probe of a dispatch freezes the pre-fetch picture, so
+/// a branch that only MATERIALISES during the fetch reads as absent for the rest
+/// of the same dispatch — and the reader that consults it drops the operator's
+/// recorded base for a branch that does exist. Call it right after any fetch
+/// that can add or prune remote-tracking refs.
+pub(crate) fn forget_remote_names(root: &Path) {
+    if let Ok(mut memo) = remote_names_memo().lock() {
+        memo.remove(root);
+    }
+}
+
 /// `true` when `base` is a branch the remote STILL has — and `true` as well
 /// when its existence could NOT be measured.
 ///

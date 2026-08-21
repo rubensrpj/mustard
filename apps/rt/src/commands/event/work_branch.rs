@@ -323,6 +323,12 @@ pub(crate) fn refresh_integration_bases(
     if run_git(vcs, root, &["fetch", "origin"]).is_err() {
         return;
     }
+    // The fetch just changed which branches `origin` is known to have, and the
+    // answer to that question is memoised per process. Leaving the stale picture
+    // in place means a branch that only MATERIALISED in the line above reads as
+    // absent for the rest of this dispatch — and the reader that consults it
+    // then drops the operator's recorded base for a branch that does exist.
+    crate::shared::work_kind::forget_remote_names(Path::new(root));
     let mut bases = config.git.preselected_bases();
     if let Some(base) = cut_from.map(str::trim).filter(|b| !b.is_empty()) {
         bases.insert(base.to_string());
