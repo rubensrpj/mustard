@@ -841,7 +841,6 @@ const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
 /// silenced the drift notice on top. An untouched seed is Mustard's own
 /// text; only an operator's EDIT earns preservation.
 const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
-    0x8b7a4a64d839a069,
     0x1c5e2e706274fc17,
     0x0fb06c788d11566b,
     0x5f1d81459b0bd9c9,
@@ -866,6 +865,10 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     // so a router reading `base-gate: enrichment stale` on stderr had no rule
     // for it and the half-authored census stayed half-authored.
     0x56c5942670aa83aa,
+    // Superseded when the enrichment-stale guidance stopped asserting a work
+    // unit of its own and started telling the reader to obey the line's own
+    // measured prescription.
+    0x8b7a4a64d839a069,
 ];
 
 /// Superseded versions of the `dispatch.md` seed. Empty on purpose: the file

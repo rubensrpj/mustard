@@ -77,11 +77,11 @@ const MAX_NAMED: usize = 3;
 pub(crate) struct EnrichmentGapPaths {
     /// Where the Guards half would write — EVERY pending subproject's
     /// instruction file, because the pass splices every one of them.
-    pub(crate) guards: Vec<String>,
+    guards: Vec<String>,
     /// Where the mold half would write. Every proposed mold, because the pass
     /// sweeps and re-authors all of them: one tracked mold makes the whole pass
     /// a rewrite of versioned files.
-    pub(crate) molds: Vec<String>,
+    molds: Vec<String>,
 }
 
 /// What the agent-written half of the census is still missing.
@@ -171,7 +171,7 @@ pub(crate) fn measure_with_targets(project: &Path) -> (EnrichmentGap, Enrichment
     (EnrichmentGap { pending_guards, missing_molds }, EnrichmentGapPaths { guards, molds })
 }
 
-/// Print the one-line notice when [`measure`] finds a gap, and nothing at all
+/// Print the one-line notice when [`measure_with_targets`] finds a gap, and nothing at all
 /// when it does not. The whole effect of this module.
 ///
 /// stderr, never stdout — see the module doc.
