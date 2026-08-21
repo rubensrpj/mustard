@@ -170,13 +170,32 @@ pub fn compute_orientation(root: &Path) -> Orientation {
 /// 2026-07 SOLID audit). A project with no declared locale defaults to `pt-BR`
 /// via [`mustard_core::ProjectConfig::i18n`], so existing installs are
 /// unchanged. Output stays deterministic and byte-stable for a given locale.
+/// How many subproject rows the injected census may carry.
+///
+/// **The census is the one part of a hook's payload that grows without a bound,
+/// and it shares that payload with everything else the hook composes.** The
+/// harness caps a hook's `additionalContext` at 10,000 characters; past that the
+/// text stops being embedded and becomes a file reference, so rules that must be
+/// IN FORCE every session quietly stop being so. `SessionStart` folds the
+/// census, the injectables and two advisories into ONE string, and the census
+/// costs roughly 45 characters per subproject — measured, a repository with
+/// around 50 subprojects pushed the composed payload past the cap while every
+/// individual file still fitted its own per-file check.
+///
+/// Bounding the only unbounded term is what makes the sum predictable, so the
+/// per-event budget can be asserted at all. 24 rows is well past what an
+/// ordinary repository has (this one has 7) and costs about 1,100 characters.
+/// What is cut is NAMED — see the truncation line in [`render_terrain`] — because
+/// a census that silently stops listing reads as a complete list.
+const TERRAIN_ROWS_CAP: usize = 24;
+
 #[must_use]
 pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> {
     if o.terrain.is_empty() {
         return None;
     }
     let mut out = String::from(translate("orient.terrain.header", lang));
-    for row in &o.terrain {
+    for row in o.terrain.iter().take(TERRAIN_ROWS_CAP) {
         out.push_str("\n- ");
         out.push_str(&row.name);
         out.push_str(" · ");
@@ -189,6 +208,14 @@ pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> 
             out.push_str(" — ");
             out.push_str(&row.role);
         }
+    }
+    // A truncation nobody is told about reads as "these are all of them", which
+    // is the one thing a census may never imply. Say how many were left out and
+    // where the whole list lives.
+    if let Some(hidden) = o.terrain.len().checked_sub(TERRAIN_ROWS_CAP).filter(|n| *n > 0) {
+        out.push_str(
+            &translate("orient.census.truncated", lang).replace("{count}", &hidden.to_string()),
+        );
     }
     Some(out)
 }
@@ -209,6 +236,47 @@ pub fn run(root: &Path) {
 
 #[cfg(test)]
 mod tests {
+
+    /// AC-2 — the SessionStart payload stays IN FORCE for a monorepo-sized
+    /// census.
+    ///
+    /// The hook folds the census, every injectable declared on that event and
+    /// two advisories into ONE `additionalContext`, and the harness caps that at
+    /// 10,000 characters — past it the text stops being embedded and becomes a
+    /// file reference, so rules that must be in force every session quietly are
+    /// not. Measured before the row cap existed: ~50 subprojects composed a
+    /// 10,079-character payload while each individual file still fitted its own
+    /// per-file check.
+    ///
+    /// The census was the only unbounded term. This asserts the bound holds at a
+    /// size no real repository reaches, and that what is cut is NAMED — a census
+    /// that silently stops listing reads as a complete list.
+    #[test]
+    fn session_start_payload_stays_in_force_for_a_large_census() {
+        let terrain: Vec<TerrainRow> = (0..200)
+            .map(|i| TerrainRow {
+                name: format!("subprojeto-de-nome-bem-comprido-numero-{i}"),
+                kind: "cargo".to_string(),
+                code_files: 1234,
+                role: "L1".to_string(),
+            })
+            .collect();
+        let o = Orientation { terrain };
+        let census = super::render_terrain(&o, SupportedLocale::PtBr).expect("census");
+
+        assert!(
+            census.chars().count() < 2_000,
+            "the census is unbounded again: {} characters at 200 subprojects — it \
+             shares one 10,000-character hook response with the injectables",
+            census.chars().count(),
+        );
+        assert!(
+            census.contains("176"),
+            "the census truncated without saying how many rows it left out, which \
+             reads as a complete list: {census}",
+        );
+    }
+
     use super::*;
     use std::path::PathBuf;
     use tempfile::tempdir;

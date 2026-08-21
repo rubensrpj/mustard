@@ -1235,12 +1235,38 @@ fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
 /// Returns `true` when the entry was added. Idempotent — a project already
 /// split (or a fresh one) returns `false`. Fail-open: an unwritable config
 /// degrades to `false`, never an error.
+/// `true` when two declared injectable paths name the SAME file.
+///
+/// A declaration is written by hand as often as it is seeded, and the same file
+/// has several honest spellings: a `./` prefix, backslashes on Windows, a
+/// trailing slash, mixed case on a case-insensitive filesystem. Comparing the
+/// raw strings makes each of those a different file, and the only consequence a
+/// user ever sees is a section that silently reaches nobody.
+///
+/// Normalisation is deliberately conservative — separators, one leading `./`,
+/// trailing separators, and ASCII case. It never resolves symlinks or touches
+/// the filesystem: this runs during install, on paths that may not exist yet.
+fn same_declared_path(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        let s = s.trim().replace('\\', "/");
+        let s = s.strip_prefix("./").unwrap_or(&s).to_string();
+        s.trim_end_matches('/').to_ascii_lowercase()
+    }
+    norm(a) == norm(b)
+}
+
 fn backfill_dispatch_inject(root: &Path) -> bool {
     if !ProjectConfig::exists(root) {
         return false;
     }
     let mut config = ProjectConfig::load(root);
-    let declares = |file: &str| config.inject.iter().any(|e| e.file == file);
+    // **Equivalent spellings of one path are the same declaration.** The exact
+    // string match this used to do read `./.claude/mustard/orchestrator.md` and
+    // `.claude\mustard\orchestrator.md` as OTHER files, so a project that wrote
+    // either got the second half seeded to disk and never declared — the state
+    // this function's own doc calls strictly worse than the over-budget file it
+    // replaced: the section reaches nobody, and nothing says so.
+    let declares = |file: &str| config.inject.iter().any(|e| same_declared_path(&e.file, file));
     if !declares(ORCHESTRATOR_INJECT_FILE) || declares(DISPATCH_INJECT_FILE) {
         return false;
     }
@@ -1277,6 +1303,38 @@ fn strip_mustard_root_lines(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// AC-3 — the migration recognises an equivalent spelling of the router's
+    /// declared path.
+    ///
+    /// Matching the raw string made `./.claude/mustard/orchestrator.md` and the
+    /// backslash form read as OTHER files, so a project that declared either got
+    /// the second half seeded to disk and never declared. The section then
+    /// reaches nobody and nothing says so — strictly worse than the over-budget
+    /// single file the split replaced.
+    #[test]
+    fn backfill_dispatch_inject_matches_equivalent_path_spellings() {
+        for spelling in [
+            ".claude/mustard/orchestrator.md",
+            "./.claude/mustard/orchestrator.md",
+            ".claude\\mustard\\orchestrator.md",
+            ".claude/mustard/Orchestrator.md",
+        ] {
+            assert!(
+                super::same_declared_path(spelling, super::ORCHESTRATOR_INJECT_FILE),
+                "`{spelling}` was read as a different file from the declared router, \
+                 so the migration would seed the second half and never declare it",
+            );
+        }
+        assert!(
+            !super::same_declared_path(
+                ".claude/mustard/dispatch.md",
+                super::ORCHESTRATOR_INJECT_FILE
+            ),
+            "two genuinely different files must not be folded together",
+        );
+    }
+
     use super::*;
     use serde_json::json;
     use std::fs as std_fs;
