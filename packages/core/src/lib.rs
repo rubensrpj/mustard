@@ -66,7 +66,8 @@ pub use platform::project_seed::{
 // `.git/info/exclude`, which is absent in a submodule or a linked worktree).
 // See `platform/git_exclude.rs`.
 pub use platform::git_branches::{
-    branch_catalog, default_branch, protected_branches, remote_branch_names, BranchEntry,
+    branch_catalog, current_branch, default_branch, protected_branches, remote_branch_names,
+    BranchEntry,
 };
 pub use platform::git_provider::{detect_provider, provider_of_url, resolve_provider};
 pub use platform::git_exclude::{

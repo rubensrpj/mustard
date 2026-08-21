@@ -291,7 +291,10 @@ pub fn init_with_templates(
     // TRACKS `mustard.json` the re-stamp is an uncommitted change nobody asked
     // for, and the next command that guards on a clean tree refuses — naming
     // the operator's own work as the cause, when the writer was this installer.
-    report_stamp(mustard_core::record_version_stamp(&project_path, found_clean));
+    report_stamp(
+        mustard_core::record_version_stamp(&project_path, found_clean),
+        &project_path,
+    );
 
     print_next_steps();
     Ok(())
@@ -300,11 +303,26 @@ pub fn init_with_templates(
 /// Say what became of the version stamp, in the didactic voice the rest of the
 /// install speaks. The ordinary run — an untracked or unchanged `mustard.json`
 /// — says nothing at all: there was nothing to settle.
-fn report_stamp(outcome: mustard_core::StampOutcome) {
+///
+/// The recorded line NAMES the branch the commit landed on. A fresh clone is
+/// checked out on the default branch, so the ordinary first install commits
+/// there — the very branch `work_branch_gate` refuses to let the operator work
+/// on. That asymmetry is deliberate (the stamp is project configuration, not
+/// the operator's work, and refusing there would hand the dirty tree back in
+/// the commonest case of all), and naming the branch is what keeps it a stated
+/// outcome rather than a silent one.
+fn report_stamp(outcome: mustard_core::StampOutcome, root: &std::path::Path) {
     match outcome {
         mustard_core::StampOutcome::Nothing => {}
         mustard_core::StampOutcome::Recorded => {
-            println!("  committed mustard.json — the version stamp this install wrote");
+            match mustard_core::current_branch(root) {
+                Some(branch) => println!(
+                    "  committed mustard.json on '{branch}' — the version stamp this install wrote"
+                ),
+                None => {
+                    println!("  committed mustard.json — the version stamp this install wrote");
+                }
+            }
         }
         mustard_core::StampOutcome::TreeNotClean => {
             println!(
@@ -1284,6 +1302,52 @@ mod tests {
             .output()
             .expect("git status");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The stamp commit lands on a PROTECTED branch too, and that is deliberate
+    /// — locked here so nobody changes it by accident.
+    ///
+    /// `work_branch_gate` denies the OPERATOR an edit that would land on the
+    /// default branch, so an installer committing there looks like the same
+    /// rule broken. It is a different case: the stamp is project configuration
+    /// the install itself wrote, not work, and a fresh clone is checked out on
+    /// the default branch — refusing there would hand the dirty tree back in
+    /// the commonest install of all, which is the defect this whole path
+    /// exists to remove. What the design owes instead is saying so: the
+    /// recorded line names the branch ([`report_stamp`]).
+    #[test]
+    fn install_commits_the_stamp_on_a_protected_branch() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        git(&project, &["init", "--initial-branch=main"]);
+        git(&project, &["config", "user.email", "t@example.com"]);
+        git(&project, &["config", "user.name", "t"]);
+        fs::write(project.join("mustard.json"), "{\n  \"version\": \"0.0.0-old\"\n}\n").unwrap();
+        git(&project, &["add", "mustard.json"]);
+        git(&project, &["commit", "-m", "config"]);
+        assert_eq!(porcelain(&project), "", "fixture must start clean");
+        assert_eq!(
+            mustard_core::current_branch(&project).as_deref(),
+            Some("main"),
+            "the fixture must really sit on the protected default branch",
+        );
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        assert_eq!(
+            porcelain(&project),
+            "",
+            "the stamp is committed on the default branch like any other — refusing there \
+             would leave the commonest install dirty",
+        );
     }
 
     /// AC-4 — a repository that TRACKS `mustard.json` gets its version stamp

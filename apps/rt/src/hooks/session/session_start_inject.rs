@@ -29,7 +29,14 @@
 //!   lost them, so they must ride back in.
 //! - version drift advisory — an installed project (`mustard.json` present)
 //!   whose `version` stamp differs from the running harness gets a one-line
-//!   nudge toward `/mustard:upsert`, appended last. Advisory, never blocking.
+//!   nudge toward `/mustard:upsert`. Advisory, never blocking.
+//! - stale plugin advisory — the running harness compared against the version
+//!   the plugin registry records as INSTALLED; strictly older gets one line
+//!   saying only a reload picks the new one up, since an upsert cannot. The
+//!   drift advisory above cannot see this: it compares the stamp against the
+//!   running harness, so a session on an old plugin reads as aligned.
+//! - pending-prune advisory — delivered work units still carrying a live
+//!   branch get one line naming what is owed. Advisory, never blocking.
 //!
 //! ## Contract shape
 //!

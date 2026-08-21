@@ -92,6 +92,21 @@ fn git_out(root: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The branch the checkout is ON, or `None` when git could not answer (absent
+/// binary, no repository) — and on a detached HEAD, where `--abbrev-ref` says
+/// `HEAD` and there is no branch to name.
+///
+/// Reported, never enforced: the one caller is the install's stamp line, which
+/// names where its commit landed so a commit on a protected branch is a stated
+/// outcome instead of a silent one. Deciding anything on this value would be a
+/// second branch policy beside [`protected_branches`], which is the module's
+/// one.
+#[must_use]
+pub fn current_branch(root: &Path) -> Option<String> {
+    let name = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    (!name.is_empty() && name != "HEAD").then_some(name)
+}
+
 /// The remote's default branch — `main`, `master`, `develop`, whatever THIS
 /// repository declares — or `None` when git could not answer.
 ///
