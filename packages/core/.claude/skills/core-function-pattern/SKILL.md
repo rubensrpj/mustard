@@ -29,7 +29,7 @@ Folder: packages/core/src/domain/ast/**, packages/core/src/domain/regression_che
 - Spans are byte offsets, start inclusive and end exclusive — `Range<usize>` in `ast`, `TextSpan` in `regression_check`.
 - Identity is the final identifier (`FunctionSig::name`) or the canonical qualifier (`FunctionCapture::qualifier`), never a file path; `regression_check` keys its map on the qualifier so two snapshots serialise byte-identically regardless of insertion order.
 - `ast/stub_detect.rs` declares `pub type FunctionName = String;` and `pub type Diff = [DiffFile];` — thin aliases that keep call sites expressive without a wrapper type.
-- Public functions are `#[must_use]` and return a real value; a missing grammar, an uncompilable `.scm` or a mid-flight parse failure degrades to "no hits for this file" and typed failures go through `AstError` (`#[non_exhaustive]`, `thiserror`).
+- Public functions are `#[must_use]` and return a real value; a missing grammar, an uncompilable `.scm` or a mid-flight parse failure does NOT degrade to an empty hit set — it runs the TEXTUAL fallback and reports what it finds with `DetectionMode::Textual` (`ast/stub_detect.rs:55-62`, `ast/signature.rs:12-19` with `FALLBACK_FUNCTION_PATTERN` at `:51`, and the crate-wide statement at `ast/mod.rs:26-31`). Returning "no hits for this file" instead would make a regression gate go silent exactly where its grammar is missing. Typed failures go through `AstError` (`#[non_exhaustive]`, `thiserror`).
 - Tests live in `#[cfg(test)] mod tests` at the bottom of the same file, using `tempfile::tempdir()` for anything that needs a project root.
 
 ## How to apply
