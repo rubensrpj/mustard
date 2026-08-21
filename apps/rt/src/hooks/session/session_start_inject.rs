@@ -29,7 +29,14 @@
 //!   lost them, so they must ride back in.
 //! - version drift advisory — an installed project (`mustard.json` present)
 //!   whose `version` stamp differs from the running harness gets a one-line
-//!   nudge toward `/mustard:upsert`, appended last. Advisory, never blocking.
+//!   nudge toward `/mustard:upsert`. Advisory, never blocking.
+//! - stale plugin advisory — the running harness compared against the version
+//!   the plugin registry records as INSTALLED; strictly older gets one line
+//!   saying only a reload picks the new one up, since an upsert cannot. The
+//!   drift advisory above cannot see this: it compares the stamp against the
+//!   running harness, so a session on an old plugin reads as aligned.
+//! - pending-prune advisory — delivered work units still carrying a live
+//!   branch get one line naming what is owed. Advisory, never blocking.
 //!
 //! ## Contract shape
 //!
@@ -379,15 +386,20 @@ impl Check for SessionStartInject {
         // stamp differs from the running harness gets a one-paragraph nudge
         // toward `/mustard:upsert`. Advisory only — the user decides.
         let drift = version_drift_notice(Path::new(&cwd));
+        // Stale-plugin advisory: the drift check above compares the stamp with
+        // the RUNNING harness, and the running harness is what wrote the stamp
+        // — so it is blind to a session still carrying a plugin an update has
+        // already replaced on disk. This is the only line that can see it.
+        let stale = stale_plugin_notice();
         // Pending-prune advisory: delivered work units whose branch is still
         // alive. The prune command already existed and worked; what was missing
         // was anyone SAYING it was owed, so six units piled up unnoticed.
         let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
         // ONE composed Inject (the dispatcher fold is last-writer-wins):
-        // terrain first, injectables after, the two advisories last —
-        // blank-line separated.
+        // terrain first, injectables after, the advisories last — blank-line
+        // separated.
         let parts: Vec<String> =
-            [terrain, injected, drift, prune].into_iter().flatten().collect();
+            [terrain, injected, drift, stale, prune].into_iter().flatten().collect();
         Ok(if parts.is_empty() {
             Verdict::Allow
         } else {
@@ -419,6 +431,37 @@ fn version_drift_notice(root: &Path) -> Option<String> {
          {current}. Tell the user this project's Mustard footprint is out of date and \
          suggest running /mustard:upsert to realign (a notice that persists after an \
          upsert means the plugin itself needs updating)."
+    ))
+}
+
+/// One line when the plugin THIS session loaded is behind the one Claude Code's
+/// registry records as installed — the session is running old prose and only a
+/// reload changes that.
+///
+/// The gap this closes: `/mustard:upsert` installs a new plugin version, and
+/// the running session keeps every command, skill and agent file of the old one
+/// until the operator reloads. Nothing said so. [`version_drift_notice`]
+/// structurally cannot: the stamp it reads was written by the running harness,
+/// so the two agree by construction and a stale session reads as aligned.
+fn stale_plugin_notice() -> Option<String> {
+    stale_plugin_line(
+        &mustard_core::harness_version(),
+        mustard_core::installed_harness_version().as_deref(),
+    )
+}
+
+/// The pure half of [`stale_plugin_notice`] — running version in, advisory out.
+///
+/// `None` unless the registry ANSWERED and the running version is strictly
+/// older: an unreadable registry, a registry that does not list this plugin,
+/// and a session already on the installed version all mean the same thing —
+/// nothing to say. An advisory that cannot prove its claim stays quiet.
+fn stale_plugin_line(running: &str, installed: Option<&str>) -> Option<String> {
+    let installed = installed.filter(|latest| mustard_core::is_behind(running, latest))?;
+    Some(format!(
+        "[Mustard] Stale plugin — this session loaded {running}; {installed} is installed. \
+         Tell the user the session is running the OLD commands, skills and agents, and that \
+         only reloading Claude Code picks up {installed} — an upsert alone does not."
     ))
 }
 
@@ -550,6 +593,34 @@ mod tests {
         std::fs::write(dir.path().join("mustard.json"), r#"{"buildCommand":"make"}"#).unwrap();
         let notice = version_drift_notice(dir.path()).expect("unstamped must fire");
         assert!(notice.contains("unstamped"), "labels the pre-version era: {notice}");
+    }
+
+    // --- stale-plugin advisory ----------------------------------------------
+
+    /// AC-5 — a session whose loaded plugin is behind the one the registry
+    /// records as installed says so in ONE line, and says that reloading is
+    /// what fixes it. The drift advisory cannot reach this case: the stamp it
+    /// compares was written BY the running harness.
+    #[test]
+    fn stale_plugin_is_announced_at_session_start() {
+        let notice = stale_plugin_line("0.1.42", Some("0.1.43")).expect("stale must fire");
+        assert_eq!(notice.lines().count(), 1, "one line, not a paragraph: {notice}");
+        assert!(notice.contains("0.1.42"), "names what the session loaded: {notice}");
+        assert!(notice.contains("0.1.43"), "names what is installed: {notice}");
+        assert!(
+            notice.to_lowercase().contains("reload"),
+            "says the reload is the missing step: {notice}"
+        );
+    }
+
+    /// The three silences, which are the same silence: a session already on the
+    /// installed version, one AHEAD of it (a local build), and a registry that
+    /// could not answer at all.
+    #[test]
+    fn stale_plugin_notice_stays_quiet_without_proof() {
+        assert_eq!(stale_plugin_line("0.1.43", Some("0.1.43")), None);
+        assert_eq!(stale_plugin_line("0.2.0", Some("0.1.43")), None);
+        assert_eq!(stale_plugin_line("0.1.42", None), None);
     }
 
     // --- pending-prune advisory ---------------------------------------------
