@@ -32,9 +32,10 @@ struct DangerRule {
     /// Stable identifier (`BG01`–`BG13`).
     id: &'static str,
     /// `true` when `cmd` (already lowercased) matches this rule. The second
-    /// argument is the project's integration bases (`git.flow`); only BG07
-    /// (branch-delete) consults it — every other rule ignores it, so its test
-    /// takes the form `|c, _| …`.
+    /// argument is the project's PROTECTED branches
+    /// ([`mustard_core::protected_branches`]); only BG07 (branch-delete)
+    /// consults it — every other rule ignores it, so its test takes the form
+    /// `|c, _| …`.
     test: fn(&str, &BTreeSet<String>) -> bool,
     /// The user-facing reason fragment.
     msg: &'static str,
@@ -81,12 +82,13 @@ const DANGER_RULES: &[DangerRule] = &[
         test: |c, _| ends_with_token_seq(c, &["git", "restore", "."]),
         msg: "git restore . blocked",
     },
-    // The protected branches are the project's `git.flow` integration bases
-    // (agnostic), NOT a hardcoded main/master: a `develop`/`master` project
-    // protects `develop` too, and a `dev`/`main` project leaves `master`
-    // deletable. main/master survive as the `integration_bases()` fallback, not
-    // as a literal here. Wrapper-prefix insensitivity is still structural (glob
-    // is start-anchored).
+    // The protected branches are what `mustard_core::protected_branches`
+    // MEASURES — the remote's own default (`origin/HEAD`) plus whatever
+    // `git.protected` declares — never a hardcoded main/master: a repository
+    // whose default is `develop` protects `develop`, and one whose default is
+    // `main` leaves `master` deletable. main/master survive only as that
+    // function's UNMEASURED fallback, not as a literal here. Wrapper-prefix
+    // insensitivity is still structural (glob is start-anchored).
     DangerRule {
         id: "BG07",
         test: is_branch_delete_protected,
@@ -186,14 +188,15 @@ fn is_git_clean_force(cmd: &str) -> bool {
     })
 }
 
-/// `git branch -d/-D <base>` where `<base>` is one of the project's integration
-/// bases (`git.flow`), NOT a hardcoded `main|master`. The base set comes from
-/// [`mustard_core::domain::config::GitConfig::integration_bases`], whose
-/// documented fallback is `{main, master}` when the flow is empty/unreadable —
-/// so main/master stay protected (via that fallback) while a `develop`/`master`
-/// project also protects `develop`, and a `dev`/`main` project leaves `master`
-/// deletable. `cmd` is already lowercased; bases are matched case-insensitively
-/// so a mixed-case `git.flow` entry still guards.
+/// `git branch -d/-D <base>` where `<base>` is one of the project's PROTECTED
+/// branches, NOT a hardcoded `main|master`. The set comes from
+/// [`mustard_core::protected_branches`] — the remote's own default branch plus
+/// whatever `git.protected` declares — whose documented fallback is
+/// `{main, master}` when `origin/HEAD` could not be measured, so main/master
+/// stay protected (via that fallback) while a repository defaulting to
+/// `develop` protects `develop` and one defaulting to `main` leaves `master`
+/// deletable. `cmd` is already lowercased; branches are matched
+/// case-insensitively so a mixed-case declaration still guards.
 fn is_branch_delete_protected(cmd: &str, bases: &BTreeSet<String>) -> bool {
     if !has_word_pair(cmd, "git", "branch") {
         return false;

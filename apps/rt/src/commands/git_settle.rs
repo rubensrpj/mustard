@@ -1,11 +1,13 @@
 //! `mustard-rt run git-settle` — the EXIT RITUAL of a delivered work unit,
 //! answering "the PR merged; now what?" with the user's exact contract:
 //!
-//! 1. **Runs from the WORK BRANCH** — invoked bare while sitting on an
-//!    integration base (`dev`/`main`) it REFUSES (`on-integration-base`):
-//!    settle is how a unit leaves the stage, not a base-side sweeper. From a
-//!    base it only runs with an explicit `--unit <branch>` (the finish step
-//!    of the dance below).
+//! 1. **Runs from the WORK BRANCH** — invoked bare while the checkout is NOT
+//!    somebody's unit it REFUSES (`on-integration-base`): settle is how a unit
+//!    leaves the stage, not a base-side sweeper. The test is the unit, never a
+//!    declared list of bases — a project whose install wrote no `git.flow`
+//!    would otherwise see its own base as a work branch. From anywhere else it
+//!    only runs with an explicit `--unit <branch>` (the finish step of the
+//!    dance below).
 //! 2. **100% merged or nothing**, measured per REF: EVERY ref that still carries
 //!    the unit — the local head and each `<remote>/<branch>` — must be contained
 //!    in `origin/<base>` now, or covered by the frozen head of a merged pull
@@ -579,7 +581,22 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     let unit_branch = match unit {
         Some(u) => u.trim().to_string(),
         None => {
-            if bases.iter().any(|b| b == &inv_branch) {
+            // Measured, not looked up: the question is whether the checkout is
+            // INSIDE a unit, and a declared list cannot answer it — a project
+            // whose install wrote no flow sees `main`/`master` there and calls
+            // every real base a work branch.
+            //
+            // The reading is the project's own RECORD of the unit, the SAME one
+            // `pr list` and `git delete` ask. The shape of the name cannot answer
+            // it: the kind vocabulary is open, so a release line named
+            // `release/2026-Q3` splits into a kind and a slug exactly like
+            // `fix/aba` and this door proceeded as if standing inside a unit.
+            // Two doors reading the same checkout and disagreeing about it is
+            // the drift `BaseFlow` exists to prevent, so there is one predicate,
+            // not two. A unit whose record is not written yet is answered here
+            // as a base — a refusal that names `--unit`, which is the recoverable
+            // direction.
+            if !flow.has_unit_record(&inv_branch) {
                 return json!({
                     "ok": false,
                     "reason": "on-integration-base",
@@ -620,9 +637,9 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         // do that job — the field incident was a `--root` that did not exist,
         // and the old message let the submodule take the blame for it.
         let hint = if superproject.is_some() {
-            "prefixo não bate com base conhecida — este repo é submódulo: as bases vêm do git.flow em configRoot"
+            "este nome não é o de uma unidade deste repo — é submódulo: o registro da unidade e as bases vêm do configRoot"
         } else {
-            "prefixo não bate com base conhecida — confira git.flow no mustard.json de configRoot"
+            "este nome não é o de uma unidade: nada registrou de qual base ele saiu e nenhum branch do repositório é prefixo dele"
         };
         return json!({
             "ok": false,
@@ -1099,6 +1116,14 @@ mod tests {
         //    local alike). Two plain file writes are deterministic and touch
         //    nothing shared.
         for unit in ["dev_done", "dev_open"] {
+            // What makes these branches UNITS is the record this project holds
+            // for them, not the shape of their names — the fixture created only
+            // the branch and the worktree, so every door here could be satisfied
+            // by a name that merely looked like a unit, which is how a real
+            // release line ended up being read as one.
+            let slug = unit.strip_prefix("dev_").unwrap_or(unit);
+            std::fs::create_dir_all(main.join(".claude").join("spec").join(slug))
+                .expect("unit record");
             let wt = main.join(".claude").join("worktrees").join(unit);
             let admin = main.join(".git").join("worktrees").join(unit);
             std::fs::write(

@@ -116,12 +116,41 @@ impl GitConfig {
     /// [`crate::platform::git_branches::protected_branches`]. Nothing here
     /// refuses anything any more.
     ///
+    /// ONE reading is neither of those two, and it is named here because it is
+    /// the only one that still consults this set and can end in a refusal: a
+    /// branch this set names is not somebody's WORK UNIT, so `git delete`
+    /// declines to remove a project's own `release/2026-Q3` — whose name splits
+    /// into a kind and a slug exactly like `feature/aba` — the way it declines
+    /// `main`. That refuses the operator no base and no cut; it stops the
+    /// harness from mistaking a branch the project ITSELF called a base for a
+    /// disposable unit.
+    ///
     /// Examples: `{"*":"dev","dev":"main"}` → `{dev, main}`; `{"*":"main"}` →
     /// `{main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`.
     /// An empty / absent flow falls back to `{main, master}` — the ONLY place a
     /// branch name is hardcoded, and only as a last resort.
     #[must_use]
     pub fn preselected_bases(&self) -> BTreeSet<String> {
+        let bases = self.declared_bases();
+        if bases.is_empty() {
+            return ["main", "master"].iter().map(|s| (*s).to_string()).collect();
+        }
+        bases
+    }
+
+    /// What the project REALLY declares — [`preselected_bases`] without its
+    /// last-resort `{main, master}`, so an empty / absent flow yields an empty
+    /// set instead of two names this repository may not carry.
+    ///
+    /// This is the one a REPORT reads. The fallback exists to keep a derivation
+    /// from having no answer at all; printing it to an operator states that the
+    /// project pre-selects `main` and `master` when it pre-selects nothing, and
+    /// the installer writes no flow — so that is what every fresh install would
+    /// otherwise be told about itself.
+    ///
+    /// [`preselected_bases`]: GitConfig::preselected_bases
+    #[must_use]
+    pub fn declared_bases(&self) -> BTreeSet<String> {
         let mut bases: BTreeSet<String> = BTreeSet::new();
         for (key, value) in &self.flow {
             let key = key.trim();
@@ -133,22 +162,7 @@ impl GitConfig {
                 bases.insert(value.to_string());
             }
         }
-        if bases.is_empty() {
-            bases.insert("main".to_string());
-            bases.insert("master".to_string());
-        }
         bases
-    }
-
-    /// The set under its former name.
-    ///
-    /// Kept as a one-line forward so the rename lands in one commit instead of
-    /// rippling through every caller at once; the doc above is the truth about
-    /// what the value MEANS now.
-    #[must_use]
-    #[deprecated(note = "these branches are pre-selected, not permitted — call preselected_bases")]
-    pub fn integration_bases(&self) -> BTreeSet<String> {
-        self.preselected_bases()
     }
 
     /// The base a picker opens ON: `flow["*"]` when present, else any single
@@ -793,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn integration_bases_derives_from_flow_keys_and_values() {
+    fn preselected_bases_derives_from_flow_keys_and_values() {
         // Standard two-tier flow → {dev, main}.
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
@@ -806,7 +820,7 @@ mod tests {
         let mut single = ProjectConfig::default();
         single.git.flow.insert("*".into(), "main".into());
         assert_eq!(
-            single.git.integration_bases(),
+            single.git.preselected_bases(),
             BTreeSet::from(["main".to_string()]),
         );
 
@@ -815,16 +829,16 @@ mod tests {
         dm.git.flow.insert("*".into(), "develop".into());
         dm.git.flow.insert("develop".into(), "master".into());
         assert_eq!(
-            dm.git.integration_bases(),
+            dm.git.preselected_bases(),
             BTreeSet::from(["develop".to_string(), "master".to_string()]),
         );
     }
 
     #[test]
-    fn integration_bases_empty_flow_falls_back_to_main_master() {
+    fn preselected_bases_empty_flow_falls_back_to_main_master() {
         let cfg = ProjectConfig::default();
         assert_eq!(
-            cfg.git.integration_bases(),
+            cfg.git.preselected_bases(),
             BTreeSet::from(["main".to_string(), "master".to_string()]),
         );
     }

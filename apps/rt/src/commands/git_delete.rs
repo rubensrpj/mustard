@@ -19,14 +19,24 @@
 //! delete a unit *because* it was never finished would refuse every case the
 //! command exists for.
 //!
-//! ## Only from an integration base
+//! ## Never from INSIDE a unit
 //!
 //! Deleting the branch you are standing on is not an operation — git refuses it,
 //! and the ritual would leave the session on a ref that no longer exists.
 //! "Which unit do I give up on" is a question asked from the BASE, exactly like
-//! `pr-list`, so a work branch REFUSES and names the base to switch to, touching
-//! nothing. Two more refusals guard the same edge from the other side: a unit
-//! that names an integration base is never deleted (the `BG07` rule of the
+//! `pr-list`, so a checkout that IS somebody's unit REFUSES and names the base
+//! to switch to, touching nothing.
+//!
+//! Both refusals are measured, never read off a declared list. The old test was
+//! membership in `git.flow`'s bases, which refused every real base the install
+//! never wrote down — and the installer writes no flow at all. What replaces it
+//! is the pair of facts the repository can actually answer: whether the branch
+//! is somebody's WORK UNIT ([`crate::shared::work_kind::BaseFlow::base_of`]) and
+//! whether [`mustard_core::protected_branches`] names it.
+//!
+//! Two more refusals guard the same edge from the other side: a name that is
+//! nobody's work unit — a bare base, a hand-cut branch, anything
+//! `protected_branches` measures — is never deleted (the `BG07` rule of the
 //! destructive-ops law, restated where this command can enforce it), and a unit
 //! no ref carries anywhere is reported as `no-such-unit` rather than answered
 //! with a cheerful "deleted" over a typo.
@@ -92,25 +102,50 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
     };
     let cfg = mustard_core::ProjectConfig::load(&main);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &main);
-    let bases: Vec<String> = flow.bases().to_vec();
+    // The DECLARED set, echoed in the refusals below purely as context. Not
+    // `preselected_bases`, whose `{main, master}` fallback would report two
+    // branches a project without a flow may not have — and every project the
+    // current installer touches is one.
+    let bases: Vec<String> = cfg.git.declared_bases().into_iter().collect();
 
     // The branch of the INVOCATION, not of the main checkout: called from
     // inside the unit's own worktree the two disagree, and it is the caller's
     // floor that decides whether this is a base-side gesture.
     let branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    if !bases.iter().any(|b| b == &branch) {
-        let target =
-            flow.base_of(&branch).into_known().unwrap_or_else(|| cfg.git.primary_base());
+    let protected = mustard_core::protected_branches(&main, &cfg.git);
+    let standing_on = flow.base_of(&branch);
+    // Standing on a branch this project holds NO unit record for is standing on
+    // a base, whatever the name looks like — a reviewer measured `release/…`
+    // being refused here for the shape of its name alone.
+    if flow.has_unit_record(&branch) && !protected.contains(&branch) {
+        // The unit's OWN record answers where to go back to; `origin/HEAD` is
+        // the last resort, so nothing here spells a branch name of its own.
+        // Same three sources, same order, as `pr list`: the unit's own record,
+        // then the DECLARED primary base when the project states one — naming
+        // `origin/HEAD` there sends a unit that integrates into `dev` off to
+        // `main` — and only then the remote's own default.
+        let declared = !cfg.git.declared_bases().is_empty();
+        let target = standing_on
+            .known()
+            .map(str::to_string)
+            .or_else(|| declared.then(|| cfg.git.primary_base()))
+            .or_else(|| mustard_core::default_branch(&main));
+        let hint = match &target {
+            Some(base) => format!(
+                "`git delete` retires a unit from the OUTSIDE — switch to `{base}` \
+                 (`git checkout {base}`) and run it again; nothing was touched"
+            ),
+            None => "`git delete` retires a unit from the OUTSIDE — switch to the branch this \
+                     unit integrates into and run it again; nothing was touched"
+                .to_string(),
+        };
         return json!({
             "ok": false,
             "reason": "not-on-integration-base",
             "branch": branch,
             "unit": unit,
             "bases": bases,
-            "hint": format!(
-                "`git delete` retires a unit from the OUTSIDE — switch to `{target}` \
-                 (`git checkout {target}`) and run it again; nothing was touched"
-            ),
+            "hint": hint,
         });
     }
 
@@ -123,20 +158,13 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
             "hint": "name the work branch to delete: `mustard-rt run git-delete --unit dev_my-unit`",
         });
     }
-    if bases.iter().any(|b| b == unit) {
-        return json!({
-            "ok": false,
-            "reason": "is-integration-base",
-            "branch": branch,
-            "unit": unit,
-            "bases": bases,
-            "hint": "an integration base is never a work unit — nothing was touched",
-        });
-    }
-
     // A unit no ref carries is a typo, not a job already done. Answering
     // "deleted" here would teach the operator that the branch they meant is
     // gone while it sits untouched under the name they mistyped.
+    //
+    // This is asked BEFORE the work-unit test on purpose: a name nothing carries
+    // has nothing to protect, and "that name is nobody's unit" would send the
+    // operator hunting for a rule when the real answer is that they mistyped.
     let local = git_ok(&main, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{unit}")]);
     let remote_ref =
         git_ok(&main, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{unit}")]);
@@ -147,6 +175,43 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
             "branch": branch,
             "unit": unit,
             "hint": "no local or remote ref carries that branch — check the name with `git branch -a`",
+        });
+    }
+
+    // What this command may remove is a WORK UNIT, and the test is the project's
+    // OWN RECORD of it — never the name's shape, never a declared list. Both of
+    // those were tried and both destroyed a real branch. The kind vocabulary is
+    // open by design, so `release/2026-Q3` splits into a kind and a slug exactly
+    // like `fix/aba` and read as somebody's unit; and with no `git.flow` written
+    // — the shape `mustard init` produces today — the declared set degrades to
+    // the hardcoded `{main, master}`, so it protected two literals and nothing
+    // else. Measured against that shape: `git-delete --unit release/2026-Q3`
+    // answered `remoteDeleted: true` and the release line was gone FROM THE
+    // REMOTE. Absence of evidence refuses here — this is the one door where
+    // being wrong cannot be undone.
+    //
+    // Two places the record can live, and this door must ask BOTH: the working
+    // tree (projects that leave `.claude/spec/` untracked) and the unit's own
+    // branch (projects that commit it — which is where the flow authors it, so
+    // from the base the directory is simply not on disk). `git delete` retires a
+    // unit from OUTSIDE it, so reading only the working tree refuses every
+    // legitimate delete — measured, before the second leg existed.
+    // The SAME reading the standing-on guard above uses. It was briefly spelled
+    // out here instead — the working tree plus the two refs — and that left the
+    // guard weaker than the permission it guards: from inside the unit's own
+    // worktree the guard answered "not a unit", declined to refuse, and this
+    // line then permitted the destruction of the caller's own worktree. One
+    // reading, in one place, is what makes that impossible to reintroduce.
+    if !flow.has_unit_record(unit) || protected.contains(unit) {
+        return json!({
+            "ok": false,
+            "reason": "not-a-work-unit",
+            "branch": branch,
+            "unit": unit,
+            "bases": bases,
+            "protected": protected.iter().collect::<Vec<_>>(),
+            "hint": "`git delete` retires a WORK UNIT, and this project holds no unit record \
+                     for that name (or it is protected) — nothing was touched",
         });
     }
 
@@ -230,6 +295,12 @@ mod tests {
         git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "seed"]);
         git(root, &["branch", "dev_abandoned"]);
+        // What makes `dev_abandoned` a UNIT is not the shape of its name — it is
+        // the record this project holds for it. The fixture used to create only
+        // the branch, which is why every door here could be satisfied by a name
+        // that merely looked like a unit.
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("abandoned"))
+            .expect("unit record");
         dir
     }
 
@@ -253,13 +324,121 @@ mod tests {
         assert!(hint.contains("dev"), "the refusal must name the base: {hint}");
         assert!(branch_exists(root, "dev_abandoned"), "the refusal touched the unit");
 
-        // A branch with no declared prefix still gets a base named, so the
-        // message is never a dead end.
+        // A branch that is NOBODY's unit is a base as far as this question
+        // goes. It used to be refused for the sole reason that `git.flow` does
+        // not list it — and the installer writes no flow, so that refusal fired
+        // on every branch a real project integrates through.
+        git(root, &["checkout", "dev"]);
         git(root, &["checkout", "-b", "loose-branch"]);
         let loose = delete_at(root, "dev_abandoned");
-        assert_eq!(loose["reason"], json!("not-on-integration-base"));
-        assert!(loose["hint"].as_str().unwrap_or_default().contains("dev"), "primary base named");
-        assert!(branch_exists(root, "dev_abandoned"));
+        assert_eq!(loose["ok"], json!(true), "an undeclared base is still outside the unit: {loose}");
+        assert!(!branch_exists(root, "dev_abandoned"), "the unit was retired from it");
+    }
+
+    /// AC-3 — a declared integration base whose NAME carries a slash
+    /// (`release/2026-Q3`) parses into a first segment that reads as a kind and
+    /// a second that reads as a slug, exactly like `feature/aba` does. So the
+    /// project's own release line answered "somebody's work unit", and both
+    /// doors acted on that answer: this one OFFERED to delete it, and `pr list`
+    /// REFUSED to run from it.
+    ///
+    /// Behaviour, not source text: every assertion below is a command's own
+    /// report plus what the repository looks like afterwards.
+    #[test]
+    fn a_slashed_integration_base_is_never_deleted_and_never_refused() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "dev"]);
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"release/2026-Q3"}}}"#,
+        )
+        .expect("cfg");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+        git(root, &["branch", "release/2026-Q3"]);
+        git(root, &["branch", "feature/na-linha"]);
+        // The unit has a RECORD; the release line has none. That asymmetry — not
+        // the shape of either name — is what the two doors below must read.
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("na-linha"))
+            .expect("unit record");
+
+        // Standing ON the slashed base, the PR door does not refuse. `gh` is
+        // absent here, which is reported as `ghError` — never as a refusal.
+        git(root, &["checkout", "release/2026-Q3"]);
+        let listed = crate::commands::review::pr_door::list_at(root);
+        assert!(
+            listed.ok,
+            "`pr list` refused from the project's own base: {:?} / {:?}",
+            listed.reason, listed.hint
+        );
+        assert_eq!(listed.branch, "release/2026-Q3");
+
+        // …and the base itself is not deletable, from there or anywhere: a base
+        // is nobody's unit, whatever the shape of its name.
+        let refused = delete_at(root, "release/2026-Q3");
+        assert_eq!(
+            refused["ok"],
+            json!(false),
+            "the declared release line was accepted for deletion: {refused}"
+        );
+        assert_eq!(refused["reason"], json!("not-a-work-unit"));
+        assert!(
+            branch_exists(root, "release/2026-Q3"),
+            "the project's release line was deleted"
+        );
+
+        // A REAL unit still goes, from that same slashed base — the door works
+        // while standing on it, which is the other half of the criterion.
+        let done = delete_at(root, "feature/na-linha");
+        assert_eq!(done["ok"], json!(true), "report: {done}");
+        assert_eq!(done["action"], json!("deleted"));
+        assert!(!branch_exists(root, "feature/na-linha"), "the unit's branch survived");
+
+        // --- and now the shape the INSTALLER writes: no `git.flow` at all ----
+        //
+        // The section above declares the release line, and a guard reading the
+        // declared set passes it. That is exactly how this defect survived two
+        // fix rounds: `mustard init` writes no flow, so the declared set falls
+        // back to the hardcoded `{main, master}` and protects two literals and
+        // nothing else. Measured against this shape before the record test
+        // existed, `git delete` answered `remoteDeleted: true` and the release
+        // line was gone.
+        let bare = tempdir().expect("tempdir");
+        let bare_root = bare.path();
+        git(bare_root, &["init", "."]);
+        git(bare_root, &["config", "user.email", "t@t"]);
+        git(bare_root, &["config", "user.name", "t"]);
+        git(bare_root, &["checkout", "-b", "dev"]);
+        std::fs::write(bare_root.join("mustard.json"), r#"{"git":{"provider":"github"}}"#)
+            .expect("cfg");
+        git(bare_root, &["add", "-A"]);
+        git(bare_root, &["commit", "-m", "seed"]);
+        git(bare_root, &["branch", "release/2026-Q3"]);
+        git(bare_root, &["branch", "hml_prod"]);
+        git(bare_root, &["branch", "feature/real"]);
+        std::fs::create_dir_all(bare_root.join(".claude").join("spec").join("real"))
+            .expect("unit record");
+
+        for base in ["release/2026-Q3", "hml_prod"] {
+            let refused = delete_at(bare_root, base);
+            assert_eq!(
+                refused["reason"],
+                json!("not-a-work-unit"),
+                "a project's own base was accepted for deletion with no flow declared: \
+                 {refused}",
+            );
+            assert!(branch_exists(bare_root, base), "`{base}` was deleted");
+        }
+
+        // …and the unit is still deletable there — the fix may not be "refuse
+        // everything", which is the other way to make the assertions above pass.
+        let done = delete_at(bare_root, "feature/real");
+        assert_eq!(done["ok"], json!(true), "the real unit was refused: {done}");
+        assert!(!branch_exists(bare_root, "feature/real"), "the unit's branch survived");
     }
 
     /// From the base the unit goes whole: the local branch is deleted, and the
@@ -284,16 +463,29 @@ mod tests {
         assert_eq!(done["prClosed"], json!(false));
     }
 
-    /// The two refusals that guard the same edge from the other side: an
-    /// integration base is never a unit, and a name no ref carries is a typo.
+    /// The two refusals that guard the same edge from the other side: a name
+    /// that is nobody's work unit is never deleted, and a name no ref carries
+    /// is a typo.
     #[test]
     fn git_delete_refuses_a_base_and_reports_an_unknown_unit() {
         let dir = repo();
         let root = dir.path();
+        // Both names must EXIST for these assertions to be about the reading
+        // rather than about absence: a name no ref carries is answered
+        // `no-such-unit` first, and that is a different claim from "this is a
+        // base". The fixture never created them, so the two cases below were
+        // passing for the wrong reason.
+        git(root, &["branch", "main"]);
+        git(root, &["branch", "squad-b-integration"]);
 
         let base = delete_at(root, "main");
         assert_eq!(base["ok"], json!(false));
-        assert_eq!(base["reason"], json!("is-integration-base"));
+        assert_eq!(base["reason"], json!("not-a-work-unit"));
+
+        // And the refusal does NOT come from a declared list: a base this
+        // project's `git.flow` never mentions is refused on the same reading.
+        let undeclared = delete_at(root, "squad-b-integration");
+        assert_eq!(undeclared["reason"], json!("not-a-work-unit"), "{undeclared}");
 
         let typo = delete_at(root, "dev_never-existed");
         assert_eq!(typo["ok"], json!(false));

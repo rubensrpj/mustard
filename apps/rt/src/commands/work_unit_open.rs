@@ -80,9 +80,9 @@ pub struct WorkUnitOpenOpts {
     /// Any directory inside the repo (worktrees welcome — the command resolves
     /// the main checkout itself). Defaults to the current dir.
     pub root: PathBuf,
-    /// Full work-branch name override (e.g. `feature/my-spec`). Its prefix MUST
-    /// name a work kind, or a declared integration base for a unit still in the
-    /// `{base}_{slug}` shape.
+    /// Full work-branch name override (e.g. `feature/my-spec`). Its prefix
+    /// names a work kind, or — for a unit still in the `{base}_{slug}` shape —
+    /// a branch `origin` really has.
     pub branch: Option<String>,
     /// Spec slug — used verbatim as the branch slug (parity with emit-pipeline).
     pub spec: Option<String>,
@@ -303,20 +303,40 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                 // and picking the outermost would cut the emergency somewhere
                 // they did not choose.
                 UnitBase::Ambiguous(candidates) => {
-                    match requested.filter(|req| candidates.iter().any(|c| c == req)) {
+                    // The operator's `--base` is validated against the branches
+                    // this repository REALLY has, never against the declared
+                    // list. `candidates` is `preselected_bases()`, which falls
+                    // back to the hardcoded `{main, master}` when no `git.flow`
+                    // is written — the shape `mustard init` produces today — so
+                    // filtering here refused a base the remote carries and
+                    // answered with a verdict about a configuration file
+                    // ("this project declares several bases") over a repository
+                    // nobody asked about. Existence is the honest test, and it
+                    // is the same one `--base`'s own help text promises.
+                    let real = |req: &&str| {
+                        ref_exists(&main, &format!("refs/heads/{req}"))
+                            || ref_exists(&main, &format!("refs/remotes/origin/{req}"))
+                    };
+                    match requested.filter(real) {
                         Some(req) => (b.to_string(), req.to_string()),
                         None => {
+                            let asked = requested.unwrap_or_default();
                             return json!({
                                 "ok": false,
                                 "reason": "ambiguous-base",
                                 "branch": b,
                                 "candidates": candidates,
-                                "hint": format!(
-                                    "'{b}' is an emergency unit and this project declares \
-                                     several bases it could have been cut from ({}) — pass \
-                                     --base with the one you mean",
-                                    candidates.join(", "),
-                                ),
+                                "hint": if asked.is_empty() {
+                                    format!(
+                                        "nothing recorded which base '{b}' was cut from — pass \
+                                         --base with a branch this repository has"
+                                    )
+                                } else {
+                                    format!(
+                                        "--base '{asked}' names no branch this repository has, \
+                                         locally or on origin — check it with `git branch -a`"
+                                    )
+                                },
                             })
                         }
                     }
@@ -519,13 +539,17 @@ fn unusable_worktree_name(name: &str) -> Option<String> {
 /// The `WorktreeCreate` hook engine: create the worktree the harness NAMED and
 /// return the path to echo. Naming decides the cut:
 ///
-/// - `{kind}/{slug}` (`feature/…`, `fix/…`, `hotfix/…`) or `{base}_…` with a
-///   DECLARED base → work unit: fetch + cut from a fresh `origin/{base}`
-///   (attach the branch if it already exists). The kind-named shape is the one
-///   this project MINTS, so it is the ordinary hand-off — `EnterWorktree
-///   name={kind}/{slug}` reaches exactly here.
-/// - `prefix_…` with an UNDECLARED prefix → `Err` (didactic — almost certainly
-///   a mistyped base; silent coercion is the disease this crate just cured).
+/// - `{kind}/{slug}` (`feature/…`, `fix/…`, `hotfix/…`) or `{base}_…` whose
+///   prefix names a branch this repository really has (declared or not — see
+///   [`BaseFlow::base_of`]) → work unit: fetch + cut from a fresh
+///   `origin/{base}` (attach the branch if it already exists). The kind-named
+///   shape is the one this project MINTS, so it is the ordinary hand-off —
+///   `EnterWorktree name={kind}/{slug}` reaches exactly here.
+/// - `prefix_…` whose prefix is no branch of this repository → NOT an error:
+///   it is one of the slugs below. The refusal that used to live here named the
+///   prefix "not an integration base of this project" and offered editing
+///   `mustard.json#git.flow` as the way out — a verdict about a configuration
+///   file, pronounced over a repository nobody had asked about.
 /// - anything else — the slug the harness actually hands over
 ///   (`recursing-benz-063389`, `feature-auth`, `pr-1234`) → [`non_unit_start`]'s
 ///   cascade: the current work unit's HEAD, else `origin/{primary_base}` from
@@ -590,6 +614,12 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     let wt_str = requested.replace('\\', "/");
     let config = mustard_core::ProjectConfig::load(&main);
     let flow = BaseFlow::of_at(&config.git, &main);
+    // Rooted at the MAIN checkout, so a `{base}_{slug}` name whose prefix the
+    // DECLARED flow does not know is still resolved — by the CATALOGUE, where
+    // "is this a branch" can actually be asked ([`BaseFlow::base_of`]). That is
+    // what the refusal below used to be, and its only offered exit was editing
+    // `mustard.json#git.flow`: a verdict about a configuration file, pronounced
+    // over a repository nobody had asked about.
     let answer = flow.base_of(&name);
     let is_unit = answer.is_unit();
     // A unit whose base nothing recorded. This used to REFUSE, and refusing was
@@ -619,18 +649,12 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         None => None,
     };
 
-    // Not a work unit → a mistyped base is refused BEFORE anything else looks
-    // at the tree: it is a naming error, and blaming a dirty tree for it would
-    // be misleading. (Such a name never becomes a worktree at all.)
+    // Not a work unit → the ordinary background/desktop cut. There is no
+    // naming refusal here any more: an `x_y` name whose `x` no branch carries
+    // is not a mistyped base to be corrected, it is one of the slugs the
+    // platform hands over, and the only exit the old message offered was to
+    // edit the configuration.
     if !is_unit {
-        if let Some((prefix, _)) = name.split_once('_') {
-            return Err(format!(
-                "WorktreeCreate: '{prefix}' (from '{name}') is not an integration base of this \
-                 project (bases: {}). Declare it in mustard.json#git.flow or use a name without \
-                 '_'.",
-                flow.bases().join(", ")
-            ));
-        }
         // Clean-tree precondition — NON-UNIT worktrees only, and the one
         // refusal in this engine that is deliberate. Checked on the INVOKING
         // tree, which is the tree the cascade derives the cut from.
@@ -996,7 +1020,9 @@ mod tests {
         assert!(!is_unit_worktree_name("feature-auth", &flow));
         assert!(!is_unit_worktree_name("pr-1234", &flow));
         assert!(!is_unit_worktree_name("agent-w1", &flow), "no special shape survives");
-        assert!(!is_unit_worktree_name("hml_x", &flow), "an UNDECLARED prefix is not a base");
+        // Rootless model: no catalogue to consult, so an undeclared prefix has
+        // nothing that could answer for it. `hook_create` asks a ROOTED one.
+        assert!(!is_unit_worktree_name("hml_x", &flow), "nothing here can measure `hml`");
         // Longest declared prefix wins, exactly like the branch gate.
         let mut nested_git = mustard_core::domain::config::GitConfig::default();
         nested_git.flow.insert("*".to_string(), "dev".to_string());
@@ -1197,12 +1223,34 @@ mod tests {
         assert!(!got.contains("/nested/"), "never cut under the caller's cwd: {got}");
     }
 
+    /// A `{base}_{slug}` name is resolved by the CATALOGUE, and a prefix no
+    /// branch carries is not a refusal any more.
+    ///
+    /// It used to be one: `'hml' … is not an integration base of this project`,
+    /// with `Declare it in mustard.json#git.flow` as the only way out — a
+    /// verdict about a configuration file, pronounced over a repository nobody
+    /// had asked about, in a client repo where nobody owns that file. What
+    /// survives is the protection that can actually be measured: an existing
+    /// branch resolves the cut, and anything else is simply nobody's unit.
     #[test]
-    fn hook_create_undeclared_prefix_is_loud() {
+    fn hook_create_resolves_a_legacy_prefix_against_the_real_catalogue() {
         let (_dir, main) = fixture();
-        let err = hook_create("hml_x", &main).unwrap_err();
-        assert!(err.contains("hml") && err.contains("git.flow"), "didactic: {err}");
-        assert!(!main.join(".claude/worktrees/hml_x").exists(), "nothing created on refusal");
+        // A base `git.flow` never declares, which the remote really has.
+        git(&main, &["branch", "hml"]);
+        git(&main, &["push", "-u", "origin", "hml"]);
+
+        let unit = hook_create("hml_x", &main).expect("an existing branch resolves the cut");
+        assert!(Path::new(&unit).is_dir(), "the unit's worktree materialized: {unit}");
+        assert_eq!(
+            git_out(Path::new(&unit), &["rev-parse", "HEAD"]),
+            git_out(&main, &["rev-parse", "origin/hml"]),
+            "cut from the base the catalogue named, not from the project's primary one",
+        );
+
+        // A prefix NO branch carries is one of the slugs the platform hands
+        // over. It takes the non-unit cascade instead of aborting the event.
+        let slug = hook_create("zzz_x", &main).expect("nobody's unit is still a worktree");
+        assert!(Path::new(&slug).is_dir(), "background isolation never breaks: {slug}");
     }
 
     #[test]

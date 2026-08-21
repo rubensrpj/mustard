@@ -35,7 +35,7 @@ Print nothing raw — read the JSON report and relay it in clear language:
 
 1. `installedBefore: false` → this was a **first install**; `true` → an update over an existing installation.
 2. Walk the four lists — `created`, `updated`, `preserved`, `migrated` — and say plainly what each file got (e.g. "your customised orchestrator.md was kept untouched").
-3. After a **first install**, add: the defaults work out of the box; `git.flow` (the branch promotion map) and `specLang` can be adjusted anytime by editing `mustard.json` at the project root.
+3. After a **first install**, add: the defaults work out of the box, and nothing needs a branch declared — bases come from git itself, and protection from `origin/HEAD`. `git.flow` (an OPTIONAL promotion map, which also pre-selects where a base picker opens), `git.protected` and `specLang` can be adjusted anytime by editing `mustard.json` at the project root.
 4. Next step: describe the work you want done. The router opens the pipeline, and the base gate mines the repo census for you on the way in — there is no separate mapping step to run.
 
 ### Off / on

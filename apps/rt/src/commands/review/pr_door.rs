@@ -10,10 +10,13 @@
 //!
 //! ## What each command answers
 //!
-//! - **`pr-list`** — the base gate first: it runs ONLY from a `git.flow`
-//!   integration base, because "which PRs are open" is a question about the
-//!   BASE, not about one unit. From a work branch it REFUSES and names the base
-//!   to switch to, touching nothing. On a base it answers one row per open PR:
+//! - **`pr-list`** — the base gate first: it refuses from INSIDE a work unit,
+//!   because "which PRs are open" is a question about the BASE, not about one
+//!   unit. The test is the unit, never a declared list: a branch that is
+//!   somebody's unit and is not one of the branches
+//!   [`mustard_core::protected_branches`] measures refuses and names the base to
+//!   switch to, touching nothing; anything else is a base as far as this
+//!   question goes. On a base it answers one row per open PR:
 //!   number, title, whether the provider calls it mergeable, whether it is a
 //!   draft, and the head branch its unit lives on.
 //! - **`pr-review`** — resolves the PR to its unit and prints the review brief:
@@ -276,6 +279,13 @@ pub(crate) struct PrListReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
     pub branch: String,
+    /// What `git.flow` really DECLARES — reported so the operator sees the hint
+    /// the project wrote down, and EMPTY when it wrote none (the installer
+    /// writes no flow). It decides nothing here: the refusal below is measured
+    /// against the unit and the protected set, never against this list — and it
+    /// is [`mustard_core::ProjectConfig`]'s declared set rather than its
+    /// pre-selected one, so a report never names the `{main, master}` fallback
+    /// as branches this repository has.
     pub bases: Vec<String>,
     /// Sorted by number, so two runs over the same state print the same bytes.
     pub prs: Vec<PrEntry>,
@@ -306,25 +316,62 @@ fn pr_entry(row: &Value) -> Option<PrEntry> {
 }
 
 /// List the open pull requests of the base `root` is standing on.
+///
+/// **What the refusal measures.** It used to ask whether the checkout's branch
+/// appears in `git.flow`'s declared set, which refused a real integration base
+/// for the sole reason that a file written at install time does not list it —
+/// and the installer writes no flow at all. The question this command actually
+/// asks is the opposite one: *am I standing INSIDE a unit?* So it refuses on a
+/// positive reading — the branch is somebody's work unit
+/// ([`crate::shared::work_kind::BaseFlow::base_of`], the crate's one parser) —
+/// and lets a branch [`mustard_core::protected_branches`] measures as a base
+/// through even when its name reads like a unit's.
 #[must_use]
 pub(crate) fn list_at(root: &Path) -> PrListReport {
     let repo = project_root(root);
     let (flow, branch) = bases_and_branch(&repo);
-    let bases: Vec<String> = flow.bases().to_vec();
-    if !bases.iter().any(|b| b == &branch) {
-        // Name the base rather than the rule. The branch's own `{base}_` prefix
-        // says which one it belongs to; a branch with no prefix (or none at all)
-        // falls back to the project's primary base, so the refusal always ends
-        // with something the operator can type.
-        let target = flow.base_of(&branch).into_known()
-            .unwrap_or_else(|| mustard_core::ProjectConfig::load(&repo).git.primary_base());
+    let config = mustard_core::ProjectConfig::load(&repo);
+    let bases: Vec<String> = config.git.declared_bases().into_iter().collect();
+    let unit = flow.base_of(&branch);
+    let protected = mustard_core::protected_branches(&repo, &config.git);
+    // The project's own RECORD of the unit, not the name's shape: an undeclared
+    // base like `release/2026-Q3` splits into a kind and a slug exactly like a
+    // unit branch does, and `pr list` was measured refusing to run from it.
+    if flow.has_unit_record(&branch) && !protected.contains(&branch) {
+        // Name the base rather than the rule. The unit's OWN record answers
+        // first — it is a measurement of where the branch really came from —
+        // and the remote's own default (`origin/HEAD`) is the last resort, so
+        // the refusal ends with something the operator can type without this
+        // module ever spelling a branch name of its own.
+        // Three sources, in the order their authority runs out. The unit's own
+        // record is a measurement of where this branch really came from. Next,
+        // when — and only when — the project DECLARES a flow, its primary base
+        // is the project's own stated answer: naming `origin/HEAD` there sent a
+        // unit that integrates into `dev` off to `main`, a regression measured
+        // in a repo whose flow says exactly that. With no flow declared there is
+        // nothing to state, and the remote's own default is the last resort, so
+        // this module never spells a branch name of its own.
+        let declared = !config.git.declared_bases().is_empty();
+        let target = unit
+            .known()
+            .map(str::to_string)
+            .or_else(|| declared.then(|| config.git.primary_base()))
+            .or_else(|| mustard_core::default_branch(&repo));
+        let hint = match &target {
+            Some(base) => format!(
+                "`pr list` asks about a BASE, not about one unit — switch to `{base}` \
+                 (`git checkout {base}`) and run it again"
+            ),
+            // Nothing recorded the base and git named no default: say what to
+            // do without inventing a branch nobody measured.
+            None => "`pr list` asks about a BASE, not about one unit — switch to the branch \
+                     this unit integrates into and run it again"
+                .to_string(),
+        };
         return PrListReport {
             ok: false,
             reason: Some("not-on-integration-base"),
-            hint: Some(format!(
-                "`pr list` asks about a BASE, not about one unit — switch to `{target}` \
-                 (`git checkout {target}`) and run it again"
-            )),
+            hint: Some(hint),
             branch,
             bases,
             prs: Vec::new(),
@@ -736,8 +783,14 @@ mod tests {
         assert_eq!(on_base.branch, "dev");
         assert!(on_base.bases.contains(&"dev".to_string()), "bases: {:?}", on_base.bases);
 
-        // On a work branch: refused, and the refusal NAMES the base.
+        // On a work branch: refused, and the refusal NAMES the base. What makes
+        // it a work branch is the project's RECORD of the unit, not the shape of
+        // the name — the fixture used to create only the branch, so this case
+        // was satisfied by anything that merely looked like a unit, which is how
+        // a real release line ended up being refused here.
         git(root, &["checkout", "-b", "dev_some-unit"]);
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("some-unit"))
+            .expect("unit record");
         let off_base = list_at(root);
         assert!(!off_base.ok, "a work branch must be refused");
         assert_eq!(off_base.reason, Some("not-on-integration-base"));
@@ -746,12 +799,15 @@ mod tests {
         let hint = off_base.hint.unwrap_or_default();
         assert!(hint.contains("dev"), "the refusal must name the base: {hint}");
 
-        // A branch with no declared prefix still gets a base named — the
-        // project's primary one — so the message is never a dead end.
+        // A branch that is NOBODY's unit is not refused any more. It used to
+        // be, for the sole reason that `git.flow` does not list it — and the
+        // installer writes no flow, so that refusal fired on every branch a
+        // real project integrates through. The question here is whether the
+        // checkout is inside a unit, and this one is not.
         git(root, &["checkout", "-b", "loose-branch"]);
         let loose = list_at(root);
-        assert_eq!(loose.reason, Some("not-on-integration-base"));
-        assert!(loose.hint.unwrap_or_default().contains("dev"), "primary base named");
+        assert_eq!(loose.reason, None, "an undeclared base is still a base");
+        assert!(loose.ok, "nothing about the checkout refuses: {:?}", loose.hint);
     }
 
     /// The rows survive the trip from `gh` shape to report shape, sorted, with

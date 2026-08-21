@@ -53,15 +53,15 @@ pub enum GitCmd {
     /// `origin/{base}` (offline degrades to the local base ref), so the
     /// orchestrator can switch the session into it via
     /// `EnterWorktree path=<returned path>`. An explicit `--base` MUST name a
-    /// declared `git.flow` integration base; the branch name matches what
+    /// branch this repository really has; the branch name matches what
     /// `emit-pipeline` stored in the `pending-work-branch` marker. Cleanup is
     /// the `/git pr close` ritual's job, never this command's.
     #[command(name = "work-unit-open")]
     #[command(display_order = 76)]
     WorkUnitOpen {
-        /// Full work-branch name (e.g. `feature/my-spec`); its prefix must name
-        /// a work kind, or a declared integration base for a unit still in the
-        /// older `{base}_{slug}` shape. Alternative to --spec/--intent.
+        /// Full work-branch name (e.g. `feature/my-spec`); its prefix names a
+        /// work kind, or — for a unit still in the older `{base}_{slug}` shape
+        /// — a branch this repository has. Alternative to --spec/--intent.
         #[arg(long)]
         branch: Option<String>,
         /// Spec slug — used verbatim as the branch slug.
@@ -70,14 +70,14 @@ pub enum GitCmd {
         /// Free-form intent, slugified when --spec is absent.
         #[arg(long)]
         intent: Option<String>,
-        /// What the unit IS: `feature`, `fix` or `hotfix`. Names the branch
-        /// (`{kind}/{slug}`) and, through `git.flow`, its base. Omitted →
-        /// `feature`.
+        /// What the unit IS: `feature`, `fix`, `hotfix`, or any token that can
+        /// be a git ref segment. Names the branch (`{kind}/{slug}`). It does
+        /// NOT decide the base. Omitted → `feature`.
         #[arg(long = "type")]
         work_kind: Option<String>,
-        /// Integration base; must name a declared `git.flow` base, and a
-        /// `hotfix` may not name the base ordinary work is cut from. Omitted →
-        /// the base `--type` implies.
+        /// Base to cut from; must name a branch this repository really has.
+        /// Omitted → the base recorded with the unit, else the project's
+        /// primary one.
         #[arg(long)]
         base: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
@@ -85,14 +85,14 @@ pub enum GitCmd {
         root: PathBuf,
     },
     /// The CANCEL path of an ABANDONED work unit — the counterpart of
-    /// `git-settle`, which retires a unit that was DELIVERED. Runs ONLY from a
-    /// `git.flow` integration base (from a work branch it refuses and names the
-    /// base to switch to, touching nothing) and removes the named unit whole:
-    /// its open pull request is closed, its worktree removed (`--force` — an
-    /// abandoned unit is abandoned precisely because it still holds uncommitted
-    /// work), its local branch deleted and its remote branch deleted
-    /// best-effort. A unit that names an integration base, or that no local or
-    /// remote ref carries, is REFUSED rather than reported as deleted.
+    /// `git-settle`, which retires a unit that was DELIVERED. Never runs from
+    /// INSIDE a unit (it refuses and names the base to switch to, touching
+    /// nothing) and removes the named unit whole: its open pull request is
+    /// closed, its worktree removed (`--force` — an abandoned unit is abandoned
+    /// precisely because it still holds uncommitted work), its local branch
+    /// deleted and its remote branch deleted best-effort. A name that is
+    /// nobody's work unit, that is protected, or that no local or remote ref
+    /// carries, is REFUSED rather than reported as deleted.
     #[command(name = "git-delete")]
     #[command(display_order = 89)]
     GitDelete {

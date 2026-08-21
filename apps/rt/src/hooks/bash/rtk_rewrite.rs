@@ -327,6 +327,47 @@ const SHELL_BUILTINS: &[&str] = &[
 /// assignments (tokens matching `[A-Za-z_][A-Za-z0-9_]*=…` followed by
 /// whitespace). If no env assignments are present the original slice is
 /// returned unchanged.
+/// Byte offset where one `VAR=value` token ends — whitespace, but never
+/// whitespace that sits INSIDE a command substitution, a backtick pair or a
+/// quoted value.
+///
+/// Bash ends a word at an unquoted space; `$( … )`, `` ` … ` `` and `'…'`/`"…"`
+/// suspend that. Reading the token with a plain "find the first space" therefore
+/// cuts `D=$(mktemp -d)` in half, and every offset derived from it points into
+/// the middle of a substitution. Nesting is counted, not merely detected, so
+/// `$(a $(b c))` closes on its own parenthesis.
+fn env_token_end(rest: &str) -> usize {
+    let mut depth = 0usize;
+    let mut backtick = false;
+    let mut quote: Option<char> = None;
+    let mut prev = '\0';
+    for (i, c) in rest.char_indices() {
+        let escaped = prev == '\\';
+        prev = if escaped { '\0' } else { c };
+        if escaped {
+            continue;
+        }
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                continue;
+            }
+            None => {}
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '`' => backtick = !backtick,
+            '(' if rest[..i].ends_with('$') => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            c if c.is_ascii_whitespace() && depth == 0 && !backtick => return i,
+            _ => {}
+        }
+    }
+    rest.len()
+}
+
 fn strip_env_prefix(s: &str) -> &str {
     let mut rest = s.trim_start();
     loop {
@@ -339,10 +380,23 @@ fn strip_env_prefix(s: &str) -> &str {
         if !(first.is_ascii_alphabetic() || first == '_') {
             break;
         }
-        // Find the boundary of this whitespace-separated token.
-        let token_end = rest
-            .find(|c: char| c.is_ascii_whitespace())
-            .unwrap_or(rest.len());
+        // Find the boundary of this token. Whitespace ends it — EXCEPT inside a
+        // command substitution or a quoted value, where a space is part of the
+        // value and not a boundary.
+        //
+        // **Why this matters, measured in the field on 2026-08-20.** A value
+        // like `D=$(mktemp -d)` was cut at the space, so the token was read as
+        // `D=$(mktemp` and the insertion offset landed INSIDE the substitution:
+        // the rewriter emitted `D=$(mktemp rtk -d)`, which fails with
+        // "too few X's in template 'rtk'" and leaves `D` EMPTY. Every script
+        // that then did `cd "$D"` or `git -C "$D" init` ran in the CURRENT
+        // directory instead — three separate agents corrupted the operator's
+        // repository that way in one session, one of them overwriting the
+        // project's `mustard.json`, another rewriting its git identity.
+        //
+        // A rewriter is allowed to be unhelpful; it is never allowed to change
+        // what a command MEANS.
+        let token_end = env_token_end(rest);
         let token = &rest[..token_end];
         // Must contain `=` to be an env assignment.
         if !token.contains('=') {
@@ -517,6 +571,45 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rewriter may decline to help; it may never change what a command MEANS.
+    ///
+    /// Field incident, 2026-08-20: the env-assignment token was read by finding
+    /// the first whitespace, so `D=$(mktemp -d)` was cut after `$(mktemp` and
+    /// `rtk` was inserted INSIDE the substitution — `D=$(mktemp rtk -d)`. That
+    /// fails ("too few X's in template 'rtk'") and leaves `D` EMPTY, so every
+    /// script that went on to `cd "$D"` or `git -C "$D" init` operated on the
+    /// CURRENT directory. Three review agents corrupted the operator's own
+    /// repository through that hole in a single session — one overwrote the
+    /// project's `mustard.json`, one rewrote its git identity so later commits
+    /// carried the wrong author, one left a stray commit on its branch.
+    ///
+    /// The assertion is deliberately about the SUBSTITUTION staying intact
+    /// rather than about where `rtk` ends up: whatever the rewriter decides to
+    /// do, `$(mktemp -d)` must come out the other side spelled exactly as it
+    /// went in.
+    #[test]
+    fn a_command_substitution_in_an_env_value_is_never_split() {
+        let cmd = r#"D=$(mktemp -d) && [ -n "$D" ] && cd "$D" && git init -q ."#;
+        let out = blanket_prefix(cmd).unwrap_or_else(|| cmd.to_string());
+        assert!(
+            out.contains("$(mktemp -d)"),
+            "the rewriter split a command substitution and changed what the command \
+             does: {out}",
+        );
+        assert!(
+            !out.contains("mktemp rtk"),
+            "`rtk` was inserted inside the substitution — this is the shape that \
+             emptied the variable and pointed `git init` at the operator's project: \
+             {out}",
+        );
+
+        // Nested substitutions close on their own parenthesis, and a quoted
+        // value keeps its spaces.
+        assert_eq!(env_token_end("A=$(a $(b c)) rest"), "A=$(a $(b c))".len());
+        assert_eq!(env_token_end(r#"A="um dois" rest"#), r#"A="um dois""#.len());
+        assert_eq!(env_token_end("A=b rest"), "A=b".len());
+    }
 
     // -----------------------------------------------------------------------
     // AC-1: Already rtk-prefixed → short-circuit, rewriter never called.

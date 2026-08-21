@@ -486,10 +486,12 @@ impl Check for WorkBranchGate {
             },
         };
 
-        // 3. Refresh the integration bases from origin FIRST so the branch is
-        //    cut from the latest dev/main. Fail-open: offline / no remote /
-        //    non-ff never blocks the edit (see refresh_integration_bases).
-        refresh_integration_bases(&vcs, &local, &config, current.as_deref());
+        // 3. Refresh the bases this cut may start from FIRST so the branch is
+        //    cut from the latest of them — `base`, the one it will really use,
+        //    included, because the pick now comes out of the catalogue and need
+        //    not be declared. Fail-open: offline / no remote / non-ff never
+        //    blocks the edit (see refresh_integration_bases).
+        refresh_integration_bases(&vcs, &local, &config, current.as_deref(), Some(&base));
 
         // 3.5 Pre-check the dirty tree with the SAME probe the worktree door
         //     uses, BEFORE the attempt. The cut itself still carries changes
