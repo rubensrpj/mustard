@@ -60,6 +60,20 @@ pub const ENRICHMENT_STALE_TAG: &str = "base-gate: enrichment stale";
 /// forty pending molds still emits one readable line.
 const MAX_NAMED: usize = 3;
 
+/// Where the enrichment would WRITE, per half — never printed, only measured.
+/// Kept apart from [`EnrichmentGap`] because the two answer different
+/// questions: that one is WHAT is missing, this one is WHERE closing it lands,
+/// and only the second decides what the pass costs.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct EnrichmentGapPaths {
+    /// Where the Guards half would write — the instruction file the pass owns.
+    pub(crate) guards: Option<String>,
+    /// Where the mold half would write. Every proposed mold, because the pass
+    /// sweeps and re-authors all of them: one tracked mold makes the whole pass
+    /// a rewrite of versioned files.
+    pub(crate) molds: Vec<String>,
+}
+
 /// What the agent-written half of the census is still missing.
 ///
 /// Two independent halves, kept apart rather than summed: a project can be
@@ -129,7 +143,8 @@ pub(crate) fn report_if_stale(project: &Path) {
     if gap.is_empty() {
         return;
     }
-    eprintln!("{}", gap_line(&gap, enrichment_is_versioned(project)));
+    let targets = enrichment_targets(project);
+    eprintln!("{}", gap_line(&gap, enrichment_is_versioned(project, &targets)));
 }
 
 /// Whether the enrichment's own output is something the host repository
@@ -144,17 +159,43 @@ pub(crate) fn report_if_stale(project: &Path) {
 /// Unmeasured (no git, no repository) counts as VERSIONED — the direction that
 /// keeps the stricter advice, which costs a needless unit at worst, where the
 /// opposite error would tell someone to rewrite versioned files in place.
-fn enrichment_is_versioned(project: &Path) -> bool {
-    // The file the Guards pass really writes, resolved by the ONE helper
-    // `collect_pending` uses for the same question — under a private install
-    // that is `CLAUDE.local.md`, and asking about `CLAUDE.md` instead would
-    // measure a file the pass never touches.
+/// Where the enrichment would WRITE, per half — the paths whose visibility
+/// decides the prescription. Collected from the same two projections the gap
+/// itself is measured from, so a path here is always one the pass really writes.
+fn enrichment_targets(project: &Path) -> EnrichmentGapPaths {
+    // The Guards file is resolved by the ONE helper `collect_pending` uses for
+    // the same question — under a private install that is `CLAUDE.local.md`,
+    // and asking about `CLAUDE.md` instead would measure a file the pass never
+    // touches. Per-subproject, not the bare root name: an ANCHORED exclude rule
+    // hides `apps/rt/CLAUDE.local.md` while saying nothing about the root one.
     let owned = crate::shared::context::guards_file_name(project);
-    !std::process::Command::new("git")
-        .args(["check-ignore", "-q", "--", owned])
-        .current_dir(project)
-        .output()
-        .is_ok_and(|out| out.status.success())
+    let guards = crate::commands::scan_guards::list::collect_pending(project)
+        .entries
+        .first()
+        .map(|pending| format!("{}/{owned}", pending.subproject));
+    let molds: Vec<String> = crate::commands::scan_patterns::list::collect(project)
+        .into_iter()
+        .map(|candidate| candidate.mold_path)
+        .collect();
+    EnrichmentGapPaths { guards, molds }
+}
+
+/// Whether the pass would rewrite anything the host repository VERSIONS.
+///
+/// **Asked of every half, and ANY versioned target is enough.** The pass has
+/// two, and they can differ: under this project's own install the Guards go to
+/// an excluded `CLAUDE.local.md` while 37 `{role}-pattern` molds are tracked —
+/// and the mold sweep DELETES and re-authors every one of them. Measuring only
+/// the Guards half announced "rewrites nothing versioned" while prescribing a
+/// pass that rewrites 37 tracked files, which is the more dangerous direction
+/// of the two errors.
+///
+/// Unmeasured counts as VERSIONED — the stricter advice costs a needless unit
+/// at worst, where the opposite would send someone to rewrite versioned files
+/// in place.
+fn enrichment_is_versioned(project: &Path, targets: &EnrichmentGapPaths) -> bool {
+    let visible = |rel: &String| !super::base_gate::path_is_ignored(project, rel);
+    targets.guards.iter().any(visible) || targets.molds.iter().any(visible)
 }
 
 /// Render the notice for a NON-empty gap. Split from [`report_if_stale`] so the

@@ -33,7 +33,7 @@ Delegate non-trivial code work: pipeline EXECUTE/PLAN, exploration >3 files or >
 
 The terrain census is injected at session start — don't grep to orient. A known literal token → `grep`/`glob`. A concept with an unknown name → `mustard-rt run feature --intent "..."`, then READ the pointed files (recall is strong, not perfect).
 
-**`base-gate: enrichment stale` on stderr means that census is only half-authored** — the deterministic model is fresh, but the `## Guards` prose and `{role}-pattern` molds the line names were never written by an agent. Say so to the operator in ONE sentence, and offer the `scan` flow as a unit of its OWN: it rewrites versioned files, so it wants a clean tree and is dispatched only once the current unit closes — never as a step inside the one running.
+**`base-gate: enrichment stale` on stderr means that census is only half-authored** — the deterministic model is fresh, but the `## Guards` prose and `{role}-pattern` molds the line names were never written by an agent. Say so to the operator in ONE sentence, and READ THE LINE'S OWN PRESCRIPTION rather than assuming one: it measures where the pass would write. `dispatch it right here, now` means the output is hidden from git — no unit, no clean tree, no commit, so run it inline and do not hand the operator a chore. `work unit of its OWN on a clean tree` means the pass really would rewrite versioned files: offer the `scan` flow as its own unit, dispatched only once the current unit closes, never as a step inside the one running.
 
 ## Efficiency
 

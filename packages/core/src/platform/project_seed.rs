@@ -841,6 +841,7 @@ const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
 /// silenced the drift notice on top. An untouched seed is Mustard's own
 /// text; only an operator's EDIT earns preservation.
 const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
+    0x8b7a4a64d839a069,
     0x1c5e2e706274fc17,
     0x0fb06c788d11566b,
     0x5f1d81459b0bd9c9,
