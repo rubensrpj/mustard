@@ -284,6 +284,11 @@ pub(crate) fn refresh_census_if_stale(project: &Path) {
 /// The commit lands in the OPERATOR's history, next to their own work.
 const CENSUS_COMMIT_SUBJECT: &str = "chore: refresh the deterministic project census";
 
+/// The scan's second versioned artifact, written beside the model on every run.
+/// Named here because the recording has to cover everything the miner wrote:
+/// leaving it out left the tree dirty under a message claiming it was clean.
+const GRAIN_DICTIONARY: &str = "grain.dictionary.json";
+
 /// Record the census this gate just re-mined, through the ONE mechanism the
 /// product uses for every artifact it writes into a tree the host repository
 /// versions ([`record_written_path`]).
@@ -291,15 +296,25 @@ const CENSUS_COMMIT_SUBJECT: &str = "chore: refresh the deterministic project ce
 /// Split out of [`refresh_census_if_stale`] for the same reason
 /// [`census_refresh_due`] is: the RECORDING is testable without the grain
 /// sidecar binary — the effect needs it, the bookkeeping does not.
+/// A scan writes TWO artifacts, not one: the model and its byte-stable
+/// `grain.dictionary.json` sidecar beside it. Recording only the model left the
+/// sidecar modified, so the tree stayed dirty and the next branch cut still
+/// refused — while this gate printed that the tree was clean again. Both go in,
+/// derived from the model path the same way the rest of the runtime derives the
+/// sidecar (`scan.rs` uses `with_file_name` for exactly this).
 fn record_census(project: &Path, model: &Path, found_clean: Option<bool>) -> RecordOutcome {
-    // The pathspec is DERIVED from the very path that was written, so the two
-    // can never name different files. Forward-slashed: a git pathspec is not a
-    // Windows path.
-    let Ok(rel) = model.strip_prefix(project) else {
-        return RecordOutcome::Unavailable;
-    };
-    let rel = rel.to_string_lossy().replace('\\', "/");
-    record_written_path(project, &rel, CENSUS_COMMIT_SUBJECT, found_clean)
+    // Each pathspec is DERIVED from a path that was really written, so no
+    // pathspec can name a file the scan did not touch. Forward-slashed: a git
+    // pathspec is not a Windows path.
+    let mut paths: Vec<String> = Vec::with_capacity(2);
+    for written in [model.to_path_buf(), model.with_file_name(GRAIN_DICTIONARY)] {
+        let Ok(rel) = written.strip_prefix(project) else {
+            return RecordOutcome::Unavailable;
+        };
+        paths.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, found_clean)
 }
 
 #[cfg(test)]
@@ -551,15 +566,26 @@ mod tests {
     /// A repo on `dev` whose `.claude/grain.model.json` is TRACKED and
     /// committed — the shape this repository has, and the only one where a
     /// census refresh can dirty anything at all. Returns the model path.
+    /// The fixture tracks BOTH artifacts a scan writes, because the real miner
+    /// writes both. Tracking only the model made the AC-2 test a false
+    /// positive: it passed while the field run left the dictionary sidecar
+    /// modified and the tree dirty.
     fn repo_tracking_the_census(root: &Path) -> std::path::PathBuf {
         init_repo_on(root, "dev");
         let model = default_model_path(root);
         std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
         std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[]}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "track the census"]);
         assert_eq!(porcelain(root), "", "the fixture must start clean");
         model
+    }
+
+    /// Everything a scan writes, as the miner would — model AND sidecar.
+    fn remine(model: &Path) {
+        std::fs::write(model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+        std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[\"wave\"]}\n").unwrap();
     }
 
     /// AC-2 — the refresh finishes its own job. Re-mining a VERSIONED census on
@@ -580,8 +606,8 @@ mod tests {
         let found_clean = worktree_is_clean(root);
         assert_eq!(found_clean, Some(true), "the fixture tree is clean");
 
-        // The miner's effect, without the grain sidecar binary.
-        std::fs::write(&model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+        // The miner's effect, without the grain binary — BOTH artifacts move.
+        remine(&model);
         assert_ne!(porcelain(root), "", "the re-mined census really did dirty the tree");
 
         assert_eq!(

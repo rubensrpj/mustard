@@ -1109,9 +1109,10 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
 /// finishes its own job instead of leaving it: it records the path when the
 /// tree it FOUND was clean, and says what it did in every other case.
 ///
-/// Not serializable, unlike its report-carrying siblings: nothing rides it in
-/// JSON today, and `rt-outcome-pattern` keeps serde off an outcome — the report
-/// type is what earns the derive, never the state it holds.
+/// Not serializable, unlike the report types beside it: nothing rides it in
+/// JSON today, and its governing mold (`core-outcome-pattern`) shows the same
+/// shape in `SeedOutcome` and `MigrationOutcome` — the REPORT earns the derive,
+/// never the state it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordOutcome {
     /// Nothing was left for git to see: the path is IGNORED (a private install
@@ -1148,7 +1149,7 @@ pub fn worktree_is_clean(root: &Path) -> Option<bool> {
     porcelain(root, &[]).map(|status| status.is_empty())
 }
 
-/// Record `path` — a repo-relative path the product itself just wrote — so the
+/// Record `paths` — repo-relative paths the product itself just wrote — so the
 /// product never leaves a versioned file dirty for the next command to blame on
 /// the operator. `subject` is the commit subject the caller wants in the
 /// operator's history.
@@ -1156,15 +1157,18 @@ pub fn worktree_is_clean(root: &Path) -> Option<bool> {
 /// `found_clean` is [`worktree_is_clean`] sampled before the write — `None`
 /// when git could not answer then either.
 ///
-/// Only ever commits the ONE path: a writer that found other work in the tree
-/// records nothing at all, and even on a clean tree the commit carries a
-/// pathspec, so nothing written beside it can ride along. Fail-open throughout
-/// — every failure degrades to [`RecordOutcome::Unavailable`] and the write
-/// simply stays uncommitted.
+/// **A slice, not one path, because a writer is rarely a single file.** The
+/// scan writes its model AND the dictionary sidecar beside it; recording one
+/// left the other modified, so the tree stayed dirty under a message announcing
+/// it clean. The caller lists everything IT wrote and nothing else — the commit
+/// still carries pathspecs, so nothing written beside them can ride along.
+///
+/// Fail-open throughout — every failure degrades to
+/// [`RecordOutcome::Unavailable`] and the writes simply stay uncommitted.
 #[must_use]
 pub fn record_written_path(
     root: &Path,
-    path: &str,
+    paths: &[&str],
     subject: &str,
     found_clean: Option<bool>,
 ) -> RecordOutcome {
@@ -1174,27 +1178,60 @@ pub fn record_written_path(
     // but nothing hides it: `git status` reports `??` and the next gate refuses
     // on it, so it has to be recorded like any other — it just needs the index
     // step a never-seen path cannot skip.
-    let untracked = git_exclude::tracked_paths(root, &[path.to_string()]).is_empty();
-    if untracked && is_ignored(root, path) {
+    //
+    // Judged per path: a set can mix a tracked model with a never-committed
+    // sidecar, and folding that into one answer would mis-handle whichever half
+    // lost the vote.
+    let visible: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|p| {
+            !(git_exclude::tracked_paths(root, &[(*p).to_string()]).is_empty()
+                && is_ignored(root, p))
+        })
+        .collect();
+    if visible.is_empty() {
         return RecordOutcome::Nothing;
     }
-    let Some(status) = porcelain(root, &[path]) else {
+    let Some(status) = porcelain(root, &visible) else {
         return RecordOutcome::Unavailable;
     };
     if status.is_empty() {
         return RecordOutcome::Nothing; // a re-write that changed no byte.
     }
     match found_clean {
-        // Staging is safe here and ONLY here: the tree was found clean, so the
-        // index holds nothing of the operator's for the commit to sweep up. A
-        // tracked path skips it — `git commit -- <path>` reaches a modified
-        // file on its own, and not touching the index is the stronger promise.
-        Some(true) if untracked && !stage_path(root, path) => RecordOutcome::Unavailable,
-        Some(true) if commit_path(root, path, subject) => RecordOutcome::Recorded,
-        Some(true) => RecordOutcome::Unavailable,
         Some(false) => RecordOutcome::TreeNotClean,
         None => RecordOutcome::Unavailable,
+        // Staging is safe here and ONLY here: the tree was found clean, so the
+        // index holds nothing of the operator's for the commit to sweep up. A
+        // tracked path would not need it — `git commit -- <path>` reaches a
+        // modified file on its own — but the set may hold a never-seen one, and
+        // that one cannot be committed without it.
+        Some(true) => {
+            if !stage_path(root, &visible) {
+                return RecordOutcome::Unavailable;
+            }
+            if commit_path(root, &visible, subject) {
+                return RecordOutcome::Recorded;
+            }
+            // The commit was refused (no identity, a declining hook, gpg). Put
+            // the index back where it was found: leaving these staged would let
+            // the operator's very next `git commit` sweep the product's write
+            // into THEIR commit — the exact swap this whole function exists to
+            // prevent, arriving through the failure path instead.
+            unstage(root, &visible);
+            RecordOutcome::Unavailable
+        }
     }
+}
+
+/// Undo [`stage_path`] after a refused commit. Best-effort by design: if this
+/// too fails there is nothing further to try, and the outcome already says the
+/// write was not recorded.
+fn unstage(root: &Path, paths: &[&str]) {
+    let mut args: Vec<&str> = vec!["reset", "-q", "--"];
+    args.extend(paths);
+    let _ = Command::new("git").args(&args).current_dir(root).output();
 }
 
 /// Whether git would ignore `path` — an ignore rule, or the clone-local exclude
@@ -1212,11 +1249,14 @@ fn is_ignored(root: &Path, path: &str) -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
-/// Stage `path` alone. Only ever called on a tree that was found CLEAN, where
-/// the index has nothing of the operator's to disturb.
-fn stage_path(root: &Path, path: &str) -> bool {
+/// Stage `paths` alone. Only ever called on a tree that was found CLEAN, where
+/// the index has nothing of the operator's to disturb — and always paired with
+/// [`unstage`] on the failure path that follows.
+fn stage_path(root: &Path, paths: &[&str]) -> bool {
+    let mut args: Vec<&str> = vec!["add", "--"];
+    args.extend(paths);
     Command::new("git")
-        .args(["add", "--", path])
+        .args(&args)
         .current_dir(root)
         .output()
         .is_ok_and(|out| out.status.success())
@@ -1236,12 +1276,15 @@ fn porcelain(root: &Path, pathspecs: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Commit `path` alone, with `subject`. `false` on any refusal — no git, no
-/// identity configured, a hook that declined — and nothing is left staged: the
-/// pathspec form of `git commit` never touches the index.
-fn commit_path(root: &Path, path: &str, subject: &str) -> bool {
+/// Commit `paths` alone, with `subject`. `false` on any refusal — no git, no
+/// identity configured, a hook that declined. The pathspec form never sweeps a
+/// file outside `paths`; what a refusal may leave behind is whatever
+/// [`stage_path`] put in the index, which the caller undoes.
+fn commit_path(root: &Path, paths: &[&str], subject: &str) -> bool {
+    let mut args: Vec<&str> = vec!["commit", "-m", subject, "--"];
+    args.extend(paths);
     Command::new("git")
-        .args(["commit", "-m", subject, "--", path])
+        .args(&args)
         .current_dir(root)
         .output()
         .is_ok_and(|out| out.status.success())
@@ -1477,7 +1520,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         std::fs::write(root.join(".claude/model.json"), "{}\n").unwrap();
 
-        let outcome = super::record_written_path(root, ".claude/model.json", "chore: model", clean);
+        let outcome = super::record_written_path(root, &[".claude/model.json"], "chore: model", clean);
         assert_eq!(outcome, super::RecordOutcome::Recorded);
         assert_eq!(
             super::porcelain(root, &[]).as_deref(),
@@ -1501,8 +1544,76 @@ mod tests {
         std::fs::write(root.join("secret.json"), "{}\n").unwrap();
 
         assert_eq!(
-            super::record_written_path(root, "secret.json", "chore: secret", clean),
+            super::record_written_path(root, &["secret.json"], "chore: secret", clean),
             super::RecordOutcome::Nothing,
+        );
+    }
+
+    /// A writer is rarely one file. The scan writes its model AND the
+    /// dictionary sidecar; recording only the first left the second modified,
+    /// so the tree stayed dirty under a message announcing it clean.
+    #[test]
+    fn every_written_path_is_recorded_not_just_the_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/model.json"), "{}\n").unwrap();
+        std::fs::write(root.join(".claude/dict.json"), "{}\n").unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "artifacts"]);
+        let clean = super::worktree_is_clean(root);
+        assert_eq!(clean, Some(true), "fixture must start clean");
+
+        // What a real re-mine does: BOTH artifacts move.
+        std::fs::write(root.join(".claude/model.json"), "{\"v\":2}\n").unwrap();
+        std::fs::write(root.join(".claude/dict.json"), "{\"v\":2}\n").unwrap();
+
+        let outcome = super::record_written_path(
+            root,
+            &[".claude/model.json", ".claude/dict.json"],
+            "chore: census",
+            clean,
+        );
+        assert_eq!(outcome, super::RecordOutcome::Recorded);
+        assert_eq!(
+            super::porcelain(root, &[]).as_deref(),
+            Some(""),
+            "the sidecar must be recorded too, or the tree is still dirty",
+        );
+    }
+
+    /// A refused commit must not leave the product's write sitting in the
+    /// index: the operator's very next `git commit` would sweep it into THEIR
+    /// commit — the swap this whole function exists to prevent, arriving
+    /// through the failure path.
+    #[test]
+    fn a_refused_commit_leaves_nothing_staged() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_repo(root);
+        // A pre-commit hook that always declines is the cheapest honest way to
+        // make `git commit` fail without breaking anything else.
+        let hooks = root.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let clean = super::worktree_is_clean(root);
+        std::fs::write(root.join("new.json"), "{}\n").unwrap();
+
+        assert_eq!(
+            super::record_written_path(root, &["new.json"], "chore: new", clean),
+            super::RecordOutcome::Unavailable,
+        );
+        let status = super::porcelain(root, &[]).unwrap_or_default();
+        assert!(
+            !status.starts_with('A'),
+            "the write must be left where it landed, never staged: {status:?}",
         );
     }
 
@@ -1513,7 +1624,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("f.json"), "{}\n").unwrap();
         assert_eq!(
-            super::record_written_path(root, "f.json", "chore: f", Some(true)),
+            super::record_written_path(root, &["f.json"], "chore: f", Some(true)),
             super::RecordOutcome::Unavailable,
         );
     }
