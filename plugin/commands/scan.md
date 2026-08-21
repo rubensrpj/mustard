@@ -1,5 +1,5 @@
 ---
-description: An internal flow — not a door. The base gate re-mines the deterministic census on its own; this flow is the FULL pass (subproject maps + Guards prose + pattern-skill molds) the router runs when the census needs re-authoring after a large change. Weak fallback only: use when the router did not engage and the model is visibly stale.
+description: An internal flow — not a door. The base gate re-mines the deterministic census on its own; this flow is the FULL pass (subproject maps + Guards prose + pattern-skill molds) the router runs when the census needs re-authoring after a large change. Weak fallback only: use when the router did not engage and the base gate printed `base-gate: enrichment stale` on stderr.
 argument-hint: [--root <dir>] [--out <path>]
 user-invocable: false
 source: manual

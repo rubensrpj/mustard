@@ -1,6 +1,6 @@
 ---
 name: dashboard-detail-pattern
-description: Use when adding or refactoring a `*Detail` drill-in route page under apps/dashboard/src/pages.
+description: Use when adding or refactoring a `*Detail` drill-in page under src/pages that renders one entity resolved from a route param.
 paths:
   - apps/dashboard/src/pages/**
 tags: [add, refactor]
@@ -17,26 +17,27 @@ metadata:
 
 ## Purpose
 
-A `*Detail` page is the drill-in reached from a list route: it resolves one entity from the URL, decides whether it can render at all, and then delegates the actual content to feature components. `ProjectDetail` resolves `:id` against the discovery cache and renders tabs of specs/about; `SessionDetail` resolves `:id` into a session and hands everything to `<ExecutionTrace source={{ kind: "session", sessionId }}>`. Both keep their own chrome minimal — `PageSurface`, `EditorialBand`, `EmptyState` from `@/components/page` — so pages stay layout, not logic. Both also guard the "no project selected / entity not found" branch with an early return before any content renders, which is what makes them safe to link into directly.
+A `*Detail` page is the drill-in reached from a list route: `/sessions/:id` renders `SessionDetail`, the project card opens `ProjectDetail`. It resolves one entity from the route param plus the active workspace, then composes existing chrome and feature components rather than inventing layout. Both exemplars are thin: the data comes from a `use*` hook or a `useQuery` with the standard guard, and the page's own job is the header band, the no-project branch, and the arrangement of cards. Live updates arrive through the watcher's key invalidation, which is why neither page polls.
 
 ## Convention
 
 Folder: apps/dashboard/src/pages/** · Extension: .tsx · Files of this role in this subproject: 2
 
-- One page per file, PascalCase name ending in `Detail`, exported as a named `export function` — neither exemplar uses a default export.
-- The entity id comes from `useParams<{ id: string }>()` from `react-router`; `SessionDetail` runs it through `decodeURIComponent` because session ids contain path-unsafe characters.
-- The active workspace comes from `useStore((s) => s.projectsRoot)` (slice selection, never a full-store destructure); `ProjectDetail` also pushes the selection back with `setSelectedProjectId` inside a `useEffect`.
-- Every return path is wrapped in `<PageSurface>`, and unmet prerequisites return early with `<EmptyState title=... description=... />` inside it; hooks are still called unconditionally before that branch (Rules of Hooks — `SessionDetail` documents this explicitly).
-- The header is `<EditorialBand eyebrow title subtitle>` with a `<Link>` breadcrumb in the eyebrow; the subtitle is a derived one-liner (`"3 pipelines em execução"`).
-- Heavy content is delegated to `features/*` components (`<SpecsList>`, `<ExecutionTrace>`, `<LivePipelineCard>`); data arrives via hooks or a local `useQuery` against a `src/lib` fetcher — never `invoke()` in a page.
-- Small view helpers (`truncate`, `eventVariant`, `SectionHeading`, `EmptyBlock`) sit above the page function and stay un-exported.
-- Tab/selection state lives in the URL via `useSearchParams` with `{ replace: true }` (`ProjectDetail`), not in component state.
+- `src/pages/<Thing>Detail.tsx`, PascalCase filename matching a single named export `export function <Thing>Detail()`. No default export.
+- The route param is read with `useParams<{ id: string }>()`; ids that may contain path-ish characters are decoded (`decodeURIComponent` in `SessionDetail`). The active project comes from a slice selector, `useStore((s) => s.projectsRoot)`, never a full-store destructure.
+- Every hook is called unconditionally before any early return — `SessionDetail` comments this explicitly ("Called unconditionally (Rules of Hooks)"), relying on the hook returning `null`/disabled instead of skipping the call.
+- The no-project branch returns `<PageSurface><EmptyState title=… description=… /></PageSurface>` with pt-BR copy; empty backend results get an empty state too, rather than leaning on an error path.
+- Chrome comes from the `@/components/page` barrel — `PageSurface` as the outer wrapper, `EditorialBand` with `eyebrow`/`title`/`subtitle` as the header, then `DataCard`, `SectionHeader`, `StatusDot`, `EmptyState`. Domain rendering is delegated to `@/features/*` components (`ExecutionTrace`, `SpecsList`, `LivePipelineCard`).
+- Queries follow the same guard as the hooks layer: `useQuery({ queryKey: ["<literal>", project?.path], queryFn: …, enabled: !!project, staleTime: N_000 })`, with a comment when the freshness is watcher-driven.
+- Small presentational helpers used only by the page (`SectionHeading`, `EmptyBlock`, `truncate`, `eventVariant` in `ProjectDetail`) are declared above the page export with inline prop types and are not exported; anything reused by another page moves to `@/components/page`.
+- Tab state is URL-backed via `useSearchParams` rather than local state, so a detail view is linkable.
+- `SessionDetail.tsx:1-11` opens with a file header comment naming the route that reaches the page (`/sessions/:id`), what it delegates to, and how it tails live (the watcher invalidates the `["trace", "session", repoPath]`-shaped keys by prefix). `ProjectDetail.tsx` has no header at all — it starts at the imports. Write the header on a new page: the route is not recoverable from the file, and the freshness policy is what a later reader would otherwise have to re-derive.
 
 ## How to apply
 
-Create `src/pages/<Entity>Detail.tsx`, read the id from `useParams`, resolve the entity from the query cache or a hook, and write the not-found / no-project branches first. Then compose the page from `@/components/page` primitives and delegate the body to an existing feature component; add a new hook in `src/hooks` (and its key to `lib/watcher.ts`) rather than fetching ad hoc if the data must tail live. Both exemplars carry literal pt-BR user copy, while newer feature components such as `features/economy/ScopeBar` resolve labels through `useTranslation()` — follow whichever the surrounding page already uses.
+Create `src/pages/<Thing>Detail.tsx`, register the route beside its list page, and start from the no-project early return. Resolve the entity from the param plus `projectsRoot`, prefer an existing `use<Domain>` hook over a raw query, and build the page out of `@/components/page` chrome plus feature components. Keep page-only helpers local and unexported; if you find yourself styling a card by hand, the atom probably already exists in the barrel.
 
 ## Examples
 
-- Ref: apps/dashboard/src/pages/SessionDetail.tsx — minimal shape: param decode, early `EmptyState`, `EditorialBand`, delegation to `<ExecutionTrace>`.
-- Ref: apps/dashboard/src/pages/ProjectDetail.tsx — cache-resolved entity, URL-driven tabs, local un-exported helpers, delegation to `<SpecsList>` and `<LivePipelineCard>`.
+- Ref: apps/dashboard/src/pages/SessionDetail.tsx — minimal shape: param decode, unconditional hook, empty-state branch, `EditorialBand` + a single feature component.
+- Ref: apps/dashboard/src/pages/ProjectDetail.tsx — richer variant with URL-backed tabs, a guarded `useQuery`, and page-local presentational helpers.

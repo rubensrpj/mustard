@@ -6,7 +6,7 @@ paths:
 tags: [add, refactor]
 appliesTo: [verdict]
 scope: [code-editing]
-source: scan
+source: manual
 metadata:
   generated_by: scan
   cluster:
@@ -25,9 +25,9 @@ Folder: apps/rt/src/commands/review/** · Extension: .rs · Files of this role i
 
 Reading the members adds:
 
-- Two flavours. **Persisted**: `pub(crate) enum Verdict { Proven, Unproven, Exempt }` and its sibling column enums (`Proof`, `Confirmation`, `Removal`, `Control`), each `#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]` with `#[serde(rename_all = "kebab-case")]`. **Payload-carrying**: `pub enum RegressionVerdict { Green, Amber { signals: Vec<Signal> }, Red { signals: Vec<Signal> } }`, `#[derive(Debug, Clone, PartialEq, Eq)]`, no serde.
+- Two flavours. **Persisted**: `pub(crate) enum Verdict { Proven, Unproven, Exempt }` and its sibling column enums (`Proof`, `Confirmation`, `Removal`, `Control`), all `#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]` with `#[serde(rename_all = "kebab-case")]`. `Default` is NOT part of that set: only the three column enums that have an honest zero state derive it and mark a `#[default]` variant (`Confirmation`/`Removal`/`Control`, at `ac_negative_check.rs:197`/`:228`/`:265`). `Verdict` (`:290`) and `Proof` (`:173`) deliberately omit it, because no answer of theirs is the right thing to read into a record that never carried one — deriving `Default` without a `#[default]` variant does not compile. **Payload-carrying**: `pub enum RegressionVerdict { Green, Amber { signals: Vec<Signal> }, Red { signals: Vec<Signal> } }`, `#[derive(Debug, Clone, PartialEq, Eq)]`, no serde.
 - A `#[default]` variant is added deliberately and its doc explains the migration property: `Confirmation::NotTaken` / `Removal::NotTaken` / `Control::NotDeclared` are the default, so every ledger written before this column existed reads as the truth about it: nobody asked.
-- Every variant carries a doc comment that opens with whether the pass was taken — "TAKEN" or "NEVER TAKEN" — because that distinction is the reason the enum exists rather than a boolean.
+- On the four column enums every variant's doc opens with whether the pass was taken — "TAKEN" or "NEVER TAKEN". `Verdict` itself does not, and neither does `RegressionVerdict` (`gate_regression_check.rs:141`): they answer *what the outcome was*, not *whether anyone looked*. Open the doc with the distinction the variant actually carries — "TAKEN" or "NEVER TAKEN" — because that distinction is the reason the enum exists rather than a boolean.
 - Raw status strings are mapped onto the enum by dedicated classifier free functions returning a tuple of the verdict plus its column and reason: `fn classify(status: &str) -> (Verdict, Proof, Option<String>)`, with `classify_confirmation` and `classify_removal` as siblings — one function per pass, never one branching helper.
 - Labels used across a module boundary are `&'static str` consts rather than a dependency on the enum: `review_spans.rs` declares `VERDICT_GREEN` / `VERDICT_AMBER` / `VERDICT_RED` and states the reason — the writer and reader agree without a circular dependency on the payload-carrying enum.
 - The record the verdict lives in is a `pub(crate) struct` with `#[serde(default)]` on every column added after the first release, so an older ledger deserializes; the command string and the declared expressions are recorded verbatim beside the verdict.
@@ -35,7 +35,7 @@ Reading the members adds:
 
 ## How to apply
 
-Declare the verdict in the review module that produces it, above the classifier that builds it. Choose the persisted flavour when the answer is stored — derive `Copy`, `Default`, `Serialize`, `Deserialize`, add `#[serde(rename_all = "kebab-case")]`, and pick the `#[default]` so old records read honestly. Choose the payload flavour when the verdict must carry evidence, and keep serde off it. Write one variant per genuinely different action a reader would take, and document each with whether the pass was taken. Map raw status words in a dedicated `classify_*` function rather than inline `match`es at the call sites. If another module needs the label but not the payload, export `&'static str` consts instead of the enum, and say why in the doc.
+Declare the verdict in the review module that produces it, above the classifier that builds it. Choose the persisted flavour when the answer is stored — derive `Copy`, `Serialize`, `Deserialize` and add `#[serde(rename_all = "kebab-case")]`. Add `Default` with a `#[default]` variant ONLY when one of the answers is what a record written before the column existed honestly means; when none is, leave `Default` off, as `Verdict` and `Proof` do. Choose the payload flavour when the verdict must carry evidence, and keep serde off it. Write one variant per genuinely different action a reader would take, and document each with whether the pass was taken. Map raw status words in a dedicated `classify_*` function rather than inline `match`es at the call sites. If another module needs the label but not the payload, export `&'static str` consts instead of the enum, and say why in the doc.
 
 ## Examples
 

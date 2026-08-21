@@ -1,6 +1,6 @@
 ---
 name: rt-model-pattern
-description: Use when adding or refactoring the private lenient-serde view a command deserializes out of .claude/grain.model.json.
+description: Use when adding or refactoring the read-only view (`*Model`) a command deserializes out of `.claude/grain.model.json` under apps/rt/src/commands/, so the projection declares only the fields it consumes and degrades to an empty model.
 paths:
   - apps/rt/src/commands/**
 tags: [add, refactor]
@@ -17,28 +17,29 @@ metadata:
 
 ## Purpose
 
-Commands that project the scan census back into the agent's window do not depend on the scan tool's internal types. Each declares its own private view of `.claude/grain.model.json` carrying only the fields it consumes, with lenient serde so any other field the scanner writes is ignored. That keeps the scan tool the single owner of the model format while letting an older or newer model file keep deserializing. The view is paired with a loader that fail-opens to `Default` and a renderer that is pure over the view, so the projection is unit-testable without a repository and its output is byte-stable.
+Several commands project the scan's `grain.model.json` back into the agent's window. None of them depends on the scan tool's internal types: each declares its own minimal `Model` struct naming only the fields it actually reads, with lenient serde so an older or newer model file keeps deserialising. The JSON is the contract, not the crate that wrote it. That narrowness is also a safety property — `orient` records that no `snippet` field is declared anywhere in its view, so the census can never leak a code body — and the `Default`-on-everything shape is what lets a missing or unparseable model degrade to an empty projection instead of an error.
 
 ## Convention
 
 Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 2
 
-Reading both members adds:
+Beyond the census facts, what the exemplars show:
 
-- The struct is private (`struct Model`, `struct RawModel`) and derives `Deserialize` plus `Default`; `lapidation.rs` adds `#[serde(default)]` at the struct level, `orient.rs` puts `#[serde(default)]` on each field and adds `Debug`.
-- Only consumed fields are declared, and the doc comment says so as a rule, not a habit: the JSON is the contract, not the grain crate's internal types; every extra field grain writes is ignored.
-- Nested rows are their own small private structs beside it (`Role`, `Convention`, `Proj`, `SkeletonEntry`), same derive set.
-- A negative claim is stated where it matters: `orient.rs` documents that no `snippet` field is declared anywhere in the view, so the census can never leak a code body. Keep that property when extending a view.
-- The loader is a private `fn load(root: &Path) -> Model` (or `compute_*`) that reads `root.join(".claude").join("grain.model.json")` and chains `.ok()` / `.and_then(...)` to `unwrap_or_default()`; a missing, unreadable or unparseable model yields the empty view and exit 0.
-- The render/projection function is pure over the view — `fn render(model: &Model) -> String` — so its shape is testable without a repository; output is sorted with an explicit tie-break and carries no clock and no absolute path.
-- Caps and thresholds are named `const`s at the top with a doc explaining the judgement (`MAX_ROLES`, `MIN_ROLE_COUNT`), not magic numbers inline.
-- Shared predicates are reused rather than re-implemented — `lapidation.rs` filters test terrain through `mustard_core::domain::ast::conventions::is_test_path` and says why a second copy would be worse than none.
+- **Name and place.** `Model` when the module owns one view (`lapidation`, and the same shape in `scan_patterns/list`), `RawModel` when a computed projection type sits beside it (`orient`, whose `Orientation` is the render-ready result). Declared under a `// ===` banner right after the constants, private to the module.
+- **Derives.** `#[derive(Deserialize, Default)]` with a struct-level `#[serde(default)]` (`lapidation`), or `#[derive(Debug, Default, Deserialize)]` with `#[serde(default)]` on each field (`orient`). Never `Serialize` — nothing writes the model back.
+- **Nested rows follow the same rule.** `Role`, `Convention`, `Proj`, `SkeletonEntry` each declare only the fields their projection consumes, keep `#[serde(default)]` so a key the scan stops writing never fails the parse, and carry a `///` line saying what the row is. `Default` is the one derive that does not have to travel down: `lapidation`'s three rows repeat the top struct's `#[derive(Deserialize, Default)]`, while `orient::SkeletonEntry` is `#[derive(Debug, Deserialize)]` alone — a row is only ever reached through `skeleton: Vec<SkeletonEntry>`, whose own `#[serde(default)]` already answers "absent" with an empty vec, so `SkeletonEntry::default()` would never be called. Derive `Default` on whatever the degradation path actually constructs.
+- **Reuse a core type when one exists.** `orient` deserializes `projects: Vec<mustard_core::domain::scan::Project>` rather than re-declaring the shape; declare your own row only for a slice core does not model.
+- **Loading.** The path is always composed as `root.join(".claude").join("grain.model.json")`, and absent, unreadable and unparseable are ONE answer: the empty projection. `lapidation` puts it in a private loader chained as `read_to_string(...).ok().and_then(|raw| serde_json::from_str::<Model>(&raw).ok()).unwrap_or_default()`; `orient` fuses load and projection into `compute_orientation(root)`, where two `let Ok(…) = … else` arms return `Orientation::default()`. Either shape is the house shape — what matters is that no caller ever sees an `Err`.
+- **Rendering is pure over the model.** `fn render(model: &Model) -> String` / `fn compute_orientation(root) -> Orientation` keeps the projection unit-testable without a repository; output is sorted, carries no clock and no absolute path.
+- **Bounded menus.** Constants cap what the projection emits and state the reason (`MAX_ROLES`, `MAX_SLICES`, `MIN_ROLE_COUNT` — "a menu of coincidences teaches a caller to distrust the menu").
 
 ## How to apply
 
-Declare the view privately in the command module that projects it, under `apps/rt/src/commands/`. Derive `Deserialize, Default`, apply `#[serde(default)]`, and add ONLY the fields you read — never mirror the scanner's full schema, and never introduce a field that could carry a code body. Add a `load(root)` that degrades to `Model::default()` on every failure, keep the render pure over the view, sort everything with a deterministic tie-break, and put caps behind named consts with a stated rationale. Reuse existing shared predicates instead of writing a local variant.
+Declare your own `Model` in the command module, list only the fields you read, put `#[serde(default)]` on the struct (or on every field) and `Default` in the derive set. Write the loader as a private `fn load(root: &Path) -> Model` that degrades to `Model::default()`, and keep the rendering in a pure function taking `&Model` so tests can build the struct literal directly. Print from `run(root: &Path)` and exit 0 whatever happened.
+
+Must not: import the scan tool's internal types; declare a field you do not consume (especially a code-body field); return `Result` from the loader; sort or filter inside the loader — the projection function owns the order; read the model through a subprocess when the file is right there.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/lapidation.rs` — `struct Model` + `Role` / `Convention` / `Proj`, `load()` fail-open and the pure `render()`.
-- Ref: `apps/rt/src/commands/orient.rs` — `struct RawModel` + `SkeletonEntry`, per-field `#[serde(default)]` and the documented no-snippet property.
+- Ref: apps/rt/src/commands/lapidation.rs — `Model { roles, conventions, projects }` with the nested `Role`/`Convention`/`Proj` rows, the `load` chain, and the pure `render`.
+- Ref: apps/rt/src/commands/orient.rs — `RawModel { projects, skeleton }` reusing the core `Project` type, with the doc recording why no `snippet` field exists and the empty-`Orientation` degradation.

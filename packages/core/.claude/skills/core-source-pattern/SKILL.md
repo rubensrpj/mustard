@@ -1,6 +1,6 @@
 ---
 name: core-source-pattern
-description: Use when adding or refactoring a `*Source` taxonomy enum in the economy domain that names which subsystem produced a record.
+description: Use when adding or refactoring a `*Source` enum in the economy layer that labels where a recorded value came from.
 paths:
   - packages/core/src/domain/economy/**
 tags: [add, refactor]
@@ -17,23 +17,24 @@ metadata:
 
 ## Purpose
 
-`SavingsSource` names which Mustard subsystem produced a `SavingsRecord`, and it is the grouping dimension of the whole savings breakdown — each variant maps one-to-one onto a column of the dashboard breakdown and onto a `SavingsBySource` roll-up row. It carries two distinct string mappings on purpose: `as_str()` is the snake_case value stored in the payload and grouped on by the dashboard, while `savings_suffix()` in `economy/writer.rs` is the kebab-case suffix of the event name `pipeline.economy.savings.{suffix}`. `from_str_opt()` is the inverse of `as_str()` and returns `Option<Self>`, so an unrecognised string is dropped rather than mis-typed into a wrong bucket. The writer builders around it are pure and return `(event_name, payload)` with no `Result`, because a `serde_json::Map` is always serialisable.
+`SavingsSource` names which Mustard intervention produced a savings record — an rtk rewrite, a blocked command, a model downgrade, a rendered scaffold. It is a grouping key with two lives: the dashboard groups by its snake_case string, and the NDJSON event name carries a kebab-case suffix built from the same variant. Keeping both spellings derived from one enum is the point of the role: `model.rs` owns the enum and the snake_case label, `writer.rs` owns the event-suffix mapping, and no call site spells either literal by hand. Each variant's doc explains not just the origin but how the saving is *measured*, because several of them are estimates (a chars-per-token proxy) rather than billed numbers.
 
 ## Convention
 
 Folder: packages/core/src/domain/economy/** · Extension: .rs · Files of this role in this subproject: 2
 
-- Declared in `economy/model.rs` with `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]`, `#[serde(rename_all = "snake_case")]` and `#[non_exhaustive]`.
-- Every variant carries a doc comment explaining what was saved and how the baseline is estimated (the scan variants document the chars-per-token `/4` proxy and that the Rust cost is ~0).
-- The two string mappings are exhaustive `match` blocks with no wildcard arm, so adding a variant makes the compiler point at every site that must be updated — `as_str` and `from_str_opt` in `model.rs`, `savings_suffix` in `writer.rs`.
-- Roll-up rows that group by the enum live beside it (`SavingsBySource`, `SavingsBreakdown`) and derive `Debug, Clone, PartialEq, Eq, Serialize, Deserialize`, with `Default` on the aggregate.
-- The `savings_source_roundtrip_string` test in `model.rs` enumerates every variant and asserts `from_str_opt(as_str())` returns it, plus that an unknown string is rejected.
+- Field-less `pub enum` in `model.rs` deriving `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "snake_case")]` and `#[non_exhaustive]`, so a later variant does not break a downstream `match`.
+- Every variant carries a multi-line `///` naming the subsystem that emits it and the baseline the number is computed against.
+- Two inherent `#[must_use]` methods: `as_str(self) -> &'static str` (the stable key persisted and grouped on) and `from_str_opt(raw: &str) -> Option<Self>`, which returns `None` for unknown input instead of defaulting to a variant.
+- The wire-name variants live where they are used: `writer.rs` keeps private `savings_suffix` (kebab-case event suffix) and `savings_source_string` next to the event builder, with a comment stating why the two spellings differ.
+- Records reference the enum by value (`SavingsRecord.source: SavingsSource`, `SavingsBySource.source`); readers match on it when folding, so adding a variant means updating both `match`es.
+- Tests at the bottom of each file cover every variant — `model.rs` round-trips `as_str`/`from_str_opt`, `writer.rs` asserts the event suffix for every source.
 
 ## How to apply
 
-Add the variant in `economy/model.rs` with its doc comment, extend `as_str` and `from_str_opt` with the snake_case word, then follow the compiler into `economy/writer.rs` and add the kebab-case arm to `savings_suffix` — the event-name suffix and the payload value are intentionally different spellings, so write both. Extend the round-trip test with the new variant. Because the enum is `#[non_exhaustive]`, downstream `match` arms keep a wildcard and will not fail the build for you; the round-trip test and the exhaustive in-crate matches are what actually catch a half-finished addition.
+Add the variant to `SavingsSource` in `packages/core/src/domain/economy/model.rs` with its measurement doc, extend `as_str` and `from_str_opt`, then extend `savings_suffix` in `writer.rs` and the tests that enumerate every variant in the same change. Never introduce a parallel string constant for a source: if a new spelling is needed, derive it from the enum in the module that needs it, the way the writer derives the kebab-case event suffix.
 
 ## Examples
 
-- Ref: packages/core/src/domain/economy/model.rs — `SavingsSource`, `as_str` / `from_str_opt`, `SavingsBySource`, the round-trip test.
-- Ref: packages/core/src/domain/economy/writer.rs — `savings_suffix` kebab-case mapping and the pure event builders.
+- Ref: packages/core/src/domain/economy/model.rs — `SavingsSource`, `as_str`, `from_str_opt`, `SavingsBySource`.
+- Ref: packages/core/src/domain/economy/writer.rs — `savings_suffix` / `savings_source_string` and the every-variant test.

@@ -1,6 +1,6 @@
 ---
 name: rt-entry-pattern
-description: Use when adding or refactoring an `*Entry` row struct that represents one item of a command's JSON report or one parsed record of external tool output.
+description: Use when adding or refactoring a row struct (`*Entry`) that a `mustard-rt run` command collects into its report or parses out of tool output under apps/rt/src/commands/, so the row carries evidence and a closed vocabulary instead of free-form prose.
 paths:
   - apps/rt/src/commands/**
 tags: [add, refactor]
@@ -17,28 +17,30 @@ metadata:
 
 ## Purpose
 
-When a `run` command answers with a list, each element of that list is a named struct, not an inline `json!` object. Naming it is what lets the row carry its own doc comment, its own optional-field policy and its own closed vocabulary, and it is what keeps the aggregate report readable. The row is built by a per-item function that returns an `*Entry` on EVERY branch — including the failure branches — so a single unreadable path never aborts the sweep and never disappears from the output. The same shape is reused for rows parsed out of external tool output (`git worktree list --porcelain`), where the struct is the parse target rather than a serialization target.
+An `*Entry` is one row of something a command enumerated: a `.claude/` child it classified, a worktree git listed, a settings file it restored. The row exists so the report can be a list of facts rather than a list of sentences — each entry names WHAT was seen, WHICH class it fell into, and the evidence for that class, and the consumer (a human, the SessionStart probe, a sibling command) decides what to do. Keeping the classification vocabulary on the struct as `&'static str` fields with the closed word set spelled in the doc comment is what stops the vocabulary from drifting per call site. Entries hold no behaviour: the module's functions classify, the entry only records.
 
 ## Convention
 
-Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 11
+Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 14
 
-Reading the members adds:
+Beyond the census facts, what the exemplars show:
 
-- Serialized rows derive `#[derive(Serialize)]` and nothing else when the module owns both row and report (`Entry`, `ErrorEntry` in `claude_dir_prune.rs`); a row a sibling module consumes is `pub(crate)` with `pub` fields (`RestoredEntry` in `rehook.rs`). A row that is only a parse target derives `#[derive(Debug, PartialEq)]` instead — no serde (`WorktreeEntry` in `git_settle.rs`).
-- Closed vocabularies are `&'static str` fields, and the accepted words are listed in the field's doc comment. A `state: String` field still documents its full word list.
-- Failure information rides a SEPARATE row type (`struct ErrorEntry { path, error }`) so the happy row never grows an error field; the report then carries both vectors.
-- Fields that do not always apply carry `#[serde(skip_serializing_if = "Option::is_none")]` (`restored_from`, `error`), keeping the JSON byte-identical when nothing happened.
-- The per-item builder is a private `fn restore_one(dir, kind) -> RestoredEntry` style function whose every early return constructs a full entry with an explicit `state`. It does not return `Result`; the outcome word IS the result.
-- Paths are rendered for the report with forward slashes (`git_settle::show` replaces backslashes with forward ones), so one JSON document reads the same on every platform.
-- Rows are gathered into a `Vec<XEntry>` on the report and sorted (or produced from a pre-sorted directory listing) before printing.
+- **Name and place.** `<What>Entry` (`WorktreeEntry`, `RestoredEntry`, `KeptEntry`, `ErrorEntry`, `ChildEntry`, `BaseCandidateEntry`), declared immediately beside the report struct that holds it — before it in `rehook`/`worktree_gc`, in the same block in `claude_dir_prune`. A module owning a single row type may name it plain `Entry`.
+- **Two derive shapes, by destination.** A row that lands in JSON gets `#[derive(Serialize)]` (`Entry`, `ErrorEntry`, `RestoredEntry`); a row that is parser output consumed in-process gets `#[derive(Debug, PartialEq)]` and no serde at all (`WorktreeEntry` in `git_settle`).
+- **Visibility.** Module-private when only the module's own report holds it; `pub(crate)` when a sibling command reads it (`RestoredEntry`, `WorktreeEntry`); `pub` with `#[serde(rename_all = "camelCase")]` when an external reader fixes the field names (`BaseCandidateEntry`).
+- **Fields.** Owned `String` for measured values, `&'static str` for a closed vocabulary, `Vec<String>` for evidence. Optional evidence carries `#[serde(skip_serializing_if = "Option::is_none")]` so the emitted JSON stays byte-stable.
+- **Doc habits.** The FIELD docs are the half that never lapses: a `///` line on every field whose meaning is not literal, and the vocabulary fields spell their words verbatim (`` /// `restored` | `already-active` | `no-snapshot` | `missing` | `skipped` | `error`. `` on `RestoredEntry::state`; `` /// `"keep"` | `"investigate"` | `"remove"`. `` on `claude_dir_prune::Entry::recommendation`) — that line IS the closed set, written nowhere else. A `///` line introducing the row is written where the type name alone would not say what one row is ("One kept-worktree entry in the JSON report.", "One error-entry in the JSON report — a worktree we tried to remove but could not" in `worktree_gc`; "One `.claude/worktrees/` entry from `git worktree list --porcelain`." in `git_settle`) and skipped where the module header already framed it — `claude_dir_prune` opens with the whole classification table and an `## Output` section, `rehook` with the two restore shapes and their state words.
+- **Construction.** Built by a small function that returns the entry for one input (`fn restore_one(claude_dir: &Path, kind: ScopeKind) -> RestoredEntry`), with every early-return branch producing a complete entry rather than an `Option` — a case that could not be handled is still a row, with its own state word.
+- **Emptiness is a row too.** `git_settle::parse_worktrees` keeps a DETACHED checkout with an empty `branch` and its `head` sha, because dropping it once hid a real checkout from every sweep built on the parser.
 
 ## How to apply
 
-Put the row next to the report it belongs to, in the command module under `apps/rt/src/commands/<family>/`. Give it `#[derive(Serialize)]`, one doc line per field, `&'static str` for any fixed word set, and `skip_serializing_if` for anything optional. Add a sibling `ErrorEntry` rather than making the happy row nullable. Write one `fn *_one(...) -> XEntry` that covers every branch — missing directory, skipped by policy, IO failure — and returns an entry with the matching `state` word instead of propagating an error. If the row is parsed from a subprocess, drop serde and derive `Debug, PartialEq` so the parser can be unit-tested against a literal fixture.
+Declare the entry next to the report that collects it, pick the derive shape from where the row is going, and give every non-obvious field its `///` line with the closed word list. Write the per-input builder so it returns an entry on every path — including the refusals — and let the caller push into the report's vector, sorting before the report struct is built.
+
+Must not: put behaviour or IO on the entry; use a `String` where the value comes from a fixed set (`&'static str` makes the set greppable); invent a second spelling of a state word already used by a sibling entry; drop a row because it was unusual — record it with a state word instead.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/maint/claude_dir_prune.rs` — `Entry` + `ErrorEntry` + `Report`, `&'static str` classification and recommendation.
-- Ref: `apps/rt/src/commands/maint/rehook.rs` — `RestoredEntry` with the documented `state` vocabulary and a total `restore_one`.
-- Ref: `apps/rt/src/commands/git_settle.rs` — `WorktreeEntry` as a porcelain parse target, plus the forward-slash path rendering the reports use.
+- Ref: apps/rt/src/commands/maint/claude_dir_prune.rs — `Entry` + `ErrorEntry` with `classification` / `recommendation` as `&'static str` fed by the `Classification` enum's `as_str`.
+- Ref: apps/rt/src/commands/maint/rehook.rs — `RestoredEntry` with `skip_serializing_if` on the optional fields and a `state` field whose doc lists all six words.
+- Ref: apps/rt/src/commands/git_settle.rs — `WorktreeEntry`, the non-serde parser row, with the doc recording why a detached checkout is still emitted.

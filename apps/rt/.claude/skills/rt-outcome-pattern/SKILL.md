@@ -1,6 +1,6 @@
 ---
 name: rt-outcome-pattern
-description: Use when adding or refactoring an `*Outcome` type that a command's core returns instead of printing or exiting, so in-process callers can fold it.
+description: Use when adding or refactoring the typed answer (`*Outcome`) a command's cwd-aware core returns to in-process callers under apps/rt/src/commands/event/ or apps/rt/src/commands/review/qa_run/, so composing callers read a state instead of parsing stdout.
 paths:
   - apps/rt/src/commands/event/**
   - apps/rt/src/commands/review/qa_run/**
@@ -18,28 +18,30 @@ metadata:
 
 ## Purpose
 
-An `*Outcome` is the non-exiting return of a command's core. The CLI face (`run`) is allowed to print and to `process::exit`; the cwd-aware core beneath it is not, because composite commands call it directly and must fold its answer into their own report rather than spawn a subprocess and parse stdout. Making the outcome a named type is what stops the two paths from drifting: the printer renders the outcome, so a new state cannot be added without deciding how it reads. The states are chosen so that "nothing happened" is distinguishable from "the work was already done" — silence made those two indistinguishable once, and the type exists to prevent it.
+An `*Outcome` is what one call DID, expressed as a value. It exists because these commands have two callers: a CLI entry that prints one deterministic line and may exit the process, and a composite command that must keep its own stdout contract. Splitting them means the core returns the outcome and the entry owns the printing and the exit code — `run_at` never prints, `run` prints `success_line(&outcome, …)`. The closed set is also what stops silence from being ambiguous: "the transition was recorded" and "it was already in that phase" are separate states, because a short-circuit that printed nothing made the two indistinguishable from stdout.
 
 ## Convention
 
-Folder: apps/rt/src/commands/event/**, apps/rt/src/commands/review/qa_run/** · Extension: .rs · Files of this role in this subproject: 4
+Folder: apps/rt/src/commands/event/**, apps/rt/src/commands/review/qa_run/** · Extension: .rs · Files of this role in this subproject: 5
 
-Reading the members adds:
+Beyond the census facts, what the exemplars show:
 
-- Two shapes, chosen by whether the answer is a closed set or a bundle of facts. A closed set is an enum with payload variants — `pub(crate) enum PhaseOutcome { Recorded { from: Option<String> }, AlreadyThere }`, `enum VerifyOutcome { Found { age_secs: i64 }, Miss }`, both `#[derive(Debug, PartialEq, Eq)]`. A bundle is a plain struct with `pub` fields — `pub struct QaSpecOutcome { spec, overall, passed, total }`, `pub struct StopGateOutcome { overall, first_failing_ac }`.
-- No serde derives on any of the four. Rendering is a separate free function in the same module (`fn success_line(outcome, spec, to) -> serde_json::Value` in `emit_phase.rs`), so the JSON shape is written once and the enum stays a pure value.
-- Visibility tracks the caller: `pub` when a hook or another crate-level door consumes it, `pub(crate)` when only a composite inside the crate does, private when the module's own `run` is the sole consumer.
-- The idempotent short-circuit gets its own variant, and the doc says why: `AlreadyThere` must SAY so, because printing nothing made "already in that phase" and "transition recorded" indistinguishable from stdout.
-- The producing function is `pub(crate) fn run_at(cwd: &Path, ...) -> Result<XOutcome, String>` or `pub fn run_for_*(cwd: &Path, ...) -> XOutcome` — always taking the root explicitly. The doc states which caller needs the non-exiting form and why the print stays in the CLI entry.
-- Where the outcome maps to an exit code, the doc says so verbatim and the CLI face does the mapping, not the type.
-- Time and other ambient facts are injected (`now_ms: i64`) so the outcome is deterministic under test.
+- **Enum or struct, by the question.** An enum when the answer is a closed set of states (`PhaseOutcome`, `VerifyOutcome`, and `CutOutcome` in the same family); a struct when it is a summary bundle the caller renders (`QaSpecOutcome { spec, overall, passed, total }`, `StopGateOutcome { overall, first_failing_ac }`).
+- **Derives.** The enums carry `#[derive(Debug, PartialEq, Eq)]` so tests assert the exact variant; none of them derive serde — `work_branch` states the rule outright: "No serde derive — the JSON shape belongs to whichever command reports it".
+- **Visibility.** `pub(crate)` for in-crate composition (`PhaseOutcome`, `CutOutcome`), private when only its own module matches on it (`VerifyOutcome`), `pub` when a caller outside the family uses it (`QaSpecOutcome`, `StopGateOutcome`).
+- **Variants carry the evidence.** `Recorded { from: Option<String> }`, `Found { age_secs: i64 }`, `AlreadyThere` — the caller never re-reads state to learn what happened. Doc lines sit on the enum AND on every variant, saying why two near-identical states are kept apart.
+- **Refusals are `Err`, not variants.** The core is `pub(crate) fn run_at(cwd: &Path, …) -> Result<Outcome, String>`; a blocked transition returns the gate reason as `Err`, and the CLI entry turns it into stderr + `process::exit(1)` while a composite folds it into its report. `mark_finding` records the reason: "the exit code belongs to `run`, never to the type".
+- **Idempotency is a state.** Every emitter checks first and returns the "already there" variant instead of writing twice, and the printed line marks it (`"idempotent": true`).
+- **Deterministic entry line.** `fn success_line(outcome, …) -> serde_json::Value` builds `{ok, kind, spec, …}` with no timestamp or session id — those ride in the NDJSON row, because run output is byte-compared in gates.
 
 ## How to apply
 
-Put the outcome in the module whose core produces it, above the function that returns it. Choose an enum when the answer is a small closed set (add a variant for the idempotent/no-op case) and a struct when it is a bundle of measured facts. Do not derive `Serialize`; write the renderer as a separate function so the CLI face owns the stdout contract. Give the core an explicit `cwd: &Path` and no `process::exit`; let `run` print, map to an exit code, and be the only place that does. Inject clocks and other ambient inputs as parameters. State in the doc comment which in-process caller the non-exiting form exists for.
+Write the cwd-aware core first: `run_at(cwd: &Path, …) -> Result<XOutcome, String>`, with the idempotent short-circuit as its own variant. Add `success_line` beside it, then the thin `pub fn run(…)` that resolves the project dir, matches on the result, prints or exits. Give the outcome `Debug, PartialEq, Eq` and test the states through `run_at` against a `tempdir`, asserting both the variant and the rendered line.
+
+Must not: derive `Serialize` on the outcome; print or `process::exit` inside the core; fold a refusal into a variant; return a bare `bool` when a caller must tell "nothing to do" from "already done".
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/event/emit_phase.rs` — `PhaseOutcome` plus the `success_line` renderer and the `run` / `run_at` split.
-- Ref: `apps/rt/src/commands/event/verify_emit.rs` — `VerifyOutcome` with an injected `now_ms` and the exit-code mapping kept outside the type.
-- Ref: `apps/rt/src/commands/review/qa_run/mod.rs` — `QaSpecOutcome` / `StopGateOutcome`, the struct flavour returned to callers that must not take over the process.
+- Ref: apps/rt/src/commands/event/emit_phase.rs — `PhaseOutcome::{Recorded { from }, AlreadyThere}` with `run_at` / `run` / `success_line` split and the tests asserting both.
+- Ref: apps/rt/src/commands/event/verify_emit.rs — `VerifyOutcome::{Found { age_secs }, Miss}`, the doc noting it maps directly to a process exit code, scanned by a pure `scan(events, args, now_ms)` with time injected.
+- Ref: apps/rt/src/commands/review/qa_run/mod.rs — the struct form: `QaSpecOutcome` for callers that do not want `process::exit`, and `StopGateOutcome` reduced from the same executor so the gate's verdict is qa-run's verdict by construction.

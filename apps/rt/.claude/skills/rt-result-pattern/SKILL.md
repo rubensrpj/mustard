@@ -1,6 +1,6 @@
 ---
 name: rt-result-pattern
-description: Use when adding or refactoring a `*Result` value type that carries what one command execution or one gate stage produced in-process.
+description: Use when adding or refactoring the internal measurement struct (`*Result`) that records what one executed command or check produced under apps/rt/src/commands/pipeline/ or apps/rt/src/commands/review/qa_run/, so the measurement stays separate from the JSON the caller prints.
 paths:
   - apps/rt/src/commands/pipeline/**
   - apps/rt/src/commands/review/qa_run/**
@@ -18,27 +18,30 @@ metadata:
 
 ## Purpose
 
-A `*Result` in this crate is the in-process value of one execution — a stage command, a subproject verification, an acceptance criterion — and it is deliberately NOT the document that gets printed. That job belongs to the `*Report` family. Keeping the two apart is what allows the executor to record everything it observed (exit code, duration, output excerpt) while the report chooses a stable subset to serialize. Because these types cross module boundaries inside the crate rather than the process boundary, they carry no serde derives and their visibility is the narrowest that works. Where a second engine grades an execution it did not run, the fields go private behind read-only accessors so a consumer can judge a result without gaining the power to forge one.
+A `*Result` is the in-process record of ONE thing that was executed or measured: a stage command that ran, a subproject that was verified, an acceptance criterion whose command exited. It is deliberately not the report — it carries no serde derive and no wire names, because the JSON belongs to whichever command reports it, and two commands report the same measurement differently. Keeping it internal is what lets the measurement stay honest: `CommandResult` distinguishes "the command failed" from "the environment could not run it" (`env_error`), `SubprojectResult` distinguishes "failed" from "nothing was declared" (`skipped`), and a caller that collapsed those into one boolean would report an infrastructure problem as a work problem.
 
 ## Convention
 
 Folder: apps/rt/src/commands/pipeline/**, apps/rt/src/commands/review/qa_run/** · Extension: .rs · Files of this role in this subproject: 5
 
-Reading the members adds:
+Beyond the census facts, what the exemplars show:
 
-- Default visibility is private to the module (`struct CommandResult` in `close_gates.rs`, `struct BuildResult` in `status.rs`). It becomes `pub(crate)` only when a named composite folds it — `QaResult` says so in its doc.
-- No `Serialize`. Several members carry no derive at all (`BuildResult { at, ok }`); the richer ones derive `Debug` (and `Clone` when a caller keeps a copy). Rendering to JSON happens in a separate `*_json` helper, not on the type.
-- Fields are the raw facts of the run, in a fixed order: identity, status word, exit code, duration, bounded output excerpt (`AcResult { id, status, exit, duration_ms, stderr_excerpt }`). Status is a plain `String` word (`pass` / `fail` / `timeout` / `skip`) rather than an enum, because the same word is what the ledger stores.
-- When another module grades the result, its fields stay private and it exposes `pub(crate) fn status(&self) -> &str`, `fn exit(&self) -> Option<i64>`, `fn stderr_excerpt(&self) -> &str`. `AcResult` documents the reason explicitly.
-- The doc comment names what produced the value ("The outcome of a single stage command", "One AC execution outcome") and, when relevant, which sibling type it must not be confused with.
-- The constructing function is a plain free function in the same module returning the type by value; a fallible read returns `Option<XResult>` (`fn last_build(root: &Path) -> Option<BuildResult>` using `?` on every step) rather than a `Result` with a bespoke error.
+- **Name and place.** `<What>Result` (`CommandResult`, `BuildResult`, `SubprojectResult`, `VerifyResult`, `AcResult`, `QaResult`), declared in the same file as its producer and above it — `CommandResult` above `run_command`, `BuildResult` above `last_build`, `AcResult` above `execute_ac` with only its accessor `impl` between them. In the long multi-concern files the declaration also sits under the `// ---` section banner naming the concern (`// Build/test gate` in `close_gates.rs`); `verify_pipeline.rs` and `qa_run/mod.rs` carry no such banners and put that weight in a `///` doc on the type instead — the banner is a property of the file's length, not of the role.
+- **Visibility.** Module-private by default; `pub(crate)` only when a composite command folds it (`QaResult` is `pub(crate)` "so `close-pipeline` reads the per-criterion detail").
+- **No serde.** None of these derive `Serialize`; the JSON is authored explicitly at the boundary, either by a `fn to_json(&self) -> Value` on the aggregate (`VerifyResult`) or by a `json!` in the reporting command. Derives are rare enough to be worth a reason: only `SubprojectResult` carries one (`#[derive(Debug, Clone)]`); the other five declare none at all.
+- **Field vocabulary.** `ok: bool` plus the qualifier that keeps failure honest (`env_error`, `skipped`), `duration_ms: u128`/`u64`, and a bounded `output` excerpt — `verify_pipeline` takes 500 chars and prefers stderr over stdout, and the field doc says it is empty on success.
+- **Aggregates.** The plural form holds `Vec<SingularResult>` plus what no single row can carry: `VerifyResult { per_subproject, total_duration_ms, timestamp }` derives its verdict at the boundary (`to_json` does `let any_fail = …iter().any(|r| !r.skipped && !r.ok);`) rather than keeping a second source of truth. Store the verdict only when the parts genuinely cannot recompute it, and `QaResult { overall, criteria }` is that case: three fail-open paths in `run_qa` return `overall: "skip"` with an EMPTY criteria vector, which no derivation could tell apart from "everything passed".
+- **Accessors over public fields when forgery matters.** `AcResult` keeps its fields private and exposes `status()` / `exit()` "so the negative-test engine can judge an execution without gaining the power to forge one" — copy that when a result is evidence for a gate.
+- **Producers never print.** `run_command(cmd, cwd) -> CommandResult`, `last_build(root) -> Option<BuildResult>`, `run_qa_with_options(cwd, spec, opts) -> QaResult`: an absent measurement is `Option::None`, an unrunnable one is a result with the qualifier set.
 
 ## How to apply
 
-Declare the result in the module that runs the thing, under `apps/rt/src/commands/pipeline/` or `apps/rt/src/commands/review/qa_run/`. Keep it private; promote to `pub(crate)` only when you can name the composite caller in the doc comment. Record the facts, not a rendering: exit code, elapsed millis, a bounded excerpt. Do not derive `Serialize` — add a `*_json(&self) -> Value` helper or let the report struct project it. If a different module will grade the result, make the fields private and add read-only accessors so it can read but not construct. Fallible producers return `Option`, and the caller treats `None` as "nothing to report", never as an error.
+Declare the result beside its producing function, give each field a `///` line stating what it means when it is empty or zero, and return it by value. Fold it into the report at the reporting boundary — build the `json!` there, or add a `to_json` on the aggregate. When another command needs the detail, widen to `pub(crate)` and say why in the doc comment rather than deriving `Serialize` to make it travel.
+
+Must not: derive `Serialize` on a result to save writing the report; collapse "could not run" into `ok: false`; store an `overall` that duplicates what the parts already say; expose mutable public fields on a result a gate reads as evidence.
 
 ## Examples
 
-- Ref: `apps/rt/src/commands/pipeline/close_gates.rs` — `CommandResult` as the private per-stage execution value, with the env-error vs real-failure taxonomy kept local.
-- Ref: `apps/rt/src/commands/pipeline/status.rs` — `BuildResult { at, ok }` and its `Option`-returning reader.
-- Ref: `apps/rt/src/commands/review/qa_run/mod.rs` — `QaResult` / `AcResult`, the accessor-only shape and the documented reason for `pub(crate)`.
+- Ref: apps/rt/src/commands/pipeline/close_gates.rs — `CommandResult { ok, env_error, output }` with the empty-command path returning an env error rather than a failure.
+- Ref: apps/rt/src/commands/pipeline/status.rs — `BuildResult { at, ok }` read through an `Option`-returning `last_build(root)`.
+- Ref: apps/rt/src/commands/review/qa_run/mod.rs — `AcResult` with read-only accessors and the `QaResult` aggregate the composite close folds.

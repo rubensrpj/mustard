@@ -1,6 +1,6 @@
 ---
 name: core-hit-pattern
-description: Use when adding or refactoring a `*Hit` row that reports one piece of matched evidence — what matched, where, and how strongly.
+description: Use when adding or refactoring a `*Hit` struct that carries one match produced by a scanning or matching pass.
 paths:
   - packages/core/src/domain/**
 tags: [add, refactor]
@@ -17,24 +17,25 @@ metadata:
 
 ## Purpose
 
-A `*Hit` is one flat evidence row, never the matcher that produced it. `ScanHit` (`vocabulary/mod.rs`) reports the owning `Layer`, the term **as it appears in the vocabulary** (explicitly not the haystack substring, which matters when the haystack has case variants), and the byte span. `KeyedHit<K>` (`vocabulary/aho.rs`) is the generic `pub(super)` form emitted by the shared `KeyedAutomaton`, keyed on whatever the consumer tags terms with — the regression matcher keys on `Layer`, the stack detector on a category. The `scan.rs` family (`ConcernHit`, `TermHit`, `SliceHit`, `ContractHit`) mirrors rows of the external scan digest payload: Mustard owns its own view of that JSON rather than importing scan's types.
+A `*Hit` is one match, emitted by a pass that produces many: an automaton match (`ScanHit`, `KeyedHit<K>`), or one row of the external scan tool's answer (`ConcernHit`, `TermHit`, `SliceHit`, `ContractHit`). It is deliberately dumb — the ranking, the dedup and the verdict all live in the caller, so a hit only reports *what matched, where, and under which key*. The `domain/scan.rs` family sits on a process boundary: Mustard owns its own view of the tool's JSON and deserializes only the fields it consumes, which is why every one of those structs is `Deserialize`-only and defaults its collections. The `vocabulary` family stays inside the crate and carries byte offsets instead.
 
 ## Convention
 
 Folder: packages/core/src/domain/** · Extension: .rs · Files of this role in this subproject: 3
 
-- In-crate hits produced by this crate derive `#[derive(Debug, Clone, PartialEq, Eq)]` and expose public fields; the engine-internal `KeyedHit<K>` stays `pub(super)` with `pub(super)` fields so the public surface only ever sees the mapped form.
-- Payload hits read from an external tool derive `#[derive(Debug, Clone, Deserialize)]` only — they are read, never written — and every non-identifying field carries `#[serde(default)]` so a payload produced by an older scan binary still deserialises. The doc comment states what a defaulted/empty value means ("old binary, fall back to `miss`").
-- Offsets are byte offsets into the haystack, `start` inclusive and `end` exclusive; a unit test slices the haystack back with them to prove it.
-- Scores travel as fixed-point integers (`score_x1024`) rather than floats, so the value is byte-stable across machines.
-- There is exactly one Aho-Corasick automaton in the crate. Construction goes through `KeyedAutomaton::from_groups`, which deduplicates within a group and keeps the first occurrence across groups so group order is the caller's priority order; empty and whitespace-only terms are skipped.
+- Flat `pub struct` with all-`pub` fields, declared in the module that emits it; no constructors and no methods in the three exemplars.
+- Visibility follows the consumer: `ScanHit` is `pub` (part of the vocabulary surface), `KeyedHit<K>` is `pub(super)` with `pub(super)` fields because it is the engine-internal generic the public matcher maps into `ScanHit`.
+- Hits parsed from an external payload derive `#[derive(Debug, Clone, Deserialize)]` — Deserialize only, never Serialize — and mark every collection or later-added field `#[serde(default)]`, with a `///` saying an older tool payload keeps deserialising. In-crate hits skip serde entirely and derive `Debug, Clone, PartialEq, Eq`.
+- Span fields are named `start` (inclusive) / `end` (exclusive) and documented as byte offsets; the `term` field documents that it is the vocabulary term, not a substring of the haystack.
+- Emission is a `scan(&self, haystack: &str) -> Vec<Hit>` that builds hits with `filter_map` and never panics on hostile input; the engine is built once — reuse `KeyedAutomaton`, do not instantiate another Aho-Corasick.
+- Tests live at the bottom of the emitting module and assert matching semantics (case sensitivity, first-key-wins on collision), not the struct shape.
 
 ## How to apply
 
-Put the new hit type next to its producer: `vocabulary/` for matcher output, `domain/scan.rs` for a digest payload row. If you need multi-pattern matching, tag your terms with a key and reuse `KeyedAutomaton::from_groups`, then map `KeyedHit<YourKey>` into your own public row — do not wire a second `AhoCorasick`. Give each field a doc comment covering the empty case, and add a test in the same file that proves the span slices back to the matched text (in-crate) or that a payload missing the new field still parses (external). New fields on an external payload row land defaulted, never required.
+Put the hit in the module that produces the matches: `domain/vocabulary/` for automaton output, `domain/scan.rs` for a new field of the scan tool's JSON. If the pass is internal plumbing, keep the type `pub(super)` and map it into the public hit at the module boundary rather than widening visibility. When the external tool grows a field, add it defaulted and document the degradation — the payload must keep parsing when an older binary is installed.
 
 ## Examples
 
-- Ref: packages/core/src/domain/vocabulary/mod.rs — `ScanHit` and the `VocabularyMatcher::scan` contract.
-- Ref: packages/core/src/domain/vocabulary/aho.rs — `KeyedHit<K>` / `KeyedAutomaton::from_groups` dedup and priority policy.
-- Ref: packages/core/src/domain/scan.rs — `ConcernHit`, `TermHit`, `SliceHit`, `ContractHit` as deserialise-only payload rows.
+- Ref: packages/core/src/domain/vocabulary/mod.rs — `ScanHit` (layer + term + byte span), no serde.
+- Ref: packages/core/src/domain/vocabulary/aho.rs — `pub(super) struct KeyedHit<K>` and the `scan` that emits it.
+- Ref: packages/core/src/domain/scan.rs — `ConcernHit` / `TermHit` / `SliceHit` / `ContractHit`, Deserialize-only with `#[serde(default)]` throughout.
