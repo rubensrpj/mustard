@@ -32,6 +32,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_rt::commands::agent::render::recommended_subagent_type;
+use mustard_rt::commands::event::enrichment_gap::ENRICHMENT_STALE_TAG;
 
 /// The repository root — two levels up from this crate's manifest.
 fn repo_root() -> PathBuf {
@@ -1844,5 +1845,92 @@ fn the_git_reference_teaches_the_measured_model() {
     assert!(
         gate.contains("NO membership test any more"),
         "the base gate judges membership of a declared list again",
+    );
+}
+
+/// The router's rule for the base gate's enrichment signal is written against
+/// the literal the gate really prints.
+///
+/// The two halves sit in different files by necessity: `mustard-rt` emits the
+/// line, and the seeded orchestrator prose is what tells a session what to do
+/// on reading one. A tag typed TWICE — once in the emitter, once in the prose —
+/// is exactly the pair that drifts in silence: reword the constant and the
+/// router keeps watching for a string nothing writes any more, with nothing
+/// red. So the prose is asserted against the COMPILED constant, never a copy
+/// of it.
+#[test]
+fn the_router_prose_names_the_signal_the_gate_emits() {
+    // --- 1. The seed quotes the tag the emitter exports -------------------
+    let seed = read("packages/core/templates/mustard/orchestrator.md");
+    let signal = line_with(&seed, ENRICHMENT_STALE_TAG).unwrap_or_else(|| {
+        panic!(
+            "the orchestrator seed never names the signal the base gate emits \
+             ({ENRICHMENT_STALE_TAG:?}), so a session reading it has no rule for it",
+        )
+    });
+
+    // Anchored: the rule belongs where the router is told how to orient in the
+    // census, not in an unrelated section a reader never reaches with it.
+    let locating = line_index(&seed, "## Locating code")
+        .expect("the orchestrator seed no longer has a `## Locating code` section");
+    let efficiency = line_index(&seed, "## Efficiency")
+        .expect("the orchestrator seed no longer has an `## Efficiency` section");
+    let signal_at = line_index(&seed, ENRICHMENT_STALE_TAG).expect("checked above");
+    assert!(
+        signal_at > locating && signal_at < efficiency,
+        "the enrichment signal is documented outside `## Locating code` \
+         (section at {locating}, signal at {signal_at}, next section at {efficiency})",
+    );
+
+    // Naming the signal is not teaching it: the rule must say what the line
+    // MEANS and what the operator is offered, or it reads as trivia.
+    assert!(
+        signal.contains("`scan`"),
+        "the rule names the signal without offering the flow that closes it: {signal}",
+    );
+    assert!(
+        signal.contains("unit of its OWN"),
+        "the rule offers `scan` without saying it is a unit of its own — which is \
+         the whole reason it cannot be taken mid-unit: {signal}",
+    );
+    assert!(
+        signal.contains("clean tree"),
+        "the rule omits the premise the enrich pass rewrites versioned files under: {signal}",
+    );
+    assert!(
+        signal.contains("current unit closes"),
+        "the rule never says WHEN the unit is dispatched, so it reads as \"do it now\": {signal}",
+    );
+
+    // --- 2. This repository's delivered copy has not drifted ---------------
+    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
+    // the template alone leaves the project that wrote the rule reading the
+    // old text.
+    let delivered = read(".claude/mustard/orchestrator.md");
+    assert_eq!(
+        line_with(&delivered, ENRICHMENT_STALE_TAG),
+        Some(signal),
+        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
+         re-seed it, or this project never reads the rule it just wrote",
+    );
+
+    // --- 3. The flow is DISCOVERED by the same measured signal -------------
+    // The description is what makes the fallback reachable at all; while it
+    // says "visibly stale" the trigger is a guess, not the line above.
+    let scan = read("plugin/commands/scan.md");
+    assert!(
+        scan.contains(ENRICHMENT_STALE_TAG),
+        "the scan flow's description names no measured trigger, so the fallback \
+         is chosen on a hunch instead of on the line the gate printed",
+    );
+
+    // --- 4. The gate really emits it --------------------------------------
+    // Without this half every assertion above outlives its mechanism: the
+    // prose would keep teaching a signal nothing prints.
+    let emit = production_half("apps/rt/src/commands/event/emit_pipeline.rs");
+    assert!(
+        emit.contains("enrichment_gap::report_if_stale"),
+        "the pipeline-opening emit no longer reports the enrichment gap, so the \
+         line the router waits for is never written",
     );
 }
