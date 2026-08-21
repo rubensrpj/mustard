@@ -1,12 +1,11 @@
 ---
 name: dashboard-props-pattern
-description: Use when adding or refactoring a React component whose props are declared as a `<ComponentName>Props` interface under components/page or the feature folders.
+description: Use when adding or refactoring a React component whose props are declared as a `<ComponentName>Props` interface under components/page, components/layout or the feature folders.
 paths:
   - apps/dashboard/src/components/page/**
-  - apps/dashboard/src/features/economy/**
-  - apps/dashboard/src/features/telemetry/PhaseStation/**
-  - apps/dashboard/src/features/telemetry/PipelineTimeline/**
-  - apps/dashboard/src/features/workspace/**
+  - apps/dashboard/src/components/layout/**
+  - apps/dashboard/src/components/DoctorBadge/**
+  - apps/dashboard/src/features/**
 tags: [add, refactor]
 appliesTo: [props]
 scope: [code-editing]
@@ -21,15 +20,15 @@ metadata:
 
 ## Purpose
 
-This is the dashboard's most repeated shape: one folder per component holding an `index.tsx`, a `<ComponentName>Props` interface, and a single named-export function that destructures those props in its signature. `components/page/*` holds the shared atoms every page composes from (surface, band, card, row, section header, code block); `features/*` holds the domain components built on top of them. Following the shape matters beyond taste — the shared atoms are re-exported through one barrel, so a page imports five of them on one line, and a component that skips the barrel or the `className` escape hatch becomes the one that cannot be placed.
+This is the dashboard's most repeated shape: one folder per component holding an `index.tsx`, a `<ComponentName>Props` interface, and a single named-export function that destructures those props in its signature. `components/page/*` holds the shared atoms every page composes from (surface, band, card, row, section header, code block); `features/*` holds the domain components built on top of them — `features/specs/*` alone is 15 of these files, the largest single family. `components/layout/*` and `components/DoctorBadge` follow the same shape for the app shell. Two neighbours are deliberately NOT this role: `src/components/ui/*` is vendored shadcn (kebab folders, `cva` variants, `React.ComponentProps`), and the handful of prop interfaces declared inside a page file (`src/pages/Specs.tsx`) are page-local helpers that follow the declaration half of this mold but not the folder half. Following the shape matters beyond taste — the shared atoms are re-exported through one barrel, so a page imports five of them on one line, and a component that skips the barrel or the `className` escape hatch becomes the one that cannot be placed.
 
 ## Convention
 
-Folder: apps/dashboard/src/components/page/**, apps/dashboard/src/features/economy/**, apps/dashboard/src/features/telemetry/PhaseStation/**, apps/dashboard/src/features/telemetry/PipelineTimeline/**, apps/dashboard/src/features/workspace/** · Extension: .tsx · Files of this role in this subproject: 37
+Folder: apps/dashboard/src/components/page/**, apps/dashboard/src/components/layout/**, apps/dashboard/src/components/DoctorBadge/**, apps/dashboard/src/features/** · Extension: .tsx · Files of this role in this subproject: 58
 
-- One folder per component, file always `index.tsx`: `components/page/<Name>/index.tsx`, `features/<area>/<Name>/index.tsx`. The folder name is the component name in PascalCase. No default exports anywhere in the exemplars.
+- One folder per component, file `index.tsx`: `components/page/<Name>/index.tsx`, `features/<area>/<Name>/index.tsx`. The folder name is the component name in PascalCase. Named exports only, and one `index.tsx` may hold several components with a `*Props` each when they ship together (`EditorialBand`, `KpiValue`, `CostBar`, `features/trace/ToolEventRow`), or hold a `*Props` for a private sub-component only (`ProjectTreeNodeProps` in `components/layout/Sidebar`). The one non-`index.tsx` file and the one `export default` in these trees are the same file — `components/page/CodeViewerPanel/CodeViewerBody.tsx`, which `React.lazy` requires; helpers shared inside one feature area live in `features/<area>/_shared/*.tsx`.
 - `interface <ComponentName>Props` is declared immediately above the component, and the component destructures it inline with defaults in the signature (`chevron = false`, `lang = "plain"`, `topN = 3`, `measuredCostMicros = null`).
-- Visibility follows reach: shared atoms in `components/page/*` export the props interface (`AcBreakdownProps`, `BaseRowProps`, `CodeBlockProps`, `SectionHeaderProps`); a feature-local component may keep it unexported (`SpecStatusCardsProps` in `features/workspace/SpecStatusCards`). Export it when another module needs to type a call site.
+- Visibility follows reach: shared atoms in `components/page/*` export the props interface (`AcBreakdownProps`, `BaseRowProps`, `CodeBlockProps`, `SectionHeaderProps` — 31 of the 32 declarations there), while feature-local components normally keep it unexported (`SpecCardProps`, `SpecBadgeProps`, `StageBulletProps`, `SpecStatusCardsProps`). `StatusDotProps` is the counter-example inside `components/page` — unexported, because nothing outside types that call site. Export it when another module needs to.
 - `className?: string` is the last field on the shared atoms and is merged through `cn()` from `@/lib/utils`, appended last so the caller's classes win.
 - Slot props are typed `ReactNode` with `import type { ReactNode } from "react"` (`SectionHeader.description`/`right`, `BaseRow.icon`); callbacks are plain `() => void`.
 - Non-obvious props carry a `/** … */` line stating what they mean and what happens when omitted, and the interface (or the file) carries a JSDoc/header comment saying when to use the component and what it renders for empty input.
@@ -41,10 +40,11 @@ Folder: apps/dashboard/src/components/page/**, apps/dashboard/src/features/econo
 
 ## How to apply
 
-Create `<Name>/index.tsx` in `components/page/` when the piece is generic chrome reused by more than one page, or under the matching `features/<area>/` when it is domain-specific. Declare `<Name>Props` above the component with docs on the non-obvious fields, accept `className` and merge it with `cn()` last, and give the empty case a rendered placeholder. If the component lands in `components/page/`, add its line to the barrel in the same commit. Keep data fetching out of the shared atoms — they take already-resolved props; feature components may call a `use*` hook.
+Create `<Name>/index.tsx` in `components/page/` when the piece is generic chrome reused by more than one page, or under the matching `features/<area>/` when it is domain-specific. Declare `<Name>Props` above the component with docs on the non-obvious fields, accept `className` and merge it with `cn()` last, and give the empty case a rendered placeholder. If the component lands in `components/page/`, add its line to the barrel in the same commit. Keep data fetching out of the shared atoms — they take already-resolved props; feature components may call a `use*` hook. One atom is deliberately not like that and it is worth knowing before you copy it: `components/page/CodeViewerPanel` is the single app-global file viewer, driven by `useCodeViewerStore`, and its lazily-loaded body (`components/page/CodeViewerPanel/CodeViewerBody.tsx:83`) calls `useFileContent` itself. That shape is for another app-global panel, not for a prop-driven atom.
 
 ## Examples
 
 - Ref: apps/dashboard/src/components/page/AcBreakdown/index.tsx — smallest complete shape: JSDoc, exported props with `className`, em-dash empty case.
 - Ref: apps/dashboard/src/components/page/BaseRow/index.tsx — exported sibling union `RowStatus`, `Record` style map, hand-rolled keyboard/ARIA interactivity.
 - Ref: apps/dashboard/src/features/economy/PerAgentTable/index.tsx — feature variant with defaulted props, per-prop docs, and i18n label fallback.
+- Ref: apps/dashboard/src/features/specs/SpecCard/index.tsx — the `features/specs` shape: unexported `SpecCardProps`, every optional prop documented with the wave that added it and what happens when it is omitted, `className` last.

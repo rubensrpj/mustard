@@ -31,7 +31,7 @@ Folder: apps/dashboard/src/pages/** · Extension: .tsx · Files of this role in 
 - Queries follow the same guard as the hooks layer: `useQuery({ queryKey: ["<literal>", project?.path], queryFn: …, enabled: !!project, staleTime: N_000 })`, with a comment when the freshness is watcher-driven.
 - Small presentational helpers used only by the page (`SectionHeading`, `EmptyBlock`, `truncate`, `eventVariant` in `ProjectDetail`) are declared above the page export with inline prop types and are not exported; anything reused by another page moves to `@/components/page`.
 - Tab state is URL-backed via `useSearchParams` rather than local state, so a detail view is linkable.
-- A file header comment states the route that reaches the page and how it tails live when that is non-obvious.
+- `SessionDetail.tsx:1-11` opens with a file header comment naming the route that reaches the page (`/sessions/:id`), what it delegates to, and how it tails live (the watcher invalidates the `["trace", "session", repoPath]`-shaped keys by prefix). `ProjectDetail.tsx` has no header at all — it starts at the imports. Write the header on a new page: the route is not recoverable from the file, and the freshness policy is what a later reader would otherwise have to re-derive.
 
 ## How to apply
 

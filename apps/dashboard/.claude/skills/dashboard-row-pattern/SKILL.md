@@ -18,13 +18,13 @@ metadata:
 
 ## Purpose
 
-A `*Row` is one line of a list the dashboard renders, and the codebase uses the suffix for two provenances that must not be mixed. Wire rows live in `src/lib/dashboard.ts` and mirror a Rust struct field-for-field — `SpecRow`, `KnowledgeRow`, `SessionRow` — so their field names are the serde contract. Fan-out rows live in `src/hooks/use*.ts` and are assembled in TypeScript from one query per project — `ArtifactDriftRow`, `ProjectDetectionRow` — so they carry query state (`isLoading`, `error`) alongside possibly-absent data. Both are declared next to the function that produces them, which is how a reader finds the row's owner without a search.
+A `*Row` is one line of a list the dashboard renders, and the codebase uses the suffix for two provenances that must not be mixed. Wire rows live in `src/lib/dashboard.ts` and mirror a Rust struct field-for-field — `SpecRow`, `KnowledgeRow`, `SessionRow` — so their field names are the serde contract. Fan-out rows live in `src/hooks/use*.ts` and are assembled in TypeScript from one query per project — `ArtifactDriftRow`, `ProjectDetectionRow` — so they carry query state (`isLoading`, `error`) alongside possibly-absent data. The rule for new rows is to declare them next to the function that produces them, so a reader finds the row's owner without a search; every fan-out row and `SessionRow` follow it, while `SpecRow` and `KnowledgeRow` still sit at the head of `dashboard.ts` from an earlier layout.
 
 ## Convention
 
 Folder: apps/dashboard/src/hooks/**, apps/dashboard/src/lib/** · Extension: .ts · Files of this role in this subproject: 4
 
-- Exported `interface <Domain>Row` in every exemplar, declared directly above its producer: `SpecRow` above `fetchSpecs`, `SessionRow` above `fetchSessions`, `ArtifactDriftRow` above `useArtifactDrift`, `ProjectDetectionRow` above `useProjectDetections`.
+- Exported `interface <Domain>Row` in every exemplar. Fan-out rows and the newest wire row are declared directly above their producer: `ArtifactDriftRow` (`useArtifactDrift.ts:19`) above `useArtifactDrift` (`:26`), `ProjectDetectionRow` (`useProjectDetections.ts:16`) above `useProjectDetections` (`:23`), and `SessionRow` with its nested `SessionToolCount` (`dashboard.ts:72` and `:114`) above `fetchSessions` (`:119`). The two oldest wire rows are not: `SpecRow` sits at `dashboard.ts:6`, beside the `SpecBucket` union it uses, while `fetchSpecs` is at `:128`; `KnowledgeRow` is at `:24` and its two producers `fetchSearchKnowledge` and `fetchKnowledgeBrowse` are at `:148` and `:232`. That is the older layout of `dashboard.ts`, where shared row types were hoisted to the head of the file. Declare a new row above its producer — and when you go looking for an existing one, check the head of the module too.
 - Wire rows keep the backend's snake_case field names verbatim (`started_at`, `is_unknown_bucket`, `tool_breakdown`) and never get camelCased at the type — the rename, when it happens, is done explicitly in a `Raw*` mapping wrapper, not by renaming the DTO.
 - Absent values are `| null` on wire rows; `?` is reserved for fields the backend is rolling out additively, and those carry a comment saying so ("Optional for backwards compatibility"). Nested row types get their own named interface (`SessionToolCount`) rather than an inline object literal.
 - Fan-out rows are camelCase and follow a fixed shape: the identity (`path` or the whole `project: ProjectEntry`), the payload as `T | undefined`, `isLoading: boolean`, `error: unknown`. They are filled defensively — `q?.data`, `q?.isLoading ?? false` — so a failed or missing query degrades the row instead of breaking the list.
@@ -38,6 +38,6 @@ Decide the provenance first. A projection the backend returns goes into `src/lib
 
 ## Examples
 
-- Ref: apps/dashboard/src/lib/dashboard.ts — `SpecRow`, `KnowledgeRow`, `SessionRow` (+ `SessionToolCount`) each above their `fetch*` wrapper.
+- Ref: apps/dashboard/src/lib/dashboard.ts — `SessionRow` (+ `SessionToolCount`) directly above `fetchSessions`, next to the retired-DTO note; `SpecRow` and `KnowledgeRow` at the head of the file as the older layout.
 - Ref: apps/dashboard/src/hooks/useProjectDetections.ts — `ProjectDetectionRow` and the 1:1 aligned `useQueries` fan-out.
 - Ref: apps/dashboard/src/hooks/useArtifactDrift.ts — `ArtifactDriftRow` returned as a `Record<path, Row>`, degrading to `undefined` when the report is unavailable.

@@ -23,7 +23,7 @@ metadata:
 
 Folder: apps/dashboard/src/lib/types/** · Extension: .ts · Files of this role in this subproject: 3
 
-- Declared with `export type`, never a TypeScript `enum` and never a const object — all three exemplars use plain string-literal unions.
+- Declared with `export type`, never a TypeScript `enum` and never a const object. The value space is always string literals, but the spelling is not always literal: `TraceKind` and `SpecActionKind` write the members out, while `EconomyScopeKind` is the indexed access `EconomyScope["kind"]` (see the next bullet).
 - Two derivation styles, both present: written out as literals (`TraceKind` in `trace.ts`, `SpecActionKind` in `specs.ts`) or projected off a discriminated union's tag field (`EconomyScopeKind = EconomyScope["kind"]` in `economy.ts`). Prefer the projection when the union already exists, so the two can never drift.
 - Variant spellings are copied from the Rust `serde` rename attribute verbatim: snake_case in `economy.ts` (`all_projects`) and `trace.ts`, kebab-case where the Rust side renames kebab (`qa-review` on `Stage` in `specs.ts`), bare lowercase for `SpecActionKind`. Do not normalise, translate, or camelCase them.
 - Discriminated unions are internally tagged on a field literally named `kind`, and each member carries only the payload that variant needs (`{ kind: "spec"; project: string; spec: string }`).
