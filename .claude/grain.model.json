@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 477,
-      "loc": 203661
+      "loc": 203669
     },
     {
       "language": "tsx",
@@ -19219,7 +19219,7 @@
     {
       "path": "apps/cli/tests/template_budget.rs",
       "language": "rust",
-      "loc": 248,
+      "loc": 256,
       "imports": [
         "std::collections::BTreeMap",
         "std::path::{Path, PathBuf}"
@@ -19229,43 +19229,43 @@
         {
           "kind": "function",
           "name": "plugin_dir",
-          "line": 72,
+          "line": 80,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "core_templates_dir",
-          "line": 78,
+          "line": 86,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_md",
-          "line": 82,
+          "line": 90,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "frontmatter_description",
-          "line": 100,
+          "line": 108,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "command_descriptions_fit_the_listing_cap",
-          "line": 137,
+          "line": 145,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "injectable_templates_fit_the_additional_context_cap",
-          "line": 178,
+          "line": 186,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "event_budget_sums_every_injectable_of_the_same_hook",
-          "line": 225,
+          "line": 233,
           "supertypes": []
         }
       ]
