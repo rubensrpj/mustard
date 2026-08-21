@@ -43,6 +43,7 @@
 //!   (the CLI prints didactic lines, the runtime prints the JSON report).
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -495,6 +496,12 @@ pub struct UpsertReport {
     /// unreadable or unwritable exclude file). Reported, never an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_unavailable: Option<String>,
+    /// What became of the version stamp in a repository that TRACKS
+    /// `mustard.json` (see [`StampOutcome`]). Absent — and byte-identical to
+    /// the shape before the field existed — on the ordinary run that left git
+    /// nothing to see.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<StampOutcome>,
 }
 
 /// `skip_serializing_if` predicate for the additive booleans above — a `false`
@@ -547,7 +554,11 @@ impl UpsertReport {
 ///    `runtime`, `version`) when absent; when present only `version` is
 ///    re-stamped (and only when `version` is `Some`), an empty `inject` is
 ///    backfilled, and an absent `runtime` is filled — everything else is
-///    preserved verbatim.
+///    preserved verbatim;
+/// 6. the stamp's own footprint ([`record_version_stamp`]) — in a repository
+///    that TRACKS `mustard.json`, an install that found a clean tree records
+///    the line it just wrote instead of leaving the file dirty. A tree that
+///    already carried the operator's work is left entirely alone.
 ///
 /// `version` is supplied by the caller because the core does not own a
 /// product version: the CLI passes its crate version (the canonical
@@ -575,6 +586,10 @@ pub fn upsert_project(
     mode: InstallMode,
 ) -> Result<UpsertReport> {
     let installed_before = ProjectConfig::exists(root);
+    // Sampled BEFORE anything is written: the only moment at which "the
+    // operator's work" and "what this run is about to write" can still be told
+    // apart. Read by step 6.
+    let found_clean = worktree_is_clean(root);
 
     let mut report = UpsertReport {
         installed_before,
@@ -623,6 +638,12 @@ pub fn upsert_project(
     // 5. The single project-root mustard.json.
     let outcome = upsert_mustard_json(root, version)?;
     report.record(MUSTARD_JSON, outcome);
+
+    // 6. …and, where the host repository TRACKS that file, the install's own
+    //    stamp is recorded rather than left dirty for the next command to
+    //    misattribute. Reported, never fatal.
+    let stamp = record_version_stamp(root, found_clean);
+    report.stamp = (stamp != StampOutcome::Nothing).then_some(stamp);
 
     Ok(report)
 }
@@ -1091,6 +1112,115 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
     }
     config.write(root)?;
     Ok(SeedOutcome::Updated)
+}
+
+// ---------------------------------------------------------------------------
+// The version stamp's own footprint
+// ---------------------------------------------------------------------------
+
+/// The commit subject the install writes when it records its own stamp.
+///
+/// Deliberately plain: it describes the line that changed and names no tool.
+/// The commit lands in the OPERATOR's history, next to their own work.
+const STAMP_COMMIT_SUBJECT: &str = "chore: update project config version stamp";
+
+/// What an install did about the version stamp it had just written into a
+/// `mustard.json` the host repository VERSIONS.
+///
+/// Every run re-stamps `mustard.json#version`, and where that file is tracked
+/// the write lands as an uncommitted change nobody asked for. The very next
+/// command that guards on a clean tree then refuses — attributing the change to
+/// another unit of the operator's work, when the writer was the installer. So
+/// the install finishes its own job instead of leaving it: it records the stamp
+/// when the tree it FOUND was clean, and says what it did in every other case.
+///
+/// Serialized because it rides in [`UpsertReport`], the runtime's JSON answer;
+/// `camelCase` matches every other key that report emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StampOutcome {
+    /// Nothing was left for git to see: the file is untracked (a private
+    /// install hid it) or the stamp did not change a byte. The ordinary case.
+    Nothing,
+    /// The stamp was the install's own change and it is now committed — the
+    /// tree the install found clean is clean again.
+    Recorded,
+    /// The install found the operator's work already in the tree and recorded
+    /// nothing. Their change is never swept into an installer's commit, and the
+    /// stamp is left for them to commit with it.
+    TreeNotClean,
+    /// Git could not answer, or refused the commit (no identity configured, a
+    /// hook that declined). The stamp is left where it landed. Reported, never
+    /// an error.
+    Unavailable,
+}
+
+/// Whether the repository containing `root` has NOTHING to report — no staged,
+/// modified or untracked path. `None` when git could not answer at all (absent
+/// binary, no repository).
+///
+/// Sampled by an installer BEFORE it writes anything, so [`record_version_stamp`]
+/// can tell its own change apart from the operator's. Never panics.
+#[must_use]
+pub fn worktree_is_clean(root: &Path) -> Option<bool> {
+    porcelain(root, &[]).map(|status| status.is_empty())
+}
+
+/// Record the version stamp this install just wrote, so an install never leaves
+/// a versioned file dirty for the next command to blame on the operator.
+///
+/// `found_clean` is [`worktree_is_clean`] sampled before the install wrote
+/// anything — `None` when git could not answer then either.
+///
+/// Only ever commits the ONE path: an install that found other work in the tree
+/// records nothing at all, and even on a clean tree the commit carries a
+/// pathspec, so nothing an install created beside the stamp can ride along.
+/// Fail-open throughout — every failure degrades to
+/// [`StampOutcome::Unavailable`] and the stamp simply stays uncommitted.
+#[must_use]
+pub fn record_version_stamp(root: &Path, found_clean: Option<bool>) -> StampOutcome {
+    // A path the host repository does not track cannot be dirty — the private
+    // install's exclude rule already made the stamp invisible.
+    if git_exclude::tracked_paths(root, &[MUSTARD_JSON.to_string()]).is_empty() {
+        return StampOutcome::Nothing;
+    }
+    let Some(status) = porcelain(root, &[MUSTARD_JSON]) else {
+        return StampOutcome::Unavailable;
+    };
+    if status.is_empty() {
+        return StampOutcome::Nothing; // re-run over a settled project.
+    }
+    match found_clean {
+        Some(true) if commit_path(root, MUSTARD_JSON) => StampOutcome::Recorded,
+        Some(true) => StampOutcome::Unavailable,
+        Some(false) => StampOutcome::TreeNotClean,
+        None => StampOutcome::Unavailable,
+    }
+}
+
+/// `git status --porcelain` for `root`, optionally narrowed to `pathspecs`.
+/// `None` when git could not answer — which is NOT the same as an empty answer,
+/// so this cannot reuse `git_exclude`'s helper (that one folds empty stdout into
+/// `None`, and empty stdout is exactly what "clean" looks like here).
+fn porcelain(root: &Path, pathspecs: &[&str]) -> Option<String> {
+    let mut args: Vec<&str> = vec!["status", "--porcelain"];
+    if !pathspecs.is_empty() {
+        args.push("--");
+        args.extend(pathspecs);
+    }
+    let out = Command::new("git").args(&args).current_dir(root).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Commit `path` alone, with [`STAMP_COMMIT_SUBJECT`]. `false` on any refusal —
+/// no git, no identity configured, a hook that declined — and nothing is left
+/// staged, because the pathspec form of `git commit` never touches the index.
+fn commit_path(root: &Path, path: &str) -> bool {
+    Command::new("git")
+        .args(["commit", "-m", STAMP_COMMIT_SUBJECT, "--", path])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 // ---------------------------------------------------------------------------
