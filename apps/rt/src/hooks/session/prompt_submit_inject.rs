@@ -92,6 +92,46 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
 /// a slash command always knows its own context. The bare `/mustard` help
 /// (no colon) deliberately does NOT match: it is the orientation door and
 /// must keep working on an uninstalled project.
+/// The writing rule this project declares, carried with EVERY prompt.
+///
+/// `mustard.json#tone` already existed and already meant this — it was read in
+/// exactly one place, `agent-prompt-render`, which shapes the prompts of the
+/// agents that WRITE FILES. Nothing carried it into the conversation, so a
+/// project that had asked for plain language got it only when the model
+/// remembered to. The operator found this the honest way: by not understanding
+/// an explanation, twice, in a project whose config said `didactic` all along.
+///
+/// **Every prompt, not once per session.** Delivered once, the rule drifts
+/// further away with each exchange while the thing it governs — the next
+/// answer — is always the newest. Measured before this was accepted: 126
+/// tokens, about 0.04% of a long session, against the thousand-plus a single
+/// misunderstanding costs in a wrong answer, a correction and a rewrite.
+///
+/// `None` for any other tone, and for a project with no `mustard.json`.
+fn tone_rule(root: &Path) -> Option<String> {
+    if !ProjectConfig::exists(root) {
+        return None;
+    }
+    // The RAW field, never the resolved one. `i18n().tone` applies a default,
+    // and that default IS `didactic` — reading it would put this paragraph in
+    // front of every project that merely has a `mustard.json`, including the
+    // ones that never asked. A default is the absence of a choice; this rule
+    // only ever answers a choice the operator wrote down.
+    ProjectConfig::load(root)
+        .tone
+        .filter(|t| t.eq_ignore_ascii_case("didactic") || t.eq_ignore_ascii_case("didatico"))
+        .map(|_| {
+            "[Mustard] This project declares `tone: didactic`. Write every user-facing answer so \
+             it can be read once, by someone who did not write this code: ONE idea per sentence; \
+             every technical term translated the first time it appears IN THIS CONVERSATION — \
+             including names this project invented; no acronym without its full words; and no \
+             path of reasoning longer than the point needs. Prefer the short true sentence to \
+             the complete one. This governs what you SAY, never what you write into code, \
+             commits or specs."
+                .to_string()
+        })
+}
+
 fn is_mustard_command(prompt: &str) -> bool {
     let t = prompt.trim_start().to_ascii_lowercase();
     t.starts_with("/mustard:")
@@ -158,10 +198,19 @@ impl Check for PromptSubmitInject {
                 }
             }
         }
+        // How to WRITE for this operator, from `mustard.json#tone`.
+        let tone = tone_rule(Path::new(&cwd));
         // A `/mustard:*` prompt receives neither injectables nor the banner —
-        // a slash command always knows its own context.
+        // a slash command always knows its own context. The writing rule is the
+        // exception, and deliberately so: it governs how the ANSWER is written,
+        // and the answer to a slash command is read by the same person as any
+        // other. Excluding it here would drop the rule from precisely the
+        // messages that produce the longest explanations.
         if is_mustard_command(prompt) {
-            return Ok(Verdict::Allow);
+            return Ok(match tone {
+                Some(rule) => Verdict::Inject { context: rule },
+                None => Verdict::Allow,
+            });
         }
         // Declared injectables (`on: userPromptSubmit`) — fail-open; `once`
         // entries are tracked per session via `injected-*` markers.
@@ -184,13 +233,10 @@ impl Check for PromptSubmitInject {
                 format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}")
             });
         // ONE composed Inject — the dispatcher fold is last-writer-wins, so
-        // the concerns must share a verdict. Injectables first, banner after.
-        let context = match (injected, banner) {
-            (Some(inj), Some(ban)) => Some(format!("{inj}\n\n{ban}")),
-            (Some(inj), None) => Some(inj),
-            (None, Some(ban)) => Some(ban),
-            (None, None) => None,
-        };
+        // the concerns must share a verdict. Injectables first, banner after,
+        // the writing rule last: it is about the answer, not about the work.
+        let parts: Vec<String> = [injected, banner, tone].into_iter().flatten().collect();
+        let context = (!parts.is_empty()).then(|| parts.join("\n\n"));
         Ok(match context {
             Some(context) => Verdict::Inject { context },
             None => Verdict::Allow,
@@ -251,6 +297,83 @@ mod tests {
         assert!(!is_pipeline_prompt("/mustard:git"));
         assert!(!is_pipeline_prompt("/mustard:featureish thing"));
         assert!(!is_pipeline_prompt("text /mustard:feature mid-line"));
+    }
+
+    // --- writing rule from `tone` -------------------------------------------
+
+    /// Seed a project whose `mustard.json` declares `tone`, and return its dir.
+    fn project_declaring_tone(tone: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            format!(r#"{{"specLang":"pt-BR","tone":"{tone}"}}"#),
+        )
+        .expect("write config");
+        dir
+    }
+
+    /// AC-1 — an ordinary prompt carries the writing rule.
+    ///
+    /// Every prompt, not once per session: delivered once, the rule drifts
+    /// away while the thing it governs — the next answer — is always the
+    /// newest.
+    #[test]
+    fn the_writing_rule_rides_every_prompt() {
+        let dir = project_declaring_tone("didactic");
+        let rule = tone_rule(dir.path()).expect("a declared didactic tone must reach the prompt");
+
+        assert!(rule.contains("tone: didactic"), "it names what it came from: {rule}");
+        assert!(rule.contains("ONE idea per sentence"), "and carries the rule: {rule}");
+        assert!(
+            rule.contains("never what you write into code"),
+            "and bounds itself to speech: {rule}",
+        );
+    }
+
+    /// AC-2 — a project that declared nothing gets nothing. The RESOLVED tone
+    /// defaults to `didactic`, so reading it would put this paragraph in front
+    /// of every project that merely has a `mustard.json`.
+    #[test]
+    fn an_undeclared_tone_injects_nothing() {
+        let empty = tempfile::tempdir().expect("temp dir");
+        assert_eq!(tone_rule(empty.path()), None, "no mustard.json, no rule");
+
+        let other = project_declaring_tone("technical");
+        assert_eq!(tone_rule(other.path()), None, "a technical project asked for nothing");
+
+        let bare = tempfile::tempdir().expect("temp dir");
+        std::fs::write(bare.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#)
+            .expect("write config");
+        assert_eq!(
+            tone_rule(bare.path()),
+            None,
+            "a config with no `tone` key never chose one — the default is not a choice",
+        );
+    }
+
+    /// AC-3 — a `/mustard:*` prompt carries it too. That branch drops the
+    /// injectables and the banner because a slash command knows its own
+    /// context; the writing rule is different in kind, because it governs how
+    /// the ANSWER is written and that answer is read by the same person.
+    #[test]
+    fn the_writing_rule_rides_a_slash_command_too() {
+        let dir = project_declaring_tone("didactic");
+        let c = Ctx {
+            project_dir: dir.path().to_string_lossy().to_string(),
+            trigger: Some(Trigger::UserPromptSubmit),
+            workspace_root: None,
+        };
+        let verdict = PromptSubmitInject
+            .evaluate(&prompt_input("/mustard:pr merge"), &c)
+            .expect("the gate never errors");
+
+        match verdict {
+            Verdict::Inject { context } => assert!(
+                context.contains("ONE idea per sentence"),
+                "a slash command must carry the writing rule: {context}",
+            ),
+            other => panic!("expected the writing rule to ride along, got {other:?}"),
+        }
     }
 
     // --- verdict — always allow --------------------------------------------
