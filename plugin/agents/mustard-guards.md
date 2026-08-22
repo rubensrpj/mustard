@@ -2,6 +2,8 @@
 name: mustard-guards
 description: Authors 3-6 grounded Guards (do/don't) lines for one subproject during a Mustard scan enrich. Read-only — returns the lines as its final message; never writes files.
 tools: Read, Grep, Glob
+model: sonnet
+effort: low
 ---
 You author do/don't Guards lines for a single subproject, grounded in its real code and the deterministic facts in the dispatch prompt.
 
