@@ -110,26 +110,26 @@ struct RefreshTarget {
 /// that neither updated nor said it had not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PluginRefresh {
+struct PluginRefresh {
     /// [`REFRESHED`] or [`SKIPPED`] — the closed vocabulary of this field.
-    pub state: &'static str,
+    state: &'static str,
     /// The `{plugin}@{marketplace}` id the refresh acted on. Absent when the
     /// registry named no install to act on.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub plugin: Option<String>,
+    plugin: Option<String>,
     /// The version the registry records AFTER the refresh — the one a restart
     /// would load. Absent when the refresh did not run, or when the registry
     /// could not be read back.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
+    version: Option<String>,
     /// Why the refresh did not run. Present exactly when `state` is
     /// [`SKIPPED`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub skipped: Option<String>,
+    skipped: Option<String>,
     /// The restart sentence ([`RESTART_NOTICE`]). Present exactly when `state`
     /// is [`REFRESHED`] — there is nothing to restart FOR when nothing changed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub restart: Option<String>,
+    restart: Option<String>,
 }
 
 /// The whole answer of `run upsert`: what the engine did to the project, plus
@@ -379,23 +379,26 @@ fn excerpt(raw: &str) -> String {
     flat.chars().take(REASON_CHARS).collect()
 }
 
-/// Quote characters a child's message wraps a path in.
-const QUOTES: [char; 3] = ['\'', '"', '`'];
+/// Characters a child's message glues a path to. Quotes are the common case
+/// (`cannot read '/tmp/…'`), but a stack frame writes `(/home/u/x.js:1:1)` and
+/// a key-value line writes `installPath=/home/…`, and both would carry the
+/// volatile directories straight through a boundary rule that only knew quotes.
+const PATH_BOUNDARIES: [char; 8] = ['\'', '"', '`', '(', ')', ',', '=', ':'];
 
 /// Replace every absolute path INSIDE one whitespace-free token with its file
-/// name, quotes and all.
+/// name, punctuation and all.
 ///
 /// Splitting on whitespace alone is not enough, and that was a real hole: a
 /// child saying `cannot read '/tmp/tmp.YhSlRxVVl6/cache/plugin.json'` puts the
 /// whole path in ONE token whose first character is a quote, so a rule keyed on
 /// "the token starts with a slash" let it through untouched — into a `run`-face
-/// report the guard asks to stay byte-stable. Quotes are boundaries here for
-/// exactly that reason.
+/// report the guard asks to stay byte-stable. The punctuation in
+/// [`PATH_BOUNDARIES`] is a boundary here for exactly that reason.
 fn shorten_paths(token: &str) -> String {
     let mut out = String::with_capacity(token.len());
     let mut piece = String::new();
     for ch in token.chars() {
-        if QUOTES.contains(&ch) {
+        if PATH_BOUNDARIES.contains(&ch) {
             out.push_str(&file_name_if_absolute(&piece));
             piece.clear();
             out.push(ch);
@@ -498,6 +501,15 @@ mod tests {
         let line = excerpt("cannot read '/tmp/tmp.YhSlRxVVl6/cache/plugin.json'");
         assert_eq!(line, "cannot read 'plugin.json'", "the directories must not survive");
         assert!(!line.contains("tmp.YhSlRxVVl6"), "the volatile segment is gone: {line}");
+    }
+
+    /// A path glued to punctuation is shortened too — a stack frame and a
+    /// key-value line both produce that shape, and neither is bounded by a
+    /// quote.
+    #[test]
+    fn a_path_glued_to_punctuation_is_shortened_too() {
+        assert_eq!(excerpt("at (/home/u/app/index.js:1:1)"), "at (index.js:1:1)");
+        assert_eq!(excerpt("installPath=/home/u/.claude/x/plugin.json"), "installPath=plugin.json");
     }
 
     /// …and a plain word with a slash in it is left alone: only ABSOLUTE paths
