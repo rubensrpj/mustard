@@ -87,9 +87,24 @@ jobs:
           cargo update --workspace
           grep -q "^version = \"$nv\"$" Cargo.lock   # o lock realmente andou
 
+          # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
+          # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
+          # --workspace` acima nao o alcanca. Ele ficou tres releases para tras sem
+          # ninguem notar: a CI exclui o dashboard (bibliotecas de sistema por SO) e
+          # o Release o compila por `tauri build` SEM `--locked`, entao o lock velho
+          # e consertado na hora do build e o conserto e jogado fora em vez de
+          # commitado. O `--workspace` aqui tambem e o que limita a atualizacao aos
+          # pacotes locais: um `-p mustard-core` re-resolve o grafo inteiro e move
+          # dependencias de terceiros junto (medido: rebaixou windows-sys, toml e
+          # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
+          # ficar para tras.
+          cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
+          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+          [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$manifest" "$cargo_toml" Cargo.lock
+          git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
           git commit -m "chore(release): v$nv — bump automático pós-merge na main"
           # Rebase ANTES da tag: se outro merge entrou no meio-tempo, o commit
           # de bump é reescrito e a tag precisa apontar para o sha final.
@@ -109,8 +124,14 @@ jobs:
           git checkout -B dev-sync "origin/dev"
           dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           cv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
-          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ]; then
-            echo "dev já está em v$nv nas duas pernas — nada a propagar"
+          # A QUARTA perna entra na DECISAO tambem, nao so no bloco de trabalho.
+          # As tres primeiras podem ja estar em $nv com o lock do dashboard para
+          # tras — foi exatamente o estado em que este conserto encontrou o
+          # repositorio. Sem este teste o bloco inteiro seria pulado e a quarta
+          # perna nunca andaria, que e o defeito de novo com outra roupa.
+          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$dash_pin" = "version = \"$nv\"" ]; then
+            echo "dev já está em v$nv nas quatro pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
             grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
@@ -122,7 +143,22 @@ jobs:
             # mesmo motivo que reprovou a main.
             cargo update --workspace
             grep -q "^version = \"$nv\"$" Cargo.lock
-            git add "$manifest" "$cargo_toml" Cargo.lock
+
+            # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
+            # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
+            # --workspace` acima nao o alcanca. Ele ficou tres releases para tras sem
+            # ninguem notar: a CI exclui o dashboard (bibliotecas de sistema por SO) e
+            # o Release o compila por `tauri build` SEM `--locked`, entao o lock velho
+            # e consertado na hora do build e o conserto e jogado fora em vez de
+            # commitado. O `--workspace` aqui tambem e o que limita a atualizacao aos
+            # pacotes locais: um `-p mustard-core` re-resolve o grafo inteiro e move
+            # dependencias de terceiros junto (medido: rebaixou windows-sys, toml e
+            # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
+            # ficar para tras.
+            cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
+            dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+            [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+            git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then
               echo "dev sincronizado: $dv -> $nv"
