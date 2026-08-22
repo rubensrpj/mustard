@@ -17,25 +17,35 @@
 //! build" — it reads as a real, old release, and the harness's own drift
 //! warning starts firing against itself.
 //!
-//! ## Why `Cargo.lock` is NOT checked here
+//! ## Which `Cargo.lock` is checked here, and which is not
 //!
-//! There is a third file carrying this version — `Cargo.lock` pins one per
-//! workspace member — and leaving it behind is what broke the v0.1.29 release
-//! on all three operating systems ("cannot update the lock file because
+//! A third kind of file carries this version: `Cargo.lock` pins one per local
+//! package. There are TWO of them in this repository, and they need opposite
+//! treatment.
+//!
+//! **The root lock is NOT checked.** A test for it was written, and then
+//! measured: it CANNOT fail. Plain `cargo test` repairs a stale root lock
+//! before running anything, so the assertion never sees the divergence;
+//! `cargo test --locked` fails in cargo itself, before any test binary starts.
+//! Either way the assertion is decoration, and decoration that looks like a
+//! guard is worse than no guard. The real guard there is `--locked`, which CI
+//! and the release already pass, plus the `cargo update --workspace` that
+//! `bump-on-main` runs — leaving that lock behind is what broke the v0.1.29
+//! release on all three operating systems ("cannot update the lock file because
 //! `--locked` was passed", before a line compiled).
 //!
-//! A test for it was written, and then measured: it CANNOT fail. Plain
-//! `cargo test` repairs a stale lock before running anything, so the assertion
-//! never sees the divergence; `cargo test --locked` fails in cargo itself,
-//! before any test binary starts. Either way the assertion is decoration, and
-//! decoration that looks like a guard is worse than no guard.
-//!
-//! The real guard is `--locked`, which CI and the release already pass. The gap
-//! was never detection — it was that the ONE commit which moved the version
-//! without the lock is the `bump-on-main` commit, and a push made with
-//! `GITHUB_TOKEN` does not trigger workflows (anti-recursion), so it is the one
-//! commit CI never sees. Fixed where it belongs: that workflow now runs
-//! `cargo update --workspace` and commits the lock with the manifest.
+//! **The dashboard lock IS checked**, and the paragraph above is exactly why it
+//! has to be. `apps/dashboard/src-tauri` is deliberately its own workspace root,
+//! so no root build ever resolves it: nothing repairs it before this test reads
+//! it as a plain file, which is what makes the assertion able to fail. Nothing
+//! else looks either — CI excludes the dashboard on purpose (it needs per-OS
+//! system libraries), and the release builds it through `tauri build` WITHOUT
+//! `--locked`, so a stale lock is silently repaired at build time and the repair
+//! is thrown away instead of committed. Measured on 2026-08-22: that lock still
+//! named `mustard-cli` and `mustard-core` at `0.1.41` while the workspace was at
+//! `0.1.44` — three releases behind, and nothing in the repository had noticed.
+//! `bump-on-main` now advances that lock too; this test is what says so out loud
+//! if it ever stops.
 
 use std::path::{Path, PathBuf};
 
@@ -126,4 +136,109 @@ mod helper_tests {
         assert_eq!(json_string_field(doc, "name").as_deref(), Some("mustard"));
         assert_eq!(json_string_field(doc, "absent"), None);
     }
+}
+
+/// The dashboard's own workspace lock, relative to the workspace root.
+const DASHBOARD_LOCK_REL: &str = "apps/dashboard/src-tauri/Cargo.lock";
+
+/// The dashboard's own manifest, relative to the workspace root.
+const DASHBOARD_MANIFEST_REL: &str = "apps/dashboard/src-tauri/Cargo.toml";
+
+/// One `[[package]]` record of a `Cargo.lock`, reduced to the three fields this
+/// file asks about.
+struct LockPackage {
+    name: String,
+    version: String,
+    /// `None` for a package that lives in this repository (reached by path);
+    /// a package pulled from a registry carries a `source` line.
+    source: Option<String>,
+}
+
+/// Every `[[package]]` record of a lock file.
+///
+/// Hand-rolled rather than pulling a TOML parser into this crate's
+/// dev-dependencies for three fields — the same trade `json_string_field` above
+/// already makes. Only column-0 `key = "value"` lines count, so the quoted
+/// entries inside a `dependencies = [...]` list are never mistaken for fields.
+fn lock_packages(raw: &str) -> Vec<LockPackage> {
+    let mut out = Vec::new();
+    for block in raw.split("[[package]]").skip(1) {
+        let field = |key: &str| {
+            block
+                .lines()
+                .take_while(|line| !line.starts_with('['))
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix(" = \"")?.strip_suffix('"'))
+                .map(str::to_string)
+        };
+        if let (Some(name), Some(version)) = (field("name"), field("version")) {
+            out.push(LockPackage { name, version, source: field("source") });
+        }
+    }
+    out
+}
+
+/// The `[package] name` of a manifest — the one package in the dashboard's lock
+/// that is NOT ours to version.
+fn package_name(manifest: &Path) -> Option<String> {
+    std::fs::read_to_string(manifest).ok()?.lines().find_map(|line| {
+        line.strip_prefix("name = \"")?.strip_suffix('"').map(str::to_string)
+    })
+}
+
+/// Every crate of THIS repository that the dashboard consumes must be pinned at
+/// THIS repository's version in the dashboard's own lock.
+///
+/// This is the assertion the module doc argues for: the dashboard is its own
+/// workspace root, so no root build resolves its lock, and this test reads that
+/// file as data — nothing repairs it first, which is what lets the assertion
+/// fail. `mustard-dashboard` itself is excluded because it carries a version of
+/// its own on purpose; every other local package is one of ours.
+#[test]
+fn the_dashboard_lock_pins_this_repositorys_crates_at_this_version() {
+    let Some(root) = workspace_root() else {
+        // Compiled outside the repository — see the sibling test for why absence
+        // is missing evidence rather than a failure.
+        return;
+    };
+    let lock_path = root.join(DASHBOARD_LOCK_REL);
+    let Ok(raw) = std::fs::read_to_string(&lock_path) else {
+        eprintln!("[skip] {} is absent from this source tree", lock_path.display());
+        return;
+    };
+
+    let own = package_name(&root.join(DASHBOARD_MANIFEST_REL)).unwrap_or_default();
+    let ours: Vec<LockPackage> = lock_packages(&raw)
+        .into_iter()
+        .filter(|p| p.source.is_none() && p.name != own)
+        .collect();
+
+    // Without this the filters could silently match nothing — a reworded lock
+    // format would turn the guard into a test that always passes, which is the
+    // decoration the module doc refuses.
+    assert!(
+        !ours.is_empty(),
+        "{} names no local package other than `{own}` — either the dashboard \
+         stopped depending on this repository (then delete this test) or the \
+         lock format moved and the parser above no longer reads it",
+        lock_path.display()
+    );
+
+    let expected = env!("CARGO_PKG_VERSION");
+    let stale: Vec<String> = ours
+        .iter()
+        .filter(|p| p.version != expected)
+        .map(|p| format!("{} {}", p.name, p.version))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "{} still pins {stale:?}, but this repository is at {expected}.\n\
+         Nothing repairs that file on its own: the dashboard is its own workspace \
+         root, CI excludes it (per-OS system libraries) and the release builds it \
+         without `--locked`, so a stale pin is patched at build time and thrown \
+         away. Advance it with\n  \
+         cargo update --workspace --manifest-path {DASHBOARD_MANIFEST_REL}\n\
+         and commit the lock. `bump-on-main` runs that same line on every release \
+         — if this is red after a release, that step is what broke.",
+        lock_path.display()
+    );
 }

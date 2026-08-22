@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 478,
-      "loc": 205541
+      "loc": 206631
     },
     {
       "language": "tsx",
@@ -425,7 +425,7 @@
     {
       "path": "packages/core/src/lib.rs",
       "language": "rust",
-      "loc": 165,
+      "loc": 170,
       "imports": [
         "domain::command_detect::{detect_commands, detect_commands_for_unit}",
         "domain::config::{\n    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, ProjectConfig, RolePattern,\n    Runtime, Subprojects, BUILD_COMMAND_FALLBACK,\n}",
@@ -443,7 +443,7 @@
         "platform::git_branches::{\n    branch_catalog, current_branch, default_branch, protected_branches, remote_branch_names,\n    BranchEntry,\n}",
         "platform::git_exclude::{\n    ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,\n}",
         "platform::git_provider::{detect_provider, provider_of_url, resolve_provider}",
-        "platform::harness::{\n    harness_version, installed_harness_version, installed_harness_version_from, is_behind,\n}",
+        "platform::harness::{\n    claude_config_dir, harness_version, installed_harness_version, installed_harness_version_from,\n    is_behind, INSTALLED_PLUGINS, PLUGIN_NAME,\n}",
         "platform::hook_resolve::{\n    resolve_mustard_rt, rewrite_command, rewrite_hooks_value, rewrite_settings_hooks,\n}",
         "platform::i18n::{\n    apply_tone, slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, Tone,\n    UserLocale, UserLocaleError,\n}",
         "platform::project_seed::{\n    carries_private_marks, default_inject_entries, detect_install_mode, footprint,\n    footprint_pathspecs, footprint_rules, is_written_footprint, migrate_orchestrator_footprint,\n    record_version_stamp, record_written_path, retire_planted_plugin_enablement, seed_gitignore,\n    seed_injectable_files, seed_settings, upsert_project, worktree_is_clean, FootprintEntry,\n    InstallMode, MigrationOutcome, RecordOutcome, SeedOutcome, UpsertReport, CLAUDE_LOCAL_MD,\n    CLAUDE_MD,\n    PRIVATE_MARKS,\n}",
@@ -17527,7 +17527,7 @@
     {
       "path": "packages/core/tests/version_line.rs",
       "language": "rust",
-      "loc": 118,
+      "loc": 224,
       "imports": [
         "std::path::{Path, PathBuf}",
         "super::json_string_field"
@@ -17537,37 +17537,79 @@
         {
           "kind": "function",
           "name": "the_workspace_version_equals_the_published_plugin_version",
-          "line": 46,
+          "line": 56,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_running_harness_reports_that_same_line",
-          "line": 72,
+          "line": 82,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "workspace_root",
-          "line": 91,
+          "line": 101,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "find_manifest",
-          "line": 103,
+          "line": 113,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "json_string_field",
-          "line": 109,
+          "line": 119,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reads_the_field_and_ignores_the_rest",
-          "line": 123,
+          "line": 133,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "LockPackage",
+          "line": 149,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "name",
+          "line": 150,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "version",
+          "line": 151,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "source",
+          "line": 154,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "lock_packages",
+          "line": 163,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "package_name",
+          "line": 182,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_dashboard_lock_pins_this_repositorys_crates_at_this_version",
+          "line": 197,
           "supertypes": []
         }
       ]
@@ -33766,17 +33808,220 @@
     {
       "path": "apps/rt/src/commands/maint/upsert.rs",
       "language": "rust",
-      "loc": 76,
+      "loc": 671,
       "imports": [
+        "crate::shared::proc::{run_shell_with_deadline, ShellOutcome}",
         "mustard_core::InstallMode",
-        "std::path::PathBuf"
+        "mustard_core::{claude_config_dir, INSTALLED_PLUGINS, PLUGIN_NAME}",
+        "serde::Serialize",
+        "std::path::{Path, PathBuf}",
+        "std::time::Duration",
+        "super::*"
       ],
       "namespaces": [],
       "declarations": [
         {
+          "kind": "struct",
+          "name": "RefreshTarget",
+          "line": 97,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "id",
+          "line": 99,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "marketplace",
+          "line": 101,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "scope",
+          "line": 103,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PluginRefresh",
+          "line": 113,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "state",
+          "line": 115,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "plugin",
+          "line": 119,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "version",
+          "line": 124,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "skipped",
+          "line": 128,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "restart",
+          "line": 132,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Report",
+          "line": 143,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "project",
+          "line": 145,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "plugin_refresh",
+          "line": 146,
+          "supertypes": []
+        },
+        {
           "kind": "function",
           "name": "run",
-          "line": 38,
+          "line": 156,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "refresh_plugin",
+          "line": 219,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "installed_version_of",
+          "line": 240,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "fold_refresh",
+          "line": 261,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "skipped",
+          "line": 326,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_step",
+          "line": 344,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "excerpt",
+          "line": 373,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shorten_paths",
+          "line": 397,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "file_name_if_absolute",
+          "line": 417,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "is_plain_id",
+          "line": 426,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "refresh_target",
+          "line": 443,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_quoted_absolute_path_is_shortened_too",
+          "line": 500,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_path_glued_to_punctuation_is_shortened_too",
+          "line": 510,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_relative_path_is_left_intact",
+          "line": 518,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_reported_version_is_the_scope_that_was_updated",
+          "line": 530,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_successful_refresh_names_the_version_and_the_restart",
+          "line": 557,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_unavailable_cli_degrades_to_a_reported_skip",
+          "line": 611,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "refresh_target_reads_marketplace_and_scope_from_the_registry",
+          "line": 653,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_shell_shaped_id_is_refused_instead_of_run",
+          "line": 673,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_outcome_appends_the_refresh_without_moving_anything",
+          "line": 690,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "excerpt_flattens_and_bounds_child_output",
+          "line": 713,
           "supertypes": []
         }
       ]
@@ -57661,7 +57906,7 @@
     {
       "path": "apps/rt/src/hooks/session/prompt_submit_inject.rs",
       "language": "rust",
-      "loc": 469,
+      "loc": 670,
       "imports": [
         "crate::hooks::observe::amend_window_inject::close_amend_windows_for_session",
         "crate::shared::events::economy",
@@ -57678,7 +57923,7 @@
         {
           "kind": "struct",
           "name": "PromptSubmitInject",
-          "line": 64,
+          "line": 72,
           "supertypes": [
             "Check"
           ]
@@ -57686,133 +57931,175 @@
         {
           "kind": "function",
           "name": "is_pipeline_prompt",
-          "line": 69,
+          "line": 76,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_mustard_command",
-          "line": 95,
+          "line": 102,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_upsert_prompt",
-          "line": 103,
+          "line": 110,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "tone_rule",
+          "line": 143,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "evaluate",
-          "line": 130,
+          "line": 190,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ctx",
-          "line": 214,
+          "line": 280,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prompt_input",
-          "line": 230,
+          "line": 296,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recognises_pipeline_commands",
-          "line": 241,
+          "line": 307,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rejects_non_pipeline_prompts",
-          "line": 249,
+          "line": 315,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "project_declaring_tone",
+          "line": 325,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "verdict_for",
+          "line": 343,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_writing_rule_rides_every_prompt",
+          "line": 361,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_accented_spelling_counts_as_declared",
+          "line": 385,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_undeclared_tone_injects_nothing",
+          "line": 397,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_writing_rule_rides_a_slash_command_too",
+          "line": 449,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_prompt_allows",
-          "line": 259,
+          "line": 472,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gate_denies_mustard_command_without_installation",
-          "line": 277,
+          "line": 490,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gate_allows_upsert_without_installation",
-          "line": 300,
+          "line": 513,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gate_allows_bare_mustard_help_without_installation",
-          "line": 316,
+          "line": 529,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gate_ignores_normal_prompts_without_installation",
-          "line": 328,
+          "line": 541,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_pipeline_prompt_allows_without_active_spec",
-          "line": 340,
+          "line": 553,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_pipeline_prompt_injects_with_active_spec",
-          "line": 355,
+          "line": 568,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_user_prompt_submit_trigger_allows",
-          "line": 383,
+          "line": 596,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prompt_input_with_session",
-          "line": 399,
+          "line": 612,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_injectable",
-          "line": 409,
+          "line": 622,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "first_prompt_injects_declared_file_and_records_marker",
-          "line": 421,
+          "line": 634,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "second_prompt_same_session_does_not_repeat_once_injectable",
-          "line": 443,
+          "line": 656,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mustard_command_prompt_gets_no_injectables",
-          "line": 464,
+          "line": 677,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_declared_file_stays_fail_open",
-          "line": 482,
+          "line": 695,
           "supertypes": []
         }
       ],
@@ -62951,7 +63238,7 @@
           "supertypes": []
         }
       ],
-      "fan_in": 4
+      "fan_in": 5
     },
     {
       "path": "apps/rt/src/shared/pr_provider.rs",
@@ -65857,7 +66144,7 @@
     {
       "path": "apps/rt/tests/plugin_agents.rs",
       "language": "rust",
-      "loc": 98,
+      "loc": 242,
       "imports": [
         "mustard_rt::commands::agent::render::TEMPLATE_PLACEHOLDERS",
         "std::fs",
@@ -65868,19 +66155,61 @@
         {
           "kind": "function",
           "name": "workspace_root",
-          "line": 27,
+          "line": 32,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_placeholders",
-          "line": 41,
+          "line": 46,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "agent_prompt_ref_documents_every_placeholder",
-          "line": 67,
+          "line": 72,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "model_is_accepted",
+          "line": 123,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "effort_is_accepted",
+          "line": 128,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "agent_frontmatter",
+          "line": 135,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "declared",
+          "line": 150,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shipped_agents",
+          "line": 164,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shipped_agents_declare_model_and_effort",
+          "line": 192,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "rejects_values_outside_the_accepted_vocabulary",
+          "line": 243,
           "supertypes": []
         }
       ]
@@ -66067,7 +66396,7 @@
     {
       "path": "apps/rt/tests/private_surface.rs",
       "language": "rust",
-      "loc": 137,
+      "loc": 143,
       "imports": [
         "serde_json::Value",
         "std::path::Path",
@@ -66084,19 +66413,19 @@
         {
           "kind": "function",
           "name": "upsert",
-          "line": 106,
+          "line": 111,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "init_repo",
-          "line": 129,
+          "line": 135,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git",
-          "line": 140,
+          "line": 146,
           "supertypes": []
         }
       ]
@@ -82207,7 +82536,7 @@
     {
       "path": "apps/dashboard/src-tauri/tests/telemetry_test.rs",
       "language": "rust",
-      "loc": 44,
+      "loc": 77,
       "imports": [
         "mustard_dashboard_lib::telemetry",
         "std::path::PathBuf",
@@ -82223,26 +82552,26 @@
         },
         {
           "kind": "function",
-          "name": "rtk_summary_is_unavailable_on_clean_repo",
-          "line": 20,
+          "name": "rtk_summary_is_well_shaped_on_clean_repo",
+          "line": 38,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "routing_breakdown_is_zeroed",
-          "line": 28,
+          "line": 62,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "hook_fire_counts_empty",
-          "line": 37,
+          "line": 71,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "agent_activity_zeroed",
-          "line": 44,
+          "line": 78,
           "supertypes": []
         }
       ]
@@ -94892,7 +95221,7 @@
   ],
   "graph": {
     "nodes": 663,
-    "edges": 523,
+    "edges": 524,
     "cyclic": true,
     "top_fan_in": [
       {
@@ -94988,6 +95317,10 @@
         "degree": 5
       },
       {
+        "module": "apps/rt/src/shared/proc.rs",
+        "degree": 5
+      },
+      {
         "module": "packages/core/src/domain/economy/scope.rs",
         "degree": 5
       },
@@ -95009,10 +95342,6 @@
       },
       {
         "module": "apps/rt/src/shared/events/route.rs",
-        "degree": 4
-      },
-      {
-        "module": "apps/rt/src/shared/proc.rs",
         "degree": 4
       },
       {
@@ -95413,11 +95742,11 @@
     "layers": [
       {
         "name": "L0",
-        "modules": 415
+        "modules": 414
       },
       {
         "name": "L1",
-        "modules": 125
+        "modules": 126
       },
       {
         "name": "L2",
@@ -97029,6 +97358,20 @@
       ]
     },
     {
+      "affix": "Target",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "apps/dashboard/src/lib/types",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::{Path, PathBuf}",
+        "crate::shared::proc::{run_shell_with_deadline, ShellOutcome}",
+        "mustard_core::io::fs",
+        "serde_json::{json, Value}"
+      ]
+    },
+    {
       "affix": "Variant",
       "kind": "suffix",
       "count": 4,
@@ -97366,19 +97709,6 @@
       ]
     },
     {
-      "affix": "Target",
-      "kind": "suffix",
-      "count": 3,
-      "common_dir": "apps/dashboard/src/lib/types",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "mustard_core::io::fs",
-        "serde_json::{json, Value}",
-        "std::path::{Path, PathBuf}"
-      ]
-    },
-    {
       "affix": "Theme",
       "kind": "suffix",
       "count": 3,
@@ -97442,6 +97772,21 @@
         "mustard_core::io::fs",
         "serde_json::json",
         "std::collections::HashSet",
+        "std::path::{Path, PathBuf}"
+      ]
+    },
+    {
+      "affix": "test",
+      "kind": "folder",
+      "count": 3,
+      "common_dir": "apps/rt/tests",
+      "dirs": [
+        "apps/rt/tests",
+        "apps/<Name>/tests"
+      ],
+      "decl_kind": "function",
+      "implements": null,
+      "collaborators": [
         "std::path::{Path, PathBuf}"
       ]
     },
@@ -98020,17 +98365,6 @@
       "collaborators": []
     },
     {
-      "affix": "rtk",
-      "kind": "prefix",
-      "count": 2,
-      "common_dir": "apps/rt/src/hooks/bash",
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": [
-        "std::process::{Command, Stdio}"
-      ]
-    },
-    {
       "affix": "Content",
       "kind": "suffix",
       "count": 1,
@@ -98068,21 +98402,30 @@
       "decl_kind": "struct",
       "implements": null,
       "collaborators": []
+    },
+    {
+      "affix": "rtk",
+      "kind": "prefix",
+      "count": 1,
+      "common_dir": "apps/rt/src/hooks/bash",
+      "decl_kind": "function",
+      "implements": null,
+      "collaborators": []
     }
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Report slice",
       "roles": [
         "(core)",
-        "State"
+        "Report"
       ],
       "optional_roles": [
         "Ac",
         "Function",
         "Kind",
         "Mode",
-        "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -98111,12 +98454,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -98169,6 +98512,12 @@
           "role": "tipo base"
         },
         {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
+        },
+        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -98179,16 +98528,10 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
-        },
-        {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
