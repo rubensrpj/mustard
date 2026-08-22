@@ -85,7 +85,13 @@ jobs:
           # nao distingue a nossa versao da de uma dependencia que por acaso
           # tenha o mesmo numero.
           cargo update --workspace
-          grep -q "^version = \"$nv\"$" Cargo.lock   # o lock realmente andou
+          # Ancorado no NOME do pacote. Um `grep -q '^version = "$nv"$'` solto e
+          # satisfeito por QUALQUER dependencia de terceiros que por acaso esteja
+          # nesse numero — medido: `tracing` em 0.1.44 com o repositorio tambem
+          # em 0.1.44 —, entao a guarda passava sem o lock ter andado. E a mesma
+          # confusao que o comentario acima diz evitar, so que na guarda.
+          root_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' Cargo.lock)
+          [ "$root_pin" = "version = \"$nv\"" ]   # o lock realmente andou
 
           # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
           # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
@@ -99,8 +105,20 @@ jobs:
           # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
           # ficar para tras.
           cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
-          [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+          # Confere TODO crate nosso fixado nesse lock, nao apenas um.
+          # `version_line.rs` cobra todo pacote local dele exceto o proprio
+          # dashboard — hoje `mustard-core` E `mustard-cli`. Conferir so um deixa
+          # o outro atrasar em silencio, e o teste fica vermelho num commit que a
+          # CI nao roda (anti-recursao do GITHUB_TOKEN), entao ninguem ve ate o
+          # proximo PR.
+          for c in mustard-core mustard-cli; do
+            pin=$(awk -v c="$c" '$0 == "name = \"" c "\"" {getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+            if [ -z "$pin" ]; then
+              echo "::error::$c sumiu do lock do dashboard. Se a dependencia foi removida de proposito, tire-o desta lista E de packages/core/tests/version_line.rs" >&2
+              exit 1
+            fi
+            [ "$pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+          done
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -124,13 +142,18 @@ jobs:
           git checkout -B dev-sync "origin/dev"
           dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           cv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
-          # A QUARTA perna entra na DECISAO tambem, nao so no bloco de trabalho.
-          # As tres primeiras podem ja estar em $nv com o lock do dashboard para
-          # tras — foi exatamente o estado em que este conserto encontrou o
-          # repositorio. Sem este teste o bloco inteiro seria pulado e a quarta
-          # perna nunca andaria, que e o defeito de novo com outra roupa.
+          # A TERCEIRA e a QUARTA pernas entram na DECISAO tambem, nao so no
+          # bloco de trabalho. As outras podem ja estar em $nv com um dos locks
+          # para tras — foi exatamente o estado em que este conserto encontrou o
+          # repositorio, com o lock do dashboard atrasado. Sem estes testes o
+          # bloco inteiro seria pulado e a perna atrasada nunca andaria, que e o
+          # defeito de novo com outra roupa. A mensagem do `then` diz QUATRO, e
+          # so e verdade se as quatro estiverem no `if`.
+          root_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' Cargo.lock)
           dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
-          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$dash_pin" = "version = \"$nv\"" ]; then
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] \
+             && [ "$root_pin" = "version = \"$nv\"" ] \
+             && [ "$dash_pin" = "version = \"$nv\"" ]; then
             echo "dev já está em v$nv nas quatro pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
@@ -142,7 +165,11 @@ jobs:
             # …e o lock junto, senão o `--locked` do Release reprova o dev pelo
             # mesmo motivo que reprovou a main.
             cargo update --workspace
-            grep -q "^version = \"$nv\"$" Cargo.lock
+            # Ancorado no nome do pacote, pela mesma razao da perna da main: um
+            # `grep` solto casa com qualquer dependencia de terceiros que por
+            # acaso esteja nesse numero.
+            root_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' Cargo.lock)
+            [ "$root_pin" = "version = \"$nv\"" ]
 
             # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
             # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
@@ -156,8 +183,15 @@ jobs:
             # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
             # ficar para tras.
             cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-            dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
-            [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+            # Todo crate nosso do lock, nao apenas um — ver a perna da main.
+            for c in mustard-core mustard-cli; do
+              pin=$(awk -v c="$c" '$0 == "name = \"" c "\"" {getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+              if [ -z "$pin" ]; then
+                echo "::error::$c sumiu do lock do dashboard. Se a dependencia foi removida de proposito, tire-o desta lista E de packages/core/tests/version_line.rs" >&2
+                exit 1
+              fi
+              [ "$pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+            done
             git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then

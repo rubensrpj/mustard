@@ -144,16 +144,34 @@ fn agent_frontmatter(path: &Path) -> String {
     body[..end].to_string()
 }
 
+/// Drop a trailing YAML comment. A `#` opens one only when it starts the value
+/// or follows whitespace; inside a quoted scalar it is literal text. Without
+/// this, `model: sonnet   # cheap distillation role` — valid YAML that the
+/// runtime resolves to `sonnet` — is read as its whole tail and reported as a
+/// value Claude Code cannot resolve, which is a ratchet lying about its input.
+fn without_comment(value: &str) -> &str {
+    if value.starts_with('"') || value.starts_with('\'') {
+        return value;
+    }
+    let bytes = value.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            return &value[..i];
+        }
+    }
+    value
+}
+
 /// The value of a TOP-LEVEL frontmatter key (column 0 only, so a `key:` quoted
-/// inside a description is never mistaken for a declaration). Surrounding quotes
-/// are stripped; `None` when the key is absent.
+/// inside a description is never mistaken for a declaration). A trailing comment
+/// and surrounding quotes are stripped; `None` when the key is absent.
 fn declared(frontmatter: &str, key: &str) -> Option<String> {
     frontmatter
         .lines()
         .filter(|line| !line.starts_with(char::is_whitespace))
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
         .map(|value| {
-            value
+            without_comment(value.trim())
                 .trim()
                 .trim_matches(|c| c == '"' || c == '\'')
                 .to_string()
@@ -260,4 +278,36 @@ fn rejects_values_outside_the_accepted_vocabulary() {
             "`effort: {bad}` must be rejected — Claude Code would ignore it"
         );
     }
+}
+
+/// A declaration is routinely annotated in place, and YAML opens a comment at a
+/// `#` that follows whitespace. Reading that comment as part of the value turns
+/// a VALID declaration into a reported failure, which teaches the next author to
+/// delete their note rather than catching a real mistake — the ratchet would be
+/// lying about its own input.
+#[test]
+fn a_trailing_comment_is_not_part_of_the_value() {
+    let annotated = "name: x\nmodel: sonnet   # cheap distillation role\neffort: low\t# fast\n";
+    let model = declared(annotated, "model").unwrap_or_default();
+    let effort = declared(annotated, "effort").unwrap_or_default();
+    assert_eq!(model, "sonnet", "a trailing comment is not part of the value");
+    assert_eq!(effort, "low", "a tab before the `#` opens a comment too");
+    assert!(model_is_accepted(&model), "`{model}` must still be accepted");
+    assert!(effort_is_accepted(&effort), "`{effort}` must still be accepted");
+
+    // A `#` opening the value is a comment as well — nothing was declared, and
+    // the empty value is then rejected by the vocabulary check above.
+    assert_eq!(declared("model: # todo\n", "model").as_deref(), Some(""));
+
+    // Inside a quoted scalar the `#` is literal, so a quoted id survives whole.
+    assert_eq!(
+        declared("model: \"claude-opus-5\"\n", "model").as_deref(),
+        Some("claude-opus-5")
+    );
+
+    // And a value carrying no comment is returned untouched.
+    assert_eq!(
+        declared("model: inherit\n", "model").as_deref(),
+        Some("inherit")
+    );
 }
