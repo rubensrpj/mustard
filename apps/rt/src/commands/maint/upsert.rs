@@ -371,19 +371,51 @@ fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
 /// reader still learns which program was missing — while the volatile part
 /// never reaches the report.
 fn excerpt(raw: &str) -> String {
-    let flat = raw
-        .split_whitespace()
-        .map(|token| match token.rsplit_once('/') {
-            // A leading `/` (or any embedded one) marks a path; keep the tail.
-            Some((_, name)) if token.starts_with('/') && !name.is_empty() => name,
-            _ => token,
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    let flat =
+        raw.split_whitespace().map(shorten_paths).collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
         return "no output".to_string();
     }
     flat.chars().take(REASON_CHARS).collect()
+}
+
+/// Quote characters a child's message wraps a path in.
+const QUOTES: [char; 3] = ['\'', '"', '`'];
+
+/// Replace every absolute path INSIDE one whitespace-free token with its file
+/// name, quotes and all.
+///
+/// Splitting on whitespace alone is not enough, and that was a real hole: a
+/// child saying `cannot read '/tmp/tmp.YhSlRxVVl6/cache/plugin.json'` puts the
+/// whole path in ONE token whose first character is a quote, so a rule keyed on
+/// "the token starts with a slash" let it through untouched — into a `run`-face
+/// report the guard asks to stay byte-stable. Quotes are boundaries here for
+/// exactly that reason.
+fn shorten_paths(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut piece = String::new();
+    for ch in token.chars() {
+        if QUOTES.contains(&ch) {
+            out.push_str(&file_name_if_absolute(&piece));
+            piece.clear();
+            out.push(ch);
+        } else {
+            piece.push(ch);
+        }
+    }
+    out.push_str(&file_name_if_absolute(&piece));
+    out
+}
+
+/// The last segment of an absolute path; anything else unchanged. Keeping the
+/// NAME keeps the message useful — the reader still learns which file was
+/// meant — while the directories, which differ on every machine and every run,
+/// never reach the report.
+fn file_name_if_absolute(piece: &str) -> String {
+    if piece.starts_with('/') {
+        return piece.rsplit('/').next().unwrap_or(piece).to_string();
+    }
+    piece.to_string()
 }
 
 /// Whether a registry-supplied token is a plain id — the only shape spliced
@@ -457,6 +489,23 @@ mod tests {
         ]
       }
     }"#;
+
+    /// A path INSIDE quotes is shortened too. The rule keyed on "the token
+    /// starts with a slash" let this exact shape through into a `run`-face
+    /// report the guard asks to stay byte-stable.
+    #[test]
+    fn a_quoted_absolute_path_is_shortened_too() {
+        let line = excerpt("cannot read '/tmp/tmp.YhSlRxVVl6/cache/plugin.json'");
+        assert_eq!(line, "cannot read 'plugin.json'", "the directories must not survive");
+        assert!(!line.contains("tmp.YhSlRxVVl6"), "the volatile segment is gone: {line}");
+    }
+
+    /// …and a plain word with a slash in it is left alone: only ABSOLUTE paths
+    /// are volatile, and rewriting a relative one would lose real information.
+    #[test]
+    fn a_relative_path_is_left_intact() {
+        assert_eq!(excerpt("see .claude/grain.model.json"), "see .claude/grain.model.json");
+    }
 
     /// The reported version belongs to the record the refresh ACTED ON, never
     /// to whichever copy happens to be highest.
