@@ -121,6 +121,15 @@ const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// absent, declared explicitly here so a MISSING key never reads as a choice),
 /// or a full model id, which is always `claude-`-prefixed.
 fn model_is_accepted(value: &str) -> bool {
+    // A model id is ONE token. Without this guard the `claude-` prefix rule
+    // certifies anything merely starting with it — `claude-opus-5 lixo`, or a
+    // value whose trailing comment survived a parsing slip — so the ratchet
+    // would report the file as compliant while holding a value no runtime
+    // resolves. A guard that only ever accepts is the decoration this file
+    // exists to refuse.
+    if value.is_empty() || value.contains(char::is_whitespace) {
+        return false;
+    }
     MODEL_ALIASES.contains(&value) || value == "inherit" || value.starts_with("claude-")
 }
 
@@ -144,38 +153,52 @@ fn agent_frontmatter(path: &Path) -> String {
     body[..end].to_string()
 }
 
-/// Drop a trailing YAML comment. A `#` opens one only when it starts the value
-/// or follows whitespace; inside a quoted scalar it is literal text. Without
-/// this, `model: sonnet   # cheap distillation role` — valid YAML that the
-/// runtime resolves to `sonnet` — is read as its whole tail and reported as a
-/// value Claude Code cannot resolve, which is a ratchet lying about its input.
-fn without_comment(value: &str) -> &str {
-    if value.starts_with('"') || value.starts_with('\'') {
-        return value;
+/// Read one frontmatter scalar, dropping a trailing comment.
+///
+/// YAML opens a comment at a `#` that starts the value or follows whitespace —
+/// EXCEPT inside a quoted scalar, where it is literal text. A quoted value must
+/// therefore be read to its CLOSING quote. Stopping at the opening one and
+/// shaving the rest with `trim_matches` is wrong in BOTH directions, which is
+/// how it escaped a first review: `model: "sonnet"  # role` came back as
+/// `sonnet"  # role` and was rejected though the runtime resolves it, while
+/// `model: "claude-opus-5"  # role` came back as `claude-opus-5"  # role` and
+/// was ACCEPTED by the `claude-` prefix rule, certifying a value no runtime
+/// resolves.
+///
+/// An unterminated quote is not a scalar this can read, so it is returned whole
+/// and left for the vocabulary check to reject.
+fn scalar(value: &str) -> &str {
+    let value = value.trim();
+    let mut chars = value.char_indices();
+    if let Some((_, quote)) = chars.next().filter(|(_, c)| *c == '"' || *c == '\'') {
+        return match chars.find(|(_, c)| *c == quote) {
+            Some((close, _)) => &value[quote.len_utf8()..close],
+            None => value,
+        };
     }
     let bytes = value.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
-            return &value[..i];
+            return value[..i].trim_end();
         }
     }
     value
 }
 
 /// The value of a TOP-LEVEL frontmatter key (column 0 only, so a `key:` quoted
-/// inside a description is never mistaken for a declaration). A trailing comment
-/// and surrounding quotes are stripped; `None` when the key is absent.
+/// inside a description is never mistaken for a declaration). Quotes and a
+/// trailing comment are removed; `None` when the key is absent.
 fn declared(frontmatter: &str, key: &str) -> Option<String> {
     frontmatter
         .lines()
         .filter(|line| !line.starts_with(char::is_whitespace))
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
-        .map(|value| {
-            without_comment(value.trim())
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'')
-                .to_string()
-        })
+        .map(|value| scalar(value).to_string())
+        // `model: # todo` declares the key and no value. Reporting that as an
+        // unresolvable value renders a diagnostic with a BLANK value in it; the
+        // absent-key path instead explains what a missing declaration costs,
+        // which is the message this input actually needs.
+        .filter(|value| !value.is_empty())
 }
 
 /// Every `plugin/agents/*.md` path, sorted — the shipped agent files.
@@ -295,19 +318,54 @@ fn a_trailing_comment_is_not_part_of_the_value() {
     assert!(model_is_accepted(&model), "`{model}` must still be accepted");
     assert!(effort_is_accepted(&effort), "`{effort}` must still be accepted");
 
-    // A `#` opening the value is a comment as well — nothing was declared, and
-    // the empty value is then rejected by the vocabulary check above.
-    assert_eq!(declared("model: # todo\n", "model").as_deref(), Some(""));
-
-    // Inside a quoted scalar the `#` is literal, so a quoted id survives whole.
-    assert_eq!(
-        declared("model: \"claude-opus-5\"\n", "model").as_deref(),
-        Some("claude-opus-5")
-    );
+    // A `#` opening the value is a comment as well, so nothing was declared —
+    // and `None` is what routes the failure to the message that explains what a
+    // missing declaration costs, instead of one quoting a blank value.
+    assert_eq!(declared("model: # todo\n", "model"), None);
+    assert_eq!(declared("model:\n", "model"), None);
 
     // And a value carrying no comment is returned untouched.
     assert_eq!(
         declared("model: inherit\n", "model").as_deref(),
         Some("inherit")
+    );
+}
+
+/// A QUOTED declaration is the case a first pass got wrong in both directions:
+/// stopping at the opening quote rejected `"sonnet"  # role`, which the runtime
+/// resolves, and accepted `"claude-opus-5"  # role`, which it does not. Both
+/// spellings are ordinary YAML, so both are pinned here.
+#[test]
+fn a_quoted_value_is_read_to_its_closing_quote() {
+    for (line, want) in [
+        ("model: \"sonnet\"   # cheap role\n", "sonnet"),
+        ("model: 'sonnet' # cheap role\n", "sonnet"),
+        ("model: \"claude-opus-5\"  # the big one\n", "claude-opus-5"),
+        ("model: \"claude-opus-5\"\n", "claude-opus-5"),
+        ("model: 'inherit'\n", "inherit"),
+    ] {
+        let got = declared(line, "model").unwrap_or_default();
+        assert_eq!(got, want, "reading {line:?}");
+        assert!(model_is_accepted(&got), "`{got}` must be accepted");
+    }
+
+    // The mirror: a value that keeps its comment must NOT slip through on the
+    // `claude-` prefix rule. A model id is one token.
+    for bad in [
+        "claude-opus-5\"  # the big one",
+        "claude-opus-5 lixo",
+        "sonnet   # cheap role",
+    ] {
+        assert!(
+            !model_is_accepted(bad),
+            "`{bad}` must be rejected — no runtime resolves it"
+        );
+    }
+
+    // An unterminated quote is not a scalar we can read: returned whole, then
+    // rejected, rather than silently becoming something else.
+    assert_eq!(
+        declared("model: \"sonnet\n", "model").as_deref(),
+        Some("\"sonnet")
     );
 }
