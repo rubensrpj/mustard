@@ -8,7 +8,8 @@
 //! missing is created or backfilled). The legacy planted-orchestrator
 //! footprint is migrated away in the same pass.
 //!
-//! Output: the serialized `UpsertReport` as pretty JSON — deterministic
+//! Output: the serialized [`Report`] as pretty JSON — the engine's
+//! `UpsertReport` flattened, with `pluginRefresh` appended — deterministic
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
@@ -220,12 +221,34 @@ fn refresh_plugin(root: &Path) -> PluginRefresh {
     let target = claude_config_dir()
         .and_then(|dir| std::fs::read_to_string(dir.join(INSTALLED_PLUGINS)).ok())
         .and_then(|raw| refresh_target(&raw));
-    fold_refresh(
-        &binary,
-        target,
-        |command| run_step(command, root),
-        mustard_core::installed_harness_version,
-    )
+    // The version reader is bound to the record this refresh ACTED ON — the
+    // same key and the same scope. `installed_harness_version` answers a
+    // different question ("what is installed anywhere"), so a leftover copy in
+    // another scope would be reported as the result of an update that never
+    // touched it.
+    let acted_on = target.as_ref().map(|t| (t.id.clone(), t.scope.clone()));
+    fold_refresh(&binary, target, |command| run_step(command, root), move || {
+        let (id, scope) = acted_on?;
+        let raw = std::fs::read_to_string(claude_config_dir()?.join(INSTALLED_PLUGINS)).ok()?;
+        installed_version_of(&raw, &id, &scope)
+    })
+}
+
+/// The version the registry records for ONE record — the `{plugin}@{marketplace}`
+/// key under a named scope. `None` when the file, the key, the scope or the
+/// field is absent; every one of those is a version this command cannot claim.
+fn installed_version_of(raw: &str, id: &str, scope: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
+    doc.get("plugins")?
+        .as_object()?
+        .get(id)?
+        .as_array()?
+        .iter()
+        .find(|record| {
+            record.get("scope").and_then(serde_json::Value::as_str).unwrap_or("user") == scope
+        })
+        .and_then(|record| record.get("version").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
 }
 
 /// The pure half of the refresh: a target, a runner for each step, and the
@@ -417,7 +440,6 @@ fn refresh_target(raw: &str) -> Option<RefreshTarget> {
     best.map(|(_, target)| target)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +457,36 @@ mod tests {
         ]
       }
     }"#;
+
+    /// The reported version belongs to the record the refresh ACTED ON, never
+    /// to whichever copy happens to be highest.
+    ///
+    /// A plugin can be installed under more than one scope, and only one of
+    /// them was updated. Answering with the maximum across all of them would
+    /// report a leftover in another scope as the result of this run — a number
+    /// that is true about the machine and false about what just happened.
+    #[test]
+    fn the_reported_version_is_the_scope_that_was_updated() {
+        const TWO_SCOPES: &str = r#"{
+          "plugins": {
+            "mustard@mustard-local": [
+              { "scope": "user", "version": "0.1.43" },
+              { "scope": "project", "version": "9.9.9" }
+            ]
+          }
+        }"#;
+
+        assert_eq!(
+            installed_version_of(TWO_SCOPES, "mustard@mustard-local", "user").as_deref(),
+            Some("0.1.43"),
+            "the updated scope answers, not the higher leftover beside it",
+        );
+        assert_eq!(
+            installed_version_of(TWO_SCOPES, "mustard@mustard-local", "absent"),
+            None,
+            "a scope the registry does not list is a version this command cannot claim",
+        );
+    }
 
     /// AC-1 — a refresh that ran carries BOTH halves of the answer: the version
     /// the registry now records, and the sentence saying this session is still
