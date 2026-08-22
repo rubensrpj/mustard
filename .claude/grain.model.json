@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 478,
-      "loc": 206348
+      "loc": 206492
     },
     {
       "language": "tsx",
@@ -66102,7 +66102,7 @@
     {
       "path": "apps/rt/tests/plugin_agents.rs",
       "language": "rust",
-      "loc": 98,
+      "loc": 242,
       "imports": [
         "mustard_rt::commands::agent::render::TEMPLATE_PLACEHOLDERS",
         "std::fs",
@@ -66113,19 +66113,61 @@
         {
           "kind": "function",
           "name": "workspace_root",
-          "line": 27,
+          "line": 32,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_placeholders",
-          "line": 41,
+          "line": 46,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "agent_prompt_ref_documents_every_placeholder",
-          "line": 67,
+          "line": 72,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "model_is_accepted",
+          "line": 123,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "effort_is_accepted",
+          "line": 128,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "agent_frontmatter",
+          "line": 135,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "declared",
+          "line": 150,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shipped_agents",
+          "line": 164,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shipped_agents_declare_model_and_effort",
+          "line": 192,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "rejects_values_outside_the_accepted_vocabulary",
+          "line": 243,
           "supertypes": []
         }
       ]
@@ -98318,17 +98360,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Report slice",
       "roles": [
         "(core)",
-        "State"
+        "Report"
       ],
       "optional_roles": [
         "Ac",
         "Function",
         "Kind",
         "Mode",
-        "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -98357,12 +98399,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -98415,6 +98457,12 @@
           "role": "tipo base"
         },
         {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
+        },
+        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -98425,16 +98473,10 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
-        },
-        {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
