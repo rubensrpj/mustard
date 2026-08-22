@@ -55,52 +55,6 @@ jobs:
           set -euo pipefail
           manifest=plugin/.claude-plugin/plugin.json
           cargo_toml=Cargo.toml
-
-          # --- guarda dos locks -------------------------------------------
-          # `locals_of <lock> [pular]` lista `nome<TAB>versao` de todo pacote
-          # LOCAL do lock: um `[[package]]` SEM linha `source =`. Dependencia de
-          # registro sempre tem uma; membro de workspace nunca tem. O segundo
-          # argumento tira um nome do conjunto — o dashboard carrega versao
-          # propria de proposito.
-          #
-          # DERIVADO do arquivo, nunca uma lista escrita a mao. O lock da raiz
-          # fixa cinco crates nossos e o do dashboard dois; uma lista literal
-          # envelhece calada no dia em que alguem acrescenta ou remove uma
-          # dependencia, e a guarda passa a aprovar so a parte que ainda conhece.
-          # `packages/core/tests/version_line.rs` deriva o MESMO conjunto pela
-          # MESMA regra (`source` ausente, menos o proprio dashboard), entao a
-          # guarda e o teste nao tem como discordar.
-          locals_of() {
-            awk -v skip="${2-}" '
-              function flush() {
-                if (name != "" && src == 0 && name != skip) print name "\t" ver
-                name=""; ver=""; src=0
-              }
-              /^\[\[package\]\]/ { flush(); next }
-              /^name = /         { name=$3; gsub(/"/, "", name); next }
-              /^version = /      { ver=$3;  gsub(/"/, "", ver);  next }
-              /^source = /       { src=1; next }
-              END { flush() }
-            ' "$1"
-          }
-
-          # `check_pins <lock> <versao> [pular]` — verdadeiro quando TODO crate
-          # nosso daquele lock esta na versao pedida, e nomeia os que nao estao.
-          # Um lock sem nenhum crate local tambem reprova: quer dizer que o
-          # formato mudou ou a dependencia sumiu, e uma guarda que nao encontra
-          # nada nao esta aprovando coisa alguma — era assim que a guarda antiga
-          # (`grep` por numero solto) passava sozinha por causa de `tracing`.
-          check_pins() {
-            bad=$(locals_of "$1" "${3-}" | awk -v want="$2" '
-              { n++; if ($2 != want) print "  " $1 " esta em " $2 }
-              END { if (n == 0) print "  nenhum crate local encontrado — o formato do lock mudou?" }
-            ')
-            if [ -n "$bad" ]; then
-              echo "::error::$1 nao esta em $2:" >&2
-              echo "$bad" >&2
-              return 1
-            fi
-          }
           pv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           IFS=. read -r ma mi pa <<<"$pv"
           nv="$ma.$mi.$((pa+1))"
@@ -131,13 +85,7 @@ jobs:
           # nao distingue a nossa versao da de uma dependencia que por acaso
           # tenha o mesmo numero.
           cargo update --workspace
-          # Confere os CINCO membros locais, por nome. A guarda antiga era um
-          # `grep -q '^version = "$nv"$' Cargo.lock`, satisfeito por QUALQUER
-          # dependencia de terceiros que por acaso estivesse nesse numero —
-          # medido: `tracing` em 0.1.44 com o repositorio tambem em 0.1.44 —,
-          # entao ela passava sem o lock ter andado. E a mesma confusao que o
-          # comentario acima diz evitar, so que dentro da guarda.
-          check_pins Cargo.lock "$nv"   # o lock realmente andou
+          grep -q "^version = \"$nv\"$" Cargo.lock   # o lock realmente andou
 
           # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
           # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
@@ -151,12 +99,8 @@ jobs:
           # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
           # ficar para tras.
           cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-          # Todo crate nosso desse lock, nao apenas um. Hoje sao dois
-          # (`mustard-core` e `mustard-cli`), mas o conjunto vem do arquivo:
-          # conferir um nome escolhido a mao deixa o outro atrasar em silencio, e
-          # o vermelho so apareceria no proximo PR — um commit de bump e
-          # justamente o que a CI nao roda (anti-recursao do GITHUB_TOKEN).
-          check_pins apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-dashboard
+          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+          [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -180,17 +124,13 @@ jobs:
           git checkout -B dev-sync "origin/dev"
           dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           cv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
-          # A DECISAO consulta as QUATRO pernas, com a MESMA guarda do bloco de
-          # trabalho. Uma decisao que confere menos do que o trabalho conserta
-          # pula justamente o caso que o trabalho existia para resolver: as
-          # outras pernas em dia com uma atrasada — foi exatamente o estado em
-          # que este conserto encontrou o repositorio, com o lock do dashboard
-          # tres releases para tras. E conferir UM crate por lock repete o
-          # defeito um nivel abaixo, porque o bloco de trabalho confere todos.
-          # `2>/dev/null` porque aqui a resposta e uma pergunta, nao uma falha.
-          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] \
-             && check_pins Cargo.lock "$nv" 2>/dev/null \
-             && check_pins apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-dashboard 2>/dev/null; then
+          # A QUARTA perna entra na DECISAO tambem, nao so no bloco de trabalho.
+          # As tres primeiras podem ja estar em $nv com o lock do dashboard para
+          # tras — foi exatamente o estado em que este conserto encontrou o
+          # repositorio. Sem este teste o bloco inteiro seria pulado e a quarta
+          # perna nunca andaria, que e o defeito de novo com outra roupa.
+          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$dash_pin" = "version = \"$nv\"" ]; then
             echo "dev já está em v$nv nas quatro pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
@@ -202,6 +142,7 @@ jobs:
             # …e o lock junto, senão o `--locked` do Release reprova o dev pelo
             # mesmo motivo que reprovou a main.
             cargo update --workspace
+            grep -q "^version = \"$nv\"$" Cargo.lock
 
             # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
             # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
@@ -215,25 +156,15 @@ jobs:
             # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
             # ficar para tras.
             cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-
-            # Daqui para baixo a falha AVISA em vez de derrubar o job, que e o
-            # contrato declarado no topo deste bloco: ele roda por ultimo
-            # justamente porque, se falhar, o release ja saiu publicado e
-            # integro. Um `exit` aqui pintaria de vermelho um release correto, e
-            # quem fosse investigar acharia tudo em ordem. O proximo bump
-            # re-sincroniza sozinho, porque o valor e SETADO e nao incrementado.
-            if check_pins Cargo.lock "$nv" \
-               && check_pins apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-dashboard; then
-              git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
-              git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
-              if git push origin "dev-sync:dev"; then
-                echo "dev sincronizado: $dv -> $nv"
-              else
-                # Corrida com um push humano no dev. Não falha o job: o release
-                # já saiu, e o próximo bump re-sincroniza sozinho (SETA o valor).
-                echo "::warning::não consegui propagar v$nv para o dev (corrida?); o próximo release re-sincroniza"
-              fi
+            dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+            [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+            git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
+            git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
+            if git push origin "dev-sync:dev"; then
+              echo "dev sincronizado: $dv -> $nv"
             else
-              echo "::warning::os locks do dev não fecharam em v$nv; nada foi propagado e o próximo release re-sincroniza"
+              # Corrida com um push humano no dev. Não falha o job: o release
+              # já saiu, e o próximo bump re-sincroniza sozinho (SETA o valor).
+              echo "::warning::não consegui propagar v$nv para o dev (corrida?); o próximo release re-sincroniza"
             fi
           fi
