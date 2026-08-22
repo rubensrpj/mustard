@@ -280,7 +280,14 @@ fn fold_refresh(
     ];
     for command in &steps {
         if let Err(reason) = step(command) {
-            return skipped(Some(target.id), format!("`{command}` did not succeed: {reason}"));
+            // The command is echoed through the same path-stripping the child's
+            // own output goes through. `binary` is `claude` on every ordinary
+            // run, but `MUSTARD_CLAUDE_BIN` may point anywhere — and a test
+            // pointing it at a temporary directory put that directory's random
+            // name straight into a `run`-face report the guard asks to stay
+            // byte-stable.
+            let quoted = excerpt(command);
+            return skipped(Some(target.id), format!("`{quoted}` did not succeed: {reason}"));
         }
     }
     PluginRefresh {
@@ -320,7 +327,13 @@ fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
             let combined = if stderr.trim().is_empty() { stdout } else { stderr };
             Err(excerpt(&combined))
         }
-        ShellOutcome::TimedOut { after } => Err(format!("timeout after {}ms", after.as_millis())),
+        // The DEADLINE, not the elapsed time. They differ by a few milliseconds
+        // that change on every run, and this line lands in a `run`-face report
+        // the guard asks to stay byte-stable. The ceiling is also the useful
+        // number: it is the one a reader could raise.
+        ShellOutcome::TimedOut { .. } => {
+            Err(format!("timed out after {}s", REFRESH_TIMEOUT.as_secs()))
+        }
         ShellOutcome::SpawnFailed { error } => Err(error),
     }
 }
