@@ -74,8 +74,13 @@ pub use platform::git_provider::{detect_provider, provider_of_url, resolve_provi
 pub use platform::git_exclude::{
     ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,
 };
+// The last three are the plugin registry itself — its path, the config dir it
+// sits in, and the key half this harness ships under. Public so `apps/rt` reads
+// the SAME registry this crate does: a second copy drifts the day the host moves
+// the file, and the caller degrades to a permanent silent skip no test can see.
 pub use platform::harness::{
-    harness_version, installed_harness_version, installed_harness_version_from, is_behind,
+    claude_config_dir, harness_version, installed_harness_version, installed_harness_version_from,
+    is_behind, INSTALLED_PLUGINS, PLUGIN_NAME,
 };
 pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
 

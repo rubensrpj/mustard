@@ -55,21 +55,23 @@ use serde::Serialize;
 
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 
-/// The plugin name this harness ships under — the left half of the
-/// `{plugin}@{marketplace}` key in Claude Code's registry. Only this half is
-/// fixed; the marketplace half varies by how the operator added it
-/// (`mustard@mustard`, `mustard@mustard-local`) and is read from the key.
-const PLUGIN_NAME: &str = "mustard";
-
-/// Claude Code's registry of installed plugins, relative to its config
-/// directory.
-const INSTALLED_PLUGINS: &str = "plugins/installed_plugins.json";
+// The registry's path, the config dir it sits in and the key half this harness
+// ships under all come from `mustard_core` — the crate that already reads this
+// same file to answer "which version is installed". Copying them here made the
+// two drift the day the host moves the file, and this side would degrade to a
+// permanent skip nobody could see.
+use mustard_core::{claude_config_dir, INSTALLED_PLUGINS, PLUGIN_NAME};
 
 /// How long one refresh step may take. Both steps reach the network (the
 /// marketplace update is a git fetch), so an unbounded wait would hang the
-/// installation door on a stalled connection. Generous enough for a cold clone,
-/// short enough that the operator is not left staring at nothing.
-const REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
+/// installation door on a stalled connection.
+///
+/// Two steps run, so this is HALF the budget the door has. The `/mustard:upsert`
+/// prose calls this command from a Bash tool call whose own timeout the host
+/// enforces; a per-step ceiling that let the pair outlast it would have the door
+/// killed from outside, and then nothing reports at all — the module's own
+/// deadline is the only one that can produce a `skipped` a person reads.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The two words `pluginRefresh.state` can carry. Both steps ran and were
 /// accepted, or the refresh did not happen and says why.
@@ -137,7 +139,7 @@ pub(crate) struct PluginRefresh {
 /// `pluginRefresh` is appended after them.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UpsertOutcome {
+struct Report {
     #[serde(flatten)]
     project: mustard_core::UpsertReport,
     plugin_refresh: PluginRefresh,
@@ -169,7 +171,7 @@ pub fn run() {
             // project was really seeded: a run that wrote nothing has no
             // installation to finish.
             let outcome =
-                UpsertOutcome { project: report, plugin_refresh: refresh_plugin(&root) };
+                Report { project: report, plugin_refresh: refresh_plugin(&root) };
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
             println!("{json}");
@@ -264,7 +266,16 @@ fn fold_refresh(
     let steps = [
         format!("{binary} plugin marketplace update {}", target.marketplace),
         // `--yes` because stdout here is a pipe, not a TTY: the host refuses to
-        // prompt for a marketplace-declared install command when it cannot ask.
+        // prompt when it cannot ask, and without the flag the step always fails.
+        //
+        // What it auto-accepts, said plainly: a marketplace may declare an
+        // install command of its own, and the prompt is where a person would
+        // approve running it. Passing `--yes` grants that approval to whatever
+        // the marketplace declares. It is bounded by the trust already given —
+        // the operator chose this marketplace and installed this plugin from it,
+        // and the target comes from THEIR registry, not from us. This project's
+        // own marketplace declares no such command (verified), so today the flag
+        // only answers a question nobody would otherwise be asked.
         format!("{binary} plugin update {} --scope {} --yes", target.id, target.scope),
     ];
     for command in &steps {
@@ -314,9 +325,25 @@ fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
     }
 }
 
-/// Collapse a child's output into one bounded line for the report.
+/// Collapse a child's output into one bounded line for the report, with every
+/// absolute path reduced to its file name.
+///
+/// The `run` face owes byte-stable output, and a child's message routinely
+/// carries the machine it ran on: measured here, a missing binary reported
+/// `/tmp/tmp.fj9mbSeH9j/bin/nope-claude … not found`, whose middle segment is
+/// different on every run. Keeping the NAME keeps the message useful — the
+/// reader still learns which program was missing — while the volatile part
+/// never reaches the report.
 fn excerpt(raw: &str) -> String {
-    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = raw
+        .split_whitespace()
+        .map(|token| match token.rsplit_once('/') {
+            // A leading `/` (or any embedded one) marks a path; keep the tail.
+            Some((_, name)) if token.starts_with('/') && !name.is_empty() => name,
+            _ => token,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     if flat.is_empty() {
         return "no output".to_string();
     }
@@ -377,19 +404,6 @@ fn refresh_target(raw: &str) -> Option<RefreshTarget> {
     best.map(|(_, target)| target)
 }
 
-/// Claude Code's config directory — `CLAUDE_CONFIG_DIR` when set, `~/.claude`
-/// otherwise.
-///
-/// Resolved here because core's copy is private to its harness module and this
-/// crate must not reach into it. `CLAUDE_CONFIG_DIR` is also what points a test
-/// at a registry of its own instead of the operator's.
-fn claude_config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
-        return Some(PathBuf::from(dir));
-    }
-    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(home).filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".claude"))
-}
 
 #[cfg(test)]
 mod tests {
@@ -548,7 +562,7 @@ mod tests {
     /// already published, and the same input serializes byte-identically twice.
     #[test]
     fn the_outcome_appends_the_refresh_without_moving_anything() {
-        let outcome = UpsertOutcome {
+        let outcome = Report {
             project: mustard_core::UpsertReport {
                 installed_before: true,
                 version: Some("0.1.43".to_string()),

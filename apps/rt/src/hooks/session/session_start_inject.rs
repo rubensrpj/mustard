@@ -395,11 +395,16 @@ impl Check for SessionStartInject {
         // alive. The prune command already existed and worked; what was missing
         // was anyone SAYING it was owed, so six units piled up unnoticed.
         let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
+        // How to WRITE for this operator, from `mustard.json#tone`. The field
+        // existed and reached only the prompts of the agents that author files;
+        // nothing carried it into the conversation, so writing plainly depended
+        // on the model remembering to. Now it is configuration.
+        let tone = tone_rule(Path::new(&cwd));
         // ONE composed Inject (the dispatcher fold is last-writer-wins):
         // terrain first, injectables after, the advisories last — blank-line
         // separated.
         let parts: Vec<String> =
-            [terrain, injected, drift, stale, prune].into_iter().flatten().collect();
+            [terrain, injected, tone, drift, stale, prune].into_iter().flatten().collect();
         Ok(if parts.is_empty() {
             Verdict::Allow
         } else {
@@ -416,6 +421,40 @@ impl Check for SessionStartInject {
 /// prompt-gate story covers that) or when the stamp matches. A missing
 /// `version` key on an installed project counts as drift: it predates the
 /// stamp and the first `/mustard:upsert` writes one.
+/// The writing rule this project declares, as one paragraph the session reads
+/// before it answers anything.
+///
+/// `mustard.json#tone` already existed and already meant this — but it was read
+/// in exactly one place, `agent-prompt-render`, which shapes the prompts of the
+/// agents that WRITE FILES. Nothing carried it into the conversation, so a
+/// project that had asked for plain language got it only when the model
+/// remembered to. The operator found this the honest way: by not understanding
+/// an explanation, twice, in a project whose config said `didactic`.
+///
+/// `None` for any other tone, and for a project with no `mustard.json` — an
+/// undeclared preference is not a preference, and inventing one would put words
+/// in the operator's mouth.
+fn tone_rule(root: &Path) -> Option<String> {
+    if !mustard_core::ProjectConfig::exists(root) {
+        return None;
+    }
+    // The RAW field, never the resolved one. `i18n().tone` applies a default,
+    // and that default IS `didactic` — reading it would put this paragraph in
+    // front of every project that merely has a `mustard.json`, including the
+    // ones that never asked. A default is the absence of a choice; this rule
+    // only ever answers a choice the operator wrote down.
+    let declared = mustard_core::ProjectConfig::load(root).tone;
+    declared.filter(|t| t.eq_ignore_ascii_case("didactic") || t.eq_ignore_ascii_case("didatico")).map(|_| {
+        "[Mustard] This project declares `tone: didactic`. Write every user-facing answer so it \
+         can be read once, by someone who did not write this code: ONE idea per sentence; every \
+         technical term translated the first time it appears IN THIS CONVERSATION — including \
+         names this project invented; no acronym without its full words; and no path of \
+         reasoning longer than the point needs. Prefer the short true sentence to the complete \
+         one. This governs what you SAY, never what you write into code, commits or specs."
+            .to_string()
+    })
+}
+
 fn version_drift_notice(root: &Path) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
@@ -560,6 +599,42 @@ mod tests {
     // --- version drift advisory --------------------------------------------
 
     #[test]
+    /// A project that declares `tone: didactic` gets the writing rule, and the
+    /// rule says what it governs — how the session TALKS, not what it writes
+    /// into files.
+    #[test]
+    fn a_didactic_project_carries_its_writing_rule_into_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"pt-BR","tone":"didactic"}"#,
+        )
+        .unwrap();
+
+        let rule = tone_rule(dir.path()).expect("a declared didactic tone must reach the session");
+        assert!(rule.contains("tone: didactic"), "it names what it came from: {rule}");
+        assert!(rule.contains("ONE idea per sentence"), "and carries the rule: {rule}");
+        assert!(
+            rule.contains("never what you write into code"),
+            "and bounds itself to speech: {rule}",
+        );
+    }
+
+    /// Any other tone, and a project with no config at all, say nothing. An
+    /// undeclared preference is not a preference.
+    #[test]
+    fn an_undeclared_tone_injects_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(tone_rule(dir.path()), None, "no mustard.json, no rule");
+
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"pt-BR","tone":"technical"}"#,
+        )
+        .unwrap();
+        assert_eq!(tone_rule(dir.path()), None, "a technical project asked for nothing");
+    }
+
     fn drift_notice_absent_without_mustard_json() {
         let dir = tempdir().unwrap();
         assert_eq!(version_drift_notice(dir.path()), None);
