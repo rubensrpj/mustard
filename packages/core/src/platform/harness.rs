@@ -37,11 +37,11 @@ pub fn harness_version() -> String {
 /// `{plugin}@{marketplace}` key in the registry. The marketplace half varies by
 /// how the operator added it (`mustard@mustard`, `mustard@mustard-local`), so
 /// only this half is matched.
-const PLUGIN_NAME: &str = "mustard";
+pub const PLUGIN_NAME: &str = "mustard";
 
 /// Claude Code's registry of installed plugins, relative to its config
 /// directory.
-const INSTALLED_PLUGINS: &str = "plugins/installed_plugins.json";
+pub const INSTALLED_PLUGINS: &str = "plugins/installed_plugins.json";
 
 /// The version the plugin registry records as INSTALLED — what the next
 /// session would load, as opposed to [`harness_version`], which is what THIS
@@ -119,7 +119,7 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when the operator moved
 /// it, `~/.claude` otherwise (`HOME`, or `USERPROFILE` on Windows). `None` when
 /// neither resolves — this crate reads no home directory through a dependency.
-fn claude_config_dir() -> Option<std::path::PathBuf> {
+pub fn claude_config_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(std::path::PathBuf::from(dir));
     }
