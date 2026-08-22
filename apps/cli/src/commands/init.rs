@@ -40,7 +40,12 @@
 //! 7. write the single project-root `mustard.json`: git-flow + agnostically
 //!    detected build/test/lint/type-check commands + spec language + tone +
 //!    the `runtime`/`version` stamp + the default `inject` declarations
-//!    (seeded only when the user has none — a curated list is preserved).
+//!    (seeded only when the user has none — a curated list is preserved);
+//! 8. settle that stamp (`mustard_core::record_version_stamp`): where the host
+//!    repository TRACKS `mustard.json`, an install that found a clean tree
+//!    commits the line it just wrote, so the install never hands the next
+//!    command a dirty file to blame on the operator. A tree that already held
+//!    the operator's work is left untouched, and the reason is printed.
 //!
 //! There is **one** config file, at the **project root** (the workspace anchor
 //! `workspace_root` keys on) — never `.claude/mustard.json`. The `version`
@@ -188,6 +193,11 @@ pub fn init_with_templates(
         return Ok(());
     }
 
+    // Sampled BEFORE the first write — the only moment at which the operator's
+    // work and this run's own writes can still be told apart. Read by the last
+    // step, which settles the version stamp.
+    let found_clean = mustard_core::worktree_is_clean(&project_path);
+
     // Step 0, private only: hide the footprint BEFORE any of it exists — before
     // `.claude/` is created, and before the backup-and-overwrite branch below
     // can leave a `.claude.backup.<stamp>/` beside it. A refusal here writes
@@ -277,8 +287,57 @@ pub fn init_with_templates(
     // re-stamps `version` — the idempotent replacement for `mustard update`.
     write_project_config(&project_path, &runtime, !options.yes)?;
 
+    // …and settle the stamp that write just left behind. In a repository that
+    // TRACKS `mustard.json` the re-stamp is an uncommitted change nobody asked
+    // for, and the next command that guards on a clean tree refuses — naming
+    // the operator's own work as the cause, when the writer was this installer.
+    report_stamp(
+        mustard_core::record_version_stamp(&project_path, found_clean),
+        &project_path,
+    );
+
     print_next_steps();
     Ok(())
+}
+
+/// Say what became of the version stamp, in the didactic voice the rest of the
+/// install speaks. The ordinary run — an untracked or unchanged `mustard.json`
+/// — says nothing at all: there was nothing to settle.
+///
+/// The recorded line NAMES the branch the commit landed on. A fresh clone is
+/// checked out on the default branch, so the ordinary first install commits
+/// there — the very branch `work_branch_gate` refuses to let the operator work
+/// on. That asymmetry is deliberate (the stamp is project configuration, not
+/// the operator's work, and refusing there would hand the dirty tree back in
+/// the commonest case of all), and naming the branch is what keeps it a stated
+/// outcome rather than a silent one.
+fn report_stamp(outcome: mustard_core::RecordOutcome, root: &std::path::Path) {
+    match outcome {
+        mustard_core::RecordOutcome::Nothing => {}
+        mustard_core::RecordOutcome::Recorded => {
+            match mustard_core::current_branch(root) {
+                Some(branch) => println!(
+                    "  committed mustard.json on '{branch}' — the version stamp this install wrote"
+                ),
+                None => {
+                    println!("  committed mustard.json — the version stamp this install wrote");
+                }
+            }
+        }
+        mustard_core::RecordOutcome::TreeNotClean => {
+            println!(
+                "  mustard.json carries a new version stamp, left UNCOMMITTED: this tree already"
+            );
+            println!(
+                "  held your own changes, and they are never swept into an install's commit"
+            );
+        }
+        mustard_core::RecordOutcome::Unavailable => {
+            println!(
+                "  mustard.json carries a new version stamp, left uncommitted (git could not record it)"
+            );
+        }
+    }
 }
 
 /// Pre-flight location guard: refuse to init a directory that sits INSIDE a
@@ -1222,6 +1281,153 @@ mod tests {
         // init seeds no entity-registry — the repo model is grain's
         // `.claude/grain.model.json`, produced on demand by `mustard-rt run scan`.
         assert!(!claude.join("entity-registry.json").exists());
+    }
+
+    /// Run git in `dir`, failing the test loudly — a half-built repository
+    /// would make the assertion below prove nothing.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    }
+
+    /// `git status --porcelain` for `dir`, trimmed.
+    fn porcelain(dir: &Path) -> String {
+        let out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(dir)
+            .output()
+            .expect("git status");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The stamp commit lands on a PROTECTED branch too, and that is deliberate
+    /// — locked here so nobody changes it by accident.
+    ///
+    /// `work_branch_gate` denies the OPERATOR an edit that would land on the
+    /// default branch, so an installer committing there looks like the same
+    /// rule broken. It is a different case: the stamp is project configuration
+    /// the install itself wrote, not work, and a fresh clone is checked out on
+    /// the default branch — refusing there would hand the dirty tree back in
+    /// the commonest install of all, which is the defect this whole path
+    /// exists to remove. What the design owes instead is saying so: the
+    /// recorded line names the branch ([`report_stamp`]).
+    #[test]
+    fn install_commits_the_stamp_on_a_protected_branch() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        git(&project, &["init", "--initial-branch=main"]);
+        git(&project, &["config", "user.email", "t@example.com"]);
+        git(&project, &["config", "user.name", "t"]);
+        fs::write(project.join("mustard.json"), "{\n  \"version\": \"0.0.0-old\"\n}\n").unwrap();
+        git(&project, &["add", "mustard.json"]);
+        git(&project, &["commit", "-m", "config"]);
+        assert_eq!(porcelain(&project), "", "fixture must start clean");
+        assert_eq!(
+            mustard_core::current_branch(&project).as_deref(),
+            Some("main"),
+            "the fixture must really sit on the protected default branch",
+        );
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        assert_eq!(
+            porcelain(&project),
+            "",
+            "the stamp is committed on the default branch like any other — refusing there \
+             would leave the commonest install dirty",
+        );
+    }
+
+    /// AC-4 — a repository that TRACKS `mustard.json` gets its version stamp
+    /// re-written on every install, and until now the installer left that
+    /// change sitting uncommitted. The next command that guards on a clean tree
+    /// then refused, naming the operator's own work as the cause — a false
+    /// attribution, since the writer was this installer. An install that found
+    /// the tree clean leaves it clean.
+    #[test]
+    fn install_leaves_the_git_tree_clean() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        git(&project, &["init"]);
+        git(&project, &["config", "user.email", "t@example.com"]);
+        git(&project, &["config", "user.name", "t"]);
+        // The repository VERSIONS its config, stamped by an older harness — the
+        // shape the defect needs (a private install's exclude rule cannot hide
+        // a path git already tracks).
+        fs::write(project.join("mustard.json"), "{\n  \"version\": \"0.0.0-old\"\n}\n").unwrap();
+        git(&project, &["add", "mustard.json"]);
+        git(&project, &["commit", "-m", "config"]);
+        assert_eq!(porcelain(&project), "", "fixture must start clean");
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        // The stamp really moved — otherwise there was nothing to leave dirty
+        // and this test would pass for the wrong reason.
+        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        assert_eq!(
+            cfg.get("version").and_then(|v| v.as_str()),
+            Some(mustard_core::harness_version().as_str()),
+        );
+        assert_eq!(
+            porcelain(&project),
+            "",
+            "the install found a clean tree and must leave one — no manual step in between",
+        );
+    }
+
+    /// The other half of the same rule: a tree that already carries the
+    /// operator's work is left entirely alone. Sweeping their change into an
+    /// installer's commit would be a far worse defect than the dirty stamp.
+    #[test]
+    fn install_never_commits_over_the_operators_own_work() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        git(&project, &["init"]);
+        git(&project, &["config", "user.email", "t@example.com"]);
+        git(&project, &["config", "user.name", "t"]);
+        fs::write(project.join("mustard.json"), "{\n  \"version\": \"0.0.0-old\"\n}\n").unwrap();
+        fs::write(project.join("notes.md"), "draft\n").unwrap();
+        git(&project, &["add", "."]);
+        git(&project, &["commit", "-m", "seed"]);
+        // The operator's own uncommitted edit, present BEFORE the install runs.
+        fs::write(project.join("notes.md"), "draft, still being written\n").unwrap();
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        let status = porcelain(&project);
+        assert!(status.contains("notes.md"), "the operator's edit survives: {status}");
+        assert!(
+            status.contains("mustard.json"),
+            "and the stamp is left with it, uncommitted: {status}"
+        );
     }
 
     #[test]

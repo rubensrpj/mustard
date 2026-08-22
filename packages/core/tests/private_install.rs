@@ -240,8 +240,18 @@ fn ac4_shared_install_is_byte_identical_to_today() {
     // 4. The negative control that makes the three assertions above mean
     //    something: a shared footprint IS visible to git. If this were empty the
     //    test would pass while the modes had silently become the same thing.
-    let status = git_status(root);
-    assert!(status.contains("mustard.json"), "a shared install is versionable: {status:?}");
+    //
+    //    It asks whether git TRACKS the file, not whether the file is dirty.
+    //    The install now records the stamp it wrote, so a shared `mustard.json`
+    //    is committed rather than left uncommitted — which is the strongest
+    //    form of visible, not a weaker one. Reading `git status` measured the
+    //    dirt as a proxy for the visibility, and the proxy is what the recording
+    //    removed; the claim itself ("versionable") is unchanged and still true.
+    let tracked = git_out(root, &["ls-files", "--", "mustard.json"]);
+    assert!(
+        tracked.contains("mustard.json"),
+        "a shared install is versionable — git must track the config: {tracked:?}",
+    );
 }
 
 // ---------------------------------------------------------------------------
