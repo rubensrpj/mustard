@@ -71,7 +71,6 @@ const PIPELINE_IN_FLIGHT_BANNER: &str = "Pipeline em curso";
 /// The UserPromptSubmit gate module.
 pub struct PromptSubmitInject;
 
-
 /// `true` if `prompt` invokes a pipeline command. Mirrors the JS regex
 /// `^\s*\/mustard:(feature|bugfix|task)\b` (case-insensitive).
 fn is_pipeline_prompt(prompt: &str) -> bool {
@@ -103,6 +102,22 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
 fn is_mustard_command(prompt: &str) -> bool {
     let t = prompt.trim_start().to_ascii_lowercase();
     t.starts_with("/mustard:")
+}
+
+/// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
+/// installation gate exempts. Same word-boundary rule as
+/// [`is_pipeline_prompt`], so `/mustard:upsertish` does not sneak through.
+fn is_upsert_prompt(prompt: &str) -> bool {
+    let t = prompt.trim_start().to_ascii_lowercase();
+    let Some(rest) = t.strip_prefix("/mustard:") else {
+        return false;
+    };
+    const CMD: &str = "upsert";
+    rest.starts_with(CMD)
+        && rest
+            .as_bytes()
+            .get(CMD.len())
+            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
 }
 
 // ===========================================================================
@@ -155,23 +170,6 @@ fn tone_rule(root: &Path) -> Option<String> {
         })
 }
 
-
-/// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
-/// installation gate exempts. Same word-boundary rule as
-/// [`is_pipeline_prompt`], so `/mustard:upsertish` does not sneak through.
-fn is_upsert_prompt(prompt: &str) -> bool {
-    let t = prompt.trim_start().to_ascii_lowercase();
-    let Some(rest) = t.strip_prefix("/mustard:") else {
-        return false;
-    };
-    const CMD: &str = "upsert";
-    rest.starts_with(CMD)
-        && rest
-            .as_bytes()
-            .get(CMD.len())
-            .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
-}
-
 /// The installation-gate refusal (didactic, short, technical EN).
 const NOT_INSTALLED_REASON: &str = "Mustard is not installed in this project (no mustard.json at \
      the root). Run /mustard:upsert to install it — everything else stays disabled until then.";
@@ -183,9 +181,12 @@ impl Check for PromptSubmitInject {
     /// when the prompt starts a new pipeline. For a non-`/mustard:*` prompt
     /// the verdict composes the declared injectables (`mustard.json#inject`,
     /// `on: userPromptSubmit`) and the W8.T8.2 pipeline-in-flight banner into
-    /// ONE `Inject` — injectables first, banner after; either alone also
-    /// injects. A `/mustard:*` prompt never injects (it is already inside the
-    /// flow). Any non-`UserPromptSubmit` trigger self-allows.
+    /// ONE `Inject` — injectables first, banner after, the writing rule
+    /// (`mustard.json#tone`) last; any one alone also injects. A `/mustard:*`
+    /// prompt receives neither injectables nor banner (it is already inside the
+    /// flow) but DOES carry the writing rule, which governs how the ANSWER is
+    /// written rather than the work. Any non-`UserPromptSubmit` trigger
+    /// self-allows.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::UserPromptSubmit) {
             return Ok(Verdict::Allow);
@@ -419,6 +420,24 @@ mod tests {
         assert!(
             !matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
             "the default is not a choice: {verdict:?}",
+        );
+
+        // …and a project with NO `mustard.json` at all. The criterion names
+        // three cases and this is the third; asserting two of them left the
+        // uninstalled project — where the hooks are supposed to stay silent —
+        // proved only by hand.
+        let none = tempfile::tempdir().expect("temp dir");
+        let c = Ctx {
+            project_dir: none.path().to_string_lossy().to_string(),
+            trigger: Some(Trigger::UserPromptSubmit),
+            workspace_root: None,
+        };
+        let verdict = PromptSubmitInject
+            .evaluate(&prompt_input("uma mensagem comum"), &c)
+            .expect("the gate never errors");
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "an uninstalled project declared nothing, so the hooks stay silent: {verdict:?}",
         );
     }
 
