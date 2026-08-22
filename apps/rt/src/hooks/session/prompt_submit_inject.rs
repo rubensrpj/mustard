@@ -2,7 +2,7 @@
 //!
 //! ## Scope (b3 Wave 5, prompt family + orchestrator-redesign injectables)
 //!
-//! Three concerns ride `UserPromptSubmit`, in this order:
+//! Four concerns ride `UserPromptSubmit`, in this order:
 //!
 //! - **installation gate** (orchestrator-redesign): a `/mustard:*` command in
 //!   a project with NO `mustard.json` at the root is denied with a didactic
@@ -20,10 +20,18 @@
 //!   the orchestrator rules in `.claude/mustard/orchestrator.md`) are spliced
 //!   into the window via [`crate::hooks::session::injectables::collect`] —
 //!   once per session when `once: true`. A `/mustard:*` prompt gets NO
-//!   injectables (the slash command is already inside the flow). The
-//!   injectable text and the W8.T8.2 banner compose into a SINGLE
-//!   [`Verdict::Inject`] (the dispatcher fold is last-writer-wins, so two
-//!   separate Injects would drop one): injectables first, banner after.
+//!   injectables (the slash command is already inside the flow).
+//! - **writing rule** (`mustard.json#tone`): a project that DECLARED
+//!   `tone: didactic` carries a one-paragraph rule for how the answer is
+//!   written. It is the one concern a `/mustard:*` prompt still receives, and
+//!   deliberately so: it governs how the ANSWER is written, and the answer to a
+//!   slash command is read by the same person as any other. Delivered on EVERY
+//!   prompt rather than once per session — the thing it governs is always the
+//!   newest message, so a rule delivered once only drifts further from it.
+//!
+//! The three injecting concerns compose into a SINGLE [`Verdict::Inject`] (the
+//! dispatcher fold is last-writer-wins, so separate Injects would drop one):
+//! injectables first, banner next, writing rule last.
 //!
 //! ## Contract shape
 //!
@@ -92,6 +100,15 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
 /// a slash command always knows its own context. The bare `/mustard` help
 /// (no colon) deliberately does NOT match: it is the orientation door and
 /// must keep working on an uninstalled project.
+fn is_mustard_command(prompt: &str) -> bool {
+    let t = prompt.trim_start().to_ascii_lowercase();
+    t.starts_with("/mustard:")
+}
+
+// ===========================================================================
+// writing rule — `mustard.json#tone`, carried with every prompt
+// ===========================================================================
+
 /// The writing rule this project declares, carried with EVERY prompt.
 ///
 /// `mustard.json#tone` already existed and already meant this — it was read in
@@ -109,17 +126,23 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
 ///
 /// `None` for any other tone, and for a project with no `mustard.json`.
 fn tone_rule(root: &Path) -> Option<String> {
-    if !ProjectConfig::exists(root) {
-        return None;
-    }
-    // The RAW field, never the resolved one. `i18n().tone` applies a default,
-    // and that default IS `didactic` — reading it would put this paragraph in
-    // front of every project that merely has a `mustard.json`, including the
-    // ones that never asked. A default is the absence of a choice; this rule
-    // only ever answers a choice the operator wrote down.
+    // The RAW field, never the resolved one. `ProjectConfig::load` fails open to
+    // a default when the file is absent, and that default IS `didactic` — a
+    // resolved read would put this paragraph in front of every project that
+    // merely has a `mustard.json`, including the ones that never asked. A
+    // default is the absence of a choice; this rule only answers a written one.
+    //
+    // Parsed by the CANONICAL parser, never by a hand-rolled match. `Tone::parse`
+    // accepts `didactic`, `didatico` AND `didático` — and the accented spelling
+    // is the one a Brazilian operator writes. A local `eq_ignore_ascii_case`
+    // pair silently rejected it, so a project declaring the word in its own
+    // language was treated as never having declared: the very defect this
+    // function exists to remove, reintroduced one line below the fix.
     ProjectConfig::load(root)
         .tone
-        .filter(|t| t.eq_ignore_ascii_case("didactic") || t.eq_ignore_ascii_case("didatico"))
+        .as_deref()
+        .and_then(mustard_core::Tone::parse)
+        .filter(|tone| *tone == mustard_core::Tone::Didactic)
         .map(|_| {
             "[Mustard] This project declares `tone: didactic`. Write every user-facing answer so \
              it can be read once, by someone who did not write this code: ONE idea per sentence; \
@@ -132,10 +155,6 @@ fn tone_rule(root: &Path) -> Option<String> {
         })
 }
 
-fn is_mustard_command(prompt: &str) -> bool {
-    let t = prompt.trim_start().to_ascii_lowercase();
-    t.starts_with("/mustard:")
-}
 
 /// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
 /// installation gate exempts. Same word-boundary rule as
@@ -312,21 +331,61 @@ mod tests {
         dir
     }
 
-    /// AC-1 — an ordinary prompt carries the writing rule.
+    /// The verdict for one prompt in a project declaring `tone`, through the
+    /// REAL gate — never the private helper.
+    ///
+    /// A test that called `tone_rule` directly is what shipped an unprovable
+    /// criterion: a review removed `tone` from the ordinary-prompt composition
+    /// and the test stayed green, because it never asked the gate anything.
+    /// Everything below goes through `evaluate`, so deleting the wiring fails
+    /// the criterion that claims to guard it.
+    fn verdict_for(tone: &str, prompt: &str) -> (tempfile::TempDir, Verdict) {
+        let dir = project_declaring_tone(tone);
+        let c = Ctx {
+            project_dir: dir.path().to_string_lossy().to_string(),
+            trigger: Some(Trigger::UserPromptSubmit),
+            workspace_root: None,
+        };
+        let verdict =
+            PromptSubmitInject.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
+        (dir, verdict)
+    }
+
+    /// AC-1 — an ORDINARY prompt carries the writing rule, through the gate.
     ///
     /// Every prompt, not once per session: delivered once, the rule drifts
     /// away while the thing it governs — the next answer — is always the
     /// newest.
     #[test]
     fn the_writing_rule_rides_every_prompt() {
-        let dir = project_declaring_tone("didactic");
-        let rule = tone_rule(dir.path()).expect("a declared didactic tone must reach the prompt");
+        let (_dir, verdict) = verdict_for("didactic", "uma mensagem comum");
 
-        assert!(rule.contains("tone: didactic"), "it names what it came from: {rule}");
-        assert!(rule.contains("ONE idea per sentence"), "and carries the rule: {rule}");
+        match verdict {
+            Verdict::Inject { context } => {
+                assert!(context.contains("tone: didactic"), "names its source: {context}");
+                assert!(
+                    context.contains("ONE idea per sentence"),
+                    "and carries the rule: {context}",
+                );
+                assert!(
+                    context.contains("never what you write into code"),
+                    "and bounds itself to speech: {context}",
+                );
+            }
+            other => panic!("an ordinary prompt must carry the rule, got {other:?}"),
+        }
+    }
+
+    /// The accented spelling a Brazilian operator actually writes is accepted.
+    /// A hand-rolled `didactic`/`didatico` match rejected it, so a project
+    /// declaring the word in its own language was read as never having
+    /// declared — the very defect this unit exists to remove.
+    #[test]
+    fn the_accented_spelling_counts_as_declared() {
+        let (_dir, verdict) = verdict_for("didático", "uma mensagem comum");
         assert!(
-            rule.contains("never what you write into code"),
-            "and bounds itself to speech: {rule}",
+            matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
+            "`didático` is the canonical parser's own spelling: {verdict:?}",
         );
     }
 
@@ -335,19 +394,31 @@ mod tests {
     /// of every project that merely has a `mustard.json`.
     #[test]
     fn an_undeclared_tone_injects_nothing() {
-        let empty = tempfile::tempdir().expect("temp dir");
-        assert_eq!(tone_rule(empty.path()), None, "no mustard.json, no rule");
+        // A project that chose a DIFFERENT tone, asked through the gate.
+        let (_dir, verdict) = verdict_for("technical", "uma mensagem comum");
+        assert!(
+            !matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
+            "a technical project asked for nothing: {verdict:?}",
+        );
 
-        let other = project_declaring_tone("technical");
-        assert_eq!(tone_rule(other.path()), None, "a technical project asked for nothing");
-
+        // A config with NO `tone` key never chose one. The resolved value
+        // defaults to `didactic`, so this is the case a resolved read would
+        // get wrong — and the one that would put the rule in front of every
+        // project that merely has a `mustard.json`.
         let bare = tempfile::tempdir().expect("temp dir");
         std::fs::write(bare.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#)
             .expect("write config");
-        assert_eq!(
-            tone_rule(bare.path()),
-            None,
-            "a config with no `tone` key never chose one — the default is not a choice",
+        let c = Ctx {
+            project_dir: bare.path().to_string_lossy().to_string(),
+            trigger: Some(Trigger::UserPromptSubmit),
+            workspace_root: None,
+        };
+        let verdict = PromptSubmitInject
+            .evaluate(&prompt_input("uma mensagem comum"), &c)
+            .expect("the gate never errors");
+        assert!(
+            !matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
+            "the default is not a choice: {verdict:?}",
         );
     }
 
