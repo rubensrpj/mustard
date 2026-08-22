@@ -35,8 +35,11 @@ Print nothing raw — read the JSON report and relay it in clear language:
 
 1. `installedBefore: false` → this was a **first install**; `true` → an update over an existing installation.
 2. Walk the four lists — `created`, `updated`, `preserved`, `migrated` — and say plainly what each file got (e.g. "your customised orchestrator.md was kept untouched").
-3. After a **first install**, add: the defaults work out of the box, and nothing needs a branch declared — bases come from git itself, and protection from `origin/HEAD`. `git.flow` (an OPTIONAL promotion map, which also pre-selects where a base picker opens), `git.protected` and `specLang` can be adjusted anytime by editing `mustard.json` at the project root.
-4. Next step: describe the work you want done. The router opens the pipeline, and the base gate mines the repo census for you on the way in — there is no separate mapping step to run.
+3. `pluginRefresh` — the run's last step updates **the plugin itself**, so there is no "now go to /plugin and reload" left over.
+   - `state: "refreshed"` → name the resulting `version`, and then say the other half plainly: **this session keeps running the plugin it loaded at start; only restarting Claude Code picks up the new one.** Never imply the new version is already active here — the host loads a plugin once per session and nothing inside the session changes that.
+   - `state: "skipped"` → relay the `skipped` reason as it comes. The project install still succeeded; only the plugin update did not run.
+4. After a **first install**, add: the defaults work out of the box, and nothing needs a branch declared — bases come from git itself, and protection from `origin/HEAD`. `git.flow` (an OPTIONAL promotion map, which also pre-selects where a base picker opens), `git.protected` and `specLang` can be adjusted anytime by editing `mustard.json` at the project root.
+5. Next step: describe the work you want done. The router opens the pipeline, and the base gate mines the repo census for you on the way in — there is no separate mapping step to run.
 
 ### Off / on
 
@@ -69,5 +72,6 @@ Read-only. Relay the report as it comes; a failing check names its own remediati
 
 - Never create or edit `.claude/settings.json`, `.claude/mustard/*.md`, `.claude/.gitignore` or `mustard.json` by hand, and never rename a `settings.json.disabled*` snapshot yourself — the binary is the only writer. An unparseable settings file is reported as `error` and left byte-for-byte untouched; that file is the safety net, so a blind overwrite is the one outcome worse than not acting.
 - Relay every list and every per-entry `state` from the report; if the JSON carries an `error` field, surface it verbatim — never mask it.
+- Never say the refreshed plugin is in effect for this session, and never offer to reload it for the user. The update lands on disk; applying it is a restart, which nothing inside a session can perform. A `pluginRefresh` that came back `skipped` is reported, not retried by hand.
 - Never pass `--confirm` automatically — the user types it for `--scope all`.
 - After `--off`, name `--on --scope <same>` as the reversal. If every `--on` entry comes back `already-active`, say so: the user may have meant `--off`.

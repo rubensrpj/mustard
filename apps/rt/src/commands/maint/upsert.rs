@@ -23,10 +23,125 @@
 //! on stderr as well as reported in the JSON. Every other degradation here costs
 //! a feature; that one costs the operator's belief that a client's git cannot
 //! see the harness, and it is the failure they cannot notice for themselves.
+//!
+//! # The plugin refresh, and the half of it nobody can automate
+//!
+//! Seeding the project used to be the whole job, and it left the operator two
+//! manual steps: update the plugin, then reload Claude Code. Those two are not
+//! the same kind of thing, and treating them as one is what made the door end
+//! halfway.
+//!
+//! UPDATING is a pair of commands the host already publishes —
+//! `claude plugin marketplace update <marketplace>` then
+//! `claude plugin update <plugin>` — so this command runs them as its last step
+//! and reports the version the registry records afterwards.
+//!
+//! APPLYING is not reachable from here at all. `claude plugin update --help`
+//! says `(restart required to apply)`: a session loads its plugin at start and
+//! holds it until it ends, because the host owns that decision, not the plugin.
+//! So the report carries the sentence instead of a promise — the running session
+//! keeps the version it loaded, and only a restart picks up the new one.
+//!
+//! Every step of the refresh is reported, never fatal: this command's subject is
+//! the PROJECT's installation, which does not depend on the state of the plugin.
+//! A missing `claude`, a refusal, a stall, or a registry that lists no install of
+//! this plugin all become a named `skipped` reason beside a successful upsert.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use mustard_core::InstallMode;
+use serde::Serialize;
+
+use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
+
+/// The plugin name this harness ships under — the left half of the
+/// `{plugin}@{marketplace}` key in Claude Code's registry. Only this half is
+/// fixed; the marketplace half varies by how the operator added it
+/// (`mustard@mustard`, `mustard@mustard-local`) and is read from the key.
+const PLUGIN_NAME: &str = "mustard";
+
+/// Claude Code's registry of installed plugins, relative to its config
+/// directory.
+const INSTALLED_PLUGINS: &str = "plugins/installed_plugins.json";
+
+/// How long one refresh step may take. Both steps reach the network (the
+/// marketplace update is a git fetch), so an unbounded wait would hang the
+/// installation door on a stalled connection. Generous enough for a cold clone,
+/// short enough that the operator is not left staring at nothing.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The two words `pluginRefresh.state` can carry. Both steps ran and were
+/// accepted, or the refresh did not happen and says why.
+const REFRESHED: &str = "refreshed";
+const SKIPPED: &str = "skipped";
+
+/// The half of "reload the plugin" that no code inside a session can perform.
+/// Stated, never promised — see the module header.
+const RESTART_NOTICE: &str = "This session keeps running the plugin version it loaded at start. \
+     Only restarting Claude Code picks up the refreshed one — an upsert alone does not.";
+
+/// How many characters of a failed step's output the reason carries. Enough to
+/// name the refusal, short enough that the report stays a report.
+const REASON_CHARS: usize = 300;
+
+/// The plugin the refresh acts on, as Claude Code's registry records it.
+///
+/// Read rather than assumed: the marketplace half of the key and the install
+/// scope are the operator's choices, and a refresh that guessed them would
+/// update someone else's install or none at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RefreshTarget {
+    /// The registry key — `{plugin}@{marketplace}`.
+    id: String,
+    /// The marketplace half, which `claude plugin marketplace update` names.
+    marketplace: String,
+    /// The scope the record was installed under (`user`, `project`, …).
+    scope: String,
+}
+
+/// What the plugin refresh did, as the upsert report carries it.
+///
+/// Always present, because "the refresh did not run" is an answer the operator
+/// needs as much as "it did" — the state before this field existed was a door
+/// that neither updated nor said it had not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginRefresh {
+    /// [`REFRESHED`] or [`SKIPPED`] — the closed vocabulary of this field.
+    pub state: &'static str,
+    /// The `{plugin}@{marketplace}` id the refresh acted on. Absent when the
+    /// registry named no install to act on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// The version the registry records AFTER the refresh — the one a restart
+    /// would load. Absent when the refresh did not run, or when the registry
+    /// could not be read back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Why the refresh did not run. Present exactly when `state` is
+    /// [`SKIPPED`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+    /// The restart sentence ([`RESTART_NOTICE`]). Present exactly when `state`
+    /// is [`REFRESHED`] — there is nothing to restart FOR when nothing changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart: Option<String>,
+}
+
+/// The whole answer of `run upsert`: what the engine did to the project, plus
+/// what the plugin refresh did.
+///
+/// The engine's report is flattened, so every key callers already read
+/// (`installedBefore`, `created`, `private`, …) keeps its name and its place;
+/// `pluginRefresh` is appended after them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertOutcome {
+    #[serde(flatten)]
+    project: mustard_core::UpsertReport,
+    plugin_refresh: PluginRefresh,
+}
 
 /// Execute `mustard-rt run upsert`.
 ///
@@ -50,7 +165,12 @@ pub fn run() {
     let version = mustard_core::harness_version();
     match mustard_core::upsert_project(&root, Some(&version), mode) {
         Ok(report) => {
-            let json = serde_json::to_string_pretty(&report)
+            // The refresh is the LAST step, and only on the path where the
+            // project was really seeded: a run that wrote nothing has no
+            // installation to finish.
+            let outcome =
+                UpsertOutcome { project: report, plugin_refresh: refresh_plugin(&root) };
+            let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
             println!("{json}");
         }
@@ -77,5 +197,382 @@ pub fn run() {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The plugin refresh
+// ---------------------------------------------------------------------------
+
+/// Refresh the installed plugin: read the registry, run the two host commands,
+/// read the registry back.
+///
+/// The impure half. Everything that decides anything lives in
+/// [`fold_refresh`], which is handed the runner and the version reader, so the
+/// tests drive the whole decision without a `claude` on `PATH`.
+///
+/// The binary name defaults to `claude` and can be pointed elsewhere with
+/// `MUSTARD_CLAUDE_BIN`, mirroring `MUSTARD_RTK_BIN` in the rewrite gate.
+fn refresh_plugin(root: &Path) -> PluginRefresh {
+    let binary = std::env::var("MUSTARD_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+    let target = claude_config_dir()
+        .and_then(|dir| std::fs::read_to_string(dir.join(INSTALLED_PLUGINS)).ok())
+        .and_then(|raw| refresh_target(&raw));
+    fold_refresh(
+        &binary,
+        target,
+        |command| run_step(command, root),
+        mustard_core::installed_harness_version,
+    )
+}
+
+/// The pure half of the refresh: a target, a runner for each step, and the
+/// registry read that follows, folded into the reported field.
+///
+/// The two steps run in order — the marketplace first, because updating the
+/// plugin from a clone that never fetched would reinstall the same version —
+/// and the first refusal ends the sequence: the second step has nothing new to
+/// install once the first did not land.
+fn fold_refresh(
+    binary: &str,
+    target: Option<RefreshTarget>,
+    mut step: impl FnMut(&str) -> Result<(), String>,
+    installed_after: impl FnOnce() -> Option<String>,
+) -> PluginRefresh {
+    let Some(target) = target else {
+        return skipped(
+            None,
+            "Claude Code's plugin registry lists no install of this plugin, so there is nothing \
+             to update — installing it is a different flow, not this door's job."
+                .to_string(),
+        );
+    };
+    // The three values below are spliced into a shell command line. They come
+    // from a JSON file this process does not own, so an id shaped like anything
+    // other than a plugin id is refused rather than executed.
+    if !is_plain_id(&target.id) || !is_plain_id(&target.marketplace) || !is_plain_id(&target.scope) {
+        let id = &target.id;
+        return skipped(
+            None,
+            format!(
+                "the plugin registry names `{id}` (scope `{}`), which is not the shape of a \
+                 plugin id this command will run",
+                target.scope
+            ),
+        );
+    }
+    let steps = [
+        format!("{binary} plugin marketplace update {}", target.marketplace),
+        // `--yes` because stdout here is a pipe, not a TTY: the host refuses to
+        // prompt for a marketplace-declared install command when it cannot ask.
+        format!("{binary} plugin update {} --scope {} --yes", target.id, target.scope),
+    ];
+    for command in &steps {
+        if let Err(reason) = step(command) {
+            return skipped(Some(target.id), format!("`{command}` did not succeed: {reason}"));
+        }
+    }
+    PluginRefresh {
+        state: REFRESHED,
+        plugin: Some(target.id),
+        version: installed_after(),
+        skipped: None,
+        restart: Some(RESTART_NOTICE.to_string()),
+    }
+}
+
+/// A refresh that did not happen, and the reason a person reads.
+fn skipped(plugin: Option<String>, reason: String) -> PluginRefresh {
+    PluginRefresh {
+        state: SKIPPED,
+        plugin,
+        version: None,
+        skipped: Some(reason),
+        // Nothing changed on disk, so there is nothing a restart would apply.
+        restart: None,
+    }
+}
+
+/// Run one refresh step under [`REFRESH_TIMEOUT`]. `Ok` only on exit 0; every
+/// other path — an absent binary, a refusal, a stall, a lost child — is an
+/// `Err` carrying the excerpt the report names.
+///
+/// Shares the spawn/drain/deadline machinery with the verify and QA runners
+/// ([`run_shell_with_deadline`]), including the concurrent pipe drain that
+/// keeps a chatty child from deadlocking on a full OS pipe buffer.
+fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
+    match run_shell_with_deadline(command, cwd, REFRESH_TIMEOUT) {
+        ShellOutcome::Exited { status, stdout, stderr } => {
+            if status.success() {
+                return Ok(());
+            }
+            let combined = if stderr.trim().is_empty() { stdout } else { stderr };
+            Err(excerpt(&combined))
+        }
+        ShellOutcome::TimedOut { after } => Err(format!("timeout after {}ms", after.as_millis())),
+        ShellOutcome::SpawnFailed { error } => Err(error),
+    }
+}
+
+/// Collapse a child's output into one bounded line for the report.
+fn excerpt(raw: &str) -> String {
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return "no output".to_string();
+    }
+    flat.chars().take(REASON_CHARS).collect()
+}
+
+/// Whether a registry-supplied token is a plain id — the only shape spliced
+/// into a command line.
+fn is_plain_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'))
+}
+
+/// The install this refresh should act on, out of Claude Code's registry text.
+///
+/// The registry keys installs by `{plugin}@{marketplace}` and maps each to an
+/// ARRAY — one record per scope. The highest version wins, matching what
+/// `mustard_core::installed_harness_version_from` calls "installed": a
+/// lower-scoped leftover must not be the one this command updates.
+///
+/// `None` when the text is not JSON, carries no `plugins` object, or lists no
+/// install of this plugin — every one of which means "there is nothing here to
+/// update", which is a reported skip and never an error.
+fn refresh_target(raw: &str) -> Option<RefreshTarget> {
+    let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let plugins = doc.get("plugins")?.as_object()?;
+    let mut best: Option<(String, RefreshTarget)> = None;
+    for (key, records) in plugins {
+        let Some((name, marketplace)) = key.split_once('@') else { continue };
+        if name != PLUGIN_NAME || marketplace.is_empty() {
+            continue;
+        }
+        for record in records.as_array().into_iter().flatten() {
+            let version = record.get("version").and_then(serde_json::Value::as_str).unwrap_or("");
+            if version.is_empty() {
+                continue;
+            }
+            let scope =
+                record.get("scope").and_then(serde_json::Value::as_str).unwrap_or("user");
+            let higher = match &best {
+                None => true,
+                Some((current, _)) => mustard_core::is_behind(current, version),
+            };
+            if higher {
+                best = Some((
+                    version.to_string(),
+                    RefreshTarget {
+                        id: key.clone(),
+                        marketplace: marketplace.to_string(),
+                        scope: scope.to_string(),
+                    },
+                ));
+            }
+        }
+    }
+    best.map(|(_, target)| target)
+}
+
+/// Claude Code's config directory — `CLAUDE_CONFIG_DIR` when set, `~/.claude`
+/// otherwise.
+///
+/// Resolved here because core's copy is private to its harness module and this
+/// crate must not reach into it. `CLAUDE_CONFIG_DIR` is also what points a test
+/// at a registry of its own instead of the operator's.
+fn claude_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(home).filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".claude"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The registry shape Claude Code writes — one `{plugin}@{marketplace}` key
+    /// mapping to an array of per-scope records.
+    const REGISTRY: &str = r#"{
+      "version": 2,
+      "plugins": {
+        "mustard@mustard-local": [
+          { "scope": "user", "version": "0.1.42" }
+        ],
+        "rust-analyzer-lsp@claude-plugins-official": [
+          { "scope": "user", "version": "1.0.0" }
+        ]
+      }
+    }"#;
+
+    /// AC-1 — a refresh that ran carries BOTH halves of the answer: the version
+    /// the registry now records, and the sentence saying this session is still
+    /// on the one it loaded. Naming the version without the restart would read
+    /// as a promise the host does not keep.
+    #[test]
+    fn a_successful_refresh_names_the_version_and_the_restart() {
+        let mut ran: Vec<String> = Vec::new();
+        let refresh = fold_refresh(
+            "claude",
+            refresh_target(REGISTRY),
+            |command| {
+                ran.push(command.to_string());
+                Ok(())
+            },
+            || Some("0.1.43".to_string()),
+        );
+
+        assert_eq!(refresh.state, REFRESHED, "both steps were accepted: {refresh:?}");
+        assert_eq!(
+            refresh.version.as_deref(),
+            Some("0.1.43"),
+            "the report must carry the version the registry records after the refresh",
+        );
+        let restart = refresh.restart.as_deref().unwrap_or_default();
+        assert!(
+            restart.contains("restarting Claude Code"),
+            "the report must say the running session keeps what it loaded: {restart}",
+        );
+        assert_eq!(refresh.skipped, None, "a refresh that ran has nothing to excuse");
+        assert_eq!(refresh.plugin.as_deref(), Some("mustard@mustard-local"));
+
+        // The marketplace is refreshed BEFORE the plugin — updating from a clone
+        // that never fetched would reinstall the same version.
+        assert_eq!(
+            ran,
+            vec![
+                "claude plugin marketplace update mustard-local".to_string(),
+                "claude plugin update mustard@mustard-local --scope user --yes".to_string(),
+            ],
+            "the two host commands, in order",
+        );
+
+        // Negative control: the same fold, with the first step refusing, must
+        // NOT produce this state — otherwise every assertion above would pass
+        // for a build that ignored its runner entirely.
+        let refused = fold_refresh(
+            "claude",
+            refresh_target(REGISTRY),
+            |_| Err("exit 1".to_string()),
+            || Some("0.1.43".to_string()),
+        );
+        assert_eq!(refused.state, SKIPPED, "a refused step cannot report a refresh");
+        assert_eq!(refused.version, None, "…and cannot name a resulting version");
+    }
+
+    /// AC-2 — an absent or refusing `claude` leaves the upsert successful and
+    /// the report explaining itself. Two shapes of unavailable are covered: the
+    /// binary that could not be spawned, and a registry that names no install.
+    #[test]
+    fn an_unavailable_cli_degrades_to_a_reported_skip() {
+        // The binary is not there: the first step fails to spawn.
+        let missing = fold_refresh(
+            "claude",
+            refresh_target(REGISTRY),
+            |_| Err("No such file or directory (os error 2)".to_string()),
+            || panic!("the version must not be read when the refresh did not run"),
+        );
+        assert_eq!(missing.state, SKIPPED);
+        assert_eq!(missing.restart, None, "nothing changed, so nothing needs applying");
+        let reason = missing.skipped.as_deref().unwrap_or_default();
+        assert!(
+            reason.contains("plugin marketplace update") && reason.contains("os error 2"),
+            "the reason must name the command and what it answered: {reason}",
+        );
+
+        // No install to act on: the registry is readable and lists other
+        // plugins, but none of this one.
+        let elsewhere = fold_refresh(
+            "claude",
+            refresh_target(r#"{"plugins": {"other@market": [{"version": "1.0.0"}]}}"#),
+            |_| panic!("no step may run when there is no install to update"),
+            || panic!("the version must not be read when the refresh did not run"),
+        );
+        assert_eq!(elsewhere.state, SKIPPED);
+        assert!(
+            elsewhere.skipped.as_deref().unwrap_or_default().contains("nothing"),
+            "the report must say WHY it did not run: {elsewhere:?}",
+        );
+        assert_eq!(elsewhere.plugin, None, "there was no plugin to name");
+
+        // Negative control: the identical fold with a runner that accepts both
+        // steps reports a refresh — so "skipped" above is a decision, not a
+        // build that can only ever skip.
+        let ok = fold_refresh("claude", refresh_target(REGISTRY), |_| Ok(()), || None);
+        assert_eq!(ok.state, REFRESHED);
+    }
+
+    /// The target is READ, not assumed: the marketplace half and the scope come
+    /// from the operator's own registry, and the highest version wins the way
+    /// core's reader defines "installed".
+    #[test]
+    fn refresh_target_reads_marketplace_and_scope_from_the_registry() {
+        let target = refresh_target(REGISTRY).expect("the registry lists this plugin");
+        assert_eq!(target.id, "mustard@mustard-local");
+        assert_eq!(target.marketplace, "mustard-local");
+        assert_eq!(target.scope, "user");
+
+        let two_scopes = r#"{"plugins": {"mustard@mustard": [
+            {"scope": "project", "version": "0.1.9"},
+            {"scope": "user", "version": "0.1.10"}
+        ]}}"#;
+        let winner = refresh_target(two_scopes).expect("both records name this plugin");
+        assert_eq!(winner.scope, "user", "0.1.10 > 0.1.9 — a dotted compare, not a string one");
+
+        assert_eq!(refresh_target("not json"), None);
+        assert_eq!(refresh_target("{}"), None);
+        assert_eq!(refresh_target(r#"{"plugins": {"mustard@": [{"version": "1.0.0"}]}}"#), None);
+    }
+
+    /// A registry value that is not a plain id never reaches a shell.
+    #[test]
+    fn a_shell_shaped_id_is_refused_instead_of_run() {
+        let hostile = r#"{"plugins": {"mustard@evil; rm -rf /": [{"version": "1.0.0"}]}}"#;
+        let refresh = fold_refresh(
+            "claude",
+            refresh_target(hostile),
+            |_| panic!("a hostile id must never be executed"),
+            || None,
+        );
+        assert_eq!(refresh.state, SKIPPED);
+        assert!(is_plain_id("mustard@mustard-local"));
+        assert!(!is_plain_id("mustard-local; echo hi"));
+        assert!(!is_plain_id(""));
+    }
+
+    /// The refresh field rides the engine's report without renaming any key it
+    /// already published, and the same input serializes byte-identically twice.
+    #[test]
+    fn the_outcome_appends_the_refresh_without_moving_anything() {
+        let outcome = UpsertOutcome {
+            project: mustard_core::UpsertReport {
+                installed_before: true,
+                version: Some("0.1.43".to_string()),
+                ..mustard_core::UpsertReport::default()
+            },
+            plugin_refresh: skipped(None, "no install".to_string()),
+        };
+        let first = serde_json::to_string_pretty(&outcome).expect("serialize");
+        let second = serde_json::to_string_pretty(&outcome).expect("serialize again");
+        assert_eq!(first, second, "the run face contracts byte-stable output");
+
+        let value: serde_json::Value = serde_json::from_str(&first).expect("valid JSON");
+        assert_eq!(value["installedBefore"], serde_json::json!(true));
+        assert_eq!(value["version"], serde_json::json!("0.1.43"));
+        assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(SKIPPED));
+        assert!(value["pluginRefresh"].get("restart").is_none());
+    }
+
+    /// A failed step's output becomes one bounded line — the report stays a
+    /// report even when the host is chatty.
+    #[test]
+    fn excerpt_flattens_and_bounds_child_output() {
+        assert_eq!(excerpt("  first line\n  second line \n"), "first line second line");
+        assert_eq!(excerpt("   \n\t "), "no output");
+        assert_eq!(excerpt(&"x".repeat(1000)).chars().count(), REASON_CHARS);
     }
 }

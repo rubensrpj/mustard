@@ -103,6 +103,11 @@ fn ac6_upsert_is_private_unconditionally_and_offers_no_switch() {
 /// with no anchor yet — the fresh-install path this test starts from. Exit 0 is
 /// asserted because the `run` face never signals through the exit code: a
 /// non-zero here would mean the process died before its own fail-open path.
+///
+/// `CLAUDE_CONFIG_DIR` points at a directory inside the fixture so the run's
+/// last step — the plugin refresh — finds no registry and reports a skip. Left
+/// unset, an `upsert` in a test would update the machine's REAL plugin install,
+/// which is a side effect no test may have.
 fn upsert(root: &Path, args: &[&str]) -> Value {
     let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
         .arg("run")
@@ -110,6 +115,7 @@ fn upsert(root: &Path, args: &[&str]) -> Value {
         .args(args)
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_CONFIG_DIR", root.join("claude-config"))
         .output()
         .expect("run the built binary");
     assert!(
