@@ -16,12 +16,46 @@ fn clean_repo() -> TempDir {
     tmp
 }
 
+/// `rtk_summary` does not READ the path it is given — it SPAWNS the `rtk` binary
+/// inside it (`telemetry::run_rtk_gain`), and `rtk` falls back to its GLOBAL
+/// store when the directory holds no project data of its own. So a clean repo
+/// says nothing about availability: without `rtk` on PATH the block comes back
+/// unavailable; with it — every Mustard development machine, since the harness
+/// routes commands through `rtk` — the global numbers answer and `available` is
+/// `true`.
+///
+/// The predecessor asserted `!r.available` and therefore measured the MACHINE
+/// rather than the code: green only on a bare CI runner, red on every machine
+/// that could actually run the dashboard. Measured on 2026-08-22: `rtk gain` in
+/// an empty directory reported 13076 commands under "Global Scope".
+///
+/// What the function really guarantees is the invariant below, and BOTH branches
+/// assert something — so the test is empty on neither machine. Unavailable means
+/// the zero shape (`RtkBlock::default()`); available means at least one field was
+/// actually measured, because a block claiming availability with nothing in it is
+/// the failure this test exists to catch.
 #[test]
-fn rtk_summary_is_unavailable_on_clean_repo() {
+fn rtk_summary_is_well_shaped_on_clean_repo() {
     let tmp = clean_repo();
     let r = telemetry::rtk_summary(&PathBuf::from(tmp.path()));
-    assert!(!r.available);
-    assert!(r.daily.is_empty());
+
+    if r.available {
+        assert!(
+            r.total_commands.is_some() || r.tokens_saved.is_some(),
+            "an available rtk block must carry at least one measured field"
+        );
+    } else {
+        assert!(r.daily.is_empty(), "an unavailable rtk block carries no daily rows");
+        assert!(
+            r.total_commands.is_none()
+                && r.input_tokens.is_none()
+                && r.output_tokens.is_none()
+                && r.tokens_saved.is_none()
+                && r.savings_pct.is_none()
+                && r.total_exec_time_ms.is_none(),
+            "an unavailable rtk block is the zero shape — every measured field is absent"
+        );
+    }
 }
 
 #[test]
