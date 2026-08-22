@@ -124,8 +124,14 @@ jobs:
           git checkout -B dev-sync "origin/dev"
           dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           cv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
-          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ]; then
-            echo "dev já está em v$nv nas duas pernas — nada a propagar"
+          # A QUARTA perna entra na DECISAO tambem, nao so no bloco de trabalho.
+          # As tres primeiras podem ja estar em $nv com o lock do dashboard para
+          # tras — foi exatamente o estado em que este conserto encontrou o
+          # repositorio. Sem este teste o bloco inteiro seria pulado e a quarta
+          # perna nunca andaria, que e o defeito de novo com outra roupa.
+          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$dash_pin" = "version = \"$nv\"" ]; then
+            echo "dev já está em v$nv nas quatro pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
             grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
