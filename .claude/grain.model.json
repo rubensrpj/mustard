@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 478,
-      "loc": 206492
+      "loc": 206631
     },
     {
       "language": "tsx",
@@ -17527,7 +17527,7 @@
     {
       "path": "packages/core/tests/version_line.rs",
       "language": "rust",
-      "loc": 118,
+      "loc": 224,
       "imports": [
         "std::path::{Path, PathBuf}",
         "super::json_string_field"
@@ -17537,37 +17537,79 @@
         {
           "kind": "function",
           "name": "the_workspace_version_equals_the_published_plugin_version",
-          "line": 46,
+          "line": 56,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_running_harness_reports_that_same_line",
-          "line": 72,
+          "line": 82,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "workspace_root",
-          "line": 91,
+          "line": 101,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "find_manifest",
-          "line": 103,
+          "line": 113,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "json_string_field",
-          "line": 109,
+          "line": 119,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reads_the_field_and_ignores_the_rest",
-          "line": 123,
+          "line": 133,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "LockPackage",
+          "line": 149,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "name",
+          "line": 150,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "version",
+          "line": 151,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "source",
+          "line": 154,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "lock_packages",
+          "line": 163,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "package_name",
+          "line": 182,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_dashboard_lock_pins_this_repositorys_crates_at_this_version",
+          "line": 197,
           "supertypes": []
         }
       ]
@@ -82494,7 +82536,7 @@
     {
       "path": "apps/dashboard/src-tauri/tests/telemetry_test.rs",
       "language": "rust",
-      "loc": 44,
+      "loc": 77,
       "imports": [
         "mustard_dashboard_lib::telemetry",
         "std::path::PathBuf",
@@ -82510,26 +82552,26 @@
         },
         {
           "kind": "function",
-          "name": "rtk_summary_is_unavailable_on_clean_repo",
-          "line": 20,
+          "name": "rtk_summary_is_well_shaped_on_clean_repo",
+          "line": 38,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "routing_breakdown_is_zeroed",
-          "line": 28,
+          "line": 62,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "hook_fire_counts_empty",
-          "line": 37,
+          "line": 71,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "agent_activity_zeroed",
-          "line": 44,
+          "line": 78,
           "supertypes": []
         }
       ]
@@ -97734,6 +97776,21 @@
       ]
     },
     {
+      "affix": "test",
+      "kind": "folder",
+      "count": 3,
+      "common_dir": "apps/rt/tests",
+      "dirs": [
+        "apps/rt/tests",
+        "apps/<Name>/tests"
+      ],
+      "decl_kind": "function",
+      "implements": null,
+      "collaborators": [
+        "std::path::{Path, PathBuf}"
+      ]
+    },
+    {
       "affix": "Ac",
       "kind": "prefix",
       "count": 2,
@@ -98308,17 +98365,6 @@
       "collaborators": []
     },
     {
-      "affix": "rtk",
-      "kind": "prefix",
-      "count": 2,
-      "common_dir": "apps/rt/src/hooks/bash",
-      "decl_kind": "function",
-      "implements": null,
-      "collaborators": [
-        "std::process::{Command, Stdio}"
-      ]
-    },
-    {
       "affix": "Content",
       "kind": "suffix",
       "count": 1,
@@ -98354,6 +98400,15 @@
         "packages/core/src/domain/spec"
       ],
       "decl_kind": "struct",
+      "implements": null,
+      "collaborators": []
+    },
+    {
+      "affix": "rtk",
+      "kind": "prefix",
+      "count": 1,
+      "common_dir": "apps/rt/src/hooks/bash",
+      "decl_kind": "function",
       "implements": null,
       "collaborators": []
     }
