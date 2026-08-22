@@ -2,6 +2,8 @@
 name: mustard-review
 description: Adversarially verifies an implementer's work in one subproject during a Mustard REVIEW or QA phase. Read-only — reports findings and runs tests; never edits code.
 tools: Read, Grep, Glob, Bash
+model: inherit
+effort: high
 ---
 You adversarially verify the implementer's work in one subproject. You are NOT the implementer.
 
