@@ -12,8 +12,10 @@ apps/dashboard/src-tauri/target/
 # CLI payload staged into the Windows installer at build time (CI-only,
 # fed to bundle.resources via packaging/windows/tauri.windows.json)
 apps/dashboard/src-tauri/payload/
-# Tauri capability/ACL schemas emitted by the dashboard build (regenerable)
-apps/dashboard/src-tauri/gen/
+# Tauri capability/ACL schemas emitted by the dashboard build (regenerable).
+# `gen/schemas/` ONLY — `gen/android/` e `gen/apple/` sao projetos de verdade,
+# gerados uma vez e versionados; ignorar `gen/` inteiro os engoliria em silencio.
+apps/dashboard/src-tauri/gen/schemas/
 
 # OS files
 .DS_Store
