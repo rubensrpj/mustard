@@ -207,39 +207,40 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, Ad
         .filter(|it| !completed.contains(&it.wave))
         .map(|it| it.level)
         .min();
-    let Some(level) = pending_level else {
-        // Every impl wave already carries a pipeline.wave.complete — emit the
-        // review round before the terminal `[]` (see module docs).
-        //
-        // Deliberately AHEAD of the cycle refusal. A contradictory `Depends on`
-        // column is a statement about ORDER, and order has nothing left to
-        // decide once every wave is done. Refusing here would strand exactly
-        // the specs this fix is for: the ones dispatched while the old code
-        // silently accepted their cycle. Their work is finished; they would be
-        // held short of their review round and their close, and the only way
-        // out would be editing a frozen wave plan to satisfy a check that no
-        // longer governs anything.
-        return Ok(review_round(project, spec, &plan, &events));
-    };
-
-    // A round WOULD be dispatched, so order matters again — and the plan does
-    // not have one. Refuse whole, ahead of every emit below: no
-    // `pipeline.wave.start` is written, so re-running after the table is fixed
-    // starts clean. The refusal itself IS recorded, though — a stall nobody
-    // can see reads as an idle pipeline to `resume-bootstrap`, which would
-    // send the orchestrator back to dispatch and refuse again, forever.
-    if !cycle.is_empty() {
-        let waves = cycle.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+    // Refuse only over a contradiction that still GOVERNS something. A
+    // `Depends on` cycle is a statement about order, and order binds a wave
+    // exactly until that wave is done: every stuck wave already carrying a
+    // `pipeline.wave.complete` leaves nothing for the contradiction to decide.
+    //
+    // Getting this boundary wrong strands the very specs the refusal is for —
+    // the ones dispatched while the old code accepted their cycle in silence.
+    // Their cyclic waves are finished; holding them back would demand editing
+    // a frozen wave plan to satisfy a check that no longer governs anything.
+    // Refusing on "the plan HAS a cycle" was too coarse for the same reason:
+    // it blocked a clean, independent wave 1 over two completed waves 2 and 3.
+    let blocking: Vec<u32> = cycle.into_iter().filter(|w| !completed.contains(w)).collect();
+    if !blocking.is_empty() {
+        // Ahead of every emit below, so a refused round writes no
+        // `pipeline.wave.start` and re-running after the table is fixed starts
+        // clean. The refusal itself IS recorded — a stall nobody can see reads
+        // as an idle pipeline to `resume-bootstrap`, which would send the
+        // orchestrator back to dispatch and refuse again, forever.
+        let waves = blocking.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
         crate::commands::event::emit_pipeline::emit_dispatch_failure(
             project,
             spec,
             "cyclic-dependency",
-            &format!(
-                "wave-plan.md declares a dependency cycle; waves {waves} cannot be ordered"
-            ),
+            &format!("wave-plan.md declares a dependency cycle; waves {waves} cannot be ordered"),
+            &events,
         );
-        return Err(AdvanceRefusal::CyclicDependency(cycle));
+        return Err(AdvanceRefusal::CyclicDependency(blocking));
     }
+
+    let Some(level) = pending_level else {
+        // Every impl wave already carries a pipeline.wave.complete — emit the
+        // review round before the terminal `[]` (see module docs).
+        return Ok(review_round(project, spec, &plan, &events));
+    };
 
     let items: Vec<AdvanceItem> = plan
         .into_iter()
@@ -640,6 +641,47 @@ mod tests {
             "the record names the stuck waves: {:?}",
             failure.payload,
         );
+    }
+
+    /// A cycle whose waves are ALL complete stops governing anything, even
+    /// while another wave is still pending. Refusing on "the plan has a cycle"
+    /// was too coarse: it blocked a clean, independent wave 1 over two
+    /// completed waves 2 and 3, and the only way out was editing a frozen plan.
+    #[test]
+    fn completed_cycle_does_not_block_a_clean_pending_wave() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot5");
+        complete_wave(project, "knot5", 2);
+        complete_wave(project, "knot5", 3);
+
+        let items = advance(project, "knot5").expect("a spent contradiction must not refuse");
+        assert_eq!(items.len(), 1, "wave 1 dispatches: {items:?}");
+        assert_eq!(items[0].wave, 1);
+    }
+
+    /// The dispatch-failure record is written ONCE per contradiction, not once
+    /// per invocation. The resume loop re-runs `wave-advance` freely, and
+    /// `build_pipeline_state` sums these into `metrics.retries` — a spec that
+    /// never dispatched anything would otherwise report N retries for one
+    /// broken table.
+    #[test]
+    fn dispatch_failure_is_recorded_once_not_per_invocation() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot6");
+
+        for _ in 0..3 {
+            assert!(advance(project, "knot6").is_err());
+        }
+
+        let recorded = spec_events(project, "knot6")
+            .iter()
+            .filter(|e| e.event == "pipeline.dispatch_failure")
+            .count();
+        assert_eq!(recorded, 1, "three refusals, one record");
     }
 
     /// Once every impl wave is complete the cycle stops mattering: order has

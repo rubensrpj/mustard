@@ -1481,10 +1481,36 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
 /// `pipeline.wave.start` for a refused round — no wave started — but "started
 /// nothing" and "recorded nothing" are different promises, and only the first
 /// one was wanted. Fail-open, like every emit here.
-pub(crate) fn emit_dispatch_failure(project: &Path, spec: &str, reason: &str, description: &str) {
+/// **Idempotent on `(reason, description)`**, mirroring the `started_waves`
+/// guard on [`emit_wave_start`]. `wave-advance` is re-invoked freely — the
+/// resume loop calls it after every round — and one authoring mistake must not
+/// grow a row per invocation: `build_pipeline_state` sums dispatch failures
+/// into `metrics.retries`, so a spec that never dispatched anything would
+/// report N retries for a single broken table.
+///
+/// The payload carries `at`. `render_dispatch_failure` reads `at` with no
+/// fallback to the event `ts`, so omitting it renders every failure as
+/// `ageMs: 0` — permanently brand new, however old it really is.
+pub(crate) fn emit_dispatch_failure(
+    project: &Path,
+    spec: &str,
+    reason: &str,
+    description: &str,
+    known: &[HarnessEvent],
+) {
+    let already = known.iter().any(|e| {
+        e.event == EVENT_PIPELINE_DISPATCH_FAILURE
+            && e.spec.as_deref() == Some(spec)
+            && e.payload.get("reason").and_then(|v| v.as_str()) == Some(reason)
+            && e.payload.get("description").and_then(|v| v.as_str()) == Some(description)
+    });
+    if already {
+        return;
+    }
+    let ts = now_iso8601();
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: now_iso8601(),
+        ts: ts.clone(),
         session_id: session_id(),
         wave: 0,
         actor: Actor {
@@ -1493,7 +1519,7 @@ pub(crate) fn emit_dispatch_failure(project: &Path, spec: &str, reason: &str, de
             actor_type: None,
         },
         event: EVENT_PIPELINE_DISPATCH_FAILURE.to_string(),
-        payload: json!({ "reason": reason, "description": description }),
+        payload: json!({ "reason": reason, "description": description, "at": ts }),
         spec: Some(spec.to_string()),
     };
     let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
