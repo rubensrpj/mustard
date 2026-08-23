@@ -564,6 +564,54 @@ fn bump_guard_checks_every_local_crate_of_each_lock() {
     }
 }
 
+/// The two spellings of the dashboard lock's crate list must stay ONE list.
+///
+/// `DASHBOARD_LOCK_MUST_PIN` and the argument list the workflow hands the guard
+/// say the same thing in two files, and naming — rather than deriving — is
+/// deliberate: only a spelled-out name can be missed. But two hand-kept copies
+/// of one list drift, and the drift is silent in the direction that matters:
+/// drop a crate HERE and this file still passes while the release stops being
+/// checked for it, drop it THERE and the release stops checking while this file
+/// still passes. That is the defect the sibling tests exist for, one level up —
+/// two criteria for one thing, which is what the module doc refuses.
+///
+/// So the workflow is the source and this constant is checked against it. Adding
+/// a crate stays a two-line edit; forgetting the second line stops being silent.
+#[test]
+fn the_dashboard_guard_is_asked_about_exactly_the_crates_this_file_names() {
+    let Some(root) = workspace_root() else {
+        return;
+    };
+    let Some(workflow) = bump_workflow(&root) else {
+        return;
+    };
+
+    let asked: Vec<Vec<String>> = guard_invocations(&workflow)
+        .into_iter()
+        .filter(|(lock, _)| lock == DASHBOARD_LOCK_REL)
+        .map(|(_, crates)| crates)
+        .collect();
+    assert!(
+        !asked.is_empty(),
+        "{BUMP_WORKFLOW_REL} never runs the guard over {DASHBOARD_LOCK_REL}, so nothing binds \
+         DASHBOARD_LOCK_MUST_PIN to what the release actually checks"
+    );
+
+    let mut want: Vec<&str> = DASHBOARD_LOCK_MUST_PIN.to_vec();
+    want.sort_unstable();
+    for crates in &asked {
+        let mut got: Vec<&str> = crates.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        assert_eq!(
+            got, want,
+            "{BUMP_WORKFLOW_REL} asks the guard about {DASHBOARD_LOCK_REL} naming {got:?} while \
+             DASHBOARD_LOCK_MUST_PIN names {want:?}. One of the two was edited alone; the release \
+             obeys the workflow and this file obeys the constant, so whichever is short stops \
+             being checked in silence. Make both lists say the same thing."
+        );
+    }
+}
+
 /// A crate of ours that VANISHED from a lock must be named, not passed over.
 ///
 /// This is the hole a set derived from the lock alone cannot see: the crate that
