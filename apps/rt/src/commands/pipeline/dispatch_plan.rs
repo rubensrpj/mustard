@@ -449,13 +449,8 @@ fn parse_wave_label(cell: &str) -> Option<u32> {
 ///
 /// Accepts both `[[1]]` (number form) and `[[wave-1-general]]` (name form) via
 /// the shared scanner; an em-dash / hyphen / empty cell means "no deps".
-/// Duplicates within one cell collapse to a single edge.
-///
-/// Parse the dependency cell into wave numbers.
-///
-/// Accepts both `[[1]]` (number form) and `[[wave-1-general]]` (name form) via
-/// the shared scanner; an em-dash / hyphen / empty cell means "no deps". A
-/// self-reference (a wave depending on itself) is dropped.
+/// Duplicates within one cell collapse to a single edge, and a self-reference
+/// (a wave depending on itself) is dropped.
 ///
 /// **Two things this deliberately does NOT read, both of them pre-existing
 /// gaps this unit chose not to widen into.** A cell authored as bare numbers
@@ -600,21 +595,35 @@ fn rows_from_fs(spec_dir: &Path) -> Vec<WaveRow> {
 // Level assignment (topological depth)
 // ---------------------------------------------------------------------------
 
-/// The wave DAG's level assignment, plus the waves it could not place.
+/// The wave plan's level assignment, plus the waves on a declared loop.
 struct WaveLevels {
-    /// Wave → topological level, for EVERY wave in the plan.
+    /// Wave → topological level, for EVERY wave in the plan — a contradictory
+    /// plan included.
     ///
-    /// A wave the peel could not place still gets a level here — see the tail
-    /// of [`assign_levels`] for why the fail-open readers need one.
+    /// Levels come from the graph with each loop collapsed to a single node, so
+    /// they are real everywhere: waves on ONE loop share a level (there is no
+    /// order between them to express), and a wave behind a loop sits above it.
+    /// No wave is ever left without a level, so the fail-open readers —
+    /// `wave-overlap-check` and `boundary_gate`, which both group by level —
+    /// never fall back on a caller's `unwrap_or(0)` and never see a wave placed
+    /// below the wave it depends on.
+    ///
+    /// They CAN still group a loop's members with an unrelated independent
+    /// wave, since all of them sit at depth 0 when nothing outside blocks them.
+    /// That is topologically true and practically harmless: the dispatch face
+    /// refuses the round, so no same-level claim about a contradictory plan is
+    /// ever acted on.
     level: BTreeMap<u32, u32>,
     /// The waves ON a declared dependency loop, ascending. Empty for a
     /// well-formed plan.
     ///
-    /// NOT every wave the peel failed to place: a wave merely waiting BEHIND a
-    /// cycle is stuck without being contradictory, its own `Depends on` cell is
-    /// correct as written, and it becomes dispatchable the moment its
-    /// dependency completes. Naming it here would send its author to fix the
-    /// wrong cell and would keep refusing a wave that was ready to run.
+    /// A wave is here exactly when it can reach ITSELF through dependency
+    /// edges. That is a definition, not a test: a wave merely waiting BEHIND a
+    /// loop, or sitting between two of them, cannot reach itself, so it is
+    /// never named. Its own `Depends on` cell is correct as written, and it
+    /// becomes dispatchable the moment its dependency completes — naming it
+    /// would send its author to the wrong cell, and refusing it would be
+    /// permanent, since a refused wave never completes.
     ///
     /// The same IDEA as the stuck set of the topological walk in
     /// [`crate::commands::wave::wave_dependency`] — what a topological pass
@@ -625,55 +634,128 @@ struct WaveLevels {
     cycle: Vec<u32>,
 }
 
-/// Assign a topological level to each wave: a wave's level is one more than the
-/// deepest level among its in-plan dependencies; waves with no in-plan
-/// dependency are level 0.
+/// Assign a topological level to each wave, and name the waves that sit on a
+/// declared dependency LOOP.
 ///
-/// A dependency on an unknown wave is ignored (an out-of-plan link is not a
-/// contradiction). A dependency the plan DOES contain but cannot order is a
-/// contradiction, and it is reported rather than smoothed over: the peel below
-/// places a wave only once every in-plan dependency already has a level, so
-/// what is left unplaced is exactly the cycle. It is not level 0 and it is not
-/// a level at all — [`WaveLevels::cycle`] names those waves, and the caller
-/// decides. Deterministic regardless of input order.
+/// A dependency on an unknown wave is ignored — an out-of-plan link is not a
+/// contradiction. A dependency the plan DOES contain but cannot be ordered is
+/// one, and it is reported rather than smoothed over.
 ///
-/// This used to relax to a fixpoint with an iteration cap, seeding an
-/// unresolved node at a provisional 0. That never actually held at 0: after the
-/// first pass every wave has an entry, so each further pass simply increments
-/// the cycle's members, and the cap stopped them at arbitrary distinct levels.
-/// A declared cycle therefore came out looking like an ordinary sequential plan
-/// — the failure was invisible, which is the worst shape it could take.
+/// ## Why it is done this way
+///
+/// Two earlier shapes of this function were wrong in instructive ways, and both
+/// are worth stating so neither comes back.
+///
+/// It first relaxed to a fixpoint with an iteration cap, seeding an unresolved
+/// node at a provisional 0. That never held at 0: after the first pass every
+/// wave has an entry, so each further pass simply incremented the loop's
+/// members until the cap stopped it, at arbitrary distinct levels. A declared
+/// contradiction therefore came out looking like an ordinary sequential plan —
+/// invisible, which is the worst shape a failure can take.
+///
+/// It then peeled — place a wave once all its dependencies are placed — and
+/// treated whatever was left as the cycle. Peeling is right; equating "unplaced"
+/// with "on a loop" is not. Unplaced also contains every wave WAITING behind a
+/// loop, whose own `Depends on` cell is correct as written; naming those sent
+/// their author to the wrong cell, and refusing them was permanent, since a
+/// refused wave never completes and so never leaves the blocking set. Patching
+/// that by stripping waves with no incoming edge still failed for a wave sitting
+/// BETWEEN two loops. And handing the unplaced waves invented levels in
+/// wave-number order could place a wave BELOW the wave it depends on, which is
+/// the one thing a level assignment exists to prevent.
+///
+/// So the question is asked directly: two waves are on the same loop exactly
+/// when each can reach the other through dependency edges, and a wave is on a
+/// loop exactly when it can reach itself. That is the definition of a strongly
+/// connected component, computed here as a transitive closure — O(n³) over a
+/// handful of waves, and correct by construction rather than by heuristic.
+/// Collapsing each component to a single node leaves a graph with no loops at
+/// all, so ordinary peeling over THAT graph gives every wave a real level:
+/// waves on one loop share it (they have no order between them), and a wave
+/// behind a loop lands above it. Deterministic regardless of input order.
 fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
-    let known: std::collections::BTreeSet<u32> = rows.iter().map(|r| r.wave).collect();
-    let deps: BTreeMap<u32, Vec<u32>> = rows
+    use std::collections::BTreeSet;
+
+    let known: BTreeSet<u32> = rows.iter().map(|r| r.wave).collect();
+    let deps: BTreeMap<u32, BTreeSet<u32>> = rows
         .iter()
         .map(|r| {
-            let filtered: Vec<u32> = r
-                .depends_on
-                .iter()
-                .copied()
-                .filter(|d| known.contains(d))
-                .collect();
+            let filtered: BTreeSet<u32> =
+                r.depends_on.iter().copied().filter(|d| known.contains(d)).collect();
             (r.wave, filtered)
         })
         .collect();
 
-    // Peel: each pass places every wave whose dependencies are already placed.
-    // A pass that places nothing means nothing further CAN be placed, so the
-    // loop ends after at most one pass per wave — no iteration cap needed.
-    let mut level: BTreeMap<u32, u32> = BTreeMap::new();
+    // 1. Transitive closure: `reach[a]` is every wave `a` depends on, directly
+    //    or through others.
+    let mut reach: BTreeMap<u32, BTreeSet<u32>> = deps.clone();
+    loop {
+        let mut grew = false;
+        for &w in &known {
+            let mut extra: BTreeSet<u32> = BTreeSet::new();
+            if let Some(direct) = reach.get(&w) {
+                for d in direct {
+                    if let Some(indirect) = reach.get(d) {
+                        extra.extend(indirect.iter().copied());
+                    }
+                }
+            }
+            if let Some(cur) = reach.get_mut(&w) {
+                let before = cur.len();
+                cur.extend(extra);
+                grew |= cur.len() != before;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    // 2. `a` and `b` are on the same loop when each reaches the other; a wave
+    //    reaching ITSELF is on one. Component id = its smallest member, so the
+    //    grouping is stable and needs no counter.
+    let on_loop = |w: u32| reach.get(&w).is_some_and(|r| r.contains(&w));
+    let component: BTreeMap<u32, u32> = known
+        .iter()
+        .map(|&w| {
+            let id = known
+                .iter()
+                .copied()
+                .find(|&o| {
+                    o == w
+                        || (reach.get(&w).is_some_and(|r| r.contains(&o))
+                            && reach.get(&o).is_some_and(|r| r.contains(&w)))
+                })
+                .unwrap_or(w);
+            (w, id)
+        })
+        .collect();
+
+    // 3. Peel the CONDENSED graph, which by construction has no loops left.
+    let mut comp_deps: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for (&w, wave_deps) in &deps {
+        let from = component[&w];
+        let entry = comp_deps.entry(from).or_default();
+        for d in wave_deps {
+            let to = component[d];
+            if to != from {
+                entry.insert(to);
+            }
+        }
+    }
+    let mut comp_level: BTreeMap<u32, u32> = BTreeMap::new();
     loop {
         let mut placed = false;
-        for (&wave, wave_deps) in &deps {
-            if level.contains_key(&wave) || !wave_deps.iter().all(|d| level.contains_key(d)) {
+        for (&c, c_deps) in &comp_deps {
+            if comp_level.contains_key(&c) || !c_deps.iter().all(|d| comp_level.contains_key(d)) {
                 continue;
             }
-            let new_level = wave_deps
+            let lvl = c_deps
                 .iter()
-                .filter_map(|d| level.get(d).map(|l| l + 1))
+                .filter_map(|d| comp_level.get(d).map(|l| l + 1))
                 .max()
                 .unwrap_or(0);
-            level.insert(wave, new_level);
+            comp_level.insert(c, lvl);
             placed = true;
         }
         if !placed {
@@ -681,53 +763,11 @@ fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
         }
     }
 
-    let stuck: Vec<u32> = deps.keys().copied().filter(|w| !level.contains_key(w)).collect();
-
-    // Of the stuck waves, WHICH ones are actually in the loop? The rest are
-    // merely waiting behind it, and the difference decides who gets refused.
-    //
-    // Strip any stuck wave that nothing else stuck depends ON, and repeat. A
-    // wave behind the cycle (4 depends on 3, nothing depends on 4) has no such
-    // dependent and falls away; what survives every pass has an incoming edge
-    // from within the set, which is what being on a loop means.
-    //
-    // This matters because a dependent is NOT a contradiction. Naming wave 4 as
-    // the cycle told its author to fix a `Depends on` cell that was correct as
-    // written, and — worse — kept refusing after waves 2 and 3 completed, when
-    // wave 4's only dependency was satisfied and it was ready to dispatch.
-    let mut cycle: Vec<u32> = stuck.clone();
-    loop {
-        let depended_on: std::collections::BTreeSet<u32> = cycle
-            .iter()
-            .filter_map(|w| deps.get(w))
-            .flatten()
-            .copied()
-            .collect();
-        let kept: Vec<u32> = cycle.iter().copied().filter(|w| depended_on.contains(w)).collect();
-        if kept.len() == cycle.len() {
-            break;
-        }
-        cycle = kept;
-    }
-
-    // A stuck wave still needs A level, because the fail-open readers group by
-    // it: `wave-overlap-check` warns about waves that share one, and
-    // `boundary_gate` authorises writes for the waves at the lowest pending
-    // one. Leaving them unplaced would collapse every stuck wave to 0 through
-    // the caller's `unwrap_or(0)` — making them look dispatch-parallel, which
-    // they are not and never will be, since the dispatch face refuses them.
-    // That would invent same-level overlap warnings and widen the write gate
-    // to the union of their files.
-    //
-    // So give each its own level after the deepest placed one, in wave order:
-    // nothing is dropped, nothing is grouped, and the audits keep reading the
-    // plan exactly as they did before the refusal existed. `cycle` — not the
-    // level — is what says the plan contradicts itself.
-    let mut next = level.values().copied().max().map_or(0, |m| m + 1);
-    for &wave in &stuck {
-        level.insert(wave, next);
-        next += 1;
-    }
+    let level: BTreeMap<u32, u32> = known
+        .iter()
+        .map(|&w| (w, comp_level.get(&component[&w]).copied().unwrap_or(0)))
+        .collect();
+    let cycle: Vec<u32> = known.iter().copied().filter(|&w| on_loop(w)).collect();
 
     WaveLevels { level, cycle }
 }
@@ -942,18 +982,32 @@ mod tests {
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![1] },
         ];
         let levels = assign_levels(&rows);
-        assert_eq!(levels.cycle, vec![1, 2], "both waves are stuck");
-        // They still carry levels, for the fail-open readers — but DISTINCT
-        // ones, so nothing downstream mistakes them for a parallel round.
-        assert_ne!(levels.level[&1], levels.level[&2]);
+        assert_eq!(levels.cycle, vec![1, 2], "both waves are on the loop");
+        // They share a level, and that is the honest answer: the plan states no
+        // order between them, so inventing one would be the original defect
+        // again. The refusal — not the level — is what stops the dispatch.
+        assert_eq!(levels.level[&1], levels.level[&2]);
     }
 
-    /// A stuck wave never shares a level with another wave. This is what keeps
-    /// `wave-overlap-check` from inventing same-level overlap warnings and
-    /// `boundary_gate` from widening its authorised set to the union of every
-    /// stuck wave's files — both group by level and neither can refuse.
+    /// Levels over a contradictory plan, in one fixture: waves 2 and 3 form a
+    /// loop, wave 4 waits behind it, wave 1 is clean.
+    ///
+    /// Two guarantees, and each replaced a defect. `cycle` names ONLY the loop
+    /// — naming wave 4 sent its author to a `Depends on` cell that was correct
+    /// as written, and refusing it was permanent, since a refused wave never
+    /// completes. And a wave behind the loop sits ABOVE it: handing stuck waves
+    /// invented levels in wave-number order could place a wave BELOW the wave
+    /// it depends on, which is the one thing a level assignment must never do.
+    ///
+    /// Note what is NOT guaranteed. The loop here depends on nothing outside
+    /// itself, so it shares level 0 with the clean wave 1 — topologically that
+    /// is simply true, and the audits that group by level will pair them. That
+    /// costs nothing: the round is refused, so no wave dispatches and no
+    /// same-level claim is ever acted on. Chasing tidier audit output for a
+    /// plan that cannot run is what produced the invented levels in the first
+    /// place.
     #[test]
-    fn stuck_waves_never_share_a_level() {
+    fn levels_over_a_contradictory_plan() {
         let rows = vec![
             WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![3] },
@@ -961,50 +1015,59 @@ mod tests {
             WaveRow { wave: 4, role: "d".into(), depends_on: vec![3] },
         ];
         let levels = assign_levels(&rows);
-        assert_eq!(levels.cycle, vec![2, 3]);
-        let mut seen: Vec<u32> = levels.level.values().copied().collect();
-        let before = seen.len();
-        seen.sort_unstable();
-        seen.dedup();
-        assert_eq!(seen.len(), before, "every wave sits on a level of its own");
+
+        assert_eq!(levels.cycle, vec![2, 3], "only the loop's own members");
         assert_eq!(levels.level[&1], 0, "the clean wave keeps its real level");
+        assert_eq!(levels.level[&2], levels.level[&3], "one loop, one level");
+        assert!(levels.level[&4] > levels.level[&3], "what waits behind sits above");
     }
 
-    /// A cell holding ordinary PROSE declares nothing. This guards the reverted
-    /// bare-number scan: reading loose digits out of free text turned "nada,
-    /// ver os 2 anexos" into an edge on wave 2, and two such cells refused a
-    /// plan that had no contradiction at all.
+    /// A wave sitting BETWEEN two loops is on neither, and must not be named.
+    ///
+    /// This is what "unplaced" could never express. Wave 4 depends on the 5↔6
+    /// loop and the 2↔3 loop depends on wave 4, so no peel of unplaced waves
+    /// ever strips it: it has both an incoming and an outgoing edge inside the
+    /// stuck set. Asking whether it reaches ITSELF answers in one step — it
+    /// does not, so it is not on a loop, and its `Depends on` cell is correct.
     #[test]
-    fn prose_in_the_depends_cell_declares_no_edge() {
-        let plan = "\
-| Wave | Spec | Role | Depends on | Summary |
-|------|------|------|------------|---------|
-| 1 | [[wave-1-rt]] | rt | nada (ver os 2 anexos) | base |
-| 2 | [[wave-2-cli]] | cli | nenhuma real, so a 1 | cli |
-";
-        let rows = parse_wave_plan_table(plan);
-        assert!(rows[0].depends_on.is_empty());
-        assert!(rows[1].depends_on.is_empty());
-        assert!(assign_levels(&rows).cycle.is_empty(), "no phantom cycle");
-    }
-
-    /// A wave waiting BEHIND a cycle is stuck without being contradictory, and
-    /// only the loop's own members are named. Wave 4 depends on 3 and nothing
-    /// depends on 4: its cell is correct as written, and it becomes
-    /// dispatchable the moment wave 3 completes. Naming it sent its author to
-    /// fix the wrong cell, and kept refusing a wave that was ready to run.
-    #[test]
-    fn levels_names_the_loop_not_what_waits_behind_it() {
+    fn levels_wave_between_two_loops_is_not_named() {
         let rows = vec![
-            WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
-            WaveRow { wave: 2, role: "b".into(), depends_on: vec![3] },
-            WaveRow { wave: 3, role: "c".into(), depends_on: vec![2] },
-            WaveRow { wave: 4, role: "d".into(), depends_on: vec![3] },
+            WaveRow { wave: 2, role: "a".into(), depends_on: vec![3] },
+            WaveRow { wave: 3, role: "b".into(), depends_on: vec![2, 4] },
+            WaveRow { wave: 4, role: "c".into(), depends_on: vec![5] },
+            WaveRow { wave: 5, role: "d".into(), depends_on: vec![6] },
+            WaveRow { wave: 6, role: "e".into(), depends_on: vec![5] },
         ];
         let levels = assign_levels(&rows);
-        assert_eq!(levels.cycle, vec![2, 3], "only the loop's members");
-        assert_eq!(levels.level[&1], 0);
-        assert!(levels.level.contains_key(&4), "wave 4 still gets a level");
+        assert_eq!(levels.cycle, vec![2, 3, 5, 6], "the two loops, and nothing else");
+        assert!(!levels.cycle.contains(&4), "wave 4 is on neither loop");
+    }
+
+    /// A wave never lands on a level BELOW a wave it declares it depends on —
+    /// not even when both are stuck behind a loop. Invented levels in
+    /// wave-number order broke exactly this, and `wave-advance` then dispatched
+    /// a wave before the one it was waiting for.
+    #[test]
+    fn levels_never_place_a_wave_below_its_dependency() {
+        let rows = vec![
+            WaveRow { wave: 4, role: "a".into(), depends_on: vec![7] },
+            WaveRow { wave: 5, role: "b".into(), depends_on: vec![6] },
+            WaveRow { wave: 6, role: "c".into(), depends_on: vec![5] },
+            WaveRow { wave: 7, role: "d".into(), depends_on: vec![5] },
+        ];
+        let levels = assign_levels(&rows);
+        for row in &rows {
+            for dep in &row.depends_on {
+                if levels.cycle.contains(&row.wave) && levels.cycle.contains(dep) {
+                    continue; // same loop: no order to respect
+                }
+                assert!(
+                    levels.level[&row.wave] > levels.level[dep],
+                    "wave {} depends on {dep} but sits at or below it",
+                    row.wave,
+                );
+            }
+        }
     }
 
     /// An out-of-plan dependency is NOT a contradiction: wave 2 links a wave
@@ -1202,13 +1265,13 @@ mod tests {
         assert_eq!(cycle, vec![2, 3], "the contradiction is named");
         assert_eq!(items.len(), 3, "no wave is dropped");
 
-        // The fail-open face reads identically, and the stuck waves keep
-        // distinct levels so no audit mistakes them for a parallel round.
+        // The fail-open face reads identically: every wave present, every wave
+        // carrying a real level, and the loop's two members sharing one.
         let plain = build_plan(project, &spec_dir, "knot", None);
         assert_eq!(plain.len(), 3);
-        let stuck: Vec<u32> =
-            plain.iter().filter(|it| it.wave != 1).map(|it| it.level).collect();
-        assert_ne!(stuck[0], stuck[1], "stuck waves are not grouped together");
+        let level_of = |w: u32| plain.iter().find(|it| it.wave == w).map(|it| it.level);
+        assert_eq!(level_of(1), Some(0));
+        assert_eq!(level_of(2), level_of(3), "one loop, one level");
     }
 
     /// `--wave N` slices to a single item, preserving its real depends_on.

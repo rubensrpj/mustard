@@ -1481,6 +1481,12 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
 /// `pipeline.wave.start` for a refused round — no wave started — but "started
 /// nothing" and "recorded nothing" are different promises, and only the first
 /// one was wanted. Fail-open, like every emit here.
+/// How long a recorded dispatch failure suppresses a re-emit of the same
+/// reason. MUST match the projection's own stale-failure cutoff
+/// (`event_projections::DISPATCH_FAILURE_TTL_MS`): a guard outliving the record
+/// it guards is a guard that silences the signal.
+const DISPATCH_FAILURE_FRESH_MS: i64 = 10 * 60 * 1_000;
+
 /// **Idempotent on `reason`**, mirroring the `started_waves` guard on
 /// [`emit_wave_start`]. `wave-advance` is re-invoked freely — the resume loop
 /// calls it after every round — and one authoring mistake must not grow a row
@@ -1493,6 +1499,13 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
 /// they complete — keying on it let the same contradiction write a second row
 /// the moment its wording changed, which is the thing the guard exists to stop.
 ///
+/// **The guard expires with the record it protects.** The projection clears a
+/// dispatch failure older than its ten-minute window, so a guard that looked at
+/// the whole event history would suppress every re-emit after the first record
+/// aged out — and the stall would go back to being invisible, permanently,
+/// which is the exact loop this function exists to break. Only a record still
+/// INSIDE that window suppresses a re-emit.
+///
 /// The payload carries `at`. `render_dispatch_failure` reads `at` with no
 /// fallback to the event `ts`, so omitting it renders every failure as
 /// `ageMs: 0` — permanently brand new, however old it really is.
@@ -1503,10 +1516,20 @@ pub(crate) fn emit_dispatch_failure(
     description: &str,
     known: &[HarnessEvent],
 ) {
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
     let already = known.iter().any(|e| {
-        e.event == EVENT_PIPELINE_DISPATCH_FAILURE
-            && e.spec.as_deref() == Some(spec)
-            && e.payload.get("reason").and_then(|v| v.as_str()) == Some(reason)
+        if e.event != EVENT_PIPELINE_DISPATCH_FAILURE || e.spec.as_deref() != Some(spec) {
+            return false;
+        }
+        if e.payload.get("reason").and_then(|v| v.as_str()) != Some(reason) {
+            return false;
+        }
+        e.payload
+            .get("at")
+            .and_then(|v| v.as_str())
+            .or(Some(e.ts.as_str()))
+            .and_then(mustard_core::time::parse_iso_millis)
+            .is_some_and(|at_ms| now_ms - at_ms <= DISPATCH_FAILURE_FRESH_MS)
     });
     if already {
         return;

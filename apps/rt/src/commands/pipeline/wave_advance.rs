@@ -64,27 +64,36 @@
 //! ## Refusal
 //!
 //! One case does NOT degrade to an array: a wave plan whose `Depends on`
-//! column declares a cycle, **when a round would actually be dispatched**. The
-//! output is then the object `{"error":"cyclic-dependency","cycle":[…]}`, no
-//! wave is dispatched, and no `pipeline.wave.start` is emitted. Exit stays 0:
-//! the refusal is carried by the JSON, never by the exit code. A
-//! `pipeline.dispatch_failure` IS recorded, so the stall is visible to
-//! `resume-bootstrap` instead of reading as an idle pipeline.
-//!
-//! The refusal borrows the two KEYS `wave-dependency` uses for an import
-//! cycle, and only the keys: its `cycle` holds project-relative file paths,
-//! this one holds wave numbers. Same vocabulary, different scale — do not
-//! write a reader that assumes one element type for both.
+//! column declares a cycle, **while a wave ON that cycle is still pending**.
+//! The output is then the object `{"error":"cyclic-dependency","cycle":[…]}`,
+//! no wave is dispatched, and no `pipeline.wave.start` is emitted. Exit stays
+//! 0: the refusal is carried by the JSON, never by the exit code.
 //!
 //! It has to be an object rather than an empty array because `[]` already
 //! means something else and something terminal — "no wave is left, go and
 //! CLOSE". A contradiction the author has to resolve cannot be reported with
 //! the word for "you are finished".
 //!
-//! **Once every impl wave is complete the cycle stops mattering** and the
-//! review round is emitted normally. Dependency order decides nothing when
-//! there is nothing left to order, and a spec dispatched while the old code
-//! accepted its cycle would otherwise be stranded short of its own close.
+//! **The condition is deliberately narrow, and each half of it was learnt the
+//! hard way.** Refusing whenever the PLAN holds a cycle stranded a clean,
+//! independent wave over two completed ones. Naming every wave the DAG could
+//! not place swept in the waves merely waiting behind the cycle — their
+//! `Depends on` cells are correct as written, so the message sent their author
+//! to the wrong place, and since such a wave can never complete while refused,
+//! the blocking set could never empty. So `cycle` carries the loop's own
+//! members, and only an uncompleted one refuses anything.
+//!
+//! The refusal borrows the two KEYS `wave-dependency` uses for an import
+//! cycle, and only the keys: its `cycle` holds project-relative file paths,
+//! this one holds wave numbers. Same vocabulary, different scale — do not
+//! write a reader that assumes one element type for both.
+//!
+//! A `pipeline.dispatch_failure` is recorded alongside, once per reason, so a
+//! `resume-bootstrap` within the projection's ten-minute window reports the
+//! stall rather than an idle pipeline. It expires like any other dispatch
+//! failure: that expiry is also what lets a FIXED plan stop being reported,
+//! and exempting this reason from it (tried, reverted) left a repaired spec
+//! reporting the old failure forever.
 //!
 //! Fail-open still holds where it was meant to: nothing is dropped. The waves
 //! stay exactly as authored, and only the ROUND is declined.
@@ -208,17 +217,29 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, Ad
         .map(|it| it.level)
         .min();
     // Refuse only over a contradiction that still GOVERNS something. A
-    // `Depends on` cycle is a statement about order, and order binds a wave
-    // exactly until that wave is done: every stuck wave already carrying a
-    // `pipeline.wave.complete` leaves nothing for the contradiction to decide.
+    // `Depends on` loop is a statement about ORDER, and order binds a wave for
+    // exactly as long as that wave is waiting on something: a wave already
+    // complete has nothing left to order, and so does a wave whose every
+    // declared dependency is complete — it can run right now, whatever the
+    // table says about who else waits on it.
     //
-    // Getting this boundary wrong strands the very specs the refusal is for —
-    // the ones dispatched while the old code accepted their cycle in silence.
-    // Their cyclic waves are finished; holding them back would demand editing
-    // a frozen wave plan to satisfy a check that no longer governs anything.
-    // Refusing on "the plan HAS a cycle" was too coarse for the same reason:
-    // it blocked a clean, independent wave 1 over two completed waves 2 and 3.
-    let blocking: Vec<u32> = cycle.into_iter().filter(|w| !completed.contains(w)).collect();
+    // Both halves were learnt from a stranded spec. Refusing whenever the PLAN
+    // held a loop blocked a clean, independent wave over two completed ones.
+    // Refusing every uncompleted loop member then blocked a wave whose own
+    // dependency had just finished — it was ready, and the refusal kept it from
+    // ever completing, so the blocking set could never empty. The population
+    // this exists to protect is precisely the specs dispatched while the old
+    // code accepted their loop in silence, and they arrive mid-round.
+    let blocking: Vec<u32> = cycle
+        .into_iter()
+        .filter(|w| !completed.contains(w))
+        .filter(|w| {
+            !plan
+                .iter()
+                .find(|it| it.wave == *w)
+                .is_some_and(|it| it.depends_on.iter().all(|d| completed.contains(d)))
+        })
+        .collect();
     if !blocking.is_empty() {
         // Ahead of every emit below, so a refused round writes no
         // `pipeline.wave.start` and re-running after the table is fixed starts
@@ -714,6 +735,60 @@ mod tests {
         let items = advance(project, "behind").expect("wave 4 is not a contradiction");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].wave, 4);
+    }
+
+    /// A wave ON the loop whose OWN declared dependency is already complete is
+    /// ready to run, and is not refused. The loop says two waves block each
+    /// other; once one of them has run, the other one's stated condition is
+    /// met. Refusing it kept it from ever completing, so the blocking set could
+    /// never empty — a permanent stall for exactly the mid-round specs this
+    /// refusal exists to protect.
+    #[test]
+    fn cycle_wave_whose_dependency_completed_is_not_refused() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "half");
+        complete_wave(project, "half", 2);
+
+        let items = advance(project, "half").expect("wave 3's dependency is satisfied");
+        assert!(!items.is_empty(), "something dispatches: {items:?}");
+    }
+
+    /// The record is written AGAIN once the previous one has aged past the
+    /// window the projection keeps it in. The guard suppresses duplicates; it
+    /// must not suppress the signal itself. An unbounded guard meant that after
+    /// the first record expired no refusal was ever recorded again, and the
+    /// stall went back to being invisible — permanently, which is the loop the
+    /// record exists to break.
+    #[test]
+    fn dispatch_failure_is_recorded_again_once_the_old_one_expired() {
+        use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "aged");
+
+        // A matching record from long ago — past the projection's window.
+        let stale = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2020-01-01T00:00:00.000Z".to_string(),
+            session_id: "old".to_string(),
+            wave: 0,
+            actor: Actor { kind: ActorKind::Orchestrator, id: None, actor_type: None },
+            event: "pipeline.dispatch_failure".to_string(),
+            payload: json!({ "reason": "cyclic-dependency", "at": "2020-01-01T00:00:00.000Z" }),
+            spec: Some("aged".to_string()),
+        };
+        crate::shared::events::route::emit(project.to_str().unwrap(), &stale);
+
+        assert!(advance(project, "aged").is_err());
+
+        let fresh = spec_events(project, "aged")
+            .iter()
+            .filter(|e| e.event == "pipeline.dispatch_failure")
+            .count();
+        assert_eq!(fresh, 2, "the expired record does not silence the new one");
     }
 
     /// Once every impl wave is complete the cycle stops mattering: order has

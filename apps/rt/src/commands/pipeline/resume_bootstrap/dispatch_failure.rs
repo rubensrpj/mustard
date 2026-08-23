@@ -17,11 +17,6 @@ pub(super) fn render_dispatch_failure(fail: &PipelineDispatchFailurePayload) -> 
         "at": fail.at.clone().unwrap_or_default(),
         "ageMs": age_ms,
         "agentType": fail.agent_type.clone().unwrap_or_default(),
-        // The only MACHINE-readable discriminator the failure carries: a plan
-        // contradiction (`cyclic-dependency`) and an agent that would not start
-        // need opposite responses, and without this the caller can only
-        // string-match the prose in `description`.
-        "reason": fail.reason.clone().unwrap_or_default(),
         "description": fail.description.clone().unwrap_or_default(),
         "prompt": fail.prompt.clone().unwrap_or_default(),
     })
