@@ -120,8 +120,24 @@ const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// the literal `inherit` (take the session's — the default when the key is
 /// absent, declared explicitly here so a MISSING key never reads as a choice),
 /// or a full model id, which is always `claude-`-prefixed.
+///
+/// The whole id is read, not just its prefix. A test that stopped at
+/// `starts_with("claude-")` certified `claude-opus-5"  # papel` — leftovers and
+/// all — as a value the runtime resolves, which is the certification this
+/// ratchet exists to withhold. An id is lowercase letters, digits, `-`, `.` and
+/// the `[…]` context suffix (`claude-opus-5[1m]`); a space, a quote or a `#` in
+/// there is not a model, it is something that never made it out of the line.
 fn model_is_accepted(value: &str) -> bool {
-    MODEL_ALIASES.contains(&value) || value == "inherit" || value.starts_with("claude-")
+    if MODEL_ALIASES.contains(&value) || value == "inherit" {
+        return true;
+    }
+    let Some(id) = value.strip_prefix("claude-") else {
+        return false;
+    };
+    !id.is_empty()
+        && id.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '[' | ']')
+        })
 }
 
 /// `true` for one of the five reasoning-effort levels.
@@ -145,19 +161,42 @@ fn agent_frontmatter(path: &Path) -> String {
 }
 
 /// The value of a TOP-LEVEL frontmatter key (column 0 only, so a `key:` quoted
-/// inside a description is never mistaken for a declaration). Surrounding quotes
-/// are stripped; `None` when the key is absent.
+/// inside a description is never mistaken for a declaration). `None` when the
+/// key is absent.
 fn declared(frontmatter: &str, key: &str) -> Option<String> {
     frontmatter
         .lines()
         .filter(|line| !line.starts_with(char::is_whitespace))
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
-        .map(|value| {
-            value
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'')
-                .to_string()
-        })
+        .map(scalar_value)
+}
+
+/// The YAML scalar a `key:` line declares — what the runtime reads, and nothing
+/// else on the line.
+///
+/// Handing back the whole tail is what made `model: sonnet   # deliberate`
+/// — valid YAML, resolved by Claude Code as `sonnet` — fail with "which Claude
+/// Code does not resolve", teaching the next author to delete the note rather
+/// than to keep it. A quoted scalar ends at its closing quote; an unquoted one
+/// ends where an inline comment starts, which in YAML is a `#` preceded by
+/// whitespace (a `#` inside `a#b` is part of the value).
+fn scalar_value(raw: &str) -> String {
+    let raw = raw.trim();
+    for quote in ['"', '\''] {
+        if let Some(rest) = raw.strip_prefix(quote) {
+            if let Some((inner, _)) = rest.split_once(quote) {
+                return inner.to_string();
+            }
+        }
+    }
+    if raw.starts_with('#') {
+        return String::new();
+    }
+    let end = raw
+        .char_indices()
+        .find(|&(at, c)| c == '#' && raw[..at].ends_with(char::is_whitespace))
+        .map_or(raw.len(), |(at, _)| at);
+    raw[..end].trim_end().to_string()
 }
 
 /// Every `plugin/agents/*.md` path, sorted — the shipped agent files.
@@ -260,4 +299,73 @@ fn rejects_values_outside_the_accepted_vocabulary() {
             "`effort: {bad}` must be rejected — Claude Code would ignore it"
         );
     }
+}
+
+/// An annotation is not a defect: a declaration that says WHY it picked what it
+/// picked must survive the ratchet, quoted or commented.
+///
+/// This is the case that was measured against the shipped surface — a real agent
+/// file was edited to carry `model: sonnet   # deliberate` and the ratchet
+/// rejected it, reporting a value Claude Code resolves as one it does not. A
+/// guard that rejects valid input teaches the author to delete the annotation,
+/// which is the opposite of what a ratchet is for.
+#[test]
+fn scalar_value_reads_the_declaration_through_quotes_and_comments() {
+    let fm = "name: mustard-review\n\
+              model: sonnet   # cheap enough for this role\n\
+              effort: \"high\"\n\
+              tools: Read, Grep\n";
+    assert_eq!(declared(fm, "model").as_deref(), Some("sonnet"));
+    assert_eq!(declared(fm, "effort").as_deref(), Some("high"));
+    assert_eq!(declared(fm, "absent"), None);
+
+    // …and the value read this way is the one the vocabulary accepts, which is
+    // the half that matters: reading it right and then rejecting it would be
+    // the same red with a different cause.
+    for (line, want) in [
+        ("model: 'inherit'  # the session's, on purpose", "inherit"),
+        ("model: \"claude-opus-5\"  # the full id", "claude-opus-5"),
+        ("model: claude-opus-5[1m]", "claude-opus-5[1m]"),
+    ] {
+        let fm = format!("{line}\n");
+        let read = declared(&fm, "model").expect("the line declares a model");
+        assert_eq!(read, want, "`{line}` declares `{want}`");
+        assert!(model_is_accepted(&read), "`{line}` declares a model the runtime resolves");
+    }
+}
+
+/// Reading the value must not become a way of laundering a broken one.
+///
+/// The prefix check this replaced accepted anything starting with `claude-`, so
+/// `model: "claude-opus-5"  # papel` — whose value, before the reader was fixed,
+/// was the string `claude-opus-5"  # papel` — passed, certifying as deliberate a
+/// value no runtime resolves. Leftovers after the id are still a failure; only
+/// the ones that are genuinely a YAML comment or quoting are not.
+#[test]
+fn scalar_value_still_rejects_leftovers_after_the_id() {
+    for bad in [
+        "claude-opus-5\"  # papel", // what the old reader handed the old check
+        "claude-opus-5 papel",      // a note with no `#` is part of the scalar
+        "claude-opus-5\tpapel",
+        "claude-",     // the prefix alone names no model
+        "claude-Opus-5", // ids are lowercase
+        "sonnet  # inline",
+    ] {
+        assert!(
+            !model_is_accepted(bad),
+            "`model: {bad}` must be rejected — Claude Code resolves no such value"
+        );
+    }
+
+    // A `#` that is not preceded by whitespace is part of the value in YAML, so
+    // the reader must not cut there and quietly produce something acceptable.
+    assert_eq!(declared("model: claude-opus#5\n", "model").as_deref(), Some("claude-opus#5"));
+    assert!(!model_is_accepted("claude-opus#5"));
+
+    // An effort with an annotation reads as the level, and a misspelled one
+    // stays rejected with the annotation stripped.
+    assert_eq!(declared("effort: max # top of the scale\n", "effort").as_deref(), Some("max"));
+    assert!(effort_is_accepted("max"));
+    assert_eq!(declared("effort: highest # nearly\n", "effort").as_deref(), Some("highest"));
+    assert!(!effort_is_accepted("highest"));
 }
