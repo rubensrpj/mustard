@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 478,
-      "loc": 206631
+      "loc": 207234
     },
     {
       "language": "tsx",
@@ -17527,9 +17527,10 @@
     {
       "path": "packages/core/tests/version_line.rs",
       "language": "rust",
-      "loc": 224,
+      "loc": 694,
       "imports": [
         "std::path::{Path, PathBuf}",
+        "std::process::{Command, Output}",
         "super::json_string_field"
       ],
       "namespaces": [],
@@ -17537,79 +17538,157 @@
         {
           "kind": "function",
           "name": "the_workspace_version_equals_the_published_plugin_version",
-          "line": 56,
+          "line": 74,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_running_harness_reports_that_same_line",
-          "line": 82,
+          "line": 100,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "workspace_root",
-          "line": 101,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "find_manifest",
-          "line": 113,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "json_string_field",
           "line": 119,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "find_manifest",
+          "line": 131,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "json_string_field",
+          "line": 137,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "reads_the_field_and_ignores_the_rest",
-          "line": 133,
+          "line": 151,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "LockPackage",
-          "line": 149,
+          "line": 181,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "name",
-          "line": 150,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "version",
-          "line": 151,
+          "line": 183,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "source",
-          "line": 154,
+          "line": 186,
           "supertypes": []
         },
         {
-          "kind": "function",
-          "name": "lock_packages",
-          "line": 163,
+          "kind": "struct",
+          "name": "Lock",
+          "line": 198,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "package",
+          "line": 200,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "package_name",
-          "line": 182,
+          "line": 205,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_dashboard_lock_pins_this_repositorys_crates_at_this_version",
-          "line": 197,
+          "line": 220,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "forge_lock",
+          "line": 315,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_lock_guard",
+          "line": 345,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "bump_workflow",
+          "line": 367,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "guard_invocation",
+          "line": 385,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "guard_invocations",
+          "line": 403,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "bump_guard_rejects_a_lock_whose_local_crates_did_not_move",
+          "line": 419,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "bump_guard_checks_every_local_crate_of_each_lock",
+          "line": 480,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_dashboard_guard_is_asked_about_exactly_the_crates_this_file_names",
+          "line": 581,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "bump_guard_rejects_a_lock_that_lost_one_of_our_crates",
+          "line": 622,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "dev_leg_decision_consults_what_the_work_block_repairs",
+          "line": 663,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "assignment",
+          "line": 722,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mentions",
+          "line": 739,
           "supertypes": []
         }
       ]
@@ -66144,7 +66223,7 @@
     {
       "path": "apps/rt/tests/plugin_agents.rs",
       "language": "rust",
-      "loc": 242,
+      "loc": 375,
       "imports": [
         "mustard_rt::commands::agent::render::TEMPLATE_PLACEHOLDERS",
         "std::fs",
@@ -66173,43 +66252,61 @@
         {
           "kind": "function",
           "name": "model_is_accepted",
-          "line": 123,
+          "line": 130,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "effort_is_accepted",
-          "line": 128,
+          "line": 144,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "agent_frontmatter",
-          "line": 135,
+          "line": 151,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "declared",
-          "line": 150,
+          "line": 166,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "scalar_value",
+          "line": 190,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "shipped_agents",
-          "line": 164,
+          "line": 217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "shipped_agents_declare_model_and_effort",
-          "line": 192,
+          "line": 245,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "rejects_values_outside_the_accepted_vocabulary",
-          "line": 243,
+          "line": 296,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "scalar_value_reads_the_declaration_through_quotes_and_comments",
+          "line": 327,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "scalar_value_still_rejects_leftovers_after_the_id",
+          "line": 359,
           "supertypes": []
         }
       ]
@@ -97782,7 +97879,8 @@
       "common_dir": "apps/rt/tests",
       "dirs": [
         "apps/rt/tests",
-        "apps/<Name>/tests"
+        "apps/<Name>/tests",
+        "packages/<Name>/tests"
       ],
       "decl_kind": "function",
       "implements": null,
@@ -99447,7 +99545,7 @@
       {
         "dir": ".github",
         "code_files": 0,
-        "other_files": 5
+        "other_files": 6
       },
       {
         "dir": "assets",
@@ -99517,15 +99615,15 @@
         "count": 4
       },
       {
+        "ext": ".sh",
+        "count": 4
+      },
+      {
         "ext": ".yml",
         "count": 4
       },
       {
         "ext": ".js",
-        "count": 3
-      },
-      {
-        "ext": ".sh",
         "count": 3
       },
       {
