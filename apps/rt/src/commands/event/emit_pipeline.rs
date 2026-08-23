@@ -1470,6 +1470,35 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
     sync_parent_started(project, spec, &ts);
 }
 
+/// Path-explicit `pipeline.dispatch_failure` emit for a round that was REFUSED
+/// rather than attempted — today, a wave plan whose `Depends on` column declares
+/// a cycle.
+///
+/// Without this the refusal exists only on stdout, so the stall is invisible to
+/// every reader that folds the event log: `resume-bootstrap` reports the spec as
+/// merely pending and tells the orchestrator to dispatch again, which refuses
+/// again, with nothing recording that it ever did. `wave-advance` must not emit
+/// `pipeline.wave.start` for a refused round — no wave started — but "started
+/// nothing" and "recorded nothing" are different promises, and only the first
+/// one was wanted. Fail-open, like every emit here.
+pub(crate) fn emit_dispatch_failure(project: &Path, spec: &str, reason: &str, description: &str) {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("wave-advance".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_DISPATCH_FAILURE.to_string(),
+        payload: json!({ "reason": reason, "description": description }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+}
+
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
 /// `pipeline.wave.complete` event. Sets:
 ///   - `raw.currentWave = wave`

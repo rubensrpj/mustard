@@ -42,9 +42,14 @@
 //! emits a (possibly empty or single-item) JSON array. A **non-wave spec with
 //! a `spec.md`** (tactical fix / Light scope) emits a one-item plan
 //! (`wave: 0`, role `impl`, no `--wave` in the `prompt_cmd` — see
-//! [`single_spec_plan`]); a spec with no `spec.md` at all still emits `[]`. A
-//! dependency cycle degrades to source order (every item keeps `level: 0`)
-//! rather than dropping waves.
+//! [`single_spec_plan`]); a spec with no `spec.md` at all still emits `[]`.
+//!
+//! A `Depends on` column that CONTRADICTS itself is the one thing this module
+//! no longer smooths over, and it has two faces. [`build_plan`] stays fail-open
+//! — every wave keeps its row and gets a level, so the audits and the write
+//! gate read the plan as they always did. [`build_plan_with_cycle`] hands the
+//! contradiction back beside the items, and `wave-advance` refuses the round
+//! with it rather than dispatching an order nobody declared.
 
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::wave::wave_lib::parse_files_section;
@@ -142,46 +147,33 @@ pub(crate) fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
 ///
 /// This face is for the AUDITS and the write gate: `wave-overlap-check` only
 /// warns, and `boundary_gate` must not deny a write because a plan contradicts
-/// itself. The dispatch path takes [`build_plan_checked`] instead.
+/// itself. The dispatch path takes [`build_plan_with_cycle`] instead, which is
+/// the same build with the contradiction handed back alongside the items.
 pub(crate) fn build_plan(
     project: &Path,
     spec_dir: &Path,
     spec: &str,
     wave_filter: Option<u32>,
 ) -> Vec<DispatchItem> {
-    plan_with_cycle(project, spec_dir, spec, wave_filter).0
+    build_plan_with_cycle(project, spec_dir, spec, wave_filter).0
 }
 
-/// [`build_plan`], refusing a plan whose `Depends on` column declares a cycle:
-/// `Err` carries the stuck waves, ascending.
+/// [`build_plan`], plus the waves whose declared dependencies never resolve —
+/// a DECLARED cycle, ascending, empty for a well-formed plan.
 ///
-/// The distinction this draws is between an INFERRED cycle and a DECLARED one.
-/// `wave-dependency` reports an import cycle as a WARN because the inference is
-/// heuristic and the planner's explicit boundaries stand over it. A cycle in
-/// the `Depends on` column is not inferred — someone wrote wave 2 depends on 3
-/// and wave 3 depends on 2. There is no order that satisfies it, so dispatching
-/// in ANY order would be inventing an answer the plan does not contain.
+/// The distinction this surfaces is between an INFERRED cycle and a declared
+/// one. `wave-dependency` reports an import cycle as a WARN because the
+/// inference is heuristic and the planner's explicit boundaries stand over it.
+/// A cycle in the `Depends on` column is not inferred — someone wrote wave 2
+/// depends on 3 and wave 3 depends on 2. There is no order that satisfies it,
+/// so dispatching in ANY order would be inventing an answer the plan does not
+/// contain.
 ///
-/// Nothing is dropped by refusing: the round is declined whole, and the waves
-/// stay exactly as authored for the person who has to fix the contradiction.
-pub(crate) fn build_plan_checked(
-    project: &Path,
-    spec_dir: &Path,
-    spec: &str,
-    wave_filter: Option<u32>,
-) -> Result<Vec<DispatchItem>, Vec<u32>> {
-    let (items, cycle) = plan_with_cycle(project, spec_dir, spec, wave_filter);
-    if cycle.is_empty() {
-        Ok(items)
-    } else {
-        Err(cycle)
-    }
-}
-
-/// The one plan build both faces share: the items, plus the waves the DAG could
-/// not place (empty for a well-formed plan). Single source — the fail-open and
-/// the refusing face can never disagree about the same spec directory.
-fn plan_with_cycle(
+/// The items come back either way, and the caller decides. `wave-advance` is
+/// the one caller that refuses — and even it refuses only when a round would
+/// actually be dispatched, because dependency ORDER stops mattering once every
+/// wave is complete.
+pub(crate) fn build_plan_with_cycle(
     project: &Path,
     spec_dir: &Path,
     spec: &str,
@@ -384,7 +376,7 @@ fn parse_wave_plan_table(text: &str) -> Vec<WaveRow> {
     raw.into_iter()
         .map(|(wave, role, cell)| WaveRow {
             wave,
-            depends_on: parse_depends_cell(&cell, wave, &role_to_wave),
+            depends_on: parse_depends_cell(&cell, &role_to_wave),
             role,
         })
         .collect()
@@ -455,10 +447,17 @@ fn parse_wave_label(cell: &str) -> Option<u32> {
 /// Parse the dependency cell into wave numbers.
 ///
 /// Accepts both `[[1]]` (number form) and `[[wave-1-general]]` (name form) via
-/// the shared scanner; an em-dash / hyphen / empty cell means "no deps". A
-/// self-reference (a wave depending on itself, which the topo pass cannot use)
-/// is dropped.
-fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String, u32>) -> Vec<u32> {
+/// the shared scanner; an em-dash / hyphen / empty cell means "no deps".
+/// Duplicates within one cell collapse to a single edge.
+///
+/// A self-reference is KEPT. It used to be dropped here, on the stated grounds
+/// that "the topo pass cannot use it" — true of the old fixpoint relaxation,
+/// which had no way to express a contradiction and so needed the edge gone
+/// before it ever arrived. [`assign_levels`] can express one now: a wave
+/// depending on itself is a cycle of one, which is exactly the right answer.
+/// Dropping it here would silence the very contradiction the dispatch face
+/// exists to refuse, and would do it one layer too early to be visible.
+fn parse_depends_cell(cell: &str, role_to_wave: &BTreeMap<String, u32>) -> Vec<u32> {
     let trimmed = cell.trim();
     if trimmed.is_empty() || trimmed == "—" || trimmed == "-" {
         return Vec::new();
@@ -466,7 +465,7 @@ fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String
     let mut out: Vec<u32> = Vec::new();
     for link in find_outgoing_links(trimmed) {
         if let Some(n) = wave_number_from_link(&link, role_to_wave) {
-            if n != self_wave && !out.contains(&n) {
+            if !out.contains(&n) {
                 out.push(n);
             }
         }
@@ -589,7 +588,10 @@ fn rows_from_fs(spec_dir: &Path) -> Vec<WaveRow> {
 
 /// The wave DAG's level assignment, plus the waves it could not place.
 struct WaveLevels {
-    /// Wave → topological level, for every wave the DAG could place.
+    /// Wave → topological level, for EVERY wave in the plan.
+    ///
+    /// A wave the peel could not place still gets a level here — see the tail
+    /// of [`assign_levels`] for why the fail-open readers need one.
     level: BTreeMap<u32, u32>,
     /// The waves whose declared dependencies never resolve, ascending: a
     /// declared cycle plus whatever waits behind one. Empty for a well-formed
@@ -656,6 +658,26 @@ fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
     }
 
     let cycle: Vec<u32> = deps.keys().copied().filter(|w| !level.contains_key(w)).collect();
+
+    // A stuck wave still needs A level, because the fail-open readers group by
+    // it: `wave-overlap-check` warns about waves that share one, and
+    // `boundary_gate` authorises writes for the waves at the lowest pending
+    // one. Leaving them unplaced would collapse every stuck wave to 0 through
+    // the caller's `unwrap_or(0)` — making them look dispatch-parallel, which
+    // they are not and never will be, since the dispatch face refuses them.
+    // That would invent same-level overlap warnings and widen the write gate
+    // to the union of their files.
+    //
+    // So give each its own level after the deepest placed one, in wave order:
+    // nothing is dropped, nothing is grouped, and the audits keep reading the
+    // plan exactly as they did before the refusal existed. `cycle` — not the
+    // level — is what says the plan contradicts itself.
+    let mut next = level.values().copied().max().map_or(0, |m| m + 1);
+    for &wave in &cycle {
+        level.insert(wave, next);
+        next += 1;
+    }
+
     WaveLevels { level, cycle }
 }
 
@@ -863,24 +885,54 @@ mod tests {
     /// so the contradiction dispatched as an ordinary sequential plan.
     #[test]
     fn levels_declared_cycle_is_named_not_ordered() {
-        // 1 → 2 → 1: no order satisfies it, so neither wave gets a level.
+        // 1 → 2 → 1: no order satisfies it, so both waves land in `cycle`.
         let rows = vec![
             WaveRow { wave: 1, role: "a".into(), depends_on: vec![2] },
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![1] },
         ];
         let levels = assign_levels(&rows);
         assert_eq!(levels.cycle, vec![1, 2], "both waves are stuck");
-        assert!(levels.level.is_empty(), "a stuck wave gets no level at all");
+        // They still carry levels, for the fail-open readers — but DISTINCT
+        // ones, so nothing downstream mistakes them for a parallel round.
+        assert_ne!(levels.level[&1], levels.level[&2]);
     }
 
-    /// A wave depending on ITSELF is the same contradiction. The old fixpoint
-    /// gave it level 2 and said nothing.
+    /// A stuck wave never shares a level with another wave. This is what keeps
+    /// `wave-overlap-check` from inventing same-level overlap warnings and
+    /// `boundary_gate` from widening its authorised set to the union of every
+    /// stuck wave's files — both group by level and neither can refuse.
     #[test]
-    fn levels_self_dependency_is_a_cycle() {
+    fn stuck_waves_never_share_a_level() {
         let rows = vec![
             WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
-            WaveRow { wave: 2, role: "b".into(), depends_on: vec![2] },
+            WaveRow { wave: 2, role: "b".into(), depends_on: vec![3] },
+            WaveRow { wave: 3, role: "c".into(), depends_on: vec![2] },
+            WaveRow { wave: 4, role: "d".into(), depends_on: vec![3] },
         ];
+        let levels = assign_levels(&rows);
+        assert_eq!(levels.cycle, vec![2, 3, 4]);
+        let mut seen: Vec<u32> = levels.level.values().copied().collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "every wave sits on a level of its own");
+        assert_eq!(levels.level[&1], 0, "the clean wave keeps its real level");
+    }
+
+    /// A wave depending on ITSELF is the same contradiction, and it must survive
+    /// the PARSER to be caught — `parse_depends_cell` used to drop a
+    /// self-reference before the level assignment ever saw it, which made the
+    /// refusal unreachable from a real `wave-plan.md`.
+    #[test]
+    fn levels_self_dependency_is_a_cycle() {
+        let plan = "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | — | base |
+| 2 | [[wave-2-cli]] | cli | [[wave-2-cli]] | depends on itself |
+";
+        let rows = parse_wave_plan_table(plan);
+        assert_eq!(rows[1].depends_on, vec![2], "the self-edge reaches the DAG");
         let levels = assign_levels(&rows);
         assert_eq!(levels.cycle, vec![2]);
         assert_eq!(levels.level[&1], 0, "the clean wave is still placed");
@@ -1093,12 +1145,17 @@ mod tests {
         )
         .unwrap();
 
-        let cycle = build_plan_checked(project, &spec_dir, "knot", None)
-            .expect_err("a declared cycle must refuse the round");
-        assert_eq!(cycle, vec![2, 3]);
+        let (items, cycle) = build_plan_with_cycle(project, &spec_dir, "knot", None);
+        assert_eq!(cycle, vec![2, 3], "the contradiction is named");
+        assert_eq!(items.len(), 3, "no wave is dropped");
 
-        let items = build_plan(project, &spec_dir, "knot", None);
-        assert_eq!(items.len(), 3, "no wave is dropped by the fail-open face");
+        // The fail-open face reads identically, and the stuck waves keep
+        // distinct levels so no audit mistakes them for a parallel round.
+        let plain = build_plan(project, &spec_dir, "knot", None);
+        assert_eq!(plain.len(), 3);
+        let stuck: Vec<u32> =
+            plain.iter().filter(|it| it.wave != 1).map(|it| it.level).collect();
+        assert_ne!(stuck[0], stuck[1], "stuck waves are not grouped together");
     }
 
     /// `--wave N` slices to a single item, preserving its real depends_on.

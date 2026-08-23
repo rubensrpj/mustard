@@ -3,8 +3,10 @@
 //!
 //! Composes, **in-process** (module-qualified, no subprocess):
 //!
-//! 1. `dispatch-plan` — [`crate::commands::pipeline::dispatch_plan::build_plan`]
-//!    (the wave DAG + ordering, including the single-spec one-item fallback).
+//! 1. `dispatch-plan` —
+//!    [`crate::commands::pipeline::dispatch_plan::build_plan_with_cycle`]
+//!    (the wave DAG + ordering, including the single-spec one-item fallback,
+//!    plus any declared dependency cycle — see ## Refusal).
 //! 2. `agent-prompt-render` — for each item of the next pending level, the
 //!    prompt is rendered via
 //!    [`crate::commands::agent::agent_prompt_render::render_prompt_ref_at`]:
@@ -62,16 +64,27 @@
 //! ## Refusal
 //!
 //! One case does NOT degrade to an array: a wave plan whose `Depends on`
-//! column declares a cycle. The output is then the object
-//! `{"error":"cyclic-dependency","cycle":[…]}` — the same shape
-//! `wave-dependency` emits for an import cycle — and no wave is dispatched,
-//! no `pipeline.wave.start` is emitted. Exit stays 0: the refusal is carried
-//! by the JSON, never by the exit code.
+//! column declares a cycle, **when a round would actually be dispatched**. The
+//! output is then the object `{"error":"cyclic-dependency","cycle":[…]}`, no
+//! wave is dispatched, and no `pipeline.wave.start` is emitted. Exit stays 0:
+//! the refusal is carried by the JSON, never by the exit code. A
+//! `pipeline.dispatch_failure` IS recorded, so the stall is visible to
+//! `resume-bootstrap` instead of reading as an idle pipeline.
+//!
+//! The refusal borrows the two KEYS `wave-dependency` uses for an import
+//! cycle, and only the keys: its `cycle` holds project-relative file paths,
+//! this one holds wave numbers. Same vocabulary, different scale — do not
+//! write a reader that assumes one element type for both.
 //!
 //! It has to be an object rather than an empty array because `[]` already
 //! means something else and something terminal — "no wave is left, go and
 //! CLOSE". A contradiction the author has to resolve cannot be reported with
 //! the word for "you are finished".
+//!
+//! **Once every impl wave is complete the cycle stops mattering** and the
+//! review round is emitted normally. Dependency order decides nothing when
+//! there is nothing left to order, and a spec dispatched while the old code
+//! accepted its cycle would otherwise be stranded short of its own close.
 //!
 //! Fail-open still holds where it was meant to: nothing is dropped. The waves
 //! stay exactly as authored, and only the ROUND is declined.
@@ -138,8 +151,9 @@ pub(crate) struct AdvanceItem {
 /// the JSON shape belongs to the command that reports it ([`run`]).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AdvanceRefusal {
-    /// The wave plan's `Depends on` column declares a cycle; carries the waves
-    /// that never resolve, ascending.
+    /// The wave plan's `Depends on` column declares a cycle; carries the WAVE
+    /// NUMBERS that never resolve, ascending (not file paths — see the module
+    /// docs on the shape it borrows).
     ///
     /// Deliberately harder than the WARN `wave-dependency` raises for an
     /// IMPORT cycle. That one is inferred from the files a wave touches, and
@@ -179,12 +193,9 @@ pub fn run(spec: &str) {
 /// semantics.
 pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, AdvanceRefusal> {
     let spec_dir = dispatch_plan::resolve_spec_dir(project, spec);
-    // `build_plan_checked`, not `build_plan`: this is the DISPATCH path, and it
-    // refuses a plan that contradicts itself. The `?` sits ahead of every emit
-    // below on purpose — a refused round leaves no `pipeline.wave.start`
-    // behind, so re-running after the plan is fixed starts clean.
-    let plan = dispatch_plan::build_plan_checked(project, &spec_dir, spec, None)
-        .map_err(AdvanceRefusal::CyclicDependency)?;
+    // The contradiction rides alongside the items; WHERE it is acted on is the
+    // whole question — see the refusal below.
+    let (plan, cycle) = dispatch_plan::build_plan_with_cycle(project, &spec_dir, spec, None);
     if plan.is_empty() {
         return Ok(Vec::new());
     }
@@ -199,8 +210,36 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, Ad
     let Some(level) = pending_level else {
         // Every impl wave already carries a pipeline.wave.complete — emit the
         // review round before the terminal `[]` (see module docs).
+        //
+        // Deliberately AHEAD of the cycle refusal. A contradictory `Depends on`
+        // column is a statement about ORDER, and order has nothing left to
+        // decide once every wave is done. Refusing here would strand exactly
+        // the specs this fix is for: the ones dispatched while the old code
+        // silently accepted their cycle. Their work is finished; they would be
+        // held short of their review round and their close, and the only way
+        // out would be editing a frozen wave plan to satisfy a check that no
+        // longer governs anything.
         return Ok(review_round(project, spec, &plan, &events));
     };
+
+    // A round WOULD be dispatched, so order matters again — and the plan does
+    // not have one. Refuse whole, ahead of every emit below: no
+    // `pipeline.wave.start` is written, so re-running after the table is fixed
+    // starts clean. The refusal itself IS recorded, though — a stall nobody
+    // can see reads as an idle pipeline to `resume-bootstrap`, which would
+    // send the orchestrator back to dispatch and refuse again, forever.
+    if !cycle.is_empty() {
+        let waves = cycle.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+        crate::commands::event::emit_pipeline::emit_dispatch_failure(
+            project,
+            spec,
+            "cyclic-dependency",
+            &format!(
+                "wave-plan.md declares a dependency cycle; waves {waves} cannot be ordered"
+            ),
+        );
+        return Err(AdvanceRefusal::CyclicDependency(cycle));
+    }
 
     let items: Vec<AdvanceItem> = plan
         .into_iter()
@@ -491,20 +530,22 @@ mod tests {
         std::fs::write(dir.join("mustard.json"), b"{}").unwrap();
     }
 
-    /// Seed a 3-wave spec: waves 1 and 2 are independent (level 0), wave 3
-    /// depends on both (level 1). Each wave dir carries a spec.md with Tasks.
-    fn seed_three_waves(project: &Path, slug: &str) -> PathBuf {
+    /// Seed a 3-wave spec, with the `Depends on` cell of waves 2 and 3 given by
+    /// the caller. Each wave dir carries a spec.md with Tasks.
+    fn seed_waves(project: &Path, slug: &str, deps_2: &str, deps_3: &str) -> PathBuf {
         let spec_dir = project.join(".claude").join("spec").join(slug);
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(
             spec_dir.join("wave-plan.md"),
-            "\
+            format!(
+                "\
 | Wave | Spec | Role | Depends on | Summary |
 |------|------|------|------------|---------|
 | 1 | [[wave-1-rt]] | rt | — | base |
-| 2 | [[wave-2-cli]] | cli | — | parallel base |
-| 3 | [[wave-3-core]] | core | [[wave-1-rt]], [[wave-2-cli]] | joins both |
-",
+| 2 | [[wave-2-cli]] | cli | {deps_2} | cli |
+| 3 | [[wave-3-core]] | core | {deps_3} | core |
+"
+            ),
         )
         .unwrap();
         for (n, role) in [(1, "rt"), (2, "cli"), (3, "core")] {
@@ -519,32 +560,15 @@ mod tests {
         spec_dir
     }
 
-    /// Seed a 3-wave spec whose table contradicts itself: wave 2 declares it
-    /// depends on 3 and wave 3 declares it depends on 2.
+    /// Waves 1 and 2 independent (level 0), wave 3 depends on both (level 1).
+    fn seed_three_waves(project: &Path, slug: &str) -> PathBuf {
+        seed_waves(project, slug, "—", "[[wave-1-rt]], [[wave-2-cli]]")
+    }
+
+    /// A table that contradicts itself: wave 2 declares it depends on 3 and
+    /// wave 3 declares it depends on 2.
     fn seed_cyclic_plan(project: &Path, slug: &str) -> PathBuf {
-        let spec_dir = project.join(".claude").join("spec").join(slug);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(
-            spec_dir.join("wave-plan.md"),
-            "\
-| Wave | Spec | Role | Depends on | Summary |
-|------|------|------|------------|---------|
-| 1 | [[wave-1-rt]] | rt | — | base |
-| 2 | [[wave-2-cli]] | cli | [[wave-3-core]] | needs core |
-| 3 | [[wave-3-core]] | core | [[wave-2-cli]] | needs cli |
-",
-        )
-        .unwrap();
-        for (n, role) in [(1, "rt"), (2, "cli"), (3, "core")] {
-            let dir = spec_dir.join(format!("wave-{n}-{role}"));
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("spec.md"),
-                format!("# wave-{n}-{role}\n\n## Tasks\n\n- [ ] task for {role}\n"),
-            )
-            .unwrap();
-        }
-        spec_dir
+        seed_waves(project, slug, "[[wave-3-core]]", "[[wave-2-cli]]")
     }
 
     /// A declared cycle refuses the round and names the stuck waves. Before
@@ -561,23 +585,83 @@ mod tests {
         assert_eq!(refusal, AdvanceRefusal::CyclicDependency(vec![2, 3]));
     }
 
-    /// A refused round dispatches nothing AND records nothing: no
-    /// `pipeline.wave.start` is left behind, so re-running once the table is
-    /// fixed starts from a clean slate rather than from waves marked started.
+    /// A refused round marks no wave as started, so re-running once the table
+    /// is fixed starts from a clean slate.
+    ///
+    /// Carries its own positive control. Asserting an empty event log proves
+    /// nothing on its own: `spec_events` fail-opens to `vec![]` on a missing
+    /// directory, so a path mismatch between the emitter and the reader — the
+    /// exact bug this guards — would leave the assertion green. The control
+    /// runs the acyclic fixture through the SAME reader first and demands a
+    /// non-empty answer, so the empty one below means "suppressed" rather than
+    /// "nobody was looking in the right place".
     #[test]
     fn refused_round_emits_no_wave_start() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
         let project = dir.path();
-        seed_cyclic_plan(project, "knot2");
 
-        assert!(advance(project, "knot2").is_err());
-
-        let events = spec_events(project, "knot2");
+        seed_three_waves(project, "control");
+        round(project, "control");
         assert!(
-            started_waves(&events, "knot2").is_empty(),
+            !started_waves(&spec_events(project, "control"), "control").is_empty(),
+            "control: a dispatched round DOES mark its waves started",
+        );
+
+        seed_cyclic_plan(project, "knot2");
+        assert!(advance(project, "knot2").is_err());
+        assert!(
+            started_waves(&spec_events(project, "knot2"), "knot2").is_empty(),
             "a refused round must not mark any wave as started",
         );
+    }
+
+    /// The refusal IS recorded, as a `pipeline.dispatch_failure`. Without it
+    /// the stall is invisible to `resume-bootstrap`, which would read the spec
+    /// as merely pending and send the orchestrator back to dispatch — refusing
+    /// again, forever, with nothing on the record.
+    #[test]
+    fn refused_round_records_a_dispatch_failure() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot3");
+
+        assert!(advance(project, "knot3").is_err());
+
+        let events = spec_events(project, "knot3");
+        let failure = events
+            .iter()
+            .find(|e| e.event == "pipeline.dispatch_failure")
+            .expect("the refusal must leave a dispatch_failure behind");
+        assert_eq!(failure.payload["reason"].as_str(), Some("cyclic-dependency"));
+        assert!(
+            failure.payload["description"].as_str().unwrap_or_default().contains("2, 3"),
+            "the record names the stuck waves: {:?}",
+            failure.payload,
+        );
+    }
+
+    /// Once every impl wave is complete the cycle stops mattering: order has
+    /// nothing left to decide, so the review round is emitted normally.
+    ///
+    /// This is the regression that matters most for specs ALREADY in flight —
+    /// the ones dispatched while the old code silently accepted their cycle.
+    /// Refusing here would strand them short of their own close, with no way
+    /// out but editing a frozen wave plan.
+    #[test]
+    fn completed_cyclic_spec_still_reaches_its_review_round() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot4");
+        for wave in [1, 2, 3] {
+            complete_wave(project, "knot4", wave);
+        }
+
+        let items = advance(project, "knot4").expect("a finished spec is never refused");
+        assert!(!items.is_empty(), "the review round is emitted");
+        assert!(items.iter().all(|it| it.role == "review"));
     }
 
     /// Emit a `pipeline.wave.complete` for `wave` into the spec's events log.
