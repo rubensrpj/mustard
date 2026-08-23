@@ -85,7 +85,11 @@ jobs:
           # nao distingue a nossa versao da de uma dependencia que por acaso
           # tenha o mesmo numero.
           cargo update --workspace
-          grep -q "^version = \"$nv\"$" Cargo.lock   # o lock realmente andou
+          # The guard applies the same rule the comment above states for the
+          # command: a bare `grep -q '^version = "$nv"$'` is satisfied by any
+          # third-party dependency sitting on our number, so it matches per
+          # PACKAGE instead. See .github/scripts/check-lock-pins.sh.
+          bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan   # o lock realmente andou
 
           # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
           # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
@@ -99,8 +103,9 @@ jobs:
           # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
           # ficar para tras.
           cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
-          [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+          # That lock pins BOTH `mustard-core` and `mustard-cli`; reading only
+          # the first passed a lock whose second crate had stayed behind.
+          bash .github/scripts/check-lock-pins.sh apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-cli mustard-core   # o lock do dashboard realmente andou
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -129,8 +134,14 @@ jobs:
           # tras — foi exatamente o estado em que este conserto encontrou o
           # repositorio. Sem este teste o bloco inteiro seria pulado e a quarta
           # perna nunca andaria, que e o defeito de novo com outra roupa.
-          dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
-          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$dash_pin" = "version = \"$nv\"" ]; then
+          # The THIRD leg is in the decision for the same reason, and it was the
+          # one still missing: the message below claims all four legs while the
+          # test consulted three, so a dev whose root Cargo.lock alone lagged
+          # skipped the whole block and that lock never moved. One reader per
+          # leg, and the decision consults every one of them.
+          root_pin=$(bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan && echo ok || echo stale)
+          dash_pin=$(bash .github/scripts/check-lock-pins.sh apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-cli mustard-core && echo ok || echo stale)
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$root_pin" = ok ] && [ "$dash_pin" = ok ]; then
             echo "dev já está em v$nv nas quatro pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
@@ -142,7 +153,7 @@ jobs:
             # …e o lock junto, senão o `--locked` do Release reprova o dev pelo
             # mesmo motivo que reprovou a main.
             cargo update --workspace
-            grep -q "^version = \"$nv\"$" Cargo.lock
+            bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan
 
             # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
             # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
@@ -156,8 +167,7 @@ jobs:
             # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
             # ficar para tras.
             cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-            dash_pin=$(awk '/^name = "mustard-core"$/{getline; print; exit}' apps/dashboard/src-tauri/Cargo.lock)
-            [ "$dash_pin" = "version = \"$nv\"" ]   # o lock do dashboard realmente andou
+            bash .github/scripts/check-lock-pins.sh apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-cli mustard-core   # o lock do dashboard realmente andou
             git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then
