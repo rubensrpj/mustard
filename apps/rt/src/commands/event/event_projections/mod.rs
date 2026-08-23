@@ -227,27 +227,16 @@ pub struct PipelineStateView {
 }
 
 /// Ten minutes in milliseconds — the stale-failure cutoff matching the `/resume` Step 0 contract.
-const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
-
-/// Failure reasons the [`DISPATCH_FAILURE_TTL_MS`] cutoff must NOT clear.
 ///
-/// The cutoff exists for failures that heal by themselves — an agent that would
-/// not start, a transient dispatch error — where a stale row would haunt a spec
-/// that has long since recovered. A wave plan that contradicts itself does not
-/// heal: the `Depends on` column says the same impossible thing tomorrow, and
-/// `wave-advance` refuses the round again. Expiring it would hand the next
-/// person an idle-looking pipeline and the resume → dispatch → refuse loop the
-/// record exists to break.
-const DURABLE_FAILURE_REASONS: &[&str] = &["cyclic-dependency"];
-
-/// `true` when this failure names a condition that outlives the TTL — see
-/// [`DURABLE_FAILURE_REASONS`].
-fn is_durable_failure(payload: &PipelineDispatchFailurePayload) -> bool {
-    payload
-        .reason
-        .as_deref()
-        .is_some_and(|r| DURABLE_FAILURE_REASONS.contains(&r))
-}
+/// A `cyclic-dependency` refusal was briefly exempted from this, on the reasoning
+/// that a contradictory wave plan does not heal with time. The reasoning was
+/// right and the change was wrong: this cutoff is the ONLY thing that ever
+/// clears `last_dispatch_failure`, so the exemption meant a spec whose plan had
+/// been FIXED still reported the failure — and `mode: ask` — on every resume,
+/// forever. Retiring a durable failure needs a clearing signal (a later
+/// successful dispatch supersedes it), not an exemption; until that exists, the
+/// ten-minute window is the honest behaviour.
+const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
 
 /// Derive a [`PipelineStateView`] for `spec` by folding a pre-fetched event
 /// slice. This is the canonical implementation used by all new call sites.
@@ -471,7 +460,7 @@ pub fn pipeline_state_from_events(
             let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
             let age_ms = mustard_core::time::parse_iso_millis(&at_str)
                 .map_or(0, |at_ms| now_ms - at_ms);
-            if age_ms > DISPATCH_FAILURE_TTL_MS && !is_durable_failure(&payload) {
+            if age_ms > DISPATCH_FAILURE_TTL_MS {
                 None // stale — cleared per /resume Step 0 contract
             } else {
                 Some(payload)

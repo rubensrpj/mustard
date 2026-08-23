@@ -451,84 +451,41 @@ fn parse_wave_label(cell: &str) -> Option<u32> {
 /// the shared scanner; an em-dash / hyphen / empty cell means "no deps".
 /// Duplicates within one cell collapse to a single edge.
 ///
-/// A DELIBERATE self-reference is kept; a self-reference that is merely an
-/// artifact of role resolution is not, and the two are told apart by HOW the
-/// token resolved.
+/// Parse the dependency cell into wave numbers.
 ///
-/// It used to be dropped unconditionally, on the stated grounds that "the topo
-/// pass cannot use it" — true of the old fixpoint relaxation, which had no way
-/// to express a contradiction and so needed the edge gone before it arrived.
-/// [`assign_levels`] can express one now: a wave depending on itself is a cycle
-/// of one. Keeping `| 2 | cli | [[wave-2-cli]] |` is therefore right — someone
-/// wrote it.
+/// Accepts both `[[1]]` (number form) and `[[wave-1-general]]` (name form) via
+/// the shared scanner; an em-dash / hyphen / empty cell means "no deps". A
+/// self-reference (a wave depending on itself) is dropped.
 ///
-/// But the BARE-ROLE form exists precisely to absorb sloppy authoring: a plan
-/// agent writing `[[cli]]` in the cli wave's own row meant "the cli work",
-/// not "I block myself". Refusing the whole spec over that would turn a
-/// tolerated shorthand into a hard stop for every other wave in the plan. So a
-/// self-edge that arrived through `role_to_wave` is dropped, and one written
-/// as a number or a wave-directory name is kept.
-fn parse_depends_cell(
-    cell: &str,
-    self_wave: u32,
-    role_to_wave: &BTreeMap<String, u32>,
-) -> Vec<u32> {
+/// **Two things this deliberately does NOT read, both of them pre-existing
+/// gaps this unit chose not to widen into.** A cell authored as bare numbers
+/// (`| 2 | ui | 1, 3 |`) yields no edges, so a cycle written that way stays
+/// invisible — `dependency_precheck::parse_deps_cell` does read that form, and
+/// the two readers of this column disagree. And a deliberate self-reference is
+/// dropped here rather than reported as the one-element cycle it is.
+///
+/// Both were attempted and both reverted, because reading a free-text cell for
+/// dependency numbers cannot be made safe by scanning: a `Depends on` cell
+/// holding ordinary prose ("nada, ver os 2 anexos") produced a phantom edge and
+/// refused a plan that had no contradiction at all. Widening the reader is a
+/// change to the wave-plan CONTRACT and belongs to a unit that can define the
+/// cell's grammar; this one only stops the level assignment from smoothing over
+/// a cycle it was already given.
+fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String, u32>) -> Vec<u32> {
     let trimmed = cell.trim();
-    let empty = ["", "—", "-", "–", "none", "nenhuma", "n/a"];
-    if empty.iter().any(|m| trimmed.eq_ignore_ascii_case(m)) {
+    if trimmed.is_empty() || trimmed == "—" || trimmed == "-" {
         return Vec::new();
     }
-
     let mut out: Vec<u32> = Vec::new();
-    let mut push = |n: u32, via_bare_role: bool| {
-        if n == self_wave && via_bare_role {
-            return;
-        }
-        if !out.contains(&n) {
-            out.push(n);
-        }
-    };
-
-    // `[[…]]` wikilinks first — the form `wave-scaffold` writes.
-    let links = find_outgoing_links(trimmed);
-    for link in &links {
-        if let Some(n) = wave_number_from_link(link, role_to_wave) {
-            push(n, is_bare_role_token(link, role_to_wave));
-        }
-    }
-
-    // A cell may also be authored as plain numbers (`| 2 | ui | 1, 3 |`) — the
-    // form `dependency_precheck::parse_deps_cell` already reads and tests. Two
-    // readers of the SAME column that disagree is how a declared cycle became
-    // invisible: this one saw no edges at all and the plan flattened into one
-    // parallel round. Only tokens outside the wikilinks are scanned, so a
-    // `[[wave-2-cli]]` is never counted twice.
-    if links.is_empty() {
-        let normalized: String = trimmed
-            .chars()
-            .map(|c| match c {
-                '[' | ']' | ',' | ';' | '|' => ' ',
-                _ => c,
-            })
-            .collect();
-        for token in normalized.split_whitespace() {
-            if let Some(n) = wave_number_from_link(token, role_to_wave) {
-                push(n, is_bare_role_token(token, role_to_wave));
+    for link in find_outgoing_links(trimmed) {
+        if let Some(n) = wave_number_from_link(&link, role_to_wave) {
+            if n != self_wave && !out.contains(&n) {
+                out.push(n);
             }
         }
     }
-
     out.sort_unstable();
     out
-}
-
-/// `true` when `token` names a wave ONLY through the role map — i.e. it is a
-/// bare role name like `cli`, not a number and not a `wave-N-role` /
-/// `wave.slug.N-role` directory form. See [`parse_depends_cell`] for why the
-/// distinction decides whether a self-edge survives.
-fn is_bare_role_token(token: &str, role_to_wave: &BTreeMap<String, u32>) -> bool {
-    let t = token.trim();
-    role_to_wave.contains_key(t) && t.parse::<u32>().is_err() && !t.starts_with("wave")
 }
 
 /// Resolve a dependency `[[…]]` token to a wave number. `[[1]]` → 1;
@@ -650,9 +607,14 @@ struct WaveLevels {
     /// A wave the peel could not place still gets a level here — see the tail
     /// of [`assign_levels`] for why the fail-open readers need one.
     level: BTreeMap<u32, u32>,
-    /// The waves whose declared dependencies never resolve, ascending: a
-    /// declared cycle plus whatever waits behind one. Empty for a well-formed
-    /// plan.
+    /// The waves ON a declared dependency loop, ascending. Empty for a
+    /// well-formed plan.
+    ///
+    /// NOT every wave the peel failed to place: a wave merely waiting BEHIND a
+    /// cycle is stuck without being contradictory, its own `Depends on` cell is
+    /// correct as written, and it becomes dispatchable the moment its
+    /// dependency completes. Naming it here would send its author to fix the
+    /// wrong cell and would keep refusing a wave that was ready to run.
     ///
     /// The same IDEA as the stuck set of the topological walk in
     /// [`crate::commands::wave::wave_dependency`] — what a topological pass
@@ -719,7 +681,34 @@ fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
         }
     }
 
-    let cycle: Vec<u32> = deps.keys().copied().filter(|w| !level.contains_key(w)).collect();
+    let stuck: Vec<u32> = deps.keys().copied().filter(|w| !level.contains_key(w)).collect();
+
+    // Of the stuck waves, WHICH ones are actually in the loop? The rest are
+    // merely waiting behind it, and the difference decides who gets refused.
+    //
+    // Strip any stuck wave that nothing else stuck depends ON, and repeat. A
+    // wave behind the cycle (4 depends on 3, nothing depends on 4) has no such
+    // dependent and falls away; what survives every pass has an incoming edge
+    // from within the set, which is what being on a loop means.
+    //
+    // This matters because a dependent is NOT a contradiction. Naming wave 4 as
+    // the cycle told its author to fix a `Depends on` cell that was correct as
+    // written, and — worse — kept refusing after waves 2 and 3 completed, when
+    // wave 4's only dependency was satisfied and it was ready to dispatch.
+    let mut cycle: Vec<u32> = stuck.clone();
+    loop {
+        let depended_on: std::collections::BTreeSet<u32> = cycle
+            .iter()
+            .filter_map(|w| deps.get(w))
+            .flatten()
+            .copied()
+            .collect();
+        let kept: Vec<u32> = cycle.iter().copied().filter(|w| depended_on.contains(w)).collect();
+        if kept.len() == cycle.len() {
+            break;
+        }
+        cycle = kept;
+    }
 
     // A stuck wave still needs A level, because the fail-open readers group by
     // it: `wave-overlap-check` warns about waves that share one, and
@@ -735,7 +724,7 @@ fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
     // plan exactly as they did before the refusal existed. `cycle` — not the
     // level — is what says the plan contradicts itself.
     let mut next = level.values().copied().max().map_or(0, |m| m + 1);
-    for &wave in &cycle {
+    for &wave in &stuck {
         level.insert(wave, next);
         next += 1;
     }
@@ -972,7 +961,7 @@ mod tests {
             WaveRow { wave: 4, role: "d".into(), depends_on: vec![3] },
         ];
         let levels = assign_levels(&rows);
-        assert_eq!(levels.cycle, vec![2, 3, 4]);
+        assert_eq!(levels.cycle, vec![2, 3]);
         let mut seen: Vec<u32> = levels.level.values().copied().collect();
         let before = seen.len();
         seen.sort_unstable();
@@ -981,67 +970,31 @@ mod tests {
         assert_eq!(levels.level[&1], 0, "the clean wave keeps its real level");
     }
 
-    /// A `Depends on` cell written as bare numbers is read like one written
-    /// with wikilinks. `dependency_precheck::parse_deps_cell` already reads and
-    /// tests that authoring form; this reader saw NO edges in it, so a cycle
-    /// written that way was invisible and the plan flattened into one parallel
-    /// round — the exact failure the refusal exists to remove.
+    /// A cell holding ordinary PROSE declares nothing. This guards the reverted
+    /// bare-number scan: reading loose digits out of free text turned "nada,
+    /// ver os 2 anexos" into an edge on wave 2, and two such cells refused a
+    /// plan that had no contradiction at all.
     #[test]
-    fn bare_number_deps_are_read_like_wikilinks() {
+    fn prose_in_the_depends_cell_declares_no_edge() {
         let plan = "\
 | Wave | Spec | Role | Depends on | Summary |
 |------|------|------|------------|---------|
-| 1 | [[wave-1-rt]] | rt | — | base |
-| 2 | [[wave-2-cli]] | cli | 3 | cli |
-| 3 | [[wave-3-core]] | core | 2 | core |
+| 1 | [[wave-1-rt]] | rt | nada (ver os 2 anexos) | base |
+| 2 | [[wave-2-cli]] | cli | nenhuma real, so a 1 | cli |
 ";
         let rows = parse_wave_plan_table(plan);
-        assert_eq!(rows[1].depends_on, vec![3]);
-        assert_eq!(rows[2].depends_on, vec![2]);
-        assert_eq!(assign_levels(&rows).cycle, vec![2, 3]);
+        assert!(rows[0].depends_on.is_empty());
+        assert!(rows[1].depends_on.is_empty());
+        assert!(assign_levels(&rows).cycle.is_empty(), "no phantom cycle");
     }
 
-    /// A cell naming the wave's OWN ROLE is a resolution artifact, not a
-    /// declaration — the bare-role form exists to absorb a plan agent writing
-    /// `[[cli]]` where it meant "the cli work". Treating it as a cycle would
-    /// turn a tolerated shorthand into a hard stop for every other wave.
+    /// A wave waiting BEHIND a cycle is stuck without being contradictory, and
+    /// only the loop's own members are named. Wave 4 depends on 3 and nothing
+    /// depends on 4: its cell is correct as written, and it becomes
+    /// dispatchable the moment wave 3 completes. Naming it sent its author to
+    /// fix the wrong cell, and kept refusing a wave that was ready to run.
     #[test]
-    fn role_named_self_reference_is_tolerated() {
-        let plan = "\
-| Wave | Spec | Role | Depends on | Summary |
-|------|------|------|------------|---------|
-| 1 | [[wave-1-rt]] | rt | — | base |
-| 2 | [[wave-2-cli]] | cli | [[cli]] | names its own role |
-";
-        let rows = parse_wave_plan_table(plan);
-        assert!(rows[1].depends_on.is_empty(), "the self-edge is dropped");
-        assert!(assign_levels(&rows).cycle.is_empty(), "the plan still runs");
-    }
-
-    /// A wave depending on ITSELF is the same contradiction, and it must survive
-    /// the PARSER to be caught — `parse_depends_cell` used to drop a
-    /// self-reference before the level assignment ever saw it, which made the
-    /// refusal unreachable from a real `wave-plan.md`.
-    #[test]
-    fn levels_self_dependency_is_a_cycle() {
-        let plan = "\
-| Wave | Spec | Role | Depends on | Summary |
-|------|------|------|------------|---------|
-| 1 | [[wave-1-rt]] | rt | — | base |
-| 2 | [[wave-2-cli]] | cli | [[wave-2-cli]] | depends on itself |
-";
-        let rows = parse_wave_plan_table(plan);
-        assert_eq!(rows[1].depends_on, vec![2], "the self-edge reaches the DAG");
-        let levels = assign_levels(&rows);
-        assert_eq!(levels.cycle, vec![2]);
-        assert_eq!(levels.level[&1], 0, "the clean wave is still placed");
-    }
-
-    /// The waves waiting BEHIND a cycle are stuck too — wave 4 depends on 3,
-    /// which never resolves. Reported together, ascending, so the author sees
-    /// the whole blocked set at once.
-    #[test]
-    fn levels_cycle_takes_its_dependents_with_it() {
+    fn levels_names_the_loop_not_what_waits_behind_it() {
         let rows = vec![
             WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![3] },
@@ -1049,8 +1002,9 @@ mod tests {
             WaveRow { wave: 4, role: "d".into(), depends_on: vec![3] },
         ];
         let levels = assign_levels(&rows);
-        assert_eq!(levels.cycle, vec![2, 3, 4]);
+        assert_eq!(levels.cycle, vec![2, 3], "only the loop's members");
         assert_eq!(levels.level[&1], 0);
+        assert!(levels.level.contains_key(&4), "wave 4 still gets a level");
     }
 
     /// An out-of-plan dependency is NOT a contradiction: wave 2 links a wave

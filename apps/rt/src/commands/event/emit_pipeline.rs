@@ -1481,12 +1481,17 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
 /// `pipeline.wave.start` for a refused round — no wave started — but "started
 /// nothing" and "recorded nothing" are different promises, and only the first
 /// one was wanted. Fail-open, like every emit here.
-/// **Idempotent on `(reason, description)`**, mirroring the `started_waves`
-/// guard on [`emit_wave_start`]. `wave-advance` is re-invoked freely — the
-/// resume loop calls it after every round — and one authoring mistake must not
-/// grow a row per invocation: `build_pipeline_state` sums dispatch failures
-/// into `metrics.retries`, so a spec that never dispatched anything would
-/// report N retries for a single broken table.
+/// **Idempotent on `reason`**, mirroring the `started_waves` guard on
+/// [`emit_wave_start`]. `wave-advance` is re-invoked freely — the resume loop
+/// calls it after every round — and one authoring mistake must not grow a row
+/// per invocation: `build_pipeline_state` sums dispatch failures into
+/// `metrics.retries`, so a spec that never dispatched anything would report N
+/// retries for a single broken table.
+///
+/// The key is the REASON alone, never the rendered `description`. The
+/// description names the waves currently blocking, and that list shrinks as
+/// they complete — keying on it let the same contradiction write a second row
+/// the moment its wording changed, which is the thing the guard exists to stop.
 ///
 /// The payload carries `at`. `render_dispatch_failure` reads `at` with no
 /// fallback to the event `ts`, so omitting it renders every failure as
@@ -1502,7 +1507,6 @@ pub(crate) fn emit_dispatch_failure(
         e.event == EVENT_PIPELINE_DISPATCH_FAILURE
             && e.spec.as_deref() == Some(spec)
             && e.payload.get("reason").and_then(|v| v.as_str()) == Some(reason)
-            && e.payload.get("description").and_then(|v| v.as_str()) == Some(description)
     });
     if already {
         return;

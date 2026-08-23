@@ -684,6 +684,38 @@ mod tests {
         assert_eq!(recorded, 1, "three refusals, one record");
     }
 
+    /// A wave waiting BEHIND the cycle dispatches once its dependency is done.
+    /// It is not on the loop, its `Depends on` cell is correct as written, and
+    /// refusing it stranded the plan permanently: it could never complete, so
+    /// the blocking set could never empty.
+    #[test]
+    fn wave_behind_a_completed_cycle_dispatches() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = seed_cyclic_plan(project, "behind");
+        // Add a fourth wave depending on 3 — behind the 2↔3 loop.
+        let plan = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            format!("{plan}| 4 | [[wave-4-ui]] | ui | [[wave-3-core]] | ui |\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-4-ui")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-4-ui").join("spec.md"),
+            "# wave-4-ui\n\n## Tasks\n\n- [ ] task\n",
+        )
+        .unwrap();
+        for wave in [1, 2, 3] {
+            complete_wave(project, "behind", wave);
+        }
+
+        let items = advance(project, "behind").expect("wave 4 is not a contradiction");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].wave, 4);
+    }
+
     /// Once every impl wave is complete the cycle stops mattering: order has
     /// nothing left to decide, so the review round is emitted normally.
     ///
