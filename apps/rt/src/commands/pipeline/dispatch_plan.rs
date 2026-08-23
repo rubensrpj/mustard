@@ -132,17 +132,61 @@ pub(crate) fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
     ClaudePaths::spec_dir_or_unchecked(project, spec)
 }
 
-/// Assemble the ordered dispatch items for `spec`.
+/// Assemble the ordered dispatch items for `spec`, fail-open over a malformed
+/// DAG: a wave the level assignment could not place keeps its row and reads as
+/// level 0, so no wave is ever dropped.
 ///
 /// Pure aside from filesystem reads; extracted so the tests can drive it with a
 /// temp spec dir. `pub(crate)` so `wave-advance` composes the same routing
 /// in-process (single DAG source — no subprocess, no reimplementation).
+///
+/// This face is for the AUDITS and the write gate: `wave-overlap-check` only
+/// warns, and `boundary_gate` must not deny a write because a plan contradicts
+/// itself. The dispatch path takes [`build_plan_checked`] instead.
 pub(crate) fn build_plan(
     project: &Path,
     spec_dir: &Path,
     spec: &str,
     wave_filter: Option<u32>,
 ) -> Vec<DispatchItem> {
+    plan_with_cycle(project, spec_dir, spec, wave_filter).0
+}
+
+/// [`build_plan`], refusing a plan whose `Depends on` column declares a cycle:
+/// `Err` carries the stuck waves, ascending.
+///
+/// The distinction this draws is between an INFERRED cycle and a DECLARED one.
+/// `wave-dependency` reports an import cycle as a WARN because the inference is
+/// heuristic and the planner's explicit boundaries stand over it. A cycle in
+/// the `Depends on` column is not inferred — someone wrote wave 2 depends on 3
+/// and wave 3 depends on 2. There is no order that satisfies it, so dispatching
+/// in ANY order would be inventing an answer the plan does not contain.
+///
+/// Nothing is dropped by refusing: the round is declined whole, and the waves
+/// stay exactly as authored for the person who has to fix the contradiction.
+pub(crate) fn build_plan_checked(
+    project: &Path,
+    spec_dir: &Path,
+    spec: &str,
+    wave_filter: Option<u32>,
+) -> Result<Vec<DispatchItem>, Vec<u32>> {
+    let (items, cycle) = plan_with_cycle(project, spec_dir, spec, wave_filter);
+    if cycle.is_empty() {
+        Ok(items)
+    } else {
+        Err(cycle)
+    }
+}
+
+/// The one plan build both faces share: the items, plus the waves the DAG could
+/// not place (empty for a well-formed plan). Single source — the fail-open and
+/// the refusing face can never disagree about the same spec directory.
+fn plan_with_cycle(
+    project: &Path,
+    spec_dir: &Path,
+    spec: &str,
+    wave_filter: Option<u32>,
+) -> (Vec<DispatchItem>, Vec<u32>) {
     // 1. Read the wave rows (event-free, FS-first). Plan table preferred; the
     //    `wave-N-{role}/` directories are the fallback when the table is absent.
     let rows = read_wave_rows(spec_dir);
@@ -157,10 +201,13 @@ pub(crate) fn build_plan(
         if let Some(w) = wave_filter {
             items.retain(|it| it.wave == w);
         }
-        return items;
+        return (items, Vec::new());
     }
 
-    // 2. Topological level assignment over the wave-number DAG.
+    // 2. Topological level assignment over the wave-number DAG. A wave the
+    //    assignment could NOT place (a declared cycle) carries no level: it
+    //    reads as 0 below so the row survives, and rides out in `cycle` so the
+    //    dispatch face can refuse the round instead of guessing an order.
     let levels = assign_levels(&rows);
 
     // 3. Materialise each item, then sort by (level, wave) so independent waves
@@ -169,7 +216,7 @@ pub(crate) fn build_plan(
         .iter()
         .map(|row| {
             let subproject = derive_subproject(project, spec_dir, row.wave, &row.role);
-            let level = levels.get(&row.wave).copied().unwrap_or(0);
+            let level = levels.level.get(&row.wave).copied().unwrap_or(0);
             DispatchItem {
                 wave: row.wave,
                 role: row.role.clone(),
@@ -187,11 +234,13 @@ pub(crate) fn build_plan(
 
     items.sort_by(|a, b| a.level.cmp(&b.level).then(a.wave.cmp(&b.wave)));
 
-    // 4. `--wave N` slice (still carries the real depends_on/level).
+    // 4. `--wave N` slice (still carries the real depends_on/level). The cycle
+    //    is NOT sliced with it: a contradiction is a property of the plan, not
+    //    of the slice someone asked to look at.
     if let Some(w) = wave_filter {
         items.retain(|it| it.wave == w);
     }
-    items
+    (items, levels.cycle)
 }
 
 /// Build the `agent-prompt-render` invocation for one item. `--mode first` is
@@ -538,14 +587,37 @@ fn rows_from_fs(spec_dir: &Path) -> Vec<WaveRow> {
 // Level assignment (topological depth)
 // ---------------------------------------------------------------------------
 
+/// The wave DAG's level assignment, plus the waves it could not place.
+struct WaveLevels {
+    /// Wave → topological level, for every wave the DAG could place.
+    level: BTreeMap<u32, u32>,
+    /// The waves whose declared dependencies never resolve, ascending: a
+    /// declared cycle plus whatever waits behind one. Empty for a well-formed
+    /// plan. Same `stuck` semantics as the topological walk in
+    /// [`crate::commands::wave::wave_dependency`], which reports the identical
+    /// set as its `cyclic-dependency` error.
+    cycle: Vec<u32>,
+}
+
 /// Assign a topological level to each wave: a wave's level is one more than the
 /// deepest level among its in-plan dependencies; waves with no in-plan
 /// dependency are level 0.
 ///
-/// Robust to a malformed DAG: a dependency on an unknown wave is ignored, and a
-/// cycle degrades to level 0 for the stuck nodes (so no wave is dropped —
-/// fail-open). Deterministic regardless of input order.
-fn assign_levels(rows: &[WaveRow]) -> BTreeMap<u32, u32> {
+/// A dependency on an unknown wave is ignored (an out-of-plan link is not a
+/// contradiction). A dependency the plan DOES contain but cannot order is a
+/// contradiction, and it is reported rather than smoothed over: the peel below
+/// places a wave only once every in-plan dependency already has a level, so
+/// what is left unplaced is exactly the cycle. It is not level 0 and it is not
+/// a level at all — [`WaveLevels::cycle`] names those waves, and the caller
+/// decides. Deterministic regardless of input order.
+///
+/// This used to relax to a fixpoint with an iteration cap, seeding an
+/// unresolved node at a provisional 0. That never actually held at 0: after the
+/// first pass every wave has an entry, so each further pass simply increments
+/// the cycle's members, and the cap stopped them at arbitrary distinct levels.
+/// A declared cycle therefore came out looking like an ordinary sequential plan
+/// — the failure was invisible, which is the worst shape it could take.
+fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
     let known: std::collections::BTreeSet<u32> = rows.iter().map(|r| r.wave).collect();
     let deps: BTreeMap<u32, Vec<u32>> = rows
         .iter()
@@ -560,34 +632,31 @@ fn assign_levels(rows: &[WaveRow]) -> BTreeMap<u32, u32> {
         })
         .collect();
 
+    // Peel: each pass places every wave whose dependencies are already placed.
+    // A pass that places nothing means nothing further CAN be placed, so the
+    // loop ends after at most one pass per wave — no iteration cap needed.
     let mut level: BTreeMap<u32, u32> = BTreeMap::new();
-    // Iterate to a fixpoint, bounded by the node count so a cycle terminates.
-    let max_iters = rows.len() + 1;
-    for _ in 0..max_iters {
-        let mut changed = false;
+    loop {
+        let mut placed = false;
         for (&wave, wave_deps) in &deps {
+            if level.contains_key(&wave) || !wave_deps.iter().all(|d| level.contains_key(d)) {
+                continue;
+            }
             let new_level = wave_deps
                 .iter()
                 .filter_map(|d| level.get(d).map(|l| l + 1))
                 .max()
                 .unwrap_or(0);
-            // Only assign when all deps already have a level (otherwise wait a
-            // round); a dep with no level yet leaves us at the provisional 0.
-            let resolved = wave_deps.iter().all(|d| level.contains_key(d));
-            let entry = level.entry(wave).or_insert(0);
-            if resolved && *entry != new_level {
-                *entry = new_level;
-                changed = true;
-            } else if !resolved {
-                // Provisionally seed at 0 so the node is never dropped.
-                changed = true;
-            }
+            level.insert(wave, new_level);
+            placed = true;
         }
-        if !changed {
+        if !placed {
             break;
         }
     }
-    level
+
+    let cycle: Vec<u32> = deps.keys().copied().filter(|w| !level.contains_key(w)).collect();
+    WaveLevels { level, cycle }
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +836,7 @@ mod tests {
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![1] },
             WaveRow { wave: 3, role: "c".into(), depends_on: vec![2] },
         ];
-        let levels = assign_levels(&rows);
+        let levels = assign_levels(&rows).level;
         assert_eq!(levels[&1], 0);
         assert_eq!(levels[&2], 1);
         assert_eq!(levels[&3], 2);
@@ -781,23 +850,69 @@ mod tests {
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![1] },
             WaveRow { wave: 3, role: "c".into(), depends_on: vec![1] },
         ];
-        let levels = assign_levels(&rows);
+        let levels = assign_levels(&rows).level;
         assert_eq!(levels[&1], 0);
         assert_eq!(levels[&2], 1);
         assert_eq!(levels[&3], 1);
     }
 
+    /// A DECLARED cycle is named, not ordered. This test used to be called
+    /// `levels_cycle_degrades_to_zero_without_dropping` and asserted only that
+    /// both waves kept an entry — which the old fixpoint satisfied while
+    /// handing back arbitrary distinct levels (1→4, 2→5 for this very input),
+    /// so the contradiction dispatched as an ordinary sequential plan.
     #[test]
-    fn levels_cycle_degrades_to_zero_without_dropping() {
-        // 1 → 2 → 1 cycle: fail-open keeps both, at level 0.
+    fn levels_declared_cycle_is_named_not_ordered() {
+        // 1 → 2 → 1: no order satisfies it, so neither wave gets a level.
         let rows = vec![
             WaveRow { wave: 1, role: "a".into(), depends_on: vec![2] },
             WaveRow { wave: 2, role: "b".into(), depends_on: vec![1] },
         ];
         let levels = assign_levels(&rows);
-        assert_eq!(levels.len(), 2);
-        assert!(levels.contains_key(&1));
-        assert!(levels.contains_key(&2));
+        assert_eq!(levels.cycle, vec![1, 2], "both waves are stuck");
+        assert!(levels.level.is_empty(), "a stuck wave gets no level at all");
+    }
+
+    /// A wave depending on ITSELF is the same contradiction. The old fixpoint
+    /// gave it level 2 and said nothing.
+    #[test]
+    fn levels_self_dependency_is_a_cycle() {
+        let rows = vec![
+            WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
+            WaveRow { wave: 2, role: "b".into(), depends_on: vec![2] },
+        ];
+        let levels = assign_levels(&rows);
+        assert_eq!(levels.cycle, vec![2]);
+        assert_eq!(levels.level[&1], 0, "the clean wave is still placed");
+    }
+
+    /// The waves waiting BEHIND a cycle are stuck too — wave 4 depends on 3,
+    /// which never resolves. Reported together, ascending, so the author sees
+    /// the whole blocked set at once.
+    #[test]
+    fn levels_cycle_takes_its_dependents_with_it() {
+        let rows = vec![
+            WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
+            WaveRow { wave: 2, role: "b".into(), depends_on: vec![3] },
+            WaveRow { wave: 3, role: "c".into(), depends_on: vec![2] },
+            WaveRow { wave: 4, role: "d".into(), depends_on: vec![3] },
+        ];
+        let levels = assign_levels(&rows);
+        assert_eq!(levels.cycle, vec![2, 3, 4]);
+        assert_eq!(levels.level[&1], 0);
+    }
+
+    /// An out-of-plan dependency is NOT a contradiction: wave 2 links a wave
+    /// the plan does not contain, so the edge is ignored and the plan stands.
+    #[test]
+    fn levels_unknown_dependency_is_not_a_cycle() {
+        let rows = vec![
+            WaveRow { wave: 1, role: "a".into(), depends_on: vec![] },
+            WaveRow { wave: 2, role: "b".into(), depends_on: vec![99] },
+        ];
+        let levels = assign_levels(&rows);
+        assert!(levels.cycle.is_empty());
+        assert_eq!(levels.level[&2], 0);
     }
 
     #[test]
@@ -845,7 +960,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].depends_on.is_empty(), "wave 1 independent");
         assert_eq!(rows[1].depends_on, vec![1], "wave 2 depends on wave 1 via the dotted link");
-        let levels = assign_levels(&rows);
+        let levels = assign_levels(&rows).level;
         assert_eq!(levels[&1], 0, "wave 1 at level 0");
         assert!(levels[&2] >= 1, "dependent wave must not be flattened to level 0");
     }
@@ -872,7 +987,7 @@ mod tests {
         assert!(rows[3].depends_on.is_empty()); // app-table independent
         // The reconstructed DAG: waves 1 and 4 share level 0 (parallel round 1),
         // wave 2 is level 1, wave 3 is level 2 — exactly the sialia plan's intent.
-        let levels = assign_levels(&rows);
+        let levels = assign_levels(&rows).level;
         assert_eq!(levels[&1], 0);
         assert_eq!(levels[&4], 0);
         assert_eq!(levels[&2], 1);
@@ -947,6 +1062,43 @@ mod tests {
         assert_eq!(items[1].subproject, "apps/cli");
         assert_eq!(items[1].level, 1);
         assert_eq!(items[1].depends_on, vec![1]);
+    }
+
+    /// The two faces over a self-contradicting plan: the dispatch face REFUSES
+    /// and names the stuck waves; the fail-open face still hands back every
+    /// wave, so refusing a round never costs the author their work.
+    #[test]
+    fn declared_cycle_refuses_the_dispatch_face_and_drops_nothing() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("knot")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // Wave 2 depends on 3 and wave 3 depends on 2 — written by hand, in the
+        // plan table. No order satisfies it.
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | — | base |
+| 2 | [[wave-2-cli]] | cli | [[wave-3-core]] | needs core |
+| 3 | [[wave-3-core]] | core | [[wave-2-cli]] | needs cli |
+",
+        )
+        .unwrap();
+
+        let cycle = build_plan_checked(project, &spec_dir, "knot", None)
+            .expect_err("a declared cycle must refuse the round");
+        assert_eq!(cycle, vec![2, 3]);
+
+        let items = build_plan(project, &spec_dir, "knot", None);
+        assert_eq!(items.len(), 3, "no wave is dropped by the fail-open face");
     }
 
     /// `--wave N` slices to a single item, preserving its real depends_on.
