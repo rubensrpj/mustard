@@ -162,6 +162,19 @@ const DASHBOARD_LOCK_REL: &str = "apps/dashboard/src-tauri/Cargo.lock";
 /// The dashboard's own manifest, relative to the workspace root.
 const DASHBOARD_MANIFEST_REL: &str = "apps/dashboard/src-tauri/Cargo.toml";
 
+/// The crates of ours the dashboard's lock must NAME, spelled out rather than
+/// derived from that lock.
+///
+/// A set read from the lock alone cannot see a crate that LEFT it: the package
+/// that vanished simply stops being asked about, every package still there is on
+/// the stamp, and the test goes green on exactly the case it exists for — a
+/// dependency dropped by accident. `!ours.is_empty()` is no floor for that
+/// either; it survives as long as one of the two remains. This is the same named
+/// list `check-lock-pins.sh` takes as its arguments, and the same reading: if
+/// the dashboard stops depending on one of these on purpose, the deliberate act
+/// is editing this line.
+const DASHBOARD_LOCK_MUST_PIN: &[&str] = &["mustard-cli", "mustard-core"];
+
 /// One `[[package]]` record of a `Cargo.lock`, reduced to the three fields this
 /// file asks about.
 #[derive(serde::Deserialize)]
@@ -234,6 +247,23 @@ fn the_dashboard_lock_pins_this_repositorys_crates_at_this_version() {
          stopped depending on this repository (then delete this test) or the \
          lock format moved and the parser above no longer reads it",
         lock_path.display()
+    );
+
+    // …and the named crates are all still THERE. The sweep below only measures
+    // the packages the lock still lists, so a crate that vanished is a crate it
+    // never asks about.
+    let gone: Vec<&&str> = DASHBOARD_LOCK_MUST_PIN
+        .iter()
+        .filter(|want| !ours.iter().any(|p| p.name == **want))
+        .collect();
+    assert!(
+        gone.is_empty(),
+        "{} no longer pins {gone:?}. A crate that left the graph is the case the \
+         version stamp cannot see on its own — restore the dependency, or drop \
+         the name from `DASHBOARD_LOCK_MUST_PIN` deliberately. Local packages \
+         found: {:?}",
+        lock_path.display(),
+        ours.iter().map(|p| p.name.as_str()).collect::<Vec<_>>()
     );
 
     let expected = env!("CARGO_PKG_VERSION");

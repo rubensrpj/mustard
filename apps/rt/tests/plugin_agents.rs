@@ -180,13 +180,27 @@ fn declared(frontmatter: &str, key: &str) -> Option<String> {
 /// than to keep it. A quoted scalar ends at its closing quote; an unquoted one
 /// ends where an inline comment starts, which in YAML is a `#` preceded by
 /// whitespace (a `#` inside `a#b` is part of the value).
+///
+/// Reading a value is never a way to LAUNDER a broken line. After the closing
+/// quote YAML allows nothing but a comment, so `model: "sonnet" garbage` is not
+/// a document Claude Code can load at all — a louder failure than the misspelling
+/// this ratchet exists to catch. Returning `sonnet` for it would certify the
+/// file as compliant; the whole line comes back instead, so the vocabulary check
+/// rejects it and the message shows the reader exactly what is on the line.
 fn scalar_value(raw: &str) -> String {
     let raw = raw.trim();
     for quote in ['"', '\''] {
         if let Some(rest) = raw.strip_prefix(quote) {
-            if let Some((inner, _)) = rest.split_once(quote) {
-                return inner.to_string();
-            }
+            // An unterminated quote closes nothing: hand the line back whole.
+            let Some((inner, after)) = rest.split_once(quote) else {
+                return raw.to_string();
+            };
+            let after = after.trim_start();
+            return if after.is_empty() || after.starts_with('#') {
+                inner.to_string()
+            } else {
+                raw.to_string()
+            };
         }
     }
     if raw.starts_with('#') {
@@ -354,6 +368,24 @@ fn scalar_value_still_rejects_leftovers_after_the_id() {
         assert!(
             !model_is_accepted(bad),
             "`model: {bad}` must be rejected — Claude Code resolves no such value"
+        );
+    }
+
+    // The same leftovers behind a closing quote. YAML allows a comment there and
+    // nothing else, so none of these three lines is a document Claude Code can
+    // load — reading the quoted part alone would hand back `sonnet`, `opus` and
+    // `claude-opus-5` and certify all three files as compliant.
+    for line in [
+        "model: \"sonnet\" garbage",
+        "model: 'opus' junk here",
+        "model: \"claude-opus-5\" papel",
+    ] {
+        let fm = format!("{line}\n");
+        let read = declared(&fm, "model").expect("the line does declare a `model:` key");
+        assert!(
+            !model_is_accepted(&read),
+            "`{line}` is not loadable YAML, and reading past the closing quote laundered it into \
+             `{read}` — a value the ratchet then certifies as deliberate"
         );
     }
 

@@ -82,11 +82,27 @@ if [ -z "$locals" ]; then
   exit 1
 fi
 
+# The pairs framed by newlines, so a `case` pattern can anchor a WHOLE name:
+# `$nl<crate> ` matches only a name that starts a line and is followed by its
+# version, never a prefix of a longer one.
+#
+# `case` and not `… | grep -Fqx "$crate"`: under `set -o pipefail` a `grep -q`
+# that exits on its first match leaves the producer ahead of it writing to a
+# closed pipe, and the 141 it dies with becomes the pipeline's status — so a
+# crate that IS present reports as missing whenever the buffer fills first.
+# Measured on a forged lock of 4001 local packages: the first name was reported
+# gone on 5 runs of 5. The repository's own locks are far too small to fill a
+# pipe buffer, which is exactly why a race like this waits.
+nl='
+'
+pairs="$nl$locals$nl"
+
 missing=''
 for crate in "$@"; do
-  if ! printf '%s\n' "$locals" | cut -d' ' -f1 | grep -Fqx -- "$crate"; then
-    missing="$missing $crate"
-  fi
+  case "$pairs" in
+    *"$nl$crate "*) ;;
+    *) missing="$missing $crate" ;;
+  esac
 done
 
 stale=''
