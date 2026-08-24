@@ -76,6 +76,14 @@
 //! stderr ([`unrecognised_answer_notice`]). This changes nothing about what the
 //! gate accepts — the stems and the fail-closed default are untouched — only
 //! about what it explains when it declines.
+//!
+//! Fact 1 declines the same way, and for the same reason: an approval that was
+//! really SELECTED while nothing was awaiting one used to return in silence, so
+//! the operator spent an unforgeable gesture, it counted for nothing, and the
+//! run only said so much later at `approve-spec`'s refusal.
+//! [`missing_plan_notice`] names which half of fact 1 failed. It fires ONLY
+//! behind facts 2 and 3 — this module observes every `AskUserQuestion` in the
+//! session, and a wider condition would warn on every ordinary question.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::io::fs;
@@ -95,16 +103,73 @@ pub struct ApprovalMarkerObserver;
 const APPROVAL_STEMS: &[&str] = &["approv", "aprov"];
 
 /// Resolve the spec the current session is deciding on; `None` on any
-/// uncertainty (which the caller treats as "record nothing"). Prefers the
-/// session→spec binding (precise), then the newest-pipeline-state hint, then —
-/// only when both are silent — the UNIQUE pending Full plan (see
-/// [`unique_pending_full_plan`]). Shared with [`super::plan_approval_observer`]
-/// (the plan-mode recorder).
+/// uncertainty (which the caller treats as "record nothing"). A thin reading of
+/// [`resolve_pending_plan`], so the spec it names ALWAYS satisfies fact 1.
+/// Shared with [`super::plan_approval_observer`] (the plan-mode recorder).
 pub(crate) fn active_spec(cwd: &str, input: &HookInput) -> Option<String> {
+    match resolve_pending_plan(cwd, input) {
+        PendingPlan::Awaiting(spec) => Some(spec),
+        PendingPlan::Outside { .. } | PendingPlan::Unresolved => None,
+    }
+}
+
+/// Where the resolution ladder landed relative to fact 1.
+///
+/// The two failure shapes are kept apart because the caller must NAME which one
+/// happened: a ladder that could not resolve a spec at all is a different thing
+/// from one that resolved a spec sitting outside the pre-approval window, and
+/// the operator's next move differs accordingly.
+enum PendingPlan {
+    /// A spec in the pre-approval window — `scope=full`, `stage=Plan`, no
+    /// `pipeline.status{to:approved}` yet. Fact 1 holds, and this is the spec
+    /// it holds for.
+    Awaiting(String),
+    /// Every rung that named a spec named one outside that window. The FIRST
+    /// such candidate is carried, with the reason it fell outside.
+    Outside { spec: String, already_approved: bool },
+    /// No rung named a spec at all.
+    Unresolved,
+}
+
+/// Walk the resolution ladder and report where it landed.
+///
+/// The rungs are unchanged and in the same order — the session→spec binding
+/// (precise), then the legacy `.pipeline-states/` hint, then the UNIQUE pending
+/// Full plan (see [`unique_pending_full_plan`]) — but a rung now ENDS the walk
+/// only when what it named satisfies fact 1.
+///
+/// That is the whole point. The ladder used to stop at the first rung that
+/// answered ANYTHING, so a stale `.pipeline-states/` file naming a spec long
+/// past PLAN shadowed the third rung — the rung written precisely for the case
+/// where the first two cannot answer — and a genuine user approval then minted
+/// nothing. A rung's answer is a HINT about which spec is in play, never proof
+/// that an approval is pending for it; only fact 1 is that proof, so fact 1 is
+/// what decides when the walk is over.
+fn resolve_pending_plan(cwd: &str, input: &HookInput) -> PendingPlan {
     let sid = input.session_id.as_deref().unwrap_or("");
-    spec_for_session(cwd, sid)
-        .or_else(|| current_spec(cwd))
-        .or_else(|| unique_pending_full_plan(cwd))
+    // Bound as closures so the ladder stays LAZY: the directory scan behind the
+    // third rung is only paid for when the two cheap ones failed.
+    let session_rung = || spec_for_session(cwd, sid);
+    let current_rung = || current_spec(cwd);
+    let unique_rung = || unique_pending_full_plan(cwd);
+    let rungs: [&dyn Fn() -> Option<String>; 3] = [&session_rung, &current_rung, &unique_rung];
+
+    let mut outside: Option<PendingPlan> = None;
+    for rung in rungs {
+        let Some(spec) = rung() else {
+            continue;
+        };
+        if !is_full_plan(cwd, &spec) {
+            outside.get_or_insert(PendingPlan::Outside { spec, already_approved: false });
+            continue;
+        }
+        if already_approved(cwd, &spec) {
+            outside.get_or_insert(PendingPlan::Outside { spec, already_approved: true });
+            continue;
+        }
+        return PendingPlan::Awaiting(spec);
+    }
+    outside.unwrap_or(PendingPlan::Unresolved)
 }
 
 /// Last-resort spec resolution for [`active_spec`] when neither the session→spec
@@ -336,6 +401,48 @@ fn unrecognised_answer_notice(spec: &str, labels: &[String], offered: &[String])
     ))
 }
 
+/// Explain a genuine approval that found NO plan to land on — the fact-1 half
+/// of the same debt [`unrecognised_answer_notice`] pays for facts 2 and 3.
+///
+/// Reached only when facts 2 and 3 ALREADY hold: an offered option was really
+/// selected and it carries the approval stem. That narrowness is the design,
+/// not an oversight — this observer sees EVERY `AskUserQuestion` in the session,
+/// and almost none of them is about approving a plan, so a notice on any weaker
+/// condition would turn ordinary questions into a stream of warnings.
+///
+/// The three failures are named apart because their remedies are: nothing
+/// resolved (approve from the session that owns the plan, or name the row),
+/// something resolved but outside the `full`+`Plan` window (the wrong spec is in
+/// play), and already approved (there is simply nothing left to record). The
+/// silent version of this cost the operator the gesture itself: it was spent,
+/// counted for nothing, and the run only said so later at `approve-spec`'s
+/// refusal, which names the missing marker but not the reason it is missing.
+///
+/// `None` for [`PendingPlan::Awaiting`], which is not a failure at all.
+fn missing_plan_notice(pending: &PendingPlan) -> Option<String> {
+    let tail = "`approve-spec` will keep refusing until `<spec>/.approved-by-user` exists.";
+    match pending {
+        PendingPlan::Awaiting(_) => None,
+        PendingPlan::Unresolved => Some(format!(
+            "[approval] an approval was SELECTED, but NOTHING was recorded: no spec could be \
+             resolved for this session — no session→spec binding, no current-spec hint, and no \
+             single Full spec awaiting approval in PLAN. Approve from the session that owns the \
+             plan, or name the row yourself with `/mustard:spec <letter>r`. {tail}"
+        )),
+        PendingPlan::Outside { spec, already_approved: false } => Some(format!(
+            "[approval] an approval was SELECTED, but NOTHING was recorded: the spec this \
+             session resolves to (`{spec}`) is not a Full spec in stage PLAN, so no plan \
+             approval is pending for it. If another plan is the one you meant to approve, name \
+             its row with `/mustard:spec <letter>r`. {tail}"
+        )),
+        PendingPlan::Outside { spec, already_approved: true } => Some(format!(
+            "[approval] an approval was SELECTED, but NOTHING was recorded: `{spec}` is ALREADY \
+             approved — its `pipeline.status{{to:approved}}` event is on the log — so there is \
+             nothing left to record."
+        )),
+    }
+}
+
 /// Bound one quoted answer in the notice. A free-text answer can be an entire
 /// message — the incident's was — and a hook's stderr is a diagnostic, not a
 /// transcript.
@@ -352,13 +459,10 @@ impl Observer for ApprovalMarkerObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = ctx.project_dir_or_cwd(input);
 
-        // Fact 1 — an unapproved Full spec in PLAN, else nothing is pending.
-        let Some(spec) = active_spec(&cwd, input) else {
-            return;
-        };
-        if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) {
-            return;
-        }
+        // Fact 1 — an unapproved Full spec in PLAN. A miss no longer returns
+        // right here: the answer is read first, because an answer that IS a
+        // genuine approval turns this miss into the one thing worth saying.
+        let pending = resolve_pending_plan(&cwd, input);
 
         // Facts 2 + 3 — a real SELECTION (one of the offered option labels,
         // exactly) that is affirmative. The `is_offered` filter runs BEFORE the
@@ -372,17 +476,31 @@ impl Observer for ApprovalMarkerObserver {
         let approved = labels
             .iter()
             .any(|l| is_offered(l, &offered) && is_affirmative(l));
+
+        let PendingPlan::Awaiting(spec) = &pending else {
+            // Nothing is awaiting approval. Only a genuine approval — offered,
+            // selected, affirmative — is worth a word here; on anything else
+            // this is one of the session's ordinary questions and silence is
+            // the correct answer.
+            if approved {
+                if let Some(notice) = missing_plan_notice(&pending) {
+                    eprintln!("{notice}");
+                }
+            }
+            return;
+        };
+
         if !approved {
-            if let Some(notice) = unrecognised_answer_notice(&spec, &labels, &offered) {
+            if let Some(notice) = unrecognised_answer_notice(spec, &labels, &offered) {
                 eprintln!("{notice}");
             }
             return;
         }
 
         // All three facts hold → record the genuine approval, best-effort.
-        if let Some(marker) = approval_marker_path(&cwd, &spec) {
+        if let Some(marker) = approval_marker_path(&cwd, spec) {
             let body = marker_body(
-                &spec,
+                spec,
                 "AskUserQuestion",
                 input.session_id.as_deref().unwrap_or("unknown"),
                 &mustard_core::time::now_iso8601(),
@@ -531,6 +649,42 @@ mod tests {
         assert!(msg.contains("approv") && msg.contains("aprov"), "names the stems: {msg}");
         // And that the consequence is nothing recorded, not something rejected.
         assert!(msg.contains(".approved-by-user"), "names the marker: {msg}");
+    }
+
+    /// The fact-1 decline SPEAKS, and says which half of fact 1 failed.
+    ///
+    /// Each of the three shapes has a different remedy, so each is named: the
+    /// ladder resolved nothing, it resolved a spec outside the `full`+`Plan`
+    /// window, or it resolved one whose approval already landed. The window that
+    /// holds — an `Awaiting` — is not a failure and says nothing.
+    #[test]
+    fn a_fact_one_decline_names_its_reason() {
+        let unresolved = missing_plan_notice(&PendingPlan::Unresolved)
+            .expect("an approval with no plan to land on is explained");
+        assert!(unresolved.contains("no spec could be resolved"), "{unresolved}");
+        assert!(unresolved.contains("/mustard:spec <letter>r"), "names a remedy: {unresolved}");
+
+        let outside = missing_plan_notice(&PendingPlan::Outside {
+            spec: "shipped-already".to_string(),
+            already_approved: false,
+        })
+        .expect("a spec outside the window is explained");
+        assert!(outside.contains("shipped-already"), "names the spec: {outside}");
+        assert!(outside.contains("stage PLAN"), "names the window: {outside}");
+
+        let done = missing_plan_notice(&PendingPlan::Outside {
+            spec: "epic".to_string(),
+            already_approved: true,
+        })
+        .expect("an already-approved spec is explained");
+        assert!(done.contains("ALREADY"), "names the condition: {done}");
+        assert!(done.contains("epic"), "names the spec: {done}");
+
+        assert_eq!(
+            missing_plan_notice(&PendingPlan::Awaiting("epic".to_string())),
+            None,
+            "a plan that IS awaiting approval failed nothing",
+        );
     }
 
     #[test]
@@ -769,6 +923,57 @@ mod tests {
                 "an unbound session's real approval mints the marker via the fallback",
             );
         }
+    }
+
+    /// **A stale hint no longer shadows the plan that IS pending.**
+    ///
+    /// The ladder used to stop at the first rung that answered ANYTHING, and the
+    /// legacy `.pipeline-states/` sink keeps answering long after the spec it
+    /// names has left PLAN. That obsolete guess reached rung two, ended the
+    /// walk, and the third rung — written exactly for the case where the first
+    /// two cannot answer — was never consulted, so a genuine approval minted
+    /// nothing at all.
+    ///
+    /// Both halves are asserted: the pending plan collects the marker, and the
+    /// stale spec collects nothing.
+    #[test]
+    fn a_stale_hint_never_shadows_the_pending_full_plan() {
+        // The hint is read from `.pipeline-states/` only when no env override
+        // is set; skip rather than flake on an ambient one.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+
+        // The spec the stale hint names is a Full spec long past PLAN…
+        seed_spec(root, "shipped-already", "full", "Execute");
+        let states = root.join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(states.join("shipped-already.json"), "{}").unwrap();
+        // …while the plan actually awaiting approval is another one entirely,
+        // with NO session binding — the shape the third rung exists for.
+        seed_spec(root, "epic", "full (wave plan)", "Plan");
+
+        assert_eq!(
+            current_spec(root_str).as_deref(),
+            Some("shipped-already"),
+            "the fixture only proves something if the stale hint really answers",
+        );
+        assert_eq!(
+            active_spec(root_str, &ask_input("s-unbound", json!({}))).as_deref(),
+            Some("epic"),
+            "the ladder walks past a hint that satisfies no fact-1 window",
+        );
+
+        let input = ask_input("s-unbound", json!({ "Approve?": "Aprovar e implementar agora" }));
+        ApprovalMarkerObserver.observe(&input, &ctx(root_str));
+        assert!(marker_exists(root, "epic"), "the pending plan is the one approved");
+        assert!(
+            !marker_exists(root, "shipped-already"),
+            "and the stale hint's spec collects nothing",
+        );
     }
 
     #[test]
