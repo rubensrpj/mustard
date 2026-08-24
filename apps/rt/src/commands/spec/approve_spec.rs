@@ -169,8 +169,10 @@ fn approval_sequence(wave_plan: bool, resume: bool) -> Vec<Step> {
 // hold: a Full plan is CLARIFIED (`<spec>/.clarified`, F6) and a real user has
 // APPROVED it (`<spec>/.approved-by-user`, T5). Each marker is born from an act the
 // model cannot author — the deliberate clarification finalize, and the user's own
-// `AskUserQuestion` / `ExitPlanMode` answer echoed in `tool_response`. A gate the
-// gated could open by running this very command is not a gate.
+// `AskUserQuestion` / `ExitPlanMode` answer echoed in `tool_response`, or the picker
+// form (`/mustard:spec {letter}r`, or `/mustard:spec r` inside the unit's own work
+// branch) submitted as the whole prompt. A gate the gated could open by running this
+// very command is not a gate.
 //
 // The two preconditions are checked in ONE pass so a single refusal names EVERY
 // unmet marker with its minting path — the pre-refactor gate exited on the first
@@ -539,9 +541,13 @@ fn unmet_gate_message(
     }
     if approval_missing {
         unmet.push(
-            "approval — no `<spec>/.approved-by-user`: the user accepts the plan in plan \
-             mode (ExitPlanMode) or answers the approval AskUserQuestion (fallback); the \
-             model cannot forge either"
+            "approval — no `<spec>/.approved-by-user`: THREE gestures mint it, and the model \
+             can forge none of them — (1) the user accepts the plan in plan mode \
+             (ExitPlanMode); (2) the user SELECTS the approval option of the approval \
+             AskUserQuestion (fallback) — a label carrying `approv`/`aprov`, since free text \
+             typed instead of selected mints nothing; (3) the user types `/mustard:spec \
+             {letter}r` — or `/mustard:spec r` inside the unit's own work branch, where the \
+             branch already names the unit — as the WHOLE prompt"
                 .to_string(),
         );
     }
@@ -1177,6 +1183,55 @@ mod tests {
             "must NOT name the met clarify marker: {msg}"
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
+    }
+
+    /// The refusal is read by someone who has just discovered their gesture did
+    /// not count, so it is the one place the WORKING gestures have to be written
+    /// down — all of them.
+    ///
+    /// It used to name two doors and there are three: the picker form
+    /// (`crate::hooks::observe::picker_approval_observer`) mints the same marker
+    /// from a prompt the user typed in full, and a refusal that omits it sends
+    /// the operator back through a plan-mode round trip they had a one-line way
+    /// out of. The two conditions the sibling doors decline on silently are
+    /// named too, because the refusal is where they become actionable: an
+    /// approval option whose label carries no `approv`/`aprov` stem, and an
+    /// answer typed as free text rather than selected.
+    #[test]
+    fn the_refusal_names_the_gestures_that_actually_mint() {
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated)
+            .expect("approval missing → a refusal");
+
+        // 1. Plan mode.
+        assert!(msg.contains("ExitPlanMode"), "the plan-mode gesture is unnamed: {msg}");
+        // 2. The modal — and the two conditions its recorder declines on.
+        assert!(msg.contains("AskUserQuestion"), "the modal gesture is unnamed: {msg}");
+        assert!(
+            msg.contains("SELECT") && msg.contains("free text"),
+            "the modal gesture must say that only a SELECTED option counts, or the \
+             operator retypes the same free text: {msg}"
+        );
+        assert!(
+            msg.contains("approv") && msg.contains("aprov"),
+            "the modal gesture must name the label stems its recorder matches: {msg}"
+        );
+        // 3. The picker — both spellings, under the whole-prompt rule that is the
+        //    only thing keeping the form unforgeable.
+        assert!(
+            msg.contains("/mustard:spec {letter}r") && msg.contains("/mustard:spec r"),
+            "the picker gestures are unnamed — the operator's one-line way out is \
+             missing from the message that explains what to do instead: {msg}"
+        );
+        assert!(
+            msg.contains("WHOLE prompt"),
+            "naming the picker form without its whole-prompt rule teaches a gesture \
+             that mints nothing when quoted inside a sentence: {msg}"
+        );
+        assert!(
+            msg.contains("work branch"),
+            "the bare `r` must carry the position it is valid in — outside a unit's \
+             branch it names no spec at all: {msg}"
+        );
     }
 
     #[test]
