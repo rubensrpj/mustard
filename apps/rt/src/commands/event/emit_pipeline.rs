@@ -1481,12 +1481,6 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
 /// `pipeline.wave.start` for a refused round — no wave started — but "started
 /// nothing" and "recorded nothing" are different promises, and only the first
 /// one was wanted. Fail-open, like every emit here.
-/// How long a recorded dispatch failure suppresses a re-emit of the same
-/// reason. MUST match the projection's own stale-failure cutoff
-/// (`event_projections::DISPATCH_FAILURE_TTL_MS`): a guard outliving the record
-/// it guards is a guard that silences the signal.
-const DISPATCH_FAILURE_FRESH_MS: i64 = 10 * 60 * 1_000;
-
 /// **Idempotent on `reason`**, mirroring the `started_waves` guard on
 /// [`emit_wave_start`]. `wave-advance` is re-invoked freely — the resume loop
 /// calls it after every round — and one authoring mistake must not grow a row
@@ -1499,12 +1493,13 @@ const DISPATCH_FAILURE_FRESH_MS: i64 = 10 * 60 * 1_000;
 /// they complete — keying on it let the same contradiction write a second row
 /// the moment its wording changed, which is the thing the guard exists to stop.
 ///
-/// **The guard expires with the record it protects.** The projection clears a
-/// dispatch failure older than its ten-minute window, so a guard that looked at
-/// the whole event history would suppress every re-emit after the first record
-/// aged out — and the stall would go back to being invisible, permanently,
-/// which is the exact loop this function exists to break. Only a record still
-/// INSIDE that window suppresses a re-emit.
+/// **The guard expires with the record it protects**, and reads the very same
+/// constant the projection clears by — a duplicated literal would let the two
+/// drift, and a guard outliving the record it guards is a guard that silences
+/// the signal. A guard over the whole event history would suppress every
+/// re-emit once the first record aged out, and the stall would go back to being
+/// invisible, permanently, which is the exact loop this function exists to
+/// break. Only a record still INSIDE that window suppresses a re-emit.
 ///
 /// The payload carries `at`. `render_dispatch_failure` reads `at` with no
 /// fallback to the event `ts`, so omitting it renders every failure as
@@ -1524,12 +1519,21 @@ pub(crate) fn emit_dispatch_failure(
         if e.payload.get("reason").and_then(|v| v.as_str()) != Some(reason) {
             return false;
         }
+        // Bounded at BOTH ends. An `at` in the future — clock skew between
+        // machines, a restored backup, a hand-edited NDJSON — yields a negative
+        // age, which an upper bound alone accepts as "fresh": the guard would
+        // then suppress every re-emit until real time caught up, while the
+        // projection replayed the phantom failure. Out-of-window in either
+        // direction means "does not suppress".
         e.payload
             .get("at")
             .and_then(|v| v.as_str())
             .or(Some(e.ts.as_str()))
             .and_then(mustard_core::time::parse_iso_millis)
-            .is_some_and(|at_ms| now_ms - at_ms <= DISPATCH_FAILURE_FRESH_MS)
+            .is_some_and(|at_ms| {
+                (0..=crate::commands::event::event_projections::DISPATCH_FAILURE_TTL_MS)
+                    .contains(&(now_ms - at_ms))
+            })
     });
     if already {
         return;

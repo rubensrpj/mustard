@@ -138,9 +138,10 @@ pub(crate) fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
 }
 
 /// Assemble the ordered dispatch items for `spec`, fail-open over a malformed
-/// DAG: a wave the level assignment could not place keeps its row and gets a
-/// level of its OWN, above every placed wave — so nothing is dropped and
-/// nothing is grouped with anything else.
+/// DAG: every wave keeps its row and gets a real level, a contradictory plan
+/// included. Waves on one dependency loop share a level — the plan states no
+/// order between them — so this face CAN group them with each other and with
+/// an unrelated independent wave. Nothing is ever dropped.
 ///
 /// Pure aside from filesystem reads; extracted so the tests can drive it with a
 /// temp spec dir. `pub(crate)` so `wave-advance` composes the same routing
@@ -197,10 +198,10 @@ pub(crate) fn build_plan_with_cycle(
         return (items, Vec::new());
     }
 
-    // 2. Topological level assignment over the wave-number DAG. A wave the
-    //    assignment could NOT place (a declared cycle) still gets a level — its
-    //    own, shared with nothing — and rides out in `cycle` so the dispatch
-    //    face can refuse the round instead of guessing an order.
+    // 2. Topological level assignment over the wave-number DAG. Every wave
+    //    gets a level, loops included; the waves ON a loop ride out in `cycle`
+    //    so the dispatch face can refuse the round instead of guessing an
+    //    order it was never given.
     let levels = assign_levels(&rows);
 
     // 3. Materialise each item, then sort by (level, wave) so independent waves
@@ -732,12 +733,18 @@ fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
         .collect();
 
     // 3. Peel the CONDENSED graph, which by construction has no loops left.
+    // Indexed with `get`, never `map[key]`. `boundary_gate` — a PreToolUse
+    // write hook — reaches this function, and the crate's standing rule is that
+    // a hook never panics: a panic there does not deny one write, it kills the
+    // session. The keys are total today; `unwrap_or` keeps that from being
+    // load-bearing.
+    let comp_of = |w: u32| component.get(&w).copied().unwrap_or(w);
     let mut comp_deps: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     for (&w, wave_deps) in &deps {
-        let from = component[&w];
+        let from = comp_of(w);
         let entry = comp_deps.entry(from).or_default();
-        for d in wave_deps {
-            let to = component[d];
+        for &d in wave_deps {
+            let to = comp_of(d);
             if to != from {
                 entry.insert(to);
             }
@@ -765,7 +772,7 @@ fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
 
     let level: BTreeMap<u32, u32> = known
         .iter()
-        .map(|&w| (w, comp_level.get(&component[&w]).copied().unwrap_or(0)))
+        .map(|&w| (w, comp_level.get(&comp_of(w)).copied().unwrap_or(0)))
         .collect();
     let cycle: Vec<u32> = known.iter().copied().filter(|&w| on_loop(w)).collect();
 
@@ -1022,6 +1029,24 @@ mod tests {
         assert!(levels.level[&4] > levels.level[&3], "what waits behind sits above");
     }
 
+    /// A cell holding ordinary PROSE declares nothing. This guards the reverted
+    /// bare-number scan: reading loose digits out of free text turned "nada,
+    /// ver os 2 anexos" into an edge on wave 2, and two such cells refused a
+    /// plan that had no contradiction at all.
+    #[test]
+    fn prose_in_the_depends_cell_declares_no_edge() {
+        let plan = "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | nada (ver os 2 anexos) | base |
+| 2 | [[wave-2-cli]] | cli | nenhuma real, so a 1 | cli |
+";
+        let rows = parse_wave_plan_table(plan);
+        assert!(rows[0].depends_on.is_empty());
+        assert!(rows[1].depends_on.is_empty());
+        assert!(assign_levels(&rows).cycle.is_empty(), "no phantom cycle");
+    }
+
     /// A wave sitting BETWEEN two loops is on neither, and must not be named.
     ///
     /// This is what "unplaced" could never express. Wave 4 depends on the 5↔6
@@ -1058,16 +1083,37 @@ mod tests {
         let levels = assign_levels(&rows);
         for row in &rows {
             for dep in &row.depends_on {
-                if levels.cycle.contains(&row.wave) && levels.cycle.contains(dep) {
-                    continue; // same loop: no order to respect
+                // Skip only a pair that shares a LEVEL, which for this fixture
+                // means the same loop. Skipping on "both are in `cycle`" would
+                // wave through a real violation between two DISTINCT loops,
+                // since `cycle` pools every loop's members together.
+                if levels.level[&row.wave] == levels.level[dep] {
+                    continue;
                 }
                 assert!(
                     levels.level[&row.wave] > levels.level[dep],
-                    "wave {} depends on {dep} but sits at or below it",
+                    "wave {} depends on {dep} but sits below it",
                     row.wave,
                 );
             }
         }
+    }
+
+    /// Ordering holds ACROSS two distinct loops: loop A depends on loop B, so
+    /// every member of A sits above every member of B.
+    #[test]
+    fn levels_order_two_distinct_loops() {
+        let rows = vec![
+            WaveRow { wave: 2, role: "a".into(), depends_on: vec![3] },
+            WaveRow { wave: 3, role: "b".into(), depends_on: vec![2, 5] },
+            WaveRow { wave: 5, role: "c".into(), depends_on: vec![6] },
+            WaveRow { wave: 6, role: "d".into(), depends_on: vec![5] },
+        ];
+        let levels = assign_levels(&rows);
+        assert_eq!(levels.cycle, vec![2, 3, 5, 6], "two loops, all four members");
+        assert_eq!(levels.level[&5], levels.level[&6], "loop B is one level");
+        assert_eq!(levels.level[&2], levels.level[&3], "loop A is one level");
+        assert!(levels.level[&2] > levels.level[&5], "A depends on B, so A sits above");
     }
 
     /// An out-of-plan dependency is NOT a contradiction: wave 2 links a wave

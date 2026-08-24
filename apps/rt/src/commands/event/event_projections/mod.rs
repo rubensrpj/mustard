@@ -236,7 +236,7 @@ pub struct PipelineStateView {
 /// forever. Retiring a durable failure needs a clearing signal (a later
 /// successful dispatch supersedes it), not an exemption; until that exists, the
 /// ten-minute window is the honest behaviour.
-const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
+pub(crate) const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
 
 /// Derive a [`PipelineStateView`] for `spec` by folding a pre-fetched event
 /// slice. This is the canonical implementation used by all new call sites.
