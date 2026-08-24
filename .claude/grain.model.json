@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 479,
-      "loc": 208187
+      "loc": 208727
     },
     {
       "language": "tsx",
@@ -3025,7 +3025,7 @@
     {
       "path": "packages/core/src/domain/model/event.rs",
       "language": "rust",
-      "loc": 537,
+      "loc": 548,
       "imports": [
         "serde::{Deserialize, Serialize}",
         "serde_json::Value",
@@ -3144,204 +3144,186 @@
         {
           "kind": "struct",
           "name": "PipelineScopePayload",
-          "line": 171,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "scope",
-          "line": 173,
+          "line": 184,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "lang",
-          "line": 176,
+          "line": 187,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "model",
-          "line": 179,
+          "line": 190,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "is_wave_plan",
-          "line": 186,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "total_waves",
-          "line": 192,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineStatusPayload",
           "line": 197,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "total_waves",
+          "line": 203,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineStatusPayload",
+          "line": 208,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "from",
-          "line": 200,
+          "line": 211,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "to",
-          "line": 202,
+          "line": 213,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PipelineTaskDispatchPayload",
-          "line": 207,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "wave",
-          "line": 210,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "name",
-          "line": 212,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "agent",
-          "line": 215,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "role",
           "line": 218,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "files",
+          "name": "wave",
           "line": 221,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "retry_count",
-          "line": 224,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineTaskCompletePayload",
-          "line": 229,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "wave",
-          "line": 232,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
           "name": "name",
-          "line": 234,
+          "line": 223,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "agent",
-          "line": 237,
+          "line": 226,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "duration_ms",
+          "name": "role",
+          "line": 229,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "files",
+          "line": 232,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "retry_count",
+          "line": 235,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineTaskCompletePayload",
           "line": 240,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "files_modified",
+          "name": "wave",
           "line": 243,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "decisions",
-          "line": 246,
+          "name": "name",
+          "line": 245,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "escalation",
-          "line": 249,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineWaveCompletePayload",
-          "line": 254,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "wave",
-          "line": 256,
+          "name": "agent",
+          "line": 248,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "duration_ms",
-          "line": 259,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineDispatchFailurePayload",
-          "line": 264,
+          "line": 251,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "agent_type",
+          "name": "files_modified",
+          "line": 254,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "decisions",
+          "line": 257,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "escalation",
+          "line": 260,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineWaveCompletePayload",
+          "line": 265,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "wave",
           "line": 267,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "description",
+          "name": "duration_ms",
           "line": 270,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineDispatchFailurePayload",
+          "line": 275,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "agent_type",
+          "line": 278,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "description",
+          "line": 281,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "prompt",
-          "line": 273,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 276,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "at",
-          "line": 279,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelinePausePayload",
           "line": 284,
           "supertypes": []
         },
@@ -3353,332 +3335,350 @@
         },
         {
           "kind": "field",
-          "name": "next_action",
+          "name": "at",
           "line": 290,
           "supertypes": []
         },
         {
           "kind": "struct",
-          "name": "PipelineResumeModePayload",
+          "name": "PipelinePausePayload",
           "line": 295,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "mode",
-          "line": 297,
+          "name": "reason",
+          "line": 298,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "escalation",
-          "line": 300,
+          "name": "next_action",
+          "line": 301,
           "supertypes": []
         },
         {
           "kind": "struct",
-          "name": "PipelineCompletePayload",
+          "name": "PipelineResumeModePayload",
+          "line": 306,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "mode",
           "line": 308,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "closed_at",
+          "name": "escalation",
           "line": 311,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineCompletePayload",
+          "line": 319,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "closed_at",
+          "line": 322,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "affected_files",
-          "line": 314,
+          "line": 325,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "from_value_lenient",
-          "line": 331,
+          "line": 342,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PipelineAmendOpenPayload",
-          "line": 344,
+          "line": 355,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec_id",
-          "line": 346,
+          "line": 357,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "session_id",
-          "line": 348,
+          "line": 359,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "closed_at",
-          "line": 350,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "pipeline_file_set",
-          "line": 352,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "subprojects",
-          "line": 354,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineAmendActivityPayload",
           "line": 361,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "spec_id",
+          "name": "pipeline_file_set",
           "line": 363,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "session_id",
+          "name": "subprojects",
           "line": 365,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineAmendActivityPayload",
+          "line": 372,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec_id",
+          "line": 374,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "session_id",
+          "line": 376,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "tool",
-          "line": 367,
+          "line": 378,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "file_path",
-          "line": 369,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "at",
-          "line": 372,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineAmendIntentPayload",
           "line": 380,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "at",
+          "line": 383,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineAmendIntentPayload",
+          "line": 391,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "spec_id",
-          "line": 382,
+          "line": 393,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "session_id",
-          "line": 384,
+          "line": 395,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "prompt_text",
-          "line": 386,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "at",
-          "line": 389,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PipelineAmendDriftPayload",
           "line": 397,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "at",
+          "line": 400,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PipelineAmendDriftPayload",
+          "line": 408,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "spec_id",
-          "line": 399,
+          "line": 410,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "session_id",
-          "line": 401,
+          "line": 412,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "unrelated_paths",
-          "line": 403,
+          "line": 414,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "threshold",
-          "line": 406,
+          "line": 417,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PipelineAmendClosePayload",
-          "line": 413,
+          "line": 424,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec_id",
-          "line": 415,
+          "line": 426,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "session_id",
-          "line": 417,
+          "line": 428,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "status",
-          "line": 419,
+          "line": 430,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "closed_at",
-          "line": 422,
+          "line": 433,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "build_verde",
-          "line": 425,
+          "line": 436,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "drift_emitted",
-          "line": 428,
+          "line": 439,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "ChecklistItemMarkedPayload",
-          "line": 440,
+          "line": 451,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 442,
+          "line": 453,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "wave",
-          "line": 445,
+          "line": 456,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "item",
-          "line": 447,
+          "line": 458,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "path",
-          "line": 450,
+          "line": 461,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "ChecklistItemDroppedPayload",
-          "line": 460,
+          "line": 471,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 462,
+          "line": 473,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "wave",
-          "line": 465,
+          "line": 476,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "item",
-          "line": 467,
+          "line": 478,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "path",
-          "line": 470,
+          "line": 481,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 472,
+          "line": 483,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "deserializes_real_tool_use_event",
-          "line": 482,
+          "line": 493,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_field_is_optional",
-          "line": 496,
+          "line": 507,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_complete_payload_lenient_accepts_null",
-          "line": 508,
+          "line": 519,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_complete_payload_lenient_reads_object",
-          "line": 517,
+          "line": 528,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_complete_payload_lenient_rejects_wrong_type",
-          "line": 530,
+          "line": 541,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "checklist_item_marked_payload_round_trips",
-          "line": 538,
+          "line": 549,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "checklist_item_marked_event_parses_in_envelope",
-          "line": 564,
+          "line": 575,
           "supertypes": []
         }
       ],
@@ -24084,12 +24084,13 @@
     {
       "path": "apps/rt/src/commands/pipeline/wave_advance.rs",
       "language": "rust",
-      "loc": 1284,
+      "loc": 1677,
       "imports": [
         "crate::commands::agent::agent_prompt_render::{self, RenderMode}",
         "crate::commands::pipeline::dispatch_plan",
         "crate::commands::review::dependency_precheck::{self, VERDICT_KEY}",
-        "mustard_core::domain::model::event::{\n    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_START,\n}",
+        "crate::shared::gate_mode::{resolve_mode, GateMode}",
+        "mustard_core::domain::model::event::{\n    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_RETRY,\n    EVENT_PIPELINE_WAVE_START,\n}",
         "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}",
         "mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION}",
         "mustard_core::io::claude_paths::ClaudePaths",
@@ -24107,319 +24108,391 @@
         {
           "kind": "struct",
           "name": "AdvanceItem",
-          "line": 118,
+          "line": 138,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "wave",
-          "line": 120,
+          "line": 140,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "role",
-          "line": 122,
+          "line": 142,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "subproject",
-          "line": 124,
+          "line": 144,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "subagent_type",
-          "line": 127,
+          "line": 147,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "prompt",
-          "line": 132,
+          "line": 152,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "precheck",
-          "line": 145,
+          "line": 165,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "own_git_root",
-          "line": 152,
+          "line": 172,
           "supertypes": []
         },
         {
           "kind": "enum",
           "name": "AdvanceRefusal",
-          "line": 162,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "CyclicDependency",
-          "line": 173,
+          "line": 193,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_false",
-          "line": 179,
+          "line": 199,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "run",
-          "line": 184,
+          "name": "retry_mode",
+          "line": 220,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "advance",
-          "line": 203,
+          "name": "retry_ceiling",
+          "line": 236,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "started_waves",
+          "name": "parse_retry_ceiling",
+          "line": 246,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "retry_counts",
+          "line": 260,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "waves_at_ceiling",
+          "line": 288,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pulls_at_ceiling",
+          "line": 308,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "escalation_item",
           "line": 322,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "run",
+          "line": 363,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "advance",
+          "line": 382,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "started_waves",
+          "line": 562,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "spec_events",
-          "line": 339,
+          "line": 579,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "completed_waves",
-          "line": 357,
+          "line": 597,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approved_subprojects",
-          "line": 381,
+          "line": 621,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "review_round",
-          "line": 423,
+          "line": 663,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_precheck",
-          "line": 469,
+          "line": 709,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "lean_precheck",
-          "line": 502,
+          "line": 742,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "round",
-          "line": 545,
+          "line": 785,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "anchor",
-          "line": 551,
+          "line": 791,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_waves",
-          "line": 558,
+          "line": 798,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_three_waves",
-          "line": 587,
+          "line": 827,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_cyclic_plan",
-          "line": 593,
+          "line": 833,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "declared_cycle_refuses_the_round",
-          "line": 601,
+          "line": 841,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "refused_round_emits_no_wave_start",
-          "line": 622,
+          "line": 862,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "refused_round_records_a_dispatch_failure",
-          "line": 647,
+          "line": 887,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "completed_cycle_does_not_block_a_clean_pending_wave",
-          "line": 673,
+          "line": 913,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dispatch_failure_is_recorded_once_not_per_invocation",
-          "line": 692,
+          "line": 932,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "three_wave_loop_with_one_member_complete_refuses_whole",
-          "line": 717,
+          "line": 957,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_behind_a_completed_cycle_dispatches",
-          "line": 750,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "loop_with_a_pending_member_still_refuses",
-          "line": 788,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "dispatch_failure_is_recorded_again_once_the_old_one_expired",
-          "line": 806,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "completed_cyclic_spec_still_reaches_its_review_round",
-          "line": 843,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "complete_wave",
-          "line": 858,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stub_body",
-          "line": 879,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "composite_wave_advance_returns_first_level_with_prompt_stubs",
-          "line": 893,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "impl_items_carry_inline_precheck_review_items_do_not",
-          "line": 929,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "record_review",
-          "line": 956,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "composite_wave_advance_progresses_levels_and_drains",
           "line": 990,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "loop_with_a_pending_member_still_refuses",
+          "line": 1028,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "dispatch_failure_is_recorded_again_once_the_old_one_expired",
+          "line": 1046,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "completed_cyclic_spec_still_reaches_its_review_round",
+          "line": 1083,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "complete_wave",
+          "line": 1098,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "retry_wave",
+          "line": 1119,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "retry_ceiling_pulls_wave_from_round",
+          "line": 1146,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ceiling_mode_governs_looking_and_pulling",
+          "line": 1222,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "retry_ceiling_never_resolves_to_zero",
+          "line": 1256,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "redispatch_of_a_started_wave_is_counted_as_a_retry",
+          "line": 1272,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stub_body",
+          "line": 1301,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "composite_wave_advance_returns_first_level_with_prompt_stubs",
+          "line": 1315,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "impl_items_carry_inline_precheck_review_items_do_not",
+          "line": 1351,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "record_review",
+          "line": 1378,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "composite_wave_advance_progresses_levels_and_drains",
+          "line": 1412,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "rejected_review_keeps_round_open_until_approved",
-          "line": 1026,
+          "line": 1448,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "count_wave_start",
-          "line": 1051,
+          "line": 1473,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "advance_emits_wave_start_and_flips_wave_meta_to_execute",
-          "line": 1063,
+          "line": 1485,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "composite_wave_advance_unknown_spec_degrades_empty",
-          "line": 1105,
+          "line": 1527,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "composite_wave_advance_single_spec_renders_root",
-          "line": 1114,
+          "line": 1536,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_three_waves_with_subprojects",
-          "line": 1140,
+          "line": 1562,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_advance_review_round_emitted_after_all_impl_complete",
-          "line": 1173,
+          "line": 1595,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_advance_review_round_not_reemitted_once_reviewed",
-          "line": 1208,
+          "line": 1630,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_advance_review_round_covers_single_spec",
-          "line": 1237,
+          "line": 1659,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "advance_item_carries_own_git_root_for_nested_repo",
-          "line": 1265,
+          "line": 1687,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_one_wave",
-          "line": 1300,
+          "line": 1722,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dependency_precheck_skip_is_surfaced",
-          "line": 1329,
+          "line": 1751,
           "supertypes": []
         }
       ]
@@ -44000,7 +44073,7 @@
     {
       "path": "apps/rt/src/commands/event/emit_pipeline.rs",
       "language": "rust",
-      "loc": 2624,
+      "loc": 2657,
       "imports": [
         "crate::commands::event::work_branch::compute_work_branch",
         "crate::commands::spec::spec_slug",
@@ -44011,7 +44084,7 @@
         "mustard_core::domain::model::event::PipelineStatusPayload",
         "mustard_core::domain::model::event::PipelineTaskCompletePayload",
         "mustard_core::domain::model::event::SCHEMA_VERSION",
-        "mustard_core::domain::model::event::{\n    Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,\n    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_KIND,\n    EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,\n    EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,\n    EVENT_PIPELINE_WAVE_START,\n}",
+        "mustard_core::domain::model::event::{\n    Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,\n    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_KIND,\n    EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,\n    EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,\n    EVENT_PIPELINE_WAVE_RETRY, EVENT_PIPELINE_WAVE_START,\n}",
         "mustard_core::io::claude_paths::ClaudePaths",
         "mustard_core::io::fs",
         "mustard_core::time::now_iso8601",
@@ -44344,272 +44417,278 @@
         },
         {
           "kind": "function",
+          "name": "emit_wave_retry",
+          "line": 1486,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "emit_dispatch_failure",
-          "line": 1507,
+          "line": 1541,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_parent_progress",
-          "line": 1582,
+          "line": 1616,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_final_wave",
-          "line": 1687,
+          "line": 1721,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_pipeline_complete",
-          "line": 1736,
+          "line": 1770,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_omitted_type_derives_from_the_payload_kind_or_refuses",
-          "line": 1774,
+          "line": 1808,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_base_that_admits_hotfix_refuses_to_derive",
-          "line": 1798,
+          "line": 1832,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "work_type_in_kind_flag_gets_payload_hint",
-          "line": 1806,
+          "line": 1840,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_base_gate_mints_the_canonical_slug",
-          "line": 1831,
+          "line": 1865,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "operator_name_wins_over_the_derivation",
-          "line": 1902,
+          "line": 1936,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "known_kinds_list_covers_legacy_and_new_kinds",
-          "line": 1978,
+          "line": 2012,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_maps_legacy_status_terminal_to_outcome",
-          "line": 2010,
+          "line": 2044,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_maps_legacy_phase_to_stage",
-          "line": 2021,
+          "line": 2055,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_returns_none_for_new_kinds",
-          "line": 2030,
+          "line": 2064,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tag_legacy_alias_sets_flag_on_object",
-          "line": 2038,
+          "line": 2072,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "valid_json_payload_parses",
-          "line": 2045,
+          "line": 2079,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "null_payload_when_none",
-          "line": 2052,
+          "line": 2086,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_payload_tolerant_recovers_powershell_escaped_json",
-          "line": 2068,
+          "line": 2102,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_routed",
-          "line": 2093,
+          "line": 2127,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "status_wave_failed_emits_the_wave_failed_twin",
-          "line": 2112,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "wave_failed_twin_prefers_payload_wave_and_skips_non_failures",
           "line": 2146,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "wave_failed_twin_prefers_payload_wave_and_skips_non_failures",
+          "line": 2180,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "each_kind_appended_once_with_correct_event_name",
-          "line": 2181,
+          "line": 2215,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_scope_payload_round_trips",
-          "line": 2209,
+          "line": 2243,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_task_complete_payload_round_trips",
-          "line": 2236,
+          "line": 2270,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "optional_fields_absent_in_minimal_payload",
-          "line": 2265,
+          "line": 2299,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_no_events_dir",
-          "line": 2282,
+          "line": 2316,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_requires_overall_pass",
-          "line": 2291,
+          "line": 2325,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_only_fail",
-          "line": 2312,
+          "line": 2346,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_overall_skip",
-          "line": 2326,
+          "line": 2360,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_uses_most_recent_event",
-          "line": 2341,
+          "line": 2375,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_error_does_not_propagate_as_nonzero",
-          "line": 2379,
+          "line": 2413,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_bumps_parent_progress",
-          "line": 2403,
+          "line": 2437,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reconcile_wave_checklist_marks_existing_files_only",
-          "line": 2451,
+          "line": 2485,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_advances_parent_stage_to_execute",
-          "line": 2477,
+          "line": 2511,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_does_not_regress_later_stage",
-          "line": 2502,
+          "line": 2536,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_start_advances_parent_stage_to_execute",
-          "line": 2528,
+          "line": 2562,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "final_wave_auto_finalizes_when_no_acceptance_criteria",
-          "line": 2565,
+          "line": 2599,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "final_wave_awaits_close_when_acceptance_criteria_present",
-          "line": 2607,
+          "line": 2641,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_spec_meta",
-          "line": 2647,
+          "line": 2681,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stage_transition_patches_meta_stage",
-          "line": 2658,
+          "line": 2692,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "outcome_transition_pins_close_on_terminal",
-          "line": 2688,
+          "line": 2722,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_sets_outcome_completed_and_stage_close",
-          "line": 2713,
+          "line": 2747,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patch_meta_complete_noop_when_spec_missing",
-          "line": 2736,
+          "line": 2770,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "projected_status",
-          "line": 2743,
+          "line": 2777,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_also_emits_completed_status_when_not_terminal",
-          "line": 2757,
+          "line": 2791,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_status_emit_is_idempotent_when_already_completed",
-          "line": 2776,
+          "line": 2810,
           "supertypes": []
         }
       ],
@@ -54364,11 +54443,12 @@
     {
       "path": "apps/rt/src/hooks/task/stop_gate.rs",
       "language": "rust",
-      "loc": 405,
+      "loc": 488,
       "imports": [
         "crate::commands::review::qa_run::{run_for_stop_gate, spec_has_executable_acs, QaRunOptions}",
         "crate::shared::context::bind_session_spec",
         "crate::shared::context::{\n    approval_marker_path, current_spec, project_config_cached, spec_for_session,\n    stop_gate_counter_path,\n}",
+        "mustard_core::ClaudePaths",
         "mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict}",
         "mustard_core::io::fs",
         "mustard_core::platform::error::Error",
@@ -54383,7 +54463,7 @@
         {
           "kind": "struct",
           "name": "StopGate",
-          "line": 83,
+          "line": 84,
           "supertypes": [
             "Check"
           ]
@@ -54391,115 +54471,139 @@
         {
           "kind": "method",
           "name": "evaluate",
-          "line": 86,
+          "line": 87,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_gated_spec",
-          "line": 156,
+          "line": 157,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "meta_stage_is_plan",
+          "line": 199,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stop_hook_active",
-          "line": 176,
+          "line": 211,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_block_count",
-          "line": 186,
+          "line": 221,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_block_count",
-          "line": 195,
+          "line": 230,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reset_block_count",
-          "line": 207,
+          "line": 242,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compose_block_reason",
-          "line": 216,
+          "line": 251,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ctx",
-          "line": 237,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stop_input",
-          "line": 245,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "seed_spec",
-          "line": 255,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "approve",
-          "line": 266,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "bind",
           "line": 272,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "stop_gate_allows_when_all_acs_pass",
-          "line": 279,
+          "name": "stop_input",
+          "line": 280,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "stop_gate_blocks_and_names_the_failing_ac",
-          "line": 300,
+          "name": "seed_spec",
+          "line": 290,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "stop_gate_is_inert_without_an_approved_spec",
+          "name": "approve",
+          "line": 301,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "bind",
+          "line": 307,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "seed_meta",
+          "line": 314,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop_gate_releases_a_spec_still_in_plan",
           "line": 325,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "stop_gate_still_blocks_once_the_spec_leaves_plan",
+          "line": 351,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop_gate_allows_when_all_acs_pass",
+          "line": 368,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop_gate_blocks_and_names_the_failing_ac",
+          "line": 389,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop_gate_is_inert_without_an_approved_spec",
+          "line": 414,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "stop_gate_ignores_subagent_stops",
-          "line": 348,
+          "line": 437,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stop_gate_own_counter_caps_the_loop",
-          "line": 365,
+          "line": 454,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stop_gate_verdict_matches_qa_run",
-          "line": 394,
+          "line": 483,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stop_gate_reason_comes_from_i18n",
-          "line": 417,
+          "line": 506,
           "supertypes": []
         }
       ],
@@ -64108,7 +64212,7 @@
           "supertypes": []
         }
       ],
-      "fan_in": 3
+      "fan_in": 4
     },
     {
       "path": "apps/rt/src/shared/branch_state.rs",
@@ -65475,13 +65579,13 @@
     {
       "path": "apps/rt/src/shared/events/route.rs",
       "language": "rust",
-      "loc": 345,
+      "loc": 365,
       "imports": [
         "crate::shared::context::{\n    bind_session_spec, current_spec, session_id, spec_for_session,\n}",
         "crate::shared::events::writer_ndjson",
         "mustard_core::ClaudePaths",
         "mustard_core::domain::model::event::HarnessEvent",
-        "mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION}",
+        "mustard_core::domain::model::event::{\n        Actor, ActorKind, EVENT_PIPELINE_WAVE_RETRY, SCHEMA_VERSION,\n    }",
         "serde_json::json",
         "std::path::Path",
         "super::*",
@@ -65516,49 +65620,55 @@
         {
           "kind": "function",
           "name": "event",
-          "line": 221,
+          "line": 223,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "event_for_session",
-          "line": 225,
+          "line": 227,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classifies_known_event_families",
-          "line": 243,
+          "line": 245,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "routes_tool_event_to_ndjson_under_spec_dir",
-          "line": 263,
+          "line": 265,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "routes_pipeline_event_to_ndjson",
-          "line": 280,
+          "line": 282,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tool_use_inherits_spec_from_session_pipeline_scope",
-          "line": 300,
+          "line": 302,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify_covers_remaining_families",
-          "line": 362,
+          "line": 364,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify_analyze_family_as_analyze",
-          "line": 372,
+          "line": 374,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "retry_event_is_not_routed_as_friction",
+          "line": 387,
           "supertypes": []
         }
       ],
@@ -95606,7 +95716,7 @@
   ],
   "graph": {
     "nodes": 664,
-    "edges": 524,
+    "edges": 525,
     "cyclic": true,
     "top_fan_in": [
       {
@@ -95730,6 +95840,10 @@
         "degree": 4
       },
       {
+        "module": "apps/rt/src/shared/gate_mode.rs",
+        "degree": 4
+      },
+      {
         "module": "packages/core/src/domain/economy/model.rs",
         "degree": 4
       },
@@ -95783,10 +95897,6 @@
       },
       {
         "module": "apps/rt/src/hooks/task/subagent_inject.rs",
-        "degree": 3
-      },
-      {
-        "module": "apps/rt/src/shared/gate_mode.rs",
         "degree": 3
       },
       {
@@ -95952,6 +96062,10 @@
         "degree": 4
       },
       {
+        "module": "apps/rt/src/commands/pipeline/wave_advance.rs",
+        "degree": 4
+      },
+      {
         "module": "apps/rt/src/commands/spec/ac_add.rs",
         "degree": 4
       },
@@ -96013,10 +96127,6 @@
       },
       {
         "module": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
-        "degree": 3
-      },
-      {
-        "module": "apps/rt/src/commands/pipeline/wave_advance.rs",
         "degree": 3
       },
       {
@@ -96219,6 +96329,11 @@
         "breadth": 4
       },
       {
+        "module": "apps/rt/src/commands/pipeline/wave_advance.rs",
+        "fan_out": 4,
+        "breadth": 4
+      },
+      {
         "module": "packages/core/src/view/projection/workspace.rs",
         "fan_out": 4,
         "breadth": 4
@@ -96285,11 +96400,6 @@
       },
       {
         "module": "apps/rt/src/commands/pipeline/close_orchestrate.rs",
-        "fan_out": 3,
-        "breadth": 3
-      },
-      {
-        "module": "apps/rt/src/commands/pipeline/wave_advance.rs",
         "fan_out": 3,
         "breadth": 3
       },
@@ -98801,17 +98911,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Kind slice",
       "roles": [
         "(core)",
-        "State"
+        "Kind"
       ],
       "optional_roles": [
         "Ac",
         "Function",
-        "Kind",
         "Mode",
         "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -98840,12 +98950,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Kind** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -98917,7 +99027,7 @@
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",

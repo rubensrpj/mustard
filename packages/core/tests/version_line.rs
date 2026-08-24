@@ -333,33 +333,228 @@ fn forge_lock(dir: &Path, manifest: &str, packages: &[(&str, &str, bool)]) -> Pa
     lock
 }
 
+/// The tokens the control question echoes, and the status it leaves behind.
+///
+/// They are consts because `shell_control` BUILDS the question out of them and
+/// `answer_is_a_shell` reads the answer AGAINST them — one fact with one
+/// spelling. Tightened in one place only, the check would reject every
+/// candidate on every platform and blame the runner for a two-line edit.
+const SHELL_PROBE_OUT: &str = "shell-speaks";
+const SHELL_PROBE_ERR: &str = "shell-answers";
+const SHELL_PROBE_EXIT: i32 = 7;
+
+/// The control question, asked about the very file the candidate will be told
+/// to run.
+///
+/// Two properties are tested at once, and the second is why the path belongs in
+/// the question at all. A candidate must RUN our text: a launcher that never
+/// got that far still exits non-zero, which by status alone looks exactly like
+/// a guard doing its job. And it must see the filesystem the way THIS process
+/// spells it: a WSL bash with a distribution installed answers the first half
+/// perfectly and still cannot open `C:/…/check-lock-pins.sh`, because that path
+/// means nothing inside its own root. Asking only "are you a shell" would hand
+/// the guard to it and land back on the empty diagnosis this file refuses.
+fn shell_control() -> String {
+    // `$0`, not the path spelled into the text. Interpolating it would break on
+    // a checkout whose path carries an apostrophe — the quote would close early,
+    // bash would die on an unterminated string, and EVERY candidate would be
+    // rejected on a machine with a perfectly good shell. The diagnosis would
+    // then name the machine while the real cause was the path.
+    format!(
+        "test -f \"$0\" || exit 1; echo {SHELL_PROBE_OUT}; \
+         echo {SHELL_PROBE_ERR} 1>&2; exit {SHELL_PROBE_EXIT}"
+    )
+}
+
+/// Did a program that ran our text, and can read our files, answer this?
+///
+/// Split out from the spawn on purpose, so a measured failure can be replayed
+/// as three plain values — see `a_stub_that_only_speaks_on_stdout_is_not_a_shell`.
+/// Each channel is asked to CONTAIN its token rather than to equal it: a
+/// non-interactive bash sources whatever `BASH_ENV` names, and an image whose
+/// profile prints a banner is still a perfectly usable shell.
+fn answer_is_a_shell(code: Option<i32>, stdout: &str, stderr: &str) -> bool {
+    code == Some(SHELL_PROBE_EXIT)
+        && stdout.contains(SHELL_PROBE_OUT)
+        && stderr.contains(SHELL_PROBE_ERR)
+}
+
+/// Ask one candidate the control question about `script`.
+fn speaks_like_a_shell(candidate: &Path, script: &str) -> bool {
+    match Command::new(candidate).arg("-c").arg(shell_control()).arg(script).output() {
+        Ok(out) => answer_is_a_shell(
+            out.status.code(),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Every `bash.exe` sitting beside a `git.exe` this PATH carries.
+///
+/// The anchor `find_posix_shell` already uses in `apps/rt/src/util/platform.rs`:
+/// a Git install puts `git.exe` under `<root>/cmd` and its shell under
+/// `<root>/bin`, so the shell is found WHEREVER the install lives — a per-user
+/// setup (`winget`, `scoop`, a non-elevated installer) included, which a fixed
+/// `Program Files` sweep misses entirely.
+///
+/// It is a SECOND copy of that walk, and the dependency does not excuse it:
+/// `apps/rt` already depends on `mustard-core` (`apps/rt/Cargo.toml:34`), so
+/// the resolver could live here and be consumed there. The two have already
+/// drifted — that one checks `bin/bash.exe` only, this one also `usr/bin`, and
+/// that one trusts spawnability where this one asks the control question.
+/// Unifying them moves code across two crates and is its own unit of work, not
+/// a line of this one; naming the debt is what this comment is for.
+fn git_bash_beside_git_on_path() -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for dir in std::env::split_paths(&path) {
+        if !dir.join("git.exe").is_file() {
+            continue;
+        }
+        let Some(root) = dir.parent() else { continue };
+        for relative in ["bin/bash.exe", "usr/bin/bash.exe"] {
+            let bash = root.join(relative);
+            if bash.is_file() {
+                found.push(bash);
+            }
+        }
+    }
+    found
+}
+
+/// Where a real `bash` may be found, best first.
+///
+/// On Windows the PATH answer comes LAST, and that ordering is the whole point:
+/// `bash` there resolves to `C:\Windows\System32\bash.exe`, the Windows
+/// Subsystem for Linux launcher, which is not a shell at all. Elsewhere PATH
+/// comes FIRST — it is the machine's own answer and deserves to win — with the
+/// usual absolute locations behind it, because a stripped PATH is not the same
+/// thing as a machine without bash.
+fn shell_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(windows) {
+        candidates.extend(git_bash_beside_git_on_path());
+        let roots = [
+            std::env::var("ProgramFiles").unwrap_or_else(|_| "C:/Program Files".to_string()),
+            std::env::var("ProgramFiles(x86)")
+                .unwrap_or_else(|_| "C:/Program Files (x86)".to_string()),
+            std::env::var("LOCALAPPDATA")
+                .map(|dir| format!("{dir}/Programs"))
+                .unwrap_or_default(),
+        ];
+        for root in roots.iter().filter(|root| !root.is_empty()) {
+            candidates.push(PathBuf::from(format!("{root}/Git/bin/bash.exe")));
+            candidates.push(PathBuf::from(format!("{root}/Git/usr/bin/bash.exe")));
+        }
+        candidates.push(PathBuf::from("bash"));
+    } else {
+        candidates.push(PathBuf::from("bash"));
+        for absolute in ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"] {
+            candidates.push(PathBuf::from(absolute));
+        }
+    }
+    candidates
+}
+
+/// Resolved once per process. Every call names the same script, so the answer
+/// cannot change during a run — and the probe spawns up to a handful of
+/// processes, which is not a thing to repeat five times.
+static SHELL: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+/// A `bash` that is really a shell AND can read `script`, or `None` when this
+/// machine has none.
+///
+/// A candidate is never trusted for being SPAWNABLE — it is asked. Measured on
+/// run 32735943086: on `windows-latest` the PATH `bash` is the WSL launcher,
+/// and with no distribution installed it runs nothing. It prints its own
+/// complaint in UTF-16 to STDOUT and exits 1, so read by status alone it is
+/// indistinguishable from a guard that legitimately rejected a lock. The three
+/// `bump_guard_*` tests only caught it because they also assert on the
+/// diagnosis TEXT, which came back empty — and an empty message is exactly the
+/// failure this file's own guards exist to refuse.
+fn shell(script: &str) -> Option<&'static PathBuf> {
+    SHELL
+        .get_or_init(|| {
+            shell_candidates().into_iter().find(|candidate| speaks_like_a_shell(candidate, script))
+        })
+        .as_ref()
+}
+
+/// Does this `CI` value mean "yes, this is a continuous-integration run"?
+///
+/// Presence is NOT the question. `CI=false`, `CI=no`, `CI=off`, `CI=0` and an
+/// empty `CI` are all how a person or a base image says "not CI" — the list is
+/// the spellings, not one of them — and reading any as CI would
+/// turn an honest local skip into a hard failure that blames a runner the
+/// developer is not sitting on. This is the only `CI` probe in the tree, so
+/// this reading is the whole contract rather than a copy of someone else's.
+fn ci_value_means_yes(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "false" | "0" | "no" | "off" | "n")
+        }
+        None => false,
+    }
+}
+
+/// Answer `None` — quietly off CI, loudly on it.
+///
+/// A skip is missing evidence. On a machine that may genuinely have no shell
+/// that is honest; on CI it is missing evidence about a runner we KNOW ships
+/// one, so there it is a finding. Left silent, any of these doors would turn
+/// the fix into its own hiding place: `cargo test` swallows a passing test's
+/// output, so the three guards would report `ok` having run nothing, on exactly
+/// the platform that produced the defect.
+///
+/// Scope, stated rather than implied: this covers the three doors of
+/// `run_lock_guard`. The older skips elsewhere in this file — an absent
+/// workspace root, an unreadable dashboard lock, an absent workflow — are
+/// untouched here and remain quiet on CI.
+fn skip_lock_guard(reason: &str) -> Option<Output> {
+    assert!(!ci_value_means_yes(std::env::var("CI").ok().as_deref()), "[CI] {reason}");
+    eprintln!("[skip] {reason}");
+    None
+}
+
 /// Run the guard the workflow runs, over the `Cargo.lock` sitting in `dir`.
 ///
-/// `None` when the script is not in this source tree, or when no `bash` can be
-/// spawned to run it — a shell guard on a machine with no shell is missing
-/// evidence about the checkout, the same reading the sibling tests give to an
-/// absent manifest. Every runner `bump-on-main` and CI use ships one.
+/// `None` when the script is not in this source tree, when nothing on this
+/// machine answers the control question, or when the spawn itself fails — each
+/// of them missing evidence about the checkout, the same reading the sibling
+/// tests give to an absent manifest. Every runner CI uses ships a shell and
+/// carries the script, so on CI each of those doors is a finding instead:
+/// `skip_lock_guard` is where that is decided.
 ///
 /// The working directory is the fixture's, so the lock is named relatively and
 /// no test has to reason about how a shell reads a Windows path.
 fn run_lock_guard(root: &Path, dir: &Path, version: &str, crates: &[&str]) -> Option<Output> {
     let script = root.join(LOCK_GUARD_REL);
     if !script.is_file() {
-        eprintln!("[skip] {} is absent from this source tree", script.display());
-        return None;
+        return skip_lock_guard(&format!("{} is absent from this source tree", script.display()));
     }
-    let mut cmd = Command::new("bash");
-    cmd.current_dir(dir)
-        .arg(script.to_string_lossy().replace('\\', "/"))
-        .arg("Cargo.lock")
-        .arg(version)
-        .args(crates);
+    // One spelling, handed to the shell and asked about in the control question,
+    // so the candidate is vetted against the very string it will receive.
+    let handed_over = script.to_string_lossy().replace('\\', "/");
+    let Some(shell) = shell(&handed_over) else {
+        return skip_lock_guard(&format!(
+            "nothing on this machine both runs a shell command and can read {handed_over}, \
+             so {LOCK_GUARD_REL} was never run. Candidates tried: {:?}",
+            shell_candidates()
+        ));
+    };
+    let mut cmd = Command::new(shell);
+    cmd.current_dir(dir).arg(&handed_over).arg("Cargo.lock").arg(version).args(crates);
     match cmd.output() {
         Ok(out) => Some(out),
-        Err(e) => {
-            eprintln!("[skip] cannot spawn bash to run {LOCK_GUARD_REL}: {e}");
-            None
-        }
+        Err(e) => skip_lock_guard(&format!(
+            "cannot spawn {} to run {LOCK_GUARD_REL}: {e}",
+            shell.display()
+        )),
     }
 }
 
@@ -745,4 +940,84 @@ fn mentions(haystack: &str, token: &str) -> bool {
         });
         before && after
     })
+}
+
+/// The WSL launcher's answer, replayed as the values the test binary read.
+///
+/// Not a hypothetical: this is what `C:\Windows\System32\bash.exe` returned on
+/// `windows-latest` in run 32735943086 — the complaint in UTF-16 on STDOUT,
+/// nothing on stderr, exit code 1. It is the reason `answer_is_a_shell` reads
+/// the TEXT of both channels instead of trusting a status.
+#[test]
+fn a_stub_that_only_speaks_on_stdout_is_not_a_shell() {
+    // UTF-16 as `from_utf8_lossy` hands it over: every letter trailed by a NUL.
+    let mut said = String::new();
+    for ch in "Windows Subsystem for Linux has no installed distributions.\r\n".chars() {
+        said.push(ch);
+        said.push('\0');
+    }
+    assert!(
+        !answer_is_a_shell(Some(1), &said, ""),
+        "the launcher answered on stdout with an empty stderr — by status alone that reads as a \
+         guard doing its job, and it must not pass for a shell"
+    );
+
+    // A check that rejected everything would satisfy the line above and prove
+    // nothing, which is the decoration this file refuses elsewhere.
+    assert!(
+        answer_is_a_shell(Some(SHELL_PROBE_EXIT), SHELL_PROBE_OUT, SHELL_PROBE_ERR),
+        "a program that answers on both channels and keeps its status IS a shell"
+    );
+
+    // Both channels right, status swallowed. The guard's whole verdict travels
+    // in its exit code, so a wrapper that loses it cannot carry this test.
+    assert!(
+        !answer_is_a_shell(Some(0), SHELL_PROBE_OUT, SHELL_PROBE_ERR),
+        "a status that does not survive the call must not pass for a shell"
+    );
+
+    // The OTHER Windows shape, and the one a status could never expose: a WSL
+    // bash WITH a distribution installed runs the text perfectly and still
+    // cannot open a `C:/…` path, so `test -f` sends it out on 1 with both
+    // channels empty. Accepting it would hand the guard to a shell that cannot
+    // read the script and land back on the empty diagnosis.
+    assert!(
+        !answer_is_a_shell(Some(1), "", ""),
+        "a shell that cannot see the script it was asked about must not pass"
+    );
+
+    // A profile banner is noise, not a disqualification: non-interactive bash
+    // sources whatever `BASH_ENV` names, and that shell still works.
+    assert!(
+        answer_is_a_shell(
+            Some(SHELL_PROBE_EXIT),
+            &format!("welcome to the image\n{SHELL_PROBE_OUT}"),
+            &format!("a warning nobody asked for\n{SHELL_PROBE_ERR}")
+        ),
+        "a usable shell whose profile prints a banner must still be accepted"
+    );
+}
+
+/// `CI` is read for what it SAYS, not for whether it exists.
+///
+/// `CI=false` is a common way to opt out, and several base images export `CI`
+/// unconditionally. Reading presence alone would turn an honest local skip into
+/// a hard failure whose message blames a runner the developer is not on.
+#[test]
+fn ci_is_read_by_value_and_not_by_presence() {
+    let negatives =
+        [None, Some(""), Some("  "), Some("false"), Some("FALSE"), Some("0"), Some("no"),
+         Some("NO"), Some("off"), Some("n")];
+    for negative in negatives {
+        assert!(
+            !ci_value_means_yes(negative),
+            "CI={negative:?} says this is not a CI run and must be read that way"
+        );
+    }
+    for positive in [Some("true"), Some("1"), Some("yes"), Some("github-actions")] {
+        assert!(
+            ci_value_means_yes(positive),
+            "CI={positive:?} says this IS a CI run and must be read that way"
+        );
+    }
 }
