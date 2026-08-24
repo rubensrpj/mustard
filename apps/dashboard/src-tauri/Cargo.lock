@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-cli"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "anyhow",
  "clap",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-core"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "aho-corasick",
  "serde",
