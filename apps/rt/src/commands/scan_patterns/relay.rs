@@ -46,9 +46,13 @@
 //! Fail-open per the `mustard-rt run` contract — but fail-open is not the same
 //! as fail-SILENT. Two ways of reading nothing used to print the same
 //! `ok:true, blocks:0` as an agent that genuinely returned nothing: a `@<path>`
-//! that could not be read at all, and a persisted return that WAS read and
-//! demarcated no block. Both now land in `skipped`, so `ok:false` names them.
-//! A blockless RAW envelope keeps the empty, `ok:true` report it always had.
+//! that could not be read at all, and a file that WAS read and demarcated no
+//! block. Both now land in `skipped`, so `ok:false` names them — and the second
+//! covers the whole FILE channel, not only the files that parse as a persisted
+//! return, because a readable file that is neither JSON nor demarcated is the
+//! same "could not interpret it" wearing the same silent report.
+//! A blockless LITERAL envelope (or stdin) keeps the empty, `ok:true` report it
+//! always had: there is no file there to have failed.
 
 use std::path::Path;
 
@@ -107,13 +111,19 @@ pub fn run(root: &Path, content: &str) {
 /// [`apply_one`]/[`Applied`] already uses for ONE block.
 fn relay(root: &Path, content: &str) -> Report {
     let resolved = super::read_envelope(content);
-    // Only a JSON envelope can hit the read-but-blockless hole below; a raw one
-    // keeps the fail-open empty report it always had.
+    // The read-but-blockless hole below belongs to the FILE channel as a whole,
+    // not to the JSON shape: a file that was read and recognised as neither
+    // reaches `Envelope::Raw` and printed the same silent `ok:true, blocks:0`.
+    // The shape is kept only to say WHICH kind of file it was.
+    let from_file = super::file_face(content).is_some();
     let from_json = matches!(resolved, super::Envelope::Json(_));
     let (envelope, unreadable) = match resolved {
         super::Envelope::Raw(text) | super::Envelope::Json(text) => (text, None),
         super::Envelope::Unreadable(e) => (String::new(), Some(e)),
     };
+    // An unreadable path already reports itself below; adding the blockless
+    // entry too would name one file twice for one event.
+    let read_from_file = from_file && unreadable.is_none();
     let blocks = parse(&envelope);
     let mut report = Report { blocks: blocks.len(), ..Report::default() };
     if let Some(e) = unreadable {
@@ -153,19 +163,25 @@ fn relay(root: &Path, content: &str) -> Report {
         }
     }
 
-    // The other door onto the same silence: the persisted return WAS read and
-    // parsed, and demarcated nothing. Left alone that prints `ok:true,
-    // blocks:0` — indistinguishable from an agent that authored nothing, which
-    // is exactly the report an unreadable path used to print.
-    if from_json && report.blocks == 0 {
+    // The other door onto the same silence: the file WAS read and demarcated
+    // nothing. Left alone that prints `ok:true, blocks:0` — indistinguishable
+    // from an agent that authored nothing, which is exactly the report an
+    // unreadable path used to print. The door was closed for the JSON shape
+    // only, so a readable file that is not a harness-persisted return fell
+    // through `Envelope::Raw` and kept printing the silence.
+    if read_from_file && report.blocks == 0 {
+        let shape = if from_json {
+            "a harness-persisted return (valid JSON)"
+        } else {
+            "plain text (not a harness-persisted return)"
+        };
         report.skipped.push(Rejected {
             path: super::content_label(content),
-            defects: vec![
-                "read as a harness-persisted return (valid JSON) but it demarcates no \
-                 `=== FILE:` / `=== DECLINE:` block — the file WAS read, so this is not \
+            defects: vec![format!(
+                "read as {shape} but it demarcates no `=== FILE:` / `=== DECLINE:` block — \
+                 the file WAS read, so this is `nothing could be recovered from it`, not \
                  `the agent returned nothing`"
-                    .into(),
-            ],
+            )],
         });
     }
 
@@ -247,7 +263,7 @@ mod tests {
 
     fn mold(slug: &str, glob: &str) -> String {
         format!(
-            "---\nname: {slug}-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - {glob}\ntags: [add, refactor]\nsource: scan\n---\n\n## Purpose\nbody\n"
+            "---\nname: {slug}-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - {glob}\ntags: [add, refactor]\nsource: scan\n---\n\n## Purpose\nbody\n\n## Convention\nbody\n\n## How to apply\nbody\n\n## Examples\nbody\n"
         )
     }
 
@@ -427,10 +443,46 @@ mod tests {
             "the report says the file was READ and carried no block: {report:?}"
         );
 
-        // The control the AC names: a blockless RAW envelope keeps its existing
-        // empty, ok:true report — this must not become a new failure mode.
+        // The control the AC names: a blockless LITERAL envelope keeps its
+        // existing empty, ok:true report — this must not become a new failure
+        // mode. There is no file there to have failed.
         let raw = relay(dir.path(), "I could not find anything worth a mold.");
         assert!(raw.ok && raw.skipped.is_empty(), "raw prose behaviour is unchanged: {raw:?}");
+    }
+
+    /// The same silence entering by the LAST door: a file that was read, is not
+    /// a harness-persisted return, and demarcates nothing lands in
+    /// `Envelope::Raw` — so the JSON-only guard above never saw it and it went
+    /// on printing `ok:true, blocks:0`. That reads as "the agent returned
+    /// nothing" when what happened is "nothing could be recovered from it".
+    #[test]
+    fn a_read_file_that_demarcates_nothing_is_never_a_silent_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = dir.path().join("persisted-return.txt");
+        std::fs::write(&on_disk, "I could not find anything worth a mold.").unwrap();
+
+        let report = relay(dir.path(), &format!("@{}", on_disk.display()));
+        assert!(!report.ok, "a read-but-blockless file is not a silent ok:true: {report:?}");
+        assert_eq!(report.blocks, 0);
+        assert_eq!(report.skipped.len(), 1, "one file, one entry: {report:?}");
+        assert!(
+            report.skipped[0].path.contains("persisted-return.txt"),
+            "the report names the file: {report:?}"
+        );
+        assert!(
+            report.skipped[0].defects[0].contains("demarcates no"),
+            "the report says it was READ and carried no block: {report:?}"
+        );
+
+        // An UNREADABLE path still reports exactly once — the IO failure, not
+        // the IO failure plus a blockless entry for the same file.
+        let missing = dir.path().join("no-such-return.txt");
+        let unread = relay(dir.path(), &format!("@{}", missing.display()));
+        assert_eq!(unread.skipped.len(), 1, "one event, one entry: {unread:?}");
+        assert!(
+            unread.skipped[0].defects[0].contains("cannot read"),
+            "the IO failure is the reason, not the blocklessness: {unread:?}"
+        );
     }
 
     /// Two runs over one envelope must print identical bytes — the report is
