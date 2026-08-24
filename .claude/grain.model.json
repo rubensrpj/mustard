@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 479,
-      "loc": 208727
+      "loc": 208986
     },
     {
       "language": "tsx",
@@ -17527,7 +17527,7 @@
     {
       "path": "packages/core/tests/version_line.rs",
       "language": "rust",
-      "loc": 694,
+      "loc": 953,
       "imports": [
         "std::path::{Path, PathBuf}",
         "std::process::{Command, Output}",
@@ -17627,68 +17627,128 @@
         },
         {
           "kind": "function",
+          "name": "shell_control",
+          "line": 357,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "answer_is_a_shell",
+          "line": 376,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "speaks_like_a_shell",
+          "line": 383,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "git_bash_beside_git_on_path",
+          "line": 409,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shell_candidates",
+          "line": 437,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "shell",
+          "line": 479,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ci_value_means_yes",
+          "line": 495,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "skip_lock_guard",
+          "line": 518,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "run_lock_guard",
-          "line": 345,
+          "line": 535,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_workflow",
-          "line": 367,
+          "line": 562,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "guard_invocation",
-          "line": 385,
+          "line": 580,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "guard_invocations",
-          "line": 403,
+          "line": 598,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_guard_rejects_a_lock_whose_local_crates_did_not_move",
-          "line": 419,
+          "line": 614,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_guard_checks_every_local_crate_of_each_lock",
-          "line": 480,
+          "line": 675,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_dashboard_guard_is_asked_about_exactly_the_crates_this_file_names",
-          "line": 581,
+          "line": 776,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_guard_rejects_a_lock_that_lost_one_of_our_crates",
-          "line": 622,
+          "line": 817,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dev_leg_decision_consults_what_the_work_block_repairs",
-          "line": 663,
+          "line": 858,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "assignment",
-          "line": 722,
+          "line": 917,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mentions",
-          "line": 739,
+          "line": 934,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_stub_that_only_speaks_on_stdout_is_not_a_shell",
+          "line": 952,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ci_is_read_by_value_and_not_by_presence",
+          "line": 1007,
           "supertypes": []
         }
       ]
