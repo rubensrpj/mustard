@@ -951,23 +951,20 @@ fn parse_wave_plan_deps(plan_text: &str, current_wave: WaveNumber) -> Vec<WaveNu
     Vec::new()
 }
 
-/// Tokenize the deps cell into wave numbers.
+/// Resolve a `Depends on` cell into wave numbers.
+///
+/// The GRAMMAR is shared with `dispatch-plan`
+/// ([`crate::commands::wave::wave_lib::depends_on_tokens`]) — two readers of
+/// the same column that disagreed is how this one came to declare phantom
+/// dependencies out of prose: it scanned every token, and
+/// `parse_wave_number_from_token` takes the leading digits of whatever it is
+/// given, so `nada (ver os 2 anexos)` produced an edge on wave 2. A phantom
+/// dependency here makes the precheck hunt for symbols in a wave that is not a
+/// dependency at all, and report them missing.
 fn parse_deps_cell(cell: &str) -> Vec<WaveNumber> {
-    let trimmed = cell.trim();
-    let empty_markers = ["", "—", "-", "–", "none", "nenhuma", "n/a"];
-    if empty_markers.iter().any(|m| trimmed.eq_ignore_ascii_case(m)) {
-        return Vec::new();
-    }
     let mut out: Vec<WaveNumber> = Vec::new();
-    let normalized: String = trimmed
-        .chars()
-        .map(|c| match c {
-            '[' | ']' | ',' | ';' | '|' => ' ',
-            _ => c,
-        })
-        .collect();
-    for token in normalized.split_whitespace() {
-        if let Some(n) = parse_wave_number_from_token(token) {
+    for token in crate::commands::wave::wave_lib::depends_on_tokens(cell) {
+        if let Some(n) = parse_wave_number_from_token(&token) {
             if !out.contains(&n) {
                 out.push(n);
             }

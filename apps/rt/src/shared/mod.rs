@@ -45,6 +45,9 @@
 
 pub mod branch_state;
 pub mod context;
+/// One topological level assignment for the whole crate — see the module docs
+/// for why there used to be two, and what they disagreed about.
+pub mod dag;
 pub mod events;
 pub mod gate_mode;
 // The Azure adapter behind the pr_provider port — reached through the factory.
