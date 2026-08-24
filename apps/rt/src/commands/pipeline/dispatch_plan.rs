@@ -53,7 +53,6 @@
 
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::wave::wave_lib::parse_files_section;
-use mustard_core::io::atomic_md::find_outgoing_links;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
 use serde::Serialize;
@@ -446,35 +445,23 @@ fn parse_wave_label(cell: &str) -> Option<u32> {
     t.parse::<u32>().ok()
 }
 
-/// Parse the dependency cell into wave numbers.
+/// Resolve a `Depends on` cell into wave numbers.
 ///
-/// Accepts both `[[1]]` (number form) and `[[wave-1-general]]` (name form) via
-/// the shared scanner; an em-dash / hyphen / empty cell means "no deps".
-/// Duplicates within one cell collapse to a single edge, and a self-reference
-/// (a wave depending on itself) is dropped.
+/// The GRAMMAR of the cell is not decided here — it lives once, in
+/// [`crate::commands::wave::wave_lib::depends_on_tokens`], because this reader
+/// and `dependency-precheck` read the same column and used to disagree about
+/// it. This function only resolves each token the grammar hands back, which is
+/// the part that IS local: a wave number, a `wave-N-role` directory name, or a
+/// bare role token resolved through `role_to_wave`.
 ///
-/// **Two things this deliberately does NOT read, both of them pre-existing
-/// gaps this unit chose not to widen into.** A cell authored as bare numbers
-/// (`| 2 | ui | 1, 3 |`) yields no edges, so a cycle written that way stays
-/// invisible — `dependency_precheck::parse_deps_cell` does read that form, and
-/// the two readers of this column disagree. And a deliberate self-reference is
-/// dropped here rather than reported as the one-element cycle it is.
-///
-/// Both were attempted and both reverted, because reading a free-text cell for
-/// dependency numbers cannot be made safe by scanning: a `Depends on` cell
-/// holding ordinary prose ("nada, ver os 2 anexos") produced a phantom edge and
-/// refused a plan that had no contradiction at all. Widening the reader is a
-/// change to the wave-plan CONTRACT and belongs to a unit that can define the
-/// cell's grammar; this one only stops the level assignment from smoothing over
-/// a cycle it was already given.
+/// A self-reference is dropped. Treating it as the one-element loop it
+/// literally is was tried and reverted: the bare-role form exists to absorb a
+/// plan agent writing `[[cli]]` in the cli wave's own row, and refusing the
+/// whole spec over that shorthand costs more than the case is worth.
 fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String, u32>) -> Vec<u32> {
-    let trimmed = cell.trim();
-    if trimmed.is_empty() || trimmed == "—" || trimmed == "-" {
-        return Vec::new();
-    }
     let mut out: Vec<u32> = Vec::new();
-    for link in find_outgoing_links(trimmed) {
-        if let Some(n) = wave_number_from_link(&link, role_to_wave) {
+    for token in crate::commands::wave::wave_lib::depends_on_tokens(cell) {
+        if let Some(n) = wave_number_from_link(&token, role_to_wave) {
             if n != self_wave && !out.contains(&n) {
                 out.push(n);
             }
@@ -596,187 +583,28 @@ fn rows_from_fs(spec_dir: &Path) -> Vec<WaveRow> {
 // Level assignment (topological depth)
 // ---------------------------------------------------------------------------
 
-/// The wave plan's level assignment, plus the waves on a declared loop.
-struct WaveLevels {
-    /// Wave → topological level, for EVERY wave in the plan — a contradictory
-    /// plan included.
-    ///
-    /// Levels come from the graph with each loop collapsed to a single node, so
-    /// they are real everywhere: waves on ONE loop share a level (there is no
-    /// order between them to express), and a wave behind a loop sits above it.
-    /// No wave is ever left without a level, so the fail-open readers —
-    /// `wave-overlap-check` and `boundary_gate`, which both group by level —
-    /// never fall back on a caller's `unwrap_or(0)` and never see a wave placed
-    /// below the wave it depends on.
-    ///
-    /// They CAN still group a loop's members with an unrelated independent
-    /// wave, since all of them sit at depth 0 when nothing outside blocks them.
-    /// That is topologically true and practically harmless: the dispatch face
-    /// refuses the round, so no same-level claim about a contradictory plan is
-    /// ever acted on.
-    level: BTreeMap<u32, u32>,
-    /// The waves ON a declared dependency loop, ascending. Empty for a
-    /// well-formed plan.
-    ///
-    /// A wave is here exactly when it can reach ITSELF through dependency
-    /// edges. That is a definition, not a test: a wave merely waiting BEHIND a
-    /// loop, or sitting between two of them, cannot reach itself, so it is
-    /// never named. Its own `Depends on` cell is correct as written, and it
-    /// becomes dispatchable the moment its dependency completes — naming it
-    /// would send its author to the wrong cell, and refusing it would be
-    /// permanent, since a refused wave never completes.
-    ///
-    /// The same IDEA as the stuck set of the topological walk in
-    /// [`crate::commands::wave::wave_dependency`] — what a topological pass
-    /// cannot place is what contradicts itself — over a different graph. That
-    /// one walks FILE imports and reports paths; this one walks declared wave
-    /// edges and reports wave numbers. The two sets are not comparable and are
-    /// not meant to be; only the reporting vocabulary is shared.
-    cycle: Vec<u32>,
-}
-
-/// Assign a topological level to each wave, and name the waves that sit on a
-/// declared dependency LOOP.
+/// Assign a topological level to each wave, and name the waves on a declared
+/// dependency loop — a thin adapter over [`crate::shared::dag::assign_levels`],
+/// which is where the algorithm and the reasoning behind it live.
 ///
-/// A dependency on an unknown wave is ignored — an out-of-plan link is not a
+/// A dependency on an unknown wave is ignored: an out-of-plan link is not a
 /// contradiction. A dependency the plan DOES contain but cannot be ordered is
-/// one, and it is reported rather than smoothed over.
+/// one, and it is named rather than smoothed over.
 ///
-/// ## Why it is done this way
-///
-/// Two earlier shapes of this function were wrong in instructive ways, and both
-/// are worth stating so neither comes back.
-///
-/// It first relaxed to a fixpoint with an iteration cap, seeding an unresolved
-/// node at a provisional 0. That never held at 0: after the first pass every
-/// wave has an entry, so each further pass simply incremented the loop's
-/// members until the cap stopped it, at arbitrary distinct levels. A declared
-/// contradiction therefore came out looking like an ordinary sequential plan —
-/// invisible, which is the worst shape a failure can take.
-///
-/// It then peeled — place a wave once all its dependencies are placed — and
-/// treated whatever was left as the cycle. Peeling is right; equating "unplaced"
-/// with "on a loop" is not. Unplaced also contains every wave WAITING behind a
-/// loop, whose own `Depends on` cell is correct as written; naming those sent
-/// their author to the wrong cell, and refusing them was permanent, since a
-/// refused wave never completes and so never leaves the blocking set. Patching
-/// that by stripping waves with no incoming edge still failed for a wave sitting
-/// BETWEEN two loops. And handing the unplaced waves invented levels in
-/// wave-number order could place a wave BELOW the wave it depends on, which is
-/// the one thing a level assignment exists to prevent.
-///
-/// So the question is asked directly: two waves are on the same loop exactly
-/// when each can reach the other through dependency edges, and a wave is on a
-/// loop exactly when it can reach itself. That is the definition of a strongly
-/// connected component, computed here as a transitive closure — O(n³) over a
-/// handful of waves, and correct by construction rather than by heuristic.
-/// Collapsing each component to a single node leaves a graph with no loops at
-/// all, so ordinary peeling over THAT graph gives every wave a real level:
-/// waves on one loop share it (they have no order between them), and a wave
-/// behind a loop lands above it. Deterministic regardless of input order.
-fn assign_levels(rows: &[WaveRow]) -> WaveLevels {
-    use std::collections::BTreeSet;
-
-    let known: BTreeSet<u32> = rows.iter().map(|r| r.wave).collect();
-    let deps: BTreeMap<u32, BTreeSet<u32>> = rows
+/// This used to be a second implementation of that walk, and before that a
+/// fixpoint relaxation with an iteration cap that reported a contradiction as
+/// an ordinary sequential plan. The history is worth keeping because both
+/// failures were invisible: see the shared module's docs.
+fn assign_levels(rows: &[WaveRow]) -> crate::shared::dag::Levels<u32> {
+    let known: std::collections::BTreeSet<u32> = rows.iter().map(|r| r.wave).collect();
+    let deps: BTreeMap<u32, std::collections::BTreeSet<u32>> = rows
         .iter()
         .map(|r| {
-            let filtered: BTreeSet<u32> =
-                r.depends_on.iter().copied().filter(|d| known.contains(d)).collect();
+            let filtered = r.depends_on.iter().copied().filter(|d| known.contains(d)).collect();
             (r.wave, filtered)
         })
         .collect();
-
-    // 1. Transitive closure: `reach[a]` is every wave `a` depends on, directly
-    //    or through others.
-    let mut reach: BTreeMap<u32, BTreeSet<u32>> = deps.clone();
-    loop {
-        let mut grew = false;
-        for &w in &known {
-            let mut extra: BTreeSet<u32> = BTreeSet::new();
-            if let Some(direct) = reach.get(&w) {
-                for d in direct {
-                    if let Some(indirect) = reach.get(d) {
-                        extra.extend(indirect.iter().copied());
-                    }
-                }
-            }
-            if let Some(cur) = reach.get_mut(&w) {
-                let before = cur.len();
-                cur.extend(extra);
-                grew |= cur.len() != before;
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
-
-    // 2. `a` and `b` are on the same loop when each reaches the other; a wave
-    //    reaching ITSELF is on one. Component id = its smallest member, so the
-    //    grouping is stable and needs no counter.
-    let on_loop = |w: u32| reach.get(&w).is_some_and(|r| r.contains(&w));
-    let component: BTreeMap<u32, u32> = known
-        .iter()
-        .map(|&w| {
-            let id = known
-                .iter()
-                .copied()
-                .find(|&o| {
-                    o == w
-                        || (reach.get(&w).is_some_and(|r| r.contains(&o))
-                            && reach.get(&o).is_some_and(|r| r.contains(&w)))
-                })
-                .unwrap_or(w);
-            (w, id)
-        })
-        .collect();
-
-    // 3. Peel the CONDENSED graph, which by construction has no loops left.
-    // Indexed with `get`, never `map[key]`. `boundary_gate` — a PreToolUse
-    // write hook — reaches this function, and the crate's standing rule is that
-    // a hook never panics: a panic there does not deny one write, it kills the
-    // session. The keys are total today; `unwrap_or` keeps that from being
-    // load-bearing.
-    let comp_of = |w: u32| component.get(&w).copied().unwrap_or(w);
-    let mut comp_deps: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for (&w, wave_deps) in &deps {
-        let from = comp_of(w);
-        let entry = comp_deps.entry(from).or_default();
-        for &d in wave_deps {
-            let to = comp_of(d);
-            if to != from {
-                entry.insert(to);
-            }
-        }
-    }
-    let mut comp_level: BTreeMap<u32, u32> = BTreeMap::new();
-    loop {
-        let mut placed = false;
-        for (&c, c_deps) in &comp_deps {
-            if comp_level.contains_key(&c) || !c_deps.iter().all(|d| comp_level.contains_key(d)) {
-                continue;
-            }
-            let lvl = c_deps
-                .iter()
-                .filter_map(|d| comp_level.get(d).map(|l| l + 1))
-                .max()
-                .unwrap_or(0);
-            comp_level.insert(c, lvl);
-            placed = true;
-        }
-        if !placed {
-            break;
-        }
-    }
-
-    let level: BTreeMap<u32, u32> = known
-        .iter()
-        .map(|&w| (w, comp_level.get(&comp_of(w)).copied().unwrap_or(0)))
-        .collect();
-    let cycle: Vec<u32> = known.iter().copied().filter(|&w| on_loop(w)).collect();
-
-    WaveLevels { level, cycle }
+    crate::shared::dag::assign_levels(&deps)
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,10 +857,52 @@ mod tests {
         assert!(levels.level[&4] > levels.level[&3], "what waits behind sits above");
     }
 
+    /// A wave listed TWICE yields one row, keeping the FIRST occurrence's
+    /// dependencies — `parse_wave_plan_table` sorts and dedups by wave number
+    /// before any `WaveRow` is built.
+    ///
+    /// Recorded because a review claimed the opposite: that the last row's
+    /// deps won and the wave dispatched twice. Measured, neither happens. The
+    /// test exists so the claim stays refuted rather than being "fixed" again.
+    #[test]
+    fn a_wave_listed_twice_keeps_the_first_rows_dependencies() {
+        let plan = "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | — | base |
+| 2 | [[wave-2-cli]] | cli | [[wave-1-rt]] | first row for wave 2 |
+| 2 | [[wave-2-cli]] | cli | — | second row for wave 2 |
+";
+        let rows = parse_wave_plan_table(plan);
+        assert_eq!(rows.len(), 2, "one row per wave, never two");
+        assert_eq!(rows[1].wave, 2);
+        assert_eq!(rows[1].depends_on, vec![1], "the first row's deps survive");
+        assert_eq!(assign_levels(&rows).level[&2], 1, "so wave 2 is not level 0");
+    }
+
     /// A cell holding ordinary PROSE declares nothing. This guards the reverted
     /// bare-number scan: reading loose digits out of free text turned "nada,
     /// ver os 2 anexos" into an edge on wave 2, and two such cells refused a
     /// plan that had no contradiction at all.
+    /// A cycle written with BARE NUMBERS is caught, same as one written with
+    /// wikilinks. This reader used to see no edges at all in that form, so the
+    /// contradiction was invisible and the plan flattened into one parallel
+    /// round — the original defect, surviving through a door nobody had opened.
+    #[test]
+    fn bare_number_deps_are_read_like_wikilinks() {
+        let plan = "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | — | base |
+| 2 | [[wave-2-cli]] | cli | 3 | cli |
+| 3 | [[wave-3-core]] | core | 2 | core |
+";
+        let rows = parse_wave_plan_table(plan);
+        assert_eq!(rows[1].depends_on, vec![3]);
+        assert_eq!(rows[2].depends_on, vec![2]);
+        assert_eq!(assign_levels(&rows).cycle, vec![2, 3]);
+    }
+
     #[test]
     fn prose_in_the_depends_cell_declares_no_edge() {
         let plan = "\
