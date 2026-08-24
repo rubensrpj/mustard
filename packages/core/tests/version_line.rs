@@ -746,3 +746,100 @@ fn mentions(haystack: &str, token: &str) -> bool {
         before && after
     })
 }
+
+// ─── PROBE — temporary, delete before this unit closes ───────────────────────
+//
+// Measured on run 32730941116: on `windows-latest` the three `bump_guard_*`
+// tests above read an EMPTY stderr from a guard that DID exit non-zero, so the
+// assertion that the guard must name the stale crate compares against `""`.
+// Ubuntu and macOS pass, `.gitattributes` already pins `*.sh` to LF, and the
+// script answers correctly when run by hand — so the broken half is the
+// INVOCATION, and nothing in a Linux checkout can say which half of it.
+//
+// This test panics on purpose, on every operating system, because a passing
+// test's stdout never reaches the CI log. Reading Linux's report beside
+// Windows' IS the measurement.
+#[test]
+fn probe_what_bash_does_on_this_runner() {
+    fn render(label: &str, out: &std::io::Result<Output>) -> String {
+        match out {
+            Ok(o) => format!(
+                "[{label}] code={:?} stdout={:?} stderr={:?}\n",
+                o.status.code(),
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => format!("[{label}] spawn failed: {e}\n"),
+        }
+    }
+
+    let mut report = format!("\n=== BASH PROBE ({}) ===\n", std::env::consts::OS);
+
+    // 1. Control. A working bash writes to BOTH channels and keeps its code.
+    //    An empty stderr here means the shell never ran our text at all.
+    report.push_str(&render(
+        "control",
+        &Command::new("bash").arg("-c").arg("echo OUT; echo ERR 1>&2; exit 3").output(),
+    ));
+
+    // 2. Identity. Which bash answered, and are the tools the script calls
+    //    reachable from the PATH this process hands the child?
+    report.push_str(&render(
+        "identity",
+        &Command::new("bash")
+            .arg("-c")
+            .arg("command -v bash; echo v=$BASH_VERSION; command -v awk; command -v dirname; uname -s")
+            .output(),
+    ));
+
+    let Some(root) = workspace_root() else {
+        panic!("{report}workspace_root = none — nothing else could be measured\n");
+    };
+    let script = root.join(LOCK_GUARD_REL);
+    report.push_str(&format!("script = {} (is_file={})\n", script.display(), script.is_file()));
+
+    let dir = tempfile::tempdir().expect("a temp dir for the forged lock");
+    forge_lock(
+        dir.path(),
+        VIRTUAL_MANIFEST,
+        &[("mustard-cli", "0.1.44", false), ("mustard-core", "0.1.44", false)],
+    );
+    let arg = script.to_string_lossy().replace('\\', "/");
+
+    // 3. The exact call `run_lock_guard` makes — the one that comes back mute.
+    report.push_str(&render(
+        "guard",
+        &Command::new("bash")
+            .current_dir(dir.path())
+            .arg(&arg)
+            .arg("Cargo.lock")
+            .arg("0.1.45")
+            .arg("mustard-cli")
+            .arg("mustard-core")
+            .output(),
+    ));
+
+    // 4. The same guard reached through `bash -c`. If this one SPEAKS while the
+    //    one above stays mute, the fault is how the script path is handed over,
+    //    not the shell.
+    report.push_str(&render(
+        "sourced",
+        &Command::new("bash")
+            .current_dir(dir.path())
+            .arg("-c")
+            .arg(format!("bash '{arg}' Cargo.lock 0.1.45 mustard-cli mustard-core"))
+            .output(),
+    ));
+
+    // 5. Can the shell even see the fixture the guard is pointed at?
+    report.push_str(&render(
+        "fixture",
+        &Command::new("bash")
+            .current_dir(dir.path())
+            .arg("-c")
+            .arg("pwd; ls -la; head -3 Cargo.lock")
+            .output(),
+    ));
+
+    panic!("{report}");
+}
