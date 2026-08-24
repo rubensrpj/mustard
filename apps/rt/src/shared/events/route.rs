@@ -213,7 +213,9 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{
+        Actor, ActorKind, EVENT_PIPELINE_WAVE_RETRY, SCHEMA_VERSION,
+    };
     use mustard_core::ClaudePaths;
     use serde_json::json;
     use tempfile::tempdir;
@@ -372,5 +374,24 @@ mod tests {
     fn classify_analyze_family_as_analyze() {
         assert_eq!(classify_kind("analyze.digest.used"), "analyze");
         assert_eq!(classify_kind("analyze.digest.summary"), "analyze");
+    }
+
+    /// The wave-redispatch signal must NOT contaminate the friction bucket.
+    /// `classify_kind` matches the exact literal `retry.attempt` as `friction`
+    /// (hook-retry telemetry), so the redispatch event is named under the
+    /// `pipeline.` prefix — the first branch — on purpose. Both halves are
+    /// checked in ONE assertion because the guarantee is the PAIR: the two
+    /// names must land in different buckets, and a rename of either that
+    /// merged them would have to break this line.
+    #[test]
+    fn retry_event_is_not_routed_as_friction() {
+        assert_eq!(
+            (
+                classify_kind(EVENT_PIPELINE_WAVE_RETRY),
+                classify_kind("retry.attempt"),
+            ),
+            ("pipeline", "friction"),
+            "pipeline.wave.retry must bucket as pipeline while retry.attempt stays friction"
+        );
     }
 }

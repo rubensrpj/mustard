@@ -3,8 +3,10 @@
 //!
 //! Composes, **in-process** (module-qualified, no subprocess):
 //!
-//! 1. `dispatch-plan` — [`crate::commands::pipeline::dispatch_plan::build_plan`]
-//!    (the wave DAG + ordering, including the single-spec one-item fallback).
+//! 1. `dispatch-plan` —
+//!    [`crate::commands::pipeline::dispatch_plan::build_plan_with_cycle`]
+//!    (the wave DAG + ordering, including the single-spec one-item fallback,
+//!    plus any declared dependency cycle — see ## Refusal).
 //! 2. `agent-prompt-render` — for each item of the next pending level, the
 //!    prompt is rendered via
 //!    [`crate::commands::agent::agent_prompt_render::render_prompt_ref_at`]:
@@ -58,14 +60,71 @@
 //! tool verbatim; the full rendered text sits in the spec's `.dispatch/` file
 //! the stub names. Fail-open: an unknown spec degrades to `[]` and a failed
 //! stub write degrades to the full inline prompt; exit 0 always.
+//!
+//! ## Refusal
+//!
+//! One case does NOT degrade to an array: a wave plan whose `Depends on`
+//! column declares a cycle, **while a wave ON that cycle is still pending**.
+//! The output is then the object `{"error":"cyclic-dependency","cycle":[…]}`,
+//! no wave is dispatched, and no `pipeline.wave.start` is emitted. Exit stays
+//! 0: the refusal is carried by the JSON, never by the exit code.
+//!
+//! It has to be an object rather than an empty array because `[]` already
+//! means something else and something terminal — "no wave is left, go and
+//! CLOSE". A contradiction the author has to resolve cannot be reported with
+//! the word for "you are finished".
+//!
+//! **The condition is deliberately narrow, and each half of it was learnt the
+//! hard way.** Refusing whenever the PLAN holds a cycle stranded a clean,
+//! independent wave over two completed ones. Naming every wave the DAG could
+//! not place swept in the waves merely waiting behind the cycle — their
+//! `Depends on` cells are correct as written, so the message sent their author
+//! to the wrong place, and since such a wave can never complete while refused,
+//! the blocking set could never empty. So `cycle` carries the loop's own
+//! members, and only an uncompleted one refuses anything.
+//!
+//! The refusal borrows the two KEYS `wave-dependency` uses for an import
+//! cycle, and only the keys: its `cycle` holds project-relative file paths,
+//! this one holds wave numbers. Same vocabulary, different scale — do not
+//! write a reader that assumes one element type for both.
+//!
+//! A `pipeline.dispatch_failure` is recorded alongside, once per reason, so a
+//! `resume-bootstrap` within the projection's ten-minute window reports the
+//! stall rather than an idle pipeline. It expires like any other dispatch
+//! failure: that expiry is also what lets a FIXED plan stop being reported,
+//! and exempting this reason from it (tried, reverted) left a repaired spec
+//! reporting the old failure forever.
+//!
+//! Fail-open still holds where it was meant to: nothing is dropped. The waves
+//! stay exactly as authored, and only the ROUND is declined.
+//!
+//! ## Retry ceiling
+//!
+//! A wave that opened and never closed is, to the filter above, indistinguishable
+//! from a wave that never ran: it comes back in every round, forever. The ceiling
+//! is what ends that. Each delivery of a wave that already carries a
+//! `pipeline.wave.start` and no `pipeline.wave.complete` IS a redispatch, so the
+//! same block that emits the start writes a `pipeline.wave.retry` instead; the
+//! round counts those events and, once a wave reaches `MUSTARD_RETRY_CEILING`
+//! (default 3), pulls THAT WAVE out and puts an escalation line in its place.
+//!
+//! The unit is the wave and never the round — the level's healthy siblings
+//! dispatch normally, for the same reason the cycle refusal narrowed above.
+//! `MUSTARD_RETRY_GATE_MODE` (default `strict`) governs: `off` does not look,
+//! `warn` records the finding and still dispatches, `strict` also pulls. The
+//! finding is recorded as a `pipeline.dispatch_failure` in both looking modes, so
+//! a wave that stopped being tried does not read as an idle pipeline to
+//! `resume-bootstrap`.
 
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
 // `VERDICT_KEY` is imported bare because `json!` takes a key as a token
 // sequence, not a path expression.
 use crate::commands::review::dependency_precheck::{self, VERDICT_KEY};
+use crate::shared::gate_mode::{resolve_mode, GateMode};
 use mustard_core::domain::model::event::{
-    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_START,
+    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_RETRY,
+    EVENT_PIPELINE_WAVE_START,
 };
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
@@ -113,6 +172,27 @@ pub(crate) struct AdvanceItem {
     pub own_git_root: bool,
 }
 
+/// Why a round was declined outright, as opposed to coming back empty.
+///
+/// The two are different answers and the command had no way to tell them
+/// apart before: `[]` says "no wave is left to dispatch, go and close", while
+/// a refusal says "this plan cannot be dispatched at all". No serde derive —
+/// the JSON shape belongs to the command that reports it ([`run`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AdvanceRefusal {
+    /// The wave plan's `Depends on` column declares a cycle; carries the WAVE
+    /// NUMBERS that never resolve, ascending (not file paths — see the module
+    /// docs on the shape it borrows).
+    ///
+    /// Deliberately harder than the WARN `wave-dependency` raises for an
+    /// IMPORT cycle. That one is inferred from the files a wave touches, and
+    /// the inference is heuristic, so the planner's explicit boundaries stand
+    /// over it. This one is not inferred — it is what the author wrote in the
+    /// table. Dispatching it in any order at all would be inventing an answer
+    /// the plan does not contain.
+    CyclicDependency(Vec<u32>),
+}
+
 /// serde `skip_serializing_if` for the additive [`AdvanceItem::own_git_root`]:
 /// omit the field when `false` so the wave-advance JSON is byte-identical to
 /// the pre-flag shape for every non-submodule subproject.
@@ -120,24 +200,192 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+// ---------------------------------------------------------------------------
+// Retry ceiling — the shared mode cascade, plus a number the cascade cannot
+// carry (see [`retry_ceiling`]).
+// ---------------------------------------------------------------------------
+
+/// How many REDISPATCHES of the same wave a round tolerates before that wave is
+/// pulled and escalated. The first delivery of a wave is not a redispatch, so
+/// the default lets a wave be handed out four times in all.
+const DEFAULT_RETRY_CEILING: u32 = 3;
+
+/// The retry gate's mode, through the shared cascade
+/// ([`crate::shared::gate_mode`]), with this call-site's own default.
+///
+/// `strict`, deliberately: the gate exists to STOP a loop that turns without
+/// limit, and in `warn` it would only describe the loop while it kept turning.
+/// `MUSTARD_RETRY_GATE_MODE=off` remains the escape hatch, and an unrecognised
+/// value falls back here rather than hardening or disabling on its own.
+fn retry_mode() -> GateMode {
+    resolve_mode("MUSTARD_RETRY_GATE_MODE", None, GateMode::Strict)
+}
+
+/// The ceiling itself, from `MUSTARD_RETRY_CEILING` (default
+/// [`DEFAULT_RETRY_CEILING`]).
+///
+/// It needs an env var of its own because [`resolve_mode`] answers with a
+/// three-state enum and a number cannot come out of one — the same mode+number
+/// pair `MUSTARD_DELEGATION_WARN_MODE` and `MUSTARD_DELEGATION_WARN_THRESHOLD`
+/// already form for the delegation advisory.
+///
+/// See [`parse_retry_ceiling`] for what the raw value is allowed to be. Split
+/// the way `parse_guard_gate_mode` / `guard_gate_mode` are in the write family,
+/// so the parsing is testable without moving the process environment
+/// (`std::env::set_var` is forbidden under edition 2024).
+fn retry_ceiling() -> u32 {
+    parse_retry_ceiling(std::env::var("MUSTARD_RETRY_CEILING").ok().as_deref())
+}
+
+/// Parse a raw `MUSTARD_RETRY_CEILING` value.
+///
+/// A missing or non-numeric value falls back to [`DEFAULT_RETRY_CEILING`], and
+/// so does `0`: a ceiling of zero would pull every wave before its FIRST
+/// dispatch, which is not a ceiling on redispatch but a pipeline that never
+/// starts. Lifting the ceiling is what `MUSTARD_RETRY_GATE_MODE=off` is for.
+fn parse_retry_ceiling(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_RETRY_CEILING)
+}
+
+/// How many times each wave of `spec` was redispatched, read from the
+/// `pipeline.wave.retry` rows of the spec's log — the same `.events/` reading
+/// [`completed_waves`] and [`started_waves`] use, grouped by the payload's
+/// `wave`. A wave absent from the map was never redispatched.
+///
+/// The count is the NUMBER OF ROWS, not the largest `retry_count` they carry:
+/// the attempt number is written for a human reader, while each row is itself
+/// one redispatch, so a log whose rows arrived out of order still counts right.
+fn retry_counts(events: &[HarnessEvent], spec: &str) -> std::collections::BTreeMap<u32, u32> {
+    let mut counts: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    let rows = events
+        .iter()
+        .filter(|e| e.event == EVENT_PIPELINE_WAVE_RETRY && e.spec.as_deref() == Some(spec));
+    for e in rows {
+        if let Some(wave) = e
+            .payload
+            .get("wave")
+            .and_then(Value::as_u64)
+            .and_then(|w| u32::try_from(w).ok())
+        {
+            *counts.entry(wave).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Which of the pending level's waves have reached `ceiling` redispatches.
+///
+/// Pure, and it takes the mode as an argument rather than resolving it: that is
+/// what makes all three answers testable at all, since `std::env::set_var` is
+/// forbidden under edition 2024 and a test cannot move `MUSTARD_RETRY_*`.
+///
+/// `off` answers with the empty set — the gate does not look, so nothing is
+/// found, nothing is recorded and nothing is pulled. `warn` and `strict` find
+/// exactly the same waves; what separates them is [`pulls_at_ceiling`], which
+/// decides whether the finding also leaves the round.
+fn waves_at_ceiling(
+    mode: GateMode,
+    ceiling: u32,
+    retries: &std::collections::BTreeMap<u32, u32>,
+    pending: &[u32],
+) -> BTreeSet<u32> {
+    if mode == GateMode::Off {
+        return BTreeSet::new();
+    }
+    pending
+        .iter()
+        .copied()
+        .filter(|w| retries.get(w).copied().unwrap_or(0) >= ceiling)
+        .collect()
+}
+
+/// Whether a wave found at the ceiling leaves the round. Only `strict` acts:
+/// `warn` has already said everything it is allowed to say (the recorded
+/// `pipeline.dispatch_failure`) and lets the wave dispatch again, and `off`
+/// found nothing to act on.
+fn pulls_at_ceiling(mode: GateMode) -> bool {
+    mode == GateMode::Strict
+}
+
+/// The line that takes the place of a wave pulled for reaching the ceiling.
+///
+/// It is not a dispatch, and its `prompt` says so in its first words: the field
+/// carries the escalation message ITSELF rather than a `MUSTARD-PROMPT-REF`
+/// stub, so the round needs no new template and the orchestrator can relay the
+/// sentence to the operator verbatim. The item keeps the pulled wave's own
+/// number, subproject and git boundary so a reader can tell WHICH wave stopped,
+/// and the text names the wave, its count and the ceiling — a reader holding
+/// nothing but the array still learns why the wave is gone and what lets it run
+/// again.
+fn escalation_item(
+    spec: &str,
+    it: &dispatch_plan::DispatchItem,
+    retries: u32,
+    ceiling: u32,
+) -> AdvanceItem {
+    let wave = it.wave;
+    let role = &it.role;
+    let sub = &it.subproject;
+    let prompt = format!(
+        "STOP — do not dispatch this item to an agent.\n\
+         \n\
+         Wave {wave} ({role}, {sub}) of spec `{spec}` has been redispatched {retries} \
+         time(s) without ever completing, reaching the retry ceiling of {ceiling}. It was \
+         REMOVED from this round and is not handed back while the ceiling holds. The \
+         other waves of the same level were dispatched normally.\n\
+         \n\
+         A human decides what happens next: raise this with AskUserQuestion, naming the \
+         wave, its retry count and the ceiling.\n\
+         \n\
+         The wave runs again only once something changes — finish it and record it \
+         (`mustard-rt run wave-done --spec {spec} --wave {wave}`), raise \
+         `MUSTARD_RETRY_CEILING`, or set `MUSTARD_RETRY_GATE_MODE=off` to lift the \
+         ceiling entirely.\n"
+    );
+    AdvanceItem {
+        wave,
+        role: "escalation".to_string(),
+        subproject: sub.clone(),
+        // Through the same helper every other item uses. An escalation has no
+        // agent of its own, so the helper answers `general-purpose`; the answer
+        // still must not be a hand-written literal.
+        subagent_type: agent_prompt_render::recommended_subagent_type("escalation"),
+        prompt,
+        // Nothing is about to be dispatched, so there is nothing to precheck.
+        precheck: None,
+        own_git_root: it.own_git_root,
+    }
+}
+
 /// CLI entry — `mustard-rt run wave-advance --spec <slug>`.
 pub fn run(spec: &str) {
     let project = PathBuf::from(crate::shared::context::project_dir());
-    let items = advance(&project, spec);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())
-    );
+    let out = match advance(&project, spec) {
+        Ok(items) => serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string()),
+        Err(AdvanceRefusal::CyclicDependency(cycle)) => {
+            let doc = json!({ "error": "cyclic-dependency", "cycle": cycle });
+            // A refusal must never degrade to `[]`: that string reads as "no
+            // wave left, go and close" — the opposite instruction. If the
+            // render somehow fails, keep the error shape and lose the detail.
+            serde_json::to_string_pretty(&doc)
+                .unwrap_or_else(|_| r#"{"error":"cyclic-dependency"}"#.to_string())
+        }
+    };
+    println!("{out}");
 }
 
 /// The composite miolo against an explicit `project` root (testable without
 /// mutating the process cwd). See the module docs for the pending-level
 /// semantics.
-pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
+pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, AdvanceRefusal> {
     let spec_dir = dispatch_plan::resolve_spec_dir(project, spec);
-    let plan = dispatch_plan::build_plan(project, &spec_dir, spec, None);
+    // The contradiction rides alongside the items; WHERE it is acted on is the
+    // whole question — see the refusal below.
+    let (plan, cycle) = dispatch_plan::build_plan_with_cycle(project, &spec_dir, spec, None);
     if plan.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let events = spec_events(project, spec);
@@ -150,13 +398,101 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
     let Some(level) = pending_level else {
         // Every impl wave already carries a pipeline.wave.complete — emit the
         // review round before the terminal `[]` (see module docs).
-        return review_round(project, spec, &plan, &events);
+        //
+        // Deliberately AHEAD of the refusal, and this is the ONLY exemption.
+        // Order decides nothing when there is nothing left to order, and
+        // without this a spec dispatched while the old code accepted its loop
+        // would be held short of its own review and close — needing its frozen
+        // wave plan edited purely to reach a phase the plan no longer governs.
+        return Ok(review_round(project, spec, &plan, &events));
     };
+
+    // The contradiction governs for exactly as long as some wave ON the loop
+    // still has to run. Once every member has completed, their mutual order is
+    // a question about the past and decides nothing; anything else in the plan
+    // dispatches normally.
+    //
+    // The unit of the answer is the LOOP, never the individual wave, and that
+    // was learnt twice. Exempting a member because its own dependency happened
+    // to complete is strictly worse than refusing: on a loop of three with one
+    // member done, one wave is exempted, another still blocks, the round is
+    // refused anyway — and the exempted wave never runs, so it never completes,
+    // so the block never lifts. A single stray `wave-done` on one member of a
+    // two-wave loop emptied the set outright and the contradiction stopped
+    // being reported at all.
+    //
+    // A loop with a member still pending therefore refuses, and the remedy is
+    // to edit the cells `cycle` names. That is the FEATURE, not a stall: the
+    // plan states something impossible, and no dispatch order can fix it.
+    let blocking: Vec<u32> = cycle.into_iter().filter(|w| !completed.contains(w)).collect();
+    if !blocking.is_empty() {
+        let cycle = blocking;
+        // Ahead of every emit below, so a refused round writes no
+        // `pipeline.wave.start` and re-running after the table is fixed starts
+        // clean. The refusal itself IS recorded — a stall nobody can see reads
+        // as an idle pipeline to `resume-bootstrap`, which would send the
+        // orchestrator back to dispatch and refuse again, forever.
+        let waves = cycle.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+        crate::commands::event::emit_pipeline::emit_dispatch_failure(
+            project,
+            spec,
+            "cyclic-dependency",
+            &format!("wave-plan.md declares a dependency cycle; waves {waves} cannot be ordered"),
+            &events,
+        );
+        return Err(AdvanceRefusal::CyclicDependency(cycle));
+    }
+
+    // The retry ceiling, read once for the whole round. `off` does not look;
+    // `warn` looks and records; `strict` also pulls the wave out.
+    //
+    // The unit is the WAVE, never the round — the same lesson the refusal above
+    // was narrowed by. A level's other waves have their own `Depends on` cells,
+    // their own subprojects and their own reasons for being clean; holding them
+    // back because a sibling spun out strangles work that was never in trouble.
+    let mode = retry_mode();
+    let ceiling = retry_ceiling();
+    let retries = retry_counts(&events, spec);
+    let pending: Vec<u32> = plan
+        .iter()
+        // Wave 0 is the wave-less single-spec fallback: no start is emitted for
+        // it, so no retry ever is either, and it cannot be at a ceiling.
+        .filter(|it| it.level == level && it.wave > 0 && !completed.contains(&it.wave))
+        .map(|it| it.wave)
+        .collect();
+    let at_ceiling = waves_at_ceiling(mode, ceiling, &retries, &pending);
+    for wave in &at_ceiling {
+        let count = retries.get(wave).copied().unwrap_or(0);
+        // Recorded in `warn` too — leaving the fact behind without acting on it
+        // is that mode's whole job. A wave that stopped being tried and left no
+        // record reads as an idle pipeline to `resume-bootstrap`, which is how
+        // the cycle refusal earned its own record. The reason is keyed per wave
+        // so two stuck waves do not collapse into one row: the guard is
+        // idempotent on the reason alone, and a wave number is stable where the
+        // rendered count is not.
+        crate::commands::event::emit_pipeline::emit_dispatch_failure(
+            project,
+            spec,
+            &format!("retry-ceiling-wave-{wave}"),
+            &format!(
+                "wave {wave} was redispatched {count} time(s) without completing, reaching the retry ceiling of {ceiling}"
+            ),
+            &events,
+        );
+    }
+    let pulled: BTreeSet<u32> = if pulls_at_ceiling(mode) { at_ceiling } else { BTreeSet::new() };
 
     let items: Vec<AdvanceItem> = plan
         .into_iter()
         .filter(|it| it.level == level && !completed.contains(&it.wave))
         .map(|it| {
+            // Over the ceiling: the wave leaves the round and an escalation
+            // line stands where it was, so the level keeps its shape and the
+            // orchestrator is told why one member stopped.
+            if pulled.contains(&it.wave) {
+                let count = retries.get(&it.wave).copied().unwrap_or(0);
+                return escalation_item(spec, &it, count, ceiling);
+            }
             // Wave 0 is the single-spec fallback: render the root spec.md
             // (no `--wave`), exactly like the prompt_cmd dispatch-plan emits.
             let wave_arg = (it.wave > 0).then_some(it.wave);
@@ -195,14 +531,29 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
     // point that KNOWS the dispatched wave, so emit it here (idempotent: a wave
     // already carrying start/complete is skipped). The emit also advances the
     // wave's own meta `Plan→Execute`. Wave 0 (single-spec fallback) is skipped —
-    // it has no `wave-N-*` sidecar.
+    // it has no `wave-N-*` sidecar, and so is a wave that was PULLED: an
+    // escalation line dispatches nothing, so nothing about it is starting.
+    //
+    // A wave that already carries a start, does not carry a complete (the filter
+    // above guarantees that) and is being handed out again IS the redispatch —
+    // there is no other persisted dispatch signal to count from (see the module
+    // docs). So the same block writes a `pipeline.wave.retry` in that case,
+    // continuing the count already on the log; the start stays idempotent and
+    // keeps sole ownership of the wave's `Plan→Execute` transition, which a
+    // second emit would rewrite on every round.
     let started = started_waves(&events, spec);
     for it in &items {
-        if it.wave > 0 && !started.contains(&it.wave) {
+        if it.wave == 0 || pulled.contains(&it.wave) {
+            continue;
+        }
+        if started.contains(&it.wave) {
+            let attempt = retries.get(&it.wave).copied().unwrap_or(0) + 1;
+            crate::commands::event::emit_pipeline::emit_wave_retry(project, spec, it.wave, attempt);
+        } else {
             crate::commands::event::emit_pipeline::emit_wave_start(project, spec, it.wave);
         }
     }
-    items
+    Ok(items)
 }
 
 /// The set of wave numbers carrying a `pipeline.wave.start` event in the spec's
@@ -428,6 +779,13 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
+    /// The round `advance` returns, for the tests whose plan is well-formed.
+    /// A refusal here is a test-setup bug, so it panics loudly rather than
+    /// reading as an empty round.
+    fn round(project: &Path, spec: &str) -> Vec<AdvanceItem> {
+        advance(project, spec).expect("this fixture's plan must not declare a cycle")
+    }
+
     /// Anchor a project root so `ClaudePaths::for_project` resolves (mirrors
     /// the dispatch_plan test helper).
     fn anchor(dir: &Path) {
@@ -435,20 +793,22 @@ mod tests {
         std::fs::write(dir.join("mustard.json"), b"{}").unwrap();
     }
 
-    /// Seed a 3-wave spec: waves 1 and 2 are independent (level 0), wave 3
-    /// depends on both (level 1). Each wave dir carries a spec.md with Tasks.
-    fn seed_three_waves(project: &Path, slug: &str) -> PathBuf {
+    /// Seed a 3-wave spec, with the `Depends on` cell of waves 2 and 3 given by
+    /// the caller. Each wave dir carries a spec.md with Tasks.
+    fn seed_waves(project: &Path, slug: &str, deps_2: &str, deps_3: &str) -> PathBuf {
         let spec_dir = project.join(".claude").join("spec").join(slug);
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(
             spec_dir.join("wave-plan.md"),
-            "\
+            format!(
+                "\
 | Wave | Spec | Role | Depends on | Summary |
 |------|------|------|------------|---------|
 | 1 | [[wave-1-rt]] | rt | — | base |
-| 2 | [[wave-2-cli]] | cli | — | parallel base |
-| 3 | [[wave-3-core]] | core | [[wave-1-rt]], [[wave-2-cli]] | joins both |
-",
+| 2 | [[wave-2-cli]] | cli | {deps_2} | cli |
+| 3 | [[wave-3-core]] | core | {deps_3} | core |
+"
+            ),
         )
         .unwrap();
         for (n, role) in [(1, "rt"), (2, "cli"), (3, "core")] {
@@ -461,6 +821,277 @@ mod tests {
             .unwrap();
         }
         spec_dir
+    }
+
+    /// Waves 1 and 2 independent (level 0), wave 3 depends on both (level 1).
+    fn seed_three_waves(project: &Path, slug: &str) -> PathBuf {
+        seed_waves(project, slug, "—", "[[wave-1-rt]], [[wave-2-cli]]")
+    }
+
+    /// A table that contradicts itself: wave 2 declares it depends on 3 and
+    /// wave 3 declares it depends on 2.
+    fn seed_cyclic_plan(project: &Path, slug: &str) -> PathBuf {
+        seed_waves(project, slug, "[[wave-3-core]]", "[[wave-2-cli]]")
+    }
+
+    /// A declared cycle refuses the round and names the stuck waves. Before
+    /// this, the level assignment quietly handed back distinct levels for the
+    /// cycle's members and the round dispatched as if the plan were ordinary.
+    #[test]
+    fn declared_cycle_refuses_the_round() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot");
+
+        let refusal = advance(project, "knot").expect_err("a declared cycle must refuse");
+        assert_eq!(refusal, AdvanceRefusal::CyclicDependency(vec![2, 3]));
+    }
+
+    /// A refused round marks no wave as started, so re-running once the table
+    /// is fixed starts from a clean slate.
+    ///
+    /// Carries its own positive control. Asserting an empty event log proves
+    /// nothing on its own: `spec_events` fail-opens to `vec![]` on a missing
+    /// directory, so a path mismatch between the emitter and the reader — the
+    /// exact bug this guards — would leave the assertion green. The control
+    /// runs the acyclic fixture through the SAME reader first and demands a
+    /// non-empty answer, so the empty one below means "suppressed" rather than
+    /// "nobody was looking in the right place".
+    #[test]
+    fn refused_round_emits_no_wave_start() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+
+        seed_three_waves(project, "control");
+        round(project, "control");
+        assert!(
+            !started_waves(&spec_events(project, "control"), "control").is_empty(),
+            "control: a dispatched round DOES mark its waves started",
+        );
+
+        seed_cyclic_plan(project, "knot2");
+        assert!(advance(project, "knot2").is_err());
+        assert!(
+            started_waves(&spec_events(project, "knot2"), "knot2").is_empty(),
+            "a refused round must not mark any wave as started",
+        );
+    }
+
+    /// The refusal IS recorded, as a `pipeline.dispatch_failure`. Without it
+    /// the stall is invisible to `resume-bootstrap`, which would read the spec
+    /// as merely pending and send the orchestrator back to dispatch — refusing
+    /// again, forever, with nothing on the record.
+    #[test]
+    fn refused_round_records_a_dispatch_failure() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot3");
+
+        assert!(advance(project, "knot3").is_err());
+
+        let events = spec_events(project, "knot3");
+        let failure = events
+            .iter()
+            .find(|e| e.event == "pipeline.dispatch_failure")
+            .expect("the refusal must leave a dispatch_failure behind");
+        assert_eq!(failure.payload["reason"].as_str(), Some("cyclic-dependency"));
+        assert!(
+            failure.payload["description"].as_str().unwrap_or_default().contains("2, 3"),
+            "the record names the stuck waves: {:?}",
+            failure.payload,
+        );
+    }
+
+    /// A cycle whose waves are ALL complete stops governing anything, even
+    /// while another wave is still pending. Refusing on "the plan has a cycle"
+    /// was too coarse: it blocked a clean, independent wave 1 over two
+    /// completed waves 2 and 3, and the only way out was editing a frozen plan.
+    #[test]
+    fn completed_cycle_does_not_block_a_clean_pending_wave() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot5");
+        complete_wave(project, "knot5", 2);
+        complete_wave(project, "knot5", 3);
+
+        let items = advance(project, "knot5").expect("a spent contradiction must not refuse");
+        assert_eq!(items.len(), 1, "wave 1 dispatches: {items:?}");
+        assert_eq!(items[0].wave, 1);
+    }
+
+    /// The dispatch-failure record is written ONCE per contradiction, not once
+    /// per invocation. The resume loop re-runs `wave-advance` freely, and
+    /// `build_pipeline_state` sums these into `metrics.retries` — a spec that
+    /// never dispatched anything would otherwise report N retries for one
+    /// broken table.
+    #[test]
+    fn dispatch_failure_is_recorded_once_not_per_invocation() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot6");
+
+        for _ in 0..3 {
+            assert!(advance(project, "knot6").is_err());
+        }
+
+        let recorded = spec_events(project, "knot6")
+            .iter()
+            .filter(|e| e.event == "pipeline.dispatch_failure")
+            .count();
+        assert_eq!(recorded, 1, "three refusals, one record");
+    }
+
+    /// A loop of THREE with one member complete still refuses, and names the
+    /// two that have not run. The two-wave fixture above passes under a
+    /// per-wave exemption too — by luck, since exempting one of two empties the
+    /// set. This one does not: exempt wave 1 (its dependency, wave 2, is done)
+    /// and wave 3 still blocks, so the round is refused anyway while wave 1 is
+    /// held back and can never complete. That was a permanent stall reached by
+    /// trying to avoid one.
+    #[test]
+    fn three_wave_loop_with_one_member_complete_refuses_whole() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = project.join(".claude").join("spec").join("tri");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | [[wave-2-cli]] | a |
+| 2 | [[wave-2-cli]] | cli | [[wave-3-core]] | b |
+| 3 | [[wave-3-core]] | core | [[wave-1-rt]] | c |
+",
+        )
+        .unwrap();
+        for (n, role) in [(1, "rt"), (2, "cli"), (3, "core")] {
+            let dir = spec_dir.join(format!("wave-{n}-{role}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("spec.md"), "# w\n\n## Tasks\n\n- [ ] t\n").unwrap();
+        }
+        complete_wave(project, "tri", 2);
+
+        let refusal = advance(project, "tri").expect_err("two members have not run");
+        assert_eq!(refusal, AdvanceRefusal::CyclicDependency(vec![1, 3]));
+    }
+
+    /// A wave waiting BEHIND the cycle dispatches once its dependency is done.
+    /// It is not on the loop, its `Depends on` cell is correct as written, and
+    /// refusing it stranded the plan permanently: it could never complete, so
+    /// the blocking set could never empty.
+    #[test]
+    fn wave_behind_a_completed_cycle_dispatches() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = seed_cyclic_plan(project, "behind");
+        // Add a fourth wave depending on 3 — behind the 2↔3 loop.
+        let plan = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            format!("{plan}| 4 | [[wave-4-ui]] | ui | [[wave-3-core]] | ui |\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-4-ui")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-4-ui").join("spec.md"),
+            "# wave-4-ui\n\n## Tasks\n\n- [ ] task\n",
+        )
+        .unwrap();
+        for wave in [1, 2, 3] {
+            complete_wave(project, "behind", wave);
+        }
+
+        let items = advance(project, "behind").expect("wave 4 is not a contradiction");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].wave, 4);
+    }
+
+    /// A loop with a member still PENDING refuses, even when that member's own
+    /// dependency has completed.
+    ///
+    /// Tempting to exempt, and wrong. The unit of the answer has to be the
+    /// loop: exempting a single member on a three-wave loop leaves another
+    /// member blocking, so the round is refused anyway and the exempted wave
+    /// never runs — never completing, never lifting the block. And a stray
+    /// `wave-done` on one member of a two-wave loop would empty the set
+    /// outright, silently retiring a contradiction nobody fixed. The remedy is
+    /// to edit the cells, which is what the refusal is for.
+    #[test]
+    fn loop_with_a_pending_member_still_refuses() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "half");
+        complete_wave(project, "half", 2);
+
+        let refusal = advance(project, "half").expect_err("wave 3 has not run");
+        assert_eq!(refusal, AdvanceRefusal::CyclicDependency(vec![3]));
+    }
+
+    /// The record is written AGAIN once the previous one has aged past the
+    /// window the projection keeps it in. The guard suppresses duplicates; it
+    /// must not suppress the signal itself. An unbounded guard meant that after
+    /// the first record expired no refusal was ever recorded again, and the
+    /// stall went back to being invisible — permanently, which is the loop the
+    /// record exists to break.
+    #[test]
+    fn dispatch_failure_is_recorded_again_once_the_old_one_expired() {
+        use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "aged");
+
+        // A matching record from long ago — past the projection's window.
+        let stale = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2020-01-01T00:00:00.000Z".to_string(),
+            session_id: "old".to_string(),
+            wave: 0,
+            actor: Actor { kind: ActorKind::Orchestrator, id: None, actor_type: None },
+            event: "pipeline.dispatch_failure".to_string(),
+            payload: json!({ "reason": "cyclic-dependency", "at": "2020-01-01T00:00:00.000Z" }),
+            spec: Some("aged".to_string()),
+        };
+        crate::shared::events::route::emit(project.to_str().unwrap(), &stale);
+
+        assert!(advance(project, "aged").is_err());
+
+        let fresh = spec_events(project, "aged")
+            .iter()
+            .filter(|e| e.event == "pipeline.dispatch_failure")
+            .count();
+        assert_eq!(fresh, 2, "the expired record does not silence the new one");
+    }
+
+    /// Once every impl wave is complete the cycle stops mattering: order has
+    /// nothing left to decide, so the review round is emitted normally.
+    ///
+    /// This is the regression that matters most for specs ALREADY in flight —
+    /// the ones dispatched while the old code silently accepted their cycle.
+    /// Refusing here would strand them short of their own close, with no way
+    /// out but editing a frozen wave plan.
+    #[test]
+    fn completed_cyclic_spec_still_reaches_its_review_round() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_cyclic_plan(project, "knot4");
+        for wave in [1, 2, 3] {
+            complete_wave(project, "knot4", wave);
+        }
+
+        let items = advance(project, "knot4").expect("a finished spec is never refused");
+        assert!(!items.is_empty(), "the review round is emitted");
+        assert!(items.iter().all(|it| it.role == "review"));
     }
 
     /// Emit a `pipeline.wave.complete` for `wave` into the spec's events log.
@@ -481,6 +1112,188 @@ mod tests {
             spec: Some(spec.to_string()),
         };
         crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    }
+
+    /// Emit a `pipeline.wave.retry` for `wave` into the spec's events log,
+    /// shaped exactly as `advance` writes one on a redispatch.
+    fn retry_wave(project: &Path, spec: &str, wave: u32, attempt: u32) {
+        use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: format!("2026-06-09T02:00:0{attempt}.000Z"),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Orchestrator,
+                id: Some("wave-advance".to_string()),
+                actor_type: None,
+            },
+            event: EVENT_PIPELINE_WAVE_RETRY.to_string(),
+            payload: json!({ "wave": wave, "retry_count": attempt }),
+            spec: Some(spec.to_string()),
+        };
+        crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    }
+
+    /// AC-1 — a wave whose retry count has reached the ceiling leaves the round,
+    /// an escalation line stands where it was, and the healthy sibling of the
+    /// same level dispatches normally.
+    ///
+    /// The control round matters: without it an empty round would satisfy the
+    /// assertion for the wrong reason, and the point is that ONE wave was pulled
+    /// while the level went on.
+    #[test]
+    fn retry_ceiling_pulls_wave_from_round() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves(project, "ceil");
+
+        // Control: nothing on the log yet, so level 0 dispatches both waves.
+        let control = round(project, "ceil");
+        assert_eq!(control.len(), 2, "control: no wave is at the ceiling yet");
+        assert!(control.iter().all(|it| it.role != "escalation"), "control: {control:?}");
+
+        // Wave 1 forged AT the default ceiling; wave 2 stays clean. The env var
+        // is deliberately not touched — `std::env::set_var` is forbidden under
+        // edition 2024, so the test exercises the declared default.
+        for attempt in 1..=DEFAULT_RETRY_CEILING {
+            retry_wave(project, "ceil", 1, attempt);
+        }
+
+        let items = round(project, "ceil");
+        assert_eq!(items.len(), 2, "the level still answers with two lines: {items:?}");
+
+        let stuck = &items[0];
+        assert_eq!(stuck.wave, 1, "the escalation names the wave it replaced");
+        assert_eq!(stuck.role, "escalation", "wave 1 left the round: {items:?}");
+        assert!(stuck.precheck.is_none(), "an escalation dispatches nothing to precheck");
+        assert!(
+            !stuck.prompt.starts_with("MUSTARD-PROMPT-REF:"),
+            "the escalation IS the text, not a stub: {}",
+            stuck.prompt
+        );
+        for needle in [
+            "Wave 1",
+            &format!("redispatched {DEFAULT_RETRY_CEILING} time"),
+            &format!("ceiling of {DEFAULT_RETRY_CEILING}"),
+        ] {
+            assert!(
+                stuck.prompt.contains(needle),
+                "the escalation must name {needle:?}: {}",
+                stuck.prompt
+            );
+        }
+
+        // The healthy sibling of the same level is untouched.
+        let sibling = &items[1];
+        assert_eq!(sibling.wave, 2);
+        assert_eq!(sibling.role, "cli");
+        assert!(
+            sibling.prompt.starts_with("MUSTARD-PROMPT-REF:"),
+            "the clean sibling still dispatches: {}",
+            sibling.prompt
+        );
+
+        // The pulled wave is not redispatched, so it gains no further retry;
+        // the sibling's re-delivery IS counted.
+        let counts = retry_counts(&spec_events(project, "ceil"), "ceil");
+        assert_eq!(counts.get(&1).copied(), Some(DEFAULT_RETRY_CEILING));
+        assert_eq!(counts.get(&2).copied(), Some(1));
+
+        // And the stall is on the record, not only in the round.
+        let recorded = spec_events(project, "ceil")
+            .iter()
+            .filter(|e| {
+                e.event == "pipeline.dispatch_failure"
+                    && e.payload["reason"].as_str() == Some("retry-ceiling-wave-1")
+            })
+            .count();
+        assert_eq!(recorded, 1, "the wave that stopped being tried is recorded once");
+    }
+
+    /// The mode governs two separate things, and they must not be collapsed:
+    /// whether the gate LOOKS, and whether what it finds leaves the round. `off`
+    /// does not look at all (so nothing is recorded either); `warn` finds
+    /// exactly what `strict` finds and keeps dispatching it; only `strict`
+    /// pulls. Exercised directly because the env vars are unreachable from a
+    /// test — `std::env::set_var` is forbidden under edition 2024.
+    #[test]
+    fn ceiling_mode_governs_looking_and_pulling() {
+        let retries = std::collections::BTreeMap::from([(1u32, 3u32), (2u32, 1u32)]);
+        let pending = vec![1u32, 2];
+
+        assert!(
+            waves_at_ceiling(GateMode::Off, 3, &retries, &pending).is_empty(),
+            "off does not look, so it finds nothing to record",
+        );
+        assert!(!pulls_at_ceiling(GateMode::Off));
+
+        let warn = waves_at_ceiling(GateMode::Warn, 3, &retries, &pending);
+        assert_eq!(warn, BTreeSet::from([1u32]), "warn finds the wave at the ceiling");
+        assert!(!pulls_at_ceiling(GateMode::Warn), "warn records, it does not pull");
+
+        assert_eq!(
+            waves_at_ceiling(GateMode::Strict, 3, &retries, &pending),
+            warn,
+            "strict finds exactly what warn finds",
+        );
+        assert!(pulls_at_ceiling(GateMode::Strict));
+
+        // The ceiling is the boundary, not a threshold to exceed: a wave one
+        // redispatch short of it stays in the round.
+        assert!(
+            waves_at_ceiling(GateMode::Strict, 4, &retries, &pending).is_empty(),
+            "3 redispatches do not reach a ceiling of 4",
+        );
+    }
+
+    /// A ceiling of `0` is not a ceiling on redispatch — it would pull every
+    /// wave before its first dispatch, leaving a pipeline that never starts — so
+    /// it falls back to the default like any other unusable value.
+    /// `MUSTARD_RETRY_GATE_MODE=off` is what lifts the gate.
+    #[test]
+    fn retry_ceiling_never_resolves_to_zero() {
+        assert_eq!(parse_retry_ceiling(None), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("")), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("many")), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("-1")), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("0")), DEFAULT_RETRY_CEILING, "0 is not a ceiling");
+        assert_eq!(parse_retry_ceiling(Some(" 7 ")), 7, "a real number is honoured, trimmed");
+        assert_eq!(parse_retry_ceiling(Some("1")), 1, "one redispatch is a legal ceiling");
+    }
+
+    /// A wave handed back while it carries a start and no complete IS the
+    /// redispatch — the only deterministic dispatch signal there is, since
+    /// `pipeline.task.dispatch` is orchestrator-authored and not enforced. The
+    /// FIRST delivery is not a retry: counting it would spend one of the
+    /// ceiling's attempts on the wave's own first run.
+    #[test]
+    fn redispatch_of_a_started_wave_is_counted_as_a_retry() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves(project, "rc");
+
+        round(project, "rc");
+        assert!(
+            retry_counts(&spec_events(project, "rc"), "rc").is_empty(),
+            "the first delivery of a wave is not a retry",
+        );
+
+        round(project, "rc");
+        let counts = retry_counts(&spec_events(project, "rc"), "rc");
+        assert_eq!(counts.get(&1).copied(), Some(1), "second delivery = first retry");
+        assert_eq!(counts.get(&2).copied(), Some(1));
+
+        round(project, "rc");
+        let counts = retry_counts(&spec_events(project, "rc"), "rc");
+        assert_eq!(counts.get(&1).copied(), Some(2), "the count keeps climbing");
+        assert_eq!(
+            count_wave_start(project, "rc"),
+            2,
+            "the start stays idempotent — the retry is a separate row, not a second start",
+        );
     }
 
     /// Resolve a dispatch stub to the rendered body it references: extract
@@ -505,7 +1318,7 @@ mod tests {
         let project = dir.path();
         seed_three_waves(project, "adv");
 
-        let items = advance(project, "adv");
+        let items = round(project, "adv");
         assert_eq!(items.len(), 2, "level 0 carries the two parallel waves");
         assert_eq!(items[0].wave, 1);
         assert_eq!(items[0].role, "rt");
@@ -541,7 +1354,7 @@ mod tests {
         let project = dir.path();
         seed_three_waves(project, "pc");
 
-        let items = advance(project, "pc");
+        let items = round(project, "pc");
         assert_eq!(items.len(), 2, "level 0 carries the two parallel waves");
         for item in &items {
             let pc = item.precheck.as_ref().expect("impl item carries an inline precheck");
@@ -552,7 +1365,7 @@ mod tests {
         for n in [1u32, 2, 3] {
             complete_wave(project, "pc", n);
         }
-        let review = advance(project, "pc");
+        let review = round(project, "pc");
         assert!(!review.is_empty(), "review round emitted once impl waves complete");
         for item in &review {
             assert_eq!(item.role, "review");
@@ -604,13 +1417,13 @@ mod tests {
 
         // Wave 1 done, wave 2 still pending → level 0 again, only wave 2.
         complete_wave(project, "adv2", 1);
-        let items = advance(project, "adv2");
+        let items = round(project, "adv2");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].wave, 2, "non-completed level-0 wave still pending");
 
         // Both level-0 waves done → level 1 (wave 3).
         complete_wave(project, "adv2", 2);
-        let items = advance(project, "adv2");
+        let items = round(project, "adv2");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].wave, 3);
         assert_eq!(items[0].role, "core");
@@ -618,13 +1431,13 @@ mod tests {
         // Everything done → the review round (one item: the seeded waves all
         // converge on subproject ".").
         complete_wave(project, "adv2", 3);
-        let items = advance(project, "adv2");
+        let items = round(project, "adv2");
         assert_eq!(items.len(), 1, "review round expected after all impl waves");
         assert_eq!(items[0].role, "review");
 
         // An APPROVED review.result (no subproject → covers ".") drains it.
         record_review(project, "adv2", None, "approved", 1);
-        let items = advance(project, "adv2");
+        let items = round(project, "adv2");
         assert!(items.is_empty(), "reviewed spec returns the empty list");
     }
 
@@ -640,18 +1453,18 @@ mod tests {
         complete_wave(project, "adv3", 1);
         complete_wave(project, "adv3", 2);
         complete_wave(project, "adv3", 3);
-        assert_eq!(advance(project, "adv3").len(), 1, "review round expected");
+        assert_eq!(round(project, "adv3").len(), 1, "review round expected");
 
         // A REJECTED review must NOT clear the subproject — the round stays open.
         record_review(project, "adv3", None, "rejected", 1);
-        let items = advance(project, "adv3");
+        let items = round(project, "adv3");
         assert_eq!(items.len(), 1, "rejected review must NOT drain the round");
         assert_eq!(items[0].role, "review");
 
         // A later APPROVED review clears it (latest verdict per subproject wins).
         record_review(project, "adv3", None, "approved", 5);
         assert!(
-            advance(project, "adv3").is_empty(),
+            round(project, "adv3").is_empty(),
             "an approving review after a rejection drains the round"
         );
     }
@@ -683,7 +1496,7 @@ mod tests {
             .unwrap();
         }
 
-        let items = advance(project, "ws");
+        let items = round(project, "ws");
         assert_eq!(items.len(), 2, "level 0 = the two parallel waves");
 
         // Both dispatched waves carry a start event; wave 3 (next level) does not.
@@ -704,7 +1517,7 @@ mod tests {
 
         // Re-invoking before completion returns the same level and does NOT
         // re-emit (idempotent on the started set).
-        let again = advance(project, "ws");
+        let again = round(project, "ws");
         assert_eq!(again.len(), 2);
         assert_eq!(count_wave_start(project, "ws"), 2, "no duplicate wave.start on re-invoke");
     }
@@ -714,7 +1527,7 @@ mod tests {
     fn composite_wave_advance_unknown_spec_degrades_empty() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
-        assert!(advance(dir.path(), "ghost").is_empty());
+        assert!(round(dir.path(), "ghost").is_empty());
     }
 
     /// Single-spec fallback (no wave plan): one wave-0 `impl` item whose
@@ -732,7 +1545,7 @@ mod tests {
         )
         .unwrap();
 
-        let items = advance(project, "flat");
+        let items = round(project, "flat");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].wave, 0);
         assert_eq!(items[0].role, "impl");
@@ -788,7 +1601,7 @@ mod tests {
             complete_wave(project, "rev", w);
         }
 
-        let items = advance(project, "rev");
+        let items = round(project, "rev");
         assert_eq!(items.len(), 3, "one review item per distinct subproject");
         // Alphabetical, regardless of the wave order that touched them.
         let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
@@ -825,19 +1638,19 @@ mod tests {
 
         // Partial coverage: apps/rt reviewed → only the other two remain.
         record_review(project, "rev2", Some("apps/rt"), "approved", 1);
-        let items = advance(project, "rev2");
+        let items = round(project, "rev2");
         let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
         assert_eq!(subs, vec!["apps/cli", "packages/core"]);
 
         // Re-invoking without new verdicts returns the same pending round.
-        let again = advance(project, "rev2");
+        let again = round(project, "rev2");
         let subs_again: Vec<&str> = again.iter().map(|i| i.subproject.as_str()).collect();
         assert_eq!(subs_again, subs, "pending review items must be stable");
 
         // Full coverage → terminal empty array.
         record_review(project, "rev2", Some("apps/cli"), "approved", 2);
         record_review(project, "rev2", Some("packages/core"), "approved", 3);
-        assert!(advance(project, "rev2").is_empty());
+        assert!(round(project, "rev2").is_empty());
     }
 
     /// The single-spec fallback (no wave plan, wave 0) also gets the review
@@ -856,14 +1669,14 @@ mod tests {
         .unwrap();
 
         complete_wave(project, "rev3", 0);
-        let items = advance(project, "rev3");
+        let items = round(project, "rev3");
         assert_eq!(items.len(), 1, "single spec gets exactly one review item");
         assert_eq!(items[0].role, "review");
         assert_eq!(items[0].subagent_type, "mustard:mustard-review");
         assert_eq!(items[0].subproject, "apps/rt");
 
         record_review(project, "rev3", Some("apps/rt"), "approved", 1);
-        assert!(advance(project, "rev3").is_empty());
+        assert!(round(project, "rev3").is_empty());
     }
 
     /// AC-5: the git-boundary fact carried by the dispatch plan reaches the
@@ -899,7 +1712,7 @@ mod tests {
         )
         .unwrap();
 
-        let items = advance(project, "bnd");
+        let items = round(project, "bnd");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].subproject, "apps/sub");
         assert!(items[0].own_git_root, "advance item carries the git-boundary flag");
@@ -943,7 +1756,7 @@ mod tests {
         // A C# wave: the JSX/import extractor and the `export`/`pub` grep have
         // nothing to say about it, so `check` takes the skip branch.
         seed_one_wave(project, "cs", "api", "- apps/api/Domain/Payable.cs");
-        let items = advance(project, "cs");
+        let items = round(project, "cs");
         assert_eq!(items.len(), 1);
         let pc = items[0].precheck.as_ref().expect("impl item carries a precheck");
         assert_eq!(pc["ok"], json!(true), "declining to judge stays fail-open: {pc}");
@@ -967,7 +1780,7 @@ mod tests {
 
         // Control: a TS wave IS judged, so no skip marker is invented for it.
         seed_one_wave(project, "ts", "web", "- apps/web/src/Panel.tsx");
-        let items = advance(project, "ts");
+        let items = round(project, "ts");
         assert_eq!(items.len(), 1);
         let pc = items[0].precheck.as_ref().expect("impl item carries a precheck");
         assert_eq!(pc["ok"], json!(true));

@@ -352,3 +352,117 @@ mod tests {
         assert!(files.is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// The `Depends on` cell — one grammar, for every reader of it
+// ---------------------------------------------------------------------------
+
+/// The markers that mean "no dependencies", matched case-insensitively.
+const NO_DEPS: &[&str] = &["", "—", "-", "–", "none", "nenhuma", "n/a"];
+
+/// `true` when `token` has the SHAPE of a wave reference: `2`, `w2`, `wave-2`,
+/// `wave-2-ui`, `wave.slug.2-ui`. Deliberately narrow — see
+/// [`depends_on_tokens`] for what rides on it.
+fn looks_like_wave_ref(token: &str) -> bool {
+    let t = token.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+    if t.starts_with("wave-") || t.starts_with("wave.") {
+        return t[5..].chars().next().is_some_and(|c| c.is_ascii_digit());
+    }
+    let digits = t.strip_prefix('w').unwrap_or(&t);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Split a wave-plan `Depends on` cell into dependency TOKENS, leaving it to
+/// the caller to resolve each one into its own wave type.
+///
+/// One grammar, because there used to be two readers of this column and they
+/// disagreed: `dispatch-plan` saw only `[[…]]` wikilinks, so a cycle written
+/// with bare numbers was invisible to the refusal; `dependency-precheck` scanned
+/// every token in the cell, so a cell holding ordinary prose declared phantom
+/// dependencies. Both are wrong, in opposite directions, over the same text.
+///
+/// The grammar:
+///
+/// - A `NO_DEPS` marker (an em-dash, `nenhuma`, an empty cell) declares nothing.
+/// - If the cell contains `[[…]]` wikilinks, THOSE are the dependencies and
+///   anything around them is commentary. This is the form `wave-scaffold`
+///   writes, and a cell that carries one is being explicit.
+/// - Otherwise the cell may be a bare list (`1, 3`) — but only if EVERY token
+///   in it has the shape of a wave reference. One token that does not, and the
+///   cell is prose, declaring nothing.
+///
+/// That last rule is the whole point, and it is deliberately all-or-nothing.
+/// Picking the wave-shaped tokens OUT of prose is what turned
+/// `nada (ver os 2 anexos)` into a dependency on wave 2 — and two such cells
+/// into a contradiction that refused a perfectly good plan. A cell is a list or
+/// it is not; there is no reading loose numbers out of a sentence.
+pub(crate) fn depends_on_tokens(cell: &str) -> Vec<String> {
+    let trimmed = cell.trim();
+    if NO_DEPS.iter().any(|m| trimmed.eq_ignore_ascii_case(m)) {
+        return Vec::new();
+    }
+
+    let links = mustard_core::io::atomic_md::find_outgoing_links(trimmed);
+    if !links.is_empty() {
+        return links;
+    }
+
+    let tokens: Vec<&str> = trimmed
+        .split(|c: char| c.is_whitespace() || matches!(c, '[' | ']' | ',' | ';' | '|'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.is_empty() || !tokens.iter().all(|t| looks_like_wave_ref(t)) {
+        return Vec::new();
+    }
+    tokens.into_iter().map(str::to_string).collect()
+}
+
+#[cfg(test)]
+mod depends_on_tests {
+    use super::depends_on_tokens;
+
+    #[test]
+    fn empty_markers_declare_nothing() {
+        for marker in ["", "—", "-", "–", "none", "Nenhuma", "N/A"] {
+            assert!(depends_on_tokens(marker).is_empty(), "marker {marker:?}");
+        }
+    }
+
+    #[test]
+    fn wikilinks_are_the_dependencies_and_prose_around_them_is_not() {
+        assert_eq!(
+            depends_on_tokens("[[wave-1-rt]], [[wave-2-cli]]"),
+            vec!["wave-1-rt".to_string(), "wave-2-cli".to_string()],
+        );
+        assert_eq!(
+            depends_on_tokens("depende de [[wave-1-rt]] (ver os 2 anexos)"),
+            vec!["wave-1-rt".to_string()],
+            "the wikilink is explicit; the 2 in the prose is not a dependency",
+        );
+    }
+
+    #[test]
+    fn a_bare_list_is_read_when_every_token_is_wave_shaped() {
+        assert_eq!(depends_on_tokens("1, 3"), vec!["1".to_string(), "3".to_string()]);
+        assert_eq!(depends_on_tokens("w2"), vec!["w2".to_string()]);
+        assert_eq!(depends_on_tokens("wave-2-ui"), vec!["wave-2-ui".to_string()]);
+    }
+
+    /// The rule that stops a sentence from declaring dependencies. Picking the
+    /// wave-shaped tokens out of prose turned `os 2 anexos` into an edge, and
+    /// two such cells refused a plan that had no contradiction at all.
+    #[test]
+    fn prose_declares_nothing_even_when_it_contains_a_number() {
+        for prose in [
+            "nada (ver os 2 anexos)",
+            "nenhuma real, so a 1",
+            "depende do time de 3 pessoas",
+            "2026-redesign",
+        ] {
+            assert!(depends_on_tokens(prose).is_empty(), "prose {prose:?}");
+        }
+    }
+}

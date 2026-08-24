@@ -46,7 +46,7 @@ use mustard_core::domain::model::event::{
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_KIND,
     EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
-    EVENT_PIPELINE_WAVE_START,
+    EVENT_PIPELINE_WAVE_RETRY, EVENT_PIPELINE_WAVE_START,
 };
 use mustard_core::{
     Flags, Outcome, SpecState, Stage, outcome_label, read_meta, stage_label, write_meta,
@@ -1468,6 +1468,126 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
     // reader (the dashboard phase label included) shows PLANEJANDO through the
     // whole first wave.
     sync_parent_started(project, spec, &ts);
+}
+
+/// Path-explicit `pipeline.wave.retry` emit: records that `wave` is being
+/// handed back for dispatch on attempt `attempt`, after an earlier dispatch of
+/// the same wave never completed.
+///
+/// `wave-advance` calls this beside [`emit_wave_start`] at the one point that
+/// already knows a wave was started and not completed — that re-delivery IS
+/// the retry, and no other persisted dispatch signal exists to count from. It
+/// deliberately does NOT touch the wave's meta: a redispatch does not move the
+/// wave's stage, [`emit_wave_start`] already owns that transition, and doing it
+/// twice would rewrite `startedAt` on every round. The event exists so the
+/// retry ceiling has something deterministic to count instead of re-deriving
+/// the count from the start events. Takes an explicit `project` (not the
+/// process cwd) so it is path-correct under test. Fail-open.
+pub(crate) fn emit_wave_retry(project: &Path, spec: &str, wave: u32, attempt: u32) {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("wave-advance".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_WAVE_RETRY.to_string(),
+        // `retry_count` is the wire spelling of the already-typed
+        // `PipelineTaskDispatchPayload::retry_count` field (that struct is not
+        // reused whole: its `name` is required and a wave has no task name).
+        payload: json!({ "wave": wave, "retry_count": attempt }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+}
+
+/// Path-explicit `pipeline.dispatch_failure` emit for a round that was REFUSED
+/// rather than attempted — today, a wave plan whose `Depends on` column declares
+/// a cycle.
+///
+/// Without this the refusal exists only on stdout, so the stall is invisible to
+/// every reader that folds the event log: `resume-bootstrap` reports the spec as
+/// merely pending and tells the orchestrator to dispatch again, which refuses
+/// again, with nothing recording that it ever did. `wave-advance` must not emit
+/// `pipeline.wave.start` for a refused round — no wave started — but "started
+/// nothing" and "recorded nothing" are different promises, and only the first
+/// one was wanted. Fail-open, like every emit here.
+/// **Idempotent on `reason`**, mirroring the `started_waves` guard on
+/// [`emit_wave_start`]. `wave-advance` is re-invoked freely — the resume loop
+/// calls it after every round — and one authoring mistake must not grow a row
+/// per invocation: `build_pipeline_state` sums dispatch failures into
+/// `metrics.retries`, so a spec that never dispatched anything would report N
+/// retries for a single broken table.
+///
+/// The key is the REASON alone, never the rendered `description`. The
+/// description names the waves currently blocking, and that list shrinks as
+/// they complete — keying on it let the same contradiction write a second row
+/// the moment its wording changed, which is the thing the guard exists to stop.
+///
+/// **The guard expires with the record it protects**, and reads the very same
+/// constant the projection clears by — a duplicated literal would let the two
+/// drift, and a guard outliving the record it guards is a guard that silences
+/// the signal. A guard over the whole event history would suppress every
+/// re-emit once the first record aged out, and the stall would go back to being
+/// invisible, permanently, which is the exact loop this function exists to
+/// break. Only a record still INSIDE that window suppresses a re-emit.
+///
+/// The payload carries `at`. `render_dispatch_failure` reads `at` with no
+/// fallback to the event `ts`, so omitting it renders every failure as
+/// `ageMs: 0` — permanently brand new, however old it really is.
+pub(crate) fn emit_dispatch_failure(
+    project: &Path,
+    spec: &str,
+    reason: &str,
+    description: &str,
+    known: &[HarnessEvent],
+) {
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
+    let already = known.iter().any(|e| {
+        if e.event != EVENT_PIPELINE_DISPATCH_FAILURE || e.spec.as_deref() != Some(spec) {
+            return false;
+        }
+        if e.payload.get("reason").and_then(|v| v.as_str()) != Some(reason) {
+            return false;
+        }
+        // Bounded at BOTH ends. An `at` in the future — clock skew between
+        // machines, a restored backup, a hand-edited NDJSON — yields a negative
+        // age, which an upper bound alone accepts as "fresh": the guard would
+        // then suppress every re-emit until real time caught up, while the
+        // projection replayed the phantom failure. Out-of-window in either
+        // direction means "does not suppress".
+        e.payload
+            .get("at")
+            .and_then(|v| v.as_str())
+            .or(Some(e.ts.as_str()))
+            .and_then(mustard_core::time::parse_iso_millis)
+            .is_some_and(|at_ms| {
+                (0..=crate::commands::event::event_projections::DISPATCH_FAILURE_TTL_MS)
+                    .contains(&(now_ms - at_ms))
+            })
+    });
+    if already {
+        return;
+    }
+    let ts = now_iso8601();
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.clone(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("wave-advance".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_DISPATCH_FAILURE.to_string(),
+        payload: json!({ "reason": reason, "description": description, "at": ts }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
 }
 
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a

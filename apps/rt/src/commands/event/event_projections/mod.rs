@@ -227,7 +227,16 @@ pub struct PipelineStateView {
 }
 
 /// Ten minutes in milliseconds — the stale-failure cutoff matching the `/resume` Step 0 contract.
-const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
+///
+/// A `cyclic-dependency` refusal was briefly exempted from this, on the reasoning
+/// that a contradictory wave plan does not heal with time. The reasoning was
+/// right and the change was wrong: this cutoff is the ONLY thing that ever
+/// clears `last_dispatch_failure`, so the exemption meant a spec whose plan had
+/// been FIXED still reported the failure — and `mode: ask` — on every resume,
+/// forever. Retiring a durable failure needs a clearing signal (a later
+/// successful dispatch supersedes it), not an exemption; until that exists, the
+/// ten-minute window is the honest behaviour.
+pub(crate) const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
 
 /// Derive a [`PipelineStateView`] for `spec` by folding a pre-fetched event
 /// slice. This is the canonical implementation used by all new call sites.

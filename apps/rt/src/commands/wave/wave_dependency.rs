@@ -188,56 +188,12 @@ enum TopoResult {
 /// Assign files to waves by topological level. Files with no in-graph
 /// dependencies are wave 1; cyclic files yield `Cycle`.
 fn topological_waves(graph: &BTreeMap<PathBuf, BTreeSet<PathBuf>>) -> TopoResult {
-    let mut indegree: BTreeMap<&PathBuf, usize> = graph.keys().map(|k| (k, 0)).collect();
-    let mut dependents: BTreeMap<&PathBuf, BTreeSet<&PathBuf>> =
-        graph.keys().map(|k| (k, BTreeSet::new())).collect();
-
-    for (node, deps) in graph {
-        for dep in deps {
-            if graph.contains_key(dep) {
-                *indegree.entry(node).or_insert(0) += 1;
-                dependents.entry(dep).or_default().insert(node);
-            }
-        }
+    let levels = crate::shared::dag::assign_levels(graph);
+    if levels.cycle.is_empty() {
+        TopoResult::Waves(levels.rounds())
+    } else {
+        TopoResult::Cycle(levels.cycle)
     }
-
-    let mut waves: Vec<Vec<PathBuf>> = Vec::new();
-    let mut visited: BTreeSet<&PathBuf> = BTreeSet::new();
-    let mut current: Vec<&PathBuf> = indegree
-        .iter()
-        .filter(|&(_, &d)| d == 0)
-        .map(|(&n, _)| n)
-        .collect();
-
-    while !current.is_empty() {
-        waves.push(current.iter().map(|p| (*p).clone()).collect());
-        for node in &current {
-            visited.insert(node);
-        }
-        let mut next: Vec<&PathBuf> = Vec::new();
-        for node in &current {
-            if let Some(deps) = dependents.get(node) {
-                for &dependent in deps {
-                    let entry = indegree.entry(dependent).or_insert(0);
-                    *entry = entry.saturating_sub(1);
-                    if *entry == 0 && !visited.contains(dependent) {
-                        next.push(dependent);
-                    }
-                }
-            }
-        }
-        current = next;
-    }
-
-    if visited.len() < graph.len() {
-        let stuck: Vec<PathBuf> = graph
-            .keys()
-            .filter(|k| !visited.contains(k))
-            .cloned()
-            .collect();
-        return TopoResult::Cycle(stuck);
-    }
-    TopoResult::Waves(waves)
 }
 
 /// Relativize `abs` against `project_root`, with forward slashes.
