@@ -413,6 +413,19 @@ fn run_lock_guard(root: &Path, dir: &Path, version: &str, crates: &[&str]) -> Op
         return None;
     }
     let Some(shell) = shell() else {
+        // A skip is missing evidence, and on CI it is missing evidence about a
+        // machine we KNOW ships a shell — so there it is a finding, not a pass.
+        // Left silent, this branch would turn the fix into its own hiding
+        // place: the three guards below would go green having run nothing, on
+        // exactly the platform that produced the defect.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no program on this runner answers the shell control question, so \
+             {LOCK_GUARD_REL} was never run. Every runner CI and `bump-on-main` \
+             use ships a shell; skipping here would pass this guard by measuring \
+             nothing. Candidates tried: {:?}",
+            shell_candidates()
+        );
         eprintln!(
             "[skip] nothing on this machine answers the shell control question, so \
              {LOCK_GUARD_REL} cannot be run"
