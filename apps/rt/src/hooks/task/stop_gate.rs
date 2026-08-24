@@ -68,6 +68,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use mustard_core::io::fs;
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{apply_tone, translate};
+use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::path::Path;
 
@@ -162,12 +163,46 @@ fn resolve_gated_spec(project_dir: &str, input: &HookInput) -> Option<String> {
     if !approved {
         return None;
     }
+    // Lifecycle: the marker above is minted at the PLAN approval, which is NOT
+    // the moment EXECUTE is unlocked. In the window between the two, verifying
+    // is asking for something the product forbids: `ac-negative-check` has
+    // already proven every criterion RED (that redness is what qualified them to
+    // enter the plan at all), and `scope_guard` denies the production edit that
+    // would turn them green. Blocking there has no state of the world in which
+    // it passes, so the gate releases and waits for EXECUTE.
+    if meta_stage_is_plan(project_dir, &spec) {
+        return None;
+    }
     // Executable ACs: the exact union qa-run would run (an empty union is the
     // `overall: skip` case). Reuses the qa-run predicate so the two agree.
     if !spec_has_executable_acs(Path::new(project_dir), &spec) {
         return None;
     }
     Some(spec)
+}
+
+/// `true` when the spec's `meta.json#stage` reads `Plan` — the window where the
+/// plan is approved but EXECUTE has not been unlocked yet.
+///
+/// Mirrors the normalisation `scope_guard::meta_stage_is_plan` uses (trim +
+/// case-insensitive) from the other side of the same window: that gate denies
+/// the write while this one declines to verify. The two-line predicate is
+/// deliberately duplicated rather than hoisted to `shared` — two copies, not the
+/// three that earned [`crate::shared::gate_mode`] its own module — so this fix
+/// touches one file instead of dragging a sibling gate's test battery along.
+///
+/// **Positive-only, and that is the whole point.** An absent, unreadable or
+/// stage-less `meta.json` returns `false`, leaving the gate verifying exactly as
+/// it did before this condition existed. Releasing on a MISSING signal would
+/// silently disarm the gate for every spec without a sidecar — including this
+/// module's own test battery, which seeds `spec.md` and no `meta.json` at all.
+fn meta_stage_is_plan(project_dir: &str, spec: &str) -> bool {
+    ClaudePaths::for_project(Path::new(project_dir))
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .and_then(|sp| mustard_core::read_meta(&sp.dir().join("meta.json")))
+        .and_then(|m| m.stage)
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("Plan"))
 }
 
 /// `true` when the harness marks this stop as a repeat driven by a prior
@@ -271,6 +306,60 @@ mod tests {
     /// Bind `session` → `spec` so `resolve_gated_spec` finds it without env.
     fn bind(project: &Path, session: &str, spec: &str) {
         bind_session_spec(project.to_str().unwrap(), session, spec);
+    }
+
+    /// Seed the `meta.json` sidecar with `stage` — the shape a Full plan parked
+    /// at PLAN really has on disk. Every OTHER test here deliberately omits it,
+    /// which is what pins the positive-only reading in `meta_stage_is_plan`.
+    fn seed_meta(project: &Path, spec: &str, stage: &str) {
+        let spec_dir = project.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            format!(r#"{{"stage":"{stage}","outcome":"Active","scope":"full"}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn stop_gate_releases_a_spec_still_in_plan() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        // The exact on-disk shape of an approved Full plan awaiting `/spec`: a
+        // red criterion, the PLAN approval marker, and stage still `Plan`.
+        seed_spec(project, "plan-spec", AC_FAIL);
+        seed_meta(project, "plan-spec", "Plan");
+        approve(project, "plan-spec");
+        bind(project, "s-plan", "plan-spec");
+
+        let v = StopGate.evaluate(&stop_input("s-plan"), &ctx(project)).expect("no error");
+        assert!(
+            !v.is_blocking(),
+            "a spec still in PLAN is forbidden to turn its criteria green, so the gate must release, got {v:?}"
+        );
+        // And it releases WITHOUT paying for a QA run — no consecutive block is
+        // recorded, so the 8-block ceiling is never spent on this window.
+        assert!(
+            !stop_gate_counter_path(project.to_str().unwrap(), "plan-spec")
+                .unwrap()
+                .exists(),
+            "releasing during PLAN must not record a consecutive block"
+        );
+    }
+
+    #[test]
+    fn stop_gate_still_blocks_once_the_spec_leaves_plan() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        // Same spec, same red criterion — only the stage moved on. The release
+        // above must be about the WINDOW, never about the sidecar's presence.
+        seed_spec(project, "exec-spec", AC_FAIL);
+        seed_meta(project, "exec-spec", "Execute");
+        approve(project, "exec-spec");
+        bind(project, "s-exec", "exec-spec");
+
+        let v = StopGate.evaluate(&stop_input("s-exec"), &ctx(project)).expect("no error");
+        assert!(v.is_blocking(), "past PLAN a red criterion still blocks, got {v:?}");
     }
 
     // -- AC-1 -----------------------------------------------------------------
