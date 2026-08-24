@@ -354,9 +354,14 @@ const SHELL_PROBE_EXIT: i32 = 7;
 /// perfectly and still cannot open `C:/…/check-lock-pins.sh`, because that path
 /// means nothing inside its own root. Asking only "are you a shell" would hand
 /// the guard to it and land back on the empty diagnosis this file refuses.
-fn shell_control(script: &str) -> String {
+fn shell_control() -> String {
+    // `$0`, not the path spelled into the text. Interpolating it would break on
+    // a checkout whose path carries an apostrophe — the quote would close early,
+    // bash would die on an unterminated string, and EVERY candidate would be
+    // rejected on a machine with a perfectly good shell. The diagnosis would
+    // then name the machine while the real cause was the path.
     format!(
-        "test -f '{script}' || exit 1; echo {SHELL_PROBE_OUT}; \
+        "test -f \"$0\" || exit 1; echo {SHELL_PROBE_OUT}; \
          echo {SHELL_PROBE_ERR} 1>&2; exit {SHELL_PROBE_EXIT}"
     )
 }
@@ -376,7 +381,7 @@ fn answer_is_a_shell(code: Option<i32>, stdout: &str, stderr: &str) -> bool {
 
 /// Ask one candidate the control question about `script`.
 fn speaks_like_a_shell(candidate: &Path, script: &str) -> bool {
-    match Command::new(candidate).arg("-c").arg(shell_control(script)).output() {
+    match Command::new(candidate).arg("-c").arg(shell_control()).arg(script).output() {
         Ok(out) => answer_is_a_shell(
             out.status.code(),
             &String::from_utf8_lossy(&out.stdout),
@@ -392,8 +397,15 @@ fn speaks_like_a_shell(candidate: &Path, script: &str) -> bool {
 /// a Git install puts `git.exe` under `<root>/cmd` and its shell under
 /// `<root>/bin`, so the shell is found WHEREVER the install lives — a per-user
 /// setup (`winget`, `scoop`, a non-elevated installer) included, which a fixed
-/// `Program Files` sweep misses entirely. `mustard-core` cannot depend on
-/// `mustard-rt`, so what is shared here is the technique, not the code.
+/// `Program Files` sweep misses entirely.
+///
+/// It is a SECOND copy of that walk, and the dependency does not excuse it:
+/// `apps/rt` already depends on `mustard-core` (`apps/rt/Cargo.toml:34`), so
+/// the resolver could live here and be consumed there. The two have already
+/// drifted — that one checks `bin/bash.exe` only, this one also `usr/bin`, and
+/// that one trusts spawnability where this one asks the control question.
+/// Unifying them moves code across two crates and is its own unit of work, not
+/// a line of this one; naming the debt is what this comment is for.
 fn git_bash_beside_git_on_path() -> Vec<PathBuf> {
     let Some(path) = std::env::var_os("PATH") else {
         return Vec::new();
@@ -474,8 +486,9 @@ fn shell(script: &str) -> Option<&'static PathBuf> {
 
 /// Does this `CI` value mean "yes, this is a continuous-integration run"?
 ///
-/// Presence is NOT the question. `CI=false`, `CI=0` and an empty `CI` are all
-/// how a person or a base image says "not CI", and reading them as CI would
+/// Presence is NOT the question. `CI=false`, `CI=no`, `CI=off`, `CI=0` and an
+/// empty `CI` are all how a person or a base image says "not CI" — the list is
+/// the spellings, not one of them — and reading any as CI would
 /// turn an honest local skip into a hard failure that blames a runner the
 /// developer is not sitting on. This is the only `CI` probe in the tree, so
 /// this reading is the whole contract rather than a copy of someone else's.
@@ -483,7 +496,7 @@ fn ci_value_means_yes(value: Option<&str>) -> bool {
     match value {
         Some(value) => {
             let value = value.trim().to_ascii_lowercase();
-            !(value.is_empty() || value == "false" || value == "0")
+            !matches!(value.as_str(), "" | "false" | "0" | "no" | "off" | "n")
         }
         None => false,
     }
@@ -992,7 +1005,10 @@ fn a_stub_that_only_speaks_on_stdout_is_not_a_shell() {
 /// a hard failure whose message blames a runner the developer is not on.
 #[test]
 fn ci_is_read_by_value_and_not_by_presence() {
-    for negative in [None, Some(""), Some("  "), Some("false"), Some("FALSE"), Some("0")] {
+    let negatives =
+        [None, Some(""), Some("  "), Some("false"), Some("FALSE"), Some("0"), Some("no"),
+         Some("NO"), Some("off"), Some("n")];
+    for negative in negatives {
         assert!(
             !ci_value_means_yes(negative),
             "CI={negative:?} says this is not a CI run and must be read that way"
