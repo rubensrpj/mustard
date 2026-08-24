@@ -46,7 +46,7 @@ use mustard_core::domain::model::event::{
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_KIND,
     EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
-    EVENT_PIPELINE_WAVE_START,
+    EVENT_PIPELINE_WAVE_RETRY, EVENT_PIPELINE_WAVE_START,
 };
 use mustard_core::{
     Flags, Outcome, SpecState, Stage, outcome_label, read_meta, stage_label, write_meta,
@@ -1468,6 +1468,40 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
     // reader (the dashboard phase label included) shows PLANEJANDO through the
     // whole first wave.
     sync_parent_started(project, spec, &ts);
+}
+
+/// Path-explicit `pipeline.wave.retry` emit: records that `wave` is being
+/// handed back for dispatch on attempt `attempt`, after an earlier dispatch of
+/// the same wave never completed.
+///
+/// `wave-advance` calls this beside [`emit_wave_start`] at the one point that
+/// already knows a wave was started and not completed — that re-delivery IS
+/// the retry, and no other persisted dispatch signal exists to count from. It
+/// deliberately does NOT touch the wave's meta: a redispatch does not move the
+/// wave's stage, [`emit_wave_start`] already owns that transition, and doing it
+/// twice would rewrite `startedAt` on every round. The event exists so the
+/// retry ceiling has something deterministic to count instead of re-deriving
+/// the count from the start events. Takes an explicit `project` (not the
+/// process cwd) so it is path-correct under test. Fail-open.
+pub(crate) fn emit_wave_retry(project: &Path, spec: &str, wave: u32, attempt: u32) {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("wave-advance".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_WAVE_RETRY.to_string(),
+        // `retry_count` is the wire spelling of the already-typed
+        // `PipelineTaskDispatchPayload::retry_count` field (that struct is not
+        // reused whole: its `name` is required and a wave has no task name).
+        payload: json!({ "wave": wave, "retry_count": attempt }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
 }
 
 /// Path-explicit `pipeline.dispatch_failure` emit for a round that was REFUSED

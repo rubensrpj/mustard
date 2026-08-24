@@ -4,6 +4,7 @@ description: Adversarially verifies an implementer's work in one subproject duri
 tools: Read, Grep, Glob, Bash
 model: inherit
 effort: high
+maxTurns: 80
 ---
 You adversarially verify the implementer's work in one subproject. You are NOT the implementer.
 

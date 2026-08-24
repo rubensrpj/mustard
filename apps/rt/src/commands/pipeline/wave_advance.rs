@@ -97,14 +97,34 @@
 //!
 //! Fail-open still holds where it was meant to: nothing is dropped. The waves
 //! stay exactly as authored, and only the ROUND is declined.
+//!
+//! ## Retry ceiling
+//!
+//! A wave that opened and never closed is, to the filter above, indistinguishable
+//! from a wave that never ran: it comes back in every round, forever. The ceiling
+//! is what ends that. Each delivery of a wave that already carries a
+//! `pipeline.wave.start` and no `pipeline.wave.complete` IS a redispatch, so the
+//! same block that emits the start writes a `pipeline.wave.retry` instead; the
+//! round counts those events and, once a wave reaches `MUSTARD_RETRY_CEILING`
+//! (default 3), pulls THAT WAVE out and puts an escalation line in its place.
+//!
+//! The unit is the wave and never the round — the level's healthy siblings
+//! dispatch normally, for the same reason the cycle refusal narrowed above.
+//! `MUSTARD_RETRY_GATE_MODE` (default `strict`) governs: `off` does not look,
+//! `warn` records the finding and still dispatches, `strict` also pulls. The
+//! finding is recorded as a `pipeline.dispatch_failure` in both looking modes, so
+//! a wave that stopped being tried does not read as an idle pipeline to
+//! `resume-bootstrap`.
 
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
 // `VERDICT_KEY` is imported bare because `json!` takes a key as a token
 // sequence, not a path expression.
 use crate::commands::review::dependency_precheck::{self, VERDICT_KEY};
+use crate::shared::gate_mode::{resolve_mode, GateMode};
 use mustard_core::domain::model::event::{
-    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_START,
+    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_RETRY,
+    EVENT_PIPELINE_WAVE_START,
 };
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
@@ -178,6 +198,165 @@ pub(crate) enum AdvanceRefusal {
 /// the pre-flag shape for every non-submodule subproject.
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+// ---------------------------------------------------------------------------
+// Retry ceiling — the shared mode cascade, plus a number the cascade cannot
+// carry (see [`retry_ceiling`]).
+// ---------------------------------------------------------------------------
+
+/// How many REDISPATCHES of the same wave a round tolerates before that wave is
+/// pulled and escalated. The first delivery of a wave is not a redispatch, so
+/// the default lets a wave be handed out four times in all.
+const DEFAULT_RETRY_CEILING: u32 = 3;
+
+/// The retry gate's mode, through the shared cascade
+/// ([`crate::shared::gate_mode`]), with this call-site's own default.
+///
+/// `strict`, deliberately: the gate exists to STOP a loop that turns without
+/// limit, and in `warn` it would only describe the loop while it kept turning.
+/// `MUSTARD_RETRY_GATE_MODE=off` remains the escape hatch, and an unrecognised
+/// value falls back here rather than hardening or disabling on its own.
+fn retry_mode() -> GateMode {
+    resolve_mode("MUSTARD_RETRY_GATE_MODE", None, GateMode::Strict)
+}
+
+/// The ceiling itself, from `MUSTARD_RETRY_CEILING` (default
+/// [`DEFAULT_RETRY_CEILING`]).
+///
+/// It needs an env var of its own because [`resolve_mode`] answers with a
+/// three-state enum and a number cannot come out of one — the same mode+number
+/// pair `MUSTARD_DELEGATION_WARN_MODE` and `MUSTARD_DELEGATION_WARN_THRESHOLD`
+/// already form for the delegation advisory.
+///
+/// See [`parse_retry_ceiling`] for what the raw value is allowed to be. Split
+/// the way `parse_guard_gate_mode` / `guard_gate_mode` are in the write family,
+/// so the parsing is testable without moving the process environment
+/// (`std::env::set_var` is forbidden under edition 2024).
+fn retry_ceiling() -> u32 {
+    parse_retry_ceiling(std::env::var("MUSTARD_RETRY_CEILING").ok().as_deref())
+}
+
+/// Parse a raw `MUSTARD_RETRY_CEILING` value.
+///
+/// A missing or non-numeric value falls back to [`DEFAULT_RETRY_CEILING`], and
+/// so does `0`: a ceiling of zero would pull every wave before its FIRST
+/// dispatch, which is not a ceiling on redispatch but a pipeline that never
+/// starts. Lifting the ceiling is what `MUSTARD_RETRY_GATE_MODE=off` is for.
+fn parse_retry_ceiling(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_RETRY_CEILING)
+}
+
+/// How many times each wave of `spec` was redispatched, read from the
+/// `pipeline.wave.retry` rows of the spec's log — the same `.events/` reading
+/// [`completed_waves`] and [`started_waves`] use, grouped by the payload's
+/// `wave`. A wave absent from the map was never redispatched.
+///
+/// The count is the NUMBER OF ROWS, not the largest `retry_count` they carry:
+/// the attempt number is written for a human reader, while each row is itself
+/// one redispatch, so a log whose rows arrived out of order still counts right.
+fn retry_counts(events: &[HarnessEvent], spec: &str) -> std::collections::BTreeMap<u32, u32> {
+    let mut counts: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    let rows = events
+        .iter()
+        .filter(|e| e.event == EVENT_PIPELINE_WAVE_RETRY && e.spec.as_deref() == Some(spec));
+    for e in rows {
+        if let Some(wave) = e
+            .payload
+            .get("wave")
+            .and_then(Value::as_u64)
+            .and_then(|w| u32::try_from(w).ok())
+        {
+            *counts.entry(wave).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Which of the pending level's waves have reached `ceiling` redispatches.
+///
+/// Pure, and it takes the mode as an argument rather than resolving it: that is
+/// what makes all three answers testable at all, since `std::env::set_var` is
+/// forbidden under edition 2024 and a test cannot move `MUSTARD_RETRY_*`.
+///
+/// `off` answers with the empty set — the gate does not look, so nothing is
+/// found, nothing is recorded and nothing is pulled. `warn` and `strict` find
+/// exactly the same waves; what separates them is [`pulls_at_ceiling`], which
+/// decides whether the finding also leaves the round.
+fn waves_at_ceiling(
+    mode: GateMode,
+    ceiling: u32,
+    retries: &std::collections::BTreeMap<u32, u32>,
+    pending: &[u32],
+) -> BTreeSet<u32> {
+    if mode == GateMode::Off {
+        return BTreeSet::new();
+    }
+    pending
+        .iter()
+        .copied()
+        .filter(|w| retries.get(w).copied().unwrap_or(0) >= ceiling)
+        .collect()
+}
+
+/// Whether a wave found at the ceiling leaves the round. Only `strict` acts:
+/// `warn` has already said everything it is allowed to say (the recorded
+/// `pipeline.dispatch_failure`) and lets the wave dispatch again, and `off`
+/// found nothing to act on.
+fn pulls_at_ceiling(mode: GateMode) -> bool {
+    mode == GateMode::Strict
+}
+
+/// The line that takes the place of a wave pulled for reaching the ceiling.
+///
+/// It is not a dispatch, and its `prompt` says so in its first words: the field
+/// carries the escalation message ITSELF rather than a `MUSTARD-PROMPT-REF`
+/// stub, so the round needs no new template and the orchestrator can relay the
+/// sentence to the operator verbatim. The item keeps the pulled wave's own
+/// number, subproject and git boundary so a reader can tell WHICH wave stopped,
+/// and the text names the wave, its count and the ceiling — a reader holding
+/// nothing but the array still learns why the wave is gone and what lets it run
+/// again.
+fn escalation_item(
+    spec: &str,
+    it: &dispatch_plan::DispatchItem,
+    retries: u32,
+    ceiling: u32,
+) -> AdvanceItem {
+    let wave = it.wave;
+    let role = &it.role;
+    let sub = &it.subproject;
+    let prompt = format!(
+        "STOP — do not dispatch this item to an agent.\n\
+         \n\
+         Wave {wave} ({role}, {sub}) of spec `{spec}` has been redispatched {retries} \
+         time(s) without ever completing, reaching the retry ceiling of {ceiling}. It was \
+         REMOVED from this round and is not handed back while the ceiling holds. The \
+         other waves of the same level were dispatched normally.\n\
+         \n\
+         A human decides what happens next: raise this with AskUserQuestion, naming the \
+         wave, its retry count and the ceiling.\n\
+         \n\
+         The wave runs again only once something changes — finish it and record it \
+         (`mustard-rt run wave-done --spec {spec} --wave {wave}`), raise \
+         `MUSTARD_RETRY_CEILING`, or set `MUSTARD_RETRY_GATE_MODE=off` to lift the \
+         ceiling entirely.\n"
+    );
+    AdvanceItem {
+        wave,
+        role: "escalation".to_string(),
+        subproject: sub.clone(),
+        // Through the same helper every other item uses. An escalation has no
+        // agent of its own, so the helper answers `general-purpose`; the answer
+        // still must not be a hand-written literal.
+        subagent_type: agent_prompt_render::recommended_subagent_type("escalation"),
+        prompt,
+        // Nothing is about to be dispatched, so there is nothing to precheck.
+        precheck: None,
+        own_git_root: it.own_git_root,
+    }
 }
 
 /// CLI entry — `mustard-rt run wave-advance --spec <slug>`.
@@ -264,10 +443,56 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, Ad
         return Err(AdvanceRefusal::CyclicDependency(cycle));
     }
 
+    // The retry ceiling, read once for the whole round. `off` does not look;
+    // `warn` looks and records; `strict` also pulls the wave out.
+    //
+    // The unit is the WAVE, never the round — the same lesson the refusal above
+    // was narrowed by. A level's other waves have their own `Depends on` cells,
+    // their own subprojects and their own reasons for being clean; holding them
+    // back because a sibling spun out strangles work that was never in trouble.
+    let mode = retry_mode();
+    let ceiling = retry_ceiling();
+    let retries = retry_counts(&events, spec);
+    let pending: Vec<u32> = plan
+        .iter()
+        // Wave 0 is the wave-less single-spec fallback: no start is emitted for
+        // it, so no retry ever is either, and it cannot be at a ceiling.
+        .filter(|it| it.level == level && it.wave > 0 && !completed.contains(&it.wave))
+        .map(|it| it.wave)
+        .collect();
+    let at_ceiling = waves_at_ceiling(mode, ceiling, &retries, &pending);
+    for wave in &at_ceiling {
+        let count = retries.get(wave).copied().unwrap_or(0);
+        // Recorded in `warn` too — leaving the fact behind without acting on it
+        // is that mode's whole job. A wave that stopped being tried and left no
+        // record reads as an idle pipeline to `resume-bootstrap`, which is how
+        // the cycle refusal earned its own record. The reason is keyed per wave
+        // so two stuck waves do not collapse into one row: the guard is
+        // idempotent on the reason alone, and a wave number is stable where the
+        // rendered count is not.
+        crate::commands::event::emit_pipeline::emit_dispatch_failure(
+            project,
+            spec,
+            &format!("retry-ceiling-wave-{wave}"),
+            &format!(
+                "wave {wave} was redispatched {count} time(s) without completing, reaching the retry ceiling of {ceiling}"
+            ),
+            &events,
+        );
+    }
+    let pulled: BTreeSet<u32> = if pulls_at_ceiling(mode) { at_ceiling } else { BTreeSet::new() };
+
     let items: Vec<AdvanceItem> = plan
         .into_iter()
         .filter(|it| it.level == level && !completed.contains(&it.wave))
         .map(|it| {
+            // Over the ceiling: the wave leaves the round and an escalation
+            // line stands where it was, so the level keeps its shape and the
+            // orchestrator is told why one member stopped.
+            if pulled.contains(&it.wave) {
+                let count = retries.get(&it.wave).copied().unwrap_or(0);
+                return escalation_item(spec, &it, count, ceiling);
+            }
             // Wave 0 is the single-spec fallback: render the root spec.md
             // (no `--wave`), exactly like the prompt_cmd dispatch-plan emits.
             let wave_arg = (it.wave > 0).then_some(it.wave);
@@ -306,10 +531,25 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Result<Vec<AdvanceItem>, Ad
     // point that KNOWS the dispatched wave, so emit it here (idempotent: a wave
     // already carrying start/complete is skipped). The emit also advances the
     // wave's own meta `Plan→Execute`. Wave 0 (single-spec fallback) is skipped —
-    // it has no `wave-N-*` sidecar.
+    // it has no `wave-N-*` sidecar, and so is a wave that was PULLED: an
+    // escalation line dispatches nothing, so nothing about it is starting.
+    //
+    // A wave that already carries a start, does not carry a complete (the filter
+    // above guarantees that) and is being handed out again IS the redispatch —
+    // there is no other persisted dispatch signal to count from (see the module
+    // docs). So the same block writes a `pipeline.wave.retry` in that case,
+    // continuing the count already on the log; the start stays idempotent and
+    // keeps sole ownership of the wave's `Plan→Execute` transition, which a
+    // second emit would rewrite on every round.
     let started = started_waves(&events, spec);
     for it in &items {
-        if it.wave > 0 && !started.contains(&it.wave) {
+        if it.wave == 0 || pulled.contains(&it.wave) {
+            continue;
+        }
+        if started.contains(&it.wave) {
+            let attempt = retries.get(&it.wave).copied().unwrap_or(0) + 1;
+            crate::commands::event::emit_pipeline::emit_wave_retry(project, spec, it.wave, attempt);
+        } else {
             crate::commands::event::emit_pipeline::emit_wave_start(project, spec, it.wave);
         }
     }
@@ -872,6 +1112,188 @@ mod tests {
             spec: Some(spec.to_string()),
         };
         crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    }
+
+    /// Emit a `pipeline.wave.retry` for `wave` into the spec's events log,
+    /// shaped exactly as `advance` writes one on a redispatch.
+    fn retry_wave(project: &Path, spec: &str, wave: u32, attempt: u32) {
+        use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: format!("2026-06-09T02:00:0{attempt}.000Z"),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Orchestrator,
+                id: Some("wave-advance".to_string()),
+                actor_type: None,
+            },
+            event: EVENT_PIPELINE_WAVE_RETRY.to_string(),
+            payload: json!({ "wave": wave, "retry_count": attempt }),
+            spec: Some(spec.to_string()),
+        };
+        crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    }
+
+    /// AC-1 — a wave whose retry count has reached the ceiling leaves the round,
+    /// an escalation line stands where it was, and the healthy sibling of the
+    /// same level dispatches normally.
+    ///
+    /// The control round matters: without it an empty round would satisfy the
+    /// assertion for the wrong reason, and the point is that ONE wave was pulled
+    /// while the level went on.
+    #[test]
+    fn retry_ceiling_pulls_wave_from_round() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves(project, "ceil");
+
+        // Control: nothing on the log yet, so level 0 dispatches both waves.
+        let control = round(project, "ceil");
+        assert_eq!(control.len(), 2, "control: no wave is at the ceiling yet");
+        assert!(control.iter().all(|it| it.role != "escalation"), "control: {control:?}");
+
+        // Wave 1 forged AT the default ceiling; wave 2 stays clean. The env var
+        // is deliberately not touched — `std::env::set_var` is forbidden under
+        // edition 2024, so the test exercises the declared default.
+        for attempt in 1..=DEFAULT_RETRY_CEILING {
+            retry_wave(project, "ceil", 1, attempt);
+        }
+
+        let items = round(project, "ceil");
+        assert_eq!(items.len(), 2, "the level still answers with two lines: {items:?}");
+
+        let stuck = &items[0];
+        assert_eq!(stuck.wave, 1, "the escalation names the wave it replaced");
+        assert_eq!(stuck.role, "escalation", "wave 1 left the round: {items:?}");
+        assert!(stuck.precheck.is_none(), "an escalation dispatches nothing to precheck");
+        assert!(
+            !stuck.prompt.starts_with("MUSTARD-PROMPT-REF:"),
+            "the escalation IS the text, not a stub: {}",
+            stuck.prompt
+        );
+        for needle in [
+            "Wave 1",
+            &format!("redispatched {DEFAULT_RETRY_CEILING} time"),
+            &format!("ceiling of {DEFAULT_RETRY_CEILING}"),
+        ] {
+            assert!(
+                stuck.prompt.contains(needle),
+                "the escalation must name {needle:?}: {}",
+                stuck.prompt
+            );
+        }
+
+        // The healthy sibling of the same level is untouched.
+        let sibling = &items[1];
+        assert_eq!(sibling.wave, 2);
+        assert_eq!(sibling.role, "cli");
+        assert!(
+            sibling.prompt.starts_with("MUSTARD-PROMPT-REF:"),
+            "the clean sibling still dispatches: {}",
+            sibling.prompt
+        );
+
+        // The pulled wave is not redispatched, so it gains no further retry;
+        // the sibling's re-delivery IS counted.
+        let counts = retry_counts(&spec_events(project, "ceil"), "ceil");
+        assert_eq!(counts.get(&1).copied(), Some(DEFAULT_RETRY_CEILING));
+        assert_eq!(counts.get(&2).copied(), Some(1));
+
+        // And the stall is on the record, not only in the round.
+        let recorded = spec_events(project, "ceil")
+            .iter()
+            .filter(|e| {
+                e.event == "pipeline.dispatch_failure"
+                    && e.payload["reason"].as_str() == Some("retry-ceiling-wave-1")
+            })
+            .count();
+        assert_eq!(recorded, 1, "the wave that stopped being tried is recorded once");
+    }
+
+    /// The mode governs two separate things, and they must not be collapsed:
+    /// whether the gate LOOKS, and whether what it finds leaves the round. `off`
+    /// does not look at all (so nothing is recorded either); `warn` finds
+    /// exactly what `strict` finds and keeps dispatching it; only `strict`
+    /// pulls. Exercised directly because the env vars are unreachable from a
+    /// test — `std::env::set_var` is forbidden under edition 2024.
+    #[test]
+    fn ceiling_mode_governs_looking_and_pulling() {
+        let retries = std::collections::BTreeMap::from([(1u32, 3u32), (2u32, 1u32)]);
+        let pending = vec![1u32, 2];
+
+        assert!(
+            waves_at_ceiling(GateMode::Off, 3, &retries, &pending).is_empty(),
+            "off does not look, so it finds nothing to record",
+        );
+        assert!(!pulls_at_ceiling(GateMode::Off));
+
+        let warn = waves_at_ceiling(GateMode::Warn, 3, &retries, &pending);
+        assert_eq!(warn, BTreeSet::from([1u32]), "warn finds the wave at the ceiling");
+        assert!(!pulls_at_ceiling(GateMode::Warn), "warn records, it does not pull");
+
+        assert_eq!(
+            waves_at_ceiling(GateMode::Strict, 3, &retries, &pending),
+            warn,
+            "strict finds exactly what warn finds",
+        );
+        assert!(pulls_at_ceiling(GateMode::Strict));
+
+        // The ceiling is the boundary, not a threshold to exceed: a wave one
+        // redispatch short of it stays in the round.
+        assert!(
+            waves_at_ceiling(GateMode::Strict, 4, &retries, &pending).is_empty(),
+            "3 redispatches do not reach a ceiling of 4",
+        );
+    }
+
+    /// A ceiling of `0` is not a ceiling on redispatch — it would pull every
+    /// wave before its first dispatch, leaving a pipeline that never starts — so
+    /// it falls back to the default like any other unusable value.
+    /// `MUSTARD_RETRY_GATE_MODE=off` is what lifts the gate.
+    #[test]
+    fn retry_ceiling_never_resolves_to_zero() {
+        assert_eq!(parse_retry_ceiling(None), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("")), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("many")), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("-1")), DEFAULT_RETRY_CEILING);
+        assert_eq!(parse_retry_ceiling(Some("0")), DEFAULT_RETRY_CEILING, "0 is not a ceiling");
+        assert_eq!(parse_retry_ceiling(Some(" 7 ")), 7, "a real number is honoured, trimmed");
+        assert_eq!(parse_retry_ceiling(Some("1")), 1, "one redispatch is a legal ceiling");
+    }
+
+    /// A wave handed back while it carries a start and no complete IS the
+    /// redispatch — the only deterministic dispatch signal there is, since
+    /// `pipeline.task.dispatch` is orchestrator-authored and not enforced. The
+    /// FIRST delivery is not a retry: counting it would spend one of the
+    /// ceiling's attempts on the wave's own first run.
+    #[test]
+    fn redispatch_of_a_started_wave_is_counted_as_a_retry() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves(project, "rc");
+
+        round(project, "rc");
+        assert!(
+            retry_counts(&spec_events(project, "rc"), "rc").is_empty(),
+            "the first delivery of a wave is not a retry",
+        );
+
+        round(project, "rc");
+        let counts = retry_counts(&spec_events(project, "rc"), "rc");
+        assert_eq!(counts.get(&1).copied(), Some(1), "second delivery = first retry");
+        assert_eq!(counts.get(&2).copied(), Some(1));
+
+        round(project, "rc");
+        let counts = retry_counts(&spec_events(project, "rc"), "rc");
+        assert_eq!(counts.get(&1).copied(), Some(2), "the count keeps climbing");
+        assert_eq!(
+            count_wave_start(project, "rc"),
+            2,
+            "the start stays idempotent — the retry is a separate row, not a second start",
+        );
     }
 
     /// Resolve a dispatch stub to the rendered body it references: extract
