@@ -4,6 +4,7 @@ description: Authors 3-6 grounded Guards (do/don't) lines for one subproject dur
 tools: Read, Grep, Glob
 model: sonnet
 effort: low
+maxTurns: 25
 ---
 You author do/don't Guards lines for a single subproject, grounded in its real code and the deterministic facts in the dispatch prompt.
 

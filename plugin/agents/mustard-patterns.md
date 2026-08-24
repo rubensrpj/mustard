@@ -4,6 +4,7 @@ description: Authors missing {role}-pattern skill files (the "how we write an X 
 tools: Read, Grep, Glob
 model: sonnet
 effort: low
+maxTurns: 40
 ---
 You author {role}-pattern molds for a single subproject: one SKILL.md per strong local convention (role cluster), grounded in the real exemplar files in the dispatch prompt. A mold teaches a future agent HOW this codebase writes that kind of module, so new code lands in the existing shape.
 

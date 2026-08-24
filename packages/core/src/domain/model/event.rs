@@ -112,6 +112,17 @@ pub const EVENT_PIPELINE_TASK_COMPLETE: &str = "pipeline.task.complete";
 /// `pipeline.task.dispatch`. Carries the same `{wave: <n>}` correlation as the
 /// completion event.
 pub const EVENT_PIPELINE_WAVE_START: &str = "pipeline.wave.start";
+/// Records that a wave was dispatched AGAIN after a previous dispatch of the
+/// same wave never completed — the deterministic redispatch signal a retry
+/// ceiling can count. Carries the same `{wave: <n>}` correlation as
+/// [`EVENT_PIPELINE_WAVE_START`] and [`EVENT_PIPELINE_WAVE_COMPLETE`], so the
+/// three line up on one wave, plus the attempt number under the
+/// `retry_count` key already typed by [`PipelineTaskDispatchPayload`].
+///
+/// The `pipeline.` prefix is load-bearing, not cosmetic: the router classifies
+/// the exact literal `retry.attempt` as `friction` (hook-retry telemetry), so
+/// naming this one after it would fold wave redispatches into that bucket.
+pub const EVENT_PIPELINE_WAVE_RETRY: &str = "pipeline.wave.retry";
 /// Records that an entire wave finished.
 pub const EVENT_PIPELINE_WAVE_COMPLETE: &str = "pipeline.wave.complete";
 /// Records a task-dispatch failure (the agent could not be started).
