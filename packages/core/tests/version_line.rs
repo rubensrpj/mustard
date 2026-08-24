@@ -333,12 +333,76 @@ fn forge_lock(dir: &Path, manifest: &str, packages: &[(&str, &str, bool)]) -> Pa
     lock
 }
 
+/// The control question every shell candidate is asked, and the shape of the
+/// only answer that passes it.
+const SHELL_CONTROL: &str = "echo out; echo err 1>&2; exit 7";
+
+/// Did a program that ACTUALLY RAN our text answer this?
+///
+/// Split out from the spawn on purpose, so the measured failure can be replayed
+/// as three plain values — see `a_stub_that_only_speaks_on_stdout_is_not_a_shell`.
+/// All three halves are load-bearing: a launcher that never ran the text can
+/// still exit non-zero, and a wrapper that runs it can still swallow the status.
+fn answer_is_a_shell(code: Option<i32>, stdout: &str, stderr: &str) -> bool {
+    code == Some(7) && stdout.trim() == "out" && stderr.trim() == "err"
+}
+
+/// Ask one candidate the control question.
+fn speaks_like_a_shell(candidate: &Path) -> bool {
+    match Command::new(candidate).arg("-c").arg(SHELL_CONTROL).output() {
+        Ok(out) => answer_is_a_shell(
+            out.status.code(),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Where a real `bash` may be found, best first.
+///
+/// On Windows the PATH answer is deliberately NOT first. `bash` there resolves
+/// to `C:\Windows\System32\bash.exe`, the Windows Subsystem for Linux launcher,
+/// which is not a shell at all; Git for Windows is what actually ships one, and
+/// every runner this repository's workflows use has it installed.
+fn shell_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(windows) {
+        let roots = [
+            std::env::var("ProgramFiles").unwrap_or_else(|_| "C:/Program Files".to_string()),
+            std::env::var("ProgramFiles(x86)")
+                .unwrap_or_else(|_| "C:/Program Files (x86)".to_string()),
+        ];
+        for root in roots {
+            candidates.push(PathBuf::from(format!("{root}/Git/bin/bash.exe")));
+            candidates.push(PathBuf::from(format!("{root}/Git/usr/bin/bash.exe")));
+        }
+    }
+    candidates.push(PathBuf::from("bash"));
+    candidates
+}
+
+/// A `bash` that is really a shell, or `None` when this machine has none.
+///
+/// A candidate is not trusted for being SPAWNABLE — it is asked. Measured on
+/// run 32735943086: on `windows-latest` the PATH `bash` is the WSL launcher,
+/// and with no distribution installed it runs nothing. It prints its own
+/// complaint in UTF-16 to STDOUT and exits 1, so read by status alone it is
+/// indistinguishable from a guard that legitimately rejected a lock. The three
+/// `bump_guard_*` tests only caught it because they also assert on the
+/// diagnosis TEXT, which came back empty — and an empty message is exactly the
+/// failure this file's own guards exist to refuse.
+fn shell() -> Option<PathBuf> {
+    shell_candidates().into_iter().find(|candidate| speaks_like_a_shell(candidate))
+}
+
 /// Run the guard the workflow runs, over the `Cargo.lock` sitting in `dir`.
 ///
-/// `None` when the script is not in this source tree, or when no `bash` can be
-/// spawned to run it — a shell guard on a machine with no shell is missing
-/// evidence about the checkout, the same reading the sibling tests give to an
-/// absent manifest. Every runner `bump-on-main` and CI use ships one.
+/// `None` when the script is not in this source tree, or when nothing on this
+/// machine answers the control question — a shell guard on a machine with no
+/// shell is missing evidence about the checkout, the same reading the sibling
+/// tests give to an absent manifest. Every runner `bump-on-main` and CI use
+/// ships one, so a `[skip]` on CI is itself a finding.
 ///
 /// The working directory is the fixture's, so the lock is named relatively and
 /// no test has to reason about how a shell reads a Windows path.
@@ -348,7 +412,14 @@ fn run_lock_guard(root: &Path, dir: &Path, version: &str, crates: &[&str]) -> Op
         eprintln!("[skip] {} is absent from this source tree", script.display());
         return None;
     }
-    let mut cmd = Command::new("bash");
+    let Some(shell) = shell() else {
+        eprintln!(
+            "[skip] nothing on this machine answers the shell control question, so \
+             {LOCK_GUARD_REL} cannot be run"
+        );
+        return None;
+    };
+    let mut cmd = Command::new(&shell);
     cmd.current_dir(dir)
         .arg(script.to_string_lossy().replace('\\', "/"))
         .arg("Cargo.lock")
@@ -357,7 +428,7 @@ fn run_lock_guard(root: &Path, dir: &Path, version: &str, crates: &[&str]) -> Op
     match cmd.output() {
         Ok(out) => Some(out),
         Err(e) => {
-            eprintln!("[skip] cannot spawn bash to run {LOCK_GUARD_REL}: {e}");
+            eprintln!("[skip] cannot spawn {} to run {LOCK_GUARD_REL}: {e}", shell.display());
             None
         }
     }
@@ -747,99 +818,37 @@ fn mentions(haystack: &str, token: &str) -> bool {
     })
 }
 
-// ─── PROBE — temporary, delete before this unit closes ───────────────────────
-//
-// Measured on run 32730941116: on `windows-latest` the three `bump_guard_*`
-// tests above read an EMPTY stderr from a guard that DID exit non-zero, so the
-// assertion that the guard must name the stale crate compares against `""`.
-// Ubuntu and macOS pass, `.gitattributes` already pins `*.sh` to LF, and the
-// script answers correctly when run by hand — so the broken half is the
-// INVOCATION, and nothing in a Linux checkout can say which half of it.
-//
-// This test panics on purpose, on every operating system, because a passing
-// test's stdout never reaches the CI log. Reading Linux's report beside
-// Windows' IS the measurement.
+/// The WSL launcher's answer, replayed as the values the test binary read.
+///
+/// Not a hypothetical: this is what `C:\Windows\System32\bash.exe` returned on
+/// `windows-latest` in run 32735943086 — the complaint in UTF-16 on STDOUT,
+/// nothing on stderr, exit code 1. It is the reason `answer_is_a_shell` reads
+/// the TEXT of both channels instead of trusting a status.
 #[test]
-fn probe_what_bash_does_on_this_runner() {
-    fn render(label: &str, out: &std::io::Result<Output>) -> String {
-        match out {
-            Ok(o) => format!(
-                "[{label}] code={:?} stdout={:?} stderr={:?}\n",
-                o.status.code(),
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            ),
-            Err(e) => format!("[{label}] spawn failed: {e}\n"),
-        }
+fn a_stub_that_only_speaks_on_stdout_is_not_a_shell() {
+    // UTF-16 as `from_utf8_lossy` hands it over: every letter trailed by a NUL.
+    let mut said = String::new();
+    for ch in "Windows Subsystem for Linux has no installed distributions.\r\n".chars() {
+        said.push(ch);
+        said.push('\0');
     }
-
-    let mut report = format!("\n=== BASH PROBE ({}) ===\n", std::env::consts::OS);
-
-    // 1. Control. A working bash writes to BOTH channels and keeps its code.
-    //    An empty stderr here means the shell never ran our text at all.
-    report.push_str(&render(
-        "control",
-        &Command::new("bash").arg("-c").arg("echo OUT; echo ERR 1>&2; exit 3").output(),
-    ));
-
-    // 2. Identity. Which bash answered, and are the tools the script calls
-    //    reachable from the PATH this process hands the child?
-    report.push_str(&render(
-        "identity",
-        &Command::new("bash")
-            .arg("-c")
-            .arg("command -v bash; echo v=$BASH_VERSION; command -v awk; command -v dirname; uname -s")
-            .output(),
-    ));
-
-    let Some(root) = workspace_root() else {
-        panic!("{report}workspace_root = none — nothing else could be measured\n");
-    };
-    let script = root.join(LOCK_GUARD_REL);
-    report.push_str(&format!("script = {} (is_file={})\n", script.display(), script.is_file()));
-
-    let dir = tempfile::tempdir().expect("a temp dir for the forged lock");
-    forge_lock(
-        dir.path(),
-        VIRTUAL_MANIFEST,
-        &[("mustard-cli", "0.1.44", false), ("mustard-core", "0.1.44", false)],
+    assert!(
+        !answer_is_a_shell(Some(1), &said, ""),
+        "the launcher answered on stdout with an empty stderr — by status alone that reads as a \
+         guard doing its job, and it must not pass for a shell"
     );
-    let arg = script.to_string_lossy().replace('\\', "/");
 
-    // 3. The exact call `run_lock_guard` makes — the one that comes back mute.
-    report.push_str(&render(
-        "guard",
-        &Command::new("bash")
-            .current_dir(dir.path())
-            .arg(&arg)
-            .arg("Cargo.lock")
-            .arg("0.1.45")
-            .arg("mustard-cli")
-            .arg("mustard-core")
-            .output(),
-    ));
+    // A check that rejected everything would satisfy the line above and prove
+    // nothing, which is the decoration this file refuses elsewhere.
+    assert!(
+        answer_is_a_shell(Some(7), "out\n", "err\n"),
+        "a program that answers on both channels and keeps its status IS a shell"
+    );
 
-    // 4. The same guard reached through `bash -c`. If this one SPEAKS while the
-    //    one above stays mute, the fault is how the script path is handed over,
-    //    not the shell.
-    report.push_str(&render(
-        "sourced",
-        &Command::new("bash")
-            .current_dir(dir.path())
-            .arg("-c")
-            .arg(format!("bash '{arg}' Cargo.lock 0.1.45 mustard-cli mustard-core"))
-            .output(),
-    ));
-
-    // 5. Can the shell even see the fixture the guard is pointed at?
-    report.push_str(&render(
-        "fixture",
-        &Command::new("bash")
-            .current_dir(dir.path())
-            .arg("-c")
-            .arg("pwd; ls -la; head -3 Cargo.lock")
-            .output(),
-    ));
-
-    panic!("{report}");
+    // Both channels right, status swallowed. The guard's whole verdict travels
+    // in its exit code, so a wrapper that loses it cannot carry this test.
+    assert!(
+        !answer_is_a_shell(Some(0), "out\n", "err\n"),
+        "a status that does not survive the call must not pass for a shell"
+    );
 }
