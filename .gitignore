@@ -106,6 +106,22 @@ packages/cli/templates/.claude/.metrics/
 # Full feature digest (`run feature` writes it; stdout is only a compact summary). Regenerable per query.
 **/.claude/feature-digest.json
 
+# Plan-mode plan files (harness carve-out, regenerable, never code).
+**/.claude/plans/
+
+# The two GATE MARKERS. Ignored not because they are regenerable — they are
+# not — but because versioning them would defeat the gate they stand for:
+# `approve-spec` decides on the PRESENCE of `.approved-by-user`, so a committed
+# marker would let `git clone` hand a fresh checkout an approval nobody gave.
+# `.clarified` is the same shape for the clarify gate.
+**/.claude/spec/*/.approved-by-user
+**/.claude/spec/*/.clarified
+
+# Per-clone local guidance. It was covered only by the harness's clone-local
+# exclude, which does not travel — so every clone had to re-create the rule, and
+# a clone that did not saw the file as untracked work.
+CLAUDE.local.md
+
 # Relevance-gate output: approved spec-memory names (regenerable per spec)
 **/.claude/spec/*/.memory-approved
 
