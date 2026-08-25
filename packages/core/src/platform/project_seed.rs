@@ -1977,6 +1977,61 @@ mod tests {
         );
     }
 
+    /// The two GATE MARKERS are held back, and the unit's own RECORD is not.
+    ///
+    /// Both halves are asserted, and the second is the one that makes the test
+    /// worth having: a blanket `spec/` cover would pass the first half alone,
+    /// and that blanket cover is exactly the state this rule replaces — it hid
+    /// 45 of 86 units from git on this repository while the seeded ignore next
+    /// to it said a spec's content stays versioned.
+    ///
+    /// Driven through REAL git rather than by reading the file back. What is
+    /// being bought is git's own decision, and `check-ignore` is the question
+    /// the operator would ask; a substring search over the file would pass on a
+    /// pattern git does not actually apply at that depth.
+    #[test]
+    fn the_seeded_gitignore_holds_back_the_gate_markers() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(root).output()
+        };
+        assert!(
+            git(&["init", "-q"]).expect("git must be available").status.success(),
+            "the test measures git's decision, so it needs a real repository",
+        );
+
+        let claude = root.join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        seed_gitignore(&claude, false).unwrap();
+
+        let ignored = |rel: &str| {
+            git(&["check-ignore", "-q", rel])
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        // Held back: presence of either file IS the gate's answer, so a commit
+        // would let `git clone` hand a fresh checkout an approval nobody gave.
+        for marker in [".approved-by-user", ".clarified"] {
+            let path = format!(".claude/spec/a-unit/{marker}");
+            assert!(ignored(&path), "a gate marker must never be versionable: {path}");
+        }
+
+        // Kept: the unit's record is what a reviewer reads, and it belongs to
+        // the repository.
+        for kept in ["spec.md", "wave-plan.md", "pr-body.md", "meta.json", "review/findings.md"] {
+            let path = format!(".claude/spec/a-unit/{kept}");
+            assert!(!ignored(&path), "the unit's own record must stay versioned: {path}");
+        }
+
+        // Unchanged by this addition: the machine sidecars stay ignored.
+        for sidecar in [".events/2026-01-01.ndjson", ".dispatch/wave-1.prompt.md"] {
+            let path = format!(".claude/spec/a-unit/{sidecar}");
+            assert!(ignored(&path), "regenerable machine state stays ignored: {path}");
+        }
+    }
+
     // --- migration -----------------------------------------------------------
 
     #[test]

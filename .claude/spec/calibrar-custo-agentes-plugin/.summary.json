@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "calibrar-custo-agentes-plugin",
+  "title": "Declarar model e effort no frontmatter dos tres agentes do plugin",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

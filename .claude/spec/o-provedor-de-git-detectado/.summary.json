@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "o-provedor-de-git-detectado",
+  "title": "o provedor de git é detectado pela URL do remoto em vez de perguntado na instalação",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

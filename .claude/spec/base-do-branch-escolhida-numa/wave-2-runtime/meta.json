@@ -1,0 +1,61 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "base-do-branch-escolhida-numa",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/event/base_gate.rs",
+      "path": "apps/rt/src/commands/event/base_gate.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/event/work_branch.rs",
+      "path": "apps/rt/src/commands/event/work_branch.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/shared/work_kind.rs",
+      "path": "apps/rt/src/shared/work_kind.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/event/base_candidates.rs",
+      "path": "apps/rt/src/commands/event/base_candidates.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/cli.rs",
+      "path": "apps/rt/src/commands/event/cli.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/hooks/bash/safety.rs",
+      "path": "apps/rt/src/hooks/bash/safety.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/review/pr_door.rs",
+      "path": "apps/rt/src/commands/review/pr_door.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/work_unit_open.rs",
+      "path": "apps/rt/src/commands/work_unit_open.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/doctor/doctor.rs",
+      "path": "apps/rt/src/commands/doctor/doctor.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": false
+    }
+  ]
+}

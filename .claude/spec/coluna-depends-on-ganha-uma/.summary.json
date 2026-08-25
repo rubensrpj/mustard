@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "coluna-depends-on-ganha-uma",
+  "title": "a coluna Depends on ganha uma gramatica e um leitor so, e a caminhada topologica passa a ser uma",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

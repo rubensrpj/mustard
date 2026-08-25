@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-20T11:06:43.012Z",
+  "parent": "pergunta-abertura-unidade-pergunta-tipo",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "path": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/cli.rs",
+      "path": "apps/rt/src/commands/event/cli.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/run_command_surface.rs",
+      "path": "apps/rt/tests/run_command_surface.rs",
+      "done": true
+    }
+  ]
+}

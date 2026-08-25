@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "poda-recusa-uma-unidade-mergeada",
+  "title": "a poda recusa uma unidade mergeada quando a base nao foi gravada",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

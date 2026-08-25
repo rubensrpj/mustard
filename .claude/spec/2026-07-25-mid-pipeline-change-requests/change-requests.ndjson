@@ -1,9 +1,0 @@
-{"ts":"2026-07-25T15:13:27.429Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"Continue"}
-{"ts":"2026-07-25T15:27:24.215Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"O que você sugere?"}
-{"ts":"2026-07-25T15:42:56.197Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"Ainda não entendi o problema, seja didático"}
-{"ts":"2026-07-25T16:58:55.164Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"Se você sabe do problema porque não dá uma sugestão certeira?"}
-{"ts":"2026-07-25T19:10:31.463Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"sim"}
-{"ts":"2026-07-25T21:52:29.899Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"não entendi nada"}
-{"ts":"2026-07-25T21:55:03.590Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"só precisa ser gravado no bilhete o que realmente é válido para o próximo, qual é a regra de linguagem adotada, já existe um configuração no mustard.json que define a linguagem a ser usada nas specs"}
-{"ts":"2026-07-25T22:43:26.162Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"mas foi resolvido?"}
-{"ts":"2026-07-25T22:50:51.215Z","session_id":"1821af81-8fc5-4b0c-ad47-ee3e63ce335a","spec":"2026-07-25-mid-pipeline-change-requests","stage":"Execute","prompt":"vc diz que termina e não termina, conclui logo tudo em agentes pois essa sessão vai acabar"}

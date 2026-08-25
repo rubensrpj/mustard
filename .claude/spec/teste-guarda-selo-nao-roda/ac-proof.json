@@ -1,0 +1,58 @@
+{
+  "spec": "teste-guarda-selo-nao-roda",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test --locked -p mustard-core --test version_line -- a_stub_that_only_speaks_on_stdout_is_not_a_shell --exact 2>&1 | grep -q \"1 passed\"",
+      "expect": null,
+      "control_command": "cargo test --locked -p mustard-core --test version_line -- the_dashboard_lock_pins_this_repositorys_crates_at_this_version --exact",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "! grep -q \"probe_what_bash_does_on_this_runner\" packages/core/tests/version_line.rs",
+      "expect": null,
+      "control_command": "test -f packages/core/tests/version_line.rs",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test --locked -p mustard-core --test version_line",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

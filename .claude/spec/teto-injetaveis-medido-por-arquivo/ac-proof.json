@@ -1,0 +1,58 @@
+{
+  "spec": "teto-injetaveis-medido-por-arquivo",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-cli --test template_budget event_budget_sums_every_injectable_of_the_same_hook",
+      "expect": "1 passed",
+      "control_command": null,
+      "verdict": "unproven",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt session_start_payload_stays_in_force_for_a_large_census",
+      "expect": "1 passed",
+      "control_command": null,
+      "verdict": "unproven",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "there is no RED proof to confirm for the command this criterion carries today — take the proof first with `mustard-rt run ac-negative-check --spec <slug>`",
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-core backfill_dispatch_inject_matches_equivalent_path_spellings",
+      "expect": "1 passed",
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

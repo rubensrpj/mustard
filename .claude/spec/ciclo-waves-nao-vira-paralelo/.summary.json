@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "ciclo-waves-nao-vira-paralelo",
+  "title": "ciclo declarado entre waves recusa a rodada em vez de fingir uma ordem",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

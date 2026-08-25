@@ -1,0 +1,58 @@
+{
+  "spec": "teto-retentativa",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "grep -q 'fn retry_ceiling_pulls_wave_from_round' apps/rt/src/commands/pipeline/wave_advance.rs && cargo test -p mustard-rt retry_ceiling_pulls_wave_from_round 2>&1",
+      "expect": "test result: ok\\. 1 passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "green",
+      "exit": 1,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "grep -q 'fn retry_event_is_not_routed_as_friction' apps/rt/src/shared/events/route.rs && cargo test -p mustard-rt retry_event_is_not_routed_as_friction 2>&1",
+      "expect": "test result: ok\\. 1 passed",
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "green",
+      "exit": 1,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "grep -lE '^maxTurns: [1-9][0-9]*$' plugin/agents/mustard-guards.md plugin/agents/mustard-patterns.md plugin/agents/mustard-review.md",
+      "expect": "mustard-review\\.md",
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

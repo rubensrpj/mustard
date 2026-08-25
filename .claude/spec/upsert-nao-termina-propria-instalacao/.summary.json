@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "upsert-nao-termina-propria-instalacao",
+  "title": "O upsert entrega dois passos manuais ao operador — atualizar o plugin e recarregar — quando o primeiro e automatizavel e o segundo so precisa ser dito",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -1,5 +1,0 @@
-spec=fix-linux-install-docs-make
-via=grill-finalize
-session=edb70433-d1a8-439c-b9aa-6d23fb890939
-at=2026-08-17T12:12:01.923Z
-terms=one-liner install, the plugin step
