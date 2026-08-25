@@ -157,9 +157,10 @@ fn build_patterns_role_block(subproject: &str) -> String {
          with it. Canonical mold format (frontmatter first): name = the \
          worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
          ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
-         `paths` value (a YAML list — this is the one key the platform reads to decide when \
-         the mold loads; never widen it, never invent a folder, and omit the key only when \
-         the worklist gave no value); `tags: [add, refactor]`; `appliesTo: [<label>]`; \
+         `paths` block — the worklist prints the exact YAML lines, so paste them as printed \
+         (this is the one key the platform reads to decide when the mold loads; never widen \
+         it, never invent a folder, and omit the key only when the worklist gave no value); \
+         `tags: [add, refactor]`; `appliesTo: [<label>]`; \
          `scope: [code-editing]`; `source: scan`; `metadata.generated_by: scan` + \
          `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` — \
          whose FIRST line is the worklist's `convention` value COPIED VERBATIM (folder, \
@@ -168,6 +169,8 @@ fn build_patterns_role_block(subproject: &str) -> String {
          (visibility habits, test placement, derive sets); `## How to apply` (where a new \
          member goes and what it follows), `## Examples` (2-3 real `Ref:` paths you read — \
          the apply refuses a path that does not exist, so cite only files you opened). \
+         Exactly those four `## ` sections, each ONCE, in that order and no others — the \
+         apply refuses a mold whose sections differ. \
          Never cite a framework the exemplars don't use. NEVER write a universal claim \
          (\"every\", \"always\", \"all of them\", \"never\") unless you checked EVERY member \
          of the cluster; if you read three files, say \"the three exemplars\" or \"most\" — \
@@ -245,9 +248,24 @@ fn render_patterns_worklist(
         out.push('\n');
         let _ = writeln!(out, "  moldPath: {}", c.mold_path);
         // The glob is computed from the census, not authored: the agent copies
-        // it verbatim into `paths:`. Emitted even when empty, so a missing
-        // value reads as "this cluster has none" rather than as a dropped line.
-        let _ = writeln!(out, "  paths (copy verbatim into the frontmatter): {}", c.paths.join(", "));
+        // it verbatim into `paths:`. It is printed as the LITERAL YAML block the
+        // frontmatter must carry, never as a comma-joined value — the
+        // instruction says "copy verbatim", so whatever shape this line prints
+        // is the shape that reaches the mold. Joined by comma it printed
+        // `paths: a/**, b/**`, which YAML reads as one scalar string rather than
+        // the list the key needs, and the agent obeyed the instruction: measured
+        // at 19 refusals over 79 molds in one enrich. Emitted even when empty,
+        // so a missing value reads as "this cluster has none" rather than as a
+        // dropped line.
+        if c.paths.is_empty() {
+            let _ = writeln!(out, "  paths: (none for this cluster — omit the key)");
+        } else {
+            let _ = writeln!(out, "  paths (copy the block below verbatim into the frontmatter):");
+            let _ = writeln!(out, "    paths:");
+            for p in &c.paths {
+                let _ = writeln!(out, "      - {p}");
+            }
+        }
         // Folder / extension / tally come from the census, never from the
         // agent's estimate — the one class of claim molds were measurably
         // getting wrong. Copied verbatim and verified by scan-patterns-apply.
@@ -633,5 +651,45 @@ mod tests {
         for key in ["tags:", "appliesTo:", "scope:"] {
             assert!(block.contains(key), "ranking key {key} must survive: {block}");
         }
+    }
+
+    /// The worklist tells the agent to copy `paths:` VERBATIM, so whatever
+    /// shape it prints is the shape that reaches the frontmatter. It printed the
+    /// globs comma-joined on one line — a YAML scalar, not the list the key
+    /// needs — and the agent obeyed: 19 refusals over 79 molds in one enrich,
+    /// the instruction fighting the validator. It now prints the literal YAML
+    /// block, so obeying it produces the canonical form.
+    #[test]
+    fn the_worklist_prints_paths_as_the_yaml_the_mold_must_carry() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        std::fs::write(
+            dir.path().join(".claude/grain.model.json"),
+            r#"{"projects":[{"name":"api","dir":"apps/api"}],
+                "roles":[{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
+                "modules":[{"path":"apps/api/services/UserService.x"},{"path":"apps/api/services/OrderService.x"}]}"#,
+        )
+        .unwrap();
+
+        let task = patterns_task_block(dir.path(), "apps/api", "");
+        assert!(
+            task.contains(
+                "  paths (copy the block below verbatim into the frontmatter):\n    paths:\n      - apps/api/services/**\n"
+            ),
+            "the worklist must print the literal YAML block: {task}"
+        );
+        // The comma-joined scalar that caused the refusals is gone.
+        assert!(
+            !task.contains("paths (copy verbatim into the frontmatter):"),
+            "the one-line joined form must not survive: {task}"
+        );
+        // Dedented, the printed block IS the frontmatter key — the whole point.
+        let printed: Vec<&str> = task
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("paths:"))
+            .take_while(|l| l.trim_start().starts_with("paths:") || l.trim_start().starts_with("- "))
+            .map(|l| l.trim_start())
+            .collect();
+        assert_eq!(printed, ["paths:", "- apps/api/services/**"], "block shape: {task}");
     }
 }
