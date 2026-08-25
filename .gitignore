@@ -117,6 +117,12 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/spec/*/.approved-by-user
 **/.claude/spec/*/.clarified
 
+# The VERBATIM operator prompts, recorded word for word as they were typed.
+# Written for the operator to re-read, never to be published — and nobody
+# re-reads them before a commit does.
+**/.claude/spec/*/change-log.md
+**/.claude/spec/*/change-requests.ndjson
+
 # Per-clone local guidance. It was covered only by the harness's clone-local
 # exclude, which does not travel — so every clone had to re-create the rule, and
 # a clone that did not saw the file as untracked work.

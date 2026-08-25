@@ -71,6 +71,20 @@ spec/*/.blobs/
 spec/*/.approved-by-user
 spec/*/.clarified
 
+# The VERBATIM operator prompts. `change-log.md` and `change-requests.ndjson`
+# record what the person typed, word for word, as they typed it — including the
+# asides, the half-formed questions and the context they gave about themselves
+# to get a useful answer. That record is written for the operator to re-read;
+# it was never written to be published, and nobody re-reads it before a commit
+# does. Found in review, 24/08/2026: one entry named the operator's employer and
+# their corporate cloud account, in a sentence typed only to ask whether it
+# would affect the tool.
+#
+# The mid-flight reasoning stays available on disk, where the flow reads it. It
+# simply stops travelling.
+spec/*/change-log.md
+spec/*/change-requests.ndjson
+
 spec/*/.memory-approved
 spec/*/.cut-base
 spec/*/qa-report.json
