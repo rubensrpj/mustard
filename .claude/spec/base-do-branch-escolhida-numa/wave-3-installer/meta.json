@@ -1,0 +1,21 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "base-do-branch-escolhida-numa",
+  "checklist": [
+    {
+      "label": "apps/cli/src/commands/git_flow.rs",
+      "path": "apps/cli/src/commands/git_flow.rs",
+      "done": true
+    },
+    {
+      "label": "apps/cli/src/commands/init.rs",
+      "path": "apps/cli/src/commands/init.rs",
+      "done": false
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "teto-retentativa",
+  "title": "Teto de retentativa: o wave que gira sem limite sai da rodada e vira escalacao",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "vocabulary",
+      "summary": "o nome proprio do evento de retentativa e o emissor que o escreve no log do spec, sem encostar na telemetria de friccao",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "pipeline",
+      "summary": "o teto lido em advance(): conta as retentativas do log, tira da rodada o wave que estourou e poe no lugar um item de escalacao",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "plugin",
+      "summary": "o teto de turnos dentro de cada subagente do plugin, declarado no frontmatter",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -1,0 +1,2 @@
+{"ts":"2026-08-19T18:10:02.122Z","session_id":"d20be45f-33ee-462f-97c9-1380e2658f0b","spec":"comandos-pr-passam-por-uma","stage":"Plan","prompt":"A onda 3 também cria apps/rt/tests/pr_prose_door.rs: a catraca que lê plugin/commands/pr.md e plugin/commands/git.md e falha se qualquer linha mandar rodar gh pr create/edit/ready direto — é o teste que o AC-5 emendado executa."}
+{"ts":"2026-08-19T18:12:39.439Z","session_id":"d20be45f-33ee-462f-97c9-1380e2658f0b","spec":"comandos-pr-passam-por-uma","stage":"Plan","prompt":"segue"}

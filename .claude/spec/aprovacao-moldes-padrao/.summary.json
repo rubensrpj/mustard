@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "aprovacao-moldes-padrao",
+  "title": "O portao de aprovacao promete um gesto que ele nao aceita, e o validador de moldes recusa o paths que a propria instrucao manda copiar",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "approval",
+      "summary": "A fila que resolve QUAL spec a porta de aprovacao decide passa a parar no primeiro degrau que satisfaz o fato 1, o recuo passa a falar, e /mustard:spec r seco dentro do branch da unidade vira gesto de",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "molds",
+      "summary": "A instrucao entregue ao autor de moldes passa a mostrar paths na forma YAML exata que o molde deve carregar, o validador passa a conferir os quatro titulos e a tolerar as duas formas de paths, e o rel",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "prose",
+      "summary": "A prosa e a mensagem de recusa param de prometer um caminho que nao existe: nomeiam os gestos que realmente cunham o marcador, inclusive o r seco, e a apresentacao do plano diz de saida qual gesto con",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

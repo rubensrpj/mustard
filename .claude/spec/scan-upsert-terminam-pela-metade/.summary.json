@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "scan-upsert-terminam-pela-metade",
+  "title": "Tres pontos em que o mustard termina o trabalho pela metade sem dizer: o scan nao escreve mold algum em repositorio de manifesto unico, o upsert deixa o selo de versao nao commitado e trava o corte da branch seguinte, e a checagem de deriva compara o selo com o plugin em execucao em vez do disponivel",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

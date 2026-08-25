@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "aviso-cobra-cerimonia-que-nao",
+  "title": "O aviso de enriquecimento manda abrir unidade propria em arvore limpa mesmo quando a saida da passada e invisivel ao git — caso em que nenhuma das tres exigencias se aplica",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

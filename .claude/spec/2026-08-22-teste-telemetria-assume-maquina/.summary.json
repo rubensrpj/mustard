@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "2026-08-22-teste-telemetria-assume-maquina",
+  "title": "Tactical Fix: teste de telemetria assume maquina sem rtk instalado",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

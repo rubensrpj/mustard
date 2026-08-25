@@ -1,0 +1,13 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-21T21:58:37.319Z",
+  "base": "fix/censo-suja-arvore-guards-contam",
+  "currentWave": 0,
+  "completedWaves": [
+    0
+  ]
+}

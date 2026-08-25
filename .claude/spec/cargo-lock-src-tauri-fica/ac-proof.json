@@ -1,0 +1,58 @@
+{
+  "spec": "cargo-lock-src-tauri-fica",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-core --test version_line the_dashboard_lock_pins_this_repositorys_crates_at_this_version",
+      "expect": null,
+      "control_command": "cargo test -p mustard-core --test version_line the_workspace_version_equals_the_published_plugin_version",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "green",
+      "exit": 101,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "test \"$(grep -c 'cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml' .github/workflows/bump-on-main.yml)\" = 2 && test \"$(grep -c 'git add .*apps/dashboard/src-tauri/Cargo.lock' .github/workflows/bump-on-main.yml)\" = 2 && grep -qE '^[[:space:]]*if \\[.*dash_pin.*\\]; then' .github/workflows/bump-on-main.yml",
+      "expect": null,
+      "control_command": "grep -q 'cargo update --workspace' .github/workflows/bump-on-main.yml",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "green",
+      "exit": 1,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build -p mustard-core",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

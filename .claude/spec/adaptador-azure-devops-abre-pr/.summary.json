@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "adaptador-azure-devops-abre-pr",
+  "title": "o adaptador Azure DevOps abre PR, atualiza o corpo e tira de rascunho via REST com a credencial do git",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

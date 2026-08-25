@@ -1,0 +1,31 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-21T11:47:50.407Z",
+  "parent": "gatilho-medido-enriquecimento",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/event/enrichment_gap.rs",
+      "path": "apps/rt/src/commands/event/enrichment_gap.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/mod.rs",
+      "path": "apps/rt/src/commands/event/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "path": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/event/base_gate.rs",
+      "path": "apps/rt/src/commands/event/base_gate.rs",
+      "done": true
+    }
+  ]
+}

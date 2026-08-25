@@ -1,0 +1,58 @@
+{
+  "spec": "aviso-cobra-cerimonia-que-nao",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt a_hidden_enrichment_asks_for_no_ceremony 2>&1 | grep -E \"[1-9][0-9]* passed\"",
+      "expect": null,
+      "control_command": "cargo test -p mustard-rt names_a_subproject_whose_guards_are_still_a_scaffold 2>&1 | grep -E \"[1-9][0-9]* passed\"",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "green",
+      "exit": 1,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt a_versioned_enrichment_still_asks_for_its_own_unit 2>&1 | grep -E \"[1-9][0-9]* passed\"",
+      "expect": null,
+      "control_command": "cargo test -p mustard-rt names_a_subproject_whose_guards_are_still_a_scaffold 2>&1 | grep -E \"[1-9][0-9]* passed\"",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "green",
+      "exit": 1,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

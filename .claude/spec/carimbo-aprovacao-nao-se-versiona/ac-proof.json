@@ -1,0 +1,107 @@
+{
+  "spec": "carimbo-aprovacao-nao-se-versiona",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-core the_seeded_gitignore_holds_back_the_gate_markers 2>&1 | grep -E \"[1-9][0-9]* passed\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "git check-ignore -v .claude/spec/x/.approved-by-user | grep -q '^\\.claude/\\.gitignore:' && git check-ignore -v .claude/spec/x/.clarified | grep -q '^\\.claude/\\.gitignore:'",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "git check-ignore -v CLAUDE.local.md | grep -q '^\\.gitignore:'",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "command": "test $(ls .claude/spec/*/spec.md 2>/dev/null | wc -l) -eq $(git ls-files \".claude/spec/*/spec.md\" | grep -c \"^\\.claude/spec/[^/]*/spec\\.md$\") && test -z \"$(git ls-files \".claude/spec/*/.approved-by-user\" \".claude/spec/*/.clarified\")\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [
+    {
+      "id": "AC-4",
+      "at": "2026-08-25T01:29:12.584Z",
+      "reason": "o comando original comparava DIRETORIOS contra specs rastreadas, e 18 diretorios nunca chegaram a ter spec.md — sao restos de unidades que nasceram e nunca foram redigidas. A contagem certa e sobre o que existe para ser versionado, nao sobre o que tem pasta",
+      "superseded_command": "test $(ls -d .claude/spec/*/ | wc -l) -eq $(git ls-files '.claude/spec/*/spec.md' | grep -c '^\\.claude/spec/[^/]*/spec\\.md$') && test -z \"$(git ls-files '.claude/spec/*/.approved-by-user' '.claude/spec/*/.clarified')\"",
+      "superseded_expect": null,
+      "superseded_statement": "quando as unidades em disco são contadas contra as que o git rastreia, então os",
+      "command": "test $(ls .claude/spec/*/spec.md 2>/dev/null | wc -l) -eq $(git ls-files \".claude/spec/*/spec.md\" | grep -c \"^\\.claude/spec/[^/]*/spec\\.md$\") && test -z \"$(git ls-files \".claude/spec/*/.approved-by-user\" \".claude/spec/*/.clarified\")\"",
+      "expect": null,
+      "statement": "quando as unidades que TEM um spec.md em disco sao contadas contra as que o git rastreia, entao os dois numeros sao iguais, e nenhum carimbo de portao aparece rastreado",
+      "rewrote": [
+        ".claude/spec/carimbo-aprovacao-nao-se-versiona/spec.md"
+      ]
+    }
+  ],
+  "additions": []
+}

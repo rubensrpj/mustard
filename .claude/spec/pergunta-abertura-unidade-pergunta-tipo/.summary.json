@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "pergunta-abertura-unidade-pergunta-tipo",
+  "title": "a pergunta de abertura de unidade pergunta o tipo antes da base e perde hotfix",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "O portão passa a aceitar um nome escolhido pelo operador, por um sinal explícito que ganha da derivação — sem afrouxar a lei de um nome só.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "docs",
+      "summary": "A pergunta de abertura vira três campos corrigíveis: base primeiro, tipo com hotfix pinado e campo livre, nome apresentado para confirmar ou corrigir — com catracas que prendem cada lei.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

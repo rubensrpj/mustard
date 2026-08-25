@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "teste-guarda-selo-nao-roda",
+  "title": "o teste da guarda do selo nao roda no Windows: Command::new(bash) cai no lancador do WSL, o canal de erro volta vazio e os tres testes bump_guard_* falham",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

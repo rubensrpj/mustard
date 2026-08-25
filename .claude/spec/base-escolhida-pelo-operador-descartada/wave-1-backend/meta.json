@@ -1,0 +1,26 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-20T14:21:54.243Z",
+  "parent": "base-escolhida-pelo-operador-descartada",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/event/work_branch.rs",
+      "path": "apps/rt/src/commands/event/work_branch.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/shared/work_kind.rs",
+      "path": "apps/rt/src/shared/work_kind.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/platform/git_branches.rs",
+      "path": "packages/core/src/platform/git_branches.rs",
+      "done": true
+    }
+  ]
+}

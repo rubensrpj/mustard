@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "teto-injetaveis-medido-por-arquivo",
+  "title": "o teto dos injetaveis e medido por arquivo mas o gancho funde varios num texto so",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

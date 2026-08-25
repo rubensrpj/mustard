@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "guardas-afirmam-mais-que-medem",
+  "title": "seis guardas do selo de versao e da catraca de frontmatter verificam menos do que declaram",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
