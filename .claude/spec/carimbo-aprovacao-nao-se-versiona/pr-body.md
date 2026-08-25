@@ -1,6 +1,6 @@
 # O carimbo de aprovação para de viajar, e metade das unidades volta para o git
 
-Duas coisas que não deviam estar como estavam. O arquivo que prova que uma pessoa aprovou um plano podia ser commitado — e 54 já estavam, então um clone novo nascia com a aprovação dada. E 45 dos 86 registros de unidade deste repositório estavam invisíveis ao git, não por decisão, mas porque uma exclusão local os escondia enquanto o `.gitignore` versionado ao lado dizia o contrário.
+Três coisas que não deviam estar como estavam. O arquivo que prova que uma pessoa aprovou um plano podia ser commitado — e 54 já estavam, então um clone novo nascia com a aprovação dada. 45 dos 86 registros de unidade deste repositório estavam invisíveis ao git, não por decisão, mas porque uma exclusão local os escondia enquanto o `.gitignore` versionado ao lado dizia o contrário. E o registro que guarda o prompt literal do operador — palavra por palavra, do jeito que foi digitado — era versionável, o que a revisão desta mudança descobriu da pior forma possível: encontrando uma frase pessoal dentro dele.
 
 ## Por quê
 
@@ -31,7 +31,9 @@ O mesmo racha estava agendado para os moldes de padrão: os 37 de hoje estão ra
 
 **Duas regras que só existiam na exclusão local migram para ignore versionado**: `plans/`, que é o par de `scratch/`, e o `CLAUDE.local.md`. Uma regra que todo clone quer não pode morar num arquivo que não viaja.
 
-**O bloco de modo privado sai deste clone**, e o registro das 45 unidades atrasadas entra num commit.
+**O prompt literal do operador deixa de ser versionado.** `change-log.md` e `change-requests.ndjson` guardam o que a pessoa digitou, do jeito que digitou — inclusive os apartes e o contexto que ela deu sobre si mesma para obter uma resposta útil. Esse registro é escrito para o operador reler; nunca foi escrito para ser publicado, e ninguém o relê antes de um commit fazer isso. A regra é a mesma dos carimbos, pela mesma razão de forma: entra na semente, e os 98 que já estavam rastreados saem do índice.
+
+**O bloco de modo privado sai deste clone**, e o registro das unidades atrasadas entra num commit.
 
 Quem faz o recorte não foi escolhido aqui. É o `.claude/.gitignore` versionado, que já dizia em texto que o conteúdo da spec fica versionado e só os sidecars regeneráveis saem:
 
@@ -89,6 +91,10 @@ Suíte completa: **3114 passaram, 0 falharam**, em 78 conjuntos.
 
 **O bloco privado inteiro sai, não só a linha das specs.** Cada linha dele é inerte (o caminho já está rastreado) ou é um racha futuro esperando a vez. Medido linha a linha antes de remover; a única que mordia de verdade e não estava coberta em lugar nenhum era `CLAUDE.local.md`, que por isso migrou.
 
+**Cortar a classe inteira dos prompts literais, não a linha achada.** A revisão varreu os 290 arquivos e os 52 prompts distintos e achou UMA ocorrência problemática. Remover só ela resolveria este caso e nenhum futuro: o registro continua guardando texto que ninguém relê antes de publicar, e o próximo aparece do mesmo jeito. A regra durável é tratar a categoria como se trata um carimbo.
+
+**Tirar os 98 do índice, não só os 30 deste branch.** 68 já estavam rastreados desde antes. Deixá-los recriaria exatamente o meio-a-meio que esta unidade existe para acabar — metade da categoria dentro, metade fora, e nada que explique a fronteira.
+
 **Os arquivos ficam em disco ao sair do índice.** Desrastrear não é apagar: o carimbo é o registro local de que uma pessoa aprovou, e os portões deste clone continuam lendo-o.
 
 ## Fora de escopo
@@ -100,8 +106,24 @@ Suíte completa: **3114 passaram, 0 falharam**, em 78 conjuntos.
 
 ## O que fica em aberto
 
+**A metade do REGISTRO tem prazo de validade, e o prazo é o próximo `upsert`.** As duas portas de instalação fixam o modo privado sem alternativa — `apps/rt/src/commands/maint/upsert.rs:166` e `apps/cli/src/commands/init.rs:163` — e o comentário ao lado argumenta, com razão, que um botão para desligá-lo seria "a mesma falha com um passo a mais". Rodar `mustard-rt run upsert` reescreve o bloco inteiro no `.git/info/exclude`, `**/.claude/spec/` incluído. A revisão verificou isso ao vivo, num clone descartável.
+
+O que sobrevive e o que não:
+
+| | sobrevive ao próximo `upsert`? |
+|---|---|
+| os registros deste commit | **sim** — uma vez rastreados, uma exclusão não os desfaz |
+| a regra dos carimbos e dos prompts | **sim** — é semeada, viaja, e não depende do modo |
+| "unidade nova entra sozinha" | **não** — a primeira nascida depois volta a ser invisível |
+
+Este repositório roda `upsert` de rotina; os dois commits mais recentes de `dev` são carimbo de versão. Então isso vai acontecer, e cedo.
+
+Isto **não** é o limite que eu havia declarado. Eu declarei que nada AVISA quando uma instalação compartilhada carrega regras de modo privado. O medido é mais forte: o harness as RECRIA. A unidade futura é, portanto, de **re-criação**, não de detecção — e ela precisa decidir algo que esta não decidiu: se um repositório pode ser dono do próprio harness.
+
 **A prova de remoção não rodou nesta unidade.** O fechamento normalmente retira o trabalho da árvore e roda os critérios de novo, para confirmar que todos voltam vermelhos. Ele lê os digests gravados por onda, e esta é uma spec leve, sem ondas — a resposta foi `removal-no-cached-diff`, que é uma recusa honesta e não uma falha. Então estes cinco critérios têm o "vermelho antes, verde depois", mas não o "vermelho de novo quando o trabalho é retirado".
 
 **Um critério foi emendado no meio do caminho.** O AC-4 original comparava *diretórios* de spec contra specs rastreadas, e 18 diretórios nunca chegaram a ter um `spec.md` — são restos de unidades que nasceram e nunca foram redigidas. A emenda passou pela porta própria, que recusa substituição que já nasça verde: o commit do resgate foi desfeito, o critério corrigido foi provado vermelho, e o resgate foi refeito.
 
-Números medidos, não estimados: 347 arquivos no total, dos quais 4 são regra e código (+108 linhas), 289 são registro resgatado e 54 são carimbos saindo do índice. 3114 testes verdes em 78 conjuntos.
+Números medidos, não estimados: **387 arquivos**, +11684/−773. Deles, **4 são regra e código** (+147 linhas); **261 são registro entrando**; e **122 saem do índice** — 27 `.approved-by-user`, 27 `.clarified`, 34 `change-log.md` e 34 `change-requests.ndjson`, todos permanecendo em disco. **3114 testes verdes** em 78 conjuntos.
+
+A primeira versão deste texto dizia 347 e 289, sob este mesmo cabeçalho. Estava errado por um, e a revisão pegou.
