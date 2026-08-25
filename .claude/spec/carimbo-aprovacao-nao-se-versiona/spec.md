@@ -84,13 +84,13 @@ Todas as unidades em disco versionadas, e zero carimbo de portão rastreado. A p
 
 ## Checklist
 
-- [ ] T1 — a semente do `.claude/.gitignore` ganha `spec/*/.approved-by-user` e
+- [x] T1 — a semente do `.claude/.gitignore` ganha `spec/*/.approved-by-user` e
       `spec/*/.clarified`, com um teste que prova que um projeto recém-semeado os segura
-- [ ] T2 — o `.claude/.gitignore` deste repositório recebe as mesmas duas linhas
-- [ ] T3 — `CLAUDE.local.md` migra do bloco privado local para o `.gitignore` versionado,
+- [x] T2 — o `.claude/.gitignore` deste repositório recebe as mesmas duas linhas
+- [x] T3 — `CLAUDE.local.md` migra do bloco privado local para o `.gitignore` versionado,
       cobrindo também as cópias por subprojeto
-- [ ] T4 — o bloco de modo privado sai do `.git/info/exclude` deste clone, com backup
-- [ ] T5 — o registro das unidades atrasadas entra num commit, conferindo antes que nenhum
+- [x] T4 — o bloco de modo privado sai do `.git/info/exclude` deste clone, com backup
+- [x] T5 — o registro das unidades atrasadas entra num commit, conferindo antes que nenhum
       carimbo, evento ou prompt renderizado veio junto
 
 ## Definitions

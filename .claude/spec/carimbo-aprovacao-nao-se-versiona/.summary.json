@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "carimbo-aprovacao-nao-se-versiona",
+  "title": "Um bloco de exclusao de modo privado numa instalacao compartilhada escondeu 45 das 86 unidades do git e deixaria o carimbo de aprovacao ser versionado",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
