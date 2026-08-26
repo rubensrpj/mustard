@@ -41,6 +41,7 @@ use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
+use crate::hooks::task::crystallise_nudge::CrystalliseNudge;
 use crate::hooks::task::stop_gate::StopGate;
 use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
@@ -519,6 +520,19 @@ impl Registry {
                 id: "stop_gate",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: Some(Box::new(StopGate)),
+                observer: None,
+            },
+            // `crystallise_nudge` — the conversation-to-disk reminder. On the
+            // main session's `Stop`, an open unit whose `spec-material.json` has
+            // not moved for a run of turns blocks the stop ONCE, asking for what
+            // the conversation settled to be written down while it is still in
+            // the window. Nudges at most once per standing drift (the marker
+            // holds the state it fired on), so unlike `stop_gate` there is no
+            // retry loop to bound.
+            Module {
+                id: "crystallise_nudge",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(CrystalliseNudge)),
                 observer: None,
             },
             Module {

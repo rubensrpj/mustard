@@ -200,6 +200,19 @@ pub fn run(
         task_filter,
         task_text,
     );
+    // AC-12 — what this wave's prompt actually carries, on stderr.
+    //
+    // stdout is the prompt itself and must stay raw, so the measurement rides
+    // the diagnostic channel. Without it a hollow wave is invisible until the
+    // agent returns something thin: the operator reported exactly that, and the
+    // pipeline had no number to show. Two facts are enough to see it — how much
+    // of the conversation reached this wave, and how big its TASK is.
+    eprintln!(
+        "agent-prompt-render: wave={} role={role} material={} task={} chars",
+        wave.map_or_else(|| "-".to_string(), |w| w.to_string()),
+        material_line_count(&rendered),
+        task_section_chars(&rendered),
+    );
     let out = match emit {
         EmitMode::Inline => rendered,
         EmitMode::Ref => prompt_ref_stub(
@@ -208,6 +221,30 @@ pub fn run(
     };
     // stdout = prompt string or dispatch stub (raw, no JSON framing).
     print!("{out}");
+}
+
+/// Bullet lines under `## CONVERSATION MATERIAL`, or 0 when the section
+/// collapsed. Counting lines, not parsing: the question is "did any of what the
+/// conversation settled reach this wave", and a count answers it.
+fn material_line_count(prompt: &str) -> usize {
+    section_lines(prompt, "## CONVERSATION MATERIAL")
+        .filter(|l| l.starts_with('-') || l.starts_with('*'))
+        .count()
+}
+
+/// Characters under `## TASK` — the body the agent is actually handed.
+fn task_section_chars(prompt: &str) -> usize {
+    section_lines(prompt, "## TASK").map(|l| l.len() + 1).sum()
+}
+
+/// Trimmed lines between a heading and the next `## `.
+fn section_lines<'a>(prompt: &'a str, heading: &str) -> impl Iterator<Item = &'a str> {
+    let body = prompt
+        .find(heading)
+        .map(|i| &prompt[i + heading.len()..])
+        .unwrap_or_default();
+    let end = body.find("\n## ").unwrap_or(body.len());
+    body[..end].lines().map(str::trim).filter(|l| !l.is_empty())
 }
 
 /// Render the dispatch/retry prompt against an explicit `project` root and
@@ -661,6 +698,22 @@ fn read_change_log(spec_dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// AC-12 — the render measures what each wave's prompt carries.
+    ///
+    /// A hollow wave used to be invisible until its agent came back with
+    /// something thin. These two counts make it visible BEFORE the dispatch.
+    #[test]
+    fn render_reports_material_counts_per_wave() {
+        let prompt = "## CONVERSATION MATERIAL\n\n                      - **termo** — o que significa\n                      - decisao com razao\n\n                      ## TASK\n\nfaca a coisa\nem duas linhas\n\n## EFFICIENCY\n\nx\n";
+        assert_eq!(super::material_line_count(prompt), 2, "both bullets counted");
+        assert_eq!(super::task_section_chars(prompt), "faca a coisa".len() + "em duas linhas".len() + 2);
+
+        // A collapsed section answers zero — which is the number worth seeing.
+        let hollow = "## TASK\n\nfaca\n";
+        assert_eq!(super::material_line_count(hollow), 0);
+        assert_eq!(super::task_section_chars(hollow), 5);
+    }
+
     use super::*;
     use tempfile::tempdir;
 

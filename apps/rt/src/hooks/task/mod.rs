@@ -5,6 +5,7 @@ pub mod delegation_advisory;
 pub mod main_context_counter;
 pub mod metrics_observer;
 pub mod skill_usage_observer;
+pub mod crystallise_nudge;
 pub mod stop_gate;
 pub mod subagent_inject;
 pub mod subagent_observer;
