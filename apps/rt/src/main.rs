@@ -111,6 +111,15 @@ enum Command {
 }
 
 fn main() {
+    // Before ANY face runs: if the plugin registry records a strictly newer
+    // install of this binary, hand the whole invocation to it. This is what
+    // makes the version of a system-installed copy (`.deb`, `.pkg`, `.exe`)
+    // irrelevant — every entry door (statusline, `run upsert`, a terminal
+    // call) converges on the plugin's self-updated binary, on every OS,
+    // without any installer changing. See `mustard_core::newer_installed_rt`
+    // for why the handover lives here and not in the installers.
+    delegate_to_newer_install();
+
     // Argv pre-routing: rewrite `run metrics wave-status ...` to
     // `run metrics-wave-status ...` so clap dispatches to the top-level
     // `RunCmd::MetricsWaveStatus` variant (and therefore renders `--spec` in
@@ -175,6 +184,51 @@ fn main() {
     };
 
     emit_outcome(&event_name, &outcome);
+}
+
+/// Hand this whole invocation to the newer `mustard-rt` the plugin registry
+/// records, when there is one; return and run as ourselves otherwise.
+///
+/// The decision (is there a strictly newer install, and where is its binary?)
+/// lives in `mustard_core::newer_installed_rt`; this function only performs
+/// the handover, which is why it belongs in `main.rs`: it is argv routing —
+/// to another process.
+///
+/// One hop only: the delegate runs with `MUSTARD_RT_DELEGATED` set and never
+/// delegates again. The version check already makes a loop impossible (the
+/// newest install is not behind itself), so the variable is a belt over
+/// braces — it also covers a corrupted install whose directory holds an older
+/// binary than the registry claims.
+///
+/// Fail-open, like every path in this binary: if the handover cannot start,
+/// we answer with this binary — exactly what happened before it existed.
+fn delegate_to_newer_install() {
+    if std::env::var_os("MUSTARD_RT_DELEGATED").is_some() {
+        return;
+    }
+    let Some(target) = mustard_core::newer_installed_rt() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(&target);
+    cmd.args(std::env::args_os().skip(1)).env("MUSTARD_RT_DELEGATED", "1");
+    #[cfg(unix)]
+    {
+        // `exec` replaces this process wholesale — stdin (the harness JSON),
+        // stdout, exit code and signals all belong to the delegate, with no
+        // parent left to double-report. It only ever RETURNS on failure, and
+        // then we fall through to run as ourselves.
+        use std::os::unix::process::CommandExt;
+        let _handover_failed: std::io::Error = cmd.exec();
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no `exec`: run the delegate as a child sharing our
+        // stdio and forward its exit code. A code-less exit forwards 0 — the
+        // fail-open direction, and the code every hook exits with anyway.
+        if let Ok(status) = cmd.status() {
+            std::process::exit(status.code().unwrap_or(0));
+        }
+    }
 }
 
 /// Rewrite `mustard-rt run metrics wave-status [args...]` to
