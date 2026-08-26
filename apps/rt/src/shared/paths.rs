@@ -23,12 +23,11 @@
 /// state the caller cannot see.
 #[must_use]
 pub fn same_declared_file(a: &str, b: &str) -> bool {
-    fn norm(s: &str) -> String {
-        let s = s.trim().replace('\\', "/");
-        let s = s.strip_prefix("./").unwrap_or(&s).to_string();
-        s.trim_end_matches('/').to_ascii_lowercase()
-    }
-    norm(a) == norm(b)
+    // Delegated, never re-implemented. `mustard-core` seeds and migrates the
+    // same declarations this crate reads, so a second normalisation here would
+    // be a second answer to one question — and review already found three
+    // copies of it, two of them subtly different at the call site.
+    mustard_core::platform::project_seed::same_declared_path(a, b)
 }
 
 #[cfg(test)]

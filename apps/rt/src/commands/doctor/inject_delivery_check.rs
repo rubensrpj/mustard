@@ -108,17 +108,6 @@ impl DeliveryFinding {
     }
 }
 
-/// `true` when two declared paths name the same file. Mirrors
-/// `project_seed::same_declared_path`: one file has several honest spellings,
-/// and comparing raw strings would report a half-router that is not one.
-fn same_declared_path(a: &str, b: &str) -> bool {
-    fn norm(s: &str) -> String {
-        let s = s.trim().replace('\\', "/");
-        let s = s.strip_prefix("./").unwrap_or(&s).to_string();
-        s.trim_end_matches('/').to_ascii_lowercase()
-    }
-    norm(a) == norm(b)
-}
 
 /// Event names registered in the shipped hook manifest, lowercased.
 ///
@@ -226,7 +215,7 @@ fn build_report(
     }
 
     // (3) The router by halves.
-    let declares = |file: &str| entries.iter().any(|e| same_declared_path(&e.file, file));
+    let declares = |file: &str| entries.iter().any(|e| crate::shared::paths::same_declared_file(&e.file, file));
     if declares(ORCHESTRATOR) && !declares(DISPATCH) {
         findings.push(DeliveryFinding::fail(
             "half-router",

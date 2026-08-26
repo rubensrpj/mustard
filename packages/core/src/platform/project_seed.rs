@@ -1507,7 +1507,7 @@ fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
 /// Normalisation is deliberately conservative — separators, one leading `./`,
 /// trailing separators, and ASCII case. It never resolves symlinks or touches
 /// the filesystem: this runs during install, on paths that may not exist yet.
-fn same_declared_path(a: &str, b: &str) -> bool {
+pub fn same_declared_path(a: &str, b: &str) -> bool {
     fn norm(s: &str) -> String {
         let s = s.trim().replace('\\', "/");
         let s = s.strip_prefix("./").unwrap_or(&s).to_string();
@@ -1605,23 +1605,44 @@ fn backfill_dispatch_inject(root: &Path) -> bool {
 /// is the conservative direction: the caller only MOVES entries when this is
 /// true, so an unreadable manifest leaves the layout exactly as it was.
 fn plugin_registers_sibling_hooks(root: &Path) -> bool {
-    let Some(manifest) = plugin_hooks_manifest(root) else {
+    plugin_hooks_manifest(root).is_some_and(|m| manifest_registers_sibling_hooks(&m))
+}
+
+/// Does THIS manifest register a hook per injectable?
+///
+/// Split from the locator so the decision is testable without a plugin install:
+/// the locator reads the machine's own registry, which no temporary directory
+/// can stand in for.
+///
+/// TWO claims is the bar, not one. The migration moves BOTH router halves onto
+/// one event, and a manifest claiming a single injectable still folds the other
+/// into a shared response — 11,646 characters against a 10,000 cap. An
+/// unreadable or absent manifest answers `false`, which is the conservative
+/// direction: the caller only moves entries on a yes.
+fn manifest_registers_sibling_hooks(manifest: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest) else {
         return false;
     };
-    let Ok(text) = fs::read_to_string(&manifest) else {
-        return false;
-    };
-    // Two claimants on one event is the shape; one `--inject` is enough to know
-    // the running plugin speaks this protocol at all.
     text.matches("--inject").count() >= 2
 }
 
 /// Where the installed plugin's hook manifest lives.
 ///
-/// `CLAUDE_PLUGIN_ROOT` when the harness exported it (the hook runtime always
-/// does); otherwise the in-repo copy, which is what a source checkout runs
-/// against. `None` when neither is present.
+/// The REGISTRY first — Claude Code records each plugin's `installPath`, and
+/// that is the directory it runs hooks out of. Two guesses were tried before
+/// this and both fail in a real install: `CLAUDE_PLUGIN_ROOT` reaches hooks but
+/// not the shell that runs `upsert`, and `<project>/plugin/hooks/` exists only
+/// inside the Mustard source repository. Relying on either answered a confident
+/// "no siblings registered" in every user project, which silently disabled the
+/// migration this manifest guards (found in review).
+///
+/// The two guesses remain as FALLBACKS, in that order: the environment variable
+/// for a caller that does run under a hook, and the in-repo copy for a source
+/// checkout — which is also what the tests seed.
 fn plugin_hooks_manifest(root: &Path) -> Option<PathBuf> {
+    if let Some(p) = crate::platform::harness::installed_plugin_hooks_manifest() {
+        return Some(p);
+    }
     if let Some(dir) = std::env::var_os("CLAUDE_PLUGIN_ROOT") {
         let p = Path::new(&dir).join("hooks").join("hooks.json");
         if p.is_file() {
@@ -2241,6 +2262,58 @@ mod tests {
         );
     }
 
+    /// The stale-plugin branch the migration test cannot isolate: a manifest
+    /// WITHOUT sibling hooks must not authorise the move.
+    ///
+    /// With one hook per event, moving both halves onto `userPromptSubmit`
+    /// folds them into a single response — measured at 11,646 characters,
+    /// over the 10,000 cap. The split being undone was at least under it, so
+    /// migrating against a stale plugin leaves the project worse.
+    #[test]
+    fn a_manifest_without_sibling_hooks_does_not_authorise_the_move() {
+        let dir = tempdir().unwrap();
+        let hooks = dir.path().join("hooks");
+        std_fs::create_dir_all(&hooks).unwrap();
+
+        // The pre-sibling shape: one hook for the whole event.
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(
+            !manifest_registers_sibling_hooks(&hooks.join("hooks.json")),
+            "one hook for the event is not sibling hooks",
+        );
+
+        // One `--inject` is not enough either: the halves need one each.
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/orchestrator.md"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(!manifest_registers_sibling_hooks(&hooks.join("hooks.json")));
+
+        // Two claims: the move is safe.
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/orchestrator.md"}]},
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/dispatch.md"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(manifest_registers_sibling_hooks(&hooks.join("hooks.json")));
+
+        // An unreadable manifest answers NO — the conservative direction, since
+        // the caller only moves entries on a yes.
+        assert!(!manifest_registers_sibling_hooks(&hooks.join("nao-existe.json")));
+    }
+
     /// AC-2 — a project split across two events is MOVED onto one, not
     /// duplicated.
     ///
@@ -2263,22 +2336,15 @@ mod tests {
         .unwrap();
 
         // The move is gated on the INSTALLED plugin registering a hook per
-        // injectable. Without that, one hook folds both halves into a single
-        // response (measured at 11,646 chars, over the cap) — worse than the
-        // split it would undo. A project with no manifest in reach is left
-        // exactly as it was.
-        upsert_project(root, None, InstallMode::Shared).unwrap();
-        assert_eq!(
-            ProjectConfig::load(root)
-                .inject
-                .iter()
-                .find(|e| e.file.ends_with("dispatch.md"))
-                .map(|e| e.on.as_str()),
-            Some("sessionStart"),
-            "a stale plugin must not have its halves folded onto one hook",
-        );
-
-        // With the sibling hooks registered, the move happens.
+        // injectable: with a stale one, a single hook folds both halves into
+        // one response (measured at 11,646 chars, over the cap) — worse than
+        // the split it would undo.
+        //
+        // That gate reads the plugin registry of the machine running the test,
+        // which a tempdir cannot fake, so the stale-plugin BRANCH is covered by
+        // `plugin_registers_sibling_hooks` unit tests rather than here. What
+        // this test pins is the consolidation itself, with the manifest in
+        // reach.
         let hooks = root.join("plugin/hooks");
         std_fs::create_dir_all(&hooks).unwrap();
         std_fs::write(

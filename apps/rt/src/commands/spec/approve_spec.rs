@@ -567,12 +567,20 @@ fn scaffold_residue(root: &Path, spec: &str) -> Vec<String> {
 
 /// The body between `## <heading>` and the next `##`, or `None` when the
 /// heading is absent.
+///
+/// The heading must be a WHOLE LINE, not a substring. An unanchored search
+/// matched `## Contexto` inside `## Contexto e Motivação`, and matched a
+/// Decisions bullet that merely quotes `` `## Arquivos` `` before reaching the
+/// real section — either way the extracted text is not the section, the
+/// placeholder comparison fails, and a spec that is pure scaffold sails through
+/// the gate (found in review). The same anchoring the render's section cutter
+/// uses, for the same reason.
 fn section_body(body: &str, heading: &str) -> Option<String> {
-    let needle = format!("## {heading}");
-    let start = body.find(&needle)? + needle.len();
-    let rest = &body[start..];
-    let end = rest.find("\n## ").unwrap_or(rest.len());
-    Some(rest[..end].trim().to_string())
+    let wanted = format!("## {heading}");
+    let mut lines = body.lines();
+    lines.by_ref().position(|l| l.trim_end() == wanted)?;
+    let section: Vec<&str> = lines.take_while(|l| !l.starts_with("## ")).collect();
+    Some(section.join("\n").trim().to_string())
 }
 
 /// Build the aggregated refusal that names EVERY unmet approval precondition at
@@ -992,6 +1000,41 @@ mod tests {
 
         // Fail-open: an unreadable spec is the read gate's problem, not this one's.
         assert!(scaffold_residue(root, "nao-existe").is_empty());
+
+        // A heading is a WHOLE LINE. `## Contexto e Motivação` is not
+        // `## Contexto`, and a bullet quoting a heading is not that heading —
+        // an unanchored search matched both and read the wrong text as the
+        // section, so a pure-scaffold spec passed the gate.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            concat!(
+                "# t\n",
+                "\n",
+                "## Contexto e Motivação\n",
+                "\n",
+                "Por que agora.\n",
+                "\n",
+                "## Decisions\n",
+                "\n",
+                "- a secao `## Arquivos` recebe a lista\n",
+                "\n",
+                "## Arquivos\n",
+                "\n",
+                "Listar arquivos afetados.\n",
+            ),
+        )
+        .unwrap();
+        let residue = scaffold_residue(root, "uma-unidade");
+        assert!(
+            residue.iter().any(|s| s == "Arquivos"),
+            "the real `## Arquivos` section is still placeholder and must be caught, \
+             not shadowed by the bullet that quotes its name: {residue:?}",
+        );
+        assert!(
+            !residue.iter().any(|s| s == "Contexto"),
+            "`## Contexto e Motivação` is a different heading and has no placeholder \
+             to report: {residue:?}",
+        );
     }
 
     #[test]

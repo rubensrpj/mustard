@@ -84,19 +84,94 @@ const INJECTING_MODULES: &[&str] = &["prompt_submit_inject", "session_start_inje
 /// Fail-open: a project that declares nothing for the trigger, or whose config
 /// cannot be read, answers `true` — running an observer twice is recoverable,
 /// losing the event trace entirely is not.
-fn carries_shared_modules(project_dir: &str, trigger_on: &str, inject_only: Option<&str>) -> bool {
+pub(crate) fn carries_shared_modules(project_dir: &str, trigger_on: &str, inject_only: Option<&str>) -> bool {
     let Some(only) = inject_only else {
         return true;
     };
-    let first = mustard_core::ProjectConfig::load(std::path::Path::new(project_dir))
+    let declared: Vec<String> = mustard_core::ProjectConfig::load(std::path::Path::new(project_dir))
         .injectables()
         .into_iter()
-        .find(|e| e.on.eq_ignore_ascii_case(trigger_on))
-        .map(|e| e.file);
-    match first {
-        Some(file) => crate::shared::paths::same_declared_file(&file, only),
+        .filter(|e| e.on.eq_ignore_ascii_case(trigger_on))
+        .map(|e| e.file)
+        .collect();
+    if declared.is_empty() {
+        return true;
+    }
+    // The elected sibling is the first declared entry that a hook ACTUALLY
+    // claims, and the manifest is the only authority on that. Electing on
+    // declaration order alone elects nobody when the first entry is a file no
+    // hook claims — a hand-edited `mustard.json` naming a custom injectable —
+    // and every observer was then skipped, leaving the event trace empty
+    // (found in review, measured at 0 records for one prompt).
+    let claimed = claimed_injectables(project_dir);
+    let position_among_claimed = declared
+        .iter()
+        .filter(|f| {
+            claimed
+                .iter()
+                .any(|c| crate::shared::paths::same_declared_file(f, c))
+        })
+        .position(|f| crate::shared::paths::same_declared_file(f, only));
+    match position_among_claimed {
+        // First among the CLAIMED entries: this invocation carries them.
+        Some(0) => true,
+        Some(_) => false,
+        // Unclaimed, or the manifest could not be read. A sibling that cannot
+        // see the list cannot count on another one being there, and running an
+        // observer twice is recoverable where an empty trace is not.
         None => true,
     }
+}
+
+/// The injectable files the installed hook manifest actually claims, via
+/// `--inject`.
+///
+/// Empty when the manifest cannot be found or read, which makes every caller
+/// fall through to the fail-open branch — the safe direction.
+fn claimed_injectables(project_dir: &str) -> Vec<String> {
+    let Some(manifest) = mustard_core::platform::harness::installed_plugin_hooks_manifest()
+        .or_else(|| {
+            let p = std::path::Path::new(project_dir)
+                .join("plugin")
+                .join("hooks")
+                .join("hooks.json");
+            p.is_file().then_some(p)
+        })
+    else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    // Parsed as JSON, then the flag is read out of each command STRING. A
+    // split over the raw file text picks up the JSON punctuation that follows
+    // the path (`… .md",`) and matches nothing afterwards — measured, and it
+    // produced the opposite defect: every sibling read itself as unclaimed and
+    // carried the shared modules, so the trace was written twice.
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let Some(events) = doc.get("hooks").and_then(serde_json::Value::as_object) else {
+        return out;
+    };
+    for entries in events.values().filter_map(serde_json::Value::as_array) {
+        for hook in entries
+            .iter()
+            .filter_map(|e| e.get("hooks")?.as_array())
+            .flatten()
+        {
+            let Some(cmd) = hook.get("command").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Some(rest) = cmd.split("--inject").nth(1) {
+                if let Some(path) = rest.split_whitespace().next() {
+                    out.push(path.trim_matches('"').to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 

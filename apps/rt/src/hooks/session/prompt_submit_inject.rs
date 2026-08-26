@@ -93,20 +93,18 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
     false
 }
 
-/// The first `userPromptSubmit` injectable this project declares, if any.
+/// Does THIS invocation carry the blocks that belong to the whole event?
 ///
-/// Sibling hooks each deliver one injectable, so exactly one of them has to
-/// carry the blocks that belong to the invocation rather than to a file (the
-/// pipeline banner, the writing rule). Declaration order picks that one — it is
-/// stable, needs no extra configuration, and every sibling reaches the same
-/// answer from the same config. Fail-open: an unreadable config returns `None`,
-/// which makes an unscoped invocation carry them, exactly as before.
-fn first_declared_injectable(project_dir: &str) -> Option<String> {
-    ProjectConfig::load(Path::new(project_dir))
-        .injectables()
-        .into_iter()
-        .find(|e| e.on == "userpromptsubmit")
-        .map(|e| e.file)
+/// The pipeline banner and the writing rule are about the invocation, not about
+/// any one injectable, so exactly one sibling hook must carry them: emitting
+/// from each hands the window one copy per hook, and emitting from none drops
+/// them entirely.
+///
+/// Delegates to the dispatcher's election so the two cannot drift — they answer
+/// the same question about the same invocation, and a second implementation is
+/// a second answer.
+fn carries_shared_blocks(project_dir: &str, inject_only: Option<&str>) -> bool {
+    crate::dispatch::carries_shared_modules(project_dir, "userpromptsubmit", inject_only)
 }
 
 /// `true` if `prompt` starts with any `/mustard:` namespaced command. The bare
@@ -146,8 +144,18 @@ fn is_slash_command(prompt: &str) -> bool {
         return false;
     }
     let name: &str = rest.split_whitespace().next().unwrap_or_default();
-    name.starts_with(|c: char| c.is_ascii_alphabetic())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_'))
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic())
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_'))
+    {
+        return false;
+    }
+    // A bare `/tmp` or `/usr` satisfies every rule above and is a PATH, not a
+    // command — the operator typing one is asking about a directory, and
+    // treating it as a slash command costs them the router on that prompt. A
+    // real command name is longer or namespaced, so require one of the two.
+    // (`/pr` and `/qa` would be false negatives; neither exists, and the cost
+    // of being wrong in this direction is one extra injection.)
+    name.contains(':') || name.len() > 4
 }
 
 /// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
@@ -274,8 +282,15 @@ impl Check for PromptSubmitInject {
         // answer to a slash command is read by the same person as any other.
         // Excluding it here would drop the rule from precisely the messages
         // that produce the longest explanations.
+        // Which sibling carries what belongs to the INVOCATION rather than to
+        // one injectable — computed BEFORE the early return below, because a
+        // slash-command prompt still delivers the writing rule and would
+        // otherwise deliver it once per sibling (found in review: this repo
+        // declares `tone: didactic`, so every `/mustard:*` prompt got the
+        // paragraph twice).
+        let carries_shared_blocks = carries_shared_blocks(&cwd, ctx.inject_only.as_deref());
         if is_slash_command(prompt) {
-            return Ok(match tone {
+            return Ok(match tone.filter(|_| carries_shared_blocks) {
                 Some(rule) => Verdict::Inject { context: rule },
                 None => Verdict::Allow,
             });
@@ -289,23 +304,6 @@ impl Check for PromptSubmitInject {
             false,
             ctx.inject_only.as_deref(),
         );
-        // The banner and the writing rule belong to the invocation as a whole,
-        // not to any one injectable — so a `--inject` sibling stays silent on
-        // them and only the unscoped invocation (or the FIRST declared
-        // injectable, when every sibling is scoped) carries them. Emitting them
-        // from each sibling would hand the window one copy per hook.
-        let carries_shared_blocks = ctx.inject_only.as_deref().is_none_or(|only| {
-            // Path spellings vary honestly (`./` prefix, case, separators), so
-            // compare NORMALISED — raw equality elected no sibling when
-            // `mustard.json` and `hooks.json` spelled the path differently, and
-            // the banner and tone rule then vanished from every prompt.
-            //
-            // No declaration at all also answers `true`: a project with nothing
-            // declared has no sibling to elect, and dropping the writing rule
-            // is worse than delivering it once.
-            first_declared_injectable(&cwd)
-                .is_none_or(|first| crate::shared::paths::same_declared_file(&first, only))
-        });
         // W8.T8.2 — inject a single-line reminder when a spec is active. The
         // per-prompt entrypoints census that used to fill the no-spec branch
         // was REMOVED: lexical prompt-token × path-token matching measured 1
@@ -809,6 +807,11 @@ mod tests {
         assert!(!is_slash_command("/"));
         assert!(is_slash_command("/mustard:git"));
         assert!(is_slash_command("  /grill-me"));
+        // A bare short path satisfies the character rules and is NOT a command:
+        // the operator asking about `/tmp` would lose the router on that prompt.
+        assert!(!is_slash_command("/tmp"));
+        assert!(!is_slash_command("/usr"));
+        assert!(!is_slash_command("/opt"));
     }
 
     #[test]
