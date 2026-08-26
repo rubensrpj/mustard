@@ -1271,7 +1271,10 @@ mod tests {
             inject[1].get("file").and_then(|v| v.as_str()),
             Some(".claude/mustard/dispatch.md")
         );
-        assert_eq!(inject[1].get("on").and_then(|v| v.as_str()), Some("sessionStart"));
+        // Both halves ride `userPromptSubmit`, one sibling hook each: the cap is
+        // per hook RESPONSE, and that event self-heals (the `once` markers are
+        // per session_id, so a fork/resume re-delivers on the next prompt).
+        assert_eq!(inject[1].get("on").and_then(|v| v.as_str()), Some("userPromptSubmit"));
         assert_eq!(inject[1].get("once").and_then(|v| v.as_bool()), Some(true));
         assert!(
             !claude.join("mustard.json").exists(),

@@ -869,13 +869,24 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     // unit of its own and started telling the reader to obey the line's own
     // measured prescription.
     0x8b7a4a64d839a069,
+    // The rule-first rewrite: justification and history moved to
+    // `refs/mustard/router-rationale.md`, the em dashes that hid run-on
+    // sentences went, and both halves moved onto `userPromptSubmit`. Every
+    // operational token was audited across the change; only the prose that
+    // explained the two-event split left the file.
+    0x0d5c58329eeb1bf5,
 ];
 
-/// Superseded versions of the `dispatch.md` seed. Empty on purpose: the file
-/// was born with the two-event split, so no project has ever received an
-/// earlier one. It grows the same way the orchestrator catalog does — the
-/// ratchet below reads this file's own history.
-const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[];
+/// Superseded versions of the `dispatch.md` seed. It grows the same way the
+/// orchestrator catalog does — the ratchet below reads this file's own history.
+const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
+    // The split-era seed, superseded by the rule-first rewrite: the paragraph
+    // arguing why the router needed two events moved to
+    // `refs/mustard/router-rationale.md` (the premise it taught was wrong —
+    // sibling hooks do not share a ceiling), and the file moved onto
+    // `userPromptSubmit`.
+    0x5169e2cb65869f12,
+];
 
 /// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
 /// catalog speaks. Normalised so a Windows checkout answers the same as a
@@ -1040,28 +1051,35 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 // mustard.json
 // ---------------------------------------------------------------------------
 
-/// The default `mustard.json#inject` declarations: the router, in its two
-/// halves, on two DIFFERENT events. Written in the same casing the docs use;
-/// the config accessor lowercases `on` at read time.
+/// The default `mustard.json#inject` declarations: both halves of the router,
+/// on `userPromptSubmit`, one sibling hook each. Written in the same casing the
+/// docs use; the config accessor lowercases `on` at read time.
 ///
-/// **Why two events and not two entries on one.** A hook's `additionalContext`
-/// is capped at 10,000 characters; past that the harness saves the overflow to
-/// a file and hands the window a preview plus a path, so the text stops being
-/// in force even though nothing was truncated mid-sentence. The session hooks
-/// fold every injectable of ONE event into a single `additionalContext` (the
-/// dispatcher fold is last-writer-wins, so a second `Inject` on the same event
-/// would be dropped) — so two entries on `userPromptSubmit` would share one
-/// ceiling and buy nothing. Two events are two hook invocations, each with its
-/// own response and its own ceiling: § Intent Routing rides `userPromptSubmit`,
-/// § Dispatch rides `sessionStart` (and re-delivers after `/clear` or a
-/// compaction, which is when a window loses it).
+/// **Why one event with a hook per injectable.** A hook RESPONSE is capped at
+/// 10,000 characters; past that the harness saves the overflow to a file and
+/// hands the window a preview plus a path, so the text stops being in force
+/// even though nothing was truncated mid-sentence. The cap is per response, not
+/// per event: sibling hooks on one event are separate invocations and Claude
+/// Code keeps the `additionalContext` of every one of them (measured 2026-08-25
+/// — two siblings emitting 6,000 characters each both arrived intact). So each
+/// injectable gets its own hook and its own ceiling, and there is no composite
+/// budget between them.
+///
+/// `userPromptSubmit` is chosen because it is SELF-HEALING: the `once` markers
+/// live under `.claude/.session/<session_id>/`, so any path that loses the
+/// window (a new session, a `fork`, a resume) also loses the marker and the
+/// next prompt re-delivers. `sessionStart` cannot do that — it only fires on
+/// openings, and `fork` matched no matcher at all until this unit.
+///
+/// Mustard's own dispatcher fold is still last-writer-wins, so two Injects
+/// within ONE invocation would drop one; a hook per injectable sidesteps that
+/// without touching the dispatcher. Rationale in full:
+/// `plugin/refs/mustard/router-rationale.md`.
 ///
 /// The didactic response style used to ride `sessionStart` here; it is now the
 /// `mustard-didactic` plugin output-style (survives `/clear` natively), so it
 /// no longer needs a per-project injectable. [`retire_response_style_inject`]
-/// retires the stale entry from projects installed before the move, and
-/// [`backfill_dispatch_inject`] adds the second half to projects installed
-/// before the split.
+/// retires the stale entry from projects installed before the move.
 #[must_use]
 pub fn default_inject_entries() -> Vec<Injectable> {
     vec![
@@ -1071,7 +1089,7 @@ pub fn default_inject_entries() -> Vec<Injectable> {
             once: true,
         },
         Injectable {
-            on: "sessionStart".to_string(),
+            on: "userPromptSubmit".to_string(),
             file: DISPATCH_INJECT_FILE.to_string(),
             once: true,
         },
@@ -2121,7 +2139,11 @@ mod tests {
             .iter()
             .find(|e| e.file == DISPATCH_INJECT_FILE)
             .expect("the second half was not declared");
-        assert_eq!(dispatch.on, "sessionStart", "the halves must not share an event");
+        assert_eq!(
+            dispatch.on, "userPromptSubmit",
+            "the backfilled half must ride the self-healing event, not the one \
+             whose missed paths caused this defect",
+        );
         assert!(
             report.migrated.iter().any(|m| m.contains("dispatch")),
             "migration reported: {:?}",
@@ -2432,46 +2454,51 @@ mod tests {
         }
     }
 
-    /// The router is delivered in TWO halves on TWO events, and both halves
-    /// fit the ceiling one hook response carries.
+    /// Both halves of the router ride the SELF-HEALING event, and each fits the
+    /// ceiling one hook response carries.
     ///
-    /// This is the ratchet the one-file router never had. `additionalContext`
-    /// is capped at 10,000 characters per hook response; the overflow is not
-    /// cut mid-sentence — the harness writes it to a file and hands the window
-    /// a preview plus a path, which is worse for a router than a truncation
-    /// would be visible: it silently stops being in force. Since the session
-    /// hooks fold every injectable of ONE event into a single payload, the
-    /// split only buys a second ceiling while the two entries sit on DIFFERENT
-    /// events — so that is what is asserted, not merely that two files exist.
+    /// `additionalContext` is capped at 10,000 characters per hook RESPONSE; the
+    /// overflow is not cut mid-sentence — the harness writes it to a file and
+    /// hands the window a preview plus a path, which is worse than a visible
+    /// truncation: the router silently stops being in force.
+    ///
+    /// This replaces a ratchet that asserted the halves must sit on DIFFERENT
+    /// events, on the theory that siblings share one ceiling. They do not.
+    /// Measured 2026-08-25: two sibling hooks on one `UserPromptSubmit`, each
+    /// emitting 6,000 characters, both arrived intact and separate. The cap is
+    /// per response, so one sibling hook per injectable gives each its own.
+    ///
+    /// What the event choice buys instead is RE-DELIVERY. The `once` markers
+    /// live under `.claude/.session/<session_id>/`, so any path that loses the
+    /// window — a new session, a `fork`, a resume — also loses the marker, and
+    /// the next prompt re-delivers on its own. `sessionStart` cannot do that:
+    /// it fires only on openings, and `fork` matched no matcher at all.
     #[test]
-    fn the_router_rides_two_events_so_neither_half_overflows() {
+    fn the_router_rides_the_self_healing_event_and_neither_half_overflows() {
         let entries = default_inject_entries();
-        let orchestrator = entries
-            .iter()
-            .find(|e| e.file == ORCHESTRATOR_INJECT_FILE)
-            .expect("the router's first half is not declared at all");
-        let dispatch = entries
-            .iter()
-            .find(|e| e.file == DISPATCH_INJECT_FILE)
-            .expect("the router's second half is not declared — it would be seeded, never delivered");
-        assert_ne!(
-            orchestrator.on, dispatch.on,
-            "both halves ride `{}`, so the composer folds them into ONE \
-             additionalContext and they share one 10,000-character ceiling — the \
-             split buys nothing",
-            orchestrator.on,
-        );
+        for file in [ORCHESTRATOR_INJECT_FILE, DISPATCH_INJECT_FILE] {
+            let entry = entries
+                .iter()
+                .find(|e| e.file == file)
+                .unwrap_or_else(|| panic!("{file} is not declared — it would be seeded, never delivered"));
+            assert_eq!(
+                entry.on, "userPromptSubmit",
+                "{file} rides `{}`; a half delivered only at session start is missed by \
+                 every path that opens no session — `fork` above all",
+                entry.on,
+            );
+        }
 
-        // Each half, alone in its own hook response, must fit with margin for
-        // the siblings that ride the same event (the terrain census and the
-        // advisories on `sessionStart`, the pipeline banner on a prompt).
+        // Each injectable is delivered by its OWN sibling hook, so each is
+        // measured alone against the real ceiling. No composite budget applies.
         for (name, body, _) in INJECTABLE_SEEDS {
             let chars = body.chars().count();
             assert!(
-                chars <= 9_500,
+                chars <= 10_000,
                 "{name} is {chars} characters; a hook response carries 10,000 of \
                  additionalContext and the overflow becomes a file path instead of \
-                 text in force",
+                 text in force. Split it and give each half a hook — never compress \
+                 a rule out to fit",
             );
         }
     }

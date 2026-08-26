@@ -19,7 +19,7 @@
       "once": true
     },
     {
-      "on": "sessionStart",
+      "on": "userPromptSubmit",
       "file": ".claude/mustard/dispatch.md",
       "once": true
     }

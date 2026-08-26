@@ -14,19 +14,20 @@
 //!    skill listing. Past that, the trigger text is cut mid-sentence and the
 //!    command mis-triggers.
 //! 2. An injectable spliced as `additionalContext` is capped at **10,000
-//!    characters** per hook response. The overflow is NOT cut mid-sentence:
-//!    `code.claude.com/docs/en/hooks` says hook output past the limit "is saved
-//!    to a file and replaced with a preview and file path". That is why the cap
-//!    still binds, and it is a different reason than the one this comment used
-//!    to give — an injectable over budget does not lose a clause, it stops
-//!    being TEXT IN FORCE and becomes a pointer the model may or may not open.
-//!    For a router injected on every prompt, that is the whole failure.
-//!    9,500 leaves margin for the composition separator + siblings: the hooks
-//!    fold every injectable of ONE event into a single `additionalContext`
-//!    (the dispatcher fold is last-writer-wins), alongside the terrain census
-//!    and the advisories. A document that outgrows the budget is SPLIT across
-//!    two events — two hook invocations, two ceilings — never compressed to fit
-//!    (see `packages/core/templates/mustard/{orchestrator,dispatch}.md`).
+//!    characters** per hook RESPONSE. The overflow is NOT cut mid-sentence:
+//!    hook output past the limit "is saved to a file and replaced with a
+//!    preview and file path". An injectable over budget does not lose a clause,
+//!    it stops being TEXT IN FORCE and becomes a pointer the model may or may
+//!    not open. For a router the window needs on every unit, that is the whole
+//!    failure.
+//!
+//!    The ceiling is per response, so each injectable gets its OWN sibling hook
+//!    and there is no composite budget between siblings — measured 2026-08-25:
+//!    two siblings emitting 6,000 characters each on one `UserPromptSubmit`
+//!    both arrived intact and separate. A document that outgrows 10,000 is
+//!    SPLIT and given another hook, never compressed until a rule drops out
+//!    (see `packages/core/templates/mustard/{orchestrator,dispatch}.md` and
+//!    `plugin/refs/mustard/router-rationale.md`).
 //!
 //! Everything else (command / ref body size) is governed by structure
 //! (progressive disclosure) and human review, not a numeric tripwire — and
@@ -39,42 +40,30 @@ use std::path::{Path, PathBuf};
 /// the skill listing; past that the trigger text is cut mid-sentence.
 const DESCRIPTION_CHAR_CAP: usize = 1_536;
 
-/// Character cap per injectable template (`templates/mustard/*.md`). The real
-/// `additionalContext` ceiling is 10,000 characters per hook response; 9,500
-/// leaves margin for the composition separator + any sibling block injected in
-/// the same hook. The remedy for a template that outgrows it is a SPLIT onto a
-/// second event, not a rewrite that says less.
-const INJECTABLE_CHAR_CAP: usize = 9_500;
+/// Advisory cap per injectable template (`templates/mustard/*.md`): the size at
+/// which a document is carrying prose it should not.
+///
+/// It is deliberately NOT the real ceiling. Measured on the rewrite that
+/// introduced it, `orchestrator.md` and `dispatch.md` hold nothing but rules at
+/// roughly 5,300 and 6,200 characters, and a tighter target could only be met by
+/// deleting instruction — a first attempt at one lost four real rules before
+/// they were restored. A budget that forces a rule out is a guard that lies: it
+/// stays green while the product gets worse. So this is an alarm for prose
+/// creep, and [`HOOK_RESPONSE_CAP`] is what actually binds.
+///
+/// **The count is of the file AS CHECKED OUT, line endings included.** A Windows
+/// checkout carries CRLF, one extra character per line. An earlier budget left 5
+/// characters of margin and passed locally while failing CI on Windows only —
+/// green where it is written, red where nobody is looking.
+const INJECTABLE_CHAR_CAP: usize = 8_000;
 
 /// The real ceiling: characters one HOOK RESPONSE may carry.
+///
+/// Per RESPONSE, not per event. Sibling hooks on one event are separate
+/// invocations and Claude Code keeps every one of their `additionalContext`
+/// blocks — measured 2026-08-25 with two siblings emitting 6,000 characters
+/// each. Rationale: `plugin/refs/mustard/router-rationale.md`.
 const HOOK_RESPONSE_CAP: usize = 10_000;
-
-/// Room the per-event budget leaves for everything the hook composes ALONGSIDE
-/// its injectables — the terrain census, the version-drift advisory, the
-/// pending-prune advisory, and the blank line between each block.
-///
-/// **Why a per-EVENT budget exists at all.** The per-file cap above answers
-/// "does this document fit?", and that was never the binding question: a hook
-/// returns ONE string, and `SessionStart` folds the census plus every injectable
-/// of that event plus two advisories into it. Measured on the real hook, a
-/// repository with about 50 subprojects pushed the composed payload to 10,079
-/// characters while every individual file still passed its own check — a green
-/// ratchet over a reachable failure, which is the exact defect shape this
-/// project keeps finding.
-///
-/// The census used to be the unbounded term; it is now capped at a known number
-/// of rows (`TERRAIN_ROWS_CAP`), which is what makes this reserve a fact rather
-/// than a hope: 16 rows at roughly 45 characters each, plus the header and the
-/// truncation line, is about 950; the two advisories add some 400 more.
-///
-/// **The count below is of the file AS CHECKED OUT, line endings included.** A
-/// Windows checkout carries CRLF, which costs one character per line — 34 for
-/// the larger injectable. The first version of this budget left 5 characters of
-/// margin and passed locally while failing CI on Windows only, which is the
-/// worst shape a ratchet can have: green where it is written, red where nobody
-/// is looking. The reserve is sized so the margin survives the platform that
-/// pays the most, not the one that pays the least.
-const COMPOSED_SIBLING_RESERVE: usize = 1_600;
 
 /// The `plugin/` tree — home of the command/ref corpus.
 fn plugin_dir() -> PathBuf {
@@ -217,26 +206,30 @@ fn injectable_templates_fit_the_additional_context_cap() {
     );
 }
 
-/// AC-1 — the budget is measured PER EVENT, summing every injectable the same
-/// hook returns, not per file.
+/// AC-1 — every declared injectable owns the ceiling of its OWN hook response,
+/// and siblings on one event impose no composite budget on each other.
 ///
-/// The per-file check above cannot see the binding constraint. A hook answers
-/// with ONE `additionalContext` string: `SessionStart` folds the terrain census,
-/// every injectable declared on that event and two advisories into it, and the
-/// harness caps the result at 10,000 characters. Two documents of 6,000 each
-/// pass the per-file cap and blow the response.
+/// This replaces a per-EVENT sum that measured a constraint the harness does not
+/// have. That test asserted two 6,000-character documents on one event would
+/// blow the response; the experiment run on 2026-08-25 registered exactly that
+/// shape — two sibling `UserPromptSubmit` hooks emitting 6,000 characters each,
+/// 12,000 combined — and BOTH arrived intact, in separate blocks, each with its
+/// own header and end marker. Nothing was truncated. The official guide states
+/// the same rule: "Text from `additionalContext` is kept from every hook and
+/// passed to Claude together."
 ///
-/// Measured before this test existed: a repository with roughly 50 subprojects
-/// composed a 10,079-character `SessionStart` payload while both injectables sat
-/// comfortably under 9,500. The ratchet was green over a reachable failure.
+/// So the cap is per hook RESPONSE. The rule this test holds is the one that
+/// follows: each injectable is delivered by its own sibling hook, so each is
+/// measured on its own against the real 10,000, and a document that outgrows it
+/// is split — never compressed past the point where a rule goes out.
 #[test]
-fn event_budget_sums_every_injectable_of_the_same_hook() {
-    use std::collections::BTreeMap;
-
+fn each_injectable_owns_its_hook_ceiling() {
     let dir = core_templates_dir().join("mustard");
-    let mut per_event: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    let entries = mustard_core::platform::project_seed::default_inject_entries();
+    assert!(!entries.is_empty(), "no injectables are declared — the router reaches nobody");
 
-    for entry in mustard_core::platform::project_seed::default_inject_entries() {
+    let mut violations = Vec::new();
+    for entry in &entries {
         // The declared path is project-relative (`.claude/mustard/x.md`); the
         // SEED that fills it lives in the templates tree under the same name.
         let name = Path::new(&entry.file)
@@ -247,28 +240,15 @@ fn event_budget_sums_every_injectable_of_the_same_hook() {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!("declared injectable {} has no seed at {}: {e}", entry.file, path.display())
         });
-        let slot = per_event.entry(entry.on.clone()).or_insert((0, Vec::new()));
-        slot.0 += text.chars().count();
-        slot.1.push(format!("{name} ({} chars)", text.chars().count()));
-    }
-
-    assert!(!per_event.is_empty(), "no injectables are declared — the router reaches nobody");
-
-    let budget = HOOK_RESPONSE_CAP - COMPOSED_SIBLING_RESERVE;
-    let mut violations = Vec::new();
-    for (event, (total, files)) in &per_event {
-        // Blank line between blocks, plus one for the census the hook prepends.
-        let composed = total + files.len().saturating_mul(2);
-        if composed > budget {
+        let chars = text.chars().count();
+        if chars > HOOK_RESPONSE_CAP {
             violations.push(format!(
-                "{event}: {composed} characters across {} injectable(s) [{}] — budget {budget} \
-                 ({HOOK_RESPONSE_CAP} per hook response minus {COMPOSED_SIBLING_RESERVE} for the \
-                 census and the advisories the same hook composes). Each file fits on its own; \
-                 the RESPONSE does not. Move one onto another event — never compress.",
-                files.len(),
-                files.join(", "),
+                "{name} on {}: {chars} characters over the {HOOK_RESPONSE_CAP} a single hook \
+                 response carries. Its own sibling hook cannot save it — SPLIT the document \
+                 and give each half a hook, never compress a rule out to fit.",
+                entry.on,
             ));
         }
     }
-    assert!(violations.is_empty(), "hook responses over budget:\n{}", violations.join("\n"));
+    assert!(violations.is_empty(), "injectables over their own hook ceiling:\n{}", violations.join("\n"));
 }
