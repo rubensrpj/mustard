@@ -113,6 +113,66 @@ pub fn installed_plugin_hooks_manifest() -> Option<std::path::PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// The `mustard-rt` binary a STALE copy should hand its whole invocation to:
+/// the one inside the newest install the plugin registry records — and only
+/// when that install is strictly newer than THIS process.
+///
+/// Why this exists: the plugin's own binary self-updates on every release
+/// (`mustard-boot` re-downloads it), but the SYSTEM copy — the `.deb`'s
+/// `/usr/bin` symlink, the `.exe` installer's PATH entry, the `.pkg`'s — only
+/// changes when the operator reinstalls. Every PATH call site (`upsert`, the
+/// statusline, a terminal `run`) therefore answers with whatever version the
+/// installer left behind, and each answers with its OWN version: a stale
+/// `upsert` re-stamps `mustard.json` with the old number and the drift
+/// advisory can never converge. Fixing the installers one by one cannot close
+/// this — an installer runs once, the plugin updates forever — so the handover
+/// lives in the binary itself and every entry door converges on the same,
+/// newest answer.
+///
+/// `None` whenever the handover cannot be PROVEN an upgrade: registry absent,
+/// unreadable, no install of this plugin, the newest install not strictly
+/// newer (a dev build equal to or ahead of the release stays in charge — the
+/// "hands off a dev machine" rule `mustard-boot` already follows), or the
+/// recorded directory holding no binary. Never panics; the caller runs itself,
+/// which is exactly what happened before this function existed.
+#[must_use]
+pub fn newer_installed_rt() -> Option<std::path::PathBuf> {
+    let raw = std::fs::read_to_string(claude_config_dir()?.join(INSTALLED_PLUGINS)).ok()?;
+    let path = newer_installed_rt_from(&raw, &harness_version())?;
+    path.is_file().then_some(path)
+}
+
+/// The testable half of [`newer_installed_rt`]: registry JSON and the running
+/// version in, the newer install's `bin/mustard-rt` path out. Existence on
+/// disk is the outer half's business.
+///
+/// Version and `installPath` are read from the SAME record — the one with the
+/// highest version. [`installed_harness_version_from`] takes the max over
+/// versions alone; pairing its answer with a path picked independently could
+/// marry scope A's version to scope B's directory.
+#[must_use]
+pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::PathBuf> {
+    let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let (version, install) = doc
+        .get("plugins")?
+        .as_object()?
+        .iter()
+        .filter(|(key, _)| key.split('@').next() == Some(PLUGIN_NAME))
+        .filter_map(|(_, records)| records.as_array())
+        .flatten()
+        .filter_map(|record| {
+            let version = record.get("version")?.as_str().filter(|v| !v.is_empty())?;
+            let install = record.get("installPath")?.as_str().filter(|p| !p.is_empty())?;
+            Some((version, install))
+        })
+        .max_by(|(a, _), (b, _)| compare_versions(a, b))?;
+    if !is_behind(running, version) {
+        return None;
+    }
+    let exe = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
+    Some(std::path::Path::new(install).join("bin").join(exe))
+}
+
 /// Whether `running` names a version strictly OLDER than `installed`.
 ///
 /// Dotted numeric components, compared left to right and zero-padded to the
@@ -219,6 +279,54 @@ mod tests {
                 .as_deref(),
             None
         );
+    }
+
+    /// The handover only ever goes from OLD to NEW: a runner equal to or ahead
+    /// of the newest recorded install answers for itself. This is what makes a
+    /// delegation loop structurally impossible (the delegate re-runs this same
+    /// check and finds itself not behind) and what keeps a dev build in charge
+    /// of a dev machine.
+    #[test]
+    fn a_runner_hands_over_only_when_strictly_behind() {
+        let raw = r#"{"plugins":{"mustard@mustard-local":[
+          {"scope":"user","version":"0.1.51","installPath":"/plug/0.1.51"}
+        ]}}"#;
+        assert_eq!(
+            newer_installed_rt_from(raw, "0.1.50"),
+            Some(std::path::PathBuf::from(if cfg!(windows) {
+                "/plug/0.1.51/bin/mustard-rt.exe"
+            } else {
+                "/plug/0.1.51/bin/mustard-rt"
+            }))
+        );
+        assert_eq!(newer_installed_rt_from(raw, "0.1.51"), None, "equal stays in charge");
+        assert_eq!(newer_installed_rt_from(raw, "0.1.52"), None, "ahead (dev build) stays in charge");
+    }
+
+    /// Version and path come from the SAME record: with two scopes recorded,
+    /// the newest install's directory is the one handed over to — never the
+    /// other scope's leftover.
+    #[test]
+    fn the_handover_target_is_the_newest_records_own_directory() {
+        let raw = r#"{"plugins":{"mustard@mustard":[
+          {"scope":"project","version":"0.1.9","installPath":"/old"},
+          {"scope":"user","version":"0.1.10","installPath":"/new"}
+        ]}}"#;
+        let target = newer_installed_rt_from(raw, "0.1.8");
+        assert!(target.is_some_and(|p| p.starts_with("/new")));
+    }
+
+    /// Every unreadable or incomplete shape is one answer — `None`, "run
+    /// yourself" — because the caller is about to replace its own execution
+    /// and must never do so on a guess.
+    #[test]
+    fn an_unprovable_handover_runs_itself() {
+        assert_eq!(newer_installed_rt_from("not json", "0.1.0"), None);
+        assert_eq!(newer_installed_rt_from(r#"{"plugins":{}}"#, "0.1.0"), None);
+        let no_path = r#"{"plugins":{"mustard@m":[{"version":"9.9.9"}]}}"#;
+        assert_eq!(newer_installed_rt_from(no_path, "0.1.0"), None, "a record without installPath names no target");
+        let foreign = r#"{"plugins":{"other@m":[{"version":"9.9.9","installPath":"/x"}]}}"#;
+        assert_eq!(newer_installed_rt_from(foreign, "0.1.0"), None);
     }
 
     /// Dotted components compare NUMERICALLY: `0.1.9` is behind `0.1.10`, which
