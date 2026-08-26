@@ -152,6 +152,20 @@ pub enum EventCmd {
         /// Omitted: the branch the checkout is standing on.
         #[arg(long)]
         unit: Option<String>,
+        /// This item EXPLAINS THE SYMPTOM the operator reported — it is not an
+        /// adjacent finding.
+        ///
+        /// The difference is not a matter of degree. An adjacent finding is the
+        /// next cycle's prompt; a finding that explains the reported symptom IS
+        /// the answer to the request in flight, and recording it quietly means
+        /// deciding, on the operator's behalf, to keep working on something
+        /// else. That decision is theirs.
+        ///
+        /// Marked here, the close gate refuses to close the unit until the item
+        /// is settled — the same way it already refuses an unmarked checklist
+        /// item.
+        #[arg(long = "explains-symptom")]
+        explains_symptom: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -198,8 +212,8 @@ pub fn dispatch(cmd: EventCmd) {
             wave,
             format,
         } => event::event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
-        EventCmd::Notebook { add, unit, root } => {
-            event::notebook::run(&root, unit.as_deref(), add.as_deref());
+        EventCmd::Notebook { add, unit, explains_symptom, root } => {
+            event::notebook::run(&root, unit.as_deref(), add.as_deref(), explains_symptom);
         }
     }
 }

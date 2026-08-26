@@ -88,7 +88,12 @@ fn one_line(text: &str) -> String {
 /// branch (omitted: the branch the checkout is standing on) and `add` records
 /// one item. Never panics.
 #[must_use]
-pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) -> Value {
+pub(crate) fn notebook_at(
+    root: &Path,
+    unit: Option<&str>,
+    add: Option<&str>,
+    explains: bool,
+) -> Value {
     let project = checkout_root(root);
     let branch = match unit.map(str::trim).filter(|u| !u.is_empty()) {
         Some(u) => u.to_string(),
@@ -125,6 +130,12 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
 
     let mut added = false;
     if let Some(text) = add.map(one_line).filter(|t| !t.is_empty()) {
+        // The marker rides the line itself — see `EXPLAINS_SYMPTOM`.
+        let text = if explains && !explains_symptom(&text) {
+            format!("{EXPLAINS_SYMPTOM} {text}")
+        } else {
+            text
+        };
         if !items.iter().any(|i| i == &text) {
             items.push(text);
             added = true;
@@ -152,15 +163,34 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
             .to_string_lossy()
             .replace('\\', "/"),
         "added": added,
+        // The items naming the operator's own symptom, called out on their own
+        // so a gate does not have to know the prefix.
+        "explainsSymptom": items.iter().filter(|i| explains_symptom(i)).cloned().collect::<Vec<_>>(),
         "items": items,
     })
 }
 
+/// The prefix an item carries when the operator's own reported symptom is what
+/// it explains.
+///
+/// Written INTO the line rather than into a sidecar, because the notebook is a
+/// markdown file a person reads and edits, and a second file would drift from
+/// it. Every existing reader keeps working; only the ones that ask about this
+/// prefix see anything new.
+pub(crate) const EXPLAINS_SYMPTOM: &str = "[EXPLICA O SINTOMA]";
+
+/// Does this notebook line claim to explain the symptom the operator reported?
+#[must_use]
+pub(crate) fn explains_symptom(item: &str) -> bool {
+    item.trim_start().starts_with(EXPLAINS_SYMPTOM)
+}
+
 /// Run `notebook` from `root` and print the JSON report.
-pub fn run(root: &Path, unit: Option<&str>, add: Option<&str>) {
+pub fn run(root: &Path, unit: Option<&str>, add: Option<&str>, explains: bool) {
     println!(
         "{}",
-        serde_json::to_string_pretty(&notebook_at(root, unit, add)).unwrap_or_else(|_| "{}".into())
+        serde_json::to_string_pretty(&notebook_at(root, unit, add, explains))
+            .unwrap_or_else(|_| "{}".into())
     );
 }
 
@@ -199,7 +229,7 @@ mod tests {
         let root = dir.path();
 
         // Recorded from inside the unit — the branch names the notebook.
-        let wrote = notebook_at(root, None, Some("the statusline truncates on narrow terminals"));
+        let wrote = notebook_at(root, None, Some("the statusline truncates on narrow terminals"), false);
         assert_eq!(wrote["ok"], json!(true), "report: {wrote}");
         assert_eq!(wrote["unit"], json!("dev_my-unit"));
         assert_eq!(wrote["slug"], json!("my-unit"));
@@ -217,7 +247,7 @@ mod tests {
         // file is still untracked, so it survives the switch — on a real unit
         // the notebook rides its own branch, as the module doc says.)
         git(root, &["checkout", "dev"]);
-        let read = notebook_at(root, Some("dev_my-unit"), None);
+        let read = notebook_at(root, Some("dev_my-unit"), None, false);
         assert_eq!(read["ok"], json!(true));
         assert_eq!(read["added"], json!(false), "reading records nothing");
         assert_eq!(
@@ -228,7 +258,7 @@ mod tests {
 
         // A DIFFERENT unit has its own notebook — the record is per branch, not
         // one global list.
-        let other = notebook_at(root, Some("dev_another-unit"), None);
+        let other = notebook_at(root, Some("dev_another-unit"), None, false);
         assert_eq!(other["items"], json!([]), "one unit's item never leaks into another's");
     }
 
@@ -239,13 +269,13 @@ mod tests {
         let dir = repo();
         let root = dir.path();
 
-        let first = notebook_at(root, None, Some("rename the digest cache"));
+        let first = notebook_at(root, None, Some("rename the digest cache"), false);
         assert_eq!(first["added"], json!(true));
-        let again = notebook_at(root, None, Some("rename the digest cache"));
+        let again = notebook_at(root, None, Some("rename the digest cache"), false);
         assert_eq!(again["added"], json!(false), "an exact repeat is folded away");
         assert_eq!(again["items"], json!(["rename the digest cache"]));
 
-        let pasted = notebook_at(root, None, Some("two lines\nbecome  one"));
+        let pasted = notebook_at(root, None, Some("two lines\nbecome  one"), false);
         assert_eq!(
             pasted["items"],
             json!(["rename the digest cache", "two lines become one"]),
@@ -261,19 +291,19 @@ mod tests {
         let root = dir.path();
         git(root, &["checkout", "dev"]);
 
-        let base = notebook_at(root, None, Some("orphan note"));
+        let base = notebook_at(root, None, Some("orphan note"), false);
         assert_eq!(base["ok"], json!(false));
         assert_eq!(base["reason"], json!("no-unit"));
         assert!(base["hint"].as_str().unwrap_or_default().contains("--unit"), "the refusal says how");
 
-        let loose = notebook_at(root, Some("no-prefix-branch"), None);
+        let loose = notebook_at(root, Some("no-prefix-branch"), None, false);
         assert_eq!(loose["reason"], json!("no-unit"));
 
         // The prefix must name a DECLARED base, not merely sit before an
         // underscore: `feature_x` is not a unit of this project, and accepting
         // it would open `.claude/spec/x/notebook.md` — another unit's file —
         // without a word.
-        let foreign = notebook_at(root, Some("feature_x"), Some("would land in the wrong unit"));
+        let foreign = notebook_at(root, Some("feature_x"), Some("would land in the wrong unit"), false);
         assert_eq!(foreign["reason"], json!("no-unit"), "report: {foreign}");
         assert!(
             !root.join(".claude/spec/x/notebook.md").exists(),

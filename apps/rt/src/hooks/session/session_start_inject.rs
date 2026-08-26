@@ -406,6 +406,12 @@ impl Check for SessionStartInject {
         // — so it is blind to a session still carrying a plugin an update has
         // already replaced on disk. This is the only line that can see it.
         let stale = stale_plugin_notice();
+        // Plugin-behind-binary advisory: the two above compare the stamp with
+        // the running harness, and the running plugin with the registry. A
+        // package install moves neither pair — it replaces the SYSTEM binary
+        // and leaves the plugin where it was, which is the shape the operator
+        // hit on 2026-08-26.
+        let behind = plugin_behind_binary_notice();
         // Pending-prune advisory: delivered work units whose branch is still
         // alive. The prune command already existed and worked; what was missing
         // was anyone SAYING it was owed, so six units piled up unnoticed.
@@ -414,7 +420,7 @@ impl Check for SessionStartInject {
         // terrain first, injectables after, the advisories last — blank-line
         // separated.
         let parts: Vec<String> =
-            [terrain, injected, drift, stale, prune].into_iter().flatten().collect();
+            [terrain, injected, drift, stale, behind, prune].into_iter().flatten().collect();
         Ok(if parts.is_empty() {
             Verdict::Allow
         } else {
@@ -477,6 +483,48 @@ fn stale_plugin_line(running: &str, installed: Option<&str>) -> Option<String> {
         "[Mustard] Stale plugin — this session loaded {running}; {installed} is installed. \
          Tell the user the session is running the OLD commands, skills and agents, and that \
          only reloading Claude Code picks up {installed} — an upsert alone does not."
+    ))
+}
+
+/// One line when the PLUGIN Claude Code would load is behind the `mustard-rt`
+/// binary installed on this machine.
+///
+/// A third pair, and neither of the two above can see it.
+/// [`version_drift_notice`] compares the project stamp with the running
+/// harness; [`stale_plugin_notice`] compares the running plugin with the
+/// registry. Both are blind to the case where the SYSTEM binary was updated and
+/// the plugin was not — which is exactly what a package install does: `dpkg -i`
+/// (or the Windows installer) replaces `/usr/lib/mustard/bin/mustard-rt` and
+/// touches nothing under `~/.claude/plugins/`.
+///
+/// Found in the field, 2026-08-26: the operator installed 0.1.50 and the plugin
+/// stayed on 0.1.49. Every version they could see said 0.1.50, and the harness
+/// that actually ran their hooks was the old one. Nothing said so.
+///
+/// `None` whenever the claim cannot be proven — no registry, no answer, or the
+/// two agree. An advisory that guesses is worse than silence.
+fn plugin_behind_binary_notice() -> Option<String> {
+    plugin_behind_binary_line(
+        &mustard_core::harness_version(),
+        mustard_core::installed_harness_version().as_deref(),
+    )
+}
+
+/// The pure half of [`plugin_behind_binary_notice`]: the running binary's
+/// version in, the advisory out.
+///
+/// The direction is the opposite of [`stale_plugin_line`], and that is the
+/// whole point. There, the session is BEHIND what is installed and a reload
+/// fixes it. Here, the plugin is behind the binary, and a reload changes
+/// nothing — only `/mustard:upsert` refreshes the plugin itself.
+fn plugin_behind_binary_line(binary: &str, plugin: Option<&str>) -> Option<String> {
+    let plugin = plugin.filter(|p| mustard_core::is_behind(p, binary))?;
+    Some(format!(
+        "[Mustard] Plugin behind the installed binary — `mustard-rt` on this machine is \
+         {binary}, but the Claude Code plugin is {plugin}. A package install replaces the \
+         system binary and does NOT touch the plugin, so the hooks are still running {plugin}. \
+         Tell the user to run `/mustard:upsert`, which refreshes the plugin, and then restart \
+         Claude Code."
     ))
 }
 
@@ -903,6 +951,33 @@ mod tests {
             Verdict::Inject { context } => context.starts_with("[Mustard] Stale plugin"),
             _ => false,
         }
+    }
+
+    /// A package install moves the system binary and leaves the plugin behind,
+    /// and until this advisory nothing said so.
+    ///
+    /// Measured in the field on 2026-08-26: `dpkg -i` put 0.1.50 on the machine
+    /// and `~/.claude/plugins/` stayed on 0.1.49. Every version the operator
+    /// could read said 0.1.50; the harness running their hooks was 0.1.49.
+    ///
+    /// The direction matters and is the opposite of the stale-plugin line: this
+    /// one fires when the PLUGIN is behind, and a reload does not fix it —
+    /// only `/mustard:upsert` refreshes the plugin.
+    #[test]
+    fn a_plugin_left_behind_by_a_package_install_is_named() {
+        let notice = plugin_behind_binary_line("0.1.50", Some("0.1.49"))
+            .expect("a plugin behind the binary must be named");
+        assert!(notice.contains("0.1.50") && notice.contains("0.1.49"), "{notice}");
+        assert!(notice.contains("upsert"), "it must name the one action that fixes it: {notice}");
+
+        // Silent whenever the claim cannot be proven, or there is nothing to
+        // claim. An advisory that guesses is worse than one that stays quiet.
+        assert_eq!(plugin_behind_binary_line("0.1.50", Some("0.1.50")), None, "aligned");
+        assert_eq!(plugin_behind_binary_line("0.1.49", Some("0.1.50")), None, "plugin AHEAD");
+        assert_eq!(plugin_behind_binary_line("0.1.50", None), None, "no registry answer");
+        // Numeric, not lexical: 0.1.9 is behind 0.1.10, which a string
+        // comparison gets backwards.
+        assert!(plugin_behind_binary_line("0.1.10", Some("0.1.9")).is_some(), "0.1.9 < 0.1.10");
     }
 
     // --- declared injectables (orchestrator-redesign) ------------------------

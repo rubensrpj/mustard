@@ -981,6 +981,29 @@ impl CloseGateModes {
 // run_close_gates is a sequential gate pipeline; splitting would require threading
 // many local mode/spec variables through helpers without clarity gain.
 #[allow(clippy::too_many_lines)]
+/// Notebook lines of `spec` marked as explaining the operator's reported
+/// symptom.
+///
+/// Empty whenever the notebook cannot be read or carries no such line — this
+/// feeds a gate, and a gate that blocks on a file it could not open blocks on
+/// nothing it can name.
+fn find_symptom_findings(cwd: &str, spec: Option<&str>) -> Vec<String> {
+    let Some(spec) = spec.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let path = mustard_core::ClaudePaths::spec_dir_or_unchecked(std::path::Path::new(cwd), spec)
+        .join("notebook.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(str::trim)
+        .filter(|l| crate::commands::event::notebook::explains_symptom(l))
+        .map(str::to_string)
+        .collect()
+}
+
 pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> Verdict {
     let mode = modes.close;
 
@@ -1024,6 +1047,70 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                         "debtMode": mode_str(debt_mode),
                         "spec": spec_ref,
                         "markerCount": markers.len(),
+                    }),
+                );
+                return Verdict::Deny { reason };
+            }
+            // warn → fall through.
+        }
+    }
+
+    // ── Explains-the-symptom gate ─────────────────────────────────────────
+    //
+    // A notebook item marked `--explains-symptom` is not the next cycle's
+    // prompt: it is the answer to the request that is still in flight. Closing
+    // the unit with one open means the operator asked why X happens, the work
+    // found out, and the unit shipped something else while the answer sat in a
+    // file nobody reads.
+    //
+    // Measured on this repository, 2026-08-26: the finding that explained the
+    // reported symptom ("the plugin's `bin/` is born empty") was recorded in
+    // the notebook, correctly, and classified out of scope by the model. A day
+    // of work went into the other half of the problem. Nothing asked.
+    //
+    // Rides the checklist mode, deliberately: it is the same promise — an item
+    // the unit acknowledged and did not settle blocks the close — and a knob of
+    // its own would be one more thing to discover.
+    if modes.checklist != GateMode::Off {
+        let open = find_symptom_findings(cwd, spec_ref);
+        if !open.is_empty() {
+            let preview = open
+                .iter()
+                .take(3)
+                .map(|i| format!("  - {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let extra = if open.len() > 3 {
+                format!("\n  …and {} more", open.len() - 3)
+            } else {
+                String::new()
+            };
+            let reason = format!(
+                "{}\n{preview}{extra}",
+                format_gate_message(
+                    "Close Gate",
+                    &format!(
+                        "the notebook of \"{}\" carries {} finding(s) marked as EXPLAINING \
+                         THE REPORTED SYMPTOM",
+                        spec_ref.unwrap_or(""),
+                        open.len()
+                    ),
+                    "a finding that explains what the operator reported is the answer to the \
+                     request in flight, not a note for later — closing over it decides, on \
+                     their behalf, that the work goes elsewhere",
+                    "settle it in this unit, or ask the operator whether to open one for it \
+                     and remove the marker from the notebook line once they answer",
+                )
+            );
+            if modes.checklist == GateMode::Strict {
+                emit_close_gate_event(
+                    cwd,
+                    spec_ref,
+                    json!({
+                        "result": "deny-explains-symptom",
+                        "mode": mode_str(mode),
+                        "spec": spec_ref,
+                        "findingCount": open.len(),
                     }),
                 );
                 return Verdict::Deny { reason };
@@ -1475,6 +1562,52 @@ pub fn gate_close_for_spec(cwd: &str, spec: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A notebook finding marked as explaining the reported symptom BLOCKS the
+    /// close; an ordinary one does not.
+    ///
+    /// This is the gate that did not exist on 2026-08-26, when the finding that
+    /// explained the operator's symptom was recorded correctly, classified out
+    /// of scope by the model, and a day of work went into the other half of the
+    /// problem. Nothing asked.
+    #[test]
+    fn a_finding_that_explains_the_symptom_blocks_the_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("uma-unidade");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let cwd = root.to_str().unwrap();
+
+        // An ordinary finding: the next cycle's prompt, and no reason to block.
+        std::fs::write(
+            spec_dir.join("notebook.md"),
+            "# Notebook\n\n- o executor confunde dois casos de 127\n",
+        )
+        .unwrap();
+        assert!(
+            find_symptom_findings(cwd, Some("uma-unidade")).is_empty(),
+            "an adjacent finding must not block",
+        );
+
+        // One that explains what the operator reported: the answer to the
+        // request in flight.
+        std::fs::write(
+            spec_dir.join("notebook.md"),
+            format!(
+                "# Notebook\n\n- o executor confunde dois casos de 127\n- {} o bin do plugin nasce vazio\n",
+                crate::commands::event::notebook::EXPLAINS_SYMPTOM
+            ),
+        )
+        .unwrap();
+        let open = find_symptom_findings(cwd, Some("uma-unidade"));
+        assert_eq!(open.len(), 1, "exactly the marked one: {open:?}");
+        assert!(open[0].contains("bin do plugin"), "{open:?}");
+
+        // Unreadable or unnamed: a gate that blocks on a file it could not open
+        // blocks on nothing it can name.
+        assert!(find_symptom_findings(cwd, Some("nao-existe")).is_empty());
+        assert!(find_symptom_findings(cwd, None).is_empty());
+    }
     use super::*;
     // W5 follow-up landed: `qa.result` events seed straight into the per-spec
     // NDJSON dir, mirroring `qa-run`'s production write path through
