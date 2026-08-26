@@ -44,13 +44,61 @@ pub fn run_event(
     let tool = input.tool_name.as_deref();
     let mut ctx = build_ctx(trigger, input);
     ctx.inject_only = inject_only.map(str::to_string);
+    let carries_shared_modules = carries_shared_modules(
+        &ctx.project_dir,
+        &trigger.as_event_name().to_ascii_lowercase(),
+        inject_only,
+    );
 
     let mut outcome = Outcome::allow();
     for module in registry.applicable(trigger, tool) {
+        // Every sibling hook of one event fires for the SAME prompt, so a
+        // module that is not about one injectable must run exactly once across
+        // all of them. Letting each sibling run the whole registry executed
+        // every observer once per sibling: `user.prompt` was logged twice for
+        // one prompt, and `change_request_log` appended twice.
+        //
+        // Skipping them on every scoped invocation is the opposite mistake, and
+        // worse — with only sibling hooks registered, no invocation carries
+        // them and the trace records nothing at all. So ONE sibling is elected
+        // to carry them: the one claiming the first declared injectable.
+        if !carries_shared_modules && !INJECTING_MODULES.contains(&module.id) {
+            continue;
+        }
         run_module(module, input, &ctx, &mut outcome);
     }
     outcome
 }
+
+/// The modules a `--inject` invocation always runs — the ones that ARE about
+/// the injectable it claims.
+const INJECTING_MODULES: &[&str] = &["prompt_submit_inject", "session_start_inject"];
+
+/// Does this invocation carry the modules that belong to the whole event?
+///
+/// An unscoped invocation always does. A `--inject` one does only when it
+/// claims the FIRST injectable the project declares for that event: declaration
+/// order elects exactly one sibling, needs no extra configuration, and every
+/// sibling reaches the same answer from the same config.
+///
+/// Fail-open: a project that declares nothing for the trigger, or whose config
+/// cannot be read, answers `true` — running an observer twice is recoverable,
+/// losing the event trace entirely is not.
+fn carries_shared_modules(project_dir: &str, trigger_on: &str, inject_only: Option<&str>) -> bool {
+    let Some(only) = inject_only else {
+        return true;
+    };
+    let first = mustard_core::ProjectConfig::load(std::path::Path::new(project_dir))
+        .injectables()
+        .into_iter()
+        .find(|e| e.on.eq_ignore_ascii_case(trigger_on))
+        .map(|e| e.file);
+    match first {
+        Some(file) => crate::shared::paths::same_declared_file(&file, only),
+        None => true,
+    }
+}
+
 
 /// Run a single named module (`mustard-rt check <id>`).
 ///

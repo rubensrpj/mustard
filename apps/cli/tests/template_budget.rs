@@ -65,6 +65,18 @@ const INJECTABLE_CHAR_CAP: usize = 8_000;
 /// each. Rationale: `plugin/refs/mustard/router-rationale.md`.
 const HOOK_RESPONSE_CAP: usize = 10_000;
 
+/// The size a hook response has to carry for this text: the LARGER of its
+/// character count and its byte count.
+///
+/// Which unit the harness counts is not documented, and the two differ wherever
+/// the text is not plain ASCII — the shipped templates carry accents, em dashes
+/// and `▸`/`⨯`. Measuring the smaller number would call a file clean while it is
+/// already past the ceiling and degraded to a path, so the conservative reading
+/// is the only honest one here.
+fn payload_size(text: &str) -> usize {
+    text.chars().count().max(text.len())
+}
+
 /// The `plugin/` tree — home of the command/ref corpus.
 fn plugin_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin")
@@ -188,10 +200,10 @@ fn injectable_templates_fit_the_additional_context_cap() {
             violations.push(format!("{}: unreadable", path.display()));
             continue;
         };
-        let chars = text.chars().count();
+        let chars = payload_size(&text);
         if chars > INJECTABLE_CHAR_CAP {
             violations.push(format!(
-                "{}: {chars} characters (cap {INJECTABLE_CHAR_CAP} — a hook response \
+                "{}: {chars} (larger of chars/bytes; cap {INJECTABLE_CHAR_CAP} — a hook response \
                  carries 10,000 characters of additionalContext; the overflow becomes a \
                  file path instead of text in force. SPLIT it onto a second event, do \
                  not compress it)",
@@ -240,10 +252,10 @@ fn each_injectable_owns_its_hook_ceiling() {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!("declared injectable {} has no seed at {}: {e}", entry.file, path.display())
         });
-        let chars = text.chars().count();
+        let chars = payload_size(&text);
         if chars > HOOK_RESPONSE_CAP {
             violations.push(format!(
-                "{name} on {}: {chars} characters over the {HOOK_RESPONSE_CAP} a single hook \
+                "{name} on {}: {chars} (larger of chars/bytes) over the {HOOK_RESPONSE_CAP} a single hook \
                  response carries. Its own sibling hook cannot save it — SPLIT the document \
                  and give each half a hook, never compress a rule out to fit.",
                 entry.on,
@@ -251,4 +263,69 @@ fn each_injectable_owns_its_hook_ceiling() {
         }
     }
     assert!(violations.is_empty(), "injectables over their own hook ceiling:\n{}", violations.join("\n"));
+}
+
+/// The ratchet that would have caught the compaction overflow: no single hook
+/// RESPONSE may exceed the ceiling, whatever it composes.
+///
+/// The per-injectable check above answers "does this document fit?" — and a
+/// review found that was not the binding question. A `SessionStart` response
+/// folds the terrain census, every `sessionStart` injectable and two advisories
+/// into ONE string. An earlier revision of this unit also folded the
+/// `userPromptSubmit` family in on a compaction, and the response measured
+/// 11,973 characters on this repository: over the cap, so the router became a
+/// file path instead of text in force.
+///
+/// The predecessor of this test summed per EVENT, which was wrong in the other
+/// direction — sibling hooks are separate responses and do not share a budget
+/// (measured 2026-08-25). What binds is the RESPONSE, so that is what this
+/// measures: the largest set of blocks any one invocation can compose.
+#[test]
+fn no_single_hook_response_can_exceed_the_ceiling() {
+    // What a `SessionStart` response composes alongside its injectables: the
+    // terrain census (16 rows at ~45 chars, plus header and truncation line)
+    // and the two advisories. Sized from `TERRAIN_ROWS_CAP`, not guessed.
+    const COMPOSED_SIBLINGS: usize = 1_600;
+
+    let dir = core_templates_dir().join("mustard");
+    let mut per_event: std::collections::BTreeMap<String, (usize, Vec<String>)> =
+        std::collections::BTreeMap::new();
+    for entry in mustard_core::platform::project_seed::default_inject_entries() {
+        let name = Path::new(&entry.file)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let text = std::fs::read_to_string(dir.join(&name)).unwrap_or_else(|e| {
+            panic!("declared injectable {} has no seed: {e}", entry.file)
+        });
+        let slot = per_event.entry(entry.on.clone()).or_insert((0, Vec::new()));
+        slot.0 += payload_size(&text);
+        slot.1.push(name);
+    }
+
+    // Each injectable rides its OWN sibling hook, so an event's injectables are
+    // never summed against each other. What IS summed into one response is the
+    // largest injectable plus everything the hook composes around it.
+    let mut violations = Vec::new();
+    for (event, (_total, files)) in &per_event {
+        let largest = files
+            .iter()
+            .map(|f| {
+                std::fs::read_to_string(dir.join(f))
+                    .map(|s| payload_size(&s))
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+        let composed = largest + COMPOSED_SIBLINGS;
+        if composed > HOOK_RESPONSE_CAP {
+            violations.push(format!(
+                "{event}: the largest injectable [{}] plus the {COMPOSED_SIBLINGS} chars the \
+                 hook composes around it is {composed}, over the {HOOK_RESPONSE_CAP} one \
+                 RESPONSE carries. Split the document and give each half its own sibling hook.",
+                files.join(", "),
+            ));
+        }
+    }
+    assert!(violations.is_empty(), "hook responses over the ceiling:\n{}", violations.join("\n"));
 }

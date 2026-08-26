@@ -68,7 +68,7 @@ pub fn collect(
         if entry.on != trigger_on {
             continue;
         }
-        if only.is_some_and(|wanted| !same_declared_file(&entry.file, wanted)) {
+        if only.is_some_and(|wanted| !crate::shared::paths::same_declared_file(&entry.file, wanted)) {
             continue; // another sibling hook owns this one.
         }
         let marker_name = marker_basename(&entry.file);
@@ -117,21 +117,6 @@ pub fn collect(
     Some(blocks.join("\n\n"))
 }
 
-/// `true` when two declared injectable paths name the SAME file.
-///
-/// A hook registration writes the path by hand as often as the seed does, and
-/// one file has several honest spellings: a `./` prefix, backslashes on
-/// Windows, mixed case on a case-insensitive filesystem. Comparing raw strings
-/// would make each of those a different file, and the only symptom is a sibling
-/// hook that silently delivers nothing. Mirrors `project_seed::same_declared_path`.
-fn same_declared_file(a: &str, b: &str) -> bool {
-    fn norm(s: &str) -> String {
-        let s = s.trim().replace('\\', "/");
-        let s = s.strip_prefix("./").unwrap_or(&s).to_string();
-        s.trim_end_matches('/').to_ascii_lowercase()
-    }
-    norm(a) == norm(b)
-}
 
 /// Delete every `injected-*` marker of the session. Called on a
 /// post-compaction `SessionStart` so the `once` entries re-deliver into the

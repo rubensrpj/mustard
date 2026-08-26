@@ -6,8 +6,9 @@ templates themselves carry rules only; the reasoning lives here, loaded on deman
 ## The delivery channel
 
 An injectable is a file declared in `mustard.json#inject`. A hook reads it and returns it
-as `additionalContext`, which Claude Code splices into the model's window. Two events
-carry the router today, and both are `userPromptSubmit`.
+as `additionalContext`, which Claude Code splices into the model's window. Two SIBLING
+HOOKS carry the router today — one per injectable — and both ride the same event,
+`userPromptSubmit`.
 
 **A hook response is capped at 10,000 characters.** Past that, the overflow is not cut
 mid-sentence: Claude Code saves it to a file and hands the window a preview plus that

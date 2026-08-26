@@ -166,27 +166,43 @@ fn build_report(
 
     for entry in &entries {
         // (2) Declared but absent from disk.
+        //
+        // The FILESYSTEM decides existence, and on Linux it is case-sensitive.
+        // The path comparison used elsewhere here is not — that is right for
+        // asking "do these two declarations name one file?", and wrong for
+        // asking "is this file there?". Keeping the two questions apart is what
+        // stops a `.claude/Mustard/Dispatch.md` from reading as declared-and-
+        // present while the hook, which opens the literal path, finds nothing.
         let path = root.join(&entry.file);
         if !path.is_file() {
             findings.push(DeliveryFinding::fail(
                 "injectable-missing",
                 format!(
-                    "`{}` is declared on `{}` but is not on disk, so that rule is not in force",
+                    "`{}` is declared on `{}` but no file is at that exact path (case \
+                     included), so that rule is not in force",
                     entry.file, entry.on,
                 ),
-                "run /mustard:upsert to reseed it",
+                "run /mustard:upsert to reseed it, or fix the spelling in mustard.json#inject",
             ));
             continue;
         }
         // (4) Over the ceiling a hook response carries.
+        //
+        // Measured as the LARGER of characters and bytes. Which unit the
+        // harness counts is not documented, and the two differ wherever the
+        // text is not plain ASCII — the shipped templates carry accents, em
+        // dashes and `▸`/`⨯`, so a file at 9,900 characters can already be past
+        // 10,000 bytes. Reporting the smaller number would call a degraded
+        // injectable clean, which is the failure this check exists to catch.
         if let Ok(text) = fs::read_to_string(&path) {
-            let chars = text.chars().count();
-            if chars > HOOK_RESPONSE_CAP {
+            let size = text.chars().count().max(text.len());
+            if size > HOOK_RESPONSE_CAP {
                 findings.push(DeliveryFinding::warn(
                     "injectable-over-ceiling",
                     format!(
-                        "`{}` is {chars} characters; past {HOOK_RESPONSE_CAP} a hook response \
-                         becomes a file path instead of text in force",
+                        "`{}` measures {size} (the larger of characters and bytes); past \
+                         {HOOK_RESPONSE_CAP} a hook response becomes a file path instead of \
+                         text in force",
                         entry.file,
                     ),
                     "split the document and give each half its own sibling hook",
@@ -373,6 +389,29 @@ mod tests {
             !report.findings.iter().any(|f| f.kind == "half-router"),
             "spelling variants read as a half-router: {:?}",
             report.findings,
+        );
+        // …and the file check is a SEPARATE question, answered by the
+        // filesystem. On Linux `.claude/Mustard/Dispatch.md` is not the file
+        // that was seeded, so the report says exactly that instead of going
+        // quiet. Asserting only the absence of `half-router` let this pass
+        // while the report still FAILed for a reason the test never examined.
+        let missing: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "injectable-missing")
+            .map(|f| f.detail.as_str())
+            .collect();
+        assert_eq!(
+            missing.len(),
+            1,
+            "the case-variant path is absent on a case-sensitive filesystem and must be \
+             reported as such: {:?}",
+            report.findings,
+        );
+        assert!(
+            missing[0].contains("case included"),
+            "the refusal must say WHY the path did not resolve: {}",
+            missing[0],
         );
     }
 

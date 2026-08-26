@@ -294,10 +294,18 @@ impl Check for PromptSubmitInject {
         // them and only the unscoped invocation (or the FIRST declared
         // injectable, when every sibling is scoped) carries them. Emitting them
         // from each sibling would hand the window one copy per hook.
-        let carries_shared_blocks = ctx
-            .inject_only
-            .as_deref()
-            .is_none_or(|only| first_declared_injectable(&cwd).is_some_and(|first| first == only));
+        let carries_shared_blocks = ctx.inject_only.as_deref().is_none_or(|only| {
+            // Path spellings vary honestly (`./` prefix, case, separators), so
+            // compare NORMALISED — raw equality elected no sibling when
+            // `mustard.json` and `hooks.json` spelled the path differently, and
+            // the banner and tone rule then vanished from every prompt.
+            //
+            // No declaration at all also answers `true`: a project with nothing
+            // declared has no sibling to elect, and dropping the writing rule
+            // is worse than delivering it once.
+            first_declared_injectable(&cwd)
+                .is_none_or(|first| crate::shared::paths::same_declared_file(&first, only))
+        });
         // W8.T8.2 — inject a single-line reminder when a spec is active. The
         // per-prompt entrypoints census that used to fill the no-spec branch
         // was REMOVED: lexical prompt-token × path-token matching measured 1

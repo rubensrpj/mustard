@@ -238,13 +238,33 @@ fn task_section_chars(prompt: &str) -> usize {
 }
 
 /// Trimmed lines between a heading and the next `## `.
+///
+/// The heading is matched at the START OF A LINE, never anywhere in the text.
+/// A bare `prompt.find("## TASK")` matched the literal inside the EFFICIENCY
+/// block ("the anchors already handed to you above (`## REFERENCE`, `## TASK`)")
+/// and inside the `patterns` role body — both of which precede the real
+/// section — so the measurement reported the tail of another block.
 fn section_lines<'a>(prompt: &'a str, heading: &str) -> impl Iterator<Item = &'a str> {
-    let body = prompt
-        .find(heading)
-        .map(|i| &prompt[i + heading.len()..])
-        .unwrap_or_default();
-    let end = body.find("\n## ").unwrap_or(body.len());
-    body[..end].lines().map(str::trim).filter(|l| !l.is_empty())
+    // Walk lines instead of searching the flat text: a heading is a LINE that
+    // equals the heading, which no substring match can express without an
+    // off-by-one on the anchor. Collecting is fine — a prompt is one document,
+    // not a stream.
+    let mut body: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in prompt.lines() {
+        if inside {
+            if line.starts_with("## ") {
+                break;
+            }
+            let t = line.trim();
+            if !t.is_empty() {
+                body.push(t);
+            }
+        } else if line.trim_end() == heading {
+            inside = true;
+        }
+    }
+    body.into_iter()
 }
 
 /// Render the dispatch/retry prompt against an explicit `project` root and
@@ -704,7 +724,26 @@ mod tests {
     /// something thin. These two counts make it visible BEFORE the dispatch.
     #[test]
     fn render_reports_material_counts_per_wave() {
-        let prompt = "## CONVERSATION MATERIAL\n\n                      - **termo** — o que significa\n                      - decisao com razao\n\n                      ## TASK\n\nfaca a coisa\nem duas linhas\n\n## EFFICIENCY\n\nx\n";
+        // Written line by line on purpose: an earlier version of this literal
+        // used string continuations, which left the headings INDENTED. It
+        // passed only because the search was loose enough to match a heading
+        // anywhere in the text — the very defect this section-cutter now
+        // refuses. A heading is a line, so the fixture must contain lines.
+        let prompt = concat!(
+            "## CONVERSATION MATERIAL\n",
+            "\n",
+            "- **termo** — o que significa\n",
+            "- decisao com razao\n",
+            "\n",
+            "## TASK\n",
+            "\n",
+            "faca a coisa\n",
+            "em duas linhas\n",
+            "\n",
+            "## EFFICIENCY\n",
+            "\n",
+            "x\n",
+        );
         assert_eq!(super::material_line_count(prompt), 2, "both bullets counted");
         assert_eq!(super::task_section_chars(prompt), "faca a coisa".len() + "em duas linhas".len() + 2);
 
@@ -712,6 +751,24 @@ mod tests {
         let hollow = "## TASK\n\nfaca\n";
         assert_eq!(super::material_line_count(hollow), 0);
         assert_eq!(super::task_section_chars(hollow), 5);
+    }
+
+    /// A heading NAMED inside another block is not that block's heading.
+    ///
+    /// The real template mentions `## TASK` in the EFFICIENCY prose ("the
+    /// anchors already handed to you above"), and the `patterns` role body
+    /// names it too — both before the section itself. An unanchored search
+    /// matched the first literal, so the reported size was the tail of a
+    /// different block: a wrong number in the very diagnostic AC-12 adds.
+    #[test]
+    fn a_heading_named_inside_another_block_is_not_the_section() {
+        let prompt = "## ROLE\n\nliste os moldes em `## TASK` desta onda\n\n\
+                      ## TASK\n\no corpo real\n";
+        assert_eq!(
+            super::task_section_chars(prompt),
+            "o corpo real".len() + 1,
+            "the mention inside ## ROLE must not be read as the section",
+        );
     }
 
     use super::*;

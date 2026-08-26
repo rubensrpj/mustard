@@ -1567,18 +1567,69 @@ fn backfill_dispatch_inject(root: &Path) -> bool {
             changed = true;
         }
     }
-    // Either half left on another event: move it. The seeded `on` is the one
-    // authority, so a future change of event carries every install with it.
-    for seeded in default_inject_entries() {
-        for entry in &mut config.inject {
-            if same_declared_path(&entry.file, &seeded.file) && entry.on != seeded.on {
-                entry.on.clone_from(&seeded.on);
-                changed = true;
+    // Either half left on another event: move it — but ONLY once the installed
+    // plugin registers a hook per injectable.
+    //
+    // Moving both halves onto one event is safe because each rides its own
+    // sibling hook and is measured alone. A plugin that predates those siblings
+    // has ONE hook for the event, which folds both into a single response:
+    // measured at 11,646 characters here, over the 10,000 cap. The split the
+    // migration undoes was at least under it, so migrating against a stale
+    // plugin would leave the project worse than it found it.
+    //
+    // The project's own `mustard.json` is not the authority on this — the
+    // installed plugin is. When it cannot be read, the move is SKIPPED: a half
+    // still delivered on its old event beats one delivered nowhere.
+    if plugin_registers_sibling_hooks(root) {
+        for seeded in default_inject_entries() {
+            for entry in &mut config.inject {
+                if same_declared_path(&entry.file, &seeded.file) && entry.on != seeded.on {
+                    entry.on.clone_from(&seeded.on);
+                    changed = true;
+                }
             }
         }
     }
 
     changed && config.write(root).is_ok()
+}
+
+/// Does the INSTALLED plugin register one hook per injectable?
+///
+/// Read from the plugin's own `hooks/hooks.json`, because that file is what
+/// actually runs — a project's `mustard.json` says what should be delivered,
+/// never how. A registration carrying `--inject` is the signal: each injectable
+/// gets its own invocation, so each is measured alone against the ceiling.
+///
+/// `false` when the manifest cannot be found or read. That is deliberate and it
+/// is the conservative direction: the caller only MOVES entries when this is
+/// true, so an unreadable manifest leaves the layout exactly as it was.
+fn plugin_registers_sibling_hooks(root: &Path) -> bool {
+    let Some(manifest) = plugin_hooks_manifest(root) else {
+        return false;
+    };
+    let Ok(text) = fs::read_to_string(&manifest) else {
+        return false;
+    };
+    // Two claimants on one event is the shape; one `--inject` is enough to know
+    // the running plugin speaks this protocol at all.
+    text.matches("--inject").count() >= 2
+}
+
+/// Where the installed plugin's hook manifest lives.
+///
+/// `CLAUDE_PLUGIN_ROOT` when the harness exported it (the hook runtime always
+/// does); otherwise the in-repo copy, which is what a source checkout runs
+/// against. `None` when neither is present.
+fn plugin_hooks_manifest(root: &Path) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_PLUGIN_ROOT") {
+        let p = Path::new(&dir).join("hooks").join("hooks.json");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let in_repo = root.join("plugin").join("hooks").join("hooks.json");
+    in_repo.is_file().then_some(in_repo)
 }
 
 /// Remove the Mustard-owned lines from a root `CLAUDE.md` body: the exact
@@ -2211,6 +2262,33 @@ mod tests {
         )
         .unwrap();
 
+        // The move is gated on the INSTALLED plugin registering a hook per
+        // injectable. Without that, one hook folds both halves into a single
+        // response (measured at 11,646 chars, over the cap) — worse than the
+        // split it would undo. A project with no manifest in reach is left
+        // exactly as it was.
+        upsert_project(root, None, InstallMode::Shared).unwrap();
+        assert_eq!(
+            ProjectConfig::load(root)
+                .inject
+                .iter()
+                .find(|e| e.file.ends_with("dispatch.md"))
+                .map(|e| e.on.as_str()),
+            Some("sessionStart"),
+            "a stale plugin must not have its halves folded onto one hook",
+        );
+
+        // With the sibling hooks registered, the move happens.
+        let hooks = root.join("plugin/hooks");
+        std_fs::create_dir_all(&hooks).unwrap();
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/orchestrator.md"}]},
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/dispatch.md"}]}
+            ]}}"#,
+        )
+        .unwrap();
         upsert_project(root, None, InstallMode::Shared).unwrap();
 
         let config = ProjectConfig::load(root);

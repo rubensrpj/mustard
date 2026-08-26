@@ -383,23 +383,20 @@ impl Check for SessionStartInject {
             source_refreshes_window,
             None,
         );
-        // A renewed window has lost EVERY injectable, not just this event's.
-        // Clearing the markers alone would leave the `userPromptSubmit` half
-        // absent until the operator's next prompt — and a compaction can land
-        // mid-turn, with queued messages processed before that prompt arrives.
-        // So the family that rides the prompt is re-delivered HERE, in the same
-        // hook response, the moment the window is refreshed.
-        let reinjected = source_refreshes_window
-            .then(|| {
-                crate::hooks::session::injectables::collect(
-                    &cwd,
-                    Some(session.as_str()),
-                    "userpromptsubmit",
-                    true,
-                    None,
-                )
-            })
-            .flatten();
+        // The `userPromptSubmit` family is NOT folded in here, and that is
+        // deliberate. Doing so was tried and MEASURED at 11,973 characters on
+        // this repository — past the 10,000 a hook RESPONSE carries, so the very
+        // router it meant to rescue became a file path instead of text in
+        // force. Worse, `collect` records the delivery markers, so each sibling
+        // hook would then skip on the next prompt: the self-healing path would
+        // be disarmed by the attempt to help it.
+        //
+        // Clearing the markers above IS the fix. The prompt family re-delivers
+        // on the operator's next prompt, through its own sibling hooks, each
+        // measured alone against its own ceiling. The window between the
+        // compaction and that prompt carries no router — accepted, because the
+        // alternative measured worse: no router at all, for the rest of the
+        // session.
         // Version drift advisory: an installed project whose `mustard.json`
         // stamp differs from the running harness gets a one-paragraph nudge
         // toward `/mustard:upsert`. Advisory only — the user decides.
@@ -417,7 +414,7 @@ impl Check for SessionStartInject {
         // terrain first, injectables after, the advisories last — blank-line
         // separated.
         let parts: Vec<String> =
-            [terrain, injected, reinjected, drift, stale, prune].into_iter().flatten().collect();
+            [terrain, injected, drift, stale, prune].into_iter().flatten().collect();
         Ok(if parts.is_empty() {
             Verdict::Allow
         } else {
@@ -561,14 +558,21 @@ mod tests {
     }
 
 
-    /// AC-5 — a renewed window re-delivers the PROMPT family immediately.
+    /// AC-5 — a renewed window RE-ARMS the prompt family; it does not fold it
+    /// into this response.
     ///
-    /// Clearing the markers alone would leave the `userPromptSubmit` half
-    /// absent until the operator's next prompt, and a compaction can land
-    /// mid-turn with queued messages processed before that prompt arrives. So
-    /// the family that rides the prompt comes back in the same hook response.
+    /// An earlier revision did fold it in, and the response measured 11,973
+    /// characters on this repository — over the 10,000 a hook response carries,
+    /// so the router became a file path instead of text in force. `collect`
+    /// also records the delivery markers, so each sibling hook would then skip
+    /// on the next prompt: the self-healing path disarmed by the attempt to
+    /// help it.
+    ///
+    /// Clearing the markers IS the fix, and this measures exactly that: after a
+    /// compaction the markers are gone, so the next prompt re-delivers through
+    /// the siblings, each against its own ceiling.
     #[test]
-    fn compact_redelivers_every_event_family_immediately() {
+    fn compact_rearms_the_prompt_family_without_folding_it_in() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         std::fs::write(
@@ -579,33 +583,31 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
         std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER-RULES").unwrap();
 
-        // An ordinary startup carries no prompt-family injectable: that family
-        // rides the prompt, and this event is not one.
-        let plain = SessionStartInject
-            .evaluate(&session_input("s1"), &ctx(project))
-            .expect("no error");
-        let plain_text = match plain {
+        // Burn the marker, as a first delivery would.
+        let session = dir.path().join(".claude/.session/s2");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("injected-orchestrator.md"), "x").unwrap();
+
+        let mut compacted = session_input("s2");
+        compacted.raw = serde_json::json!({"source": "compact"});
+        let verdict = SessionStartInject.evaluate(&compacted, &ctx(project)).expect("no error");
+
+        // The router is NOT in this response — folding it here is what
+        // overflowed it.
+        let text = match verdict {
             Verdict::Inject { ref context } => context.clone(),
             _ => String::new(),
         };
         assert!(
-            !plain_text.contains("ROUTER-RULES"),
-            "a plain startup must not pre-empt the prompt family: {plain_text}",
+            !text.contains("ROUTER-RULES"),
+            "the prompt family must not ride the SessionStart response: {text}",
         );
 
-        // A compaction renewed the window, so the router rides back NOW.
-        let mut compacted = session_input("s2");
-        compacted.raw = serde_json::json!({"source": "compact"});
-        let after = SessionStartInject
-            .evaluate(&compacted, &ctx(project))
-            .expect("no error");
-        let after_text = match after {
-            Verdict::Inject { ref context } => context.clone(),
-            other => panic!("compaction produced no context: {other:?}"),
-        };
+        // The marker is gone, so the next prompt re-delivers through the
+        // sibling hook that owns it.
         assert!(
-            after_text.contains("ROUTER-RULES"),
-            "the compacted window lost the router and nothing brought it back: {after_text}",
+            !session.join("injected-orchestrator.md").exists(),
+            "a renewed window must clear the delivery markers",
         );
     }
 
