@@ -712,10 +712,17 @@ mod tests {
         assert_eq!(res.status, "fail", "a missing program must stay a failure");
         assert_eq!(res.exit, Some(EXIT_COMMAND_NOT_FOUND));
 
-        // On PATH: the retry is eligible. `sh` is present wherever these tests
-        // run, and an absolute path is answered without consulting PATH at all.
-        assert!(first_program_is_on_path("sh -c true"));
-        assert!(first_program_is_on_path("/bin/sh -c true"));
+        // On PATH: the retry is eligible. The program has to be one that really
+        // exists on every runner, and `sh` is not — Windows has no `sh`, which
+        // is what broke CI there (measured, not guessed). `cargo` is on PATH by
+        // construction: these tests only run because it invoked them.
+        assert!(first_program_is_on_path("cargo --version"));
+        // An absolute path is answered by the filesystem, without consulting
+        // PATH at all — so the executable named here must also exist on every
+        // platform. `current_exe` is this very test binary.
+        if let Ok(me) = std::env::current_exe() {
+            assert!(first_program_is_on_path(&me.to_string_lossy()));
+        }
         assert!(!first_program_is_on_path("/nao/existe/em/lugar/nenhum"));
         assert!(!first_program_is_on_path(""));
     }

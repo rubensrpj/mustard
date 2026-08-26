@@ -732,28 +732,44 @@ mod tests {
             report.findings,
         );
         // …and the file check is a SEPARATE question, answered by the
-        // filesystem. On Linux `.claude/Mustard/Dispatch.md` is not the file
-        // that was seeded, so the report says exactly that instead of going
-        // quiet. Asserting only the absence of `half-router` let this pass
-        // while the report still FAILed for a reason the test never examined.
+        // FILESYSTEM — which is why the answer legitimately differs by
+        // platform. On Linux `.claude/Mustard/Dispatch.md` is not the file that
+        // was seeded and the report says exactly that; on macOS and Windows the
+        // same path opens the seeded file and there is nothing to report.
+        //
+        // Asserting the Linux answer unconditionally is what broke CI on macOS
+        // (measured there, not guessed). Asserting only the absence of
+        // `half-router` was the opposite mistake — it let the test pass while
+        // the report FAILed for a reason nobody examined. So the test asks the
+        // filesystem the same question the code does, and holds it to that.
+        let case_variant_resolves =
+            dir.path().join(".claude/Mustard/Dispatch.md").is_file();
         let missing: Vec<&str> = report
             .findings
             .iter()
             .filter(|f| f.kind == "injectable-missing")
             .map(|f| f.detail.as_str())
             .collect();
-        assert_eq!(
-            missing.len(),
-            1,
-            "the case-variant path is absent on a case-sensitive filesystem and must be \
-             reported as such: {:?}",
-            report.findings,
-        );
-        assert!(
-            missing[0].contains("case included"),
-            "the refusal must say WHY the path did not resolve: {}",
-            missing[0],
-        );
+        if case_variant_resolves {
+            assert!(
+                missing.is_empty(),
+                "the case-variant path opens the seeded file here, so nothing is missing: {:?}",
+                report.findings,
+            );
+        } else {
+            assert_eq!(
+                missing.len(),
+                1,
+                "the case-variant path is absent on a case-sensitive filesystem and must be \
+                 reported as such: {:?}",
+                report.findings,
+            );
+            assert!(
+                missing[0].contains("case included"),
+                "the refusal must say WHY the path did not resolve: {}",
+                missing[0],
+            );
+        }
     }
 
     /// Fail-open: no settings file at all means the plugin question is

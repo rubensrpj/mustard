@@ -891,9 +891,16 @@ mod tests {
             assert!(defects.is_empty(), "{}: {defects:?}", m.display());
             // The corpus is also already in the form the write normalises to,
             // so normalising can never churn a mold that was fine.
+            //
+            // Compared with `\r` stripped: on Windows git checks these files
+            // out with CRLF endings, and the normaliser emits LF, so the two
+            // differ by line-ending style alone while the content is identical.
+            // Asserting on the raw bytes failed CI there over a difference this
+            // test is not about (measured, not guessed).
+            let lf = |s: &str| s.replace("\r\n", "\n").trim_end().to_string();
             assert_eq!(
-                canonical_paths_form(&text).trim_end(),
-                text.trim_end(),
+                lf(&canonical_paths_form(&text)),
+                lf(&text),
                 "{} is already in the canonical `paths:` form",
                 m.display()
             );
