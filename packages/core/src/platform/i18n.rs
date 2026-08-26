@@ -665,6 +665,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("statusline.prune.label", Locale::PtBr) => "a podar",
         ("statusline.prune.label", Locale::EnUs) => "to prune",
+        ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
+        ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         ("prune.pending.notice", Locale::PtBr) => {
             "[Mustard] {count} unidade(s) de trabalho já mergeada(s) ainda têm branch viva: \
              {branches}. Diga ao usuário que o ritual de saída ficou pendente e ofereça \

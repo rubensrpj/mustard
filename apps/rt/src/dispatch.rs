@@ -19,16 +19,11 @@ use mustard_core::domain::model::contract::{Ctx, HookInput, Outcome, Trigger, Ve
 use mustard_core::io::workspace::workspace_root;
 use std::path::PathBuf;
 
-/// Run every module applicable to a whole harness event (`mustard-rt on`).
+/// Run every module applicable to a whole harness event (`mustard-rt on`),
+/// optionally narrowed to a single declared injectable.
 ///
 /// `trigger` is `None` when the harness event name was unrecognised — the
 /// fail-open path: no module matches, the outcome is a bare `Allow`.
-#[must_use]
-pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
-    run_event_scoped(trigger, input, None)
-}
-
-/// [`run_event`], narrowed to a single declared injectable.
 ///
 /// `inject_only` is the `--inject <file>` a sibling hook registration carries.
 /// Each injectable is delivered by its own hook invocation, so each is measured
@@ -37,7 +32,7 @@ pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
 /// `plugin/refs/mustard/router-rationale.md`). `None` delivers every entry of
 /// the trigger, which is what every non-injectable module wants.
 #[must_use]
-pub fn run_event_scoped(
+pub fn run_event(
     trigger: Option<Trigger>,
     input: &HookInput,
     inject_only: Option<&str>,
@@ -178,7 +173,7 @@ mod tests {
 
     #[test]
     fn unknown_event_fails_open_to_allow() {
-        let outcome = run_event(None, &HookInput::default());
+        let outcome = run_event(None, &HookInput::default(), None);
         assert_eq!(outcome.verdict, Verdict::Allow);
     }
 
@@ -191,14 +186,14 @@ mod tests {
     #[test]
     fn dispatch_runs_bash_guard_for_bash_pretooluse() {
         let input = bash_input("rm -rf /", "PreToolUse");
-        let outcome = run_event(Some(Trigger::PreToolUse), &input);
+        let outcome = run_event(Some(Trigger::PreToolUse), &input, None);
         assert!(outcome.is_blocking());
     }
 
     #[test]
     fn dispatch_denies_bare_ls_for_bash_pretooluse() {
         let input = bash_input("ls", "PreToolUse");
-        let outcome = run_event(Some(Trigger::PreToolUse), &input);
+        let outcome = run_event(Some(Trigger::PreToolUse), &input, None);
         assert!(
             outcome.is_blocking(),
             "expected blocking outcome for bare ls; got {:?}, warnings {:?}",

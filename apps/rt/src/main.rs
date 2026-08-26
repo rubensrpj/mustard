@@ -159,7 +159,7 @@ fn main() {
             // response's `hookEventName` matches the dispatched event
             // (e.g. `UserPromptSubmit`). Claude Code errors out when
             // the value disagrees with the event it just dispatched.
-            (event, dispatch::run_event_scoped(trigger, &input, inject.as_deref()))
+            (event, dispatch::run_event(trigger, &input, inject.as_deref()))
         }
         Command::Check { id } => (
             // `check <id>` is invoked outside the harness event loop;
