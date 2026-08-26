@@ -375,14 +375,50 @@ fn first_program_is_on_path(command: &str) -> bool {
         return false;
     };
     // An absolute or relative path is checked directly; a bare name is looked
-    // up the way the shell would.
-    if word.contains('/') {
+    // up the way the shell would. `\` counts as a separator too — on Windows
+    // that is THE separator, so testing only `/` sent every absolute path there
+    // through the PATH scan below, where it never matches.
+    if word.contains('/') || word.contains('\\') {
         return Path::new(word).is_file();
     }
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&paths).any(|dir| dir.join(word).is_file())
+    std::env::split_paths(&paths).any(|dir| {
+        // The bare name FIRST — that is the whole answer on Unix.
+        if dir.join(word).is_file() {
+            return true;
+        }
+        // On Windows the file on disk carries an extension the command line
+        // does not: `cargo` is `cargo.exe`. Without this the function answered
+        // "not on PATH" for EVERY program there, so the retry this module
+        // exists for could never fire on Windows — a product defect, found by
+        // CI when a test finally asked the question on that platform.
+        cfg!(windows)
+            && executable_extensions()
+                .iter()
+                .any(|ext| dir.join(format!("{word}{ext}")).is_file())
+    })
+}
+
+/// The extensions Windows appends to a bare command name, from `PATHEXT`, each
+/// lowercased and dot-prefixed. Empty off Windows, where the name IS the file.
+///
+/// Falls back to the documented default set when `PATHEXT` is unset — an
+/// absent variable must not mean "no program is executable".
+fn executable_extensions() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    raw.split(';')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            let e = e.to_ascii_lowercase();
+            if e.starts_with('.') { e } else { format!(".{e}") }
+        })
+        .collect()
 }
 
 /// [`run_ac_command_with_timeout`], with the retry flag the public face hides.
@@ -712,18 +748,30 @@ mod tests {
         assert_eq!(res.status, "fail", "a missing program must stay a failure");
         assert_eq!(res.exit, Some(EXIT_COMMAND_NOT_FOUND));
 
-        // On PATH: the retry is eligible. The program has to be one that really
-        // exists on every runner, and `sh` is not — Windows has no `sh`, which
-        // is what broke CI there (measured, not guessed). `cargo` is on PATH by
-        // construction: these tests only run because it invoked them.
-        assert!(first_program_is_on_path("cargo --version"));
+        // On PATH: the retry is eligible. Twice this assertion named a program
+        // that does not exist on every runner — first `sh` (absent on Windows),
+        // then `cargo` — and the second failure was not the test's fault: the
+        // lookup itself never matched anything on Windows, because the file on
+        // disk is `cargo.exe` and the name asked for is `cargo`. So this line
+        // now guards a real product behaviour, not a convenience.
+        assert!(
+            first_program_is_on_path("cargo --version"),
+            "cargo invoked these tests, so it IS on PATH — a false answer here means \
+             the lookup cannot see programs on this platform",
+        );
         // An absolute path is answered by the filesystem, without consulting
-        // PATH at all — so the executable named here must also exist on every
-        // platform. `current_exe` is this very test binary.
+        // PATH at all — so the executable named here must exist on every
+        // platform. `current_exe` is this very test binary, and on Windows its
+        // path uses `\`, which the lookup must accept as a separator too.
         if let Ok(me) = std::env::current_exe() {
-            assert!(first_program_is_on_path(&me.to_string_lossy()));
+            assert!(
+                first_program_is_on_path(&me.to_string_lossy()),
+                "an absolute path must be answered by the filesystem: {}",
+                me.display(),
+            );
         }
         assert!(!first_program_is_on_path("/nao/existe/em/lugar/nenhum"));
+        assert!(!first_program_is_on_path("programa-que-nao-existe-xyz"));
         assert!(!first_program_is_on_path(""));
     }
 
