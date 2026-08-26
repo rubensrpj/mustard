@@ -244,12 +244,25 @@ fn build_report(
 /// manifest for the registered events; both are fail-open.
 #[must_use]
 pub fn run(root: &Path) -> InjectDeliveryReport {
-    let home_settings = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|home| Path::new(&home).join(".claude").join("settings.json"))
+    // Through `claude_config_dir()`, which honours `CLAUDE_CONFIG_DIR` — an
+    // operator who moved their config got zero `plugin-disabled` findings from
+    // a hardcoded `$HOME/.claude`, so the check reported healthy while no hook
+    // ran at all (found in review). Same reader the plugin registry uses.
+    let home_settings = mustard_core::platform::harness::claude_config_dir()
+        .map(|dir| dir.join("settings.json"))
         .unwrap_or_default();
-    let manifest = std::env::var_os("CLAUDE_PLUGIN_ROOT")
-        .map(|dir| Path::new(&dir).join("hooks").join("hooks.json"));
+    // The REGISTRY first. `CLAUDE_PLUGIN_ROOT` reaches hooks but not the shell
+    // that runs `doctor`, so relying on it alone left condition (5) —
+    // `event-unregistered` — dead in production: one of the five this module
+    // promises never fired (found in review). `project_seed` had already been
+    // fixed this way; this module had not.
+    let manifest = mustard_core::platform::harness::installed_plugin_hooks_manifest().or_else(
+        || {
+            std::env::var_os("CLAUDE_PLUGIN_ROOT")
+                .map(|dir| Path::new(&dir).join("hooks").join("hooks.json"))
+                .filter(|p| p.is_file())
+        },
+    );
     build_report(root, &home_settings, manifest.as_deref())
 }
 

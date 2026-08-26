@@ -74,6 +74,16 @@ impl Check for CrystalliseNudge {
         else {
             return Ok(Verdict::Allow);
         };
+        // …and a unit that is actually OPEN. `current_spec` reads the newest
+        // pipeline-state file, and those are swept only at SessionEnd — so for
+        // the rest of a session after a unit closes, a finished one still reads
+        // as active. The banner shares that signal and merely displays it; this
+        // gate BLOCKS, so the staleness would cost the operator a turn demanding
+        // they crystallise material for a unit that no longer exists (found in
+        // review). `meta.json` is the lifecycle authority.
+        if spec_is_closed(root, &spec) {
+            return Ok(Verdict::Allow);
+        }
 
         let material = root.join(MATERIAL_FILE);
         let state = material_state(&material);
@@ -105,6 +115,20 @@ impl Check for CrystalliseNudge {
         let reason = mustard_core::translate("crystallise.nudge", lang).replace("{spec}", &spec);
         Ok(Verdict::Deny { reason })
     }
+}
+
+/// Has this unit already reached a terminal outcome?
+///
+/// Read from `meta.json`, the single lifecycle source. Fail-open: an absent or
+/// unreadable sidecar answers "not closed", so the gate still applies to a unit
+/// whose state cannot be read — the direction that keeps the reminder working
+/// rather than silently disabling it.
+fn spec_is_closed(root: &Path, spec: &str) -> bool {
+    let spec_md = root.join(".claude").join("spec").join(spec).join("spec.md");
+    mustard_core::domain::meta::read_meta_beside(&spec_md)
+        .and_then(|m| m.outcome)
+        .and_then(|o| mustard_core::Outcome::parse(&o))
+        .is_some_and(|o| o == mustard_core::Outcome::Completed)
 }
 
 /// A cheap fingerprint of the material file: byte length plus modification

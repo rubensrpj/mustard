@@ -528,7 +528,20 @@ fn scaffold_residue(root: &Path, spec: &str) -> Vec<String> {
     ) else {
         return Vec::new();
     };
-    let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+    // The SPEC's language, not the project's. `spec-draft` writes the body in
+    // `--lang` and records it in `meta.json#lang`; the documented cascade is
+    // that value first, `mustard.json#specLang` only as the fallback. Reading
+    // the project's alone looked for `## Contexto` in a file written with
+    // `## Context`, found no section at all, and reported zero residue — so a
+    // spec that was 100% untouched scaffold passed this gate whenever the two
+    // languages differed (found in review, reproduced end to end).
+    let lang = std::fs::read_to_string(
+        root.join(".claude").join("spec").join(spec).join("meta.json"),
+    )
+    .ok()
+    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    .and_then(|m| m.get("lang")?.as_str()?.parse::<mustard_core::platform::i18n::Locale>().ok())
+    .unwrap_or_else(|| mustard_core::ProjectConfig::load(root).i18n().lang);
     // Each section the draft seeds with a placeholder, by the heading key that
     // titles it and the placeholder key that fills it. `context` is the one
     // composite: the draft writes `{intent}.\n\n{fill_why_now}`, so the trailing
@@ -1030,6 +1043,31 @@ mod tests {
             "the real `## Arquivos` section is still placeholder and must be caught, \
              not shadowed by the bullet that quotes its name: {residue:?}",
         );
+        // The SPEC's language decides the headings, not the project's. A spec
+        // drafted in English inside a pt-BR project made every lookup miss, so
+        // a file that was 100% untouched scaffold reported zero residue and
+        // sailed through approval (found in review, reproduced end to end).
+        let en = root.join(".claude/spec/em-ingles");
+        std::fs::create_dir_all(&en).unwrap();
+        std::fs::write(en.join("meta.json"), r#"{"lang":"en-US","scope":"full"}"#).unwrap();
+        std::fs::write(
+            en.join("spec.md"),
+            concat!(
+                "# t\n\n## Context\n\ndo something.\n\nfill in why now.\n",
+                "\n## Users/Stakeholders\n\nfill in who benefits.\n",
+                "\n## Success Metric\n\nfill in the success metric.\n",
+                "\n## Non-Goals\n\nfill in what stays out.\n",
+                "\n## Files\n\nfill in affected files.\n",
+            ),
+        )
+        .unwrap();
+        let en_residue = scaffold_residue(root, "em-ingles");
+        assert_eq!(
+            en_residue.len(),
+            5,
+            "an all-scaffold English spec in a pt-BR project must still be caught: {en_residue:?}",
+        );
+
         assert!(
             !residue.iter().any(|s| s == "Contexto"),
             "`## Contexto e Motivação` is a different heading and has no placeholder \

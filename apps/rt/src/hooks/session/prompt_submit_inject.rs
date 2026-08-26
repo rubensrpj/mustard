@@ -150,12 +150,18 @@ fn is_slash_command(prompt: &str) -> bool {
         return false;
     }
     // A bare `/tmp` or `/usr` satisfies every rule above and is a PATH, not a
-    // command — the operator typing one is asking about a directory, and
-    // treating it as a slash command costs them the router on that prompt. A
-    // real command name is longer or namespaced, so require one of the two.
-    // (`/pr` and `/qa` would be false negatives; neither exists, and the cost
-    // of being wrong in this direction is one extra injection.)
-    name.contains(':') || name.len() > 4
+    // command: the operator is asking about a directory, and reading it as a
+    // command costs them the router on that prompt.
+    //
+    // Told apart by NAME, not by length. A length threshold cut both ways —
+    // `/init`, `/help`, `/cost`, `/plan` are real commands at four characters
+    // or fewer, and `/proc` is a directory at five (found in review). The
+    // filesystem roots are a short, closed list; everything else is a command.
+    const FS_ROOTS: &[&str] = &[
+        "tmp", "usr", "var", "etc", "opt", "bin", "sbin", "lib", "home", "root", "proc", "sys",
+        "dev", "boot", "mnt", "media", "srv", "run",
+    ];
+    !FS_ROOTS.iter().any(|r| name.eq_ignore_ascii_case(r))
 }
 
 /// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the

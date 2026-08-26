@@ -1507,7 +1507,20 @@ fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
         "inject-delivery" => {
             // Never a no-op: "no injectable declared" is itself an answer, and
             // the plugin switch is measurable with no project state at all.
-            serde_json::to_value(crate::commands::doctor::inject_delivery_check::run(cwd))
+            //
+            // A FAIL exits NON-ZERO, like `i1`. This check is advertised as the
+            // validation command, and a script or CI job gating on it read a
+            // clean exit while the report said `failed: true` — the harness
+            // entirely inert and the gate silently green, which is the exact
+            // shape this unit exists to remove (found in review).
+            let report = crate::commands::doctor::inject_delivery_check::run(cwd);
+            let exit_non_zero = report.failed;
+            let v = serde_json::to_value(report);
+            print_typed_value(v, json_format);
+            if exit_non_zero {
+                std::process::exit(1);
+            }
+            return;
         }
         "i1" => {
             let report = crate::commands::doctor::doctor_i1::run(cwd);

@@ -362,8 +362,12 @@ pub fn inert_segment(cwd: &Path) -> Option<Segment> {
     if !mustard_core::ProjectConfig::exists(cwd) {
         return None;
     }
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    if plugin_switched_off(&Path::new(&home).join(".claude/settings.json")) != Some(true) {
+    // Through `claude_config_dir()`, which honours `CLAUDE_CONFIG_DIR`. A
+    // hardcoded `$HOME/.claude` left this flag silent for an operator who moved
+    // their config: the bar looked healthy while no hook ran, which is the very
+    // state it exists to show (found in review).
+    let settings = mustard_core::platform::harness::claude_config_dir()?.join("settings.json");
+    if plugin_switched_off(&settings) != Some(true) {
         return None;
     }
     let lang = mustard_core::ProjectConfig::load(cwd).i18n().lang;

@@ -103,7 +103,7 @@ pub(crate) fn carries_shared_modules(project_dir: &str, trigger_on: &str, inject
     // hook claims — a hand-edited `mustard.json` naming a custom injectable —
     // and every observer was then skipped, leaving the event trace empty
     // (found in review, measured at 0 records for one prompt).
-    let claimed = claimed_injectables(project_dir);
+    let claimed = claimed_injectables(project_dir, trigger_on);
     let position_among_claimed = declared
         .iter()
         .filter(|f| {
@@ -128,7 +128,7 @@ pub(crate) fn carries_shared_modules(project_dir: &str, trigger_on: &str, inject
 ///
 /// Empty when the manifest cannot be found or read, which makes every caller
 /// fall through to the fail-open branch — the safe direction.
-fn claimed_injectables(project_dir: &str) -> Vec<String> {
+fn claimed_injectables(project_dir: &str, trigger_on: &str) -> Vec<String> {
     let Some(manifest) = mustard_core::platform::harness::installed_plugin_hooks_manifest()
         .or_else(|| {
             let p = std::path::Path::new(project_dir)
@@ -155,7 +155,17 @@ fn claimed_injectables(project_dir: &str) -> Vec<String> {
     let Some(events) = doc.get("hooks").and_then(serde_json::Value::as_object) else {
         return out;
     };
-    for entries in events.values().filter_map(serde_json::Value::as_array) {
+    // Scoped to the event being dispatched. `declared` above is filtered by
+    // trigger, so an unscoped claim list mixes events and the election indexes
+    // two different sets against each other — today only one event carries
+    // `--inject` hooks so they coincide, and the moment a second one does the
+    // double-observer and empty-trace defects come straight back (found in
+    // review, latent).
+    for entries in events
+        .iter()
+        .filter(|(event, _)| event.eq_ignore_ascii_case(trigger_on))
+        .filter_map(|(_, v)| v.as_array())
+    {
         for hook in entries
             .iter()
             .filter_map(|e| e.get("hooks")?.as_array())
