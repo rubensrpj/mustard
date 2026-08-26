@@ -178,6 +178,27 @@ fn claims_in(manifest: &Path, event: &str) -> Vec<String> {
     out
 }
 
+/// Pick the hook manifest to read: the plugin registry's answer, else the
+/// `CLAUDE_PLUGIN_ROOT` directory's — and only when the file is really there.
+///
+/// A separate function taking both candidates because it is the ONLY logic in
+/// [`run`], and [`run`] itself cannot be tested: it reads process-wide
+/// environment variables, and this crate forbids `unsafe`, which is what
+/// mutating them requires under edition 2024. Review proved the gap is not
+/// theoretical — mutating these four lines alone reintroduced a false clean
+/// bill of health while the whole suite stayed green. Pulling them out is how
+/// they become reachable by a test without the environment.
+fn resolve_manifest(
+    registry: Option<std::path::PathBuf>,
+    plugin_root: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    registry.or_else(|| {
+        plugin_root
+            .map(|dir| dir.join("hooks").join("hooks.json"))
+            .filter(|p| p.is_file())
+    })
+}
+
 /// Build the report for a project root, with the two external inputs passed in
 /// so the whole thing is testable without touching a real HOME or plugin tree.
 fn build_report(
@@ -364,12 +385,9 @@ pub fn run(root: &Path) -> InjectDeliveryReport {
     // `event-unregistered` — dead in production: one of the five this module
     // promises never fired (found in review). `project_seed` had already been
     // fixed this way; this module had not.
-    let manifest = mustard_core::platform::harness::installed_plugin_hooks_manifest().or_else(
-        || {
-            std::env::var_os("CLAUDE_PLUGIN_ROOT")
-                .map(|dir| Path::new(&dir).join("hooks").join("hooks.json"))
-                .filter(|p| p.is_file())
-        },
+    let manifest = resolve_manifest(
+        mustard_core::platform::harness::installed_plugin_hooks_manifest(),
+        std::env::var_os("CLAUDE_PLUGIN_ROOT").map(std::path::PathBuf::from),
     );
     build_report(root, &home_settings, manifest.as_deref())
 }
@@ -578,10 +596,14 @@ mod tests {
     /// A check that cannot answer must say so; that is the whole premise of
     /// this module.
     ///
-    /// It goes through `run()` deliberately. The previous test called
-    /// `build_report` with a hand-picked manifest — a value `run()` can never
-    /// produce — so it passed while the shipped check was silent (found in
-    /// review, and the exact "green in the test, wrong in the field" shape).
+    /// `None` is the value `run()` itself produces when neither the plugin
+    /// registry nor `CLAUDE_PLUGIN_ROOT` resolves — verified by driving the
+    /// binary with an empty config directory. So this covers the builder's half
+    /// faithfully. It does NOT cover `run()`'s own resolution, and the sibling
+    /// test below does: a doc comment that claims coverage it does not have is
+    /// how the previous round stayed green while the shipped check was silent
+    /// (found in review, which proved the gap by mutating `run()` alone and
+    /// watching the whole suite pass).
     #[test]
     fn a_manifest_that_cannot_be_found_is_reported_not_cleared() {
         let dir = tempdir().unwrap();
@@ -621,6 +643,47 @@ mod tests {
             "nothing declared, nothing to say: {:?}",
             quiet.findings,
         );
+    }
+
+    /// The manifest resolution `run()` performs — the four lines no test used
+    /// to reach.
+    ///
+    /// Review proved the gap by mutating ONLY that resolution so it substituted
+    /// a non-existent path: the shipped check went back to reporting a clean
+    /// bill of health, and the entire suite stayed green. Every other test here
+    /// hands `build_report` a manifest chosen by hand, which covers the builder
+    /// and leaves the choosing untested.
+    ///
+    /// It could not be tested where it lived: `run()` reads process-wide
+    /// environment variables, mutating those is `unsafe` under edition 2024,
+    /// and this crate forbids `unsafe`. So the logic moved to a function that
+    /// takes its two candidates as arguments.
+    #[test]
+    fn the_manifest_resolution_prefers_the_registry_and_demands_a_real_file() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("hooks").join("hooks.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "{}").unwrap();
+        let registry = dir.path().join("registry.json");
+        std::fs::write(&registry, "{}").unwrap();
+
+        // The registry wins whenever it answers.
+        assert_eq!(
+            resolve_manifest(Some(registry.clone()), Some(dir.path().to_path_buf())),
+            Some(registry.clone()),
+        );
+        // Absent a registry, the plugin root supplies it.
+        assert_eq!(
+            resolve_manifest(None, Some(dir.path().to_path_buf())),
+            Some(real),
+        );
+        // A plugin root with no manifest FILE resolves to nothing — the
+        // mutation review used was exactly this: a path that does not exist,
+        // handed on as if it did, which reinstated the false clean report.
+        let empty = tempdir().unwrap();
+        assert_eq!(resolve_manifest(None, Some(empty.path().to_path_buf())), None);
+        // Neither candidate: nothing, which is what raises `claims-unknown`.
+        assert_eq!(resolve_manifest(None, None), None);
     }
 
     /// The two WARN conditions: delivered, but less or later than declared.
