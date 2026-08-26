@@ -886,6 +886,11 @@ const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
     // sibling hooks do not share a ceiling), and the file moved onto
     // `userPromptSubmit`.
     0x5169e2cb65869f12,
+    // The rule that says a settled decision is written down when it is settled
+    // named no door, so nobody ever ran it — measured, two units across two
+    // days of conversation and neither carried material. It now names
+    // `material-add`.
+    0x14e5044fb82e2541,
 ];
 
 /// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed

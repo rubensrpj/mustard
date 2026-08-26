@@ -299,6 +299,38 @@ pub enum SpecCmd {
         #[arg(long)]
         instruction: String,
     },
+    /// Record ONE piece of conversation material, at the moment it is settled.
+    ///
+    /// `spec-draft --material <FILE>` reads a finished document, and nothing
+    /// wrote one: the model was expected to assemble the whole thing by hand at
+    /// draft time, from memory of a conversation that may already have been
+    /// compacted away. Measured 2026-08-26: two units shipped across two days
+    /// and NEITHER carried a material file.
+    ///
+    /// A decision the conversation settles is written down WHEN it is settled —
+    /// the only moment its reason is still known.
+    #[command(name = "material-add")]
+    #[command(display_order = 97)]
+    MaterialAdd {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Which channel: `definition`, `decision` or `finding`.
+        #[arg(long)]
+        kind: String,
+        /// The first half: the term, the decision, or the statement.
+        #[arg(long)]
+        subject: String,
+        /// The half that makes it usable: what the term MEANS here, WHY the
+        /// decision was taken, or the FILE a finding was checked against.
+        /// Refused when blank — a decision without its reason is the one thing
+        /// a later reader cannot use.
+        #[arg(long)]
+        detail: String,
+        /// A finding's line number, when the claim is line-precise.
+        #[arg(long)]
+        line: Option<u64>,
+    },
     /// Deliberately change ONE acceptance criterion after the spec artefacts are
     /// frozen, and prove the replacement still knows how to fail.
     ///
@@ -504,6 +536,15 @@ pub fn dispatch(cmd: SpecCmd) {
             spec::change_request::run(spec::change_request::ChangeRequestOpts {
                 spec: slug,
                 instruction,
+            });
+        }
+        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line } => {
+            spec::material_add::run(&spec::material_add::MaterialAddOpts {
+                spec: slug,
+                kind,
+                subject,
+                detail,
+                line,
             });
         }
         SpecCmd::AcAmend {
