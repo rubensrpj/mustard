@@ -614,15 +614,31 @@ fn unmet_gate_message(
     approval_missing: bool,
     proof: &ProofState,
     scaffold_sections: &[String],
+    is_full: bool,
 ) -> Option<String> {
     let mut unmet: Vec<String> = Vec::new();
     if !scaffold_sections.is_empty() {
+        // The residue gate runs on EVERY scope — the PRD sections are seeded
+        // for Light and Full alike — so the remedy has to match the spec it is
+        // refusing. `plan-materialize` is the Full door: it requires a
+        // `--plan <plan.json>` a Light spec never has, and it emits
+        // `pipeline.scope full`, so following it on a Light spec would both
+        // fail and, if satisfied, silently change the spec's scope. Review
+        // measured the wrong advice being handed to a Light spec.
+        let remedy = if is_full {
+            format!(
+                "Author each one, then re-materialise with `mustard-rt run plan-materialize \
+                 --spec-dir .claude/spec/{spec} --plan <plan.json>`"
+            )
+        } else {
+            "Author each one directly in `spec.md` — a light spec carries no plan document to \
+             re-materialise from"
+                .to_string()
+        };
         unmet.push(format!(
             "narrative — {} section(s) still hold the seeded placeholder, byte for byte: {}. \
              The spec would be approved describing nothing, and the waves inherit that: the \
-             per-wave prompt is built from what this file says. Author each one, then \
-             re-materialise with `mustard-rt run plan-materialize --spec-dir \
-             .claude/spec/{spec} --plan <plan.json>`",
+             per-wave prompt is built from what this file says. {remedy}",
             scaffold_sections.len(),
             scaffold_sections.join(", "),
         ));
@@ -802,7 +818,14 @@ fn approve_at(
     // the flow proceeds silently.
     let scaffold = scaffold_residue(Path::new(root), &opts.spec);
     if let Some(message) =
-        unmet_gate_message(&opts.spec, clarify, approval_missing, &proof, &scaffold)
+        unmet_gate_message(
+            &opts.spec,
+            clarify,
+            approval_missing,
+            &proof,
+            &scaffold,
+            spec_is_full(root, &opts.spec),
+        )
     {
         let gate = if proof.refuses() {
             ApprovalGate::Block
@@ -992,10 +1015,35 @@ mod tests {
             false,
             &ProofState::NotGated,
             &residue,
+            true,
         )
         .expect("scaffold residue must refuse");
         assert!(msg.contains("Contexto"), "the refusal must name the sections: {msg}");
         assert!(msg.contains("plan-materialize"), "the refusal must name its remedy: {msg}");
+
+        // …and on a LIGHT spec the same refusal names a remedy that spec can
+        // actually follow. `plan-materialize` requires a `--plan <plan.json>` a
+        // light spec never has, and it emits `pipeline.scope full` — so the
+        // Full-only advice both fails and, if satisfied, changes the scope
+        // (measured in review, handed to a real light spec).
+        let light = unmet_gate_message(
+            "uma-unidade",
+            ClarifyState::NotGated,
+            false,
+            &ProofState::NotGated,
+            &residue,
+            false,
+        )
+        .expect("scaffold residue must refuse a light spec too");
+        assert!(light.contains("Contexto"), "it must still name the sections: {light}");
+        assert!(
+            !light.contains("plan-materialize"),
+            "a light spec must not be sent to the Full-only door: {light}",
+        );
+        assert!(
+            light.contains("spec.md"),
+            "it must say where to author instead: {light}",
+        );
 
         // Authored: the sections are replaced, and the gate goes quiet.
         std::fs::write(
@@ -1362,7 +1410,7 @@ mod tests {
     fn combined_refusal_lists_all_missing_gates() {
         // Both markers absent → the single refusal names BOTH, each with its own
         // minting path, instead of exiting on the first miss and hiding the second.
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated, &[])
+        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated, &[], true)
             .expect("both missing → a refusal");
         assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
         assert!(
@@ -1382,7 +1430,7 @@ mod tests {
     fn clarify_only_missing_refuses_with_single_requirement() {
         // Clarify absent, approval present → refuse, but name ONLY the clarify
         // requirement (no stray approval line).
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated, &[])
+        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated, &[], true)
             .expect("clarify missing → a refusal");
         assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
         assert!(
@@ -1400,7 +1448,7 @@ mod tests {
     fn approval_only_missing_refuses_with_single_requirement() {
         // Approval absent, clarify present (or not a Full spec) → refuse, but name
         // ONLY the approval requirement.
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[])
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
             .expect("approval missing → a refusal");
         assert!(msg.contains(".approved-by-user"), "names the approval marker: {msg}");
         assert!(
@@ -1428,7 +1476,7 @@ mod tests {
     /// answer typed as free text rather than selected.
     #[test]
     fn the_refusal_names_the_gestures_that_actually_mint() {
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[])
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
             .expect("approval missing → a refusal");
 
         // 1. Plan mode.
@@ -1467,12 +1515,12 @@ mod tests {
     fn both_present_approves() {
         // Neither precondition unmet → no refusal message, and strict proceeds.
         assert_eq!(
-            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven, &[]),
+            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven, &[], true),
             None
         );
         // A Light spec skips clarify entirely — same silence.
         assert_eq!(
-            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated, &[]),
+            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated, &[], true),
             None
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
@@ -1987,7 +2035,7 @@ mod tests {
         assert_eq!(proof_state(root_str, bare), ProofState::NotGated);
         let bare_opts = ApproveSpecOpts { spec: bare.to_string(), wave_plan: false, resume: false };
         assert_eq!(
-            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare), &[]),
+            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare), &[], true),
             None,
             "a spec with no acceptance criteria must not be refused by this gate"
         );

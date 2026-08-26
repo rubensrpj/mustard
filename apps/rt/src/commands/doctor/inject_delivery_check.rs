@@ -214,6 +214,45 @@ fn build_report(
         }
     }
 
+    // (6) Declared on an event whose hooks each claim ONE file — and claimed
+    // by none of them.
+    //
+    // The delivery of `userPromptSubmit` was split into sibling hooks, each
+    // invoked with `--inject <its own file>`, so that each injectable gets its
+    // own response ceiling. A sibling collects only the file it was given. That
+    // makes the claim list, not the event registration, the thing that decides
+    // whether an entry is delivered: an operator's own entry survives every
+    // upsert, rides a registered event, sits on disk at the right path — and is
+    // collected by nobody. Every condition above reports it clean, which is the
+    // failure mode this whole check exists to end (found in review, measured
+    // against the binary).
+    if let Some(manifest) = manifest {
+        let root_str = root.to_string_lossy();
+        for entry in &entries {
+            let claims = crate::dispatch::claimed_injectables(&root_str, &entry.on);
+            // No claim at all on this event means it is delivered whole, by one
+            // unscoped hook — the shape before the split, and still correct.
+            if claims.is_empty() {
+                continue;
+            }
+            if claims
+                .iter()
+                .any(|c| crate::shared::paths::same_declared_file(c, &entry.file))
+            {
+                continue;
+            }
+            let _ = manifest;
+            findings.push(DeliveryFinding::fail(
+                "injectable-unclaimed",
+                format!(
+                    "`{}` is declared on `{}`, but every hook on that event is scoped to one                      other file with `--inject`, so nothing collects it — it is present,                      registered, and never in force",
+                    entry.file, entry.on,
+                ),
+                "give it a sibling hook of its own in the manifest (one `--inject <file>` per                  injectable), or declare it on an event delivered whole",
+            ));
+        }
+    }
+
     // (3) The router by halves.
     let declares = |file: &str| entries.iter().any(|e| crate::shared::paths::same_declared_file(&e.file, file));
     if declares(ORCHESTRATOR) && !declares(DISPATCH) {
@@ -345,6 +384,60 @@ mod tests {
         let report3 = build_report(dir3.path(), &s3, None);
         assert!(report3.failed, "a disabled plugin must FAIL — no hook runs");
         assert!(report3.findings.iter().any(|f| f.kind == "plugin-disabled"));
+    }
+
+    /// An operator's OWN injectable, on the event whose hooks are each scoped
+    /// to one file, is collected by nobody — and every other condition here
+    /// reports it clean.
+    ///
+    /// This is the shape review measured against the binary: the entry survives
+    /// every upsert, rides a registered event, and sits on disk at the exact
+    /// declared path. The siblings emit their own two files and nothing emits
+    /// the third. Present, registered, never in force.
+    #[test]
+    fn an_injectable_no_sibling_hook_claims_is_reported_as_undelivered() {
+        let dir = tempdir().unwrap();
+        seed(
+            dir.path(),
+            &format!(
+                r#"{BOTH},
+                   {{"on":"userPromptSubmit","file":".claude/mustard/my-rules.md","once":true}}"#
+            ),
+            &[
+                ".claude/mustard/orchestrator.md",
+                ".claude/mustard/dispatch.md",
+                ".claude/mustard/my-rules.md",
+            ],
+        );
+        // A manifest shaped like the shipped one: one sibling per injectable,
+        // each scoped with `--inject`, and none of them claiming the third.
+        let manifest = dir.path().join("hooks.json");
+        std::fs::write(
+            &manifest,
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[
+                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/orchestrator.md"},
+                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/dispatch.md"}
+               ]}]}}"#,
+        )
+        .unwrap();
+        let s = settings(dir.path(), true);
+        let report = build_report(dir.path(), &s, Some(&manifest));
+
+        assert!(report.failed, "an uncollected injectable must FAIL: {:?}", report.findings);
+        let f = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "injectable-unclaimed")
+            .expect("the unclaimed entry must be named");
+        assert!(f.detail.contains("my-rules.md"), "it must say WHICH file: {}", f.detail);
+        assert!(!f.remedy.is_empty(), "a refusal must name its own remedy");
+        // …and the two the siblings DO claim are not reported.
+        assert_eq!(
+            report.findings.iter().filter(|f| f.kind == "injectable-unclaimed").count(),
+            1,
+            "only the unclaimed entry: {:?}",
+            report.findings,
+        );
     }
 
     /// The two WARN conditions: delivered, but less or later than declared.

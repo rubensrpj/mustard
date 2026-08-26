@@ -128,7 +128,7 @@ pub(crate) fn carries_shared_modules(project_dir: &str, trigger_on: &str, inject
 ///
 /// Empty when the manifest cannot be found or read, which makes every caller
 /// fall through to the fail-open branch — the safe direction.
-fn claimed_injectables(project_dir: &str, trigger_on: &str) -> Vec<String> {
+pub(crate) fn claimed_injectables(project_dir: &str, trigger_on: &str) -> Vec<String> {
     let Some(manifest) = mustard_core::platform::harness::installed_plugin_hooks_manifest()
         .or_else(|| {
             let p = std::path::Path::new(project_dir)

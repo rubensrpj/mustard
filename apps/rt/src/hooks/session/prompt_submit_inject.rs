@@ -135,6 +135,33 @@ fn is_mustard_command(prompt: &str) -> bool {
 /// lone `/`, or a path-looking prompt (`/etc/hosts`, `/usr/bin`) — a command
 /// name is a word, so the first segment must start with a letter and hold only
 /// name characters.
+///
+/// **Nor does a slash token followed by a SENTENCE.** An earlier version told
+/// commands from paths with a closed list of filesystem roots, and everything
+/// else with a word-shaped first segment counted as a command. Application
+/// route names are word-shaped and cannot be enumerated, so `/login nao
+/// funciona`, `/checkout quebrou em producao` and `/api retorna 500` all read
+/// as commands and lost the router — reproducing, silently, the very field
+/// symptom this unit exists to remove (measured in review, against the binary).
+///
+/// Two rules, because the two shapes carry different amounts of evidence.
+///
+/// A NAMESPACED token — one holding a `:` — is always a command. `/mustard:pr
+/// merge 212` cannot be a route: no URL path segment carries a colon, and the
+/// namespace is the plugin declaring the command as its own. Arguments after it
+/// are unrestricted.
+///
+/// A BARE token is weaker evidence, so it is a command only when it stands
+/// alone or carries a single short argument: `/grill-me`, `/init`, `/review
+/// 212`. Anything longer is a sentence, and a sentence about `/login` is a bug
+/// report that needs the router.
+///
+/// The line falls where it does because the two mistakes do not cost the same.
+/// Reading a work request as a command drops the router SILENTLY, and the
+/// operator never learns why the unit opened on the wrong branch. Reading a
+/// command as work adds a paragraph to a turn that already had its own context
+/// — visible, and harmless. A bare command that takes several arguments pays
+/// that harmless cost; a bug report never pays the silent one.
 fn is_slash_command(prompt: &str) -> bool {
     let t = prompt.trim_start();
     let Some(rest) = t.strip_prefix('/') else {
@@ -161,7 +188,19 @@ fn is_slash_command(prompt: &str) -> bool {
         "tmp", "usr", "var", "etc", "opt", "bin", "sbin", "lib", "home", "root", "proc", "sys",
         "dev", "boot", "mnt", "media", "srv", "run",
     ];
-    !FS_ROOTS.iter().any(|r| name.eq_ignore_ascii_case(r))
+    if FS_ROOTS.iter().any(|r| name.eq_ignore_ascii_case(r)) {
+        return false;
+    }
+    // A namespaced token is unambiguous — no route segment carries a colon —
+    // so its arguments are unrestricted.
+    if name.contains(':') {
+        return true;
+    }
+    // A BARE token is weaker evidence: a command invocation, or a route named
+    // at the start of a sentence about it. Told apart by length, leaning toward
+    // routing. See the doc above.
+    const MAX_BARE_ARGUMENT_WORDS: usize = 1;
+    rest.split_whitespace().count() <= 1 + MAX_BARE_ARGUMENT_WORDS
 }
 
 /// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
@@ -263,11 +302,24 @@ impl Check for PromptSubmitInject {
         // denied when `mustard.json` is absent from the project root. Normal
         // prompts are never gated — the hooks stay silent on uninstalled
         // projects.
+        //
+        // Which sibling speaks belongs to the INVOCATION, not to one
+        // injectable, so it is resolved once here and reused below. The gate
+        // needs it too: `userPromptSubmit` is delivered by one sibling hook per
+        // injectable, and a Deny emitted by each of them shows the operator the
+        // same block twice (found in review). One elected sibling speaks; the
+        // others stay quiet, and the outcome is identical because any single
+        // Deny blocks the prompt.
+        let carries_shared_blocks = carries_shared_blocks(&cwd, ctx.inject_only.as_deref());
         if is_mustard_command(prompt)
             && !is_upsert_prompt(prompt)
             && !ProjectConfig::exists(Path::new(&cwd))
         {
-            return Ok(Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() });
+            return Ok(if carries_shared_blocks {
+                Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() }
+            } else {
+                Verdict::Allow
+            });
         }
         if is_pipeline_prompt(prompt) {
             // Close any open amendment windows for this session — the user is
@@ -288,13 +340,11 @@ impl Check for PromptSubmitInject {
         // answer to a slash command is read by the same person as any other.
         // Excluding it here would drop the rule from precisely the messages
         // that produce the longest explanations.
-        // Which sibling carries what belongs to the INVOCATION rather than to
-        // one injectable — computed BEFORE the early return below, because a
-        // slash-command prompt still delivers the writing rule and would
-        // otherwise deliver it once per sibling (found in review: this repo
-        // declares `tone: didactic`, so every `/mustard:*` prompt got the
-        // paragraph twice).
-        let carries_shared_blocks = carries_shared_blocks(&cwd, ctx.inject_only.as_deref());
+        // `carries_shared_blocks` was resolved above, before the installation
+        // gate, because a slash-command prompt still delivers the writing rule
+        // and would otherwise deliver it once per sibling (found in review:
+        // this repo declares `tone: didactic`, so every `/mustard:*` prompt got
+        // the paragraph twice).
         if is_slash_command(prompt) {
             return Ok(match tone.filter(|_| carries_shared_blocks) {
                 Some(rule) => Verdict::Inject { context: rule },
@@ -818,6 +868,43 @@ mod tests {
         assert!(!is_slash_command("/tmp"));
         assert!(!is_slash_command("/usr"));
         assert!(!is_slash_command("/opt"));
+    }
+
+    /// An application ROUTE named at the start of a work request is not a
+    /// command, and must keep the router.
+    ///
+    /// Route names are word-shaped and cannot be enumerated, so the closed list
+    /// of filesystem roots could never separate them. What separates them is
+    /// what follows: a command carries arguments, a route is mentioned inside a
+    /// sentence. Every row below was measured against the binary in review,
+    /// dropping the router — the exact field symptom this unit exists to
+    /// remove.
+    #[test]
+    fn a_route_name_inside_a_sentence_still_gets_the_router() {
+        for prompt in [
+            "/login nao funciona",
+            "/checkout quebrou em producao",
+            "/api endpoint retorna 500",
+            "/health check falha",
+            "/dashboard esta lento",
+            "/admin precisa de auth",
+            "/settings nao salva",
+            "/node_modules deve ser ignorado",
+        ] {
+            assert!(!is_slash_command(prompt), "must keep the router: {prompt}");
+        }
+
+        // …and a real command, with or without arguments, is still a command.
+        for prompt in [
+            "/mustard:spec",
+            "/mustard:spec ar",
+            "/mustard:pr merge 212",
+            "/grill-me",
+            "/review 212",
+            "/init",
+        ] {
+            assert!(is_slash_command(prompt), "must stay a command: {prompt}");
+        }
     }
 
     #[test]

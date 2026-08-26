@@ -140,12 +140,13 @@ fn material_state(material: &Path) -> String {
     let Ok(body) = fs::read_to_string(material) else {
         return "absent".to_string();
     };
-    let stamp = fs::modified(material)
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    format!("{}:{stamp}", body.len())
+    // The CONTENT decides, not its length and mtime. Those two miss a rewrite
+    // of identical length within the same wall-clock second — the gate then
+    // reads a changed file as unchanged and stays quiet (found in review). The
+    // body is already in hand, so hashing it costs nothing and cannot miss.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&body, &mut hasher);
+    format!("{}:{:016x}", body.len(), std::hash::Hasher::finish(&hasher))
 }
 
 /// `<root>/.claude/.harness/crystallise-<spec>` — the state this gate last
