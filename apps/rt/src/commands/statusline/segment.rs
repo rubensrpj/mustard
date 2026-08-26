@@ -33,10 +33,14 @@ pub enum SegmentKind {
     Version = 8,
     Mustard = 9,
     Prune = 10,
+    /// The work unit this session is inside, and its stage.
+    Unit = 11,
+    /// The plugin is installed but switched off, so no hook runs.
+    Inert = 12,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 11;
+pub const SEGMENT_KIND_COUNT: usize = 13;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -290,6 +294,89 @@ pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
     })
 }
 
+/// `▸ {slug} {STAGE}` — the work unit this session is inside, and where it is.
+///
+/// The operator who reopens a terminal should not have to type a command to
+/// learn where they stopped. Before this segment the bar named the harness
+/// version and nothing else, so a unit parked in PLAN was invisible until
+/// `/mustard:spec` was run.
+///
+/// Reads the per-session active-spec marker ([`current_spec`]) and that spec's
+/// `meta.json`, both of which the pipeline already maintains — a status bar
+/// redrawn every turn must not enumerate the spec tree. `None` when the project
+/// is not a Mustard install or no unit is active.
+#[must_use]
+pub fn unit_segment(cwd: &Path) -> Option<Segment> {
+    if !mustard_core::ProjectConfig::exists(cwd) {
+        return None;
+    }
+    let slug = crate::shared::context::current_spec(&cwd.to_string_lossy())
+        .filter(|s| !s.is_empty())?;
+    // The stage is a convenience, not the point: an unreadable or half-written
+    // `meta.json` still leaves the unit NAMED, which is the whole job here.
+    let stage = std::fs::read_to_string(cwd.join(".claude/spec").join(&slug).join("meta.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|m| m.get("phase").and_then(Value::as_str).map(str::to_string));
+    let text = match stage {
+        Some(phase) => format!("\u{25b8} {slug} {phase}"),
+        None => format!("\u{25b8} {slug}"),
+    };
+    Some(Segment::new(SegmentKind::Unit, text))
+}
+
+/// Is the Mustard plugin listed in `settings` and switched OFF?
+///
+/// `Some(true)` disabled, `Some(false)` enabled, `None` when the question
+/// cannot be answered — no file, unparseable, or the plugin unlisted (a source
+/// checkout with no plugin install is not a defect). The marketplace suffix
+/// varies by install (`mustard@mustard-local`, `mustard@mustard`, …), so the
+/// name before the `@` is what decides.
+///
+/// Shared with the doctor's `inject-delivery` check, which reports the same
+/// state as a FAIL: one reader, so the bar and the diagnosis cannot disagree.
+#[must_use]
+pub fn plugin_switched_off(settings: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(settings).ok()?;
+    let json: Value = serde_json::from_str(&text).ok()?;
+    json.get("enabledPlugins")?
+        .as_object()?
+        .iter()
+        .find(|(key, _)| key.split('@').next() == Some("mustard"))
+        .map(|(_, value)| value.as_bool() == Some(false))
+}
+
+/// `⨯ harness inerte` — the plugin is installed and switched OFF.
+///
+/// With the plugin disabled no hook runs at all: no router, no gates. Measured
+/// in the field 2026-08-25, that state is indistinguishable from a working
+/// harness — the bar rendered normally while nothing was enforced, and three
+/// attempts were spent discovering it by error. Red, because it is not
+/// something owed; it is the harness not running.
+///
+/// `None` when the switch cannot be read (no settings file, unreadable, the
+/// plugin unlisted) or when it is enabled. Never claims health it did not
+/// measure: an unanswerable question renders nothing.
+#[must_use]
+pub fn inert_segment(cwd: &Path) -> Option<Segment> {
+    if !mustard_core::ProjectConfig::exists(cwd) {
+        return None;
+    }
+    // Through `claude_config_dir()`, which honours `CLAUDE_CONFIG_DIR`. A
+    // hardcoded `$HOME/.claude` left this flag silent for an operator who moved
+    // their config: the bar looked healthy while no hook ran, which is the very
+    // state it exists to show (found in review).
+    let settings = mustard_core::platform::harness::claude_config_dir()?.join("settings.json");
+    if plugin_switched_off(&settings) != Some(true) {
+        return None;
+    }
+    let lang = mustard_core::ProjectConfig::load(cwd).i18n().lang;
+    let label = mustard_core::translate("statusline.harness.inert", lang);
+    let mut seg = Segment::new(SegmentKind::Inert, format!("\u{2a2f} {label}"));
+    seg.override_fg = Some(Color::Ansi(1));
+    Some(seg)
+}
+
 // ---------------------------------------------------------------------------
 // Pending-prune segment
 // ---------------------------------------------------------------------------
@@ -410,6 +497,84 @@ fn git(cwd: &Path, args: &[&str]) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// AC-7 — the bar names the active unit and its stage, and says so when the
+    /// harness is inert.
+    ///
+    /// Both halves answer the same question: what does the operator see without
+    /// typing anything? A unit parked in PLAN was invisible, and a switched-off
+    /// plugin rendered exactly like a working one.
+    #[test]
+    fn statusline_names_the_active_unit_and_flags_an_inert_harness() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // `current_spec` memoises per PROCESS — right for a hook, which is one
+        // invocation, but it means each state below needs its own root: asking
+        // about a root before seeding it would cache the empty answer.
+        let bare = tempfile::tempdir().unwrap();
+        assert!(unit_segment(bare.path()).is_none(), "not a Mustard project: quiet");
+        assert!(inert_segment(bare.path()).is_none());
+
+        let idle = tempfile::tempdir().unwrap();
+        std::fs::write(idle.path().join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        assert!(unit_segment(idle.path()).is_none(), "no active unit must render nothing");
+
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","specLang":"pt-BR"}"#).unwrap();
+        // A unit in PLAN: named, with its stage. The active unit is the newest
+        // pipeline-state file — the same source every other consumer reads.
+        let spec = root.join(".claude/spec/roteador-didatico");
+        std::fs::create_dir_all(&spec).unwrap();
+        std::fs::write(spec.join("meta.json"), r#"{"stage":"Plan","phase":"PLAN"}"#).unwrap();
+        let states = root.join(".claude/.pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(states.join("roteador-didatico.json"), "{}").unwrap();
+
+        let seg = unit_segment(root).expect("an active unit must reach the bar");
+        assert!(seg.text.contains("roteador-didatico"), "the unit is unnamed: {}", seg.text);
+        assert!(seg.text.contains("PLAN"), "the stage is missing: {}", seg.text);
+
+        // An unreadable meta still leaves the unit NAMED — that is the job.
+        std::fs::write(spec.join("meta.json"), "{ not json").unwrap();
+        let seg = unit_segment(root).expect("a broken meta must not hide the unit");
+        assert!(seg.text.contains("roteador-didatico"));
+    }
+
+    /// The inert flag reads the plugin switch, and never claims health it could
+    /// not measure: an absent or unlisted switch answers "cannot tell".
+    ///
+    /// Exercises the decision directly rather than through `$HOME`: a test that
+    /// mutates process-wide environment races every other test in the binary,
+    /// and the thing worth pinning here is the verdict, not the path lookup.
+    #[test]
+    fn the_inert_flag_reads_the_plugin_switch_and_stays_silent_when_unanswerable() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let verdict = |body: Option<&str>| {
+            match body {
+                Some(b) => std::fs::write(&settings, b).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&settings);
+                }
+            }
+            plugin_switched_off(&settings)
+        };
+
+        assert_eq!(verdict(None), None, "no settings file: unanswerable, not green");
+        assert_eq!(verdict(Some("{ not json")), None, "unparseable: unanswerable");
+        assert_eq!(verdict(Some(r#"{"enabledPlugins":{}}"#)), None, "unlisted: unanswerable");
+        assert_eq!(
+            verdict(Some(r#"{"enabledPlugins":{"mustard@mustard-local":true}}"#)),
+            Some(false),
+            "an enabled plugin is measured as running",
+        );
+        // The marketplace suffix varies by install, so the name before `@` decides.
+        assert_eq!(
+            verdict(Some(r#"{"enabledPlugins":{"other@x":true,"mustard@whatever":false}}"#)),
+            Some(true),
+            "a disabled plugin is measured whatever marketplace it came from",
+        );
+    }
 
     #[test]
     fn module_segment_uses_cwd_basename() {

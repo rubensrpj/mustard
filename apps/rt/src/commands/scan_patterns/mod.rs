@@ -103,7 +103,13 @@ pub(crate) fn content_label(content: &str) -> String {
 /// ALWAYS spans lines — the demarcators occupy whole lines by construction — so
 /// the ambiguity is unreachable in practice, and the rule costs one condition
 /// instead of a second flag to keep in step on two commands.
-fn file_face(content: &str) -> Option<&str> {
+///
+/// `pub(crate)` because [`relay`] must know whether the envelope came from a
+/// FILE before it decides what "no blocks" means: a file that was read and
+/// demarcated nothing is a failure to interpret, while a literal `--content`
+/// that demarcates nothing is fail-open. [`Envelope`] cannot answer that — a
+/// `Raw` covers stdin, the literal value and a file whose bytes are plain text.
+pub(crate) fn file_face(content: &str) -> Option<&str> {
     let path = content.strip_prefix('@')?;
     (!path.is_empty() && !content.contains('\n')).then_some(path)
 }

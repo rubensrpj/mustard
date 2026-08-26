@@ -120,6 +120,24 @@ pub struct AcAmendOpts {
     pub statement: Option<String>,
     /// Why the criterion is being changed. Never blank.
     pub reason: String,
+    /// Take the proof against ANOTHER tree — a checkout that does not yet carry
+    /// the work — instead of the one being amended.
+    ///
+    /// The negative proof asks "can this criterion fail?", and it can only be
+    /// answered where the behaviour does NOT exist. A criterion corrected after
+    /// the code lands therefore has no honest answer in the current tree: the
+    /// replacement comes back green, and green proves nothing.
+    ///
+    /// Measured on this repository: three criteria named tests the
+    /// implementation had not created (`cargo test <unknown>` answers
+    /// `0 passed` with exit 0, so they would have passed vacuously). Correcting
+    /// them meant hiding each test, running the amend, and restoring it — a
+    /// contrivance that leaves no trace of WHERE the red was taken.
+    ///
+    /// The tree is recorded in the ledger alongside the verdict, so the
+    /// amendment says where its evidence came from. The spec is still read and
+    /// rewritten in the CURRENT tree; only the command runs elsewhere.
+    pub proof_tree: Option<PathBuf>,
 }
 
 /// JSON report printed on stdout. Deterministic: repo-relative paths, sorted,
@@ -201,6 +219,93 @@ struct Amendment {
     statement: Option<String>,
     /// The artefacts the amendment rewrote, as repo paths.
     rewrote: Vec<String>,
+    /// WHERE the red was taken, when it was not this tree.
+    ///
+    /// A proof carries no weight without the state it was taken against, and a
+    /// criterion corrected after the work landed can only come back red
+    /// somewhere the work is absent. Recording the tree is what keeps
+    /// `--proof-tree` an evidenced claim rather than an escape hatch: a reader
+    /// can go to that commit and take the same measurement.
+    ///
+    /// Absent for the ordinary case — the proof was taken here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_tree: Option<String>,
+}
+
+/// Run one `git -C <tree> …` and return its trimmed stdout, or `None` when git
+/// is absent, fails, or answers nothing.
+fn git_in(tree: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(tree);
+    cmd.args(args);
+    let out = cmd.output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The commit a proof tree stands on, as a short hash.
+///
+/// **The question is not "is this tree a repository root" — it is "did git
+/// answer about the tree the operator meant, or about the one being amended?"**
+/// `rev-parse` walks up through parent directories, so a plain directory nested
+/// under the checkout being amended answers with THAT repository's HEAD — the
+/// commit which carries the work, the exact opposite of what the flag claims. A
+/// reader sent there finds the criterion green, so the record reads as a lie
+/// about evidence rather than as a missing field.
+///
+/// An earlier version asked for exact equality with `--show-toplevel`, which
+/// also refused a SUBDIRECTORY of the correct worktree — a tree git names the
+/// right commit for. Review measured it. So the test is which repository the
+/// walk landed in: any tree resolving to a repository other than the one being
+/// amended is answered for, wherever inside it the path points.
+///
+/// **Both sides are asked of GIT, and that is load-bearing.** A second version
+/// compared git's answer for `tree` against the `amending` PATH — which is the
+/// project anchor (`mustard.json` + `.claude/`), not the repository root. In a
+/// monorepo the two differ, so the equality could never hold and a plain nested
+/// directory borrowed the amended tree's own HEAD again, in exactly the layout
+/// this repository has. Review measured it in an `apps/thing/` project: the
+/// ledger claimed the negative proof was taken at the commit carrying the work.
+/// Comparing repository root against repository root is the only form that
+/// holds wherever the anchor sits.
+///
+/// `None` when git cannot answer, or when it answers about the repository being
+/// amended — see [`proof_tree_record`] for why that is recorded as nothing
+/// rather than as a path.
+fn proof_tree_commit(tree: &Path, amending: &Path) -> Option<String> {
+    let resolved = git_root(tree)?;
+    // The REPOSITORY the amended tree belongs to, asked of git the same way —
+    // never the project anchor, which in a monorepo is a subdirectory of it.
+    if git_root(amending).is_some_and(|here| here == resolved) {
+        return None;
+    }
+    git_in(tree, &["rev-parse", "--short", "HEAD"])
+}
+
+/// The canonical path of the git repository `dir` belongs to, or `None` when
+/// git cannot say.
+fn git_root(dir: &Path) -> Option<std::path::PathBuf> {
+    let toplevel = git_in(dir, &["rev-parse", "--show-toplevel"])?;
+    std::fs::canonicalize(toplevel).ok()
+}
+
+/// What the ledger records about WHERE a proof was taken.
+///
+/// The commit, or nothing at all. **Never the path**: `ac-proof.json` is a
+/// versioned artefact, and this crate's guard requires its output to be
+/// byte-stable — an absolute `/tmp/…` differs on every machine and would make
+/// the file churn per checkout. The path is also useless as evidence on its own
+/// terms: the doc for `--proof-tree` records the commit precisely BECAUSE a
+/// worktree under `/tmp` is gone by the time anyone reads the ledger, so
+/// falling back to that path writes down the very thing it argued was worthless.
+///
+/// A proof git cannot speak for is therefore recorded as absent, and the report
+/// says so through the `remedy` a reader can act on rather than through a field
+/// that looks like evidence and is not.
+fn proof_tree_record(tree: Option<&Path>, amending: &Path) -> Option<String> {
+    proof_tree_commit(tree?, amending)
 }
 
 /// What a rewrite must apply to one criterion.
@@ -624,8 +729,37 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // was not declared. When the markdown still carries one, the next
     // `ac-negative-check` pass sees it differ from the record and takes it — the
     // safe direction, since it can only cause a run, never a stale reuse.
+    // WHERE the command runs, which is not always where the spec lives. A
+    // criterion corrected after the work landed cannot come back red in this
+    // tree — the behaviour exists — so `--proof-tree` points at a checkout that
+    // predates it. Everything else (reading the spec, rewriting the artefacts,
+    // appending to the ledger) stays here.
+    let proof_root: &Path = opts.proof_tree.as_deref().unwrap_or(root);
+    if let Some(tree) = opts.proof_tree.as_deref() {
+        if !tree.is_dir() {
+            // `error` is a CODE — a closed vocabulary a caller can match on,
+            // and the field the crate's byte-stable-output guard covers. The
+            // path is volatile (an absolute `/tmp/…` differs on every machine),
+            // so it belongs in `remedy`, which is prose for a human.
+            return AcAmendReport::refused(
+                opts,
+                &id,
+                "proof_tree_not_a_directory",
+                &format!(
+                    "`--proof-tree {}` is not a directory — point it at a checkout of this \
+                     repository that does not carry the work yet \
+                     (`git worktree add --detach <dir> <base-commit>`)",
+                    tree.display()
+                ),
+            );
+        }
+    }
+    // WHERE the red was taken, resolved ONCE and written to every reader: the
+    // criterion's own record (which the approval gate reads), the amendment
+    // history, and the report on stdout.
+    let proof_tree_record = proof_tree_record(opts.proof_tree.as_deref(), root);
     let mut proof = ac_negative_check::prove_one(
-        root,
+        proof_root,
         &id,
         &opts.command,
         expect.as_deref(),
@@ -716,6 +850,16 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     }
     rewritten.sort();
 
+    // WHERE the red came from travels on the CRITERION's record, not only in
+    // the amendment history — the approval gate reads `criteria`, and a gate
+    // that cannot tell an imported proof from one taken in place cannot audit
+    // the very thing this flag exists to make auditable.
+    //
+    // Assigned HERE, before the report clones it. It used to be set after, so
+    // stdout — the documented interface — omitted the field the ledger carried,
+    // and an auditor reading the report could not make the distinction either.
+    proof.proof_tree = proof_tree_record.clone();
+
     let mut report = AcAmendReport {
         ok: false,
         spec: opts.spec.clone(),
@@ -767,6 +911,7 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         expect,
         statement: plan.statement.clone(),
         rewrote: rewritten,
+        proof_tree: proof_tree_record,
     };
     if let Ok(value) = serde_json::to_value(&entry) {
         ledger.amendments.push(value);
@@ -852,7 +997,228 @@ mod tests {
             expect: None,
             statement: None,
             reason: reason.to_string(),
+            proof_tree: None,
         }
+    }
+
+    /// A criterion corrected AFTER the work landed takes its red somewhere the
+    /// work is absent — and the ledger records where.
+    ///
+    /// Without this, the only way through was a contrivance: hide the test, run
+    /// the amend, restore the test. It worked, and it left no trace of where
+    /// the red came from, so the ledger's own claim could not be checked.
+    ///
+    /// Measured by giving the two trees opposite answers to one command: a
+    /// marker file that exists here and not there. The proof runs THERE; the
+    /// spec is still read and rewritten HERE.
+    #[test]
+    fn a_proof_tree_takes_the_red_where_the_work_is_absent() {
+        let here = tempfile::tempdir().unwrap();
+        seed(here.path(), "demo");
+        let marker_cmd = "test -f built.marker";
+
+        // This tree carries the work, so the replacement passes and an
+        // ordinary amend has no honest red to take.
+        std::fs::write(here.path().join("built.marker"), "done").unwrap();
+        let green = amend(here.path(), &opts("demo", "AC-1", marker_cmd, "the work exists here"));
+        assert!(!green.ok, "a replacement that passes must be refused");
+
+        // A tree WITHOUT the marker answers the same command red — and it is a
+        // REAL repository with a commit, because recording the commit is the
+        // branch under test. A bare temp directory is satisfied by the
+        // path fallback, which would let the commit branch stay unexercised.
+        let before = tempfile::tempdir().unwrap();
+        let head = git_repo_with_one_commit(before.path())
+            .expect("the test needs a usable `git` to prove the commit branch");
+        let mut o = opts("demo", "AC-1", marker_cmd, "corrected after the work landed");
+        o.proof_tree = Some(before.path().to_path_buf());
+        let red = amend(here.path(), &o);
+        assert!(red.ok, "the red taken in the other tree must be accepted: {red:?}");
+
+        // …and BOTH readers say WHERE. Without it the claim is unverifiable,
+        // which is the state this flag replaces.
+        let ledger: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                here.path().join(".claude/spec/demo").join(AC_PROOF_JSON),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // The COMMIT, not the path: the directory is gone by the time anyone
+        // reads this, and only the commit lets a reader repeat the measurement.
+        assert_eq!(
+            ledger["amendments"][0]["proof_tree"].as_str(),
+            Some(head.as_str()),
+            "the amendment must record the commit the red stood on",
+        );
+        // The approval gate reads `criteria`, never `amendments` — recording it
+        // only in the history leaves that gate unable to tell an imported proof
+        // from one taken in place.
+        assert_eq!(
+            ledger["criteria"][0]["proof_tree"].as_str(),
+            Some(head.as_str()),
+            "the criterion's own record must carry it too",
+        );
+    }
+
+    /// The rule is about WHICH REPOSITORY git answered for, not about whether
+    /// the path is a repository root.
+    ///
+    /// `git rev-parse` walks up through parents, so a plain directory under the
+    /// tree being AMENDED answers with that tree's HEAD — the commit which
+    /// carries the work, the opposite of what the flag claims. But a
+    /// SUBDIRECTORY of a different worktree is a tree git names the right commit
+    /// for, and an earlier exact-equality guard refused it. Both directions are
+    /// asserted here.
+    #[test]
+    fn the_proof_tree_answers_for_any_repository_but_the_one_being_amended() {
+        let amending = tempfile::tempdir().unwrap();
+        let Some(_here) = git_repo_with_one_commit(amending.path()) else {
+            return; // no usable git here; the amend path is covered elsewhere
+        };
+        // Nested in the tree being amended: git walks up and offers the commit
+        // that carries the work. Refused.
+        let nested = amending.path().join("not-a-repo");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            proof_tree_commit(&nested, amending.path()),
+            None,
+            "a directory inside the amended tree must not borrow its commit",
+        );
+
+        // A DIFFERENT repository answers — at its root…
+        let other = tempfile::tempdir().unwrap();
+        let Some(head) = git_repo_with_one_commit(other.path()) else {
+            return;
+        };
+        assert_eq!(
+            proof_tree_commit(other.path(), amending.path()).as_deref(),
+            Some(head.as_str()),
+            "another repository's root answers",
+        );
+        // …and at a subdirectory of it, which the exact-equality guard refused.
+        let sub = other.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            proof_tree_commit(&sub, amending.path()).as_deref(),
+            Some(head.as_str()),
+            "a subdirectory of the right worktree names the right commit",
+        );
+    }
+
+    /// The comparison is REPOSITORY against REPOSITORY, so it still holds when
+    /// the project anchor is a subdirectory of the git root.
+    ///
+    /// A monorepo is the ordinary case — this repository is one. An earlier fix
+    /// compared git's answer for the proof tree against the `amending` PATH,
+    /// which is the `mustard.json` + `.claude/` anchor. In `mono/apps/thing/`
+    /// the two differ, the equality could never hold, and a plain nested
+    /// directory borrowed the amended tree's own HEAD: the ledger then claimed
+    /// the negative proof was taken at the very commit carrying the work
+    /// (measured in review).
+    #[test]
+    fn the_guard_holds_when_the_project_anchor_is_not_the_git_root() {
+        let mono = tempfile::tempdir().unwrap();
+        let Some(_head) = git_repo_with_one_commit(mono.path()) else {
+            return; // no usable git here
+        };
+        // The project anchor sits DEEP inside the repository, as it does in a
+        // monorepo — this is the path `amend` receives as `root`.
+        let anchor = mono.path().join("apps").join("thing");
+        std::fs::create_dir_all(&anchor).unwrap();
+        // A plain directory, not a repository, anywhere inside that same repo.
+        let nested = mono.path().join("scratch").join("plain");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(
+            proof_tree_commit(&nested, &anchor),
+            None,
+            "a directory inside the amended REPOSITORY must not borrow its commit, \
+             whatever subdirectory the project anchor sits in",
+        );
+
+        // …and a genuinely different repository still answers, from that same
+        // anchor — the guard refuses the right thing, not everything.
+        let other = tempfile::tempdir().unwrap();
+        let Some(head) = git_repo_with_one_commit(other.path()) else {
+            return;
+        };
+        assert_eq!(
+            proof_tree_commit(other.path(), &anchor).as_deref(),
+            Some(head.as_str()),
+            "another repository still answers",
+        );
+    }
+
+    /// A tree git cannot speak for records NOTHING — never an absolute path.
+    ///
+    /// `ac-proof.json` is versioned and this crate requires byte-stable output,
+    /// so a `/tmp/…` path would churn per machine. It is also worthless as
+    /// evidence on its own terms: the commit is recorded precisely BECAUSE the
+    /// directory is gone by the time anyone reads the ledger.
+    #[test]
+    fn a_tree_git_cannot_speak_for_records_nothing_rather_than_a_path() {
+        let amending = tempfile::tempdir().unwrap();
+        let plain = tempfile::tempdir().unwrap();
+        // Not a repository, and not inside one that git would walk up into
+        // (temp dirs are outside this checkout).
+        let recorded = proof_tree_record(Some(plain.path()), amending.path());
+        assert!(
+            recorded.as_deref().is_none_or(|r| !r.contains('/')),
+            "a path must never reach the ledger: {recorded:?}",
+        );
+    }
+
+    /// Make `dir` a git repository carrying exactly one commit, and return its
+    /// short hash. `None` when git is absent or refuses — the caller then skips,
+    /// rather than failing a test on the environment.
+    fn git_repo_with_one_commit(dir: &Path) -> Option<String> {
+        let git = |args: &[&str]| -> bool {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !git(&["init", "--quiet"]) {
+            return None;
+        }
+        std::fs::write(dir.join("seed.txt"), "seed").ok()?;
+        if !git(&["add", "-A"]) || !git(&["commit", "--quiet", "-m", "seed"]) {
+            return None;
+        }
+        proof_tree_commit(dir, Path::new("/nonexistent-amending-tree"))
+    }
+
+    /// A `--proof-tree` that is not a directory refuses and says how to make
+    /// one. A typo must never silently fall back to proving here — that would
+    /// hand back the green this flag exists to avoid.
+    #[test]
+    fn a_proof_tree_that_is_not_a_directory_refuses() {
+        let here = tempfile::tempdir().unwrap();
+        seed(here.path(), "demo");
+        let mut o = opts("demo", "AC-1", "cd .", "typo in the path");
+        o.proof_tree = Some(here.path().join("does-not-exist"));
+        let r = amend(here.path(), &o);
+        assert!(!r.ok, "a bad --proof-tree must refuse");
+        assert!(
+            r.remedy.as_deref().is_some_and(|m| m.contains("git worktree add")),
+            "the refusal must name how to make one: {:?}",
+            r.remedy,
+        );
+        // `error` is a CODE — matchable, and byte-stable across machines. The
+        // volatile absolute path belongs to `remedy`, which is prose.
+        assert_eq!(r.error.as_deref(), Some("proof_tree_not_a_directory"));
+        assert!(
+            !r.error.as_deref().unwrap_or_default().contains('/'),
+            "the code must carry no path: {:?}",
+            r.error,
+        );
     }
 
     /// The load-bearing refusal: a replacement that ALREADY passes proves

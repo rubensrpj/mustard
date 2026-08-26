@@ -328,6 +328,10 @@ pub const DEFAULT: Theme = Theme {
         Style::fg(Color::Ansi(8)),
         // Prune — yellow: a delivered unit still owes its exit ritual
         Style::fg(Color::Ansi(3)),
+        // Unit — cyan: where the operator stopped
+        Style::fg(Color::Ansi(6)),
+        // Inert — red: the plugin is off, so no hook runs at all
+        Style::fg(Color::Ansi(1)),
     ],
 };
 
@@ -373,6 +377,10 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
         Style::pl(Color::Rgb(0xf9, 0xe2, 0xaf), Color::Rgb(0x11, 0x11, 0x1b)),
         // Prune — peach on crust: owed, not broken
         Style::pl(Color::Rgb(0xfa, 0xb3, 0x87), Color::Rgb(0x11, 0x11, 0x1b)),
+        // Unit — sky on crust: where the operator stopped
+        Style::pl(Color::Rgb(0x89, 0xdc, 0xeb), Color::Rgb(0x11, 0x11, 0x1b)),
+        // Inert — crust on red: the harness is not running
+        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf3, 0x8b, 0xa8)),
     ],
 };
 
@@ -408,6 +416,10 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
         Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x1a, 0x1b, 0x26)),
         // Prune — yellow on bg-storm: owed, not broken
         Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x24, 0x28, 0x3b)),
+        // Unit — cyan on bg-storm: where the operator stopped
+        Style::pl(Color::Rgb(0x7d, 0xcf, 0xff), Color::Rgb(0x24, 0x28, 0x3b)),
+        // Inert — bg on red: the harness is not running
+        Style::pl(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xf7, 0x76, 0x8e)),
     ],
 };
 
@@ -442,6 +454,10 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf9, 0xe2, 0xaf)),
         // Prune — crust on pastel peach: owed, not broken
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xfa, 0xb3, 0x87)),
+        // Unit — crust on pastel sky: where the operator stopped
+        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x89, 0xdc, 0xeb)),
+        // Inert — crust on pastel red: the harness is not running
+        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf3, 0x8b, 0xa8)),
     ],
 };
 
@@ -477,6 +493,10 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd7, 0x99, 0x21)),
         // Prune — bg on orange: owed, not broken
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd6, 0x5d, 0x0e)),
+        // Unit — bg on aqua: where the operator stopped
+        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x68, 0x9d, 0x6a)),
+        // Inert — bg on red: the harness is not running
+        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xcc, 0x24, 0x1d)),
     ],
 };
 

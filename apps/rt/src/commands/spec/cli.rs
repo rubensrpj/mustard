@@ -169,6 +169,12 @@ pub enum SpecCmd {
         /// (or carrying nothing): the draft is byte-identical to today's.
         #[arg(long)]
         material: Option<PathBuf>,
+        /// Why this draft carries no conversation material. REQUIRED when
+        /// `--material` is absent or carries nothing: an empty channel has to
+        /// be a stated choice, not an omission that looks like success. One
+        /// sentence; it is recorded in the report as `noMaterialReason`.
+        #[arg(long)]
+        no_material_reason: Option<String>,
         /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
         /// Without `--plan` the wave dirs themselves are materialised later, by
         /// `plan-materialize`.
@@ -330,6 +336,18 @@ pub enum SpecCmd {
         /// Why the criterion is being changed. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// Take the proof against ANOTHER checkout — one that does not carry
+        /// the work yet — instead of this tree.
+        ///
+        /// The negative proof asks whether a criterion can FAIL, which is only
+        /// answerable where the behaviour is absent. A criterion corrected
+        /// after the code landed comes back green here, and green proves
+        /// nothing. Point this at a worktree of the base commit
+        /// (`git worktree add --detach <dir> <base>`); the spec is still read
+        /// and rewritten HERE, and the ledger records the commit the red was
+        /// taken on.
+        #[arg(long = "proof-tree")]
+        proof_tree: Option<PathBuf>,
     },
     /// ADD an acceptance criterion the spec does not yet carry, after the
     /// artefacts are frozen, taking the SAME negative proof a planned one takes.
@@ -433,6 +451,7 @@ pub fn dispatch(cmd: SpecCmd) {
             signals,
             output,
             material,
+            no_material_reason,
             waves,
             plan,
             force,
@@ -447,6 +466,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 signals,
                 output,
                 material,
+                no_material_reason,
                 waves,
                 plan,
                 force,
@@ -493,6 +513,7 @@ pub fn dispatch(cmd: SpecCmd) {
             expect,
             statement,
             reason,
+            proof_tree,
         } => {
             spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
                 spec: slug,
@@ -501,6 +522,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 expect,
                 statement,
                 reason,
+                proof_tree,
             });
         }
         SpecCmd::AcAdd {

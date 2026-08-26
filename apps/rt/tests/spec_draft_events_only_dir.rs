@@ -33,6 +33,7 @@ fn opts(output: &Path) -> SpecDraftOpts {
         signals: None,
         output: Some(output.to_path_buf()),
         material: None,
+        no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
         waves: 0,
         plan: None,
         force: false,

@@ -37,7 +37,7 @@
         ]
       },
       {
-        "matcher": "clear|compact|resume",
+        "matcher": "clear|compact|resume|fork",
         "hooks": [
           {
             "type": "command",
@@ -55,7 +55,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SessionEnd",
-            "statusMessage": "Extracting knowledge and cleaning state...",
+            "statusMessage": "Cleaning session state...",
             "timeout": 15
           }
         ]
@@ -103,7 +103,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on UserPromptSubmit",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on UserPromptSubmit --inject .claude/mustard/orchestrator.md",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on UserPromptSubmit --inject .claude/mustard/dispatch.md",
             "timeout": 10
           }
         ]

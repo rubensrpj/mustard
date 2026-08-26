@@ -19,7 +19,7 @@
       "once": true
     },
     {
-      "on": "sessionStart",
+      "on": "userPromptSubmit",
       "file": ".claude/mustard/dispatch.md",
       "once": true
     }
@@ -29,5 +29,5 @@
     "os": "linux",
     "arch": "x86_64"
   },
-  "version": "0.1.44"
+  "version": "0.1.47"
 }

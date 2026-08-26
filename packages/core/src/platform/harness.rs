@@ -85,6 +85,34 @@ pub fn installed_harness_version_from(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The hook manifest of the plugin Claude Code actually has INSTALLED.
+///
+/// Read from the registry's own `installPath`, because that is the directory
+/// the harness runs hooks out of. Two guesses were tried before this and both
+/// fail in a real install: `CLAUDE_PLUGIN_ROOT` is exported to hooks but NOT to
+/// the shell that runs `mustard-rt run upsert`, and `<project>/plugin/hooks/`
+/// exists only inside the Mustard source repository. A caller relying on either
+/// gets a confident `false` in every user project — found in review, and it had
+/// silently disabled the migration it guarded.
+///
+/// `None` when the registry is absent, unreadable, records no install of this
+/// plugin, or the recorded directory holds no manifest. Callers treat that as
+/// "cannot tell", never as "not registered".
+#[must_use]
+pub fn installed_plugin_hooks_manifest() -> Option<std::path::PathBuf> {
+    let raw = std::fs::read_to_string(claude_config_dir()?.join(INSTALLED_PLUGINS)).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    doc.get("plugins")?
+        .as_object()?
+        .iter()
+        .filter(|(key, _)| key.split('@').next() == Some(PLUGIN_NAME))
+        .filter_map(|(_, records)| records.as_array())
+        .flatten()
+        .filter_map(|record| record.get("installPath")?.as_str())
+        .map(|dir| std::path::Path::new(dir).join("hooks").join("hooks.json"))
+        .find(|path| path.is_file())
+}
+
 /// Whether `running` names a version strictly OLDER than `installed`.
 ///
 /// Dotted numeric components, compared left to right and zero-padded to the

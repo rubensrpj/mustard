@@ -362,6 +362,18 @@ pub(crate) struct AcProof {
     /// on the most recent run.
     #[serde(default)]
     pub(crate) stderr_excerpt: String,
+    /// WHERE the red was taken, when it was not this tree — the commit an
+    /// imported proof stands on (see `ac_amend`'s `--proof-tree`).
+    ///
+    /// It lives HERE, on the record the approval gate reads, and not only in the
+    /// amendment history: a gate that cannot tell an imported proof from one
+    /// taken in place cannot audit the very thing the flag exists to make
+    /// auditable. The amendment entry keeps its own copy — that array is the
+    /// history of the operation, this field is the state of the criterion.
+    ///
+    /// Absent for the ordinary case: the proof was taken here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) proof_tree: Option<String>,
 }
 
 impl AcProof {
@@ -903,6 +915,7 @@ pub(crate) fn prove_one(
         removal_exit: None,
         reason: Some(reason.to_string()),
         stderr_excerpt: String::new(),
+        proof_tree: None,
     };
     if exempt {
         return base(Verdict::Exempt, Proof::NotAttempted, REASON_EXEMPT);
@@ -954,6 +967,7 @@ pub(crate) fn prove_one(
         removal_exit: None,
         reason,
         stderr_excerpt: result.stderr_excerpt().to_string(),
+        proof_tree: None,
     }
 }
 
@@ -1055,6 +1069,7 @@ pub(crate) fn confirm_one(
         removal_exit: None,
         reason: None,
         stderr_excerpt: String::new(),
+        proof_tree: None,
     });
     if record.proof != Proof::Red {
         return AcProof {
@@ -1158,6 +1173,7 @@ pub(crate) fn remove_one(
         removal_exit: None,
         reason: None,
         stderr_excerpt: String::new(),
+        proof_tree: None,
     });
     if record.confirmation != Confirmation::Green {
         return AcProof {
@@ -1688,6 +1704,7 @@ mod tests {
                 removal_exit: None,
                 reason: None,
                 stderr_excerpt: String::new(),
+                proof_tree: None,
             }],
             amendments: vec![serde_json::json!({ "id": "AC-1", "reason": "from wave 3" })],
             additions: Vec::new(),

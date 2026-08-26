@@ -1358,6 +1358,7 @@ pub fn run(opts: DoctorOpts) {
                 | "superseded"
                 | "capability-drift"
                 | "guards-scaffold"
+                | "inject-delivery"
         ) {
             run_typed_check(check_name, &cwd, opts.format == "json");
             economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
@@ -1371,7 +1372,7 @@ pub fn run(opts: DoctorOpts) {
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, branch-protection"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection"
                 );
                 std::process::exit(1);
             }
@@ -1427,6 +1428,12 @@ pub fn run(opts: DoctorOpts) {
     // agent dispatched there is silently handed no rules. `None` when there is
     // no scan census (nothing could carry the sentinel → silent no-op).
     let scaffold_report = crate::commands::doctor::guards_scaffold_check::run(&cwd);
+    // Delivery of the declared injectables. NOT advisory: a router that does
+    // not reach the window means the harness is not enforcing anything, and
+    // until this check existed every way that happens failed in silence. Joins
+    // `results` so it reaches both renderers and the exit code.
+    let delivery_report = crate::commands::doctor::inject_delivery_check::run(&cwd);
+    results.push(inject_delivery_to_check_result(&delivery_report));
 
     if opts.format == "json" {
         render_combined_json(
@@ -1496,6 +1503,24 @@ fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
                     "skipped": "no grain.model.json — no scan census to judge guards scaffolds",
                 })),
             }
+        }
+        "inject-delivery" => {
+            // Never a no-op: "no injectable declared" is itself an answer, and
+            // the plugin switch is measurable with no project state at all.
+            //
+            // A FAIL exits NON-ZERO, like `i1`. This check is advertised as the
+            // validation command, and a script or CI job gating on it read a
+            // clean exit while the report said `failed: true` — the harness
+            // entirely inert and the gate silently green, which is the exact
+            // shape this unit exists to remove (found in review).
+            let report = crate::commands::doctor::inject_delivery_check::run(cwd);
+            let exit_non_zero = report.failed;
+            let v = serde_json::to_value(report);
+            print_typed_value(v, json_format);
+            if exit_non_zero {
+                std::process::exit(1);
+            }
+            return;
         }
         "i1" => {
             let report = crate::commands::doctor::doctor_i1::run(cwd);
@@ -1698,6 +1723,35 @@ fn capability_drift_to_check_result(
         .map(|d| format!("drift {} covers {} (no longer in grain)", d.id, d.entity))
         .collect();
     CheckResult::warn("capability-drift", details)
+}
+
+/// Project an `InjectDeliveryReport` onto the legacy `CheckResult` envelope.
+///
+/// Unlike the advisories around it, this one can FAIL: a router that does not
+/// reach the window is not a style problem, it is the harness not running. Each
+/// detail line carries its own remedy, so a failing report is actionable
+/// without opening the JSON.
+fn inject_delivery_to_check_result(
+    report: &crate::commands::doctor::inject_delivery_check::InjectDeliveryReport,
+) -> CheckResult {
+    if report.ok {
+        let mut r = CheckResult::ok("inject-delivery");
+        r.details.push(format!(
+            "{} declared injectable(s) reach the window",
+            report.declared
+        ));
+        return r;
+    }
+    let details: Vec<String> = report
+        .findings
+        .iter()
+        .map(|f| format!("{}: {} — {}", f.kind, f.detail, f.remedy))
+        .collect();
+    if report.failed {
+        CheckResult::fail("inject-delivery", details)
+    } else {
+        CheckResult::warn("inject-delivery", details)
+    }
 }
 
 /// Project a `GuardsScaffoldReport` onto the legacy `CheckResult` envelope. The

@@ -1,0 +1,41 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-20T14:49:40.966Z",
+  "parent": "base-escolhida-pelo-operador-descartada",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/work_unit_open.rs",
+      "path": "apps/rt/src/commands/work_unit_open.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/review/pr_door.rs",
+      "path": "apps/rt/src/commands/review/pr_door.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/git_delete.rs",
+      "path": "apps/rt/src/commands/git_delete.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/doctor/doctor.rs",
+      "path": "apps/rt/src/commands/doctor/doctor.rs",
+      "done": true
+    },
+    {
+      "label": "plugin/refs/git/git-flow.md",
+      "path": "plugin/refs/git/git-flow.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "done": true
+    }
+  ]
+}

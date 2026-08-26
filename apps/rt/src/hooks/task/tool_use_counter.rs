@@ -285,6 +285,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(trigger),
             workspace_root: None,
+            inject_only: None,
         }
     }
 

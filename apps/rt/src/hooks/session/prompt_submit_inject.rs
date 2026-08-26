@@ -93,15 +93,114 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
     false
 }
 
-/// `true` if `prompt` starts with any `/mustard:` namespaced command. Broader
-/// than [`is_pipeline_prompt`] — used by the W8.T8.2 reminder check, where we
-/// suppress the banner for every `/mustard:*` (not just pipeline ones), since
-/// a slash command always knows its own context. The bare `/mustard` help
-/// (no colon) deliberately does NOT match: it is the orientation door and
-/// must keep working on an uninstalled project.
+/// Does THIS invocation carry the blocks that belong to the whole event?
+///
+/// The pipeline banner and the writing rule are about the invocation, not about
+/// any one injectable, so exactly one sibling hook must carry them: emitting
+/// from each hands the window one copy per hook, and emitting from none drops
+/// them entirely.
+///
+/// Delegates to the dispatcher's election so the two cannot drift — they answer
+/// the same question about the same invocation, and a second implementation is
+/// a second answer.
+fn carries_shared_blocks(project_dir: &str, inject_only: Option<&str>) -> bool {
+    crate::dispatch::carries_shared_modules(project_dir, "userpromptsubmit", inject_only)
+}
+
+/// `true` if `prompt` starts with any `/mustard:` namespaced command. The bare
+/// `/mustard` help (no colon) deliberately does NOT match: it is the
+/// orientation door and must keep working on an uninstalled project.
+///
+/// Narrower than [`is_slash_command`] on purpose — this one guards the
+/// INSTALLATION gate, which may only speak for Mustard's own doors. Denying a
+/// third party's command for a missing `mustard.json` would break a skill that
+/// has nothing to do with this harness.
 fn is_mustard_command(prompt: &str) -> bool {
     let t = prompt.trim_start().to_ascii_lowercase();
     t.starts_with("/mustard:")
+}
+
+/// `true` if `prompt` invokes ANY slash command, Mustard's or a third party's.
+///
+/// A slash command knows its own context, so the router has nothing to add and
+/// a great deal to break: an interview skill asks a question, the operator
+/// answers it, and a router that reclassifies that answer opens a work unit in
+/// the middle of someone else's flow. **The flow that expanded owns the turn.**
+///
+/// This used to match `/mustard:` alone, so only Mustard's own doors were
+/// spared and every third-party skill was routed over.
+///
+/// The bare `/mustard` help (no colon) deliberately does NOT match: it is the
+/// orientation door and must keep working on an uninstalled project. Nor does a
+/// lone `/`, or a path-looking prompt (`/etc/hosts`, `/usr/bin`) — a command
+/// name is a word, so the first segment must start with a letter and hold only
+/// name characters.
+///
+/// **Nor does a slash token followed by a SENTENCE.** An earlier version told
+/// commands from paths with a closed list of filesystem roots, and everything
+/// else with a word-shaped first segment counted as a command. Application
+/// route names are word-shaped and cannot be enumerated, so `/login nao
+/// funciona`, `/checkout quebrou em producao` and `/api retorna 500` all read
+/// as commands and lost the router — reproducing, silently, the very field
+/// symptom this unit exists to remove (measured in review, against the binary).
+///
+/// Two rules, because the two shapes carry different amounts of evidence.
+///
+/// A NAMESPACED token — one holding a `:` — is always a command. `/mustard:pr
+/// merge 212` cannot be a route: no URL path segment carries a colon, and the
+/// namespace is the plugin declaring the command as its own. Arguments after it
+/// are unrestricted.
+///
+/// A BARE token is weaker evidence, so it is a command only when it stands
+/// alone or carries a single short argument: `/grill-me`, `/init`, `/review
+/// 212`. Anything longer is a sentence, and a sentence about `/login` is a bug
+/// report that needs the router.
+///
+/// The line falls where it does because the two mistakes do not cost the same.
+/// Reading a work request as a command drops the router SILENTLY, and the
+/// operator never learns why the unit opened on the wrong branch. Reading a
+/// command as work adds a paragraph to a turn that already had its own context
+/// — visible, and harmless. A bare command that takes several arguments pays
+/// that harmless cost; a bug report never pays the silent one.
+fn is_slash_command(prompt: &str) -> bool {
+    let t = prompt.trim_start();
+    let Some(rest) = t.strip_prefix('/') else {
+        return false;
+    };
+    if t.eq_ignore_ascii_case("/mustard") || t.to_ascii_lowercase().starts_with("/mustard ") {
+        return false;
+    }
+    let name: &str = rest.split_whitespace().next().unwrap_or_default();
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic())
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_'))
+    {
+        return false;
+    }
+    // A bare `/tmp` or `/usr` satisfies every rule above and is a PATH, not a
+    // command: the operator is asking about a directory, and reading it as a
+    // command costs them the router on that prompt.
+    //
+    // Told apart by NAME, not by length. A length threshold cut both ways —
+    // `/init`, `/help`, `/cost`, `/plan` are real commands at four characters
+    // or fewer, and `/proc` is a directory at five (found in review). The
+    // filesystem roots are a short, closed list; everything else is a command.
+    const FS_ROOTS: &[&str] = &[
+        "tmp", "usr", "var", "etc", "opt", "bin", "sbin", "lib", "home", "root", "proc", "sys",
+        "dev", "boot", "mnt", "media", "srv", "run",
+    ];
+    if FS_ROOTS.iter().any(|r| name.eq_ignore_ascii_case(r)) {
+        return false;
+    }
+    // A namespaced token is unambiguous — no route segment carries a colon —
+    // so its arguments are unrestricted.
+    if name.contains(':') {
+        return true;
+    }
+    // A BARE token is weaker evidence: a command invocation, or a route named
+    // at the start of a sentence about it. Told apart by length, leaning toward
+    // routing. See the doc above.
+    const MAX_BARE_ARGUMENT_WORDS: usize = 1;
+    rest.split_whitespace().count() <= 1 + MAX_BARE_ARGUMENT_WORDS
 }
 
 /// `true` if `prompt` invokes `/mustard:upsert` — the bootstrap door the
@@ -203,6 +302,21 @@ impl Check for PromptSubmitInject {
         // denied when `mustard.json` is absent from the project root. Normal
         // prompts are never gated — the hooks stay silent on uninstalled
         // projects.
+        //
+        // **Every sibling emits this Deny, and it is not worth silencing.** The
+        // duplicate was raised in review, and the obvious fix — electing one
+        // sibling, as the writing rule below does — is DEAD CODE on this path:
+        // the election reads the declared inject list, and this gate only fires
+        // when `mustard.json` is absent, so that list is empty and every
+        // sibling elects itself. An election that can never elect is worse than
+        // the duplicate it hides, because the next reader trusts it.
+        //
+        // The honest alternative would gate on the invocation's own `--inject`
+        // ordering, read from the manifest — real work, for a cosmetic gain, on
+        // the one path where being loud is the safe direction: any single Deny
+        // blocks the prompt, so a silenced sibling can only ever cost the
+        // block, never duplicate it.
+        let carries_shared_blocks = carries_shared_blocks(&cwd, ctx.inject_only.as_deref());
         if is_mustard_command(prompt)
             && !is_upsert_prompt(prompt)
             && !ProjectConfig::exists(Path::new(&cwd))
@@ -220,14 +334,21 @@ impl Check for PromptSubmitInject {
         }
         // How to WRITE for this operator, from `mustard.json#tone`.
         let tone = tone_rule(Path::new(&cwd));
-        // A `/mustard:*` prompt receives neither injectables nor the banner —
-        // a slash command always knows its own context. The writing rule is the
-        // exception, and deliberately so: it governs how the ANSWER is written,
-        // and the answer to a slash command is read by the same person as any
-        // other. Excluding it here would drop the rule from precisely the
-        // messages that produce the longest explanations.
-        if is_mustard_command(prompt) {
-            return Ok(match tone {
+        // ANY slash command — Mustard's or a third party's — receives neither
+        // injectables nor the banner: the flow that expanded owns the turn, and
+        // a router that reclassifies an interview's answers opens a work unit
+        // inside someone else's protocol. The writing rule is the exception,
+        // and deliberately so: it governs how the ANSWER is written, and the
+        // answer to a slash command is read by the same person as any other.
+        // Excluding it here would drop the rule from precisely the messages
+        // that produce the longest explanations.
+        // `carries_shared_blocks` was resolved above, before the installation
+        // gate, because a slash-command prompt still delivers the writing rule
+        // and would otherwise deliver it once per sibling (found in review:
+        // this repo declares `tone: didactic`, so every `/mustard:*` prompt got
+        // the paragraph twice).
+        if is_slash_command(prompt) {
+            return Ok(match tone.filter(|_| carries_shared_blocks) {
                 Some(rule) => Verdict::Inject { context: rule },
                 None => Verdict::Allow,
             });
@@ -239,6 +360,7 @@ impl Check for PromptSubmitInject {
             input.session_id.as_deref(),
             "userpromptsubmit",
             false,
+            ctx.inject_only.as_deref(),
         );
         // W8.T8.2 — inject a single-line reminder when a spec is active. The
         // per-prompt entrypoints census that used to fill the no-spec branch
@@ -246,15 +368,20 @@ impl Check for PromptSubmitInject {
         // useful hit in 17 across two field sessions — location is on-demand
         // work (Grep for literals, the digest for concepts), not a per-prompt
         // guess. Fail-open throughout.
-        let banner = crate::shared::context::current_spec(&cwd)
+        let banner = carries_shared_blocks
+            .then(|| crate::shared::context::current_spec(&cwd))
+            .flatten()
             .filter(|s| !s.is_empty())
             .map(|spec| {
                 economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
                 format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}")
             });
         // ONE composed Inject — the dispatcher fold is last-writer-wins, so
-        // the concerns must share a verdict. Injectables first, banner after,
-        // the writing rule last: it is about the answer, not about the work.
+        // the concerns of THIS invocation must share a verdict. Injectables
+        // first, banner after, the writing rule last: it is about the answer,
+        // not about the work. Across sibling hooks the fold does not apply:
+        // Claude Code keeps every hook's additionalContext.
+        let tone = carries_shared_blocks.then_some(tone).flatten();
         let parts: Vec<String> = [injected, banner, tone].into_iter().flatten().collect();
         let context = (!parts.is_empty()).then(|| parts.join("\n\n"));
         Ok(match context {
@@ -289,6 +416,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         };
         (dir, ctx)
     }
@@ -346,6 +474,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict =
             PromptSubmitInject.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
@@ -413,6 +542,7 @@ mod tests {
             project_dir: bare.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("uma mensagem comum"), &c)
@@ -431,6 +561,7 @@ mod tests {
             project_dir: none.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("uma mensagem comum"), &c)
@@ -452,6 +583,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("/mustard:pr merge"), &c)
@@ -577,6 +709,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         };
         let v = PromptSubmitInject
             .evaluate(&prompt_input("how do I do X?"), &c)
@@ -598,6 +731,7 @@ mod tests {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             PromptSubmitInject
@@ -689,6 +823,90 @@ mod tests {
                 .exists(),
             "no marker burned on a slash-command prompt"
         );
+    }
+
+    /// AC-8 — ANY slash command owns its turn, not just Mustard's own.
+    ///
+    /// The carve-out used to match `/mustard:` alone, so a third party's
+    /// interview skill was routed over: the operator answered one of its
+    /// questions and the router read that answer as a fresh request, opening a
+    /// work unit inside someone else's protocol.
+    #[test]
+    fn any_slash_command_prompt_gets_no_injectables() {
+        let (dir, c) = ctx();
+        seed_injectable(dir.path(), "ORCH-RULES-BODY\n");
+        for prompt in ["/grill-me", "/review-pr 42", "/some-plugin:deploy"] {
+            let v = PromptSubmitInject
+                .evaluate(&prompt_input_with_session(prompt, "sess-1"), &c)
+                .unwrap();
+            assert_eq!(v, Verdict::Allow, "`{prompt}` must not receive injectables");
+        }
+        assert!(
+            !dir.path().join(".claude/.session/sess-1/injected-orchestrator.md").exists(),
+            "no marker burned on a slash-command prompt",
+        );
+        // Free text still routes — the carve-out must not swallow ordinary work.
+        let v = PromptSubmitInject
+            .evaluate(&prompt_input_with_session("arrume o botao de login", "sess-2"), &c)
+            .unwrap();
+        assert!(matches!(v, Verdict::Inject { .. }), "free text still gets the router");
+    }
+
+    /// The bare `/mustard` help and path-shaped prompts are NOT slash commands.
+    ///
+    /// `/mustard` (no colon) is the orientation door and must keep working on an
+    /// uninstalled project; a prompt that merely opens with a path is ordinary
+    /// work and still needs the router.
+    #[test]
+    fn the_help_door_and_paths_are_not_slash_commands() {
+        assert!(!is_slash_command("/mustard"));
+        assert!(!is_slash_command("/mustard como funciona"));
+        assert!(!is_slash_command("/etc/hosts esta errado"));
+        assert!(!is_slash_command("/"));
+        assert!(is_slash_command("/mustard:git"));
+        assert!(is_slash_command("  /grill-me"));
+        // A bare short path satisfies the character rules and is NOT a command:
+        // the operator asking about `/tmp` would lose the router on that prompt.
+        assert!(!is_slash_command("/tmp"));
+        assert!(!is_slash_command("/usr"));
+        assert!(!is_slash_command("/opt"));
+    }
+
+    /// An application ROUTE named at the start of a work request is not a
+    /// command, and must keep the router.
+    ///
+    /// Route names are word-shaped and cannot be enumerated, so the closed list
+    /// of filesystem roots could never separate them. What separates them is
+    /// what follows: a command carries arguments, a route is mentioned inside a
+    /// sentence. Every row below was measured against the binary in review,
+    /// dropping the router — the exact field symptom this unit exists to
+    /// remove.
+    #[test]
+    fn a_route_name_inside_a_sentence_still_gets_the_router() {
+        for prompt in [
+            "/login nao funciona",
+            "/checkout quebrou em producao",
+            "/api endpoint retorna 500",
+            "/health check falha",
+            "/dashboard esta lento",
+            "/admin precisa de auth",
+            "/settings nao salva",
+            "/node_modules deve ser ignorado",
+        ] {
+            assert!(!is_slash_command(prompt), "must keep the router: {prompt}");
+        }
+
+        // …and a real command, with or without arguments, is still a command.
+        for prompt in [
+            "/mustard:spec",
+            "/mustard:spec ar",
+            "/mustard:pr merge 212",
+            "/grill-me",
+            "/review 212",
+            "/init",
+        ] {
+            assert!(is_slash_command(prompt), "must stay a command: {prompt}");
+        }
     }
 
     #[test]

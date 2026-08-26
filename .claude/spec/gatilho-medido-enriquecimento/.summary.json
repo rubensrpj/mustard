@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "gatilho-medido-enriquecimento",
+  "title": "o portao de base passa a medir a lacuna do enriquecimento (Guards pendentes e moldes sem autor) e reportar em stderr a unidade propria que a fecha; o roteador ganha a regra que despacha o fluxo scan, e o comentario que ainda cita a porta /scan selada e corrigido",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "o portao de base passa a medir a lacuna do enriquecimento e a reportar em stderr, e o comentario deixa de citar a porta selada",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "docs",
+      "summary": "a prosa semeada do roteador ganha a regra que le o sinal, e um teste trava prosa e codigo no mesmo literal",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

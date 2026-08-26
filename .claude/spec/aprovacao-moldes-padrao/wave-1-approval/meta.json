@@ -1,0 +1,36 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-25T00:15:10.636Z",
+  "parent": "aprovacao-moldes-padrao",
+  "checklist": [
+    {
+      "label": "apps/rt/src/hooks/observe/approval_marker_observer.rs",
+      "path": "apps/rt/src/hooks/observe/approval_marker_observer.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/observe/picker_approval_observer.rs",
+      "path": "apps/rt/src/hooks/observe/picker_approval_observer.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/observe/plan_approval_observer.rs",
+      "path": "apps/rt/src/hooks/observe/plan_approval_observer.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/mode_decision.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
+      "path": "apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs",
+      "done": true
+    }
+  ]
+}

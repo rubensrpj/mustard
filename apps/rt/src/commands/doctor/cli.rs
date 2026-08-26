@@ -32,7 +32,10 @@ pub enum DoctorCmd {
         /// Run a specific named check in isolation: `wave-integrity`,
         /// `claude-paths`, `workspace-leaks`, `i1`, `status-consistency`,
         /// `superseded` (prune candidates — terminal / stale-anchored specs the
-        /// maintainer can archive), `capability-drift`, `guards-scaffold`, or
+        /// maintainer can archive), `capability-drift`, `guards-scaffold`,
+        /// `inject-delivery` (does the declared router actually REACH the
+        /// window — plugin switched off, a declared file absent, the router
+        /// declared by halves), or
         /// `branch-protection` (which branches this repository REALLY refuses a
         /// direct write on — the measured set, not what `git.flow` declares).
         /// An unknown name exits 1 after printing the list above.

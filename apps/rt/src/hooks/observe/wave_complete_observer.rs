@@ -285,6 +285,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::SubagentStop),
             workspace_root: None,
+            inject_only: None,
         };
         let input = HookInput {
             hook_event_name: Some("SubagentStop".to_string()),

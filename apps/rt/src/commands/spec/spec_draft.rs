@@ -140,6 +140,13 @@ pub struct SpecDraftOpts {
     /// intact. Absent (or carrying nothing) ⇒ the draft is byte-identical to a
     /// draft without the channel.
     pub material: Option<PathBuf>,
+    /// Why this draft carries NO conversation material, when it carries none.
+    ///
+    /// Required in that case: an empty channel used to be indistinguishable
+    /// from a draft written before the channel existed, so a spec that lost a
+    /// conversation's worth of decisions looked exactly like one that never had
+    /// any. The reason is recorded in the report as `noMaterialReason`.
+    pub no_material_reason: Option<String>,
     /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
     /// The wave dirs themselves are materialised by `wave-scaffold`.
     pub waves: u32,
@@ -472,6 +479,30 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         },
         None => ConversationMaterial::default(),
     };
+    // **An empty channel must be a CHOICE, not an omission.**
+    //
+    // The channel was optional in both directions: pass nothing and the draft
+    // came out exactly as it did before the channel existed, with no trace that
+    // a conversation's worth of decisions had failed to reach the spec. That
+    // silence is what produces a thin spec — and thin waves after it, since the
+    // per-wave material comes from here. The operator reported it from the
+    // field before any gate could.
+    //
+    // So the omission now has to be spoken: `--no-material-reason "<sentence>"`
+    // records WHY nothing was carried, and the reason rides the report. Not a
+    // ceremony — a draft that genuinely establishes nothing (a re-draft, a
+    // mechanical rename) says so in one line and proceeds.
+    if material.is_empty() && opts.no_material_reason.as_deref().is_none_or(|r| r.trim().is_empty())
+    {
+        emit_error(
+            "no conversation material and no stated reason",
+            "the spec would carry none of what the conversation established. Pass \
+             --material <file> with the definitions, decisions and findings it settled, or \
+             --no-material-reason \"<why nothing was established>\" to record the omission \
+             deliberately.",
+        );
+        return 0;
+    }
 
     // ---- The unit's branch is cut BEFORE a single byte is written. ----
     //
@@ -702,9 +733,15 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     if let (Some(obj), Some(branch)) = (report.as_object_mut(), work_branch) {
         obj.insert("workBranch".to_string(), json!(branch));
     }
-    // What the channel actually carried — so a material file that was read but
-    // yielded nothing is visible in the report instead of looking like success.
-    if let (Some(obj), false) = (report.as_object_mut(), material.is_empty()) {
+    // What the channel actually carried — ALWAYS, including the zeroes.
+    //
+    // The counts used to be omitted when the channel carried nothing, which is
+    // exactly backwards: an empty channel is the case that needs to be seen. A
+    // report that simply lacks the key reads as a spec drafted before the
+    // channel existed, and the approval question had no number to show. The
+    // operator reported the consequence in the field — specs and waves that "do
+    // not reflect what was defined" — and nothing in the pipeline had said so.
+    if let Some(obj) = report.as_object_mut() {
         obj.insert(
             "material".to_string(),
             json!({
@@ -713,6 +750,9 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
                 "findings": material.findings.len(),
             }),
         );
+        if let Some(reason) = opts.no_material_reason.as_deref().filter(|r| !r.trim().is_empty()) {
+            obj.insert("noMaterialReason".to_string(), json!(reason));
+        }
     }
     // The scan anchors ride the REPORT, not the artifact — the orchestrator
     // reads them to decide what to open, and `## Context` stays prose.
@@ -1546,6 +1586,7 @@ mod tests {
                 signals: None,
                 output: None,
                 material: None,
+                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 1,
                 plan: None,
                 force: false,
@@ -1643,6 +1684,7 @@ mod tests {
                 signals: None,
                 output: None,
                 material: None,
+                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 1,
                 plan: None,
                 force: false,
@@ -1950,6 +1992,7 @@ mod tests {
             signals: None,
             output: Some(out.clone()),
             material: None,
+            no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 0,
             plan: None,
             force: false,
@@ -1992,6 +2035,7 @@ mod tests {
             signals: None,
             output: Some(out.clone()),
             material: None,
+            no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 3,
             plan: None,
             force: false,
@@ -2050,6 +2094,7 @@ mod tests {
                 signals: None,
                 output: Some(out.clone()),
                 material: None,
+                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves,
                 plan: None,
                 force: false,
@@ -2088,6 +2133,7 @@ mod tests {
             signals: None,
             output: Some(dir.path().join("specs").join("demo")),
             material: None,
+            no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 2,
             plan: None,
             force: false,
@@ -2116,6 +2162,7 @@ mod tests {
             signals: None,
             output: Some(dir.path().join("out")),
             material: None,
+            no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 0,
             plan: None,
             force: false,
@@ -2149,6 +2196,9 @@ mod tests {
             signals: None,
             output: Some(out.to_path_buf()),
             material,
+            // These cases exercise the CHANNEL, including the empty one, so the
+            // omission is declared here rather than being what is measured.
+            no_material_reason: Some("fixture: the channel itself is under test".into()),
             waves: 0,
             plan: None,
             force: false,
@@ -2156,6 +2206,48 @@ mod tests {
             force_scope: false,
         });
         std::fs::read_to_string(out.join("spec.md")).expect("draft written")
+    }
+
+    /// AC-10 — an empty channel must be a stated CHOICE, not an omission.
+    ///
+    /// Passing no material used to produce a draft byte-identical to one
+    /// written before the channel existed, so a spec that lost a conversation's
+    /// worth of decisions looked exactly like one that never had any. The
+    /// operator saw the consequence — thin specs and thinner waves — before any
+    /// gate could.
+    #[test]
+    fn empty_material_requires_a_stated_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("spec");
+
+        let opts = |reason: Option<&str>| SpecDraftOpts {
+            intent: "Uma unidade".into(),
+            slug: None,
+            scope: "light".into(),
+            lang: "pt-BR".into(),
+            signals: None,
+            output: Some(out.clone()),
+            material: None,
+            no_material_reason: reason.map(str::to_string),
+            waves: 0,
+            plan: None,
+            force: true,
+            query_terms: None,
+            force_scope: false,
+        };
+
+        // No material and no reason: refused, and nothing is written.
+        run(opts(None));
+        assert!(!out.join("spec.md").exists(), "a refused draft must leave no spec behind");
+
+        // A blank reason is no reason.
+        run(opts(Some("   ")));
+        assert!(!out.join("spec.md").exists(), "whitespace is not a stated reason");
+
+        // Stated: the draft proceeds. A re-draft or a mechanical rename says so
+        // in one line and is not blocked.
+        run(opts(Some("re-materialisation: nothing new was settled")));
+        assert!(out.join("spec.md").exists(), "a stated reason must let the draft through");
     }
 
     /// The whole point of the channel: one definition, one decision WITH its
@@ -2325,6 +2417,7 @@ mod tests {
                 signals: None,
                 output: Some(out.clone()),
                 material: Some(path),
+                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 0,
                 plan: None,
                 force: false,
@@ -2389,6 +2482,7 @@ mod tests {
             signals: None,
             output: None,
             material: None,
+            no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 1,
             plan: Some(plan.to_path_buf()),
             force: false,

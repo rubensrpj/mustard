@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "cargo-lock-src-tauri-fica",
+  "title": "O Cargo.lock do src-tauri fica para tras a cada release de versao",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

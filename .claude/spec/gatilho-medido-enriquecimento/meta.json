@@ -1,0 +1,72 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "full (wave plan)",
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-21T12:05:24.124Z",
+  "base": "dev",
+  "isWavePlan": true,
+  "totalWaves": 2,
+  "findings": [
+    {
+      "id": "F-findings-7063a121",
+      "source": "review",
+      "statement": "All checks complete. Repository left exactly as found (`git status` clean, no config touched); every experiment ran in `/tmp/tmp.wVGD38HOP6`.",
+      "routed": {
+        "kind": "change_request",
+        "reason": "Os dois achados desta revisao foram atendidos dentro da propria unidade: o T6 do checklist foi marcado via mark-checklist-item, e a palavra 'once' no doc do modulo foi reescrita no commit d8a2602a para dizer a cadencia real (uma linha por abertura enquanto a lacuna existir)."
+      }
+    },
+    {
+      "id": "F-findings-apps-rt-ce46291b",
+      "source": "review",
+      "statement": "**Guards (apps/rt) — all pass**",
+      "routed": {
+        "kind": "queued_work",
+        "reason": "Tres achados menores, nenhum bloqueante e nenhum tocando comportamento: campos de EnrichmentGap sao pub(crate) embora so o modulo os leia; a meia-assercao da chamada de report_if_stale e por substring e sobreviveria a migracao para o braco Abstain; e o selo mustard.json pre-existente entrou no chore 9bd2d821, que e commit rotulado e separado dos dois de feature. Os dois primeiros valem uma unidade propria de polimento; o terceiro ja esta liquidado pelo proprio formato do commit."
+      }
+    },
+    {
+      "id": "AC-1-8c8e875c",
+      "source": "proof_ledger",
+      "statement": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `enrichment_gap`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "routed": {
+        "kind": "dropped",
+        "reason": "O passe de remocao nao tem o que dizer sobre este criterio, por construcao: o comando dele nomeia enrichment_gap, que a propria remocao apaga da arvore, entao o vermelho seria fato sobre o corte e nao sobre o comportamento. A prova deste criterio ja esta completa pelas duas metades que se aplicam a ele: veio VERMELHO antes do trabalho existir (ac-negative-check) e VERDE depois que o trabalho entrou (qa-run e a confirmacao do close)."
+      }
+    },
+    {
+      "id": "AC-2-8c8e875c",
+      "source": "proof_ledger",
+      "statement": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `enrichment_gap`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "routed": {
+        "kind": "dropped",
+        "reason": "O passe de remocao nao tem o que dizer sobre este criterio, por construcao: o comando dele nomeia enrichment_gap, que a propria remocao apaga da arvore, entao o vermelho seria fato sobre o corte e nao sobre o comportamento. A prova deste criterio ja esta completa pelas duas metades que se aplicam a ele: veio VERMELHO antes do trabalho existir (ac-negative-check) e VERDE depois que o trabalho entrou (qa-run e a confirmacao do close)."
+      }
+    },
+    {
+      "id": "AC-3-8c8e875c",
+      "source": "proof_ledger",
+      "statement": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `enrichment_gap`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "routed": {
+        "kind": "dropped",
+        "reason": "O passe de remocao nao tem o que dizer sobre este criterio, por construcao: o comando dele nomeia enrichment_gap, que a propria remocao apaga da arvore, entao o vermelho seria fato sobre o corte e nao sobre o comportamento. A prova deste criterio ja esta completa pelas duas metades que se aplicam a ele: veio VERMELHO antes do trabalho existir (ac-negative-check) e VERDE depois que o trabalho entrou (qa-run e a confirmacao do close)."
+      }
+    },
+    {
+      "id": "AC-4-2d4aa8e6",
+      "source": "proof_ledger",
+      "statement": "the REMOVAL was NOT TAKEN: this criterion's own evidence (its command or its `Expect:` regex) names `the_router_prose_names_the_signal_the_gate_emits`, which the strip itself deleted from the tree, so the command was going to come back red whatever the behaviour does — that red would be a fact about the strip, not about the criterion. This transition has nothing to say here; it speaks only about a criterion whose evidence outlives the work it checks",
+      "routed": {
+        "kind": "dropped",
+        "reason": "O passe de remocao nao tem o que dizer sobre este criterio, por construcao: o comando dele nomeia enrichment_gap, que a propria remocao apaga da arvore, entao o vermelho seria fato sobre o corte e nao sobre o comportamento. A prova deste criterio ja esta completa pelas duas metades que se aplicam a ele: veio VERMELHO antes do trabalho existir (ac-negative-check) e VERDE depois que o trabalho entrou (qa-run e a confirmacao do close)."
+      }
+    }
+  ],
+  "currentWave": 2,
+  "completedWaves": [
+    1,
+    2
+  ]
+}

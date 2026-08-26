@@ -1,0 +1,124 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "core",
+      "summary": "separa no modelo o que é ponto-de-corte do que é branch protegido",
+      "depends_on": [],
+      "tasks": [
+        "em packages/core/src/domain/config.rs, criar protected_branches(): resolve origin/HEAD via `git symbolic-ref refs/remotes/origin/HEAD` e une com a lista opcional git.protected do mustard.json; fail-open para {main, master} quando o remoto não responde",
+        "manter integration_bases() vivo mas rebaixado: passa a significar APENAS 'bases pré-selecionadas', nunca 'bases permitidas' — documentar a mudança de sentido no doc do método",
+        "adicionar o campo opcional git.protected ao ProjectConfig, mantendo o schema camelCase e o dono único do mustard.json",
+        "escrever o teste flow_preselects_but_never_restricts provando que um git.flow preenchido pré-seleciona mas não recusa nenhum outro branch",
+        "registrar o modulo novo em platform/mod.rs e reexportar a costura em lib.rs"
+      ],
+      "files": [
+        "packages/core/src/domain/config.rs",
+        "packages/core/src/platform/git_branches.rs",
+        "packages/core/src/platform/mod.rs",
+        "packages/core/src/lib.rs"
+      ],
+      "acceptance": [],
+      "satisfies": [],
+      "reality_obligations": [
+        "RESOLVIDA: `git symbolic-ref refs/remotes/origin/HEAD` sai com exit 128 num clone sem origin/HEAD (formato comum em CI); a escada passa a ser ref local, depois `ls-remote --symref`, e so entao o literal {main, master}"
+      ]
+    },
+    {
+      "n": 2,
+      "role": "runtime",
+      "summary": "os portões param de recusar branch real, o tipo abre e nasce o comando que lista as candidatas",
+      "depends_on": [
+        "wave-1-core"
+      ],
+      "tasks": [
+        "base_gate.rs: remover a recusa 'não é uma base de integração'; manter intacta a recusa por base atrasada em relação ao remoto",
+        "work_branch.rs: is_protected() passa a consultar protected_branches() em vez de integration_bases()",
+        "work_kind.rs: WorkKind deixa de ser enum fechado — vira rótulo validado por sanitize_git_ref com lista de sugestões sobrescrevível; base_of_kind deixa de existir porque a base agora é escolhida, não derivada do tipo",
+        "novo comando run base-candidates: faz git fetch, lista os branches do remoto ordenados por recência do último commit, marca qual é o protegido e qual está pré-selecionado; saída JSON determinística",
+        "registrar o comando nos QUATRO lugares que o guard do rt exige: variante no enum da família, braço no dispatch(), lista em tests/run_command_surface.rs e um chamador real na prosa",
+        "hooks/bash/safety.rs: o guard de comando destrutivo passa a ler protected_branches()",
+        "review/pr_door.rs: o alvo do PR passa a ser a base registrada da unidade, com origin/HEAD como último recurso",
+        "work_unit_open.rs e doctor/doctor.rs acompanham a nova origem da lista",
+        "escrever base_gate::tests::a_declared_flow_preselects_without_refusing_others: com git.flow preenchido, um branch que ele NAO declara abre a unidade e o declarado aparece so como pre-selecao"
+      ],
+      "files": [
+        "apps/rt/src/commands/event/base_gate.rs",
+        "apps/rt/src/commands/event/work_branch.rs",
+        "apps/rt/src/shared/work_kind.rs",
+        "apps/rt/src/commands/event/base_candidates.rs",
+        "apps/rt/src/commands/event/cli.rs",
+        "apps/rt/src/hooks/bash/safety.rs",
+        "apps/rt/src/commands/review/pr_door.rs",
+        "apps/rt/src/commands/work_unit_open.rs",
+        "apps/rt/src/commands/doctor/doctor.rs",
+        "apps/rt/tests/run_command_surface.rs"
+      ],
+      "acceptance": [
+        "AC-1 — o portão de base aceita um branch real não declarado. Command: `cargo test -p mustard-rt --lib base_gate::tests::accepts_any_real_branch_as_base -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"`",
+        "AC-2 — só o branch padrão do remoto é protegido. Command: `cargo test -p mustard-rt --lib work_branch::tests::only_the_remote_default_branch_is_protected -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"`",
+        "AC-3 — um tipo fora da lista sugerida é aceito. Command: `cargo test -p mustard-rt --lib work_kind::tests::accepts_a_type_outside_the_suggested_list -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"`",
+        "AC-4 — run base-candidates devolve os branches reais. Command: `cargo run -p mustard-rt --quiet -- run base-candidates 2>&1 | grep -q '\"branches\"'`",
+        "AC-6 — uma instalacao antiga com git.flow preenchido abre a unidade a partir de um branch que o flow NAO declara, e a base declarada fica apenas como pre-selecao. Command: `cargo test -p mustard-rt --lib base_gate::tests::a_declared_flow_preselects_without_refusing_others -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"`"
+      ],
+      "satisfies": [
+        "AC-1",
+        "AC-2",
+        "AC-3",
+        "AC-4",
+        "AC-6"
+      ]
+    },
+    {
+      "n": 3,
+      "role": "installer",
+      "summary": "o init para de perguntar qual é a produção e qual é o desenvolvimento",
+      "depends_on": [
+        "wave-1-core"
+      ],
+      "tasks": [
+        "git_flow.rs: remover as perguntas de branch de produção e de branch de desenvolvimento; a sondagem de origin/HEAD e de branches remotos PERMANECE, porque agora serve à proteção e ao seletor",
+        "init.rs: parar de gravar git.flow no mustard.json — um projeto novo nasce sem a chave, e o resto do fluxo já sabe viver sem ela",
+        "escrever o teste init_does_not_ask_for_branches provando as duas metades: nenhuma pergunta de branch e nenhuma chave git.flow no arquivo gravado"
+      ],
+      "files": [
+        "apps/cli/src/commands/git_flow.rs",
+        "apps/cli/src/commands/init.rs"
+      ],
+      "acceptance": [
+        "AC-5 — o init não pergunta branches e não grava git.flow. Command: `cargo test -p mustard-cli init_does_not_ask_for_branches -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"`"
+      ],
+      "satisfies": [
+        "AC-5"
+      ]
+    },
+    {
+      "n": 4,
+      "role": "docs",
+      "summary": "a prosa ensina o seletor no lugar da pergunta de duas opções",
+      "depends_on": [
+        "wave-2-runtime",
+        "wave-3-installer"
+      ],
+      "tasks": [
+        "orquestrador: a seção de Dispatch descreve o seletor sobre lista real — fetch, escolha da base entre branches que existem, tipo como rótulo aberto — e deixa de ensinar que hotfix é um tipo que decide a base",
+        "plugin/commands: alinhar a prosa dos fluxos que citam base de integração ou git.flow",
+        "README: a seção de configuração deixa de apresentar git.flow como obrigatório"
+      ],
+      "files": [
+        "plugin/commands/git.md",
+        "plugin/commands/pr.md",
+        "README.md",
+        "README.en.md"
+      ],
+      "acceptance": [
+        "AC-7 — o build do workspace passa verde. Command: `cargo build --workspace`"
+      ],
+      "satisfies": [
+        "AC-7"
+      ]
+    }
+  ],
+  "total_waves": 4,
+  "lang": "pt-BR"
+}

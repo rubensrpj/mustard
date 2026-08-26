@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "comandos-pr-passam-por-uma",
+  "title": "os comandos de PR passam por uma porta de provedor, com adaptador GitHub e esqueleto Azure",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "a porta PrProvider e seus dois adaptadores: GitHub real, Azure esqueleto honesto",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "commands",
+      "summary": "pr-open, pr-edit e pr-ready como comandos run, atrás da porta",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "integration",
+      "summary": "os consumidores existentes e a prosa passam pela porta",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "full",
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-23T08:39:42.187Z",
+  "base": "dev",
+  "isWavePlan": true,
+  "totalWaves": 1,
+  "findings": [
+    {
+      "id": "F-findings-48ad6094",
+      "source": "review",
+      "statement": "Supersedes the 04:25 `rejected` verdict, which predates the fix commit.",
+      "routed": {
+        "kind": "dropped",
+        "reason": "Nao descreve defeito nenhum. E a linha de contexto do relatorio de re-revisao, dizendo que ele substitui o veredito de 04:25 por ser anterior ao commit de conserto. O extrator leu o paragrafo de cabecalho como achado. Nada a consertar."
+      }
+    },
+    {
+      "id": "F-findings-root-0ec59cab",
+      "source": "review",
+      "statement": "CRITICAL — `apps/rt/tests/plugin_agents.rs:183` (`scalar_value`) approves invalid YAML the old ratchet rejected",
+      "routed": {
+        "kind": "criterion",
+        "reason": "Consertado em 4d6f6ac6: depois da aspa de fechamento so vazio ou comentario e aceito, e qualquer sobra devolve a linha inteira, que a checagem de vocabulario reprova. Coberto pelo AC-5, cuja segunda clausula e exatamente continua reprovando valor com sobra depois do id: o teste scalar_value_still_rejects_leftovers_after_the_id agora passa as tres linhas por declared(), que e o caminho que o arquivo de agente real percorre. Provado vermelho por mutacao: com o leitor anterior de volta o teste reprova. A revisao confirmou por execucao diferencial contra interpretador YAML de referencia em 376 linhas geradas, com zero entradas que a versao nova aceita e a anterior reprovava."
+      }
+    },
+    {
+      "id": "F-findings-root-23ce4b6d",
+      "source": "review",
+      "statement": "MINOR — `packages/core/tests/version_line.rs:222` — `the_dashboard_lock_pins_this_repositorys_crates_at_this_version` still derives its set purely from the lock with `!ours.is_empty()` as the only floor, so a `mustard-cli` that vanished fro…",
+      "routed": {
+        "kind": "criterion",
+        "reason": "Consertado em 4d6f6ac6: o teste ganhou a mesma lista NOMEADA que o roteiro recebe por argumento, entao um crate que sumiu do lock reprova nomeando qual sumiu, em vez de aprovar o conjunto reduzido. Provado por mutacao, apagando mustard-cli do lock. E em 10dfb024 a lacuna de um nivel acima tambem fechou: o teste the_dashboard_guard_is_asked_about_exactly_the_crates_this_file_names amarra essa lista a argv que o workflow passa ao roteiro, para que as duas nao divergam em silencio."
+      }
+    },
+    {
+      "id": "F-findings-root-7bbdcea1",
+      "source": "review",
+      "statement": "MAJOR (non-blocking) — `.github/scripts/check-lock-pins.sh:87` pipefail/SIGPIPE race in the ABSENT check",
+      "routed": {
+        "kind": "criterion",
+        "reason": "Consertado em 4d6f6ac6: o cano printf-cut-grep virou um case sobre pares emoldurados por quebra de linha, sem cano nenhum, entao nao ha mais SIGPIPE para o pipefail transformar em status. O caminho ABSENT onde a corrida vivia e o que o AC-3 exercita. A corrida em si nao ganhou AC proprio porque so se manifesta com lock grande o bastante para encher o buffer do cano, o que nenhum lock deste repositorio chega perto de ser: foi medida pela revisao em lock forjado de 4001 pacotes locais, saida 0 em 5 de 5 contra saida 1 em 5 de 5 no script anterior."
+      }
+    }
+  ],
+  "currentWave": 0,
+  "completedWaves": [
+    0
+  ]
+}

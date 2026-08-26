@@ -1,5 +1,0 @@
-spec=private-install-mode-leaving-no
-via=grill-finalize
-session=ca274624-2198-4526-969a-58f394f604eb
-at=2026-08-17T20:15:28.874Z
-reason=the glossary grill declines: every term the corpus can judge here (mode, repo) is repository-wide vocabulary - the scan model ranks each below the upper quartile of this repository's term rarity, so there is no domain definition worth capturing

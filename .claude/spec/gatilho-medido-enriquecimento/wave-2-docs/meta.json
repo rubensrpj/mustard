@@ -1,0 +1,36 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-21T11:54:19.776Z",
+  "parent": "gatilho-medido-enriquecimento",
+  "checklist": [
+    {
+      "label": "packages/core/templates/mustard/orchestrator.md",
+      "path": "packages/core/templates/mustard/orchestrator.md",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/platform/project_seed.rs",
+      "path": "packages/core/src/platform/project_seed.rs",
+      "done": true
+    },
+    {
+      "label": ".claude/mustard/orchestrator.md",
+      "path": ".claude/mustard/orchestrator.md",
+      "done": true
+    },
+    {
+      "label": "plugin/commands/scan.md",
+      "path": "plugin/commands/scan.md",
+      "done": true
+    },
+    {
+      "label": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
+      "done": true
+    }
+  ]
+}

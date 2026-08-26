@@ -341,6 +341,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         }
     }
 
@@ -536,6 +537,7 @@ mod tests {
             project_dir: project.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         ToolResultObserver.observe(&input, &pre);
         // No tool.result event should land in the NDJSON session dir.

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "leituras-pr-passam-pela-porta",
+  "title": "as leituras de PR passam pela porta: a evidencia do branch-state e o prefetch de revisao falam Azure tambem",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

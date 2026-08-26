@@ -725,6 +725,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         (input, ctx)
     }
@@ -767,6 +768,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             BoundaryGate.evaluate(&input, &ctx).expect("no error"),
@@ -1187,6 +1189,7 @@ mod tests {
                     project_dir: cwd_str.clone(),
                     trigger: Some(Trigger::PreToolUse),
                     workspace_root: None,
+                    inject_only: None,
                 },
             )
             .expect("hook must not error");
@@ -1280,6 +1283,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             BoundaryGate.evaluate(&input, &ctx).expect("no error"),

@@ -24,6 +24,11 @@ settings.local.json
 # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
 worktrees/
 
+# Plan-mode plan files. The peer of `scratch/` below — the write gate treats
+# both as the harness's carve-out, and neither is code. It was covered only by
+# the clone-local exclude, which does not travel.
+plans/
+
 # Sanctioned throwaway evidence: the write gate lets a diagnosis write here on a
 # protected integration base (`work_branch_gate`), so it must be ignored by
 # construction — scratch decides between hypotheses, it never joins the unit.
@@ -50,6 +55,36 @@ spec/*/.blobs/
 # `spec/*/qa/report.md` is deliberately NOT here: the QA transcript is the
 # unit's own record of which criteria passed, the peer of `review/verdict.md`,
 # and the close commits it. Only the machine renders of it are regenerable.
+# The two GATE MARKERS, and they are ignored for a reason no other line here
+# shares. Everything above is ignored because it is regenerable; these two are
+# ignored because versioning them would DEFEAT the gate they stand for.
+#
+# `.approved-by-user` is minted only from an act a model cannot author — the
+# user accepting a plan, answering the approval question, or typing the picker
+# form — and `approve-spec` decides on the file's PRESENCE, not its contents.
+# `.clarified` is the same shape for the clarify gate. Committed, they would
+# travel: a fresh clone would arrive with the approval already given, and the
+# one signal the gate rests on being unforgeable would be forgeable by
+# `git clone`. Measured on this repository, 24/08/2026: with the harness's
+# clone-local exclude lifted, 9 `.approved-by-user` and 13 `.clarified` were
+# staged for commit.
+spec/*/.approved-by-user
+spec/*/.clarified
+
+# The VERBATIM operator prompts. `change-log.md` and `change-requests.ndjson`
+# record what the person typed, word for word, as they typed it — including the
+# asides, the half-formed questions and the context they gave about themselves
+# to get a useful answer. That record is written for the operator to re-read;
+# it was never written to be published, and nobody re-reads it before a commit
+# does. Found in review, 24/08/2026: one entry named the operator's employer and
+# their corporate cloud account, in a sentence typed only to ask whether it
+# would affect the tool.
+#
+# The mid-flight reasoning stays available on disk, where the flow reads it. It
+# simply stops travelling.
+spec/*/change-log.md
+spec/*/change-requests.ndjson
+
 spec/*/.memory-approved
 spec/*/.cut-base
 spec/*/qa-report.json

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "portao-parada-ignora-ciclo-vida",
+  "title": "Portao de parada cobra QA numa spec ainda em PLAN, onde todo criterio e vermelho por construcao",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

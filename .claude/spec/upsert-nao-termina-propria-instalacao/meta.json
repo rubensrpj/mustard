@@ -1,0 +1,13 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-22T08:47:40.291Z",
+  "base": "dev",
+  "currentWave": 0,
+  "completedWaves": [
+    0
+  ]
+}

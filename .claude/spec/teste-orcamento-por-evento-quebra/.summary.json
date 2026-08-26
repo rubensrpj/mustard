@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "teste-orcamento-por-evento-quebra",
+  "title": "o teste de orcamento por evento quebra no windows por causa do CRLF",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

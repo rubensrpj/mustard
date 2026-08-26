@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "censo-suja-arvore-guards-contam",
+  "title": "Duas tarefas que o produto cria para o operador e nao termina: o portao de base re-minera o censo num arquivo versionado e deixa sujo, travando a unidade seguinte; e a varredura de guards conta fixtures de teste como subprojetos pendentes",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -1006,6 +1006,7 @@ mod tests {
                         project_dir: cwd.clone(),
                         trigger: Some(Trigger::PreToolUse),
                         workspace_root: None,
+                        inject_only: None,
                     },
                 )
                 .expect("hook must not error");
@@ -1047,6 +1048,7 @@ mod tests {
                         project_dir: cwd.clone(),
                         trigger: Some(Trigger::SubagentStop),
                         workspace_root: None,
+                        inject_only: None,
                     },
                 )
                 .expect("hook must not error");
@@ -1324,6 +1326,7 @@ mod tests {
             project_dir: cwd.clone(),
             trigger: Some(trigger),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = SubagentInject
             .evaluate(&pre, &ctx(Trigger::PreToolUse))

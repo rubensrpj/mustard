@@ -1,0 +1,16 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-08-24T11:59:14.820Z",
+  "parent": "teto-retentativa",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/pipeline/wave_advance.rs",
+      "path": "apps/rt/src/commands/pipeline/wave_advance.rs",
+      "done": true
+    }
+  ]
+}

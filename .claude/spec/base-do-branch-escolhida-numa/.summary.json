@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "spec": "base-do-branch-escolhida-numa",
+  "title": "a base do branch é escolhida numa lista real do git após fetch, o tipo do branch vira vocabulário aberto e só o branch padrão do remoto fica protegido contra commit e merge diretos",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "core",
+      "summary": "separa no modelo o que é ponto-de-corte do que é branch protegido",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "runtime",
+      "summary": "os portões param de recusar branch real, o tipo abre e nasce o comando que lista as candidatas",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "installer",
+      "summary": "o init para de perguntar qual é a produção e qual é o desenvolvimento",
+      "status": "in_progress"
+    },
+    {
+      "n": 4,
+      "role": "docs",
+      "summary": "a prosa ensina o seletor no lugar da pergunta de duas opções",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "spec": "portao-parada-ignora-ciclo-vida",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "grep -q 'fn stop_gate_releases_a_spec_still_in_plan' apps/rt/src/hooks/task/stop_gate.rs && cargo test -p mustard-rt stop_gate_releases_a_spec_still_in_plan 2>&1",
+      "expect": "test result: ok\\. 1 passed",
+      "control_command": "cargo test -p mustard-rt stop_gate_is_inert_without_an_approved_spec 2>&1",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt stop_gate 2>&1",
+      "expect": "test result: ok\\.",
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

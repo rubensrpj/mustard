@@ -200,6 +200,19 @@ pub fn run(
         task_filter,
         task_text,
     );
+    // AC-12 — what this wave's prompt actually carries, on stderr.
+    //
+    // stdout is the prompt itself and must stay raw, so the measurement rides
+    // the diagnostic channel. Without it a hollow wave is invisible until the
+    // agent returns something thin: the operator reported exactly that, and the
+    // pipeline had no number to show. Two facts are enough to see it — how much
+    // of the conversation reached this wave, and how big its TASK is.
+    eprintln!(
+        "agent-prompt-render: wave={} role={role} material={} task={} chars",
+        wave.map_or_else(|| "-".to_string(), |w| w.to_string()),
+        material_line_count(&rendered),
+        task_section_chars(&rendered),
+    );
     let out = match emit {
         EmitMode::Inline => rendered,
         EmitMode::Ref => prompt_ref_stub(
@@ -208,6 +221,50 @@ pub fn run(
     };
     // stdout = prompt string or dispatch stub (raw, no JSON framing).
     print!("{out}");
+}
+
+/// Bullet lines under `## CONVERSATION MATERIAL`, or 0 when the section
+/// collapsed. Counting lines, not parsing: the question is "did any of what the
+/// conversation settled reach this wave", and a count answers it.
+fn material_line_count(prompt: &str) -> usize {
+    section_lines(prompt, "## CONVERSATION MATERIAL")
+        .filter(|l| l.starts_with('-') || l.starts_with('*'))
+        .count()
+}
+
+/// Characters under `## TASK` — the body the agent is actually handed.
+fn task_section_chars(prompt: &str) -> usize {
+    section_lines(prompt, "## TASK").map(|l| l.len() + 1).sum()
+}
+
+/// Trimmed lines between a heading and the next `## `.
+///
+/// The heading is matched at the START OF A LINE, never anywhere in the text.
+/// A bare `prompt.find("## TASK")` matched the literal inside the EFFICIENCY
+/// block ("the anchors already handed to you above (`## REFERENCE`, `## TASK`)")
+/// and inside the `patterns` role body — both of which precede the real
+/// section — so the measurement reported the tail of another block.
+fn section_lines<'a>(prompt: &'a str, heading: &str) -> impl Iterator<Item = &'a str> {
+    // Walk lines instead of searching the flat text: a heading is a LINE that
+    // equals the heading, which no substring match can express without an
+    // off-by-one on the anchor. Collecting is fine — a prompt is one document,
+    // not a stream.
+    let mut body: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in prompt.lines() {
+        if inside {
+            if line.starts_with("## ") {
+                break;
+            }
+            let t = line.trim();
+            if !t.is_empty() {
+                body.push(t);
+            }
+        } else if line.trim_end() == heading {
+            inside = true;
+        }
+    }
+    body.into_iter()
 }
 
 /// Render the dispatch/retry prompt against an explicit `project` root and
@@ -661,6 +718,59 @@ fn read_change_log(spec_dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// AC-12 — the render measures what each wave's prompt carries.
+    ///
+    /// A hollow wave used to be invisible until its agent came back with
+    /// something thin. These two counts make it visible BEFORE the dispatch.
+    #[test]
+    fn render_reports_material_counts_per_wave() {
+        // Written line by line on purpose: an earlier version of this literal
+        // used string continuations, which left the headings INDENTED. It
+        // passed only because the search was loose enough to match a heading
+        // anywhere in the text — the very defect this section-cutter now
+        // refuses. A heading is a line, so the fixture must contain lines.
+        let prompt = concat!(
+            "## CONVERSATION MATERIAL\n",
+            "\n",
+            "- **termo** — o que significa\n",
+            "- decisao com razao\n",
+            "\n",
+            "## TASK\n",
+            "\n",
+            "faca a coisa\n",
+            "em duas linhas\n",
+            "\n",
+            "## EFFICIENCY\n",
+            "\n",
+            "x\n",
+        );
+        assert_eq!(super::material_line_count(prompt), 2, "both bullets counted");
+        assert_eq!(super::task_section_chars(prompt), "faca a coisa".len() + "em duas linhas".len() + 2);
+
+        // A collapsed section answers zero — which is the number worth seeing.
+        let hollow = "## TASK\n\nfaca\n";
+        assert_eq!(super::material_line_count(hollow), 0);
+        assert_eq!(super::task_section_chars(hollow), 5);
+    }
+
+    /// A heading NAMED inside another block is not that block's heading.
+    ///
+    /// The real template mentions `## TASK` in the EFFICIENCY prose ("the
+    /// anchors already handed to you above"), and the `patterns` role body
+    /// names it too — both before the section itself. An unanchored search
+    /// matched the first literal, so the reported size was the tail of a
+    /// different block: a wrong number in the very diagnostic AC-12 adds.
+    #[test]
+    fn a_heading_named_inside_another_block_is_not_the_section() {
+        let prompt = "## ROLE\n\nliste os moldes em `## TASK` desta onda\n\n\
+                      ## TASK\n\no corpo real\n";
+        assert_eq!(
+            super::task_section_chars(prompt),
+            "o corpo real".len() + 1,
+            "the mention inside ## ROLE must not be read as the section",
+        );
+    }
+
     use super::*;
     use tempfile::tempdir;
 

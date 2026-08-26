@@ -25,7 +25,8 @@ pub(crate) mod theme;
 
 use segment::{
     context_segment, cost_segment, diff_segment, duration_segment, git_segment,
-    model_segment, module_segment, mustard_segment, prune_segment, savings_segment,
+    inert_segment, model_segment, module_segment, mustard_segment, prune_segment, savings_segment,
+    unit_segment,
     version_segment, Segment,
 };
 use serde_json::Value;
@@ -81,6 +82,17 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     // units still have a live branch. Silent when nothing is owed — the bar
     // only grows when there is something to say.
     if let Some(s) = prune_segment(&cwd) {
+        segs.push(s);
+    }
+    // Where the operator stopped: the unit this session is inside and its
+    // stage. The bar named the harness version and nothing else, so a unit
+    // parked in PLAN was invisible until a command was typed.
+    if let Some(s) = unit_segment(&cwd) {
+        segs.push(s);
+    }
+    // Loudest last, and red: the plugin is installed but switched OFF, so no
+    // hook runs at all. That state renders like a healthy one everywhere else.
+    if let Some(s) = inert_segment(&cwd) {
         segs.push(s);
     }
     segs

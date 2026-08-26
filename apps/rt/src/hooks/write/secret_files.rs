@@ -118,6 +118,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         (input, ctx)
     }

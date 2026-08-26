@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "base-do-branch-escolhida-numa",
+  "checklist": [
+    {
+      "label": "plugin/commands/git.md",
+      "path": "plugin/commands/git.md",
+      "done": false
+    },
+    {
+      "label": "plugin/commands/pr.md",
+      "path": "plugin/commands/pr.md",
+      "done": false
+    },
+    {
+      "label": "README.md",
+      "path": "README.md",
+      "done": false
+    },
+    {
+      "label": "README.en.md",
+      "path": "README.en.md",
+      "done": false
+    }
+  ]
+}

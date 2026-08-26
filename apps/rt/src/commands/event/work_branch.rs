@@ -1749,6 +1749,7 @@ mod tests {
                 signals: None,
                 output: None,
                 material: None,
+                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 1,
                 plan: None,
                 force: false,

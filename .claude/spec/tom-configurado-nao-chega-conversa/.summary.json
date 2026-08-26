@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "tom-configurado-nao-chega-conversa",
+  "title": "O tom declarado no mustard.json nao chega a conversa: ele e lido num lugar so e entra apenas nos pedidos enviados aos agentes que escrevem arquivos",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

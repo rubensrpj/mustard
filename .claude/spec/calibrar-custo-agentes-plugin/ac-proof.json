@@ -1,0 +1,58 @@
+{
+  "spec": "calibrar-custo-agentes-plugin",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt --test plugin_agents shipped_agents_declare_model_and_effort",
+      "expect": null,
+      "control_command": "cargo test -p mustard-rt --test plugin_agents agent_prompt_ref_documents_every_placeholder",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "green",
+      "exit": 101,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "grep -qx 'model: inherit' plugin/agents/mustard-review.md && grep -qx 'effort: high' plugin/agents/mustard-review.md && grep -qx 'effort: low' plugin/agents/mustard-guards.md && grep -qx 'effort: low' plugin/agents/mustard-patterns.md",
+      "expect": null,
+      "control_command": "grep -qx 'name: mustard-review' plugin/agents/mustard-review.md",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "green",
+      "exit": 1,
+      "confirmation_exit": 0,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo build -p mustard-rt",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [],
+  "additions": []
+}

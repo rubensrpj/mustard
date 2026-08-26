@@ -1,0 +1,217 @@
+{
+  "spec": "base-do-branch-escolhida-numa",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "command": "cargo test -p mustard-rt --lib commands::event::base_gate::tests::accepts_any_real_branch_as_base -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "command": "cargo test -p mustard-rt --lib commands::event::work_branch::tests::only_the_remote_default_branch_is_protected -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "command": "cargo test -p mustard-rt --lib shared::work_kind::tests::accepts_a_type_outside_the_suggested_list -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "command": "cargo run -p mustard-rt --quiet -- run base-candidates 2>&1 | grep -q '\"branches\"'",
+      "expect": null,
+      "control_command": "cargo run -p mustard-rt --quiet -- run --help 2>&1 | grep -q \"emit-pipeline\"",
+      "verdict": "proven",
+      "proof": "red",
+      "control": "green",
+      "control_exit": 0,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "command": "cargo test -p mustard-cli --lib commands::git_flow::tests::init_does_not_ask_for_branches -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "command": "cargo test -p mustard-rt --lib commands::event::base_gate::tests::a_declared_flow_preselects_without_refusing_others -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "control_command": null,
+      "verdict": "proven",
+      "proof": "red",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": 1,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": null,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "command": "cargo build --workspace",
+      "expect": null,
+      "control_command": null,
+      "verdict": "exempt",
+      "proof": "not-attempted",
+      "control": "not-declared",
+      "control_exit": null,
+      "confirmation": "not-taken",
+      "exit": null,
+      "confirmation_exit": null,
+      "removal": "not-taken",
+      "removal_exit": null,
+      "reason": "exempt by position: the trailing criterion is the build-green safety net, green before the work by design",
+      "stderr_excerpt": ""
+    }
+  ],
+  "amendments": [
+    {
+      "id": "AC-6",
+      "at": "2026-08-19T12:03:18.708Z",
+      "reason": "o comando original apontava para config::tests, um caminho de modulo que nunca existiu — provava vermelho por nao achar teste nenhum, nao por asseverar comportamento. O criterio passa a asseverar o resultado ponta-a-ponta no portao de base, que e o que o operador observa, e por isso migra da onda 1 para a onda 2",
+      "superseded_command": "cargo test -p mustard-core config::tests::flow_preselects_but_never_restricts -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "superseded_expect": null,
+      "superseded_statement": "when uma instalação antiga com `git.flow` preenchido abre uma unidade, then a base declarada aparece pré-selecionada na lista e nenhuma outra é recusada por causa dela.",
+      "command": "cargo test -p mustard-rt --lib base_gate::tests::a_declared_flow_preselects_without_refusing_others -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "statement": "when uma instalação antiga com git.flow preenchido abre uma unidade a partir de um branch que o flow NÃO declara, then o portão de base aceita a abertura e a base declarada aparece apenas como pré-seleção",
+      "rewrote": [
+        ".claude/spec/base-do-branch-escolhida-numa/spec.md",
+        ".claude/spec/base-do-branch-escolhida-numa/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-1",
+      "at": "2026-08-19T12:13:31.273Z",
+      "reason": "o caminho de modulo estava incompleto: com --exact o cargo exige o caminho inteiro, e um filtro que nao casa roda 0 testes e sai 0 — o criterio provava vermelho por nao achar teste, nao por asseverar comportamento",
+      "superseded_command": "cargo test -p mustard-rt --lib base_gate::tests::accepts_any_real_branch_as_base -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "superseded_expect": null,
+      "superseded_statement": null,
+      "command": "cargo test -p mustard-rt --lib commands::event::base_gate::tests::accepts_any_real_branch_as_base -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "statement": null,
+      "rewrote": [
+        ".claude/spec/base-do-branch-escolhida-numa/spec.md",
+        ".claude/spec/base-do-branch-escolhida-numa/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-6",
+      "at": "2026-08-19T12:13:31.438Z",
+      "reason": "mesmo defeito de caminho incompleto do AC-1",
+      "superseded_command": "cargo test -p mustard-rt --lib base_gate::tests::a_declared_flow_preselects_without_refusing_others -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "superseded_expect": null,
+      "superseded_statement": null,
+      "command": "cargo test -p mustard-rt --lib commands::event::base_gate::tests::a_declared_flow_preselects_without_refusing_others -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "statement": null,
+      "rewrote": [
+        ".claude/spec/base-do-branch-escolhida-numa/spec.md",
+        ".claude/spec/base-do-branch-escolhida-numa/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "at": "2026-08-19T12:13:47.365Z",
+      "reason": "caminho de modulo incompleto: com --exact o cargo exige o caminho inteiro",
+      "superseded_command": "cargo test -p mustard-rt --lib work_branch::tests::only_the_remote_default_branch_is_protected -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "superseded_expect": null,
+      "superseded_statement": null,
+      "command": "cargo test -p mustard-rt --lib commands::event::work_branch::tests::only_the_remote_default_branch_is_protected -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "statement": null,
+      "rewrote": [
+        ".claude/spec/base-do-branch-escolhida-numa/spec.md",
+        ".claude/spec/base-do-branch-escolhida-numa/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "at": "2026-08-19T12:13:47.530Z",
+      "reason": "caminho de modulo incompleto: work_kind vive em shared::, nao na raiz",
+      "superseded_command": "cargo test -p mustard-rt --lib work_kind::tests::accepts_a_type_outside_the_suggested_list -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "superseded_expect": null,
+      "superseded_statement": null,
+      "command": "cargo test -p mustard-rt --lib shared::work_kind::tests::accepts_a_type_outside_the_suggested_list -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "statement": null,
+      "rewrote": [
+        ".claude/spec/base-do-branch-escolhida-numa/spec.md",
+        ".claude/spec/base-do-branch-escolhida-numa/wave-plan.md"
+      ]
+    },
+    {
+      "id": "AC-5",
+      "at": "2026-08-19T13:13:16.845Z",
+      "reason": "caminho de modulo incompleto, o mesmo defeito dos outros quatro: com --exact o cargo exige o caminho inteiro (commands::git_flow::tests::), e um filtro que nao casa roda 0 testes e sai 0 — provava vermelho por nao achar teste, nao por asseverar comportamento",
+      "superseded_command": "cargo test -p mustard-cli init_does_not_ask_for_branches -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "superseded_expect": null,
+      "superseded_statement": null,
+      "command": "cargo test -p mustard-cli --lib commands::git_flow::tests::init_does_not_ask_for_branches -- --exact 2>&1 | grep -q \"test result: ok. 1 passed\"",
+      "expect": null,
+      "statement": null,
+      "rewrote": [
+        ".claude/spec/base-do-branch-escolhida-numa/spec.md",
+        ".claude/spec/base-do-branch-escolhida-numa/wave-plan.md"
+      ]
+    }
+  ],
+  "additions": []
+}

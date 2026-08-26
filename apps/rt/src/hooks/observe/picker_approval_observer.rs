@@ -14,6 +14,18 @@
 //! taken through a plan-mode round trip to say it a second time. That second
 //! gesture is the ceremony this door removes.
 //!
+//! The bare `/mustard:spec r` is the same gesture with the letter left out,
+//! and it is accepted for exactly one position: a checkout standing INSIDE a
+//! unit's own work branch. There the branch already names the unit, so the
+//! table the letter indexes has nothing left to disambiguate — asking for a row
+//! letter would be asking the operator to re-state what the tree already says.
+//! Outside a unit's branch (an integration base, a detached HEAD, a directory
+//! that is not a repository) the bare form names no unit and decides nothing.
+//! One consequence is stated rather than hidden: the bare `r` is no longer read
+//! as "act on row `r`" — the two spellings collide on that one letter, and this
+//! door resolves the collision toward the checkout because a bare letter never
+//! minted anything anyway.
+//!
 //! ## Why the marker's property survives
 //!
 //! The whole value of `.approved-by-user` is that it is born from an act the
@@ -41,30 +53,37 @@
 //! 1. **A person's prompt (unforgeable).** `raw.prompt` carries non-empty text
 //!    that is NOT a runtime notice.
 //! 2. **The picker's approve-and-implement form, EXACTLY.** The whole prompt is
-//!    `/mustard:spec <letter>r` — never a message that merely contains it.
-//!    Exactness is the same rule `approval_marker_observer::is_offered` applies
-//!    to a selected label, and for the same reason: a substring rule lets a
-//!    sentence quoting the form pass, which is the shape of the forgery that
-//!    already happened once on the AskUserQuestion door.
-//! 3. **The ROW the letter names, in the pre-approval window.** The letter is
-//!    resolved through
-//!    [`crate::commands::spec::active_specs::spec_for_letter`] — the SAME
-//!    enumerator that rendered the table the user read — and that spec must be
-//!    `scope=full`, `stage=Plan` and carry no `pipeline.status{to:approved}`
-//!    yet, through the SAME predicates the AskUserQuestion door trusts,
-//!    imported rather than re-spelled.
+//!    `/mustard:spec <letter>r`, or `/mustard:spec r` on its own — never a
+//!    message that merely contains either. Exactness is the same rule
+//!    `approval_marker_observer::is_offered` applies to a selected label, and
+//!    for the same reason: a substring rule lets a sentence quoting the form
+//!    pass, which is the shape of the forgery that already happened once on the
+//!    AskUserQuestion door. Widening this to a form that matched inside a longer
+//!    message would hand every subagent report that merely SPELLS the gesture
+//!    the power to mint the marker.
+//! 3. **The spec THE GESTURE names, in the pre-approval window.** A letter is
+//!    resolved through [`crate::commands::spec::active_specs::spec_for_letter`]
+//!    — the SAME enumerator that rendered the table the user read; the bare `r`
+//!    is resolved through the checkout's own branch
+//!    ([`crate::commands::event::work_branch::slug_of_work_branch`], the same
+//!    reading `spec-draft` consumes to name the spec directory). Either way that
+//!    spec must be `scope=full`, `stage=Plan` and carry no
+//!    `pipeline.status{to:approved}` yet, through the SAME predicates the
+//!    AskUserQuestion door trusts, imported rather than re-spelled.
 //!
-//! ## The letter decides WHICH spec — never the session
+//! ## The gesture decides WHICH spec — never the session
 //!
 //! Fact 3 deliberately does NOT ask `active_spec()` (session binding →
 //! current-spec → unique-pending), the way the two sibling doors do. Those two
 //! read a gesture that carries no spec of its own, so the session is the only
-//! thing that can name one. This door's gesture DOES name one, and the picker
-//! exists precisely to choose a row that is not the current spec: honouring the
-//! session there would mint a real, unforgeable gesture against the WRONG spec —
-//! which for that spec is indistinguishable from a forged one. A letter no row
-//! carries resolves to nothing and mints nothing; the user then approves the
-//! ordinary way, and `approve-spec` still refuses without the marker.
+//! thing that can name one. This door's gesture DOES name one — by row letter,
+//! or by the branch the tree is standing on — and the picker exists precisely to
+//! act on a unit that is not the current spec: honouring the session there would
+//! mint a real, unforgeable gesture against the WRONG spec, which for that spec
+//! is indistinguishable from a forged one. A letter no row carries, and a
+//! checkout inside no unit, both resolve to nothing and mint nothing; the user
+//! then approves the ordinary way, and `approve-spec` still refuses without the
+//! marker.
 //!
 //! The facts are checked cheapest-first (2, 1, then 3) because unlike its two
 //! siblings this observer runs on EVERY prompt: the two pure string tests settle
@@ -78,8 +97,10 @@
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use serde_json::Value;
+use std::path::Path;
 
 use super::approval_marker_observer::{already_approved, is_full_plan};
+use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
 use crate::commands::spec::active_specs::spec_for_letter;
 use crate::shared::context::{approval_marker_path, marker_body};
 
@@ -111,30 +132,69 @@ fn picker_argument(prompt: &str) -> Option<&str> {
     Some(rest.trim())
 }
 
-/// The ROW LETTER, lower-cased, when the WHOLE prompt is the picker's
-/// approve-and-implement form — one row letter followed by the `r` suffix
-/// (`/mustard:spec ar`). `None` for anything else.
+/// WHICH plan an approve-and-implement gesture names — the closed set of two
+/// spellings, and the only thing that differs between them.
+#[derive(Debug, PartialEq, Eq)]
+enum ApprovalTarget {
+    /// `/mustard:spec ar` — the row the LETTER names in the table the user read.
+    Row(char),
+    /// `/mustard:spec r` — the unit the CHECKOUT is standing in. No letter is
+    /// needed, because the branch already names the unit.
+    Checkout,
+}
+
+/// The plan the gesture names, when the WHOLE prompt is the picker's
+/// approve-and-implement form — a row letter followed by the `r` suffix
+/// (`/mustard:spec ar`), or that suffix alone (`/mustard:spec r`). `None` for
+/// anything else.
 ///
-/// Returns the letter rather than a `bool` because the letter is the only thing
-/// in the gesture that says WHICH spec is being approved; discarding it and
-/// asking the session instead lands the marker on whatever spec the session was
-/// bound to, which is the row the user did NOT pick.
+/// Returns the TARGET rather than a `bool` because the gesture is the only
+/// thing that says WHICH spec is being approved; discarding it and asking the
+/// session instead lands the marker on whatever spec the session was bound to,
+/// which is the plan the user did NOT name.
 ///
 /// A BARE letter (`/mustard:spec a`) is deliberately not an approval: it only
 /// acts on the row, and on a PLAN-stage spec the approval is still the pending
 /// action. Only the `r` suffix carries "approve and implement now", which is the
-/// gesture this door records.
-fn approve_and_implement_letter(prompt: &str) -> Option<char> {
+/// gesture this door records — and a lone `r` is that suffix with the row half
+/// left to the checkout instead of to a letter.
+fn approve_and_implement_target(prompt: &str) -> Option<ApprovalTarget> {
     let arg = picker_argument(prompt)?;
     let mut chars = arg.chars();
     match (chars.next(), chars.next(), chars.next()) {
+        (Some(suffix), None, None) if suffix.eq_ignore_ascii_case(&'r') => {
+            Some(ApprovalTarget::Checkout)
+        }
         (Some(letter), Some(suffix), None)
             if letter.is_ascii_alphabetic() && suffix.eq_ignore_ascii_case(&'r') =>
         {
-            Some(letter.to_ascii_lowercase())
+            Some(ApprovalTarget::Row(letter.to_ascii_lowercase()))
         }
         _ => None,
     }
+}
+
+/// The unit the CHECKOUT is standing in: the slug half of the work branch the
+/// tree is on (`feature/my-unit` → `my-unit`), which IS the name its spec is
+/// filed under.
+///
+/// The branch is the DURABLE record of a unit's name — the pending-work-branch
+/// marker that carried it from the gate is consumed by the first checkout — so
+/// [`slug_of_work_branch`] is the same reading `spec-draft` consumes to name the
+/// spec directory, and the two therefore agree by construction rather than by
+/// both deriving the same string. Re-spelling the branch parse here would mint
+/// exactly the second name that reading exists to prevent.
+///
+/// `None` everywhere the tree is not inside a unit: an integration base (a
+/// declared base parses to no slug), a detached HEAD, a VCS opt-out, a directory
+/// that is not a repository. The bare `r` then names no plan, and a name nobody
+/// can resolve mints nothing — the fail-closed direction, exactly as for a
+/// letter no row carries.
+fn spec_of_checkout(project: &Path) -> Option<String> {
+    let config = mustard_core::ProjectConfig::load(project);
+    let vcs = config.vcs()?;
+    let current = current_branch(&vcs, &project.to_string_lossy())?;
+    slug_of_work_branch(&current, &config)
 }
 
 /// The literal text the PERSON submitted, or `None` when this invocation carries
@@ -158,15 +218,21 @@ impl Observer for PickerApprovalObserver {
         let Some(prompt) = user_typed_text(input) else {
             return;
         };
-        let Some(letter) = approve_and_implement_letter(prompt) else {
+        let Some(target) = approve_and_implement_target(prompt) else {
             return;
         };
 
-        // Fact 3 — the row THAT LETTER names, and it must be an unapproved Full
-        // spec in PLAN. The letter is resolved through the picker's own
-        // enumerator, never through the session: see the module docs.
+        // Fact 3 — the plan THE GESTURE names, and it must be an unapproved
+        // Full spec in PLAN. A letter resolves through the picker's own
+        // enumerator, the bare `r` through the checkout's own branch; never
+        // through the session: see the module docs.
         let cwd = ctx.project_dir_or_cwd(input);
-        let Some(spec) = spec_for_letter(std::path::Path::new(&cwd), letter) else {
+        let project = Path::new(&cwd);
+        let named = match target {
+            ApprovalTarget::Row(letter) => spec_for_letter(project, letter),
+            ApprovalTarget::Checkout => spec_of_checkout(project),
+        };
+        let Some(spec) = named else {
             return;
         };
         if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) {
@@ -202,6 +268,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         }
     }
 
@@ -266,16 +333,21 @@ mod tests {
     #[test]
     fn recognises_only_the_approve_and_implement_form() {
         // The letter comes back, lower-cased — it is what names the row.
-        for (yes, letter) in [
-            ("/mustard:spec ar", 'a'),
-            ("  /mustard:spec zr  ", 'z'),
-            ("/MUSTARD:SPEC ar", 'a'),
-            ("/mustard:spec BR", 'b'),
+        for (yes, target) in [
+            ("/mustard:spec ar", ApprovalTarget::Row('a')),
+            ("  /mustard:spec zr  ", ApprovalTarget::Row('z')),
+            ("/MUSTARD:SPEC ar", ApprovalTarget::Row('a')),
+            ("/mustard:spec BR", ApprovalTarget::Row('b')),
+            // `rr` is still a row: the FIRST char is the letter, as always.
+            ("/mustard:spec rr", ApprovalTarget::Row('r')),
+            // The suffix alone leaves the row half to the checkout.
+            ("/mustard:spec r", ApprovalTarget::Checkout),
+            ("  /mustard:spec R  ", ApprovalTarget::Checkout),
         ] {
             assert_eq!(
-                approve_and_implement_letter(yes),
-                Some(letter),
-                "should be the form, naming row {letter:?}: {yes:?}"
+                approve_and_implement_target(yes),
+                Some(target),
+                "should be the form: {yes:?}"
             );
         }
         for no in [
@@ -286,16 +358,19 @@ mod tests {
             "/mustard:spec ceremony-costs-more-than-gates",
             // Another command that merely starts the same way.
             "/mustard:specs ar",
-            // Free text QUOTING the form is not the form — the exactness rule.
+            // Free text QUOTING either form is not the form — the exactness
+            // rule, which the bare `r` does not relax by one character.
             "go ahead: /mustard:spec ar",
             "/mustard:spec ar please",
             "run /mustard:spec ar for me",
+            "then type /mustard:spec r",
+            "/mustard:spec r agora",
             // Ordinary prose, and the empty prompt.
             "aprova o plano",
             "",
         ] {
             assert!(
-                approve_and_implement_letter(no).is_none(),
+                approve_and_implement_target(no).is_none(),
                 "should NOT be the form: {no:?}"
             );
         }
@@ -305,8 +380,8 @@ mod tests {
     /// not panic — a hook that panics takes the session's prompt with it.
     #[test]
     fn a_multibyte_prompt_declines_without_panicking() {
-        assert!(approve_and_implement_letter("/mustard:spéc ar").is_none());
-        assert!(approve_and_implement_letter("çã").is_none());
+        assert!(approve_and_implement_target("/mustard:spéc ar").is_none());
+        assert!(approve_and_implement_target("çã").is_none());
     }
 
     // ── The observer (integration over a tempdir) ────────────────────────────
@@ -433,6 +508,118 @@ mod tests {
         assert!(
             marker_exists(root, "epic"),
             "the same text typed by the user must still mint the marker"
+        );
+    }
+
+    /// Run a git command in `root`, asserting success — test scaffolding only.
+    fn git(root: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// A repo whose single commit lives on `base`, with `git.flow` declared so
+    /// the base set is DERIVED (nothing here assumes `dev`/`main`).
+    fn repo_on(root: &Path, base: &str) {
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", base]);
+        std::fs::write(root.join("f.txt"), "hi").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "init"]);
+    }
+
+    /// **The bare `r`: the BRANCH names the unit, and the session does not.**
+    ///
+    /// Inside a unit's own work branch the table has nothing left to
+    /// disambiguate — the checkout already says which unit this is — so the
+    /// gesture needs no letter. What it must NOT do is fall back to the session,
+    /// for the same reason the letter form does not: the session is bound
+    /// elsewhere here, and honouring it would mint a real, unforgeable gesture
+    /// against a plan the operator never named.
+    ///
+    /// Both halves are asserted, plus the inverse that always travels with this
+    /// door: the identical text arriving as a subagent's report mints nothing.
+    #[test]
+    fn a_bare_r_inside_the_units_branch_mints_the_marker() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        repo_on(root, "dev");
+        seed_spec(root, "epic", "full (wave plan)", "Plan");
+        seed_spec(root, "other-plan", "full", "Plan");
+        // The session is working on the OTHER pending plan on purpose.
+        bind_session(root, "s-1", "other-plan");
+
+        // On the integration base the gesture names no unit at all.
+        PickerApprovalObserver.observe(&prompt_input("s-1", "/mustard:spec r"), &ctx(root_str));
+        assert!(!marker_exists(root, "epic"), "an integration base is not a unit's branch");
+        assert!(!marker_exists(root, "other-plan"), "and the session must not answer for it");
+
+        git(root, &["checkout", "-b", "feature/epic"]);
+
+        // Model-authored text carrying the very same gesture still mints nothing.
+        let report = "<task-notification>\n<status>completed</status>\nThe operator will type \
+                      /mustard:spec r\n</task-notification>";
+        PickerApprovalObserver.observe(&prompt_input("s-1", report), &ctx(root_str));
+        assert!(
+            !marker_exists(root, "epic"),
+            "a subagent's report must never mint the marker, whatever it quotes"
+        );
+
+        // The person's own prompt, inside the unit's branch → the branch decides.
+        PickerApprovalObserver.observe(&prompt_input("s-1", "/mustard:spec r"), &ctx(root_str));
+        assert!(marker_exists(root, "epic"), "the unit the checkout stands in is the one approved");
+        assert!(
+            !marker_exists(root, "other-plan"),
+            "the session's spec must NOT collect an approval the branch did not name"
+        );
+        let marker = approval_marker_path(root_str, "epic").unwrap();
+        let p = crate::shared::context::read_marker_provenance(&marker)
+            .expect("the minted body must read back as provenance");
+        assert_eq!(p.spec, "epic", "the body names the unit, not the session's spec");
+        assert_eq!(p.via, PICKER_VIA);
+    }
+
+    /// Outside a unit, the bare `r` decides nothing — every position that cannot
+    /// SHOW which unit the tree is in resolves to no spec.
+    #[test]
+    fn the_bare_r_decides_nothing_outside_a_unit_branch() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        repo_on(root, "dev");
+        seed_spec(root, "epic", "full", "Plan");
+
+        // A neighbouring unit's branch names a slug this project has no spec for.
+        git(root, &["checkout", "-b", "feature/another-unit"]);
+        PickerApprovalObserver.observe(&prompt_input("s-1", "/mustard:spec r"), &ctx(root_str));
+        assert!(!marker_exists(root, "epic"), "another unit's branch never answers for this spec");
+        assert!(
+            spec_of_checkout(root).as_deref() == Some("another-unit"),
+            "the reading is the branch's own slug, not a guess"
+        );
+
+        // A detached HEAD is standing on no branch at all.
+        git(root, &["checkout", "--detach", "HEAD"]);
+        assert_eq!(spec_of_checkout(root), None, "a detached HEAD names no unit");
+
+        // …and a directory that is not a repository names none either.
+        let bare = tempdir().unwrap();
+        assert_eq!(spec_of_checkout(bare.path()), None);
+        PickerApprovalObserver.observe(
+            &prompt_input("s-1", "/mustard:spec r"),
+            &ctx(bare.path().to_str().unwrap()),
         );
     }
 

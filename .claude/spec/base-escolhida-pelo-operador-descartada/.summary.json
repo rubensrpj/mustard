@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "base-escolhida-pelo-operador-descartada",
+  "title": "a base escolhida pelo operador e descartada na leitura porque e conferida contra a lista velha do git.flow",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "A escolha de base gravada passa a ser conferida por EXISTÊNCIA no remoto, não por pertencimento à lista de configuração — nos dois pontos de leitura.",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "cleanup",
+      "summary": "Os cinco pontos restantes deixam de consultar a lista de configuração para recusar, e os textos de ajuda deixam de ensinar o modelo apagado.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
