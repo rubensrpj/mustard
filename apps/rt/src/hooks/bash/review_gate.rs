@@ -548,6 +548,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(review_gate("git status", &ctx, Mode::Warn), None);
         assert_eq!(review_gate("npm run build", &ctx, Mode::Warn), None);
@@ -560,6 +561,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(review_gate("git commit -m x", &ctx, Mode::Off), None);
     }
@@ -572,6 +574,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         // No `.git`, no `.pipeline-states` → no warnings → no verdict.
         assert_eq!(review_gate("git commit -m x", &ctx, Mode::Warn), None);
@@ -621,6 +624,7 @@ mod tests {
             project_dir: repo.to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let warn = review_gate("git commit -m \"feat: x\"", &ctx, Mode::Warn);
         let strict = review_gate("git commit -m \"feat: x\"", &ctx, Mode::Strict);

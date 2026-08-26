@@ -432,6 +432,7 @@ mod tests {
             project_dir: root.to_string_lossy().into_owned(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let edit = |p: &str| HookInput {
             tool_name: Some("Edit".to_string()),
@@ -480,6 +481,7 @@ mod tests {
             project_dir: root.to_string_lossy().into_owned(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         // Every edit is attributed to a subagent via the harness `agent_id`.
         let edit = |p: &str| HookInput {
@@ -539,6 +541,7 @@ mod tests {
             project_dir: root.to_string_lossy().into_owned(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let input = HookInput {
             tool_name: Some("Write".to_string()),
@@ -568,6 +571,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let input = HookInput {
             tool_name: Some("Edit".to_string()),

@@ -367,6 +367,14 @@ pub struct Ctx {
     /// point at a monorepo subproject). `None` when resolution failed; the
     /// dispatcher fails open in that case.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// The single declared injectable this invocation must deliver, when the
+    /// hook was registered with `--inject <file>`.
+    ///
+    /// Each injectable rides its OWN sibling hook, because the 10,000-character
+    /// `additionalContext` ceiling is per hook RESPONSE and siblings do not
+    /// share one (measured 2026-08-25). `None` means the legacy behaviour:
+    /// deliver every entry declared on the trigger, folded into one payload.
+    pub inject_only: Option<String>,
 }
 
 impl Ctx {

@@ -210,6 +210,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let input = HookInput {
             tool_name: Some("Write".to_string()),

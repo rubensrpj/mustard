@@ -171,6 +171,7 @@ mod tests {
             project_dir: cwd.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         (input, ctx)
     }

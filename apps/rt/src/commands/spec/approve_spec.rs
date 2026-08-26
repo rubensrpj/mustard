@@ -43,6 +43,7 @@
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::path::Path;
 
 use crate::commands::review::{ac_negative_check, qa_run};
 use crate::shared::context::MarkerProvenance;
@@ -500,6 +501,101 @@ pub(crate) fn proof_state(root: &str, spec: &str) -> ProofState {
     }
 }
 
+/// Narrative sections of `spec.md` still holding the seeded placeholder, byte
+/// for byte.
+///
+/// **The oracle is exact, not a judgement.** It compares each section's body
+/// against the very string `spec-draft` seeds for it (`placeholder.fill_*` in
+/// the i18n catalogue, in the spec's own language) — so it answers "was this
+/// authored?", never "is this good?". A one-word section passes; only untouched
+/// scaffold fails. Measuring writing quality is not this gate's business and
+/// pretending otherwise would make it unpredictable.
+///
+/// Why it refuses at all: nothing in the pipeline read the narrative. A Full
+/// spec could reach approval with `Por que agora.` under `## Contexto`, and the
+/// waves inherit it — `agent-prompt-render` builds each wave's TASK out of this
+/// file, so a hollow spec produces hollow prompts for every agent after it.
+/// Reported from the field, and then reproduced by this very unit: a
+/// `spec-draft --force` re-drafted the body from scratch, restoring the
+/// placeholders, and nothing objected.
+///
+/// Returns the localised HEADINGS, so the refusal names what the reader sees.
+/// Fail-open: an unreadable spec yields an empty list — an unreadable file is
+/// the read gate's problem, not this one's.
+fn scaffold_residue(root: &Path, spec: &str) -> Vec<String> {
+    let Ok(body) = mustard_core::io::fs::read_to_string(
+        root.join(".claude").join("spec").join(spec).join("spec.md"),
+    ) else {
+        return Vec::new();
+    };
+    // The SPEC's language, not the project's. `spec-draft` writes the body in
+    // `--lang` and records it in `meta.json#lang`; the documented cascade is
+    // that value first, `mustard.json#specLang` only as the fallback. Reading
+    // the project's alone looked for `## Contexto` in a file written with
+    // `## Context`, found no section at all, and reported zero residue — so a
+    // spec that was 100% untouched scaffold passed this gate whenever the two
+    // languages differed (found in review, reproduced end to end).
+    let lang = std::fs::read_to_string(
+        root.join(".claude").join("spec").join(spec).join("meta.json"),
+    )
+    .ok()
+    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    .and_then(|m| m.get("lang")?.as_str()?.parse::<mustard_core::platform::i18n::Locale>().ok())
+    .unwrap_or_else(|| mustard_core::ProjectConfig::load(root).i18n().lang);
+    // Each section the draft seeds with a placeholder, by the heading key that
+    // titles it and the placeholder key that fills it. `context` is the one
+    // composite: the draft writes `{intent}.\n\n{fill_why_now}`, so the trailing
+    // placeholder line is what marks it unauthored — the title alone is not
+    // narrative.
+    const SEEDED: &[(&str, &str)] = &[
+        ("heading.spec.users", "placeholder.fill_beneficiary"),
+        ("heading.spec.metric", "placeholder.fill_metric"),
+        ("heading.spec.non_goals", "placeholder.fill_excluded"),
+        ("heading.spec.files", "placeholder.fill_files"),
+    ];
+    let mut residue: Vec<String> = SEEDED
+        .iter()
+        .filter_map(|(heading_key, placeholder_key)| {
+            let heading = mustard_core::translate(heading_key, lang);
+            let placeholder = mustard_core::translate(placeholder_key, lang);
+            let section = section_body(&body, heading)?;
+            // Untouched when the placeholder is the ONLY prose under the
+            // heading. A section the author added to still passes.
+            (section == placeholder.trim()).then(|| heading.to_string())
+        })
+        .collect();
+    let context_heading = mustard_core::translate("heading.spec.context", lang);
+    let why_now = mustard_core::translate("placeholder.fill_why_now", lang);
+    if let Some(section) = section_body(&body, context_heading) {
+        // The seeded shape is the title echoed back plus the placeholder. An
+        // author who wrote the section replaces that line; one who only kept
+        // the echo has still explained nothing.
+        if section.ends_with(why_now.trim()) {
+            residue.push(context_heading.to_string());
+        }
+    }
+    residue.sort();
+    residue
+}
+
+/// The body between `## <heading>` and the next `##`, or `None` when the
+/// heading is absent.
+///
+/// The heading must be a WHOLE LINE, not a substring. An unanchored search
+/// matched `## Contexto` inside `## Contexto e Motivação`, and matched a
+/// Decisions bullet that merely quotes `` `## Arquivos` `` before reaching the
+/// real section — either way the extracted text is not the section, the
+/// placeholder comparison fails, and a spec that is pure scaffold sails through
+/// the gate (found in review). The same anchoring the render's section cutter
+/// uses, for the same reason.
+fn section_body(body: &str, heading: &str) -> Option<String> {
+    let wanted = format!("## {heading}");
+    let mut lines = body.lines();
+    lines.by_ref().position(|l| l.trim_end() == wanted)?;
+    let section: Vec<&str> = lines.take_while(|l| !l.starts_with("## ")).collect();
+    Some(section.join("\n").trim().to_string())
+}
+
 /// Build the aggregated refusal that names EVERY unmet approval precondition at
 /// once — clarify (F6, `<spec>/.clarified`) and/or user-approval (T5,
 /// `<spec>/.approved-by-user`) — each with the path that mints it. One message so
@@ -517,8 +613,36 @@ fn unmet_gate_message(
     clarify: ClarifyState,
     approval_missing: bool,
     proof: &ProofState,
+    scaffold_sections: &[String],
+    is_full: bool,
 ) -> Option<String> {
     let mut unmet: Vec<String> = Vec::new();
+    if !scaffold_sections.is_empty() {
+        // The residue gate runs on EVERY scope — the PRD sections are seeded
+        // for Light and Full alike — so the remedy has to match the spec it is
+        // refusing. `plan-materialize` is the Full door: it requires a
+        // `--plan <plan.json>` a Light spec never has, and it emits
+        // `pipeline.scope full`, so following it on a Light spec would both
+        // fail and, if satisfied, silently change the spec's scope. Review
+        // measured the wrong advice being handed to a Light spec.
+        let remedy = if is_full {
+            format!(
+                "Author each one, then re-materialise with `mustard-rt run plan-materialize \
+                 --spec-dir .claude/spec/{spec} --plan <plan.json>`"
+            )
+        } else {
+            "Author each one directly in `spec.md` — a light spec carries no plan document to \
+             re-materialise from"
+                .to_string()
+        };
+        unmet.push(format!(
+            "narrative — {} section(s) still hold the seeded placeholder, byte for byte: {}. \
+             The spec would be approved describing nothing, and the waves inherit that: the \
+             per-wave prompt is built from what this file says. {remedy}",
+            scaffold_sections.len(),
+            scaffold_sections.join(", "),
+        ));
+    }
     if clarify == ClarifyState::Missing {
         unmet.push(format!(
             "clarify — no `<spec>/.clarified`: run the clarification finalize \
@@ -692,7 +816,17 @@ fn approve_at(
     // `approval_gate(mode, false)` maps mode → Block (strict, exit 1) or Warn
     // (stderr nudge, proceed). Nothing unmet → the builder returns `None` and
     // the flow proceeds silently.
-    if let Some(message) = unmet_gate_message(&opts.spec, clarify, approval_missing, &proof) {
+    let scaffold = scaffold_residue(Path::new(root), &opts.spec);
+    if let Some(message) =
+        unmet_gate_message(
+            &opts.spec,
+            clarify,
+            approval_missing,
+            &proof,
+            &scaffold,
+            spec_is_full(root, &opts.spec),
+        )
+    {
         let gate = if proof.refuses() {
             ApprovalGate::Block
         } else {
@@ -845,6 +979,149 @@ mod tests {
     // -----------------------------------------------------------------------
     // Sequence shape (unit — no I/O)
     // -----------------------------------------------------------------------
+
+    /// AC-11 — a spec whose narrative is still the seeded placeholder is
+    /// refused, and the refusal names the sections.
+    ///
+    /// The oracle is exact: it compares each section against the very string
+    /// the draft seeds. Authoring one word clears it — this gate answers "was
+    /// this written?", never "is this good?".
+    #[test]
+    fn approval_refuses_scaffold_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","specLang":"pt-BR"}"#)
+            .unwrap();
+        let spec_dir = root.join(".claude/spec/uma-unidade");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+
+        // Straight out of the draft: every PRD section is its placeholder.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# t\n\n## Contexto\n\nfazer algo.\n\nPor que agora.\n\n\
+             ## Usuários/Stakeholders\n\nQuem se beneficia.\n\n\
+             ## Métrica de sucesso\n\nMétrica de sucesso.\n\n\
+             ## Não-Objetivos\n\nO que fica de fora.\n\n## Arquivos\n\nListar arquivos afetados.\n",
+        )
+        .unwrap();
+
+        let residue = scaffold_residue(root, "uma-unidade");
+        assert_eq!(residue.len(), 5, "every seeded section is residue: {residue:?}");
+        assert!(residue.iter().any(|s| s == "Contexto"), "{residue:?}");
+
+        let msg = unmet_gate_message(
+            "uma-unidade",
+            ClarifyState::NotGated,
+            false,
+            &ProofState::NotGated,
+            &residue,
+            true,
+        )
+        .expect("scaffold residue must refuse");
+        assert!(msg.contains("Contexto"), "the refusal must name the sections: {msg}");
+        assert!(msg.contains("plan-materialize"), "the refusal must name its remedy: {msg}");
+
+        // …and on a LIGHT spec the same refusal names a remedy that spec can
+        // actually follow. `plan-materialize` requires a `--plan <plan.json>` a
+        // light spec never has, and it emits `pipeline.scope full` — so the
+        // Full-only advice both fails and, if satisfied, changes the scope
+        // (measured in review, handed to a real light spec).
+        let light = unmet_gate_message(
+            "uma-unidade",
+            ClarifyState::NotGated,
+            false,
+            &ProofState::NotGated,
+            &residue,
+            false,
+        )
+        .expect("scaffold residue must refuse a light spec too");
+        assert!(light.contains("Contexto"), "it must still name the sections: {light}");
+        assert!(
+            !light.contains("plan-materialize"),
+            "a light spec must not be sent to the Full-only door: {light}",
+        );
+        assert!(
+            light.contains("spec.md"),
+            "it must say where to author instead: {light}",
+        );
+
+        // Authored: the sections are replaced, and the gate goes quiet.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# t\n\n## Contexto\n\nO roteador nao alcanca a janela.\n\n\
+             ## Usuários/Stakeholders\n\nO operador.\n\n\
+             ## Métrica de sucesso\n\nNenhum caminho sem roteador.\n\n\
+             ## Não-Objetivos\n\nMedir qualidade de texto.\n\n## Arquivos\n\n- `a.rs`\n",
+        )
+        .unwrap();
+        assert!(
+            scaffold_residue(root, "uma-unidade").is_empty(),
+            "an authored spec must not be refused",
+        );
+
+        // Fail-open: an unreadable spec is the read gate's problem, not this one's.
+        assert!(scaffold_residue(root, "nao-existe").is_empty());
+
+        // A heading is a WHOLE LINE. `## Contexto e Motivação` is not
+        // `## Contexto`, and a bullet quoting a heading is not that heading —
+        // an unanchored search matched both and read the wrong text as the
+        // section, so a pure-scaffold spec passed the gate.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            concat!(
+                "# t\n",
+                "\n",
+                "## Contexto e Motivação\n",
+                "\n",
+                "Por que agora.\n",
+                "\n",
+                "## Decisions\n",
+                "\n",
+                "- a secao `## Arquivos` recebe a lista\n",
+                "\n",
+                "## Arquivos\n",
+                "\n",
+                "Listar arquivos afetados.\n",
+            ),
+        )
+        .unwrap();
+        let residue = scaffold_residue(root, "uma-unidade");
+        assert!(
+            residue.iter().any(|s| s == "Arquivos"),
+            "the real `## Arquivos` section is still placeholder and must be caught, \
+             not shadowed by the bullet that quotes its name: {residue:?}",
+        );
+        // The SPEC's language decides the headings, not the project's. A spec
+        // drafted in English inside a pt-BR project made every lookup miss, so
+        // a file that was 100% untouched scaffold reported zero residue and
+        // sailed through approval (found in review, reproduced end to end).
+        let en = root.join(".claude/spec/em-ingles");
+        std::fs::create_dir_all(&en).unwrap();
+        std::fs::write(en.join("meta.json"), r#"{"lang":"en-US","scope":"full"}"#).unwrap();
+        std::fs::write(
+            en.join("spec.md"),
+            concat!(
+                "# t\n\n## Context\n\ndo something.\n\nfill in why now.\n",
+                "\n## Users/Stakeholders\n\nfill in who benefits.\n",
+                "\n## Success Metric\n\nfill in the success metric.\n",
+                "\n## Non-Goals\n\nfill in what stays out.\n",
+                "\n## Files\n\nfill in affected files.\n",
+            ),
+        )
+        .unwrap();
+        let en_residue = scaffold_residue(root, "em-ingles");
+        assert_eq!(
+            en_residue.len(),
+            5,
+            "an all-scaffold English spec in a pt-BR project must still be caught: {en_residue:?}",
+        );
+
+        assert!(
+            !residue.iter().any(|s| s == "Contexto"),
+            "`## Contexto e Motivação` is a different heading and has no placeholder \
+             to report: {residue:?}",
+        );
+    }
 
     #[test]
     fn approval_sequence_default_stops_at_approved() {
@@ -1133,7 +1410,7 @@ mod tests {
     fn combined_refusal_lists_all_missing_gates() {
         // Both markers absent → the single refusal names BOTH, each with its own
         // minting path, instead of exiting on the first miss and hiding the second.
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated)
+        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated, &[], true)
             .expect("both missing → a refusal");
         assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
         assert!(
@@ -1153,7 +1430,7 @@ mod tests {
     fn clarify_only_missing_refuses_with_single_requirement() {
         // Clarify absent, approval present → refuse, but name ONLY the clarify
         // requirement (no stray approval line).
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated)
+        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated, &[], true)
             .expect("clarify missing → a refusal");
         assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
         assert!(
@@ -1171,7 +1448,7 @@ mod tests {
     fn approval_only_missing_refuses_with_single_requirement() {
         // Approval absent, clarify present (or not a Full spec) → refuse, but name
         // ONLY the approval requirement.
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated)
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
             .expect("approval missing → a refusal");
         assert!(msg.contains(".approved-by-user"), "names the approval marker: {msg}");
         assert!(
@@ -1199,7 +1476,7 @@ mod tests {
     /// answer typed as free text rather than selected.
     #[test]
     fn the_refusal_names_the_gestures_that_actually_mint() {
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated)
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
             .expect("approval missing → a refusal");
 
         // 1. Plan mode.
@@ -1238,12 +1515,12 @@ mod tests {
     fn both_present_approves() {
         // Neither precondition unmet → no refusal message, and strict proceeds.
         assert_eq!(
-            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven),
+            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven, &[], true),
             None
         );
         // A Light spec skips clarify entirely — same silence.
         assert_eq!(
-            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated),
+            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated, &[], true),
             None
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
@@ -1758,7 +2035,7 @@ mod tests {
         assert_eq!(proof_state(root_str, bare), ProofState::NotGated);
         let bare_opts = ApproveSpecOpts { spec: bare.to_string(), wave_plan: false, resume: false };
         assert_eq!(
-            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare)),
+            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare), &[], true),
             None,
             "a spec with no acceptance criteria must not be refused by this gate"
         );

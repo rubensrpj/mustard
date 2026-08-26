@@ -665,6 +665,25 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("statusline.prune.label", Locale::PtBr) => "a podar",
         ("statusline.prune.label", Locale::EnUs) => "to prune",
+        ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
+        ("statusline.harness.inert", Locale::EnUs) => "harness inert",
+        ("crystallise.nudge", Locale::PtBr) => {
+            "[Mustard] A unidade `{spec}` está aberta e o material da conversa não muda há \
+             várias rodadas. O que foi assentado aqui — termos definidos, decisões com a \
+             razão, achados com arquivo:linha — vive só nesta janela até ser gravado, e uma \
+             compactação o dilui. Grave agora em `.claude/.cache/spec-material.json` e siga. \
+             Se nada foi assentado desde a última gravação, diga isso ao operador em uma \
+             frase e prossiga — este aviso não se repete para o mesmo estado."
+        }
+        ("crystallise.nudge", Locale::EnUs) => {
+            "[Mustard] Unit `{spec}` is open and the conversation material has not changed \
+             for several turns. What was settled here — terms defined, decisions with their \
+             reason, findings with file:line — lives only in this window until it is written \
+             down, and a compaction dilutes it. Write it to \
+             `.claude/.cache/spec-material.json` now and carry on. If nothing has been \
+             settled since the last write, say so to the operator in one sentence and \
+             proceed — this notice does not repeat for the same state."
+        }
         ("prune.pending.notice", Locale::PtBr) => {
             "[Mustard] {count} unidade(s) de trabalho já mergeada(s) ainda têm branch viva: \
              {branches}. Diga ao usuário que o ritual de saída ficou pendente e ofereça \

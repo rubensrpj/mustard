@@ -1040,6 +1040,7 @@ mod tests {
             project_dir: dir.to_string_lossy().to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         }
     }
 

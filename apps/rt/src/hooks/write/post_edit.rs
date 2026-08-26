@@ -1220,6 +1220,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         }
     }
 
@@ -1255,6 +1256,7 @@ mod tests {
             project_dir: "/proj".to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             PostEdit.evaluate(&input, &pre_ctx).expect("no error"),

@@ -1934,3 +1934,61 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
          line the router waits for is never written",
     );
 }
+
+/// AC-13 — the shipped router teaches the delivery model this unit MEASURED,
+/// and the delivered copy matches the seed.
+///
+/// Two claims used to be wrong in the prose, and both were load-bearing. The
+/// router said sibling hooks share one ceiling (they do not — measured
+/// 2026-08-25 with two 6,000-character siblings, both intact), and it attributed
+/// that limit to Claude Code rather than to Mustard's own last-writer-wins
+/// dispatcher fold. A maintainer reading either sentence would re-derive the
+/// two-event split this unit undid.
+#[test]
+fn router_teaches_the_self_healing_delivery() {
+    // The wrong claims are gone from the shipped seeds.
+    for seed in [mustard_core::ORCHESTRATOR_MD, mustard_core::DISPATCH_MD] {
+        for retired in ["two events", "sessionStart", "share one ceiling"] {
+            assert!(
+                !seed.contains(retired),
+                "the router still teaches `{retired}`, the model the measurement replaced",
+            );
+        }
+    }
+
+    // The rationale moved to a ref, and the router points at it rather than
+    // carrying the argument in every window.
+    let orchestrator = mustard_core::ORCHESTRATOR_MD;
+    assert!(
+        orchestrator.contains("router-rationale.md"),
+        "the router drops the rationale without saying where it went",
+    );
+
+    // The rule the conversation channel depends on rides the dispatch half.
+    let dispatch = mustard_core::DISPATCH_MD;
+    assert!(
+        dispatch.contains("spec-material.json"),
+        "the dispatch half never says a settled decision is written down when settled",
+    );
+
+    // The ref carries the measurement itself, with its date — a claim a reader
+    // can check rather than take on faith.
+    let rationale = read("plugin/refs/mustard/router-rationale.md");
+    assert!(
+        rationale.contains("2026-08-25") && rationale.contains("6,000"),
+        "the rationale asserts the ceiling model without the measurement behind it",
+    );
+
+    // The delivered copies are the seeds — a project reading a stale router is
+    // reading rules this repository no longer ships.
+    for (delivered, seed) in [
+        (".claude/mustard/orchestrator.md", mustard_core::ORCHESTRATOR_MD),
+        (".claude/mustard/dispatch.md", mustard_core::DISPATCH_MD),
+    ] {
+        assert_eq!(
+            read(delivered).replace("\r\n", "\n"),
+            seed.replace("\r\n", "\n"),
+            "the delivered {delivered} drifted from the seed — re-run `mustard-rt run upsert`",
+        );
+    }
+}

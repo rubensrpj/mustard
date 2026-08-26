@@ -869,13 +869,24 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     // unit of its own and started telling the reader to obey the line's own
     // measured prescription.
     0x8b7a4a64d839a069,
+    // The rule-first rewrite: justification and history moved to
+    // `refs/mustard/router-rationale.md`, the em dashes that hid run-on
+    // sentences went, and both halves moved onto `userPromptSubmit`. Every
+    // operational token was audited across the change; only the prose that
+    // explained the two-event split left the file.
+    0x0d5c58329eeb1bf5,
 ];
 
-/// Superseded versions of the `dispatch.md` seed. Empty on purpose: the file
-/// was born with the two-event split, so no project has ever received an
-/// earlier one. It grows the same way the orchestrator catalog does — the
-/// ratchet below reads this file's own history.
-const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[];
+/// Superseded versions of the `dispatch.md` seed. It grows the same way the
+/// orchestrator catalog does — the ratchet below reads this file's own history.
+const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
+    // The split-era seed, superseded by the rule-first rewrite: the paragraph
+    // arguing why the router needed two events moved to
+    // `refs/mustard/router-rationale.md` (the premise it taught was wrong —
+    // sibling hooks do not share a ceiling), and the file moved onto
+    // `userPromptSubmit`.
+    0x5169e2cb65869f12,
+];
 
 /// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
 /// catalog speaks. Normalised so a Windows checkout answers the same as a
@@ -1040,28 +1051,35 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 // mustard.json
 // ---------------------------------------------------------------------------
 
-/// The default `mustard.json#inject` declarations: the router, in its two
-/// halves, on two DIFFERENT events. Written in the same casing the docs use;
-/// the config accessor lowercases `on` at read time.
+/// The default `mustard.json#inject` declarations: both halves of the router,
+/// on `userPromptSubmit`, one sibling hook each. Written in the same casing the
+/// docs use; the config accessor lowercases `on` at read time.
 ///
-/// **Why two events and not two entries on one.** A hook's `additionalContext`
-/// is capped at 10,000 characters; past that the harness saves the overflow to
-/// a file and hands the window a preview plus a path, so the text stops being
-/// in force even though nothing was truncated mid-sentence. The session hooks
-/// fold every injectable of ONE event into a single `additionalContext` (the
-/// dispatcher fold is last-writer-wins, so a second `Inject` on the same event
-/// would be dropped) — so two entries on `userPromptSubmit` would share one
-/// ceiling and buy nothing. Two events are two hook invocations, each with its
-/// own response and its own ceiling: § Intent Routing rides `userPromptSubmit`,
-/// § Dispatch rides `sessionStart` (and re-delivers after `/clear` or a
-/// compaction, which is when a window loses it).
+/// **Why one event with a hook per injectable.** A hook RESPONSE is capped at
+/// 10,000 characters; past that the harness saves the overflow to a file and
+/// hands the window a preview plus a path, so the text stops being in force
+/// even though nothing was truncated mid-sentence. The cap is per response, not
+/// per event: sibling hooks on one event are separate invocations and Claude
+/// Code keeps the `additionalContext` of every one of them (measured 2026-08-25
+/// — two siblings emitting 6,000 characters each both arrived intact). So each
+/// injectable gets its own hook and its own ceiling, and there is no composite
+/// budget between them.
+///
+/// `userPromptSubmit` is chosen because it is SELF-HEALING: the `once` markers
+/// live under `.claude/.session/<session_id>/`, so any path that loses the
+/// window (a new session, a `fork`, a resume) also loses the marker and the
+/// next prompt re-delivers. `sessionStart` cannot do that — it only fires on
+/// openings, and `fork` matched no matcher at all until this unit.
+///
+/// Mustard's own dispatcher fold is still last-writer-wins, so two Injects
+/// within ONE invocation would drop one; a hook per injectable sidesteps that
+/// without touching the dispatcher. Rationale in full:
+/// `plugin/refs/mustard/router-rationale.md`.
 ///
 /// The didactic response style used to ride `sessionStart` here; it is now the
 /// `mustard-didactic` plugin output-style (survives `/clear` natively), so it
 /// no longer needs a per-project injectable. [`retire_response_style_inject`]
-/// retires the stale entry from projects installed before the move, and
-/// [`backfill_dispatch_inject`] adds the second half to projects installed
-/// before the split.
+/// retires the stale entry from projects installed before the move.
 #[must_use]
 pub fn default_inject_entries() -> Vec<Injectable> {
     vec![
@@ -1071,7 +1089,7 @@ pub fn default_inject_entries() -> Vec<Injectable> {
             once: true,
         },
         Injectable {
-            on: "sessionStart".to_string(),
+            on: "userPromptSubmit".to_string(),
             file: DISPATCH_INJECT_FILE.to_string(),
             once: true,
         },
@@ -1478,20 +1496,6 @@ fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
     changed
 }
 
-/// Give a project installed BEFORE the two-event split its missing half: add
-/// the `sessionStart` → `.claude/mustard/dispatch.md` entry when the project
-/// still declares the orchestrator half and does not declare this one.
-///
-/// Deliberately conditional on the orchestrator entry being present, so an
-/// operator who removed the router from their `inject` list is not handed it
-/// back — this migration completes a router the project already declares, it
-/// does not re-impose one it dropped. A project whose `inject` is empty is not
-/// touched here either: [`upsert_mustard_json`] already backfills that case
-/// with the full defaults.
-///
-/// Returns `true` when the entry was added. Idempotent — a project already
-/// split (or a fresh one) returns `false`. Fail-open: an unwritable config
-/// degrades to `false`, never an error.
 /// `true` when two declared injectable paths name the SAME file.
 ///
 /// A declaration is written by hand as often as it is seeded, and the same file
@@ -1503,7 +1507,7 @@ fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
 /// Normalisation is deliberately conservative — separators, one leading `./`,
 /// trailing separators, and ASCII case. It never resolves symlinks or touches
 /// the filesystem: this runs during install, on paths that may not exist yet.
-fn same_declared_path(a: &str, b: &str) -> bool {
+pub fn same_declared_path(a: &str, b: &str) -> bool {
     fn norm(s: &str) -> String {
         let s = s.trim().replace('\\', "/");
         let s = s.strip_prefix("./").unwrap_or(&s).to_string();
@@ -1512,6 +1516,30 @@ fn same_declared_path(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
+/// Bring an already-installed project's `inject` list onto the current router
+/// layout: both halves on `userPromptSubmit`, one sibling hook each.
+///
+/// Two historical shapes reach this, and both are repaired:
+///
+/// - **Half-delivered** — the project declares the orchestrator and nothing
+///   else, because it was installed before the router was split in two. The
+///   dispatch half was seeded to disk and never declared, so the question that
+///   opens a unit reached nobody and nothing said so.
+/// - **Split across events** — the project declares both, with dispatch on
+///   `sessionStart`. That event misses every path that opens no session:
+///   `fork` matched no matcher at all, and `startup` never cleared the
+///   per-session markers. The entry is MOVED, never duplicated.
+///
+/// Deliberately conditional on the orchestrator entry being present, so an
+/// operator who removed the router from their `inject` list is not handed it
+/// back — this migration repairs a router the project already declares, it does
+/// not re-impose one that was dropped. A project whose `inject` is empty is not
+/// touched here either: [`upsert_mustard_json`] already backfills that case
+/// with the full defaults.
+///
+/// Returns `true` when the list changed. Idempotent — a project already on the
+/// current layout (or a fresh one) returns `false`. Fail-open: an unwritable
+/// config degrades to `false`, never an error.
 fn backfill_dispatch_inject(root: &Path) -> bool {
     if !ProjectConfig::exists(root) {
         return false;
@@ -1524,17 +1552,105 @@ fn backfill_dispatch_inject(root: &Path) -> bool {
     // this function's own doc calls strictly worse than the over-budget file it
     // replaced: the section reaches nobody, and nothing says so.
     let declares = |file: &str| config.inject.iter().any(|e| same_declared_path(&e.file, file));
-    if !declares(ORCHESTRATOR_INJECT_FILE) || declares(DISPATCH_INJECT_FILE) {
+    if !declares(ORCHESTRATOR_INJECT_FILE) {
         return false;
     }
-    let Some(dispatch) = default_inject_entries()
-        .into_iter()
-        .find(|e| e.file == DISPATCH_INJECT_FILE)
-    else {
+
+    let mut changed = false;
+    // The half that was never declared: add it, on the current event.
+    if !declares(DISPATCH_INJECT_FILE) {
+        if let Some(dispatch) = default_inject_entries()
+            .into_iter()
+            .find(|e| e.file == DISPATCH_INJECT_FILE)
+        {
+            config.inject.push(dispatch);
+            changed = true;
+        }
+    }
+    // Either half left on another event: move it — but ONLY once the installed
+    // plugin registers a hook per injectable.
+    //
+    // Moving both halves onto one event is safe because each rides its own
+    // sibling hook and is measured alone. A plugin that predates those siblings
+    // has ONE hook for the event, which folds both into a single response:
+    // measured at 11,646 characters here, over the 10,000 cap. The split the
+    // migration undoes was at least under it, so migrating against a stale
+    // plugin would leave the project worse than it found it.
+    //
+    // The project's own `mustard.json` is not the authority on this — the
+    // installed plugin is. When it cannot be read, the move is SKIPPED: a half
+    // still delivered on its old event beats one delivered nowhere.
+    if plugin_registers_sibling_hooks(root) {
+        for seeded in default_inject_entries() {
+            for entry in &mut config.inject {
+                if same_declared_path(&entry.file, &seeded.file) && entry.on != seeded.on {
+                    entry.on.clone_from(&seeded.on);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed && config.write(root).is_ok()
+}
+
+/// Does the INSTALLED plugin register one hook per injectable?
+///
+/// Read from the plugin's own `hooks/hooks.json`, because that file is what
+/// actually runs — a project's `mustard.json` says what should be delivered,
+/// never how. A registration carrying `--inject` is the signal: each injectable
+/// gets its own invocation, so each is measured alone against the ceiling.
+///
+/// `false` when the manifest cannot be found or read. That is deliberate and it
+/// is the conservative direction: the caller only MOVES entries when this is
+/// true, so an unreadable manifest leaves the layout exactly as it was.
+fn plugin_registers_sibling_hooks(root: &Path) -> bool {
+    plugin_hooks_manifest(root).is_some_and(|m| manifest_registers_sibling_hooks(&m))
+}
+
+/// Does THIS manifest register a hook per injectable?
+///
+/// Split from the locator so the decision is testable without a plugin install:
+/// the locator reads the machine's own registry, which no temporary directory
+/// can stand in for.
+///
+/// TWO claims is the bar, not one. The migration moves BOTH router halves onto
+/// one event, and a manifest claiming a single injectable still folds the other
+/// into a shared response — 11,646 characters against a 10,000 cap. An
+/// unreadable or absent manifest answers `false`, which is the conservative
+/// direction: the caller only moves entries on a yes.
+fn manifest_registers_sibling_hooks(manifest: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest) else {
         return false;
     };
-    config.inject.push(dispatch);
-    config.write(root).is_ok()
+    text.matches("--inject").count() >= 2
+}
+
+/// Where the installed plugin's hook manifest lives.
+///
+/// The REGISTRY first — Claude Code records each plugin's `installPath`, and
+/// that is the directory it runs hooks out of. Two guesses were tried before
+/// this and both fail in a real install: `CLAUDE_PLUGIN_ROOT` reaches hooks but
+/// not the shell that runs `upsert`, and `<project>/plugin/hooks/` exists only
+/// inside the Mustard source repository. Relying on either answered a confident
+/// "no siblings registered" in every user project, which silently disabled the
+/// migration this manifest guards (found in review).
+///
+/// The two guesses remain as FALLBACKS, in that order: the environment variable
+/// for a caller that does run under a hook, and the in-repo copy for a source
+/// checkout — which is also what the tests seed.
+fn plugin_hooks_manifest(root: &Path) -> Option<PathBuf> {
+    if let Some(p) = crate::platform::harness::installed_plugin_hooks_manifest() {
+        return Some(p);
+    }
+    if let Some(dir) = std::env::var_os("CLAUDE_PLUGIN_ROOT") {
+        let p = Path::new(&dir).join("hooks").join("hooks.json");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let in_repo = root.join("plugin").join("hooks").join("hooks.json");
+    in_repo.is_file().then_some(in_repo)
 }
 
 /// Remove the Mustard-owned lines from a root `CLAUDE.md` body: the exact
@@ -2121,7 +2237,11 @@ mod tests {
             .iter()
             .find(|e| e.file == DISPATCH_INJECT_FILE)
             .expect("the second half was not declared");
-        assert_eq!(dispatch.on, "sessionStart", "the halves must not share an event");
+        assert_eq!(
+            dispatch.on, "userPromptSubmit",
+            "the backfilled half must ride the self-healing event, not the one \
+             whose missed paths caused this defect",
+        );
         assert!(
             report.migrated.iter().any(|m| m.contains("dispatch")),
             "migration reported: {:?}",
@@ -2138,6 +2258,121 @@ mod tests {
         assert!(
             !again.migrated.iter().any(|m| m.contains("dispatch")),
             "an already-split project must report no migration: {:?}",
+            again.migrated,
+        );
+    }
+
+    /// The stale-plugin branch the migration test cannot isolate: a manifest
+    /// WITHOUT sibling hooks must not authorise the move.
+    ///
+    /// With one hook per event, moving both halves onto `userPromptSubmit`
+    /// folds them into a single response — measured at 11,646 characters,
+    /// over the 10,000 cap. The split being undone was at least under it, so
+    /// migrating against a stale plugin leaves the project worse.
+    #[test]
+    fn a_manifest_without_sibling_hooks_does_not_authorise_the_move() {
+        let dir = tempdir().unwrap();
+        let hooks = dir.path().join("hooks");
+        std_fs::create_dir_all(&hooks).unwrap();
+
+        // The pre-sibling shape: one hook for the whole event.
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(
+            !manifest_registers_sibling_hooks(&hooks.join("hooks.json")),
+            "one hook for the event is not sibling hooks",
+        );
+
+        // One `--inject` is not enough either: the halves need one each.
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/orchestrator.md"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(!manifest_registers_sibling_hooks(&hooks.join("hooks.json")));
+
+        // Two claims: the move is safe.
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/orchestrator.md"}]},
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/dispatch.md"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(manifest_registers_sibling_hooks(&hooks.join("hooks.json")));
+
+        // An unreadable manifest answers NO — the conservative direction, since
+        // the caller only moves entries on a yes.
+        assert!(!manifest_registers_sibling_hooks(&hooks.join("nao-existe.json")));
+    }
+
+    /// AC-2 — a project split across two events is MOVED onto one, not
+    /// duplicated.
+    ///
+    /// This is the shape every project installed between the split and this
+    /// unit carries: both halves declared, dispatch on `sessionStart`. That
+    /// event misses every path that opens no session — `fork` matched no
+    /// matcher at all — so the question that opens a unit was absent with
+    /// nothing to say so.
+    #[test]
+    fn migration_consolidates_the_router_onto_userpromptsubmit() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","inject":[
+                {"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},
+                {"on":"sessionStart","file":".claude/mustard/dispatch.md","once":true}
+            ]}"#,
+        )
+        .unwrap();
+
+        // The move is gated on the INSTALLED plugin registering a hook per
+        // injectable: with a stale one, a single hook folds both halves into
+        // one response (measured at 11,646 chars, over the cap) — worse than
+        // the split it would undo.
+        //
+        // That gate reads the plugin registry of the machine running the test,
+        // which a tempdir cannot fake, so the stale-plugin BRANCH is covered by
+        // `plugin_registers_sibling_hooks` unit tests rather than here. What
+        // this test pins is the consolidation itself, with the manifest in
+        // reach.
+        let hooks = root.join("plugin/hooks");
+        std_fs::create_dir_all(&hooks).unwrap();
+        std_fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/orchestrator.md"}]},
+                {"hooks":[{"command":"mustard-rt on UserPromptSubmit --inject .claude/mustard/dispatch.md"}]}
+            ]}}"#,
+        )
+        .unwrap();
+        upsert_project(root, None, InstallMode::Shared).unwrap();
+
+        let config = ProjectConfig::load(root);
+        assert_eq!(config.inject.len(), 2, "the entry was duplicated: {:?}", config.inject);
+        for entry in &config.inject {
+            assert_eq!(
+                entry.on, "userPromptSubmit",
+                "`{}` was left on `{}`; a half delivered only at session start is missed \
+                 by every path that opens no session",
+                entry.file, entry.on,
+            );
+        }
+
+        // Idempotent: a project already consolidated is not touched again.
+        let again = upsert_project(root, None, InstallMode::Shared).unwrap();
+        assert!(
+            !again.migrated.iter().any(|m| m.contains("dispatch")),
+            "an already-consolidated project must report no migration: {:?}",
             again.migrated,
         );
     }
@@ -2432,46 +2667,51 @@ mod tests {
         }
     }
 
-    /// The router is delivered in TWO halves on TWO events, and both halves
-    /// fit the ceiling one hook response carries.
+    /// Both halves of the router ride the SELF-HEALING event, and each fits the
+    /// ceiling one hook response carries.
     ///
-    /// This is the ratchet the one-file router never had. `additionalContext`
-    /// is capped at 10,000 characters per hook response; the overflow is not
-    /// cut mid-sentence — the harness writes it to a file and hands the window
-    /// a preview plus a path, which is worse for a router than a truncation
-    /// would be visible: it silently stops being in force. Since the session
-    /// hooks fold every injectable of ONE event into a single payload, the
-    /// split only buys a second ceiling while the two entries sit on DIFFERENT
-    /// events — so that is what is asserted, not merely that two files exist.
+    /// `additionalContext` is capped at 10,000 characters per hook RESPONSE; the
+    /// overflow is not cut mid-sentence — the harness writes it to a file and
+    /// hands the window a preview plus a path, which is worse than a visible
+    /// truncation: the router silently stops being in force.
+    ///
+    /// This replaces a ratchet that asserted the halves must sit on DIFFERENT
+    /// events, on the theory that siblings share one ceiling. They do not.
+    /// Measured 2026-08-25: two sibling hooks on one `UserPromptSubmit`, each
+    /// emitting 6,000 characters, both arrived intact and separate. The cap is
+    /// per response, so one sibling hook per injectable gives each its own.
+    ///
+    /// What the event choice buys instead is RE-DELIVERY. The `once` markers
+    /// live under `.claude/.session/<session_id>/`, so any path that loses the
+    /// window — a new session, a `fork`, a resume — also loses the marker, and
+    /// the next prompt re-delivers on its own. `sessionStart` cannot do that:
+    /// it fires only on openings, and `fork` matched no matcher at all.
     #[test]
-    fn the_router_rides_two_events_so_neither_half_overflows() {
+    fn the_router_rides_the_self_healing_event_and_neither_half_overflows() {
         let entries = default_inject_entries();
-        let orchestrator = entries
-            .iter()
-            .find(|e| e.file == ORCHESTRATOR_INJECT_FILE)
-            .expect("the router's first half is not declared at all");
-        let dispatch = entries
-            .iter()
-            .find(|e| e.file == DISPATCH_INJECT_FILE)
-            .expect("the router's second half is not declared — it would be seeded, never delivered");
-        assert_ne!(
-            orchestrator.on, dispatch.on,
-            "both halves ride `{}`, so the composer folds them into ONE \
-             additionalContext and they share one 10,000-character ceiling — the \
-             split buys nothing",
-            orchestrator.on,
-        );
+        for file in [ORCHESTRATOR_INJECT_FILE, DISPATCH_INJECT_FILE] {
+            let entry = entries
+                .iter()
+                .find(|e| e.file == file)
+                .unwrap_or_else(|| panic!("{file} is not declared — it would be seeded, never delivered"));
+            assert_eq!(
+                entry.on, "userPromptSubmit",
+                "{file} rides `{}`; a half delivered only at session start is missed by \
+                 every path that opens no session — `fork` above all",
+                entry.on,
+            );
+        }
 
-        // Each half, alone in its own hook response, must fit with margin for
-        // the siblings that ride the same event (the terrain census and the
-        // advisories on `sessionStart`, the pipeline banner on a prompt).
+        // Each injectable is delivered by its OWN sibling hook, so each is
+        // measured alone against the real ceiling. No composite budget applies.
         for (name, body, _) in INJECTABLE_SEEDS {
             let chars = body.chars().count();
             assert!(
-                chars <= 9_500,
+                chars <= 10_000,
                 "{name} is {chars} characters; a hook response carries 10,000 of \
                  additionalContext and the overflow becomes a file path instead of \
-                 text in force",
+                 text in force. Split it and give each half a hook — never compress \
+                 a rule out to fit",
             );
         }
     }

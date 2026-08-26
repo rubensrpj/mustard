@@ -169,6 +169,12 @@ pub enum SpecCmd {
         /// (or carrying nothing): the draft is byte-identical to today's.
         #[arg(long)]
         material: Option<PathBuf>,
+        /// Why this draft carries no conversation material. REQUIRED when
+        /// `--material` is absent or carries nothing: an empty channel has to
+        /// be a stated choice, not an omission that looks like success. One
+        /// sentence; it is recorded in the report as `noMaterialReason`.
+        #[arg(long)]
+        no_material_reason: Option<String>,
         /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
         /// Without `--plan` the wave dirs themselves are materialised later, by
         /// `plan-materialize`.
@@ -445,6 +451,7 @@ pub fn dispatch(cmd: SpecCmd) {
             signals,
             output,
             material,
+            no_material_reason,
             waves,
             plan,
             force,
@@ -459,6 +466,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 signals,
                 output,
                 material,
+                no_material_reason,
                 waves,
                 plan,
                 force,

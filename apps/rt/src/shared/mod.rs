@@ -51,6 +51,7 @@ pub mod dag;
 pub mod events;
 pub mod gate_mode;
 // The Azure adapter behind the pr_provider port — reached through the factory.
+pub mod paths;
 pub mod pr_azure;
 // The bin target sees this port as unreached until the pr/git doors move
 // behind it (next waves) — the allow leaves with the first caller.

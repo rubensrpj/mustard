@@ -358,6 +358,46 @@ fn run_ac_command_with_timeout(
     timeout: Duration,
     running: Option<&Path>,
 ) -> AcResult {
+    run_ac_command_inner(command, expect, cwd, timeout, running, false)
+}
+
+/// Is the first word of `command` a program the shell can find?
+///
+/// Answers the ONE question that separates "this criterion names a program that
+/// does not exist" from "the environment could not run it just now": the former
+/// is a real defect and must stay `fail`, the latter is worth one retry.
+///
+/// `false` whenever the question cannot be answered — an empty command, a shell
+/// builtin, an unreadable `PATH`. That direction keeps the historical behaviour
+/// (no retry, verdict unchanged), which is the safe one.
+fn first_program_is_on_path(command: &str) -> bool {
+    let Some(word) = command.split_whitespace().next() else {
+        return false;
+    };
+    // An absolute or relative path is checked directly; a bare name is looked
+    // up the way the shell would.
+    if word.contains('/') {
+        return Path::new(word).is_file();
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| dir.join(word).is_file())
+}
+
+/// [`run_ac_command_with_timeout`], with the retry flag the public face hides.
+///
+/// `is_retry` exists to bound the recursion at exactly one extra attempt: a
+/// flaky environment gets a second chance, a genuinely missing program does not
+/// spin.
+fn run_ac_command_inner(
+    command: &str,
+    expect: Option<&str>,
+    cwd: &Path,
+    timeout: Duration,
+    running: Option<&Path>,
+    is_retry: bool,
+) -> AcResult {
     let t0 = Instant::now();
     // Both halves of the path question, resolved once: where cargo would write
     // and what this process is executing from. `None` on either side means the
@@ -498,6 +538,26 @@ fn run_ac_command_with_timeout(
     // reads `exit` off this record and decides for itself — the discrimination
     // lives in the ONE caller that needs it, never in the shared status that
     // every caller reads differently.
+    // **A 127 whose program DOES exist means "could not run it now", not "does
+    // not exist" — and that is worth one retry, never a softer verdict.**
+    //
+    // Measured four times in one session: a second `cargo` compiling in
+    // parallel makes the first lose the build lock, the shell answers 127, and
+    // all fourteen criteria fail at once — every one of them passing again less
+    // than a minute later. The Stop gate then names a healthy criterion and
+    // asks for a fix to something that is not broken.
+    //
+    // The verdict stays `fail` if the retry also fails. Grading 127 `skip` is
+    // the tempting fix and it is the wrong one: it shipped once and let a spec
+    // CLOSE on a criterion nobody had ever run (see the note above). One retry
+    // separates a flaky environment from a real defect without weakening what
+    // the record claims.
+    if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND)
+        && !is_retry
+        && first_program_is_on_path(command)
+    {
+        return run_ac_command_inner(command, expect, cwd, timeout, running, true);
+    }
     if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND) {
         return AcResult {
             id: String::new(),
@@ -626,6 +686,40 @@ pub(super) fn gather_capability_acs(cwd: &Path, spec: &str) -> Vec<(String, Stri
 
 #[cfg(test)]
 mod tests {
+
+    /// A program that genuinely does not exist still FAILS — no retry softens
+    /// it, and no retry spins on it.
+    ///
+    /// The retry exists only for the other 127: a program the shell CAN find
+    /// that could not run just now (a second `cargo` holding the build lock).
+    /// Measured four times in one session — fourteen criteria failing together
+    /// with 127, all passing again under a minute later.
+    #[test]
+    fn a_missing_program_still_fails_and_one_that_exists_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Not on PATH: no retry, verdict unchanged. Grading this `skip` is the
+        // regression documented above — it once let a spec CLOSE on a criterion
+        // nobody had run.
+        assert!(!first_program_is_on_path("programa-que-nao-existe-xyz --flag"));
+        let res = run_ac_command_with_timeout(
+            "programa-que-nao-existe-xyz",
+            None,
+            dir.path(),
+            Duration::from_secs(10),
+            None,
+        );
+        assert_eq!(res.status, "fail", "a missing program must stay a failure");
+        assert_eq!(res.exit, Some(EXIT_COMMAND_NOT_FOUND));
+
+        // On PATH: the retry is eligible. `sh` is present wherever these tests
+        // run, and an absolute path is answered without consulting PATH at all.
+        assert!(first_program_is_on_path("sh -c true"));
+        assert!(first_program_is_on_path("/bin/sh -c true"));
+        assert!(!first_program_is_on_path("/nao/existe/em/lugar/nenhum"));
+        assert!(!first_program_is_on_path(""));
+    }
+
     use super::*;
     use tempfile::tempdir;
 
