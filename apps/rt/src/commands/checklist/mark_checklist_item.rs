@@ -179,7 +179,32 @@ fn emit_item_dropped(
 /// the label (the historical markdown contract), or a normalised exact /
 /// segment-suffix / basename match against the item's path anchor.
 fn item_matches(item: &ChecklistItem, needle: &str) -> bool {
+    if needle.trim().is_empty() {
+        return false;
+    }
+    // The operator's needle is usually LONGER than what the item records: the
+    // close gate reports the task SENTENCE from `wave-*/spec.md`, while the
+    // sidecar stores a short `label` and an optional `path`. So containment is
+    // tried both ways — but never rawly.
+    //
+    // **Every containment in the NEEDLE goes through the token boundary.** A
+    // raw `needle.contains(label)` was tried first and review caught it: it ran
+    // before the boundary rules and returned early, so a sentence about
+    // `src/x.rs.bak` marked the item for `src/x.rs`. Marking the WRONG item is
+    // the failure this function exists to avoid — the operator sees a refusal,
+    // never a silent mismarking.
+    //
+    // The OTHER direction below is deliberately raw, and the comment used to
+    // claim otherwise. `--item` is the operator typing a fragment of the item
+    // they are looking at, so a short needle legitimately matches a longer
+    // label — that is the documented substring contract of the flag, and the
+    // one-character `--item "e"` case a boundary rule here would break is the
+    // operator's own aim, not a mismark. Only the sentence-to-label direction
+    // can mark an item nobody named, and only that direction is bounded.
     if item.label.contains(needle) {
+        return true;
+    }
+    if contains_as_token(needle, &item.label) {
         return true;
     }
     let Some(path) = item.path.as_deref() else {
@@ -187,10 +212,93 @@ fn item_matches(item: &ChecklistItem, needle: &str) -> bool {
     };
     let p = path.replace('\\', "/").to_ascii_lowercase();
     let n = needle.replace('\\', "/").to_ascii_lowercase();
-    if n.is_empty() {
+    if p == n || p.ends_with(&format!("/{n}")) || p.rsplit('/').next() == n.rsplit('/').next() {
+        return true;
+    }
+    // The sentence names the file either in full — "criar apps/rt/…/x.rs no
+    // molde de …" — or by its BASENAME alone: "em session_start_inject.rs:
+    // quando source é compact…". Seven of fifteen real items used the short
+    // spelling. Both go through the same boundary.
+    if contains_as_token(&n, &p) {
+        return true;
+    }
+    match p.rsplit('/').next().filter(|b| !b.is_empty()) {
+        Some(base) => contains_as_token(&n, base),
+        None => false,
+    }
+}
+
+/// Does `haystack` contain `needle` as a WHOLE token?
+///
+/// A filename is a token, not a substring: `x.rs` must not match a sentence
+/// about `prefix_x.rs` or `x.rs.bak`, because marking the wrong checklist item
+/// is worse than refusing — a refusal is visible, a wrong mark is not.
+///
+/// The rule is SYMMETRIC, and a dot is judged by what follows it rather than by
+/// which side it sits on.
+///
+/// An earlier version closed the token on any dot AFTER the match and on no dot
+/// BEFORE it. Both halves were wrong, and review measured both:
+///
+/// - A task sentence ending in a period — `…em boundary_gate.rs.` — could not
+///   mark the file it names, because the sentence-final dot read as
+///   name-continuation. The gate's own messages end in periods, so the door
+///   refused the very wording it had just printed.
+/// - `app.config.toml` marked the item for `config.toml`, because a dot before
+///   the match read as punctuation. A dotted prefix is part of a filename just
+///   as a dotted suffix is: `app.config.toml` and `config.toml` are two files.
+///
+/// What actually separates the two cases is not the SIDE but what sits beyond
+/// the dot. A dot with a name character on its far side is continuing a name
+/// (`x.rs.bak`, `app.config.toml`); a dot at the end of the text, or followed by
+/// whitespace or other punctuation, is ending a sentence. So a dot closes the
+/// token only when it is name-continuation, on either side.
+///
+/// An empty needle matches nothing: it would otherwise match every item.
+fn contains_as_token(haystack: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
         return false;
     }
-    p == n || p.ends_with(&format!("/{n}")) || p.rsplit('/').next() == n.rsplit('/').next()
+    haystack.match_indices(needle).any(|(i, _)| {
+        let before = &haystack[..i];
+        let after = &haystack[i + needle.len()..];
+        boundary_before(before) && boundary_after(after)
+    })
+}
+
+/// Characters that continue a name on their own: a further dot is judged
+/// separately, by its neighbour.
+fn continues_name(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '/')
+}
+
+/// Is the text ENDING at the match a clean boundary?
+///
+/// Empty is. A name character is not. A dot is only when the character before
+/// IT is not itself part of a name — so `app.config.toml` keeps `config.toml`
+/// out, while a sentence like `veja .config aqui` still matches.
+fn boundary_before(before: &str) -> bool {
+    let mut chars = before.chars().rev();
+    match chars.next() {
+        None => true,
+        Some('.') => !chars.next().is_some_and(continues_name),
+        Some(c) => !continues_name(c),
+    }
+}
+
+/// Is the text STARTING after the match a clean boundary?
+///
+/// Empty is. A name character is not. A dot is only when what follows IT is not
+/// a name character — so `x.rs.bak` is kept out while `boundary_gate.rs.` at the
+/// end of a sentence still matches.
+fn boundary_after(after: &str) -> bool {
+    let mut chars = after.chars();
+    match chars.next() {
+        None => true,
+        Some('.') => !chars.next().is_some_and(continues_name),
+        Some(c) => !continues_name(c),
+    }
 }
 
 /// The candidate meta-bearing dirs for marking: the spec's own dir first, then
@@ -543,7 +651,40 @@ pub fn run(
     let mut lines: Vec<String> = raw.split('\n').map(String::from).collect();
     let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     let Some((start, end)) = find_checklist_section(&line_refs) else {
-        die(1, "no `## Checklist` section in spec");
+        // Reached only after the wave sidecars were searched and nothing
+        // matched, so blaming the missing section describes the LAST thing
+        // tried rather than what actually failed. A wave-plan spec never has
+        // this section — its items live in the waves — and a reader sent to
+        // look for it finds nothing and no next step.
+        // Two callers reach here and they failed at DIFFERENT things, so they
+        // get different sentences. `--item` looked for wording and found none;
+        // `--line` never had an index to apply, because neither the meta
+        // sidecar nor the markdown carries a checklist at all — telling that
+        // caller "no item matches ''" names an empty search they never ran, and
+        // advising `--line` advises the flag they already passed.
+        if let Some(n) = line {
+            die(
+                1,
+                &format!(
+                    "--line {n} has nothing to index: this spec carries no checklist — neither \
+                     `meta.json#checklist` nor a `## Checklist` section in `spec.md`. On a wave \
+                     plan the items live in each `wave-*/meta.json`; run \
+                     `mustard-rt run wave-tree --spec <spec>` to see which wave holds yours, and \
+                     address it with `--spec <that wave>`"
+                ),
+            );
+        }
+        die(
+            1,
+            &format!(
+                "no checklist item matches {:?}. The spec's own `## Checklist` section is \
+                 absent (normal for a wave plan — the items live in each `wave-*/meta.json`), \
+                 and no wave sidecar carries a matching OPEN item either. Check the wording \
+                 against `mustard-rt run wave-tree --spec <spec>`, or pass `--line <n>` when \
+                 the item is in this file",
+                item.unwrap_or(""),
+            ),
+        );
     };
 
     let target_idx: usize = if let Some(n) = line {
@@ -717,6 +858,106 @@ mod tests {
         assert!(item_matches(&it, "src/api/handler.rs"), "exact path");
         assert!(item_matches(&it, "handler"), "label substring");
         assert!(!item_matches(&it, "other.rs"));
+    }
+
+    /// The needle the operator actually has is the close gate's SENTENCE, and
+    /// it is longer than the label — the reverse of what the matcher assumed.
+    ///
+    /// Measured in the field: 15 items, all implemented, could not be marked
+    /// through the only door that marks them. Each wave records an item twice —
+    /// a short `label` (the file path) in `meta.json`, and the task sentence in
+    /// that wave's `spec.md` — and the gate reports the sentence.
+    #[test]
+    fn the_gates_own_sentence_marks_the_item_it_names() {
+        let it = ChecklistItem {
+            label: "apps/rt/src/hooks/session/session_start_inject.rs".to_string(),
+            path: Some("apps/rt/src/hooks/session/session_start_inject.rs".to_string()),
+            done: false,
+            dropped: None,
+        };
+        // The full path inside a longer sentence.
+        assert!(item_matches(
+            &it,
+            "criar apps/rt/src/hooks/session/session_start_inject.rs no molde do vizinho",
+        ));
+        // The BASENAME alone — how 7 of those 15 items were written.
+        assert!(item_matches(
+            &it,
+            "em session_start_inject.rs: quando source é compact, reentregar a família",
+        ));
+
+        // A basename must be a whole token. `x.rs` matching a sentence about
+        // `prefix_x.rs` would mark the WRONG item, and a checklist marked wrong
+        // is worse than one that refuses.
+        let short = ChecklistItem {
+            label: "src/x.rs".to_string(),
+            path: Some("src/x.rs".to_string()),
+            done: false,
+            dropped: None,
+        };
+        assert!(!item_matches(&short, "em prefix_x.rs: outra tarefa"), "prefixed");
+        assert!(!item_matches(&short, "em x.rs.bak: outra tarefa"), "suffixed");
+        assert!(item_matches(&short, "em x.rs: a tarefa certa"), "whole token");
+
+        // The FULL-PATH spelling goes through the same boundary. The first
+        // version checked `needle.contains(label)` before any boundary rule and
+        // returned early, so this exact sentence marked the wrong item — and
+        // the test above never caught it, because `em x.rs.bak` does not
+        // contain `src/x.rs` (found in review).
+        assert!(
+            !item_matches(&short, "em src/x.rs.bak: outra tarefa"),
+            "the full path must not match a longer filename either",
+        );
+        assert!(
+            !item_matches(&short, "em src/x.rs_old: outra tarefa"),
+            "nor a name that merely starts with it",
+        );
+        assert!(item_matches(&short, "criar src/x.rs no molde do vizinho"), "full path, whole token");
+
+        // A dot is judged by WHAT FOLLOWS IT, not by which side it sits on.
+        // Both halves of the old asymmetric rule were wrong, and review
+        // measured both against the binary:
+        //
+        // A sentence-final period is punctuation, not a name. The close gate
+        // prints task sentences that END in one, so the door was refusing the
+        // very wording it had just handed the operator.
+        assert!(
+            item_matches(&short, "Corrigir o aviso em src/x.rs."),
+            "a sentence-final period must not disqualify the file it names",
+        );
+        assert!(item_matches(&short, "ver src/x.rs. Depois seguir."), "…nor mid-sentence");
+        // …and a dotted PREFIX is part of a filename exactly as a dotted suffix
+        // is. `app.config.toml` and `config.toml` are two different files, so
+        // the first must never mark the item for the second.
+        let dotted = ChecklistItem {
+            label: "config.toml".to_string(),
+            path: None,
+            done: false,
+            dropped: None,
+        };
+        assert!(item_matches(&dotted, "editar config.toml agora"), "whole token");
+        assert!(
+            !item_matches(&dotted, "renomear app.config.toml para outro"),
+            "a dotted prefix names a DIFFERENT file",
+        );
+
+        // A PROSE label is not a path. `ChecklistItem::label` is documented as
+        // the human-readable task label, so a short one used to match any
+        // sentence containing that word — `teste` marking an item because the
+        // operator wrote "adicionar o teste de regressão em outro.rs". The
+        // boundary makes it a whole word, and a refusal beats a wrong mark.
+        let prose = ChecklistItem {
+            label: "teste".to_string(),
+            path: None,
+            done: false,
+            dropped: None,
+        };
+        assert!(item_matches(&prose, "rodar o teste de novo"), "whole word matches");
+        assert!(!item_matches(&prose, "revisar o testes-antigos do modulo"), "not a fragment");
+
+        // An empty needle matches nothing — it would otherwise mark the first
+        // open item of whichever wave is read first.
+        assert!(!item_matches(&it, ""));
     }
 
     #[test]

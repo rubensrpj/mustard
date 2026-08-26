@@ -119,8 +119,18 @@ It lands in the shape `read_change_log` filters for, so the next rendered prompt
 **Then carry anything that changes BEHAVIOUR into `## Acceptance Criteria` — with `ac-amend`, never by hand**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25).
 
 ```bash
-mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that asserts the NEW behaviour>" [--expect "<evidence regex>"] [--statement "<the EARS line>"] --reason "<why the criterion is changing>"
+mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that asserts the NEW behaviour>" [--expect "<evidence regex>"] [--statement "<the EARS line>"] --reason "<why the criterion is changing>" [--proof-tree <dir>]
 ```
+
+**`--proof-tree` is for a criterion corrected AFTER its work already landed.** The negative test asks whether the command can FAIL, and that is only answerable where the behaviour is absent — in the current tree the replacement comes back green, and the door refuses it, correctly. Point the flag at a checkout that predates the work and the red is taken there:
+
+```bash
+git worktree add --detach /tmp/proof <base-commit>
+mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<…>" --reason "<…>" --proof-tree /tmp/proof
+git worktree remove /tmp/proof
+```
+
+The spec is still read and rewritten HERE; only the command runs elsewhere, and the ledger records the COMMIT the red was taken on, so the claim can be checked later. Without it the only way through was to hide the test, amend, and restore it — which worked and left no trace of where the evidence came from.
 
 Two things the hand cannot do, and this is why the hand does not do it:
 
