@@ -187,12 +187,20 @@ fn item_matches(item: &ChecklistItem, needle: &str) -> bool {
     // sidecar stores a short `label` and an optional `path`. So containment is
     // tried both ways — but never rawly.
     //
-    // **Every containment goes through the token boundary.** A raw
-    // `needle.contains(label)` was tried first and review caught it: it ran
+    // **Every containment in the NEEDLE goes through the token boundary.** A
+    // raw `needle.contains(label)` was tried first and review caught it: it ran
     // before the boundary rules and returned early, so a sentence about
     // `src/x.rs.bak` marked the item for `src/x.rs`. Marking the WRONG item is
     // the failure this function exists to avoid — the operator sees a refusal,
     // never a silent mismarking.
+    //
+    // The OTHER direction below is deliberately raw, and the comment used to
+    // claim otherwise. `--item` is the operator typing a fragment of the item
+    // they are looking at, so a short needle legitimately matches a longer
+    // label — that is the documented substring contract of the flag, and the
+    // one-character `--item "e"` case a boundary rule here would break is the
+    // operator's own aim, not a mismark. Only the sentence-to-label direction
+    // can mark an item nobody named, and only that direction is bounded.
     if item.label.contains(needle) {
         return true;
     }
@@ -226,10 +234,25 @@ fn item_matches(item: &ChecklistItem, needle: &str) -> bool {
 /// about `prefix_x.rs` or `x.rs.bak`, because marking the wrong checklist item
 /// is worse than refusing — a refusal is visible, a wrong mark is not.
 ///
-/// The two sides are deliberately asymmetric. A character before the match that
-/// could continue a name (`_`, `-`, alphanumeric, `/`) closes it; so does one
-/// after. A dot AFTER also closes it, because `x.rs.bak` is a different file —
-/// but a dot BEFORE is ordinary punctuation and does not.
+/// The rule is SYMMETRIC, and a dot is judged by what follows it rather than by
+/// which side it sits on.
+///
+/// An earlier version closed the token on any dot AFTER the match and on no dot
+/// BEFORE it. Both halves were wrong, and review measured both:
+///
+/// - A task sentence ending in a period — `…em boundary_gate.rs.` — could not
+///   mark the file it names, because the sentence-final dot read as
+///   name-continuation. The gate's own messages end in periods, so the door
+///   refused the very wording it had just printed.
+/// - `app.config.toml` marked the item for `config.toml`, because a dot before
+///   the match read as punctuation. A dotted prefix is part of a filename just
+///   as a dotted suffix is: `app.config.toml` and `config.toml` are two files.
+///
+/// What actually separates the two cases is not the SIDE but what sits beyond
+/// the dot. A dot with a name character on its far side is continuing a name
+/// (`x.rs.bak`, `app.config.toml`); a dot at the end of the text, or followed by
+/// whitespace or other punctuation, is ending a sentence. So a dot closes the
+/// token only when it is name-continuation, on either side.
 ///
 /// An empty needle matches nothing: it would otherwise match every item.
 fn contains_as_token(haystack: &str, needle: &str) -> bool {
@@ -238,19 +261,44 @@ fn contains_as_token(haystack: &str, needle: &str) -> bool {
         return false;
     }
     haystack.match_indices(needle).any(|(i, _)| {
-        let before_ok = i == 0
-            || !haystack[..i]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'));
-        let after = i + needle.len();
-        let after_ok = after >= haystack.len()
-            || !haystack[after..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'));
-        before_ok && after_ok
+        let before = &haystack[..i];
+        let after = &haystack[i + needle.len()..];
+        boundary_before(before) && boundary_after(after)
     })
+}
+
+/// Characters that continue a name on their own: a further dot is judged
+/// separately, by its neighbour.
+fn continues_name(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '/')
+}
+
+/// Is the text ENDING at the match a clean boundary?
+///
+/// Empty is. A name character is not. A dot is only when the character before
+/// IT is not itself part of a name — so `app.config.toml` keeps `config.toml`
+/// out, while a sentence like `veja .config aqui` still matches.
+fn boundary_before(before: &str) -> bool {
+    let mut chars = before.chars().rev();
+    match chars.next() {
+        None => true,
+        Some('.') => !chars.next().is_some_and(continues_name),
+        Some(c) => !continues_name(c),
+    }
+}
+
+/// Is the text STARTING after the match a clean boundary?
+///
+/// Empty is. A name character is not. A dot is only when what follows IT is not
+/// a name character — so `x.rs.bak` is kept out while `boundary_gate.rs.` at the
+/// end of a sentence still matches.
+fn boundary_after(after: &str) -> bool {
+    let mut chars = after.chars();
+    match chars.next() {
+        None => true,
+        Some('.') => !chars.next().is_some_and(continues_name),
+        Some(c) => !continues_name(c),
+    }
 }
 
 /// The candidate meta-bearing dirs for marking: the spec's own dir first, then
@@ -865,6 +913,33 @@ mod tests {
             "nor a name that merely starts with it",
         );
         assert!(item_matches(&short, "criar src/x.rs no molde do vizinho"), "full path, whole token");
+
+        // A dot is judged by WHAT FOLLOWS IT, not by which side it sits on.
+        // Both halves of the old asymmetric rule were wrong, and review
+        // measured both against the binary:
+        //
+        // A sentence-final period is punctuation, not a name. The close gate
+        // prints task sentences that END in one, so the door was refusing the
+        // very wording it had just handed the operator.
+        assert!(
+            item_matches(&short, "Corrigir o aviso em src/x.rs."),
+            "a sentence-final period must not disqualify the file it names",
+        );
+        assert!(item_matches(&short, "ver src/x.rs. Depois seguir."), "…nor mid-sentence");
+        // …and a dotted PREFIX is part of a filename exactly as a dotted suffix
+        // is. `app.config.toml` and `config.toml` are two different files, so
+        // the first must never mark the item for the second.
+        let dotted = ChecklistItem {
+            label: "config.toml".to_string(),
+            path: None,
+            done: false,
+            dropped: None,
+        };
+        assert!(item_matches(&dotted, "editar config.toml agora"), "whole token");
+        assert!(
+            !item_matches(&dotted, "renomear app.config.toml para outro"),
+            "a dotted prefix names a DIFFERENT file",
+        );
 
         // A PROSE label is not a path. `ChecklistItem::label` is documented as
         // the human-readable task label, so a short one used to match any
