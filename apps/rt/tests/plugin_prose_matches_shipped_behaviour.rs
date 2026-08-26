@@ -1964,6 +1964,24 @@ fn router_teaches_the_self_healing_delivery() {
         "the router drops the rationale without saying where it went",
     );
 
+    // SIZE IS NOT THE TEST for whether a unit opens.
+    //
+    // Measured in the field, 2026-08-26: a one-line fix was classified `Simple`
+    // — a row that dispenses the PIPELINE — and the model stretched that
+    // exemption to the opening question too, committing straight onto
+    // `release`. The operator had to ask why nothing was asked. Both halves now
+    // say which half `Simple` exempts, and this holds them to it.
+    let orchestrator_simple = mustard_core::ORCHESTRATOR_MD;
+    assert!(
+        orchestrator_simple.contains("dispenses the PIPELINE, never the question"),
+        "the Simple row lets the opening question be skipped for a small edit",
+    );
+    let dispatch_unit = mustard_core::DISPATCH_MD;
+    assert!(
+        dispatch_unit.contains("Every request that edits a file opens a unit"),
+        "the dispatch half never says WHAT counts as a unit, so a small edit reads as none",
+    );
+
     // The rule the conversation channel depends on rides the dispatch half.
     let dispatch = mustard_core::DISPATCH_MD;
     assert!(

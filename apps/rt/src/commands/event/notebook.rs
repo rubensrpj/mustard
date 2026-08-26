@@ -52,7 +52,17 @@ fn checkout_root(root: &Path) -> PathBuf {
 /// (the title, the reminder of what the notebook is for) is not an item.
 fn parse_items(text: &str) -> Vec<String> {
     text.lines()
-        .filter_map(|line| line.strip_prefix("- "))
+        // LEADING WHITESPACE FIRST. Without the trim an indented bullet is not
+        // an item here, and `render` rewrites the file from these items — so
+        // the next `--add` DELETES the line. An editor's auto-indent is enough
+        // to trigger it, and the operator is never told.
+        //
+        // Review measured the consequence once the close gate started reading
+        // this same file: the gate trimmed and this did not, so an indented
+        // finding marked as explaining the symptom blocked the close, and then
+        // an unrelated `--add` silently removed it and the close went through.
+        // Two readers of one file must agree on what a line IS.
+        .filter_map(|line| line.trim_start().strip_prefix("- "))
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
         .collect()
@@ -88,7 +98,12 @@ fn one_line(text: &str) -> String {
 /// branch (omitted: the branch the checkout is standing on) and `add` records
 /// one item. Never panics.
 #[must_use]
-pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) -> Value {
+pub(crate) fn notebook_at(
+    root: &Path,
+    unit: Option<&str>,
+    add: Option<&str>,
+    explains: bool,
+) -> Value {
     let project = checkout_root(root);
     let branch = match unit.map(str::trim).filter(|u| !u.is_empty()) {
         Some(u) => u.to_string(),
@@ -125,6 +140,49 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
 
     let mut added = false;
     if let Some(text) = add.map(one_line).filter(|t| !t.is_empty()) {
+        // The marker rides the line itself — see `EXPLAINS_SYMPTOM` — and the
+        // FLAG is the only thing that sets it. An item whose own text opens
+        // with the literal prefix, typed without `--explains-symptom`, is
+        // someone quoting the marker; taking that as a claim would let a gate
+        // be armed by a sentence about the gate (found in review). Stripped, so
+        // the quote survives as text and stops being a signal.
+        // Normalise FIRST, then mark. The flag path used to pass an already
+        // prefixed item through untouched, which stored a doubled prefix when
+        // the operator had typed one too (found in review). Stripping every
+        // prefix and re-adding exactly one makes the stored form the same
+        // whatever the caller typed.
+        let bare = strip_marker(&text);
+        // EMPTY AFTER STRIPPING is empty, and the guard above cannot see it:
+        // it runs on what the caller typed, before the marker comes off. An
+        // item that is only the marker leaves nothing behind.
+        //
+        // Recording it anyway is not merely untidy — it is unremovable. With
+        // the flag, the stored line was `"[MARCADOR] "`, with a trailing space
+        // the reader trims away, so the dedupe below compared an untrimmed
+        // write against a trimmed read, never matched, and appended AGAIN on
+        // every call. Six invocations left six content-free bullets blocking
+        // the close, and `--add` cannot remove a line (found in review,
+        // reproduced against the binary).
+        //
+        // So it is refused where the caller can still fix it, and the refusal
+        // says what is missing.
+        if bare.is_empty() {
+            return json!({
+                "ok": false,
+                "reason": "empty-item",
+                "branch": branch,
+                "slug": slug,
+                "hint": "the item is empty once the marker is removed — the notebook records \
+                         WHAT surfaced, so pass the finding itself; `--explains-symptom` marks \
+                         an item, it is not one",
+            });
+        }
+        // ONE canonical spelling per item, so a line always equals itself on
+        // the next read. `render` writes `- {item}` and `parse_items` trims, so
+        // anything stored with edge whitespace comes back different from what
+        // was written and can never dedupe.
+        let text = if explains { format!("{EXPLAINS_SYMPTOM} {bare}") } else { bare };
+        debug_assert_eq!(text.trim(), text, "a stored item must equal its own round trip");
         if !items.iter().any(|i| i == &text) {
             items.push(text);
             added = true;
@@ -152,15 +210,51 @@ pub(crate) fn notebook_at(root: &Path, unit: Option<&str>, add: Option<&str>) ->
             .to_string_lossy()
             .replace('\\', "/"),
         "added": added,
+        // The items naming the operator's own symptom, called out on their own
+        // so a gate does not have to know the prefix.
+        "explainsSymptom": items.iter().filter(|i| explains_symptom(i)).cloned().collect::<Vec<_>>(),
         "items": items,
     })
 }
 
+/// The prefix an item carries when the operator's own reported symptom is what
+/// it explains.
+///
+/// Written INTO the line rather than into a sidecar, because the notebook is a
+/// markdown file a person reads and edits, and a second file would drift from
+/// it. Every existing reader keeps working; only the ones that ask about this
+/// prefix see anything new.
+pub(crate) const EXPLAINS_SYMPTOM: &str = "[EXPLICA O SINTOMA]";
+
+/// The item with EVERY leading marker removed — what the operator typed, once
+/// the prefix stops being read as a claim.
+///
+/// A LOOP, not one `strip_prefix`. The single-strip version was here for one
+/// commit and review measured the hole it left: `--add "[M] [M] texto"` with no
+/// flag came out still carrying one prefix, so the close gate was armed by a
+/// sentence nobody marked. Narrowing a forgery to "type it twice" is not
+/// closing it — and the test that shipped with that version exercised one
+/// prefix, which is why 3,176 green tests sat over a live forgery.
+fn strip_marker(item: &str) -> String {
+    let mut rest = item.trim();
+    while let Some(shorter) = rest.strip_prefix(EXPLAINS_SYMPTOM) {
+        rest = shorter.trim_start();
+    }
+    rest.trim().to_string()
+}
+
+/// Does this notebook line claim to explain the symptom the operator reported?
+#[must_use]
+pub(crate) fn explains_symptom(item: &str) -> bool {
+    item.trim_start().starts_with(EXPLAINS_SYMPTOM)
+}
+
 /// Run `notebook` from `root` and print the JSON report.
-pub fn run(root: &Path, unit: Option<&str>, add: Option<&str>) {
+pub fn run(root: &Path, unit: Option<&str>, add: Option<&str>, explains: bool) {
     println!(
         "{}",
-        serde_json::to_string_pretty(&notebook_at(root, unit, add)).unwrap_or_else(|_| "{}".into())
+        serde_json::to_string_pretty(&notebook_at(root, unit, add, explains))
+            .unwrap_or_else(|_| "{}".into())
     );
 }
 
@@ -199,7 +293,7 @@ mod tests {
         let root = dir.path();
 
         // Recorded from inside the unit — the branch names the notebook.
-        let wrote = notebook_at(root, None, Some("the statusline truncates on narrow terminals"));
+        let wrote = notebook_at(root, None, Some("the statusline truncates on narrow terminals"), false);
         assert_eq!(wrote["ok"], json!(true), "report: {wrote}");
         assert_eq!(wrote["unit"], json!("dev_my-unit"));
         assert_eq!(wrote["slug"], json!("my-unit"));
@@ -217,7 +311,7 @@ mod tests {
         // file is still untracked, so it survives the switch — on a real unit
         // the notebook rides its own branch, as the module doc says.)
         git(root, &["checkout", "dev"]);
-        let read = notebook_at(root, Some("dev_my-unit"), None);
+        let read = notebook_at(root, Some("dev_my-unit"), None, false);
         assert_eq!(read["ok"], json!(true));
         assert_eq!(read["added"], json!(false), "reading records nothing");
         assert_eq!(
@@ -228,7 +322,7 @@ mod tests {
 
         // A DIFFERENT unit has its own notebook — the record is per branch, not
         // one global list.
-        let other = notebook_at(root, Some("dev_another-unit"), None);
+        let other = notebook_at(root, Some("dev_another-unit"), None, false);
         assert_eq!(other["items"], json!([]), "one unit's item never leaks into another's");
     }
 
@@ -239,13 +333,13 @@ mod tests {
         let dir = repo();
         let root = dir.path();
 
-        let first = notebook_at(root, None, Some("rename the digest cache"));
+        let first = notebook_at(root, None, Some("rename the digest cache"), false);
         assert_eq!(first["added"], json!(true));
-        let again = notebook_at(root, None, Some("rename the digest cache"));
+        let again = notebook_at(root, None, Some("rename the digest cache"), false);
         assert_eq!(again["added"], json!(false), "an exact repeat is folded away");
         assert_eq!(again["items"], json!(["rename the digest cache"]));
 
-        let pasted = notebook_at(root, None, Some("two lines\nbecome  one"));
+        let pasted = notebook_at(root, None, Some("two lines\nbecome  one"), false);
         assert_eq!(
             pasted["items"],
             json!(["rename the digest cache", "two lines become one"]),
@@ -261,24 +355,203 @@ mod tests {
         let root = dir.path();
         git(root, &["checkout", "dev"]);
 
-        let base = notebook_at(root, None, Some("orphan note"));
+        let base = notebook_at(root, None, Some("orphan note"), false);
         assert_eq!(base["ok"], json!(false));
         assert_eq!(base["reason"], json!("no-unit"));
         assert!(base["hint"].as_str().unwrap_or_default().contains("--unit"), "the refusal says how");
 
-        let loose = notebook_at(root, Some("no-prefix-branch"), None);
+        let loose = notebook_at(root, Some("no-prefix-branch"), None, false);
         assert_eq!(loose["reason"], json!("no-unit"));
 
         // The prefix must name a DECLARED base, not merely sit before an
         // underscore: `feature_x` is not a unit of this project, and accepting
         // it would open `.claude/spec/x/notebook.md` — another unit's file —
         // without a word.
-        let foreign = notebook_at(root, Some("feature_x"), Some("would land in the wrong unit"));
+        let foreign = notebook_at(root, Some("feature_x"), Some("would land in the wrong unit"), false);
         assert_eq!(foreign["reason"], json!("no-unit"), "report: {foreign}");
         assert!(
             !root.join(".claude/spec/x/notebook.md").exists(),
             "an undeclared prefix must never write into another unit's notebook",
         );
         assert_eq!(foreign["bases"], json!(["dev", "main"]), "the refusal names the bases it knows");
+    }
+
+    /// An INDENTED bullet is an item, and the marker survives an unrelated add.
+    ///
+    /// `parse_items` did not trim before looking for `- `, while the close gate
+    /// reading the same file did. Review measured the consequence end to end:
+    /// an indented finding marked as explaining the symptom blocked the close,
+    /// an unrelated `--add` rewrote the file from these items and DELETED it,
+    /// and the close then went through. An editor's auto-indent was enough, and
+    /// the operator was never told.
+    #[test]
+    fn an_indented_item_survives_an_unrelated_add() {
+        let dir = repo();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("my-unit");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("notebook.md"),
+            format!("# Notebook\n\n  - {EXPLAINS_SYMPTOM} causa raiz indentada\n- outro\n"),
+        )
+        .unwrap();
+
+        let out = notebook_at(root, None, Some("nota qualquer"), false);
+        let items: Vec<String> = out["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(items.len(), 3, "the indented item must be one of them: {items:?}");
+        assert!(
+            items.iter().any(|i| i.contains("causa raiz indentada")),
+            "an unrelated add must not delete it: {items:?}",
+        );
+        assert_eq!(
+            out["explainsSymptom"].as_array().map(Vec::len),
+            Some(1),
+            "…and it still reads as marked: {out}",
+        );
+    }
+
+    /// An item that is ONLY the marker records nothing, and cannot pile up.
+    ///
+    /// The emptiness guard runs on what the caller typed, before the marker
+    /// comes off — so it never saw this. With the flag the stored line was
+    /// `"[MARCADOR] "`, and the reader trims: the dedupe compared an untrimmed
+    /// write against a trimmed read, never matched, and appended again on every
+    /// call. Six invocations left six content-free bullets blocking the close,
+    /// and `--add` cannot remove a line.
+    ///
+    /// Found in review, one round after the fix that introduced it — the fifth
+    /// time in this cycle that closing one hole opened the one beside it. The
+    /// test that shipped with that fix covered repeated prefixes with a body,
+    /// and never the input that strips to nothing.
+    #[test]
+    fn an_item_that_is_only_the_marker_records_nothing() {
+        let dir = repo();
+        let root = dir.path();
+
+        for (typed, flag) in [
+            (EXPLAINS_SYMPTOM.to_string(), true),
+            (EXPLAINS_SYMPTOM.to_string(), false),
+            (format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM}"), true),
+            (format!("  {EXPLAINS_SYMPTOM}   "), true),
+        ] {
+            let out = notebook_at(root, None, Some(&typed), flag);
+            assert_eq!(
+                out["ok"].as_bool(),
+                Some(false),
+                "an item that strips to nothing must be refused: {typed:?} -> {out}",
+            );
+            assert_eq!(out["reason"].as_str(), Some("empty-item"), "{out}");
+        }
+
+        // …and after all of that the notebook is still empty: nothing was
+        // written, so nothing can block the close.
+        let read = notebook_at(root, None, None, false);
+        assert_eq!(read["items"].as_array().map(Vec::len), Some(0), "{read}");
+        assert_eq!(read["explainsSymptom"].as_array().map(Vec::len), Some(0), "{read}");
+    }
+
+    /// A stored item equals itself on the next read, so the same item recorded
+    /// twice never grows the file.
+    ///
+    /// The round trip IS the dedupe: `render` writes `- {item}` and
+    /// `parse_items` trims, so anything stored with edge whitespace comes back
+    /// different from what was written and appends forever.
+    #[test]
+    fn a_stored_item_round_trips_so_the_same_item_never_piles_up() {
+        let dir = repo();
+        let root = dir.path();
+        for (typed, flag) in [
+            ("um achado comum".to_string(), false),
+            ("um achado marcado".to_string(), true),
+            (format!("{EXPLAINS_SYMPTOM} ja prefixado"), true),
+            (format!("  {EXPLAINS_SYMPTOM}   com espacos   "), true),
+        ] {
+            for _ in 0..3 {
+                notebook_at(root, None, Some(&typed), flag);
+            }
+        }
+        let read = notebook_at(root, None, None, false);
+        let items: Vec<&str> =
+            read["items"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(items.len(), 4, "three writes of each must leave one each: {items:?}");
+        for item in &items {
+            assert_eq!(item.trim(), *item, "a stored item carries no edge whitespace: {item:?}");
+        }
+    }
+
+    /// The FLAG is the only thing that sets the marker.
+    ///
+    /// An item whose own text opens with the literal prefix, typed without
+    /// `--explains-symptom`, is someone quoting the marker. Taking that as a
+    /// claim would let a gate be armed by a sentence about the gate.
+    #[test]
+    fn the_marker_cannot_be_forged_by_typing_it() {
+        let dir = repo();
+        let root = dir.path();
+        let quoted = format!("{EXPLAINS_SYMPTOM} eu so estava citando o marcador");
+
+        let out = notebook_at(root, None, Some(&quoted), false);
+        assert_eq!(
+            out["explainsSymptom"].as_array().map(Vec::len),
+            Some(0),
+            "a quoted prefix must not arm the gate: {out}",
+        );
+        // …and the words survive as text, so nothing the operator wrote is lost.
+        let items = out["items"].as_array().unwrap();
+        assert!(
+            items[0].as_str().unwrap().contains("citando o marcador"),
+            "the text itself is kept: {items:?}",
+        );
+
+        // With the flag, the same item IS marked — and marked exactly once.
+        let out2 = notebook_at(root, None, Some("outra coisa"), true);
+        let marked: Vec<&str> =
+            out2["explainsSymptom"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(marked.len(), 1, "{out2}");
+        assert_eq!(marked[0].matches(EXPLAINS_SYMPTOM).count(), 1, "no double prefix");
+
+        // REPEATED prefixes forge nothing either. The first fix stripped ONE
+        // and stored the rest, so two typed prefixes came out still marked and
+        // armed the close gate — and its test covered only the single case,
+        // which is how the suite stayed green over a live forgery (found in
+        // review, reproduced against the binary).
+        let dir3 = repo();
+        let root3 = dir3.path();
+        for typed in [
+            format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} duas vezes"),
+            format!("{EXPLAINS_SYMPTOM}{EXPLAINS_SYMPTOM} coladas"),
+            format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} tres"),
+        ] {
+            let out = notebook_at(root3, None, Some(&typed), false);
+            assert_eq!(
+                out["explainsSymptom"].as_array().map(Vec::len),
+                Some(0),
+                "repeated prefixes must not arm the gate: {typed:?} -> {out}",
+            );
+        }
+
+        // …and the flag on an item that already carries prefixes stores
+        // exactly ONE, not the pile the operator typed.
+        let dir4 = repo();
+        let out4 = notebook_at(
+            dir4.path(),
+            None,
+            Some(&format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} ja marcado")),
+            true,
+        );
+        let m4: Vec<&str> =
+            out4["explainsSymptom"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(m4.len(), 1, "{out4}");
+        assert_eq!(
+            m4[0].matches(EXPLAINS_SYMPTOM).count(),
+            1,
+            "the stored form is the same whatever the caller typed: {:?}",
+            m4[0],
+        );
     }
 }
