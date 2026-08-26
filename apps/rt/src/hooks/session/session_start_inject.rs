@@ -882,7 +882,27 @@ mod tests {
         let verdict = SessionStartInject
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        assert_eq!(verdict, Verdict::Allow);
+        assert!(is_quiet(&verdict), "nothing to inject must stay quiet: {verdict:?}");
+    }
+
+    /// Is this verdict "nothing of substance", once the machine-state advisory
+    /// is set aside?
+    ///
+    /// `stale_plugin_notice` reads the REAL plugin registry of the machine the
+    /// test runs on — there is no seam to substitute it — so on a developer's
+    /// box mid-upgrade every `Allow` here arrives as an `Inject` carrying that
+    /// one line. Asserting on the bare verdict made three tests fail for a
+    /// reason none of them is about (measured on this repository, with the
+    /// session on 0.1.47 and 0.1.49 installed).
+    ///
+    /// So the question each of them actually asks is spelled out: nothing was
+    /// injected EXCEPT possibly that advisory.
+    fn is_quiet(verdict: &Verdict) -> bool {
+        match verdict {
+            Verdict::Allow => true,
+            Verdict::Inject { context } => context.starts_with("[Mustard] Stale plugin"),
+            _ => false,
+        }
     }
 
     // --- declared injectables (orchestrator-redesign) ------------------------
@@ -941,7 +961,7 @@ mod tests {
         let v = SessionStartInject
             .evaluate(&session_input_with_source("s1", "resume"), &ctx(project))
             .unwrap();
-        assert_eq!(v, Verdict::Allow, "once injectable must not re-deliver on resume");
+        assert!(is_quiet(&v), "once injectable must not re-deliver on resume: {v:?}");
     }
 
     #[test]
@@ -1038,6 +1058,6 @@ mod tests {
         let v = SessionStartInject
             .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
             .unwrap();
-        assert_eq!(v, Verdict::Allow, "missing declared file must fail open");
+        assert!(is_quiet(&v), "missing declared file must fail open: {v:?}");
     }
 }

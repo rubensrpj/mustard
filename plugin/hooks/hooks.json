@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SessionStart",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SessionStart",
             "statusMessage": "Re-injecting session context...",
             "timeout": 15
           }
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SessionEnd",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SessionEnd",
             "statusMessage": "Cleaning session state...",
             "timeout": 15
           }
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SubagentStart",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SubagentStart",
             "statusMessage": "Registering agent...",
             "timeout": 5
           }
@@ -78,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on SubagentStop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SubagentStop",
             "statusMessage": "Agent completed",
             "timeout": 5
           }
@@ -90,7 +90,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on WorktreeCreate",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on WorktreeCreate",
             "statusMessage": "Cutting work-unit worktree from its integration base...",
             "timeout": 60
           }
@@ -103,7 +103,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on UserPromptSubmit --inject .claude/mustard/orchestrator.md",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on UserPromptSubmit --inject .claude/mustard/orchestrator.md",
             "timeout": 10
           }
         ]
@@ -113,7 +113,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on UserPromptSubmit --inject .claude/mustard/dispatch.md",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on UserPromptSubmit --inject .claude/mustard/dispatch.md",
             "timeout": 10
           }
         ]
@@ -124,7 +124,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt\" on Stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on Stop",
             "timeout": 5
           }
         ]
