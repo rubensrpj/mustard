@@ -19,7 +19,30 @@ RT="$DIR/mustard-rt"
 MANIFEST="$DIR/../.claude-plugin/plugin.json"
 STAMP="$DIR/.version"
 
+# THE FAST PATH, and it is why every hook can afford to come through here.
+#
+# A binary that is present and carries no stamp is a local build — "hands off",
+# per the header — so there is nothing to decide and nothing to read. Handing
+# over immediately keeps this shim at the cost of one `exec`; the version
+# lookup below spawns `sed` on every single invocation, which is 10x this
+# script's whole runtime (measured: 12 hundredths of a second versus 1).
+#
+# That difference is what decides whether this file can sit in front of
+# PreToolUse, which fires on every tool call, or only in front of SessionStart,
+# which fires once. It used to be only SessionStart — and so a plugin whose
+# `bin/` had not been populated yet failed on ten OTHER hooks before the one
+# that knows how to fix it ever ran.
+if [ -x "$RT" ] && [ ! -f "$STAMP" ]; then
+  exec "$RT" "$@"
+fi
+
 VER=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" 2>/dev/null | head -n 1)
+
+# A stamped binary matching the manifest is also settled: hand over without
+# touching the network.
+if [ -x "$RT" ] && [ -n "$VER" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$VER" ]; then
+  exec "$RT" "$@"
+fi
 
 need_fetch=0
 if [ ! -x "$RT" ]; then
@@ -28,11 +51,30 @@ elif [ -f "$STAMP" ] && [ -n "$VER" ] && [ "$(cat "$STAMP" 2>/dev/null)" != "$VE
   need_fetch=1
 fi
 
+# Declared before the branch: `set -u` at the top of this file makes an unset
+# variable fatal, and the second test below reads `$os` whether or not the
+# branch that assigns it ran.
+os=""
 if [ "$need_fetch" = "1" ] && [ -n "$VER" ]; then
+  # Named, not assumed. The catch-all used to be `linux-x64`, so any system
+  # that is not macOS asked for the Linux bundle — a guess this project spent a
+  # whole cycle removing from its own code. Windows never reaches this line
+  # (`mustard-boot.cmd` is its twin, and `cmd` resolves it by PATHEXT), but a
+  # wrong download is a silent failure and an unnamed system deserves the
+  # honest answer: do nothing, and say why.
   case "$(uname -s)" in
-    Darwin) os="macos-universal" ;;
-    *)      os="linux-x64" ;;
+    Darwin)                        os="macos-universal" ;;
+    Linux)                         os="linux-x64" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows*) os="windows-x64" ;;
+    *) echo "[mustard-boot] no published bundle for $(uname -s) — hooks stay dormant" >&2
+       os="" ;;
   esac
+fi
+
+# An unnamed system named no bundle above, so there is nothing to fetch and the
+# `exec` below simply does not happen — dormant, which is this script's one
+# promise on every failure path.
+if [ "$need_fetch" = "1" ] && [ -n "$VER" ] && [ -n "$os" ]; then
   url="https://github.com/rubensrpj/mustard/releases/download/v${VER}/mustard-bins-${VER}-${os}.tar.gz"
   tmp="$DIR/.boot-tmp"
   mkdir -p "$tmp"
