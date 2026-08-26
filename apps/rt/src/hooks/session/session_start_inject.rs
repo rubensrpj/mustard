@@ -486,10 +486,11 @@ fn stale_plugin_line(running: &str, installed: Option<&str>) -> Option<String> {
     ))
 }
 
-/// One line when the PLUGIN Claude Code would load is behind the `mustard-rt`
-/// binary installed on this machine.
+/// One line when the plugin Claude Code would load is behind the harness that
+/// is RUNNING.
 ///
-/// A third pair, and neither of the two above can see it.
+/// The third DIRECTION on the same pair, and neither of the two above reports
+/// it.
 /// [`version_drift_notice`] compares the project stamp with the running
 /// harness; [`stale_plugin_notice`] compares the running plugin with the
 /// registry. Both are blind to the case where the SYSTEM binary was updated and
@@ -510,21 +511,26 @@ fn plugin_behind_binary_notice() -> Option<String> {
     )
 }
 
-/// The pure half of [`plugin_behind_binary_notice`]: the running binary's
+/// The pure half of [`plugin_behind_binary_notice`]: the running harness's
 /// version in, the advisory out.
 ///
 /// The direction is the opposite of [`stale_plugin_line`], and that is the
-/// whole point. There, the session is BEHIND what is installed and a reload
-/// fixes it. Here, the plugin is behind the binary, and a reload changes
-/// nothing — only `/mustard:upsert` refreshes the plugin itself.
+/// whole point. There, the session is BEHIND what the registry records, and a
+/// reload fixes it. Here, the registry is behind the running harness, and a
+/// reload changes nothing — only `/mustard:upsert` refreshes the plugin.
+///
+/// The two read the same pair through the antisymmetric `is_behind`, so exactly
+/// one can ever be true; they cannot contradict each other. What this one must
+/// NOT claim is which binary the hooks are executing — the emitting process IS
+/// the newer one, and an earlier wording said the opposite (found in review).
 fn plugin_behind_binary_line(binary: &str, plugin: Option<&str>) -> Option<String> {
     let plugin = plugin.filter(|p| mustard_core::is_behind(p, binary))?;
     Some(format!(
-        "[Mustard] Plugin behind the installed binary — `mustard-rt` on this machine is \
-         {binary}, but the Claude Code plugin is {plugin}. A package install replaces the \
-         system binary and does NOT touch the plugin, so the hooks are still running {plugin}. \
-         Tell the user to run `/mustard:upsert`, which refreshes the plugin, and then restart \
-         Claude Code."
+        "[Mustard] Plugin behind the running harness — this harness is {binary} and the \
+         Claude Code plugin registry records {plugin}. A package install replaces the system \
+         binary and does NOT touch the plugin, so the plugin's commands, skills and agents \
+         are still the {plugin} ones. Tell the user to run `/mustard:upsert`, which refreshes \
+         the plugin, and then restart Claude Code."
     ))
 }
 

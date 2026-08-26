@@ -968,19 +968,6 @@ impl CloseGateModes {
     }
 }
 
-/// Run every close-gate sub-gate against an already-resolved `(cwd, spec)`
-/// pair — the spec-aware entry point used by `mustard-rt run emit-phase --to
-/// CLOSE` and the thin `PreToolUse(Write|Edit)` adapter. No JSON dependency,
-/// no `HookInput` coupling.
-///
-/// Returns:
-/// - [`Verdict::Allow`] when every gate passes (or every gate is in `off`).
-/// - [`Verdict::Deny`] when any strict gate fires.
-/// - [`Verdict::Warn`] only for the build/test gate in `warn` mode; the
-///   debt/checklist/qa gates degrade to `Allow` in `warn`.
-// run_close_gates is a sequential gate pipeline; splitting would require threading
-// many local mode/spec variables through helpers without clarity gain.
-#[allow(clippy::too_many_lines)]
 /// Notebook lines of `spec` marked as explaining the operator's reported
 /// symptom.
 ///
@@ -1004,6 +991,19 @@ fn find_symptom_findings(cwd: &str, spec: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Run every close-gate sub-gate against an already-resolved `(cwd, spec)`
+/// pair — the spec-aware entry point used by `mustard-rt run emit-phase --to
+/// CLOSE` and the thin `PreToolUse(Write|Edit)` adapter. No JSON dependency,
+/// no `HookInput` coupling.
+///
+/// Returns:
+/// - [`Verdict::Allow`] when every gate passes (or every gate is in `off`).
+/// - [`Verdict::Deny`] when any strict gate fires.
+/// - [`Verdict::Warn`] only for the build/test gate in `warn` mode; the
+///   debt/checklist/qa gates degrade to `Allow` in `warn`.
+// run_close_gates is a sequential gate pipeline; splitting would require threading
+// many local mode/spec variables through helpers without clarity gain.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> Verdict {
     let mode = modes.close;
 

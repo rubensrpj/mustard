@@ -52,7 +52,17 @@ fn checkout_root(root: &Path) -> PathBuf {
 /// (the title, the reminder of what the notebook is for) is not an item.
 fn parse_items(text: &str) -> Vec<String> {
     text.lines()
-        .filter_map(|line| line.strip_prefix("- "))
+        // LEADING WHITESPACE FIRST. Without the trim an indented bullet is not
+        // an item here, and `render` rewrites the file from these items — so
+        // the next `--add` DELETES the line. An editor's auto-indent is enough
+        // to trigger it, and the operator is never told.
+        //
+        // Review measured the consequence once the close gate started reading
+        // this same file: the gate trimmed and this did not, so an indented
+        // finding marked as explaining the symptom blocked the close, and then
+        // an unrelated `--add` silently removed it and the close went through.
+        // Two readers of one file must agree on what a line IS.
+        .filter_map(|line| line.trim_start().strip_prefix("- "))
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
         .collect()
@@ -130,11 +140,17 @@ pub(crate) fn notebook_at(
 
     let mut added = false;
     if let Some(text) = add.map(one_line).filter(|t| !t.is_empty()) {
-        // The marker rides the line itself — see `EXPLAINS_SYMPTOM`.
-        let text = if explains && !explains_symptom(&text) {
-            format!("{EXPLAINS_SYMPTOM} {text}")
-        } else {
-            text
+        // The marker rides the line itself — see `EXPLAINS_SYMPTOM` — and the
+        // FLAG is the only thing that sets it. An item whose own text opens
+        // with the literal prefix, typed without `--explains-symptom`, is
+        // someone quoting the marker; taking that as a claim would let a gate
+        // be armed by a sentence about the gate (found in review). Stripped, so
+        // the quote survives as text and stops being a signal.
+        let text = match (explains, explains_symptom(&text)) {
+            (true, false) => format!("{EXPLAINS_SYMPTOM} {text}"),
+            (true, true) => text,
+            (false, true) => strip_marker(&text),
+            (false, false) => text,
         };
         if !items.iter().any(|i| i == &text) {
             items.push(text);
@@ -178,6 +194,14 @@ pub(crate) fn notebook_at(
 /// it. Every existing reader keeps working; only the ones that ask about this
 /// prefix see anything new.
 pub(crate) const EXPLAINS_SYMPTOM: &str = "[EXPLICA O SINTOMA]";
+
+/// The item with any leading marker removed — what the operator typed, once
+/// the prefix stops being read as a claim.
+fn strip_marker(item: &str) -> String {
+    item.trim_start()
+        .strip_prefix(EXPLAINS_SYMPTOM)
+        .map_or_else(|| item.trim().to_string(), |rest| rest.trim().to_string())
+}
 
 /// Does this notebook line claim to explain the symptom the operator reported?
 #[must_use]
@@ -310,5 +334,76 @@ mod tests {
             "an undeclared prefix must never write into another unit's notebook",
         );
         assert_eq!(foreign["bases"], json!(["dev", "main"]), "the refusal names the bases it knows");
+    }
+
+    /// An INDENTED bullet is an item, and the marker survives an unrelated add.
+    ///
+    /// `parse_items` did not trim before looking for `- `, while the close gate
+    /// reading the same file did. Review measured the consequence end to end:
+    /// an indented finding marked as explaining the symptom blocked the close,
+    /// an unrelated `--add` rewrote the file from these items and DELETED it,
+    /// and the close then went through. An editor's auto-indent was enough, and
+    /// the operator was never told.
+    #[test]
+    fn an_indented_item_survives_an_unrelated_add() {
+        let dir = repo();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("my-unit");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("notebook.md"),
+            format!("# Notebook\n\n  - {EXPLAINS_SYMPTOM} causa raiz indentada\n- outro\n"),
+        )
+        .unwrap();
+
+        let out = notebook_at(root, None, Some("nota qualquer"), false);
+        let items: Vec<String> = out["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(items.len(), 3, "the indented item must be one of them: {items:?}");
+        assert!(
+            items.iter().any(|i| i.contains("causa raiz indentada")),
+            "an unrelated add must not delete it: {items:?}",
+        );
+        assert_eq!(
+            out["explainsSymptom"].as_array().map(Vec::len),
+            Some(1),
+            "…and it still reads as marked: {out}",
+        );
+    }
+
+    /// The FLAG is the only thing that sets the marker.
+    ///
+    /// An item whose own text opens with the literal prefix, typed without
+    /// `--explains-symptom`, is someone quoting the marker. Taking that as a
+    /// claim would let a gate be armed by a sentence about the gate.
+    #[test]
+    fn the_marker_cannot_be_forged_by_typing_it() {
+        let dir = repo();
+        let root = dir.path();
+        let quoted = format!("{EXPLAINS_SYMPTOM} eu so estava citando o marcador");
+
+        let out = notebook_at(root, None, Some(&quoted), false);
+        assert_eq!(
+            out["explainsSymptom"].as_array().map(Vec::len),
+            Some(0),
+            "a quoted prefix must not arm the gate: {out}",
+        );
+        // …and the words survive as text, so nothing the operator wrote is lost.
+        let items = out["items"].as_array().unwrap();
+        assert!(
+            items[0].as_str().unwrap().contains("citando o marcador"),
+            "the text itself is kept: {items:?}",
+        );
+
+        // With the flag, the same item IS marked — and marked exactly once.
+        let out2 = notebook_at(root, None, Some("outra coisa"), true);
+        let marked: Vec<&str> =
+            out2["explainsSymptom"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(marked.len(), 1, "{out2}");
+        assert_eq!(marked[0].matches(EXPLAINS_SYMPTOM).count(), 1, "no double prefix");
     }
 }

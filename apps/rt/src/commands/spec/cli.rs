@@ -328,8 +328,11 @@ pub enum SpecCmd {
         #[arg(long)]
         detail: String,
         /// A finding's line number, when the claim is line-precise.
+        ///
+        /// `u32`, the width `spec-draft --material` reads. A wider one here
+        /// would let the door accept a value the draft refuses.
         #[arg(long)]
-        line: Option<u64>,
+        line: Option<u32>,
     },
     /// Deliberately change ONE acceptance criterion after the spec artefacts are
     /// frozen, and prove the replacement still knows how to fail.

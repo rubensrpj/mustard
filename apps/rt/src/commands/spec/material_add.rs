@@ -57,14 +57,27 @@ struct Decision {
 struct Finding {
     statement: String,
     file: String,
+    /// The line, when the claim is line-precise.
+    ///
+    /// `u32`, matching `spec_draft`'s own `Finding` exactly. It was `u64` for
+    /// one commit, and review measured the consequence: `--line 4294967296`
+    /// wrote a file the reader REFUSES, and its loader is deliberately
+    /// fail-closed, so the unit's whole material channel died until someone
+    /// hand-edited JSON. Two spellings of one contract is how a writer lands
+    /// material where no reader looks — the type is half of that contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    line: Option<u64>,
+    line: Option<u32>,
 }
 
 /// The accumulating document. Field names and shape mirror what
 /// `spec-draft --material` deserialises, byte for byte — two spellings of one
 /// contract is how a writer lands material where no reader looks.
+///
+/// `deny_unknown_fields` mirrors the reader: without it a hand-authored key is
+/// accepted here and silently stripped on the next write, and the two structs
+/// drift with nothing detecting it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Material {
     #[serde(default)]
     definitions: Vec<Definition>,
@@ -108,7 +121,7 @@ pub struct MaterialAddOpts {
     /// The meaning, the reason, or the file — the half that makes it usable.
     pub detail: String,
     /// A finding's line number, when the claim is line-precise.
-    pub line: Option<u64>,
+    pub line: Option<u32>,
 }
 
 /// The JSON report. Deterministic: repo-relative path, counts, no timestamp.
@@ -184,10 +197,47 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
         );
     }
     let path = dir.join(MATERIAL_FILE);
-    let mut doc: Material = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
+    // FAIL-CLOSED on a file that exists and does not parse.
+    //
+    // The obvious `unwrap_or_default()` was here for one commit, and review
+    // measured what it does: three recorded items, a truncated file, one more
+    // `material-add` — and the three were GONE, replaced by the new one, with
+    // `ok: true` and no warning. That is the very defect this whole command
+    // closes ("the material vanishes and nobody is told"), reintroduced by the
+    // writer while the reader guards against it.
+    //
+    // An ABSENT file is different and still starts empty: nothing was lost, and
+    // the first item has to land somewhere.
+    let mut doc = Material::default();
+    if path.is_file() {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return MaterialAddReport::refused(
+                &opts.spec,
+                "material_unreadable",
+                "the material file exists and could not be read — fix its permissions, or \
+                 move it aside if it is no longer wanted",
+            );
+        };
+        // An empty file is an empty document, not a broken one: an interrupted
+        // create leaves zero bytes, and refusing there would strand the unit
+        // over nothing.
+        if !raw.trim().is_empty() {
+            match serde_json::from_str::<Material>(&raw) {
+                Ok(parsed) => doc = parsed,
+                Err(e) => {
+                    return MaterialAddReport::refused(
+                        &opts.spec,
+                        "material_corrupt",
+                        &format!(
+                            "the material file does not parse ({e}) — appending would \
+                             DISCARD everything it holds, so nothing was written. Repair the \
+                             JSON, or move the file aside to start over"
+                        ),
+                    );
+                }
+            }
+        }
+    }
 
     let added = match kind {
         Kind::Definition => {
@@ -360,5 +410,68 @@ mod tests {
         let mut o = opts("decision", "x", "y");
         o.spec = "nao-existe".to_string();
         assert_eq!(add(dir.path(), &o).error.as_deref(), Some("unknown_spec"));
+    }
+
+    /// A material file that exists and does not parse is REFUSED, never
+    /// silently replaced.
+    ///
+    /// Review measured the earlier `unwrap_or_default()`: three recorded items,
+    /// a truncated file, one more `material-add` — and the three were gone,
+    /// reported as `ok: true`. That is the defect this command exists to close,
+    /// reintroduced by its own writer.
+    #[test]
+    fn a_corrupt_material_file_is_refused_rather_than_discarded() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+        let path = dir.path().join(".claude/spec/demo").join(MATERIAL_FILE);
+
+        assert!(add(dir.path(), &opts("decision", "primeira", "razao")).ok);
+        assert!(add(dir.path(), &opts("decision", "segunda", "razao")).ok);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let half = before[..before.len() / 2].to_string();
+
+        // Truncated mid-write — the shape an interrupted save leaves.
+        std::fs::write(&path, &half).unwrap();
+        let r = add(dir.path(), &opts("decision", "terceira", "razao"));
+        assert!(!r.ok, "a corrupt file must refuse: {r:?}");
+        assert_eq!(r.error.as_deref(), Some("material_corrupt"));
+        assert!(
+            r.remedy.as_deref().is_some_and(|m| m.contains("DISCARD")),
+            "the refusal must say what was at stake: {:?}",
+            r.remedy,
+        );
+        // …and NOTHING was written: the half-file is exactly as it was.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), half);
+
+        // An EMPTY file is not corrupt — an interrupted create leaves zero
+        // bytes, and refusing there would strand the unit over nothing.
+        std::fs::write(&path, "").unwrap();
+        assert!(add(dir.path(), &opts("decision", "quarta", "razao")).ok, "empty is not corrupt");
+    }
+
+    /// The `line` type is the reader's, and a value the reader refuses cannot
+    /// be written.
+    ///
+    /// It was `u64` here against the reader's `u32` for one commit. Review
+    /// measured it: `--line 4294967296` produced a file the fail-closed loader
+    /// permanently refuses, killing the unit's whole material channel.
+    #[test]
+    fn the_line_width_is_the_one_the_draft_reads() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+        let mut o = opts("finding", "afirmacao", "src/x.rs");
+        o.line = Some(u32::MAX);
+        assert!(add(dir.path(), &o).ok, "the widest value the reader takes must land");
+
+        let raw = std::fs::read_to_string(
+            dir.path().join(".claude/spec/demo").join(MATERIAL_FILE),
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let written = doc["findings"][0]["line"].as_u64().unwrap();
+        assert!(
+            u32::try_from(written).is_ok(),
+            "every value this door can write must fit the reader's width: {written}",
+        );
     }
 }
