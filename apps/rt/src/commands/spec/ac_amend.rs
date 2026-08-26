@@ -261,18 +261,34 @@ fn git_in(tree: &Path, args: &[&str]) -> Option<String> {
 /// walk landed in: any tree resolving to a repository other than the one being
 /// amended is answered for, wherever inside it the path points.
 ///
-/// `None` when git cannot answer, or when it answers about `amending` — see
-/// [`proof_tree_record`] for why that is recorded as nothing rather than as a
-/// path.
+/// **Both sides are asked of GIT, and that is load-bearing.** A second version
+/// compared git's answer for `tree` against the `amending` PATH — which is the
+/// project anchor (`mustard.json` + `.claude/`), not the repository root. In a
+/// monorepo the two differ, so the equality could never hold and a plain nested
+/// directory borrowed the amended tree's own HEAD again, in exactly the layout
+/// this repository has. Review measured it in an `apps/thing/` project: the
+/// ledger claimed the negative proof was taken at the commit carrying the work.
+/// Comparing repository root against repository root is the only form that
+/// holds wherever the anchor sits.
+///
+/// `None` when git cannot answer, or when it answers about the repository being
+/// amended — see [`proof_tree_record`] for why that is recorded as nothing
+/// rather than as a path.
 fn proof_tree_commit(tree: &Path, amending: &Path) -> Option<String> {
-    let toplevel = git_in(tree, &["rev-parse", "--show-toplevel"])?;
-    let resolved = std::fs::canonicalize(&toplevel).ok()?;
-    // The tree being amended, resolved the same way. When git walked up into
-    // it, the commit on offer is the one that carries the work.
-    if std::fs::canonicalize(amending).is_ok_and(|here| here == resolved) {
+    let resolved = git_root(tree)?;
+    // The REPOSITORY the amended tree belongs to, asked of git the same way —
+    // never the project anchor, which in a monorepo is a subdirectory of it.
+    if git_root(amending).is_some_and(|here| here == resolved) {
         return None;
     }
     git_in(tree, &["rev-parse", "--short", "HEAD"])
+}
+
+/// The canonical path of the git repository `dir` belongs to, or `None` when
+/// git cannot say.
+fn git_root(dir: &Path) -> Option<std::path::PathBuf> {
+    let toplevel = git_in(dir, &["rev-parse", "--show-toplevel"])?;
+    std::fs::canonicalize(toplevel).ok()
 }
 
 /// What the ledger records about WHERE a proof was taken.
@@ -1087,6 +1103,50 @@ mod tests {
             proof_tree_commit(&sub, amending.path()).as_deref(),
             Some(head.as_str()),
             "a subdirectory of the right worktree names the right commit",
+        );
+    }
+
+    /// The comparison is REPOSITORY against REPOSITORY, so it still holds when
+    /// the project anchor is a subdirectory of the git root.
+    ///
+    /// A monorepo is the ordinary case — this repository is one. An earlier fix
+    /// compared git's answer for the proof tree against the `amending` PATH,
+    /// which is the `mustard.json` + `.claude/` anchor. In `mono/apps/thing/`
+    /// the two differ, the equality could never hold, and a plain nested
+    /// directory borrowed the amended tree's own HEAD: the ledger then claimed
+    /// the negative proof was taken at the very commit carrying the work
+    /// (measured in review).
+    #[test]
+    fn the_guard_holds_when_the_project_anchor_is_not_the_git_root() {
+        let mono = tempfile::tempdir().unwrap();
+        let Some(_head) = git_repo_with_one_commit(mono.path()) else {
+            return; // no usable git here
+        };
+        // The project anchor sits DEEP inside the repository, as it does in a
+        // monorepo — this is the path `amend` receives as `root`.
+        let anchor = mono.path().join("apps").join("thing");
+        std::fs::create_dir_all(&anchor).unwrap();
+        // A plain directory, not a repository, anywhere inside that same repo.
+        let nested = mono.path().join("scratch").join("plain");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(
+            proof_tree_commit(&nested, &anchor),
+            None,
+            "a directory inside the amended REPOSITORY must not borrow its commit, \
+             whatever subdirectory the project anchor sits in",
+        );
+
+        // …and a genuinely different repository still answers, from that same
+        // anchor — the guard refuses the right thing, not everything.
+        let other = tempfile::tempdir().unwrap();
+        let Some(head) = git_repo_with_one_commit(other.path()) else {
+            return;
+        };
+        assert_eq!(
+            proof_tree_commit(other.path(), &anchor).as_deref(),
+            Some(head.as_str()),
+            "another repository still answers",
         );
     }
 
