@@ -330,6 +330,18 @@ pub enum SpecCmd {
         /// Why the criterion is being changed. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// Take the proof against ANOTHER checkout — one that does not carry
+        /// the work yet — instead of this tree.
+        ///
+        /// The negative proof asks whether a criterion can FAIL, which is only
+        /// answerable where the behaviour is absent. A criterion corrected
+        /// after the code landed comes back green here, and green proves
+        /// nothing. Point this at a worktree of the base commit
+        /// (`git worktree add --detach <dir> <base>`); the spec is still read
+        /// and rewritten HERE, and the ledger records the commit the red was
+        /// taken on.
+        #[arg(long = "proof-tree")]
+        proof_tree: Option<PathBuf>,
     },
     /// ADD an acceptance criterion the spec does not yet carry, after the
     /// artefacts are frozen, taking the SAME negative proof a planned one takes.
@@ -493,6 +505,7 @@ pub fn dispatch(cmd: SpecCmd) {
             expect,
             statement,
             reason,
+            proof_tree,
         } => {
             spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
                 spec: slug,
@@ -501,6 +514,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 expect,
                 statement,
                 reason,
+                proof_tree,
             });
         }
         SpecCmd::AcAdd {

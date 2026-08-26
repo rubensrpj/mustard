@@ -179,7 +179,25 @@ fn emit_item_dropped(
 /// the label (the historical markdown contract), or a normalised exact /
 /// segment-suffix / basename match against the item's path anchor.
 fn item_matches(item: &ChecklistItem, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
     if item.label.contains(needle) {
+        return true;
+    }
+    // **The needle is usually LONGER than the label, not shorter.**
+    //
+    // A wave records each item twice: as a short `label` here — the file path —
+    // and as the task sentence in that wave's `spec.md`. The close gate reports
+    // the SENTENCE, so the operator copies it and hands it to this command,
+    // where `label.contains(needle)` is false for the obvious reason: a path
+    // cannot contain a sentence that merely mentions it.
+    //
+    // Measured in the field: 15 items that were all implemented could not be
+    // marked through the only door that marks them, and the refusal blamed a
+    // missing `## Checklist` section — the last-resort path, not the real
+    // cause. So the containment is tried BOTH ways.
+    if needle.contains(&item.label) && !item.label.trim().is_empty() {
         return true;
     }
     let Some(path) = item.path.as_deref() else {
@@ -187,10 +205,40 @@ fn item_matches(item: &ChecklistItem, needle: &str) -> bool {
     };
     let p = path.replace('\\', "/").to_ascii_lowercase();
     let n = needle.replace('\\', "/").to_ascii_lowercase();
-    if n.is_empty() {
-        return false;
+    if p == n || p.ends_with(&format!("/{n}")) || p.rsplit('/').next() == n.rsplit('/').next() {
+        return true;
     }
-    p == n || p.ends_with(&format!("/{n}")) || p.rsplit('/').next() == n.rsplit('/').next()
+    // The task sentence names the file it is about, either in full — "criar
+    // apps/rt/…/x.rs no molde de …" — or by its BASENAME alone: "em
+    // session_start_inject.rs: quando source é compact…". Both spellings mean
+    // the same item, and 7 of 15 real items used the short one.
+    //
+    // The basename must be a whole token, not a substring: `x.rs` would
+    // otherwise match a sentence about `prefix_x.rs`, marking the wrong item —
+    // and a checklist marked wrong is worse than one that refuses.
+    if n.contains(&p) {
+        return true;
+    }
+    let Some(base) = p.rsplit('/').next().filter(|b| !b.is_empty()) else {
+        return false;
+    };
+    n.match_indices(base).any(|(i, _)| {
+        let before_ok = i == 0
+            || !n[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '/');
+        let after = i + base.len();
+        // A dot AFTER the basename continues the filename (`x.rs.bak` is not
+        // `x.rs`), so it closes the match — unlike a dot before, which is just
+        // punctuation. The two sides are not symmetric.
+        let after_ok = after >= n.len()
+            || !n[after..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.');
+        before_ok && after_ok
+    })
 }
 
 /// The candidate meta-bearing dirs for marking: the spec's own dir first, then
@@ -543,7 +591,22 @@ pub fn run(
     let mut lines: Vec<String> = raw.split('\n').map(String::from).collect();
     let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     let Some((start, end)) = find_checklist_section(&line_refs) else {
-        die(1, "no `## Checklist` section in spec");
+        // Reached only after the wave sidecars were searched and nothing
+        // matched, so blaming the missing section describes the LAST thing
+        // tried rather than what actually failed. A wave-plan spec never has
+        // this section — its items live in the waves — and a reader sent to
+        // look for it finds nothing and no next step.
+        die(
+            1,
+            &format!(
+                "no checklist item matches {:?}. The spec's own `## Checklist` section is \
+                 absent (normal for a wave plan — the items live in each `wave-*/meta.json`), \
+                 and no wave sidecar carries a matching OPEN item either. Check the wording \
+                 against `mustard-rt run wave-tree --spec <spec>`, or pass `--line <n>` when \
+                 the item is in this file",
+                item.unwrap_or(""),
+            ),
+        );
     };
 
     let target_idx: usize = if let Some(n) = line {
@@ -717,6 +780,50 @@ mod tests {
         assert!(item_matches(&it, "src/api/handler.rs"), "exact path");
         assert!(item_matches(&it, "handler"), "label substring");
         assert!(!item_matches(&it, "other.rs"));
+    }
+
+    /// The needle the operator actually has is the close gate's SENTENCE, and
+    /// it is longer than the label — the reverse of what the matcher assumed.
+    ///
+    /// Measured in the field: 15 items, all implemented, could not be marked
+    /// through the only door that marks them. Each wave records an item twice —
+    /// a short `label` (the file path) in `meta.json`, and the task sentence in
+    /// that wave's `spec.md` — and the gate reports the sentence.
+    #[test]
+    fn the_gates_own_sentence_marks_the_item_it_names() {
+        let it = ChecklistItem {
+            label: "apps/rt/src/hooks/session/session_start_inject.rs".to_string(),
+            path: Some("apps/rt/src/hooks/session/session_start_inject.rs".to_string()),
+            done: false,
+            dropped: None,
+        };
+        // The full path inside a longer sentence.
+        assert!(item_matches(
+            &it,
+            "criar apps/rt/src/hooks/session/session_start_inject.rs no molde do vizinho",
+        ));
+        // The BASENAME alone — how 7 of those 15 items were written.
+        assert!(item_matches(
+            &it,
+            "em session_start_inject.rs: quando source é compact, reentregar a família",
+        ));
+
+        // A basename must be a whole token. `x.rs` matching a sentence about
+        // `prefix_x.rs` would mark the WRONG item, and a checklist marked wrong
+        // is worse than one that refuses.
+        let short = ChecklistItem {
+            label: "src/x.rs".to_string(),
+            path: Some("src/x.rs".to_string()),
+            done: false,
+            dropped: None,
+        };
+        assert!(!item_matches(&short, "em prefix_x.rs: outra tarefa"), "prefixed");
+        assert!(!item_matches(&short, "em x.rs.bak: outra tarefa"), "suffixed");
+        assert!(item_matches(&short, "em x.rs: a tarefa certa"), "whole token");
+
+        // An empty needle matches nothing — it would otherwise mark the first
+        // open item of whichever wave is read first.
+        assert!(!item_matches(&it, ""));
     }
 
     #[test]

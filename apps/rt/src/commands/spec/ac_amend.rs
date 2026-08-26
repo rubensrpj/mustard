@@ -120,6 +120,24 @@ pub struct AcAmendOpts {
     pub statement: Option<String>,
     /// Why the criterion is being changed. Never blank.
     pub reason: String,
+    /// Take the proof against ANOTHER tree — a checkout that does not yet carry
+    /// the work — instead of the one being amended.
+    ///
+    /// The negative proof asks "can this criterion fail?", and it can only be
+    /// answered where the behaviour does NOT exist. A criterion corrected after
+    /// the code lands therefore has no honest answer in the current tree: the
+    /// replacement comes back green, and green proves nothing.
+    ///
+    /// Measured on this repository: three criteria named tests the
+    /// implementation had not created (`cargo test <unknown>` answers
+    /// `0 passed` with exit 0, so they would have passed vacuously). Correcting
+    /// them meant hiding each test, running the amend, and restoring it — a
+    /// contrivance that leaves no trace of WHERE the red was taken.
+    ///
+    /// The tree is recorded in the ledger alongside the verdict, so the
+    /// amendment says where its evidence came from. The spec is still read and
+    /// rewritten in the CURRENT tree; only the command runs elsewhere.
+    pub proof_tree: Option<PathBuf>,
 }
 
 /// JSON report printed on stdout. Deterministic: repo-relative paths, sorted,
@@ -201,6 +219,33 @@ struct Amendment {
     statement: Option<String>,
     /// The artefacts the amendment rewrote, as repo paths.
     rewrote: Vec<String>,
+    /// WHERE the red was taken, when it was not this tree.
+    ///
+    /// A proof carries no weight without the state it was taken against, and a
+    /// criterion corrected after the work landed can only come back red
+    /// somewhere the work is absent. Recording the tree is what keeps
+    /// `--proof-tree` an evidenced claim rather than an escape hatch: a reader
+    /// can go to that commit and take the same measurement.
+    ///
+    /// Absent for the ordinary case — the proof was taken here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_tree: Option<String>,
+}
+
+/// The commit a proof tree stands on, as a short hash.
+///
+/// `None` when git cannot answer — the caller then records the path, which is
+/// weaker evidence but still better than recording nothing about where the red
+/// came from.
+fn proof_tree_commit(tree: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &tree.to_string_lossy(), "rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    })
+    .filter(|s| !s.is_empty())
 }
 
 /// What a rewrite must apply to one criterion.
@@ -624,8 +669,25 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // was not declared. When the markdown still carries one, the next
     // `ac-negative-check` pass sees it differ from the record and takes it — the
     // safe direction, since it can only cause a run, never a stale reuse.
+    // WHERE the command runs, which is not always where the spec lives. A
+    // criterion corrected after the work landed cannot come back red in this
+    // tree — the behaviour exists — so `--proof-tree` points at a checkout that
+    // predates it. Everything else (reading the spec, rewriting the artefacts,
+    // appending to the ledger) stays here.
+    let proof_root: &Path = opts.proof_tree.as_deref().unwrap_or(root);
+    if let Some(tree) = opts.proof_tree.as_deref() {
+        if !tree.is_dir() {
+            return AcAmendReport::refused(
+                opts,
+                &id,
+                &format!("--proof-tree {} is not a directory", tree.display()),
+                "point it at a checkout of this repository that does not carry the work yet \
+                 (`git worktree add --detach <dir> <base-commit>`)",
+            );
+        }
+    }
     let mut proof = ac_negative_check::prove_one(
-        root,
+        proof_root,
         &id,
         &opts.command,
         expect.as_deref(),
@@ -767,6 +829,12 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         expect,
         statement: plan.statement.clone(),
         rewrote: rewritten,
+        // The COMMIT, not the directory. A worktree under `/tmp` is gone by the
+        // time anyone reads the ledger; the commit it stood on is what lets a
+        // reader take the same measurement again.
+        proof_tree: opts.proof_tree.as_deref().map(|tree| {
+            proof_tree_commit(tree).unwrap_or_else(|| tree.display().to_string())
+        }),
     };
     if let Ok(value) = serde_json::to_value(&entry) {
         ledger.amendments.push(value);
@@ -852,7 +920,68 @@ mod tests {
             expect: None,
             statement: None,
             reason: reason.to_string(),
+            proof_tree: None,
         }
+    }
+
+    /// A criterion corrected AFTER the work landed takes its red somewhere the
+    /// work is absent — and the ledger records where.
+    ///
+    /// Without this, the only way through was a contrivance: hide the test, run
+    /// the amend, restore the test. It worked, and it left no trace of where
+    /// the red came from, so the ledger's own claim could not be checked.
+    ///
+    /// Measured by giving the two trees opposite answers to one command: a
+    /// marker file that exists here and not there. The proof runs THERE; the
+    /// spec is still read and rewritten HERE.
+    #[test]
+    fn a_proof_tree_takes_the_red_where_the_work_is_absent() {
+        let here = tempfile::tempdir().unwrap();
+        seed(here.path(), "demo");
+        let marker_cmd = "test -f built.marker";
+
+        // This tree carries the work, so the replacement passes and an
+        // ordinary amend has no honest red to take.
+        std::fs::write(here.path().join("built.marker"), "done").unwrap();
+        let green = amend(here.path(), &opts("demo", "AC-1", marker_cmd, "the work exists here"));
+        assert!(!green.ok, "a replacement that passes must be refused");
+
+        // A tree WITHOUT the marker answers the same command red.
+        let before = tempfile::tempdir().unwrap();
+        let mut o = opts("demo", "AC-1", marker_cmd, "corrected after the work landed");
+        o.proof_tree = Some(before.path().to_path_buf());
+        let red = amend(here.path(), &o);
+        assert!(red.ok, "the red taken in the other tree must be accepted: {red:?}");
+
+        // …and the amendment says WHERE. Without it the claim is unverifiable,
+        // which is the state this flag replaces.
+        let ledger: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                here.path().join(".claude/spec/demo").join(AC_PROOF_JSON),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let recorded = ledger["amendments"][0]["proof_tree"].as_str().unwrap_or_default();
+        assert!(!recorded.is_empty(), "the ledger must record where the red was taken");
+    }
+
+    /// A `--proof-tree` that is not a directory refuses and says how to make
+    /// one. A typo must never silently fall back to proving here — that would
+    /// hand back the green this flag exists to avoid.
+    #[test]
+    fn a_proof_tree_that_is_not_a_directory_refuses() {
+        let here = tempfile::tempdir().unwrap();
+        seed(here.path(), "demo");
+        let mut o = opts("demo", "AC-1", "cd .", "typo in the path");
+        o.proof_tree = Some(here.path().join("does-not-exist"));
+        let r = amend(here.path(), &o);
+        assert!(!r.ok, "a bad --proof-tree must refuse");
+        assert!(
+            r.remedy.as_deref().is_some_and(|m| m.contains("git worktree add")),
+            "the refusal must name how to make one: {:?}",
+            r.remedy,
+        );
     }
 
     /// The load-bearing refusal: a replacement that ALREADY passes proves
