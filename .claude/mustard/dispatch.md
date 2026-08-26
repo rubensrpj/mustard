@@ -4,7 +4,9 @@ The router's second half: the question that OPENS a work unit, the gate that emi
 
 ## Dispatch
 
-**A unit opens with ONE question, asked against a REAL list.** Get the candidates from git first. `mustard-rt run base-candidates` fetches every branch on `origin`, newest first, each marked `protected` (a direct commit is refused there) and `preselected` (`git.flow` names it; where the cursor opens). `measured:false` means git could not be asked: ask without a menu rather than showing an empty one as complete.
+**Every request that edits a file opens a unit, and a unit opens with ONE question.** Size is not the test: a one-line change lands on a branch the same way a rewrite does, and "too small to ask about" is how work ends up committed to whatever the checkout was standing on. The only requests that open no unit are the ones that WRITE NOTHING — a question answered by reading, a status command, a digest.
+
+**The question is asked against a REAL list.** Get the candidates from git first. `mustard-rt run base-candidates` fetches every branch on `origin`, newest first, each marked `protected` (a direct commit is refused there) and `preselected` (`git.flow` names it; where the cursor opens). `measured:false` means git could not be asked: ask without a menu rather than showing an empty one as complete.
 
 Ask the rows together, **`sai de` FIRST**. The operator settles where the unit STARTS before what it is CALLED. A type shown above the base makes the base read as the type's consequence.
 

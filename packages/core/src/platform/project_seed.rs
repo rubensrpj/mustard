@@ -875,6 +875,10 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     // operational token was audited across the change; only the prose that
     // explained the two-event split left the file.
     0x0d5c58329eeb1bf5,
+    // The `Simple` row dispensed the pipeline and said nothing about the
+    // question, so a one-line fix was committed straight onto `release`
+    // (measured in the field). The row now says which half it exempts.
+    0x4942f9490f128105,
 ];
 
 /// Superseded versions of the `dispatch.md` seed. It grows the same way the
@@ -891,6 +895,10 @@ const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
     // days of conversation and neither carried material. It now names
     // `material-add`.
     0x14e5044fb82e2541,
+    // The opening rule said "a unit opens with ONE question" and never said
+    // what counts as a unit, so a one-line edit was treated as too small to
+    // ask about. It now names the test: anything that WRITES opens a unit.
+    0x02e6a5f55ac6f495,
 ];
 
 /// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
@@ -1451,7 +1459,12 @@ pub fn migrate_orchestrator_footprint(root: &Path, claude_dir: &Path) -> Migrati
     if backfill_dispatch_inject(root) {
         outcome
             .migrated
-            .push("mustard.json (dispatch injectable on sessionStart)".to_string());
+            // Names the RESULT, not the state it left. The old wording said
+            // "dispatch injectable on sessionStart" — the event the migration
+            // moves entries OFF — and a reader relayed it to the operator as
+            // where the file had landed, i.e. the exact broken state the
+            // migration exists to undo (measured in the field, 2026-08-26).
+            .push("mustard.json (router injectables consolidated)".to_string());
     }
 
     // (b) the root CLAUDE.md — give the file back to the user.
@@ -2247,9 +2260,17 @@ mod tests {
             "the backfilled half must ride the self-healing event, not the one \
              whose missed paths caused this defect",
         );
+        // The line must name the RESULT. It used to say "on sessionStart" —
+        // the event entries are moved OFF — and a reader relayed that to the
+        // operator as where the file had landed (measured in the field).
         assert!(
-            report.migrated.iter().any(|m| m.contains("dispatch")),
+            report.migrated.iter().any(|m| m.contains("router injectables")),
             "migration reported: {:?}",
+            report.migrated,
+        );
+        assert!(
+            !report.migrated.iter().any(|m| m.contains("sessionStart")),
+            "the report must not name the event it moved AWAY from: {:?}",
             report.migrated,
         );
 
