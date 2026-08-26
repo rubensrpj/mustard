@@ -608,6 +608,24 @@ pub fn run(
         // tried rather than what actually failed. A wave-plan spec never has
         // this section — its items live in the waves — and a reader sent to
         // look for it finds nothing and no next step.
+        // Two callers reach here and they failed at DIFFERENT things, so they
+        // get different sentences. `--item` looked for wording and found none;
+        // `--line` never had an index to apply, because neither the meta
+        // sidecar nor the markdown carries a checklist at all — telling that
+        // caller "no item matches ''" names an empty search they never ran, and
+        // advising `--line` advises the flag they already passed.
+        if let Some(n) = line {
+            die(
+                1,
+                &format!(
+                    "--line {n} has nothing to index: this spec carries no checklist — neither \
+                     `meta.json#checklist` nor a `## Checklist` section in `spec.md`. On a wave \
+                     plan the items live in each `wave-*/meta.json`; run \
+                     `mustard-rt run wave-tree --spec <spec>` to see which wave holds yours, and \
+                     address it with `--spec <that wave>`"
+                ),
+            );
+        }
         die(
             1,
             &format!(

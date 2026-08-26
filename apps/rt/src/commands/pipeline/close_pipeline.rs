@@ -853,6 +853,7 @@ mod tests {
             removal_exit: None,
             reason: None,
             stderr_excerpt: String::new(),
+            proof_tree: None,
         }
     }
 
