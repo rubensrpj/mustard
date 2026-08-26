@@ -125,19 +125,25 @@ fn registered_events(manifest: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// The files the hooks of `event` claim with `--inject`, read from THIS
-/// manifest.
+/// The files the hooks of `event` claim with `--inject`, read from the manifest
+/// this check was handed.
 ///
-/// Deliberately not `dispatch::claimed_injectables`, which resolves the
-/// machine's INSTALLED plugin manifest first and never consults its
-/// `project_dir` argument for that lookup. That is right for the dispatcher —
-/// the hooks that actually run ARE the installed ones — and wrong here, because
-/// this check answers a question about the project in front of it. Review
-/// measured both misreads against the binary: a correctly wired project
-/// reported FAIL because the developer's installed plugin claimed something
-/// else, and a genuinely undelivered injectable reported GREEN. The second is
-/// the dangerous one — it is the exact "present, registered, never in force"
-/// state this condition exists to catch, reported clean.
+/// **That manifest is the INSTALLED plugin's, and it is the right one.** A
+/// project does not ship hooks; the installed plugin does, and its hooks are
+/// what actually run in every project on the machine. An earlier round of this
+/// fix assumed the project had a manifest of its own to consult — it does not,
+/// and reading one would answer about a file nothing executes.
+///
+/// The consequence is stronger than it first looks, and measured: the shipped
+/// manifest claims exactly two fixed paths (`orchestrator.md`, `dispatch.md`).
+/// A THIRD injectable an operator declares is therefore collected by nobody, on
+/// any machine — which is precisely the finding this condition should report,
+/// not a false alarm about the developer's install.
+///
+/// Kept local rather than calling `dispatch::claimed_injectables` so the check
+/// reads the manifest its caller resolved, instead of resolving a second one
+/// behind its back — two lookups that can disagree is how a diagnostic starts
+/// reporting on a file its own report does not name.
 fn claims_in(manifest: &Path, event: &str) -> Vec<String> {
     let Ok(text) = fs::read_to_string(manifest) else {
         return Vec::new();
@@ -273,6 +279,21 @@ fn build_report(
     // collected by nobody. Every condition above reports it clean, which is the
     // failure mode this whole check exists to end (found in review, measured
     // against the binary).
+    // A manifest that could not be located is NOT a clean bill of health. With
+    // no manifest this condition cannot run, and staying silent about that is
+    // the same false GREEN it exists to end: the operator reads `ok: true` and
+    // concludes their declaration is delivered, when in fact nobody looked.
+    if manifest.is_none() && !entries.is_empty() {
+        findings.push(DeliveryFinding::warn(
+            "claims-unknown",
+            "the shipped hook manifest could not be located, so whether each declared \
+             injectable is actually collected by a hook was NOT checked — this report is \
+             silent on that question rather than clearing it"
+                .to_string(),
+            "run this from a machine with the Mustard plugin installed, or set \
+             CLAUDE_PLUGIN_ROOT to the plugin directory",
+        ));
+    }
     if let Some(manifest) = manifest {
         for entry in &entries {
             let claims = claims_in(manifest, &entry.on);
@@ -383,6 +404,14 @@ mod tests {
     const BOTH: &str = r#"{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},
                           {"on":"userPromptSubmit","file":".claude/mustard/dispatch.md","once":true}"#;
 
+    /// A complete declaration, on an enabled plugin, whose manifest claims both
+    /// files, reports nothing at all.
+    ///
+    /// The manifest is passed HERE rather than left `None`. It used to be
+    /// `None`, which made this test assert the very thing review caught as
+    /// wrong: that a report which could not check delivery reads as clean.
+    /// `claims-unknown` now covers that case on its own, and this test is back
+    /// to what its name says — a genuinely clean project.
     #[test]
     fn a_complete_declaration_on_an_enabled_plugin_is_clean() {
         let dir = tempdir().unwrap();
@@ -391,8 +420,17 @@ mod tests {
             BOTH,
             &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
         );
+        let manifest = dir.path().join("hooks.json");
+        std::fs::write(
+            &manifest,
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[
+                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/orchestrator.md"},
+                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/dispatch.md"}
+               ]}]}}"#,
+        )
+        .unwrap();
         let s = settings(dir.path(), true);
-        let report = build_report(dir.path(), &s, None);
+        let report = build_report(dir.path(), &s, Some(&manifest));
         assert!(report.ok, "clean project reported findings: {:?}", report.findings);
         assert_eq!(report.declared, 2);
     }
@@ -529,6 +567,60 @@ mod tests {
         // The operator reads these verbatim: no run of collapsed indentation.
         assert!(!f.detail.contains("  "), "detail carries raw indentation: {}", f.detail);
         assert!(!f.remedy.contains("  "), "remedy carries raw indentation: {}", f.remedy);
+    }
+
+    /// A manifest nobody could locate is reported, never passed over in
+    /// silence.
+    ///
+    /// This is the shape review caught: with no manifest, condition (6) simply
+    /// does not run, and the report came back `ok: true` — the operator reads
+    /// that as "my declaration is delivered" when the truth is "nobody looked".
+    /// A check that cannot answer must say so; that is the whole premise of
+    /// this module.
+    ///
+    /// It goes through `run()` deliberately. The previous test called
+    /// `build_report` with a hand-picked manifest — a value `run()` can never
+    /// produce — so it passed while the shipped check was silent (found in
+    /// review, and the exact "green in the test, wrong in the field" shape).
+    #[test]
+    fn a_manifest_that_cannot_be_found_is_reported_not_cleared() {
+        let dir = tempdir().unwrap();
+        seed(
+            dir.path(),
+            BOTH,
+            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
+        );
+        let s = settings(dir.path(), true);
+        let report = build_report(dir.path(), &s, None);
+
+        assert!(
+            !report.ok,
+            "an unanswerable check must not read as clean: {:?}",
+            report.findings,
+        );
+        let f = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "claims-unknown")
+            .expect("the report must say the claim question went unchecked");
+        assert_eq!(f.severity, Severity::Warn, "unknown is a WARN, not a FAIL");
+        assert!(
+            !report.failed,
+            "…and it must not read as a failure either — nobody looked is not a defect found",
+        );
+        assert!(!f.detail.contains("  "), "detail carries raw indentation: {}", f.detail);
+        assert!(!f.remedy.contains("  "), "remedy carries raw indentation: {}", f.remedy);
+
+        // A project declaring nothing has no claim question to leave open.
+        let empty = tempdir().unwrap();
+        seed(empty.path(), "", &[]);
+        let s2 = settings(empty.path(), true);
+        let quiet = build_report(empty.path(), &s2, None);
+        assert!(
+            !quiet.findings.iter().any(|f| f.kind == "claims-unknown"),
+            "nothing declared, nothing to say: {:?}",
+            quiet.findings,
+        );
     }
 
     /// The two WARN conditions: delivered, but less or later than declared.
