@@ -15,6 +15,8 @@ Classify intent + coarse scope yourself. There is no pre-spec classifier. Narrat
 | Vibe / spike | prototype, throwaway | `task`, no spec, no gates |
 | Simple | config tweak, one-line edit, rename, version bump | direct (no Task) |
 
+**`Simple` dispenses the PIPELINE, never the question.** It means no spec, no waves, no gates — it does not mean writing to whatever branch the checkout happens to be on. Any request that EDITS A FILE opens a work unit, and § Dispatch's opening question is what opens it, one line or five hundred. Measured in the field, 2026-08-26: a one-line fix was read as `Simple` and committed straight onto `release`, and the operator had to ask why nothing was asked. The exemption is for ceremony; where the work is born is not ceremony.
+
 Each kind dispatches the `/mustard:<kind>` flow. **Dispatching means LOADING the flow, not improvising it.** For `feature`/`bugfix`/`task`/`tactical-fix`, invoke `Skill(mustard:<kind>)` FIRST, then follow what it loads. Never your recollection of the commands. `spec-draft` is the ONLY `spec.md` writer; never hand-write it. Skill unavailable: use `commands/<kind>.md`. `/mustard:*` is a direct power-override.
 
 `--spec` takes two different things, and the wrong one fails as `spec-not-readable`, which reads like a broken tool and is not. Spec PATH (`.claude/spec/{slug}` or its `spec.md`): `scope-classify`, `plan-prepare`, `analyze-validation`, `dependency-precheck`, `exec-rewave-check`. Bare slug: everything else. `ac-negative-check` and `ac-amend` accept EITHER; they resolve a slug through the same locator `qa-run` uses.

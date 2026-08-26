@@ -2,6 +2,7 @@ pub mod cli;
 
 pub mod ac_add;
 pub mod ac_amend;
+pub mod material_add;
 pub mod active_specs;
 pub mod approve_spec;
 pub mod change_request;

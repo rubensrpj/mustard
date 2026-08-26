@@ -69,6 +69,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "maint-validate",
     "mark-checklist-item",
     "mark-finding",
+    "material-add",
     "metrics",
     "metrics-wave-status",
     "notebook",
