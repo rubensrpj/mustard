@@ -617,6 +617,7 @@ mod tests {
             project_dir: root.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         (input, ctx)
     }
@@ -856,6 +857,7 @@ mod tests {
             project_dir: main_s.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
@@ -904,6 +906,7 @@ mod tests {
             project_dir: main_s.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
@@ -1375,6 +1378,7 @@ mod tests {
             project_dir: main_s.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");

@@ -302,6 +302,7 @@ mod tests {
             project_dir: cwd.to_string_lossy().into_owned(),
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
+            inject_only: None,
         }
     }
 

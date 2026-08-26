@@ -440,6 +440,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::SessionEnd),
             workspace_root: None,
+            inject_only: None,
         }
     }
 
@@ -468,6 +469,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         SessionCleanupObserver.observe(&session_end_input(), &other);
         // PreToolUse → cleanup did not run, the terminal state survives.

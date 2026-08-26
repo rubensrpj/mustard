@@ -25,12 +25,30 @@ use std::path::PathBuf;
 /// fail-open path: no module matches, the outcome is a bare `Allow`.
 #[must_use]
 pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
+    run_event_scoped(trigger, input, None)
+}
+
+/// [`run_event`], narrowed to a single declared injectable.
+///
+/// `inject_only` is the `--inject <file>` a sibling hook registration carries.
+/// Each injectable is delivered by its own hook invocation, so each is measured
+/// alone against the 10,000-character ceiling a hook RESPONSE holds — siblings
+/// do not share a budget (measured 2026-08-25; see
+/// `plugin/refs/mustard/router-rationale.md`). `None` delivers every entry of
+/// the trigger, which is what every non-injectable module wants.
+#[must_use]
+pub fn run_event_scoped(
+    trigger: Option<Trigger>,
+    input: &HookInput,
+    inject_only: Option<&str>,
+) -> Outcome {
     let Some(trigger) = trigger else {
         return Outcome::allow();
     };
     let registry = Registry::new();
     let tool = input.tool_name.as_deref();
-    let ctx = build_ctx(trigger, input);
+    let mut ctx = build_ctx(trigger, input);
+    ctx.inject_only = inject_only.map(str::to_string);
 
     let mut outcome = Outcome::allow();
     for module in registry.applicable(trigger, tool) {
@@ -97,6 +115,7 @@ fn build_ctx(trigger: Trigger, input: &HookInput) -> Ctx {
         project_dir,
         trigger: Some(trigger),
         workspace_root,
+        inject_only: None,
     }
 }
 

@@ -337,6 +337,7 @@ mod tests {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             ActiveSpecLimitGate.evaluate(&input, &ctx).expect("no error"),

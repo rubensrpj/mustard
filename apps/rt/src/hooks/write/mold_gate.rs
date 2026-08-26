@@ -226,6 +226,7 @@ mod tests {
             project_dir: root.to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         (input, ctx)
     }

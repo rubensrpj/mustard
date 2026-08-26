@@ -86,6 +86,15 @@ enum Command {
     On {
         /// The harness event name, e.g. `PreToolUse`, `PostToolUse`.
         event: String,
+        /// Deliver ONLY this declared injectable (the project-relative path in
+        /// `mustard.json#inject`), instead of every entry of the event.
+        ///
+        /// This is how a sibling hook claims one injectable. The 10,000-char
+        /// `additionalContext` ceiling is per hook RESPONSE, so one hook per
+        /// injectable gives each its own; siblings do not share a budget
+        /// (measured 2026-08-25 — `plugin/refs/mustard/router-rationale.md`).
+        #[arg(long, value_name = "FILE")]
+        inject: Option<String>,
     },
     /// Run a single named enforcement module.
     Check {
@@ -131,7 +140,7 @@ fn main() {
         // carries the created path (not `hookSpecificOutput` JSON) and a
         // non-zero exit aborts the creation. It reads the harness stdin like
         // the enforcement faces, but must never flow into `emit_outcome`.
-        Command::On { ref event } if event == "WorktreeCreate" => {
+        Command::On { ref event, .. } if event == "WorktreeCreate" => {
             hooks::worktree_create::run(&read_stdin_input());
         }
         _ => {}
@@ -144,13 +153,13 @@ fn main() {
     let input = read_stdin_input();
 
     let (event_name, outcome) = match cli.command {
-        Command::On { event } => {
+        Command::On { event, inject } => {
             let trigger = Trigger::from_event_name(&event);
             // Echo the harness event name back unchanged so the
             // response's `hookEventName` matches the dispatched event
             // (e.g. `UserPromptSubmit`). Claude Code errors out when
             // the value disagrees with the event it just dispatched.
-            (event, dispatch::run_event(trigger, &input))
+            (event, dispatch::run_event_scoped(trigger, &input, inject.as_deref()))
         }
         Command::Check { id } => (
             // `check <id>` is invoked outside the harness event loop;

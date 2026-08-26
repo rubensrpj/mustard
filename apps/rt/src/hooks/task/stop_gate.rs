@@ -274,6 +274,7 @@ mod tests {
             project_dir: project.to_string_lossy().into_owned(),
             trigger: Some(Trigger::Stop),
             workspace_root: None,
+            inject_only: None,
         }
     }
 

@@ -81,3 +81,71 @@ fn known_events_match_shipped_hooks() {
         "hook events the doctor accepts but nothing ships: {extra:?}"
     );
 }
+
+/// AC-3 — every way a session can start is covered by a matcher.
+///
+/// `SessionStart` fires with one of five sources: `startup`, `resume`, `clear`,
+/// `compact`, `fork`. A source no matcher names gets no hook at all, so the
+/// window opens with the router absent and nothing says so — which is exactly
+/// what `fork` did until this unit.
+#[test]
+fn sessionstart_matchers_cover_fork() {
+    let path = shipped_manifest_path().expect("plugin/hooks/hooks.json must be reachable");
+    let text = std::fs::read_to_string(&path).expect("hooks.json must be readable");
+    let manifest: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+    let matchers: Vec<String> = manifest["hooks"]["SessionStart"]
+        .as_array()
+        .expect("SessionStart must register at least one entry")
+        .iter()
+        .filter_map(|e| e.get("matcher").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect();
+
+    for source in ["startup", "resume", "clear", "compact", "fork"] {
+        assert!(
+            matchers.iter().any(|m| m.split('|').any(|alt| alt.trim() == source)),
+            "no SessionStart matcher covers `{source}` — a session started that way \
+             opens with no hook at all. Registered: {matchers:?}",
+        );
+    }
+}
+
+/// Each router injectable is claimed by its OWN sibling hook.
+///
+/// The 10,000-character `additionalContext` ceiling is per hook RESPONSE, and
+/// Claude Code keeps the context of every sibling (measured 2026-08-25). One
+/// hook per injectable is what turns that into a ceiling each document owns —
+/// registering both on one hook would put them back under a single response.
+#[test]
+fn each_router_injectable_rides_its_own_sibling_hook() {
+    let path = shipped_manifest_path().expect("plugin/hooks/hooks.json must be reachable");
+    let text = std::fs::read_to_string(&path).expect("hooks.json must be readable");
+    let manifest: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+    let commands: Vec<String> = manifest["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .expect("UserPromptSubmit must register at least one entry")
+        .iter()
+        .flat_map(|entry| {
+            entry["hooks"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|h| h.get("command").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    for file in [".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"] {
+        let claimants = commands.iter().filter(|c| c.contains(file)).count();
+        assert_eq!(
+            claimants, 1,
+            "`{file}` is claimed by {claimants} UserPromptSubmit hook(s); it needs exactly \
+             one, so it is measured alone against the per-response ceiling. Registered: \
+             {commands:?}",
+        );
+    }
+}

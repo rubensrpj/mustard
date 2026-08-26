@@ -381,7 +381,25 @@ impl Check for SessionStartInject {
             Some(session.as_str()),
             "sessionstart",
             source_refreshes_window,
+            None,
         );
+        // A renewed window has lost EVERY injectable, not just this event's.
+        // Clearing the markers alone would leave the `userPromptSubmit` half
+        // absent until the operator's next prompt — and a compaction can land
+        // mid-turn, with queued messages processed before that prompt arrives.
+        // So the family that rides the prompt is re-delivered HERE, in the same
+        // hook response, the moment the window is refreshed.
+        let reinjected = source_refreshes_window
+            .then(|| {
+                crate::hooks::session::injectables::collect(
+                    &cwd,
+                    Some(session.as_str()),
+                    "userpromptsubmit",
+                    true,
+                    None,
+                )
+            })
+            .flatten();
         // Version drift advisory: an installed project whose `mustard.json`
         // stamp differs from the running harness gets a one-paragraph nudge
         // toward `/mustard:upsert`. Advisory only — the user decides.
@@ -399,7 +417,7 @@ impl Check for SessionStartInject {
         // terrain first, injectables after, the advisories last — blank-line
         // separated.
         let parts: Vec<String> =
-            [terrain, injected, drift, stale, prune].into_iter().flatten().collect();
+            [terrain, injected, reinjected, drift, stale, prune].into_iter().flatten().collect();
         Ok(if parts.is_empty() {
             Verdict::Allow
         } else {
@@ -530,6 +548,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::SessionStart),
             workspace_root: None,
+            inject_only: None,
         }
     }
 
@@ -541,6 +560,55 @@ mod tests {
         }
     }
 
+
+    /// AC-5 — a renewed window re-delivers the PROMPT family immediately.
+    ///
+    /// Clearing the markers alone would leave the `userPromptSubmit` half
+    /// absent until the operator's next prompt, and a compaction can land
+    /// mid-turn with queued messages processed before that prompt arrives. So
+    /// the family that rides the prompt comes back in the same hook response.
+    #[test]
+    fn compact_redelivers_every_event_family_immediately() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
+        std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER-RULES").unwrap();
+
+        // An ordinary startup carries no prompt-family injectable: that family
+        // rides the prompt, and this event is not one.
+        let plain = SessionStartInject
+            .evaluate(&session_input("s1"), &ctx(project))
+            .expect("no error");
+        let plain_text = match plain {
+            Verdict::Inject { ref context } => context.clone(),
+            _ => String::new(),
+        };
+        assert!(
+            !plain_text.contains("ROUTER-RULES"),
+            "a plain startup must not pre-empt the prompt family: {plain_text}",
+        );
+
+        // A compaction renewed the window, so the router rides back NOW.
+        let mut compacted = session_input("s2");
+        compacted.raw = serde_json::json!({"source": "compact"});
+        let after = SessionStartInject
+            .evaluate(&compacted, &ctx(project))
+            .expect("no error");
+        let after_text = match after {
+            Verdict::Inject { ref context } => context.clone(),
+            other => panic!("compaction produced no context: {other:?}"),
+        };
+        assert!(
+            after_text.contains("ROUTER-RULES"),
+            "the compacted window lost the router and nothing brought it back: {after_text}",
+        );
+    }
+
     // --- routing -----------------------------------------------------------
 
     #[test]
@@ -550,6 +618,7 @@ mod tests {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             SessionStartInject.evaluate(&input, &other).expect("no error"),

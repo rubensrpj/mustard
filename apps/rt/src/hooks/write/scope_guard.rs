@@ -269,6 +269,7 @@ mod tests {
             project_dir: cwd.to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         }
     }
 

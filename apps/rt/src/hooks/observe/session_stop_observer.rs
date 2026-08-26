@@ -94,6 +94,7 @@ mod tests {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::Stop),
             workspace_root: None,
+            inject_only: None,
         }
     }
 

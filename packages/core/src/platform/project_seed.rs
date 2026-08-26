@@ -1496,20 +1496,6 @@ fn retire_response_style_inject(root: &Path, claude_dir: &Path) -> bool {
     changed
 }
 
-/// Give a project installed BEFORE the two-event split its missing half: add
-/// the `sessionStart` → `.claude/mustard/dispatch.md` entry when the project
-/// still declares the orchestrator half and does not declare this one.
-///
-/// Deliberately conditional on the orchestrator entry being present, so an
-/// operator who removed the router from their `inject` list is not handed it
-/// back — this migration completes a router the project already declares, it
-/// does not re-impose one it dropped. A project whose `inject` is empty is not
-/// touched here either: [`upsert_mustard_json`] already backfills that case
-/// with the full defaults.
-///
-/// Returns `true` when the entry was added. Idempotent — a project already
-/// split (or a fresh one) returns `false`. Fail-open: an unwritable config
-/// degrades to `false`, never an error.
 /// `true` when two declared injectable paths name the SAME file.
 ///
 /// A declaration is written by hand as often as it is seeded, and the same file
@@ -1530,6 +1516,30 @@ fn same_declared_path(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
+/// Bring an already-installed project's `inject` list onto the current router
+/// layout: both halves on `userPromptSubmit`, one sibling hook each.
+///
+/// Two historical shapes reach this, and both are repaired:
+///
+/// - **Half-delivered** — the project declares the orchestrator and nothing
+///   else, because it was installed before the router was split in two. The
+///   dispatch half was seeded to disk and never declared, so the question that
+///   opens a unit reached nobody and nothing said so.
+/// - **Split across events** — the project declares both, with dispatch on
+///   `sessionStart`. That event misses every path that opens no session:
+///   `fork` matched no matcher at all, and `startup` never cleared the
+///   per-session markers. The entry is MOVED, never duplicated.
+///
+/// Deliberately conditional on the orchestrator entry being present, so an
+/// operator who removed the router from their `inject` list is not handed it
+/// back — this migration repairs a router the project already declares, it does
+/// not re-impose one that was dropped. A project whose `inject` is empty is not
+/// touched here either: [`upsert_mustard_json`] already backfills that case
+/// with the full defaults.
+///
+/// Returns `true` when the list changed. Idempotent — a project already on the
+/// current layout (or a fresh one) returns `false`. Fail-open: an unwritable
+/// config degrades to `false`, never an error.
 fn backfill_dispatch_inject(root: &Path) -> bool {
     if !ProjectConfig::exists(root) {
         return false;
@@ -1542,17 +1552,33 @@ fn backfill_dispatch_inject(root: &Path) -> bool {
     // this function's own doc calls strictly worse than the over-budget file it
     // replaced: the section reaches nobody, and nothing says so.
     let declares = |file: &str| config.inject.iter().any(|e| same_declared_path(&e.file, file));
-    if !declares(ORCHESTRATOR_INJECT_FILE) || declares(DISPATCH_INJECT_FILE) {
+    if !declares(ORCHESTRATOR_INJECT_FILE) {
         return false;
     }
-    let Some(dispatch) = default_inject_entries()
-        .into_iter()
-        .find(|e| e.file == DISPATCH_INJECT_FILE)
-    else {
-        return false;
-    };
-    config.inject.push(dispatch);
-    config.write(root).is_ok()
+
+    let mut changed = false;
+    // The half that was never declared: add it, on the current event.
+    if !declares(DISPATCH_INJECT_FILE) {
+        if let Some(dispatch) = default_inject_entries()
+            .into_iter()
+            .find(|e| e.file == DISPATCH_INJECT_FILE)
+        {
+            config.inject.push(dispatch);
+            changed = true;
+        }
+    }
+    // Either half left on another event: move it. The seeded `on` is the one
+    // authority, so a future change of event carries every install with it.
+    for seeded in default_inject_entries() {
+        for entry in &mut config.inject {
+            if same_declared_path(&entry.file, &seeded.file) && entry.on != seeded.on {
+                entry.on.clone_from(&seeded.on);
+                changed = true;
+            }
+        }
+    }
+
+    changed && config.write(root).is_ok()
 }
 
 /// Remove the Mustard-owned lines from a root `CLAUDE.md` body: the exact
@@ -2160,6 +2186,49 @@ mod tests {
         assert!(
             !again.migrated.iter().any(|m| m.contains("dispatch")),
             "an already-split project must report no migration: {:?}",
+            again.migrated,
+        );
+    }
+
+    /// AC-2 — a project split across two events is MOVED onto one, not
+    /// duplicated.
+    ///
+    /// This is the shape every project installed between the split and this
+    /// unit carries: both halves declared, dispatch on `sessionStart`. That
+    /// event misses every path that opens no session — `fork` matched no
+    /// matcher at all — so the question that opens a unit was absent with
+    /// nothing to say so.
+    #[test]
+    fn migration_consolidates_the_router_onto_userpromptsubmit() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","inject":[
+                {"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},
+                {"on":"sessionStart","file":".claude/mustard/dispatch.md","once":true}
+            ]}"#,
+        )
+        .unwrap();
+
+        upsert_project(root, None, InstallMode::Shared).unwrap();
+
+        let config = ProjectConfig::load(root);
+        assert_eq!(config.inject.len(), 2, "the entry was duplicated: {:?}", config.inject);
+        for entry in &config.inject {
+            assert_eq!(
+                entry.on, "userPromptSubmit",
+                "`{}` was left on `{}`; a half delivered only at session start is missed \
+                 by every path that opens no session",
+                entry.file, entry.on,
+            );
+        }
+
+        // Idempotent: a project already consolidated is not touched again.
+        let again = upsert_project(root, None, InstallMode::Shared).unwrap();
+        assert!(
+            !again.migrated.iter().any(|m| m.contains("dispatch")),
+            "an already-consolidated project must report no migration: {:?}",
             again.migrated,
         );
     }

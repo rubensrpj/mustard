@@ -44,11 +44,20 @@ const MARKER_PREFIX: &str = "injected-";
 /// (unless `ignore_markers` — the post-compaction re-delivery), read the file
 /// project-root-relative, and record a delivery marker for what was read.
 /// Returns the blocks joined by a blank line, or `None` when nothing applies.
+///
+/// `only` narrows the collection to ONE declared file, which is how a sibling
+/// hook claims its own injectable. Each injectable is delivered by its own hook
+/// invocation, so each is measured alone against the 10,000-character ceiling a
+/// hook response carries — siblings do not share one (measured 2026-08-25; see
+/// `plugin/refs/mustard/router-rationale.md`). `None` keeps the legacy
+/// behaviour of folding every entry of the trigger into one payload, which is
+/// what the post-compaction re-delivery still wants.
 pub fn collect(
     project_dir: &str,
     session_id: Option<&str>,
     trigger_on: &str,
     ignore_markers: bool,
+    only: Option<&str>,
 ) -> Option<String> {
     let root = Path::new(project_dir);
     let config = ProjectConfig::load(root);
@@ -59,6 +68,9 @@ pub fn collect(
         if entry.on != trigger_on {
             continue;
         }
+        if only.is_some_and(|wanted| !same_declared_file(&entry.file, wanted)) {
+            continue; // another sibling hook owns this one.
+        }
         let marker_name = marker_basename(&entry.file);
         if entry.once
             && !ignore_markers
@@ -67,12 +79,27 @@ pub fn collect(
         {
             continue; // already delivered this session.
         }
-        // Root-relative read; an absent or unreadable file skips silently.
-        let Ok(text) = fs::read_to_string(root.join(&entry.file)) else {
-            continue;
+        // Root-relative read. Still FAIL-OPEN — a hook never blocks on this —
+        // but no longer SILENT: a declared injectable that cannot be read is
+        // a router half that reaches nobody, and the operator saw a working
+        // harness. Same channel the base gate uses for `enrichment stale`.
+        let text = match fs::read_to_string(root.join(&entry.file)) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!(
+                    "mustard: declared injectable `{}` (on {}) could not be read: {err} — \
+                     that rule is NOT in force this session; run `/mustard:upsert` to reseed it",
+                    entry.file, entry.on,
+                );
+                continue;
+            }
         };
         let trimmed = text.trim();
         if trimmed.is_empty() {
+            eprintln!(
+                "mustard: declared injectable `{}` (on {}) is empty — that rule is NOT in force",
+                entry.file, entry.on,
+            );
             continue;
         }
         blocks.push(trimmed.to_string());
@@ -88,6 +115,22 @@ pub fn collect(
         write_marker(project_dir, session_id, name);
     }
     Some(blocks.join("\n\n"))
+}
+
+/// `true` when two declared injectable paths name the SAME file.
+///
+/// A hook registration writes the path by hand as often as the seed does, and
+/// one file has several honest spellings: a `./` prefix, backslashes on
+/// Windows, mixed case on a case-insensitive filesystem. Comparing raw strings
+/// would make each of those a different file, and the only symptom is a sibling
+/// hook that silently delivers nothing. Mirrors `project_seed::same_declared_path`.
+fn same_declared_file(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        let s = s.trim().replace('\\', "/");
+        let s = s.strip_prefix("./").unwrap_or(&s).to_string();
+        s.trim_end_matches('/').to_ascii_lowercase()
+    }
+    norm(a) == norm(b)
 }
 
 /// Delete every `injected-*` marker of the session. Called on a
@@ -172,7 +215,7 @@ mod tests {
         let project = dir.path().to_str().unwrap();
         seed_project(dir.path(), "userPromptSubmit", ".claude/mustard/orchestrator.md", true, "RULES\n");
 
-        let got = collect(project, Some("s1"), "userpromptsubmit", false);
+        let got = collect(project, Some("s1"), "userpromptsubmit", false, None);
         assert_eq!(got.as_deref(), Some("RULES"));
         assert!(
             dir.path()
@@ -182,11 +225,11 @@ mod tests {
         );
 
         // Second collect in the same session: once → nothing.
-        let again = collect(project, Some("s1"), "userpromptsubmit", false);
+        let again = collect(project, Some("s1"), "userpromptsubmit", false, None);
         assert_eq!(again, None, "once entry must not re-deliver in the session");
 
         // A DIFFERENT session delivers again (its own marker namespace).
-        let other = collect(project, Some("s2"), "userpromptsubmit", false);
+        let other = collect(project, Some("s2"), "userpromptsubmit", false, None);
         assert_eq!(other.as_deref(), Some("RULES"));
     }
 
@@ -200,13 +243,13 @@ mod tests {
             r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/nope.md","once":true}]}"#,
         )
         .unwrap();
-        assert_eq!(collect(project, Some("s1"), "sessionstart", false), None);
+        assert_eq!(collect(project, Some("s1"), "sessionstart", false, None), None);
         assert!(
             !dir.path().join(".claude/.session/s1/injected-nope.md").exists(),
             "no marker for an undelivered entry"
         );
         // A trigger with no declared entry → None.
-        assert_eq!(collect(project, Some("s1"), "userpromptsubmit", false), None);
+        assert_eq!(collect(project, Some("s1"), "userpromptsubmit", false, None), None);
     }
 
     #[test]
@@ -216,9 +259,9 @@ mod tests {
         seed_project(dir.path(), "userPromptSubmit", "rules.md", true, "X");
         // No usable session id: markers cannot be recorded, so the entry
         // delivers every time (fail-open: deliver, never silently drop).
-        assert!(collect(project, None, "userpromptsubmit", false).is_some());
-        assert!(collect(project, Some("unknown"), "userpromptsubmit", false).is_some());
-        assert!(collect(project, None, "userpromptsubmit", false).is_some());
+        assert!(collect(project, None, "userpromptsubmit", false, None).is_some());
+        assert!(collect(project, Some("unknown"), "userpromptsubmit", false, None).is_some());
+        assert!(collect(project, None, "userpromptsubmit", false, None).is_some());
     }
 
     #[test]
@@ -244,13 +287,84 @@ mod tests {
         let project = dir.path().to_str().unwrap();
         seed_project(dir.path(), "sessionStart", "style.md", true, "STYLE");
         // First delivery records the marker…
-        assert!(collect(project, Some("s1"), "sessionstart", false).is_some());
+        assert!(collect(project, Some("s1"), "sessionstart", false, None).is_some());
         // …the guarded path now skips…
-        assert_eq!(collect(project, Some("s1"), "sessionstart", false), None);
+        assert_eq!(collect(project, Some("s1"), "sessionstart", false, None), None);
         // …but the post-compaction path (ignore_markers) re-delivers.
         assert_eq!(
-            collect(project, Some("s1"), "sessionstart", true).as_deref(),
+            collect(project, Some("s1"), "sessionstart", true, None).as_deref(),
             Some("STYLE")
         );
+    }
+
+    /// Two injectables on ONE event, each claimed by its own sibling hook.
+    ///
+    /// The ceiling is per hook RESPONSE, so this is how each document gets its
+    /// own: `--inject <file>` narrows the invocation to one entry, and the
+    /// sibling that did not claim it delivers nothing of it.
+    #[test]
+    fn a_sibling_hook_collects_only_the_injectable_it_claims() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"inject":[
+                {"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},
+                {"on":"userPromptSubmit","file":".claude/mustard/dispatch.md","once":true}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
+        std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER").unwrap();
+        std::fs::write(dir.path().join(".claude/mustard/dispatch.md"), "DISPATCH").unwrap();
+
+        assert_eq!(
+            collect(project, Some("s1"), "userpromptsubmit", false, Some(".claude/mustard/orchestrator.md")).as_deref(),
+            Some("ROUTER"),
+            "the claiming sibling delivers its own file and nothing else",
+        );
+        assert_eq!(
+            collect(project, Some("s1"), "userpromptsubmit", false, Some(".claude/mustard/dispatch.md")).as_deref(),
+            Some("DISPATCH"),
+            "the other sibling is unaffected by the first one's marker",
+        );
+        // Equivalent spellings of one path name the same file: a registration
+        // written by hand must not silently deliver nothing.
+        assert_eq!(
+            collect(project, Some("s2"), "userpromptsubmit", false, Some("./.claude/Mustard/Orchestrator.md")).as_deref(),
+            Some("ROUTER"),
+        );
+    }
+
+    /// AC-4 — a declared injectable that cannot be read leaves a NAMED trace.
+    ///
+    /// Fail-open is right (a hook never blocks a session on this) but silence
+    /// was not: the operator saw a working harness while a router half reached
+    /// nobody. The absent entry is skipped and the readable sibling still
+    /// arrives, so the trace is the only difference.
+    #[test]
+    fn an_unreadable_injectable_is_skipped_and_the_rest_still_arrives() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"inject":[
+                {"on":"userPromptSubmit","file":".claude/mustard/gone.md","once":true},
+                {"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
+        std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER").unwrap();
+
+        assert_eq!(
+            collect(project, Some("s1"), "userpromptsubmit", false, None).as_deref(),
+            Some("ROUTER"),
+            "the missing entry must not take the readable one down with it",
+        );
+        // The absent file records no delivery marker, so a later reseed is
+        // still delivered in the same session.
+        let session = dir.path().join(".claude/.session/s1");
+        assert!(!session.join("injected-gone.md").exists());
     }
 }

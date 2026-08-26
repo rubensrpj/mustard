@@ -914,6 +914,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         (input, ctx)
     }
@@ -1191,6 +1192,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             SizeGate.evaluate(&input, &ctx).expect("no error"),
@@ -1209,6 +1211,7 @@ mod tests {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
+            inject_only: None,
         };
         assert_eq!(
             SizeGate.evaluate(&input, &ctx).expect("no error"),
