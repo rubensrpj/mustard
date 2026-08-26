@@ -146,12 +146,13 @@ pub(crate) fn notebook_at(
         // someone quoting the marker; taking that as a claim would let a gate
         // be armed by a sentence about the gate (found in review). Stripped, so
         // the quote survives as text and stops being a signal.
-        let text = match (explains, explains_symptom(&text)) {
-            (true, false) => format!("{EXPLAINS_SYMPTOM} {text}"),
-            (true, true) => text,
-            (false, true) => strip_marker(&text),
-            (false, false) => text,
-        };
+        // Normalise FIRST, then mark. The flag path used to pass an already
+        // prefixed item through untouched, which stored a doubled prefix when
+        // the operator had typed one too (found in review). Stripping every
+        // prefix and re-adding exactly one makes the stored form the same
+        // whatever the caller typed.
+        let bare = strip_marker(&text);
+        let text = if explains { format!("{EXPLAINS_SYMPTOM} {bare}") } else { bare };
         if !items.iter().any(|i| i == &text) {
             items.push(text);
             added = true;
@@ -195,12 +196,21 @@ pub(crate) fn notebook_at(
 /// prefix see anything new.
 pub(crate) const EXPLAINS_SYMPTOM: &str = "[EXPLICA O SINTOMA]";
 
-/// The item with any leading marker removed — what the operator typed, once
+/// The item with EVERY leading marker removed — what the operator typed, once
 /// the prefix stops being read as a claim.
+///
+/// A LOOP, not one `strip_prefix`. The single-strip version was here for one
+/// commit and review measured the hole it left: `--add "[M] [M] texto"` with no
+/// flag came out still carrying one prefix, so the close gate was armed by a
+/// sentence nobody marked. Narrowing a forgery to "type it twice" is not
+/// closing it — and the test that shipped with that version exercised one
+/// prefix, which is why 3,176 green tests sat over a live forgery.
 fn strip_marker(item: &str) -> String {
-    item.trim_start()
-        .strip_prefix(EXPLAINS_SYMPTOM)
-        .map_or_else(|| item.trim().to_string(), |rest| rest.trim().to_string())
+    let mut rest = item.trim();
+    while let Some(shorter) = rest.strip_prefix(EXPLAINS_SYMPTOM) {
+        rest = shorter.trim_start();
+    }
+    rest.trim().to_string()
 }
 
 /// Does this notebook line claim to explain the symptom the operator reported?
@@ -405,5 +415,44 @@ mod tests {
             out2["explainsSymptom"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(marked.len(), 1, "{out2}");
         assert_eq!(marked[0].matches(EXPLAINS_SYMPTOM).count(), 1, "no double prefix");
+
+        // REPEATED prefixes forge nothing either. The first fix stripped ONE
+        // and stored the rest, so two typed prefixes came out still marked and
+        // armed the close gate — and its test covered only the single case,
+        // which is how the suite stayed green over a live forgery (found in
+        // review, reproduced against the binary).
+        let dir3 = repo();
+        let root3 = dir3.path();
+        for typed in [
+            format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} duas vezes"),
+            format!("{EXPLAINS_SYMPTOM}{EXPLAINS_SYMPTOM} coladas"),
+            format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} tres"),
+        ] {
+            let out = notebook_at(root3, None, Some(&typed), false);
+            assert_eq!(
+                out["explainsSymptom"].as_array().map(Vec::len),
+                Some(0),
+                "repeated prefixes must not arm the gate: {typed:?} -> {out}",
+            );
+        }
+
+        // …and the flag on an item that already carries prefixes stores
+        // exactly ONE, not the pile the operator typed.
+        let dir4 = repo();
+        let out4 = notebook_at(
+            dir4.path(),
+            None,
+            Some(&format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} ja marcado")),
+            true,
+        );
+        let m4: Vec<&str> =
+            out4["explainsSymptom"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(m4.len(), 1, "{out4}");
+        assert_eq!(
+            m4[0].matches(EXPLAINS_SYMPTOM).count(),
+            1,
+            "the stored form is the same whatever the caller typed: {:?}",
+            m4[0],
+        );
     }
 }
