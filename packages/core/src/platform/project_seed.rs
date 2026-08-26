@@ -2282,7 +2282,7 @@ mod tests {
             "the backfill ran twice",
         );
         assert!(
-            !again.migrated.iter().any(|m| m.contains("dispatch")),
+            !again.migrated.iter().any(|m| m.contains("router injectables")),
             "an already-split project must report no migration: {:?}",
             again.migrated,
         );
@@ -2396,8 +2396,13 @@ mod tests {
 
         // Idempotent: a project already consolidated is not touched again.
         let again = upsert_project(root, None, InstallMode::Shared).unwrap();
+        // Asserts on the CURRENT wording. It used to look for "dispatch", a
+        // word the report lost when it was rewritten to name the result — so
+        // the check could never fire again, whatever the behaviour (found in
+        // review). An assertion whose needle left the haystack is worse than
+        // none: it reads as coverage.
         assert!(
-            !again.migrated.iter().any(|m| m.contains("dispatch")),
+            !again.migrated.iter().any(|m| m.contains("router injectables")),
             "an already-consolidated project must report no migration: {:?}",
             again.migrated,
         );

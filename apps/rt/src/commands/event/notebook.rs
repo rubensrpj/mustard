@@ -152,7 +152,37 @@ pub(crate) fn notebook_at(
         // prefix and re-adding exactly one makes the stored form the same
         // whatever the caller typed.
         let bare = strip_marker(&text);
+        // EMPTY AFTER STRIPPING is empty, and the guard above cannot see it:
+        // it runs on what the caller typed, before the marker comes off. An
+        // item that is only the marker leaves nothing behind.
+        //
+        // Recording it anyway is not merely untidy — it is unremovable. With
+        // the flag, the stored line was `"[MARCADOR] "`, with a trailing space
+        // the reader trims away, so the dedupe below compared an untrimmed
+        // write against a trimmed read, never matched, and appended AGAIN on
+        // every call. Six invocations left six content-free bullets blocking
+        // the close, and `--add` cannot remove a line (found in review,
+        // reproduced against the binary).
+        //
+        // So it is refused where the caller can still fix it, and the refusal
+        // says what is missing.
+        if bare.is_empty() {
+            return json!({
+                "ok": false,
+                "reason": "empty-item",
+                "branch": branch,
+                "slug": slug,
+                "hint": "the item is empty once the marker is removed — the notebook records \
+                         WHAT surfaced, so pass the finding itself; `--explains-symptom` marks \
+                         an item, it is not one",
+            });
+        }
+        // ONE canonical spelling per item, so a line always equals itself on
+        // the next read. `render` writes `- {item}` and `parse_items` trims, so
+        // anything stored with edge whitespace comes back different from what
+        // was written and can never dedupe.
         let text = if explains { format!("{EXPLAINS_SYMPTOM} {bare}") } else { bare };
+        debug_assert_eq!(text.trim(), text, "a stored item must equal its own round trip");
         if !items.iter().any(|i| i == &text) {
             items.push(text);
             added = true;
@@ -383,6 +413,75 @@ mod tests {
             Some(1),
             "…and it still reads as marked: {out}",
         );
+    }
+
+    /// An item that is ONLY the marker records nothing, and cannot pile up.
+    ///
+    /// The emptiness guard runs on what the caller typed, before the marker
+    /// comes off — so it never saw this. With the flag the stored line was
+    /// `"[MARCADOR] "`, and the reader trims: the dedupe compared an untrimmed
+    /// write against a trimmed read, never matched, and appended again on every
+    /// call. Six invocations left six content-free bullets blocking the close,
+    /// and `--add` cannot remove a line.
+    ///
+    /// Found in review, one round after the fix that introduced it — the fifth
+    /// time in this cycle that closing one hole opened the one beside it. The
+    /// test that shipped with that fix covered repeated prefixes with a body,
+    /// and never the input that strips to nothing.
+    #[test]
+    fn an_item_that_is_only_the_marker_records_nothing() {
+        let dir = repo();
+        let root = dir.path();
+
+        for (typed, flag) in [
+            (EXPLAINS_SYMPTOM.to_string(), true),
+            (EXPLAINS_SYMPTOM.to_string(), false),
+            (format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM}"), true),
+            (format!("  {EXPLAINS_SYMPTOM}   "), true),
+        ] {
+            let out = notebook_at(root, None, Some(&typed), flag);
+            assert_eq!(
+                out["ok"].as_bool(),
+                Some(false),
+                "an item that strips to nothing must be refused: {typed:?} -> {out}",
+            );
+            assert_eq!(out["reason"].as_str(), Some("empty-item"), "{out}");
+        }
+
+        // …and after all of that the notebook is still empty: nothing was
+        // written, so nothing can block the close.
+        let read = notebook_at(root, None, None, false);
+        assert_eq!(read["items"].as_array().map(Vec::len), Some(0), "{read}");
+        assert_eq!(read["explainsSymptom"].as_array().map(Vec::len), Some(0), "{read}");
+    }
+
+    /// A stored item equals itself on the next read, so the same item recorded
+    /// twice never grows the file.
+    ///
+    /// The round trip IS the dedupe: `render` writes `- {item}` and
+    /// `parse_items` trims, so anything stored with edge whitespace comes back
+    /// different from what was written and appends forever.
+    #[test]
+    fn a_stored_item_round_trips_so_the_same_item_never_piles_up() {
+        let dir = repo();
+        let root = dir.path();
+        for (typed, flag) in [
+            ("um achado comum".to_string(), false),
+            ("um achado marcado".to_string(), true),
+            (format!("{EXPLAINS_SYMPTOM} ja prefixado"), true),
+            (format!("  {EXPLAINS_SYMPTOM}   com espacos   "), true),
+        ] {
+            for _ in 0..3 {
+                notebook_at(root, None, Some(&typed), flag);
+            }
+        }
+        let read = notebook_at(root, None, None, false);
+        let items: Vec<&str> =
+            read["items"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(items.len(), 4, "three writes of each must leave one each: {items:?}");
+        for item in &items {
+            assert_eq!(item.trim(), *item, "a stored item carries no edge whitespace: {item:?}");
+        }
     }
 
     /// The FLAG is the only thing that sets the marker.
