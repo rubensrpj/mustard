@@ -303,23 +303,25 @@ impl Check for PromptSubmitInject {
         // prompts are never gated — the hooks stay silent on uninstalled
         // projects.
         //
-        // Which sibling speaks belongs to the INVOCATION, not to one
-        // injectable, so it is resolved once here and reused below. The gate
-        // needs it too: `userPromptSubmit` is delivered by one sibling hook per
-        // injectable, and a Deny emitted by each of them shows the operator the
-        // same block twice (found in review). One elected sibling speaks; the
-        // others stay quiet, and the outcome is identical because any single
-        // Deny blocks the prompt.
+        // **Every sibling emits this Deny, and it is not worth silencing.** The
+        // duplicate was raised in review, and the obvious fix — electing one
+        // sibling, as the writing rule below does — is DEAD CODE on this path:
+        // the election reads the declared inject list, and this gate only fires
+        // when `mustard.json` is absent, so that list is empty and every
+        // sibling elects itself. An election that can never elect is worse than
+        // the duplicate it hides, because the next reader trusts it.
+        //
+        // The honest alternative would gate on the invocation's own `--inject`
+        // ordering, read from the manifest — real work, for a cosmetic gain, on
+        // the one path where being loud is the safe direction: any single Deny
+        // blocks the prompt, so a silenced sibling can only ever cost the
+        // block, never duplicate it.
         let carries_shared_blocks = carries_shared_blocks(&cwd, ctx.inject_only.as_deref());
         if is_mustard_command(prompt)
             && !is_upsert_prompt(prompt)
             && !ProjectConfig::exists(Path::new(&cwd))
         {
-            return Ok(if carries_shared_blocks {
-                Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() }
-            } else {
-                Verdict::Allow
-            });
+            return Ok(Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() });
         }
         if is_pipeline_prompt(prompt) {
             // Close any open amendment windows for this session — the user is

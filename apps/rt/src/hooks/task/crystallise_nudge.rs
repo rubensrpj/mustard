@@ -123,7 +123,7 @@ impl Check for CrystalliseNudge {
 /// unreadable sidecar answers "not closed", so the gate still applies to a unit
 /// whose state cannot be read — the direction that keeps the reminder working
 /// rather than silently disabling it.
-fn spec_is_closed(root: &Path, spec: &str) -> bool {
+pub(crate) fn spec_is_closed(root: &Path, spec: &str) -> bool {
     let spec_md = root.join(".claude").join("spec").join(spec).join("spec.md");
     mustard_core::domain::meta::read_meta_beside(&spec_md)
         .and_then(|m| m.outcome)
@@ -144,9 +144,18 @@ fn material_state(material: &Path) -> String {
     // of identical length within the same wall-clock second — the gate then
     // reads a changed file as unchanged and stays quiet (found in review). The
     // body is already in hand, so hashing it costs nothing and cannot miss.
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(&body, &mut hasher);
-    format!("{}:{:016x}", body.len(), std::hash::Hasher::finish(&hasher))
+    //
+    // Written out here rather than through `DefaultHasher`, whose output the
+    // standard library does not promise to keep stable across releases: the
+    // marker outlives a toolchain upgrade, and a changed hash would read as a
+    // changed file and spend one spurious nudge per spec. FNV-1a is four lines
+    // and fixed forever.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in body.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{}:{hash:016x}", body.len())
 }
 
 /// `<root>/.claude/.harness/crystallise-<spec>` — the state this gate last

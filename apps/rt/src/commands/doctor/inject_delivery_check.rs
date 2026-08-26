@@ -125,6 +125,53 @@ fn registered_events(manifest: &Path) -> Option<Vec<String>> {
     )
 }
 
+/// The files the hooks of `event` claim with `--inject`, read from THIS
+/// manifest.
+///
+/// Deliberately not `dispatch::claimed_injectables`, which resolves the
+/// machine's INSTALLED plugin manifest first and never consults its
+/// `project_dir` argument for that lookup. That is right for the dispatcher —
+/// the hooks that actually run ARE the installed ones — and wrong here, because
+/// this check answers a question about the project in front of it. Review
+/// measured both misreads against the binary: a correctly wired project
+/// reported FAIL because the developer's installed plugin claimed something
+/// else, and a genuinely undelivered injectable reported GREEN. The second is
+/// the dangerous one — it is the exact "present, registered, never in force"
+/// state this condition exists to catch, reported clean.
+fn claims_in(manifest: &Path, event: &str) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(events) = doc.get("hooks").and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entries in events
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(event))
+        .filter_map(|(_, v)| v.as_array())
+    {
+        for hook in entries
+            .iter()
+            .filter_map(|e| e.get("hooks")?.as_array())
+            .flatten()
+        {
+            let Some(cmd) = hook.get("command").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Some(rest) = cmd.split("--inject").nth(1) {
+                if let Some(path) = rest.split_whitespace().next() {
+                    out.push(path.trim_matches('"').to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Build the report for a project root, with the two external inputs passed in
 /// so the whole thing is testable without touching a real HOME or plugin tree.
 fn build_report(
@@ -227,9 +274,8 @@ fn build_report(
     // failure mode this whole check exists to end (found in review, measured
     // against the binary).
     if let Some(manifest) = manifest {
-        let root_str = root.to_string_lossy();
         for entry in &entries {
-            let claims = crate::dispatch::claimed_injectables(&root_str, &entry.on);
+            let claims = claims_in(manifest, &entry.on);
             // No claim at all on this event means it is delivered whole, by one
             // unscoped hook — the shape before the split, and still correct.
             if claims.is_empty() {
@@ -241,14 +287,16 @@ fn build_report(
             {
                 continue;
             }
-            let _ = manifest;
             findings.push(DeliveryFinding::fail(
                 "injectable-unclaimed",
                 format!(
-                    "`{}` is declared on `{}`, but every hook on that event is scoped to one                      other file with `--inject`, so nothing collects it — it is present,                      registered, and never in force",
+                    "`{}` is declared on `{}`, but every hook on that event is scoped to \
+                     one other file with `--inject`, so nothing collects it — it is \
+                     present, registered, and never in force",
                     entry.file, entry.on,
                 ),
-                "give it a sibling hook of its own in the manifest (one `--inject <file>` per                  injectable), or declare it on an event delivered whole",
+                "give it a sibling hook of its own in the manifest (one `--inject <file>` \
+                 per injectable), or declare it on an event delivered whole",
             ));
         }
     }
@@ -438,6 +486,49 @@ mod tests {
             "only the unclaimed entry: {:?}",
             report.findings,
         );
+    }
+
+    /// The claim list is read from the manifest THIS project was given, never
+    /// from whichever plugin happens to be installed on the machine.
+    ///
+    /// The first version called `dispatch::claimed_injectables`, which resolves
+    /// the installed plugin first and ignores its `project_dir` for that
+    /// lookup. Review measured both misreads. The dangerous one is here: a
+    /// project whose own manifest leaves `dispatch.md` genuinely uncollected
+    /// reported GREEN, because the developer's installed plugin did claim it —
+    /// the exact "present, registered, never in force" state this condition
+    /// exists to catch, reported clean.
+    #[test]
+    fn the_claim_list_comes_from_this_projects_manifest() {
+        let dir = tempdir().unwrap();
+        seed(
+            dir.path(),
+            BOTH,
+            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
+        );
+        // THIS project's manifest claims only the orchestrator, so `dispatch.md`
+        // is collected by nobody — whatever any installed plugin claims.
+        let manifest = dir.path().join("hooks.json");
+        std::fs::write(
+            &manifest,
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[
+                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/orchestrator.md"}
+               ]}]}}"#,
+        )
+        .unwrap();
+        let s = settings(dir.path(), true);
+        let report = build_report(dir.path(), &s, Some(&manifest));
+
+        assert!(report.failed, "an uncollected injectable must FAIL: {:?}", report.findings);
+        let f = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "injectable-unclaimed")
+            .expect("dispatch.md is uncollected in THIS project");
+        assert!(f.detail.contains("dispatch.md"), "it must say WHICH file: {}", f.detail);
+        // The operator reads these verbatim: no run of collapsed indentation.
+        assert!(!f.detail.contains("  "), "detail carries raw indentation: {}", f.detail);
+        assert!(!f.remedy.contains("  "), "remedy carries raw indentation: {}", f.remedy);
     }
 
     /// The two WARN conditions: delivered, but less or later than declared.

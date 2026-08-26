@@ -173,6 +173,25 @@ fn resolve_gated_spec(project_dir: &str, input: &HookInput) -> Option<String> {
     if meta_stage_is_plan(project_dir, &spec) {
         return None;
     }
+    // CLOSED: a unit that already completed has nothing left to verify, and
+    // verifying it anyway is how the gate ends up measuring the wrong tree.
+    //
+    // `current_spec` falls back to the NEWEST pipeline-state file by
+    // modification time, with no test that the unit is still open. Two units
+    // closed in one session — the ordinary shape of a cycle — therefore leave
+    // the gate holding whichever closed last, and it re-runs that unit's
+    // criteria against whatever checkout the session happens to stand in. When
+    // the two live on different branches, every criterion of the absent one
+    // fails: its tests are not in this tree, `cargo test <name>` filters
+    // everything out, and the gate blocks the turn over a unit that is finished
+    // and green where its code actually lives. Measured on this repository, on
+    // three consecutive turns, against two units that were both already closed.
+    //
+    // The same reading the crystallisation nudge already uses, for the same
+    // reason: a completed spec is not a subject for a gate.
+    if crate::hooks::task::crystallise_nudge::spec_is_closed(Path::new(project_dir), &spec) {
+        return None;
+    }
     // Executable ACs: the exact union qa-run would run (an empty union is the
     // `overall: skip` case). Reuses the qa-run predicate so the two agree.
     if !spec_has_executable_acs(Path::new(project_dir), &spec) {
@@ -318,6 +337,53 @@ mod tests {
         std::fs::write(
             spec_dir.join("meta.json"),
             format!(r#"{{"stage":"{stage}","outcome":"Active","scope":"full"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// A COMPLETED unit is released — the gate has nothing left to verify, and
+    /// verifying it anyway is how it ends up measuring the wrong tree.
+    ///
+    /// `current_spec` falls back to the newest pipeline-state file by
+    /// modification time and never asks whether that unit is still open. Two
+    /// units closed in one session leave the gate holding whichever closed
+    /// last; when the two live on different branches, every criterion of the
+    /// absent one fails, because its tests are not in this checkout at all.
+    /// Measured on this repository, blocking three consecutive turns over two
+    /// units that were both already green where their code lives.
+    #[test]
+    fn stop_gate_releases_a_completed_spec() {
+        let project = tempfile::tempdir().unwrap();
+        let spec = "ja-fechada";
+        // A criterion that WOULD fail if anyone ran it: the release must come
+        // from the unit being closed, not from the criteria passing.
+        seed_spec(project.path(), spec, "- AC-1: algo. Command: `false`");
+        approve(project.path(), spec);
+        bind(project.path(), "s-closed", spec);
+        seed_meta_outcome(project.path(), spec, "Execute", "Completed");
+        assert_eq!(
+            resolve_gated_spec(project.path().to_str().unwrap(), &stop_input("s-closed")),
+            None,
+            "a completed unit must not be gated",
+        );
+
+        // …and the same spec, still Active, IS gated — so the release above is
+        // the outcome talking, not the fixture going quiet for another reason.
+        seed_meta_outcome(project.path(), spec, "Execute", "Active");
+        assert_eq!(
+            resolve_gated_spec(project.path().to_str().unwrap(), &stop_input("s-closed")),
+            Some(spec.to_string()),
+            "an active unit with an executable criterion is still gated",
+        );
+    }
+
+    /// Seed `meta.json` with both `stage` and `outcome`.
+    fn seed_meta_outcome(project: &Path, spec: &str, stage: &str, outcome: &str) {
+        let spec_dir = project.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            format!(r#"{{"stage":"{stage}","outcome":"{outcome}","scope":"full"}}"#),
         )
         .unwrap();
     }
