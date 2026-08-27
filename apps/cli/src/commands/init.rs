@@ -128,9 +128,29 @@ enum ExistingAction {
 /// the process working directory; a caller may pass any folder. The bundled
 /// `templates/` directory is located via [`resolve_templates_dir`]; callers
 /// that already know its location use [`init_with_templates`].
-pub fn init(project_path: &Path, options: &InitOptions) -> Result<()> {
+pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
     let templates_dir = resolve_templates_dir()?;
     init_with_templates(project_path, &templates_dir, options)
+}
+
+/// What an `init` run actually DID, reported as a fact rather than folded into
+/// `Result`.
+///
+/// The distinction is load-bearing and was found in review: `Ok(())` used to
+/// cover both "the project was seeded" and "the operator answered Cancel", so a
+/// caller that acted on success alone changed the machine after an explicit
+/// refusal. A closed set of dispositions lets the caller judge; the callee keeps
+/// its opinion to itself. Mold: `core-outcome-pattern`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitOutcome {
+    /// The project was seeded: `.claude/` and `mustard.json` are on disk.
+    Installed,
+    /// An existing `.claude/` was found and the operator chose to stop. Nothing
+    /// was written, so nothing about the machine may change on this run's
+    /// account either.
+    Cancelled,
+    /// `--dry-run`: the plan was printed and no path was touched.
+    DryRun,
 }
 
 /// [`init`] with the `templates/` directory supplied explicitly.
@@ -142,7 +162,7 @@ pub fn init_with_templates(
     project_path: &Path,
     templates_dir: &Path,
     options: &InitOptions,
-) -> Result<()> {
+) -> Result<InitOutcome> {
     // NO RTK PROBE HERE, and that is the point of this function's split.
     //
     // Probing `PATH` is an environment concern, which the doc above says this
@@ -201,7 +221,7 @@ pub fn init_with_templates(
             project_path.join("mustard.json").display()
         );
         println!("  (dry-run) content payload (commands/skills/agents/refs) + .mcp.json now ship in the `mustard` plugin — not written");
-        return Ok(());
+        return Ok(InitOutcome::DryRun);
     }
 
     // Sampled BEFORE the first write — the only moment at which the operator's
@@ -223,7 +243,11 @@ pub fn init_with_templates(
         match decide_existing_action(&claude_path, options)? {
             ExistingAction::Cancel => {
                 println!("\n  Cancelled.\n");
-                return Ok(());
+                // Cancelled, NOT installed. The caller reads the difference: an
+                // `Ok(())` here used to let `cli::dispatch` run the tool
+                // installers after an explicit refusal, writing RTK's global
+                // config on a run the operator stopped (found in review).
+                return Ok(InitOutcome::Cancelled);
             }
             ExistingAction::Merge => false,
             ExistingAction::Overwrite => true,
@@ -287,9 +311,12 @@ pub fn init_with_templates(
         }
     }
 
-    ensure_global_permissions().unwrap_or_else(|err| {
-        eprintln!("[mustard] warning: could not update global permissions: {err}");
-    });
+    // `ensure_global_permissions` is NOT called here either — it writes
+    // `$HOME/.claude/settings.json`, outside the project, which is the same
+    // class of act as the installers below. A reviewer measured it happening
+    // from a plain library call with `MUSTARD_GLOBAL_PERMISSIONS=1`; it sat
+    // three lines above a comment forbidding exactly that. It now runs from
+    // `cli::dispatch`, through `ensure_global_permissions_if_opted_in`.
 
     // NO TOOL INSTALLERS HERE — `ensure_rtk` / `ensure_ripgrep` live in
     // `cli::dispatch`, beside the gate, for the same reason the gate does.
@@ -328,7 +355,7 @@ pub fn init_with_templates(
     );
 
     print_next_steps();
-    Ok(())
+    Ok(InitOutcome::Installed)
 }
 
 /// Say what became of the version stamp, in the didactic voice the rest of the
@@ -735,6 +762,17 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
 /// default — user policy is to never touch global settings unprompted. The
 /// write only runs when `MUSTARD_GLOBAL_PERMISSIONS` is set to `1`/`true`;
 /// otherwise this is a no-op and the project-local `.claude/settings.json` is
+
+/// The binary-side face of [`ensure_global_permissions`].
+///
+/// Exists so `cli::dispatch` can take this environment act without the library
+/// taking it: it is the only caller, it swallows the failure the way the install
+/// always did, and `pub(crate)` keeps it off the crate's public API.
+pub(crate) fn ensure_global_permissions_if_opted_in() {
+    ensure_global_permissions().unwrap_or_else(|err| {
+        eprintln!("[mustard] warning: could not update global permissions: {err}");
+    });
+}
 /// the only thing `init` writes.
 fn ensure_global_permissions() -> Result<()> {
     if !global_permissions_opt_in() {
@@ -1035,6 +1073,10 @@ fn install_ripgrep() -> bool {
 /// teach the same plugin step twice, in English and then in Portuguese. The
 /// installer resolves that on its side: when it ran init itself it points back
 /// at these lines instead of reprinting them (`packaging/installer/install.sh`).
+/// NOTE: in a DIRECT run this is no longer the last thing on screen — the
+/// RTK/ripgrep setup lines now follow it, because those acts moved to
+/// `cli::dispatch` and run after `init` returns. The block is still the last
+/// word of the INSTALL; what trails it is tool setup, not project state.
 /// Keep these two commands here regardless; they are what the direct run needs.
 fn print_next_steps() {
     println!("\nDone!\n");

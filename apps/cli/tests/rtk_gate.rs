@@ -19,6 +19,13 @@
 //! every invocation is logged. A gate that quietly stopped gating, or an
 //! installer that came back into the library, both show up here as a changed
 //! log rather than as a green run.
+//!
+//! LIMIT, declared rather than hidden: the two behavioural tests are
+//! `ignore`d off unix, because the shims are shell scripts. Windows is where
+//! `install_rtk` takes its most expensive branch (`scoop install rtk`, then
+//! `cargo install --git`), so the gate has no coverage on the runner where it
+//! would cost the most. Closing that means shims the Windows shell can run —
+//! its own unit, not a line here.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -127,8 +134,62 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
         "the install must have written the project"
     );
     let spawned = fs::read_to_string(&log).unwrap_or_default();
+    // `rtk init -g --no-patch`, NOT `rtk `. The prefix was the first spelling and
+    // it pinned nothing: the gate itself runs `rtk --version` through
+    // `rtk_on_path` before `init` even starts, so the assertion passed with both
+    // installer calls deleted from dispatch (measured in review). Only
+    // `ensure_rtk` issues this line.
     assert!(
-        spawned.lines().any(|l| l.starts_with("rtk ")),
+        spawned.lines().any(|l| l.starts_with("rtk init")),
         "the binary must still reach the RTK tooling; log was:\n{spawned}"
+    );
+}
+
+/// The library must not take environment acts. This reads the source rather than
+/// running anything, because the regression it guards is a CALL coming back —
+/// and a behavioural test cannot see that from inside the same process.
+///
+/// Why a ratchet at all: review measured that restoring `ensure_rtk()` /
+/// `ensure_ripgrep()` into `init_with_templates` left the entire suite green,
+/// including this file's other two tests. A revert of the fix was invisible.
+#[test]
+fn the_library_half_of_init_calls_no_environment_installer() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init.rs"),
+    )
+    .expect("init.rs is readable");
+
+    for call in ["    ensure_rtk();", "    ensure_ripgrep();"] {
+        assert!(
+            !source.contains(call),
+            "`{}` is back inside init.rs. These installers belong to `cli::dispatch`: \
+             from the library they run `sh -c \"curl … | sh\"` for any caller, which is \
+             how the dashboard's integration test came to spawn it twice on CI.",
+            call.trim()
+        );
+    }
+
+    // And the call site that IS allowed must still exist, so this test cannot
+    // pass by the installers having disappeared altogether.
+    let dispatch = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
+    )
+    .expect("cli.rs is readable");
+    for call in ["init::ensure_rtk();", "init::ensure_ripgrep();"] {
+        assert!(
+            dispatch.contains(call),
+            "`{call}` vanished from cli::dispatch — the terminal user lost the tooling"
+        );
+    }
+
+    // And they must be gated on what the run actually DID, never on "no error".
+    // `Ok` covers the operator answering Cancel to an existing `.claude/`, and on
+    // that path this arm once ran `rtk init -g --no-patch` — a global write after
+    // an explicit refusal. Measured through a pty in review.
+    assert!(
+        dispatch.contains("outcome == init::InitOutcome::Installed"),
+        "the installers must be gated on InitOutcome::Installed; `is_ok()` also \
+         means the operator cancelled, and acting on a refusal is the defect this \
+         whole exercise is about"
     );
 }

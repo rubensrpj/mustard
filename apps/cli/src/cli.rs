@@ -110,18 +110,22 @@ fn dispatch(cli: Cli) -> Result<()> {
             if !dry_run {
                 init::probe_rtk();
             }
-            let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run });
-            // The tool installers live here for the same reason the gate does:
-            // putting software on the operator's machine is an ENVIRONMENT act,
-            // and a library call must never take it. They run AFTER the install
-            // so a failed `init` does not leave the machine changed for nothing,
-            // and they stay fail-open — a missing `rtk` was already refused
-            // above, and a missing `rg` only costs noisier output.
-            if !dry_run && outcome.is_ok() {
+            let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run })?;
+            // Environment acts live HERE, never in the library: putting software
+            // on the operator's machine, and writing their global settings, are
+            // things a library call must never take on its caller's behalf.
+            //
+            // The condition is `Installed`, not "no error". `Ok` used to cover
+            // the operator answering Cancel to an existing `.claude/` — and on
+            // that path this arm still ran `rtk init -g --no-patch`, a GLOBAL
+            // write, after an explicit refusal. Measured through a pty in
+            // review. `InitOutcome` exists so the caller can tell the two apart.
+            if outcome == init::InitOutcome::Installed {
+                init::ensure_global_permissions_if_opted_in();
                 init::ensure_rtk();
                 init::ensure_ripgrep();
             }
-            outcome
+            Ok(())
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
         Commands::Add { template, force } => {
