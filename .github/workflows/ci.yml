@@ -48,11 +48,12 @@ jobs:
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
-      # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
-      # The Tauri dashboard (apps/dashboard/src-tauri) is intentionally
-      # excluded: it needs per-OS system libraries (webkit2gtk on Linux, etc.)
-      # that would make this matrix slow and brittle, and it is not part of the
-      # CLI/runtime surface this workflow guards.
+      # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt /
+      # mustard-dashboard). The dashboard used to be excluded because the Tauri
+      # wrapper needed per-OS system libraries (webkit2gtk on Linux, etc.) that
+      # made this matrix slow and brittle. Tauri is gone — the backend is a
+      # `tiny_http` server with no system dependency at all — so its suite runs
+      # here like every other crate's.
       #
       # `-p scan` is here because mustard-core's stack-registry tests exercise
       # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
@@ -88,10 +89,14 @@ jobs:
       # round is free — but read 6,8% as the number, not 41%.
       # Full figures: docs/2026-08-14-build-cycle-measurements.md.
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
+        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard -- --test-threads=8
 
       # Plain clippy: the workspace lint table makes `unwrap_used` (and other
       # correctness lints) deny-level while keeping pedantic lints at warn, so
       # this fails the build on real problems without drowning in style noise.
+      # `mustard-dashboard` is absent on purpose: it does not opt into
+      # `[lints] workspace = true`, so clippy there is pure style noise with no
+      # deny-level lint behind it. Its TESTS run above, which is the coverage
+      # that was missing while the crate sat outside the workspace.
       - name: Clippy
         run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan

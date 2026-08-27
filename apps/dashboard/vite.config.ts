@@ -32,8 +32,8 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. the Rust backend lives beside this app; a .rs edit is not an HMR event
+      ignored: ["**/server/**"],
     },
   },
 }));

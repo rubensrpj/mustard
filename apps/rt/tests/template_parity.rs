@@ -397,7 +397,7 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
     let mut rt_sources = Vec::new();
     walk_files(&root.join("apps/rt/src"), &mut rt_sources);
     let mut dash_sources = Vec::new();
-    walk_files(&root.join("apps/dashboard/src-tauri/src"), &mut dash_sources);
+    walk_files(&root.join("apps/dashboard/server/src"), &mut dash_sources);
 
     let excluded = |p: &Path| {
         p.file_name()

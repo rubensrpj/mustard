@@ -1,0 +1,48 @@
+[package]
+name = "mustard-dashboard"
+version.workspace = true
+description = "HTTP server backing the Mustard dashboard"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "mustard_dashboard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mustard-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Minimal blocking HTTP server — the same engine the OTLP collector runs on
+# (`mustard-rt run otel-collector`). No async runtime: every request is served
+# on a worker thread, which is why the command bodies are plain synchronous
+# functions.
+tiny_http = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+chrono = { workspace = true }
+# Resolve the user's home dir to locate `~/.claude/` — the project registry
+# lives there, and so do the Claude Code session transcripts
+# (`<home>/.claude/projects/<encoded-cwd>/<session_id>.jsonl`) that supply the
+# assistant narration behind each tool.use.
+dirs = { workspace = true }
+# Mustard CLI as a native library (B5 Wave 3): the dashboard installs/updates
+# Mustard into a selected folder by calling `mustard_cli::init`/`update`
+# directly — no sidecar process.
+mustard-cli = { path = "../../cli" }
+mustard-core = { path = "../../../packages/core" }
+
+[[test]]
+name = "telemetry_test"
+path = "tests/telemetry_test.rs"
+
+[[test]]
+name = "mustard_cli_test"
+path = "tests/mustard_cli_test.rs"
+
+# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
+[dev-dependencies]
+tempfile = { workspace = true }
