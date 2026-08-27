@@ -89,3 +89,13 @@ grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 # Used only at build time to read the external language registry and embed the
 # .scm query files. No language knowledge lives in the Rust source.
 toml = "1"
+
+# NO `[lints]` TABLE HERE, and that is a measured decision, not an oversight.
+# Three reviewers flagged this crate as the second one outside the workspace
+# table (the spec had claimed the dashboard was the only one). Adopting it was
+# then attempted and measured: `unwrap_used = "deny"` costs 10 rewrites in
+# `src/` plus 241 in `tests/` — integration tests are their own crates, so the
+# `#![cfg_attr(test, allow(...))]` line that covers `mustard-core` and
+# `mustard-cli` does not reach them. That is more than the 269 the dashboard
+# needed, i.e. a wave of its own, not a repair. `build.rs` was cleaned up here
+# regardless, since it was three sites.

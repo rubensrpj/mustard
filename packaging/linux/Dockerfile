@@ -37,9 +37,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # toolchain in the image layer, and a number free to disagree with the one every
 # other build uses.
 #
-# `rustup --version` is the verification: `rustc`/`cargo` have no toolchain to
-# resolve outside a pinned tree, which is the intended state here.
-#
 # rustup home is /opt/rustup, cargo home /opt/cargo; the registry/target caches
 # come in as volumes on `docker run`, outside this file.
 ENV RUSTUP_HOME=/opt/rustup \
@@ -48,5 +45,23 @@ ENV RUSTUP_HOME=/opt/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --profile minimal --default-toolchain none \
     && rustup --version
+
+# THE PINNED TOOLCHAIN IS BAKED INTO THE IMAGE, and this line is why.
+#
+# Installing rustup with `--default-toolchain none` removes the version that
+# used to disagree with the repository's — but it also leaves the image with no
+# compiler at all. `packaging/build-packages.ps1` runs `docker run --rm` and
+# mounts volumes only for /opt/cargo/registry, /opt/cargo/git and the target
+# dirs: RUSTUP_HOME is neither baked nor mounted, so every single package build
+# would download and install the whole toolchain before compiling a line. That is
+# a speed regression in the exact dimension this unit exists to remove, and it
+# was found in review rather than by anyone timing a build.
+#
+# Copying the pin and installing it here gets both halves: one version, named by
+# the repository, resolved once at image-build time and cached in the layer.
+# `--locked` is not a thing for toolchains; the guarantee is that the file below
+# is the same file the repository carries, so a bump to it rebuilds this layer.
+COPY rust-toolchain.toml /tmp/rust-toolchain.toml
+RUN cd /tmp && rustup toolchain install && rustup show active-toolchain && rm -f /tmp/rust-toolchain.toml
 
 WORKDIR /work

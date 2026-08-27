@@ -70,7 +70,8 @@ flate2 = "1.1.9"
 #
 # The two majors cost two lines — `model::Content` became
 # `model::content::ContentBlock`, and nothing else in `apps/mcp` moved. Crate
-# count is unchanged at 282: the 3.x line drops `async-trait` and adds `uuid`.
+# count moved 281 -> 282 here (the 3.x line drops `async-trait` and adds `uuid`),
+# and the pruning wave then took it to 278.
 rmcp = { version = "3.1", features = ["server", "transport-io"] }
 # Async runtime — required only by `rmcp` (async-only). Scoped to the `mcp`
 # face: the handler builds a `current_thread` runtime locally so the `on` /

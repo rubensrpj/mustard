@@ -89,9 +89,9 @@ fn main() {
             body,
             "        RawLang {{ name: {name:?}, query: {query:?}, language: {grammar}.into() }},"
         )
-        .unwrap();
-        writeln!(ext_table, "    ({name:?}, &[{exts}]),").unwrap();
-        writeln!(alias_table, "    ({name:?}, &[{aliases}]),").unwrap();
+        .expect("the generated body is a String, which never fails to write");
+        writeln!(ext_table, "    ({name:?}, &[{exts}]),").expect("the generated table is a String, which never fails to write");
+        writeln!(alias_table, "    ({name:?}, &[{aliases}]),").expect("the generated table is a String, which never fails to write");
     }
 
     body.push_str("    ]\n}\n");
