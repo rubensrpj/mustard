@@ -290,8 +290,28 @@ pub fn init_with_templates(
     ensure_global_permissions().unwrap_or_else(|err| {
         eprintln!("[mustard] warning: could not update global permissions: {err}");
     });
-    ensure_rtk();
-    ensure_ripgrep();
+
+    // NO TOOL INSTALLERS HERE — `ensure_rtk` / `ensure_ripgrep` live in
+    // `cli::dispatch`, beside the gate, for the same reason the gate does.
+    //
+    // They were called from this spot, and moving the gate out without moving
+    // them nearly shipped a worse bug than the one it fixed. While `probe_rtk`
+    // exited at the top of this function, `ensure_rtk` could only ever run with
+    // `rtk` ALREADY present — its install branch was unreachable from here. Take
+    // the exit away and that branch goes live for every library and
+    // integration-test caller, and it runs
+    // `sh -c "curl … rtk/master/install.sh | sh"` on Unix, or `cargo install`
+    // from git plus `cargo install ripgrep` on Windows.
+    //
+    // Measured in review, not argued: the dashboard's `mustard_cli_test` spawned
+    // that curl pipeline TWICE under a logging `sh` shim. It would have run on
+    // ubuntu, macOS and Windows runners, downloading and executing a remote
+    // script inside a unit test, with no timeout.
+    //
+    // The verification that missed it is worth naming too: `PATH=/nonexistent`
+    // makes every spawn fail instantly, so the installer degrades to printing
+    // instructions — the one environment where this consequence cannot appear.
+    // Re-measure this file with a SHIMMED PATH, never an empty one.
 
     // Write the single project-root mustard.json: git-flow + detected commands
     // + language/tone + runtime/version stamp. One file, one write. A re-run
@@ -813,7 +833,7 @@ fn home_dir() -> Option<PathBuf> {
 /// Flow: if `rtk` is already on PATH, run `rtk init -g --no-patch` and return.
 /// Otherwise attempt an auto-install (see [`install_rtk`]); on success re-run
 /// the `rtk init`, on failure print the manual instructions and carry on.
-fn ensure_rtk() {
+pub(crate) fn ensure_rtk() {
     // No external-tool side effects under unit tests: on a clean CI runner this
     // would shell out to `cargo install --git …rtk` (slow / network-bound).
     if cfg!(test) {
@@ -855,9 +875,12 @@ fn rtk_on_path() -> bool {
 /// failing later in a confusing way.
 ///
 /// This is **not** fail-open — unlike [`ensure_rtk`], which is best-effort
-/// during the install phase. The exit code is `1` so CI and library callers
-/// can detect the failure and surface it to the user.
-pub fn probe_rtk() {
+/// during the install phase. The exit code is `1` so a script driving the
+/// binary can detect the failure and surface it to the user. NOT library
+/// callers: they never reach this function, which is the whole point of it
+/// living in `cli::dispatch`. `pub(crate)` makes the compiler enforce that
+/// rather than leaving it to this comment.
+pub(crate) fn probe_rtk() {
     // Skip the hard gate under unit tests: a clean CI runner has no `rtk`, and a
     // `process::exit` here would kill the whole test process.
     //
@@ -944,7 +967,7 @@ fn install_rtk(pinned_rev: Option<&str>) -> bool {
 /// Flow: if `rg` is already on PATH, return silently. Otherwise attempt
 /// auto-install via Scoop (Windows) or `cargo install ripgrep`; on Unix only
 /// print manual instructions (the package manager varies).
-fn ensure_ripgrep() {
+pub(crate) fn ensure_ripgrep() {
     // No external-tool side effects under unit tests (would `cargo install
     // ripgrep` on a clean CI runner). Production keeps `cfg!(test) == false`.
     if cfg!(test) {

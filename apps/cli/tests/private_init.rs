@@ -25,9 +25,22 @@
 //! survived, and `apps/dashboard/server/tests/mustard_cli_test.rs` walked into
 //! it the first time CI ran that crate — the process vanished mid-test. So the
 //! gate moved OUT of the library and into `cli::dispatch`, where the terminal
-//! user still meets it and no library caller can be killed by it. Calling
-//! `init_with_templates` in-process is now safe; this test drives the binary for
-//! the reasons above, not for that one.
+//! user still meets it and no library caller can be killed by it.
+//!
+//! Moving the gate alone was not enough, and the second half is worth recording
+//! because it nearly shipped. While the gate exited at the top of
+//! `init_with_templates`, the best-effort installers below it (`ensure_rtk`,
+//! `ensure_ripgrep`) could only run with the tools ALREADY present — their
+//! install branches were unreachable from `init`. Removing the exit made them
+//! live for library callers, and a shimmed-PATH run of the dashboard's test
+//! caught it spawning `sh -c "curl … | sh"` twice. Both now sit beside the gate
+//! in `cli::dispatch`, for the same reason: putting software on the operator's
+//! machine is an environment act, and a library call must never take it.
+//!
+//! So an in-process `init_with_templates` no longer exits the process and no
+//! longer installs anything. This test drives the binary for the reasons above,
+//! not for either of those. The gate itself is pinned by
+//! `apps/cli/tests/rtk_gate.rs`.
 //!
 //! The test carries its own CONTROL: the same fixture, installed shared, must
 //! produce `.github/pull_request_template.md`. Without it a green run would

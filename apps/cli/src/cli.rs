@@ -110,7 +110,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             if !dry_run {
                 init::probe_rtk();
             }
-            init::init(&cwd, &InitOptions { force, yes, dry_run })
+            let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run });
+            // The tool installers live here for the same reason the gate does:
+            // putting software on the operator's machine is an ENVIRONMENT act,
+            // and a library call must never take it. They run AFTER the install
+            // so a failed `init` does not leave the machine changed for nothing,
+            // and they stay fail-open — a missing `rtk` was already refused
+            // above, and a missing `rg` only costs noisier output.
+            if !dry_run && outcome.is_ok() {
+                init::ensure_rtk();
+                init::ensure_ripgrep();
+            }
+            outcome
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
         Commands::Add { template, force } => {
