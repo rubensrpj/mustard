@@ -81,8 +81,23 @@ fn main() -> ExitCode {
         println!("mustard-dashboard: port {requested} was taken, using {port}");
     }
 
-    let url = format!("http://{}:{port}/", args.host);
+    // A wildcard bind is not an address anyone can paste. `--host 0.0.0.0` is
+    // the path the tutorials tell operators to use for reaching the panel from
+    // another machine, so printing `http://0.0.0.0:7777/` hands them a URL that
+    // cannot work and says nothing about what would (found in review).
+    let wildcard = args.host == "0.0.0.0" || args.host == "::";
+    let url = if wildcard {
+        format!("http://127.0.0.1:{port}/")
+    } else {
+        format!("http://{}:{port}/", args.host)
+    };
     println!("mustard-dashboard: serving {} at {url}", root.display());
+    if wildcard {
+        println!(
+            "mustard-dashboard: also reachable on every interface at port {port} — \
+             from another machine use http://<this machine's address>:{port}/"
+        );
+    }
 
     // `bound_to` carries the address the guard compares incoming `Host` headers
     // against — the port that `bind` actually got, never the one requested.

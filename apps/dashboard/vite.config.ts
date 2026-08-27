@@ -42,6 +42,17 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: `http://127.0.0.1:${apiPort}`,
+        // `changeOrigin` rewrites `Host` to the target and leaves `Origin` as the
+        // browser sent it (`http://localhost:1420`). Measured with a netcat
+        // listener standing in for the target: `host: 127.0.0.1:<port>` beside
+        // `origin: http://localhost:1420`. Two attempts to make the proxy rewrite
+        // `Origin` too — a `configure` hook, then the declarative `headers`
+        // option — BOTH failed to reach the wire; the same probe kept showing the
+        // browser's origin.
+        //
+        // So the mismatch is permanent and the server accommodates it: its `/api`
+        // guard accepts any LOOPBACK origin, which a dev page always has and a
+        // hostile page never does. Nothing here needs to compensate.
         changeOrigin: true,
       },
     },

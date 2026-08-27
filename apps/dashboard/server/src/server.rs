@@ -229,14 +229,27 @@ impl Ctx {
     ///    This is what refuses DNS rebinding, where `evil.example` resolves to
     ///    `127.0.0.1` and check 2 alone would pass — attacker origin and
     ///    attacker host agree with each other.
-    /// 2. **`Origin`, when present, must equal `Host`.** A cross-origin page
-    ///    always sends `Origin`; a same-origin fetch sends one that matches.
-    ///    Comparing the two rather than an allowlist is what keeps `--host`
-    ///    working: the operator reaching the panel at `http://192.168.1.5:7777`
+    /// 2. **`Origin`, when present, must be a LOOPBACK origin or equal `Host`.**
+    ///    A hostile page always has a public origin; a loopback origin is a page
+    ///    the operator is serving themselves. The `or equal Host` half is what
+    ///    keeps `--host` working: reaching the panel at `http://192.168.1.5:7777`
     ///    sends both headers naming that address, and they agree.
+    ///
+    ///    Requiring `Origin == Host` alone was tried first and **broke
+    ///    `pnpm dev`**: Vite's proxy rewrites `Host` to the backend and forwards
+    ///    the browser's `Origin` untouched, so the pair can never agree and every
+    ///    dev request answered 403. Fixing it in the proxy was tried twice — a
+    ///    `configure` hook and the declarative `headers` option — and a netcat
+    ///    listener in the target's place proved neither reached the wire. The
+    ///    rule was the wrong shape, not the configuration.
     ///
     /// A request with no `Origin` at all is a non-browser client — `curl`, the
     /// AC scripts — and passes check 2 by having nothing to disagree with.
+    ///
+    /// What check 2 gives up: another server on this machine's loopback could
+    /// drive these commands. Someone able to run a server on your loopback has
+    /// already won by other means; a public page has not, and that is the whole
+    /// population this guard exists for.
     ///
     /// Explicit exposure (`--host 0.0.0.0`) cannot know which address the
     /// operator will type, so check 1 falls back to the port alone. That is the
@@ -256,7 +269,12 @@ impl Ctx {
             Some(origin) => origin
                 .strip_prefix("http://")
                 .or_else(|| origin.strip_prefix("https://"))
-                .is_some_and(|rest| rest.eq_ignore_ascii_case(host)),
+                .is_some_and(|rest| {
+                    rest.eq_ignore_ascii_case(host) || {
+                        let (name, _) = split_host_port(rest);
+                        LOOPBACK_NAMES.contains(&name)
+                    }
+                }),
         }
     }
 
@@ -268,10 +286,24 @@ impl Ctx {
             None if self.port != 80 => return false,
             _ => {}
         }
-        // Wildcard binds cannot know the address the operator will reach them
-        // by; the port is the only assertion left. See the doc comment.
+        // A wildcard bind cannot know WHICH of the machine's addresses the
+        // operator will type — but it can insist on an ADDRESS. DNS rebinding
+        // needs a NAME: the attack is "my domain resolves to your machine", and
+        // a domain is exactly what an IP literal is not. Accepting only literals
+        // (plus the loopback names) therefore closes rebinding without an
+        // interface allowlist and without a new dependency.
+        //
+        // Measured before this narrowing, with `--host 0.0.0.0`:
+        //   curl -H 'Host: evil.example:P' -H 'Origin: http://evil.example:P' \
+        //        -X POST --data '{}' .../api/dashboard_projects_list  ->  200
+        // That is the mode all three tutorials prescribe, which is why it could
+        // not stay (found in re-review).
         if self.bound_host == "0.0.0.0" || self.bound_host == "::" {
-            return true;
+            return LOOPBACK_NAMES.contains(&name)
+                || name.parse::<std::net::IpAddr>().is_ok()
+                // `[::1]`-style brackets are already stripped by split_host_port,
+                // but a bare IPv6 host arrives with its colons intact.
+                || name.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok();
         }
         name.eq_ignore_ascii_case(&self.bound_host) || LOOPBACK_NAMES.contains(&name)
     }
@@ -942,17 +974,46 @@ mod tests {
         assert!(!ctx.api_caller_allowed(None, None));
     }
 
-    /// `--host 0.0.0.0` is the operator choosing exposure, and the address they
-    /// will type is unknowable here — so the host check falls back to the port,
-    /// while the origin/host agreement carries on guarding cross-origin pages.
+    /// `--host 0.0.0.0` is the operator choosing exposure, and it is the command
+    /// all three tutorials prescribe — so it cannot be the mode with the weak
+    /// guard. A wildcard bind accepts an ADDRESS, never a NAME: DNS rebinding
+    /// needs a domain, and a domain is what an IP literal is not.
     #[test]
-    fn explicit_exposure_keeps_the_origin_check_and_relaxes_only_the_host_check() {
+    fn explicit_exposure_accepts_an_address_and_refuses_a_name() {
         let ctx = Ctx::new(PathBuf::from("/tmp")).bound_to("0.0.0.0", 7777);
+
+        // The operator on the local network, reaching the panel by address.
         assert!(ctx.api_caller_allowed(Some("192.168.1.5:7777"), Some("http://192.168.1.5:7777")));
+        // Rebinding: origin and host agree with EACH OTHER, and both are a name.
+        // This answered 200 before the narrowing (measured in re-review).
+        assert!(
+            !ctx.api_caller_allowed(Some("evil.example:7777"), Some("http://evil.example:7777")),
+            "a domain that resolves here is still not an address of this machine"
+        );
+        // A public page against the exposed panel.
         assert!(
             !ctx.api_caller_allowed(Some("192.168.1.5:7777"), Some("https://evil.example")),
             "exposure relaxes the host check, never the origin one"
         );
+    }
+
+    /// `pnpm dev` puts Vite in front: it rewrites `Host` to the backend and
+    /// forwards the browser's own `Origin`, so the pair never agrees. Requiring
+    /// agreement alone made every dev request 403 (found in re-review, measured
+    /// against a real dev server). A loopback origin is a page the operator is
+    /// serving themselves; the attacker's is always public.
+    #[test]
+    fn the_dev_proxy_is_served_and_a_public_origin_still_is_not() {
+        let ctx = Ctx::new(PathBuf::from("/tmp")).bound_to("127.0.0.1", 47950);
+
+        // What Vite actually forwards: host rewritten, origin left alone.
+        assert!(
+            ctx.api_caller_allowed(Some("127.0.0.1:47950"), Some("http://localhost:1420")),
+            "the dev proxy must reach the backend"
+        );
+        assert!(ctx.api_caller_allowed(Some("127.0.0.1:47950"), Some("http://127.0.0.1:5173")));
+        // The population this guard exists for is unaffected.
+        assert!(!ctx.api_caller_allowed(Some("127.0.0.1:47950"), Some("https://evil.example")));
     }
 
     #[test]
