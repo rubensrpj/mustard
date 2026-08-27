@@ -12,6 +12,12 @@
 # Usage: scripts/ac/dashboard-events-stream.sh
 set -euo pipefail
 
+# `cargo` is NOT on PATH in the harness shell that runs this criterion — the
+# spec's own AC-4 and AC-10 carry this prefix for exactly that reason, and
+# omitting it here left three criteria exiting 127 (found in review). A
+# rustup install puts it here; an already-reachable cargo is unaffected.
+export PATH="$HOME/.cargo/bin:$PATH"
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="$(mktemp -d)"
 server_pid=""

@@ -164,6 +164,12 @@ pub struct Ctx {
     pub watchers: Arc<Mutex<watcher::WatcherState>>,
     /// Where watcher notifications go.
     pub bus: EventBus,
+    /// The host this server was bound to, and the port it actually got. Both
+    /// exist for ONE reason: deciding whether an `/api/` request was addressed
+    /// to us — see [`Ctx::api_caller_allowed`].
+    pub bound_host: String,
+    /// The bound port. See [`Ctx::bound_host`].
+    pub port: u16,
     /// The discovery root: the directory the server was started in, or
     /// `--root`. The native folder dialog died with the desktop shell, so this is the only
     /// answer to "which machine's projects?" — the server's own.
@@ -182,10 +188,110 @@ impl Ctx {
         Self {
             watchers: Arc::new(Mutex::new(watcher::WatcherState::default())),
             bus: EventBus::default(),
+            bound_host: DEFAULT_HOST.to_string(),
+            port: DEFAULT_PORT,
             root,
             dist: resolve_dist(),
             shutdown: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Record where the server actually landed, so the `/api/` guard can tell a
+    /// request addressed to US from one aimed at a name that merely resolves
+    /// here. Callers pass the port [`bind`] returned, never the one requested.
+    #[must_use]
+    pub fn bound_to(mut self, host: &str, port: u16) -> Self {
+        self.bound_host = host.to_string();
+        self.port = port;
+        self
+    }
+
+    /// Whether an `/api/` request may be served, given its `Host` and `Origin`.
+    ///
+    /// # The hole this closes
+    ///
+    /// The desktop shell's `invoke` bridge was reachable only from inside the
+    /// app. An HTTP port is reachable from every page the operator's browser
+    /// visits, and a `Content-Type: text/plain` POST is CORS-*safelisted*: the
+    /// browser sends it with NO preflight, so a hostile page reaches this
+    /// dispatcher directly. Measured before this guard existed: a POST carrying
+    /// `Origin: https://evil.example` ran `uninstall_mustard` and deleted a
+    /// project's `.claude/` and `mustard.json`, answering 200. The response is
+    /// opaque cross-origin — but the side effect is not, and that is the whole
+    /// attack. This is NOT the "no login, one person's panel" non-goal: that one
+    /// is about authenticating the operator, this is about defending them from
+    /// third-party pages.
+    ///
+    /// # The two checks, and why both
+    ///
+    /// 1. **`Host` must name us.** Bound to loopback (the default, and the one
+    ///    every machine has), only the loopback names at our port are accepted.
+    ///    This is what refuses DNS rebinding, where `evil.example` resolves to
+    ///    `127.0.0.1` and check 2 alone would pass — attacker origin and
+    ///    attacker host agree with each other.
+    /// 2. **`Origin`, when present, must equal `Host`.** A cross-origin page
+    ///    always sends `Origin`; a same-origin fetch sends one that matches.
+    ///    Comparing the two rather than an allowlist is what keeps `--host`
+    ///    working: the operator reaching the panel at `http://192.168.1.5:7777`
+    ///    sends both headers naming that address, and they agree.
+    ///
+    /// A request with no `Origin` at all is a non-browser client — `curl`, the
+    /// AC scripts — and passes check 2 by having nothing to disagree with.
+    ///
+    /// Explicit exposure (`--host 0.0.0.0`) cannot know which address the
+    /// operator will type, so check 1 falls back to the port alone. That is the
+    /// mode where exposure was a deliberate act; loopback, the mode nobody opts
+    /// into, keeps the full guard.
+    #[must_use]
+    pub fn api_caller_allowed(&self, host: Option<&str>, origin: Option<&str>) -> bool {
+        let Some(host) = host else {
+            // HTTP/1.1 requires Host. Its absence is not a client we serve.
+            return false;
+        };
+        if !self.host_is_ours(host) {
+            return false;
+        }
+        match origin {
+            None => true,
+            Some(origin) => origin
+                .strip_prefix("http://")
+                .or_else(|| origin.strip_prefix("https://"))
+                .is_some_and(|rest| rest.eq_ignore_ascii_case(host)),
+        }
+    }
+
+    /// Half of [`Ctx::api_caller_allowed`]: does this `Host` name this server?
+    fn host_is_ours(&self, host: &str) -> bool {
+        let (name, port) = split_host_port(host);
+        match port {
+            Some(p) if p != self.port => return false,
+            None if self.port != 80 => return false,
+            _ => {}
+        }
+        // Wildcard binds cannot know the address the operator will reach them
+        // by; the port is the only assertion left. See the doc comment.
+        if self.bound_host == "0.0.0.0" || self.bound_host == "::" {
+            return true;
+        }
+        name.eq_ignore_ascii_case(&self.bound_host) || LOOPBACK_NAMES.contains(&name)
+    }
+}
+
+/// Host names that always mean "this machine, this process".
+const LOOPBACK_NAMES: [&str; 3] = ["127.0.0.1", "localhost", "::1"];
+
+/// Split a `Host` header into its name and optional port, tolerating the
+/// bracketed IPv6 form (`[::1]:7777`).
+fn split_host_port(host: &str) -> (&str, Option<u16>) {
+    if let Some(rest) = host.strip_prefix('[') {
+        return match rest.split_once("]:") {
+            Some((name, port)) => (name, port.parse().ok()),
+            None => (rest.trim_end_matches(']'), None),
+        };
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) => (name, port.parse().ok()),
+        None => (host, None),
     }
 }
 
@@ -307,6 +413,33 @@ fn handle_one(mut request: Request, ctx: &Arc<Ctx>) {
     let method = request.method().clone();
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
+
+    // Every `/api/` route is guarded, not just the mutating POSTs: reading the
+    // dispatch table or the event stream from a hostile page is exfiltration,
+    // and `EventSource` sends `Origin` exactly like `fetch` does. The asset
+    // routes below are deliberately outside the guard — they serve the same
+    // public bundle to anyone who can reach the port.
+    if path.starts_with("/api/") {
+        // One pass, no closure: `HeaderField::equiv` takes a `&'static str`, so
+        // the field name cannot come in as a borrowed parameter.
+        let mut host: Option<String> = None;
+        let mut origin: Option<String> = None;
+        for header in request.headers() {
+            if header.field.equiv("Host") {
+                host = Some(header.value.as_str().to_string());
+            } else if header.field.equiv("Origin") {
+                origin = Some(header.value.as_str().to_string());
+            }
+        }
+        if !ctx.api_caller_allowed(host.as_deref(), origin.as_deref()) {
+            respond_error(
+                request,
+                403,
+                "refused: this request was not addressed to this server (Host/Origin mismatch)",
+            );
+            return;
+        }
+    }
 
     if method == Method::Get && path == "/api/events" {
         // The stream lives as long as the browser tab. Hand it to its own
@@ -730,7 +863,10 @@ mod tests {
     /// handle.
     fn spawn(root: PathBuf, dist: PathBuf) -> (u16, Arc<Ctx>, std::thread::JoinHandle<()>) {
         let (server, port) = bind("127.0.0.1", 0).unwrap();
-        let mut ctx = Ctx::new(root);
+        // `bound_to` is not optional decoration: the `/api/` guard compares the
+        // request's `Host` against it, so a context that never learned its port
+        // refuses every call in this module with 403.
+        let mut ctx = Ctx::new(root).bound_to("127.0.0.1", port);
         ctx.dist = dist;
         let ctx = Arc::new(ctx);
         let serving = Arc::clone(&ctx);
@@ -748,7 +884,7 @@ mod tests {
     fn http(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(req.as_bytes()).unwrap();
@@ -763,6 +899,60 @@ mod tests {
             .unwrap_or(0);
         let body = resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
         (status, body)
+    }
+
+    /// The regression this file exists to prevent, stated as a unit test so it
+    /// cannot come back quietly.
+    ///
+    /// Before the guard, a page at `https://evil.example` could POST
+    /// `Content-Type: text/plain` (CORS-safelisted, so no preflight) to
+    /// `/api/uninstall_mustard` and delete a project's `.claude/`. Reproduced
+    /// live during review; the response was 200 and the directory was gone.
+    #[test]
+    fn a_hostile_origin_cannot_reach_the_command_dispatcher() {
+        let ctx = Ctx::new(PathBuf::from("/tmp")).bound_to("127.0.0.1", 7777);
+
+        // The attack: origin disagrees with the host it was sent to.
+        assert!(
+            !ctx.api_caller_allowed(Some("127.0.0.1:7777"), Some("https://evil.example")),
+            "a cross-origin page must never reach /api/"
+        );
+        // DNS rebinding: attacker origin and attacker host AGREE with each
+        // other, which is why comparing them alone is not enough.
+        assert!(
+            !ctx.api_caller_allowed(Some("evil.example:7777"), Some("http://evil.example:7777")),
+            "a name that merely resolves here is not this server"
+        );
+        // A sandboxed iframe sends the literal `null`.
+        assert!(!ctx.api_caller_allowed(Some("127.0.0.1:7777"), Some("null")));
+
+        // The panel itself, on every name the operator can reach loopback by.
+        for host in ["127.0.0.1:7777", "localhost:7777", "[::1]:7777"] {
+            let origin = format!("http://{host}");
+            assert!(
+                ctx.api_caller_allowed(Some(host), Some(&origin)),
+                "same-origin panel refused at {host}"
+            );
+        }
+        // Non-browser clients (curl, the AC scripts) send no Origin at all.
+        assert!(ctx.api_caller_allowed(Some("127.0.0.1:7777"), None));
+        // A request aimed at another port was not addressed to us.
+        assert!(!ctx.api_caller_allowed(Some("127.0.0.1:9999"), None));
+        // HTTP/1.1 requires Host; its absence is not a client we serve.
+        assert!(!ctx.api_caller_allowed(None, None));
+    }
+
+    /// `--host 0.0.0.0` is the operator choosing exposure, and the address they
+    /// will type is unknowable here — so the host check falls back to the port,
+    /// while the origin/host agreement carries on guarding cross-origin pages.
+    #[test]
+    fn explicit_exposure_keeps_the_origin_check_and_relaxes_only_the_host_check() {
+        let ctx = Ctx::new(PathBuf::from("/tmp")).bound_to("0.0.0.0", 7777);
+        assert!(ctx.api_caller_allowed(Some("192.168.1.5:7777"), Some("http://192.168.1.5:7777")));
+        assert!(
+            !ctx.api_caller_allowed(Some("192.168.1.5:7777"), Some("https://evil.example")),
+            "exposure relaxes the host check, never the origin one"
+        );
     }
 
     #[test]
@@ -870,8 +1060,17 @@ mod tests {
         let (port, ctx, handle) = spawn(tmp.path().to_path_buf(), tmp.path().join("dist"));
 
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        // The `Host` must name the bound port: `/api/events` is behind the same
+        // guard as the command dispatcher, because `EventSource` sends `Origin`
+        // exactly like `fetch` and a hostile page reading the stream is
+        // exfiltration.
         stream
-            .write_all(b"GET /api/events HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n")
+            .write_all(
+                format!(
+                    "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: text/event-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            )
             .unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))

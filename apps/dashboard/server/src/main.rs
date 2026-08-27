@@ -84,7 +84,9 @@ fn main() -> ExitCode {
     let url = format!("http://{}:{port}/", args.host);
     println!("mustard-dashboard: serving {} at {url}", root.display());
 
-    let ctx = Arc::new(Ctx::new(root));
+    // `bound_to` carries the address the guard compares incoming `Host` headers
+    // against — the port that `bind` actually got, never the one requested.
+    let ctx = Arc::new(Ctx::new(root).bound_to(&args.host, port));
     if args.open && has_graphical_session() {
         open_browser(&url);
     } else if args.open {
