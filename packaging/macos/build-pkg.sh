@@ -4,15 +4,19 @@
 #
 # Roda num Mac (runner macos-* do GitHub Actions ou máquina local — NÃO há
 # cross-compile confiável de macOS a partir de outro SO). Gera UM instalador
-# que traz o Dashboard E o CLI:
+# que traz o CLI E o servidor do dashboard:
 #
 #   dist/Mustard-<versao>-universal.pkg
 #
-# Espelha o que o .deb faz no Linux: os binários do CLI ficam JUNTO do binário
-# do Dashboard dentro do .app, com a pasta `templates/` ao lado, de modo que a
-# resolução `<dir-do-exe>/templates` funcione para TODOS (CLI e Dashboard) — o
-# mesmo invariante de `mustard_cli::resolve_templates_dir`. O script de
-# pós-instalação do .pkg cria os symlinks do CLI no PATH (/usr/local/bin).
+# There is no `.app` any more. It existed because Tauri produced one, and what
+# is installed now is a folder of executables plus the built React assets — the
+# same shape the .deb installs. Layout, mirroring the Linux package:
+#
+#   /usr/local/mustard/bin/        os 5 binários do CLI + o mustard-dashboard
+#   /usr/local/mustard/bin/dist/   os assets do React que o servidor serve
+#   /usr/local/mustard/templates/  a carga do `mustard init`
+#
+# (/usr/local, not /usr/lib: /usr is protected by SIP on macOS.)
 #
 # CUIDADO com o invariante que sustenta esses symlinks: current_exe() NÃO
 # resolve symlink sozinho. No macOS o _NSGetExecutablePath devolve "a path",
@@ -24,6 +28,12 @@
 # Este comentário afirmava o contrário e foi o que legitimou o layout: não
 # reintroduzir a premissa de que o symlink se resolve sozinho.
 #
+# AND THAT IS WHY mustard-dashboard GETS A WRAPPER, NOT A SYMLINK: the server's
+# `resolve_dist` looks for `<dir of the exe>/dist` and does NOT canonicalize, so
+# a symlink in /usr/local/bin would send it hunting for /usr/local/bin/dist and
+# it would serve 404s. A one-line `exec` of the real path makes current_exe()
+# report the real path, and the assets are found beside it.
+#
 # Binários UNIVERSAIS (Intel x86_64 + Apple Silicon arm64 via `lipo`): um único
 # .pkg roda nos dois tipos de Mac.
 # ============================================================================
@@ -32,43 +42,45 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 DIST="$REPO/dist"
-APP_NAME="Mustard Dashboard.app"
 CLI_BINS="scan mustard-rt mustard-mcp mustard"
-TARGET_UNIVERSAL="universal-apple-darwin"
+PREFIX=/usr/local/mustard
 
-VERSION=$(grep -m1 '"version"' "$REPO/apps/dashboard/src-tauri/tauri.conf.json" \
-  | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-[ -n "$VERSION" ] || { echo "erro: não consegui ler a versão do tauri.conf.json" >&2; exit 1; }
+# The version used to come from tauri.conf.json, which no longer exists. The
+# release job exports MUSTARD_RELEASE_VERSION (it is also what gets compiled
+# into the binaries); a local run falls back to the workspace version, which
+# `bump-on-main` keeps equal to plugin.json.
+VERSION="${MUSTARD_RELEASE_VERSION:-}"
+if [ -z "$VERSION" ]; then
+  VERSION=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$REPO/Cargo.toml" | head -1)
+fi
+[ -n "$VERSION" ] || { echo "erro: não consegui resolver a versão (MUSTARD_RELEASE_VERSION ou Cargo.toml)" >&2; exit 1; }
 echo "==> versão: $VERSION"
 
 mkdir -p "$DIST"
 
-# --- 1. binários do CLI (universal) -----------------------------------------
-echo "==> [1/5] cargo build --release (universal)"
+# --- 1. binários (universal) ------------------------------------------------
+echo "==> [1/5] cargo build --release (universal, CLI + servidor do dashboard)"
 for t in x86_64-apple-darwin aarch64-apple-darwin; do rustup target add "$t" >/dev/null; done
 ( cd "$REPO" && cargo build --release --locked \
     --target x86_64-apple-darwin --target aarch64-apple-darwin \
-    --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard )
+    --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard --bin mustard-dashboard )
 
-# --- 2. Dashboard .app (universal, só o bundle .app — sem .dmg) --------------
-echo "==> [2/5] tauri build (Dashboard, bundle app)"
+# --- 2. assets do React -----------------------------------------------------
+echo "==> [2/5] pnpm build (assets do dashboard)"
 ( cd "$REPO" && pnpm install --frozen-lockfile )
-( cd "$REPO" && pnpm --filter mustard-dashboard exec \
-    tauri build --target "$TARGET_UNIVERSAL" --bundles app )
-APP_SRC="$REPO/apps/dashboard/src-tauri/target/$TARGET_UNIVERSAL/release/bundle/macos/$APP_NAME"
-[ -d "$APP_SRC" ] || { echo "erro: .app não gerado em $APP_SRC" >&2; exit 1; }
+( cd "$REPO" && pnpm --filter mustard-dashboard build )
+DIST_SRC="$REPO/apps/dashboard/dist"
+[ -f "$DIST_SRC/index.html" ] || { echo "erro: o build do React não gerou $DIST_SRC" >&2; exit 1; }
 
-# --- 3. funde o CLI + rtk + templates dentro do .app ------------------------
-echo "==> [3/5] injetando CLI + templates no .app"
+# --- 3. monta a raiz do pacote ----------------------------------------------
+echo "==> [3/5] montando a raiz do pacote"
 PKGROOT="$DIST/_pkgroot"
 rm -rf "$PKGROOT"
-mkdir -p "$PKGROOT/Applications"
-cp -R "$APP_SRC" "$PKGROOT/Applications/"
-APP="$PKGROOT/Applications/$APP_NAME"
-MACOS="$APP/Contents/MacOS"
+BIN="$PKGROOT$PREFIX/bin"
+mkdir -p "$BIN" "$PKGROOT$PREFIX/templates"
 
-for b in $CLI_BINS; do
-  lipo -create -output "$MACOS/$b" \
+for b in $CLI_BINS mustard-dashboard; do
+  lipo -create -output "$BIN/$b" \
     "$REPO/target/x86_64-apple-darwin/release/$b" \
     "$REPO/target/aarch64-apple-darwin/release/$b"
 done
@@ -79,12 +91,13 @@ for p in "$HOME/.local/bin/rtk" "$HOME/.cargo/bin/rtk" \
          /usr/local/bin/rtk /opt/homebrew/bin/rtk; do
   if [ -x "$p" ]; then RTK="$p"; break; fi
 done
-if [ -n "$RTK" ]; then cp "$RTK" "$MACOS/rtk"; echo "    rtk: $RTK"; else echo "    aviso: rtk ausente"; fi
+if [ -n "$RTK" ]; then cp "$RTK" "$BIN/rtk"; echo "    rtk: $RTK"; else echo "    aviso: rtk ausente"; fi
+chmod 0755 "$BIN"/*
 
-# templates ao lado dos exes -> <exe>/templates resolve (igual ao .deb)
-rm -rf "$MACOS/templates"
-cp -R "$REPO/apps/cli/templates" "$MACOS/templates"
-chmod 0755 "$MACOS"/* 2>/dev/null || true
+# assets ao lado do exe -> <exe>/dist resolve (igual ao .deb)
+cp -R "$DIST_SRC" "$BIN/dist"
+# templates um nível acima -> <exe>/../templates resolve (igual ao .deb)
+cp -R "$REPO/apps/cli/templates/." "$PKGROOT$PREFIX/templates/"
 
 # --- 4. script de pós-instalação (symlinks no PATH + tira a quarentena) ------
 echo "==> [4/5] montando o postinstall"
@@ -93,16 +106,23 @@ rm -rf "$SCRIPTS"
 mkdir -p "$SCRIPTS"
 cat > "$SCRIPTS/postinstall" <<'EOF'
 #!/bin/bash
-# Roda como root após copiar o .app para /Applications.
+# Roda como root após copiar a árvore para /usr/local/mustard.
 set -e
-APP="/Applications/Mustard Dashboard.app"
-MACOS="$APP/Contents/MacOS"
+PREFIX=/usr/local/mustard
 mkdir -p /usr/local/bin
 for b in mustard mustard-rt mustard-mcp scan rtk; do
-  if [ -e "$MACOS/$b" ]; then ln -sf "$MACOS/$b" "/usr/local/bin/$b"; fi
+  if [ -e "$PREFIX/bin/$b" ]; then ln -sf "$PREFIX/bin/$b" "/usr/local/bin/$b"; fi
 done
+# The dashboard gets a wrapper instead of a symlink — see the header: its asset
+# resolution reads the exe's own directory without canonicalizing, and `exec`
+# hands it the real path.
+cat > /usr/local/bin/mustard-dashboard <<'WRAP'
+#!/bin/sh
+exec /usr/local/mustard/bin/mustard-dashboard "$@"
+WRAP
+chmod 0755 /usr/local/bin/mustard-dashboard
 # binários não assinados/notarizados: libera o Gatekeeper para esta instalação.
-xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+xattr -dr com.apple.quarantine "$PREFIX" 2>/dev/null || true
 exit 0
 EOF
 chmod +x "$SCRIPTS/postinstall"

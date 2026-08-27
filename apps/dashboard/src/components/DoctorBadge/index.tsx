@@ -11,7 +11,7 @@
 // active, nothing renders (`null`).
 //
 // Data flow: TanStack Query fetches the doctor report via the `doctor_status`
-// Tauri command (`@/lib/doctor`). Polling is `staleTime: 30s` — the typical
+// backend command (`@/lib/doctor`). Polling is `staleTime: 30s` — the typical
 // developer ergonomics window for "did I forget to install something?".
 
 import { useQuery } from "@tanstack/react-query";

@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils";
  * (`#512bd4`). The fill is computed at render via `color-mix`, NOT a Tailwind
  * opacity modifier: a Tailwind opacity modifier over a hex CSS var produces
  * `rgb(#hex / 0.1)` (invalid CSS), so the tonal square silently
- * dropped out and the icon read as flat grey. `color-mix` is supported in the
- * Tauri WebView (recent Chromium), so we mix the color with `transparent` for
+ * dropped out and the icon read as flat grey. `color-mix` ships in every
+ * browser this dashboard targets, so we mix the color with `transparent` for
  * the fill and let the icon inherit `currentColor`.
  */
 export type TonalColor = string;

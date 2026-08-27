@@ -3,7 +3,7 @@ import { fetchReadFile, type FileContent } from "@/lib/dashboard";
 
 /**
  * Read one repository file's text + metadata for the code viewer. Backed by
- * the `dashboard_read_file` Tauri command, which is fail-open — a missing
+ * the `dashboard_read_file` backend command, which is fail-open — a missing
  * file, a binary file, or a path that escapes the repo resolves to
  * `{ readable: false }` (never a rejected Promise), so callers render an empty
  * / "não foi possível abrir" state rather than catching.

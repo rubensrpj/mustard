@@ -1,6 +1,6 @@
 /**
  * Path-containment helper shared by the trace ("abrir" affordance) and the
- * docked CodeViewer. The dashboard's `dashboard_read_file` Tauri command is a
+ * docked CodeViewer. The dashboard's `dashboard_read_file` command is a
  * deliberate sandbox: it only reads files INSIDE the project repo and rejects
  * anything outside (job temp dirs, `~/.claude/jobs/...`, `/tmp`, …) with
  * `readable: false`. Tool-trace events, however, carry absolute paths that

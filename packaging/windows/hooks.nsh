@@ -1,32 +1,40 @@
 ; ============================================================================
-; hooks.nsh — hooks do instalador NSIS do Tauri (Tauri 2) para o Mustard.
+; hooks.nsh — everything the Windows installer does to the machine beyond
+; copying files: the user Path, the templates variable and the Start Menu
+; shortcut. Included by packaging/windows/mustard.nsi, which decides when each
+; macro runs.
 ;
-; O instalador do Mustard Dashboard embute também o CLI: via bundle.resources
-; (ver packaging/windows/tauri.windows.json) os binários do CLI e os templates
-; são copiados para dentro da pasta de instalação:
+; Installed layout (mustard.nsi writes it; this file depends on it):
 ;
-;   $INSTDIR\mustard-cli\        scan.exe, mustard*.exe, rtk.exe
-;   $INSTDIR\mustard-templates\  a carga do `mustard init`
+;   $INSTDIR\mustard-cli\        scan.exe, mustard*.exe, rtk.exe,
+;                                mustard-dashboard.exe
+;   $INSTDIR\mustard-cli\dist\   the built React assets
+;   $INSTDIR\mustard-templates\  the payload `mustard init` copies
 ;
-; POR QUE ESSES CAMINHOS NÃO TÊM UMA SUBPASTA `resources\`: o destino declarado
-; em bundle.resources é relativo à RAIZ de $INSTDIR no bundler NSIS. A subpasta
-; `resources` é layout do `.app` do macOS (Contents/Resources), não do Windows.
-; Este arquivo escreveu o caminho errado até 0.1.52 e o efeito era mudo: o
-; instalador copiava os binários para $INSTDIR\mustard-cli e mandava para o Path
-; uma pasta que nunca existiu, então NADA de novo entrava no Path. Quem já tinha
-; uma instalação antiga continuava sendo respondido por ela — foi assim que uma
-; máquina atualizada para 0.1.52 seguiu dizendo 0.1.47 (o número é gravado
-; dentro do executável em tempo de compilação: quem responde 0.1.47 É um binário
-; 0.1.47). Quem não tinha nada ficava sem comando algum. Ao mexer aqui, confira
-; o par contra tauri.windows.json: os dois têm de nomear a MESMA pasta.
+; THE FOLDER NAME `mustard-cli` IS A CONTRACT WITH mustard.nsi. It used to be a
+; contract with tauri.windows.json instead, and the two disagreed until 0.1.52:
+; the bundler copied the binaries to $INSTDIR\mustard-cli while this file sent a
+; `resources\mustard-cli` that never existed to the Path, so NOTHING new entered
+; the Path. Anyone with an older install kept being answered by it — that is how
+; a machine updated to 0.1.52 went on reporting 0.1.47 (the number is compiled
+; into the executable: whatever answers 0.1.47 IS a 0.1.47 binary). Anyone with
+; no prior install got no command at all. When touching either file, check the
+; pair: both must name the SAME folder.
 ;
-; O Dashboard.exe fica em $INSTDIR. Como a resolução de templates do Mustard
-; (mustard_cli::resolve_templates_dir) tenta MUSTARD_TEMPLATES_DIR PRIMEIRO,
-; apontar essa variável basta para que TANTO o CLI no terminal QUANTO o
-; Dashboard encontrem os templates — sem depender de layout relativo. Essa
-; resolução testa `is_dir()` antes de aceitar a variável, então uma variável
-; apontando para pasta inexistente degrada para o layout ao lado do executável
-; em vez de quebrar: por isso o caminho errado acima não deu erro nenhum.
+; Templates: `mustard_cli::resolve_templates_dir` tries MUSTARD_TEMPLATES_DIR
+; FIRST, so pointing that variable at the installed folder is enough for both
+; the CLI in a terminal and the dashboard server, with no reliance on relative
+; layout. That resolution tests `is_dir()` before accepting the variable, so a
+; variable aimed at a missing folder degrades to the layout beside the
+; executable instead of breaking — which is why the wrong path above raised no
+; error at all.
+;
+; SHORTCUT: it starts a SERVER, not a window. `mustard-dashboard.exe` binds
+; 127.0.0.1:7777, prints the URL and opens the browser itself when there is a
+; graphical session. The console window that stays open IS the server — closing
+; it stops serving. "Start in" is the user profile because the scan root is the
+; directory the server was started from; a narrower root is `--root DIR` from a
+; terminal.
 ;
 ; POR QUE O PATH É EDITADO PELO POWERSHELL, NUNCA PELO NSIS: o NSIS trunca
 ; toda string no seu limite de compilação (1024 na build clássica, 8192 na de
@@ -71,11 +79,21 @@
   nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\mustard-cli'; $$p = [Environment]::GetEnvironmentVariable('Path', 'User'); $$k = @(); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\mustard-cli') }) }; [Environment]::SetEnvironmentVariable('Path', (($$k + $$d) -join ';'), 'User')"`
   Pop $0
 
+  ; Start Menu entry. SetOutPath decides the shortcut's working directory, and
+  ; that directory is the dashboard's scan root — see the header.
+  CreateDirectory "$SMPROGRAMS\Mustard"
+  SetOutPath "$PROFILE"
+  CreateShortCut "$SMPROGRAMS\Mustard\Mustard Dashboard.lnk" "$INSTDIR\mustard-cli\mustard-dashboard.exe" "" "$INSTDIR\mustard-cli\mustard-dashboard.exe" 0 SW_SHOWNORMAL "" "Serve o Mustard Dashboard em http://127.0.0.1:7777 e abre o navegador"
+  SetOutPath "$INSTDIR"
+
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
   DeleteRegValue HKCU "Environment" "MUSTARD_TEMPLATES_DIR"
+
+  Delete "$SMPROGRAMS\Mustard\Mustard Dashboard.lnk"
+  RMDir "$SMPROGRAMS\Mustard"
 
   ; Remove só as entradas \mustard-cli; todo o resto do Path passa
   ; intocado pelo mesmo caminho sem limite do POSTINSTALL.

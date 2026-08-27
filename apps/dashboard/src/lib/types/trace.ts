@@ -1,5 +1,5 @@
 // Wave 6 — Trace viewer DTOs. Mirrors the serde shape of
-// `apps/dashboard/src-tauri/src/telemetry.rs::TraceNode` (`#[serde(rename_all
+// `apps/dashboard/server/src/telemetry.rs::TraceNode` (`#[serde(rename_all
 // = "snake_case")]`). Keep these aligned; a field rename on the Rust side
 // must land here in the same commit.
 

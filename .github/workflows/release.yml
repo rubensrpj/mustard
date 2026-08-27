@@ -11,13 +11,13 @@ name: Release
 # antes de cravar uma tag de verdade.
 #
 # Artefatos (1 instalador completo por SO):
-#   Windows : Mustard Dashboard_<versao>_x64-setup.exe  (NSIS: app + CLI + PATH)
+#   Windows : Mustard_<versao>_x64-setup.exe            (NSIS: CLI + servidor + PATH)
 #   macOS   : Mustard-<versao>-universal.pkg            (app em /Applications + CLI no PATH)
-#   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: app + CLI + symlinks)
+#   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: CLI + servidor + symlinks)
 #
-# Nota: existe um workflow legado `dashboard-release.yml` (tag `dashboard-v*`)
-# que publica SÓ o Dashboard. Este o engloba; pode ser removido quando não
-# precisar mais de releases isolados do Dashboard.
+# The dashboard is a `tiny_http` server now, not a Tauri desktop app: every
+# installer ships `mustard-dashboard` as one more binary, with the built React
+# assets beside it. No `tauri build`, no bundler, no WebKitGTK.
 
 on:
   push:
@@ -98,49 +98,74 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # One workspace now. `apps/dashboard/src-tauri` was a second Cargo root
+      # only because the Tauri wrapper pinned its own edition and lock; the
+      # dashboard backend is a plain member (`apps/dashboard/server`).
       - name: Rust cache
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            apps/dashboard/src-tauri
 
-      - name: Sincroniza a versão no tauri.conf.json
-        shell: bash
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          node -e "const fs=require('fs');const f='apps/dashboard/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "$VERSION"
-
-      - name: Compila os binários do CLI
-        run: cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
+      # `mustard-dashboard` joins the list: it is a normal workspace binary now.
+      - name: Compila os binários
+        run: cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard --bin mustard-dashboard
 
       - name: rtk (best-effort — embutido no instalador se compilar)
         continue-on-error: true
         run: cargo install --git https://github.com/rtk-ai/rtk --locked
 
-      - name: Monta o payload do CLI (entra via bundle.resources)
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build do React (assets do dashboard)
+        run: pnpm --filter mustard-dashboard build
+
+      # The installer is assembled from a staging tree, so makensis only has to
+      # copy three folders and mustard.nsi never has to know where a build put
+      # what. Layout mirrors what lands on the machine — see mustard.nsi.
+      - name: Monta o payload do instalador
         shell: bash
         run: |
-          PAYLOAD=apps/dashboard/src-tauri/payload
+          PAYLOAD=dist/_win-payload
           rm -rf "$PAYLOAD"
           mkdir -p "$PAYLOAD/bin"
-          for b in scan mustard-rt mustard-mcp mustard; do
+          for b in scan mustard-rt mustard-mcp mustard mustard-dashboard; do
             cp "target/release/$b.exe" "$PAYLOAD/bin/$b.exe"
           done
           RTK="$(command -v rtk || true)"
           if [ -n "$RTK" ]; then cp "$RTK" "$PAYLOAD/bin/rtk.exe"; else echo "rtk ausente — instalador sai sem rtk"; fi
           cp -R apps/cli/templates "$PAYLOAD/templates"
+          [ -f apps/dashboard/dist/index.html ] || { echo "::error::pnpm build não gerou apps/dashboard/dist"; exit 1; }
+          cp -R apps/dashboard/dist "$PAYLOAD/dist"
 
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
+      # NSIS ships with some runner images and not others (it left windows-2025),
+      # so the presence is checked instead of assumed — the assumption is exactly
+      # how the v0.1.29 release broke.
+      - name: Garante o makensis
+        shell: pwsh
+        run: |
+          $nsis = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path "$nsis\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+          if (-not (Test-Path "$nsis\makensis.exe")) { throw "makensis não encontrado após a instalação." }
+          Add-Content -Path $env:GITHUB_PATH -Value $nsis
 
-      - name: Build do instalador (Dashboard + CLI embutido)
-        run: pnpm --filter mustard-dashboard exec tauri build --bundles nsis --config ../../packaging/windows/tauri.windows.json
+      - name: Build do instalador (makensis)
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $root    = (Get-Location).Path
+          $payload = Join-Path $root 'dist\_win-payload'
+          $out     = Join-Path $root ("dist\Mustard_{0}_x64-setup.exe" -f $env:VERSION)
+          makensis "/DVERSION=$($env:VERSION)" "/DPAYLOAD=$payload" "/DOUTFILE=$out" (Join-Path $root 'packaging\windows\mustard.nsi')
+          if ($LASTEXITCODE -ne 0) { throw "makensis falhou (exit $LASTEXITCODE)." }
+          if (-not (Test-Path $out)) { throw "makensis não gerou $out." }
 
       # Binários avulsos que o bootstrap do plugin baixa na primeira sessão
-      # (mustard-boot): CLI completo + rtk (se compilou) + o exe portátil do
-      # Dashboard. O instalador NSIS acima continua sendo o caminho "app".
+      # (mustard-boot): o CLI completo + rtk (se compilou). O `mustard-dashboard`
+      # NÃO entra: sem a pasta dist/ ao lado dele o binário não serve página
+      # nenhuma, e carregar os assets do React em todo bootstrap de projeto
+      # custaria megabytes por uma tela que o instalador de cada SO já entrega.
       - name: Empacota binários avulsos (bootstrap do plugin)
         shell: bash
         env:
@@ -152,8 +177,6 @@ jobs:
           done
           RTK="$(command -v rtk || true)"
           if [ -n "$RTK" ]; then cp "$RTK" dist/bins/rtk.exe; else echo "rtk ausente — pacote sai sem rtk"; fi
-          DASH="$(ls apps/dashboard/src-tauri/target/release/*.exe 2>/dev/null | grep -vi 'setup' | head -1 || true)"
-          if [ -n "$DASH" ]; then cp "$DASH" dist/bins/; else echo "exe do dashboard não encontrado — pacote sai sem ele"; fi
           # O `mustard init` procura o templates/ AO LADO do binário. Sem ele o
           # CLI que veio por esta via morre com "could not locate the Mustard
           # templates/ directory" — os instaladores por SO levam o seu, este
@@ -167,7 +190,7 @@ jobs:
           name: windows-installer
           if-no-files-found: error
           path: |
-            apps/dashboard/src-tauri/target/release/bundle/nsis/*-setup.exe
+            dist/Mustard_*-setup.exe
             dist/mustard-bins-*.zip
 
   # ------------------------------------------------ macOS — instalador .pkg ----
@@ -197,18 +220,9 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # One workspace now — see the note in the Windows job.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            apps/dashboard/src-tauri
-
-      - name: Sincroniza a versão no tauri.conf.json
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          node -e "const fs=require('fs');const f='apps/dashboard/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "$VERSION"
 
       - name: rtk (best-effort — embutido no .pkg se disponível)
         continue-on-error: true
@@ -219,7 +233,9 @@ jobs:
 
       # Binários avulsos universais (lipo dos dois targets que o build-pkg.sh
       # já compilou) — o bootstrap do plugin baixa este tar na primeira sessão.
-      # O Dashboard macOS é um .app bundle; o veículo dele é o .pkg acima.
+      # O `mustard-dashboard` fica de fora pela mesma razão do job do Windows:
+      # sem os assets do React ao lado ele não serve nada, e o .pkg acima é o
+      # veículo que os leva.
       - name: Empacota binários avulsos (bootstrap do plugin)
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -254,20 +270,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sincroniza a versão no tauri.conf.json
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          jq --arg v "$VERSION" '.version=$v' apps/dashboard/src-tauri/tauri.conf.json > /tmp/tauri.conf.json
-          mv /tmp/tauri.conf.json apps/dashboard/src-tauri/tauri.conf.json
-
       - name: Empacota CLI + Dashboard num .deb (build-deb.sh via Docker)
         shell: pwsh
         run: ./packaging/build-packages.ps1 -Targets linux
 
       # Binários avulsos nativos (runner ubuntu, sem Docker) — o bootstrap do
-      # plugin baixa este tar na primeira sessão. O Dashboard Linux segue no
-      # .deb acima (precisa das libs de sistema que o apt resolve).
+      # plugin baixa este tar na primeira sessão. O `mustard-dashboard` fica de
+      # fora pela mesma razão dos outros dois jobs: sem os assets do React ao
+      # lado ele não serve nada, e o .deb acima é o veículo que os leva.
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

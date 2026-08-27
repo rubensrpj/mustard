@@ -16,10 +16,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChangeRequestActivityBlock } from "../ChangeRequestActivityBlock";
 
-// ── mock Tauri invoke ────────────────────────────────────────────────────────
+// ── mock the backend transport ───────────────────────────────────────────────
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/api-client", () => ({
+  call: vi.fn(),
 }));
 
 // ── mock zustand store ───────────────────────────────────────────────────────

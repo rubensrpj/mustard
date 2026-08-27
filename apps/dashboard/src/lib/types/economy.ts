@@ -1,14 +1,14 @@
 // Mirror of `mustard_core::economy` shapes exposed via the
-// `dashboard_economy_summary` Tauri command (W7 of
+// `dashboard_economy_summary` backend command (W7 of
 // 2026-05-20-economia-moat-unification).
 //
 // Kept in sync with `packages/core/src/economy/model.rs` and
-// `apps/dashboard/src-tauri/src/telemetry.rs::EconomyScopeDto`. When the core
+// `apps/dashboard/server/src/telemetry.rs::EconomyScopeDto`. When the core
 // shape evolves, update this file in lockstep — both sides use `serde`
 // snake_case so the wire format is the same on both ends.
 
 /**
- * Discriminated union matching the Tauri DTO `EconomyScopeDto` (internally
+ * Discriminated union matching the wire DTO `EconomyScopeDto` (internally
  * tagged on `kind` with snake_case variant names). Use the type-narrowing
  * helpers below to construct scopes instead of building literal objects, so a
  * later variant doesn't silently slip past the compiler.

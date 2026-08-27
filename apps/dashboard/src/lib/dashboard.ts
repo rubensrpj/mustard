@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { call, subscribe } from "@/lib/api-client";
 
 export type SpecBucket = "active" | "completed" | "cancelled";
 
@@ -54,15 +53,15 @@ export interface RecentEvent {
 }
 
 export function fetchSubprojects(repoPath: string): Promise<SubprojectInfo[]> {
-  return invoke<SubprojectInfo[]>("dashboard_subprojects", { repoPath });
+  return call<SubprojectInfo[]>("dashboard_subprojects", { repoPath });
 }
 
 export function fetchSkills(repoPath: string): Promise<SkillMeta[]> {
-  return invoke<SkillMeta[]>("dashboard_skills", { repoPath });
+  return call<SkillMeta[]>("dashboard_skills", { repoPath });
 }
 
 export function fetchRecentEvents(repoPath: string, limit?: number): Promise<RecentEvent[]> {
-  return invoke<RecentEvent[]>("dashboard_recent_events", { repoPath, limit });
+  return call<RecentEvent[]>("dashboard_recent_events", { repoPath, limit });
 }
 
 // W5 (`2026-05-24-mustard-unification`, T5.4) — recent sessions from the
@@ -117,7 +116,7 @@ export interface SessionToolCount {
 }
 
 export function fetchSessions(repoPath: string, limit?: number): Promise<SessionRow[]> {
-  return invoke<SessionRow[]>("dashboard_sessions", { repoPath, limit });
+  return call<SessionRow[]>("dashboard_sessions", { repoPath, limit });
 }
 
 // The per-session drill-in is now the rich `<ExecutionTrace source={{ kind:
@@ -126,23 +125,23 @@ export function fetchSessions(repoPath: string, limit?: number): Promise<Session
 // removed. `SessionRow` (the list fold) + `SessionToolCount` stay.
 
 export function fetchSpecs(repoPath: string): Promise<SpecRow[]> {
-  return invoke<SpecRow[]>("dashboard_specs", { repoPath });
+  return call<SpecRow[]>("dashboard_specs", { repoPath });
 }
 
 export function fetchSpecMarkdown(repoPath: string, specName: string): Promise<string> {
-  return invoke<string>("dashboard_spec_markdown", { repoPath, specName });
+  return call<string>("dashboard_spec_markdown", { repoPath, specName });
 }
 
 export function completeSpec(repoPath: string, specName: string): Promise<SpecBucket> {
-  return invoke<SpecBucket>("dashboard_spec_complete", { repoPath, specName });
+  return call<SpecBucket>("dashboard_spec_complete", { repoPath, specName });
 }
 
 export function cancelSpec(repoPath: string, specName: string): Promise<SpecBucket> {
-  return invoke<SpecBucket>("dashboard_spec_cancel", { repoPath, specName });
+  return call<SpecBucket>("dashboard_spec_cancel", { repoPath, specName });
 }
 
 export function reactivateSpec(repoPath: string, specName: string): Promise<SpecBucket> {
-  return invoke<SpecBucket>("dashboard_spec_reactivate", { repoPath, specName });
+  return call<SpecBucket>("dashboard_spec_reactivate", { repoPath, specName });
 }
 
 export function fetchSearchKnowledge(
@@ -150,7 +149,7 @@ export function fetchSearchKnowledge(
   query: string,
   limit?: number,
 ): Promise<KnowledgeRow[]> {
-  return invoke<KnowledgeRow[]>("dashboard_search_knowledge", { repoPath, query, limit });
+  return call<KnowledgeRow[]>("dashboard_search_knowledge", { repoPath, query, limit });
 }
 
 // --- Friction telemetry (.claude/.metrics/friction.json) ---
@@ -174,7 +173,7 @@ export interface FrictionEntry {
 }
 
 export function fetchFriction(repoPath: string): Promise<FrictionEntry[]> {
-  return invoke<FrictionEntry[]>("dashboard_friction", { repoPath });
+  return call<FrictionEntry[]>("dashboard_friction", { repoPath });
 }
 
 // --- Active Pipelines ---
@@ -195,14 +194,14 @@ export interface ActivePipeline {
 }
 
 export function fetchActivePipelines(repoPath: string): Promise<ActivePipeline[]> {
-  return invoke<ActivePipeline[]>("dashboard_active_pipelines", { repoPath });
+  return call<ActivePipeline[]>("dashboard_active_pipelines", { repoPath });
 }
 
 // --- Specs snapshot push (spec performance-dashboard-rotas-lentas-cache, W3) ---
 
 /**
- * Aggregated payload of the `dashboard:specs-snapshot` Tauri event — mirrors
- * the Rust `SpecsSnapshot` struct (`serde(rename_all = "snake_case")`). The
+ * Aggregated payload of the `dashboard:specs-snapshot` server-sent event —
+ * mirrors the Rust `SpecsSnapshot` struct (`serde(rename_all = "snake_case")`). The
  * watcher rebuilds it on a background thread after each debounced burst of
  * `.ndjson` / spec writes and ships it ready to render: `specs` is the
  * `dashboard_specs` projection, `active_pipelines` the
@@ -215,22 +214,21 @@ export interface SpecsSnapshot {
 }
 
 /**
- * Typed binding for the `dashboard:specs-snapshot` push. Resolves to the
- * unlisten function, like `listen` from `@tauri-apps/api/event`. The payload
- * carries no sequence number, so callers apply snapshots in reception order
- * (last write wins) and lean on the queries' own staleTime / refetch fallback
- * to reconcile the theoretical out-of-order pair of overlapping rebuilds.
+ * Typed binding for the `dashboard:specs-snapshot` push. Returns the
+ * unsubscribe — synchronously, because attaching to the shared events stream
+ * needs no round trip. The payload carries no sequence number, so callers
+ * apply snapshots in reception order (last write wins) and lean on the
+ * queries' own staleTime / refetch fallback to reconcile the theoretical
+ * out-of-order pair of overlapping rebuilds.
  */
 export function onSpecsSnapshot(
   handler: (snapshot: SpecsSnapshot) => void,
-): Promise<() => void> {
-  return listen<SpecsSnapshot>("dashboard:specs-snapshot", ({ payload }) =>
-    handler(payload),
-  );
+): () => void {
+  return subscribe<SpecsSnapshot>("dashboard:specs-snapshot", handler);
 }
 
 export function fetchKnowledgeBrowse(repoPath: string, limit = 500): Promise<KnowledgeRow[]> {
-  return invoke<KnowledgeRow[]>("dashboard_knowledge_browse", { repoPath, limit });
+  return call<KnowledgeRow[]>("dashboard_knowledge_browse", { repoPath, limit });
 }
 
 // --- Consumption & cost ---
@@ -282,12 +280,12 @@ export interface ConsumptionSummary {
 }
 
 export function fetchConsumption(repoPath: string): Promise<ConsumptionSummary> {
-  return invoke<ConsumptionSummary>("dashboard_consumption", { repoPath });
+  return call<ConsumptionSummary>("dashboard_consumption", { repoPath });
 }
 
 // --- Economy summary (W7 — 2026-05-20-economia-moat-unification) ---
 //
-// Thin invoke wrapper for the W7 Tauri command. The scope union maps directly
+// Thin wrapper for the W7 backend command. The scope union maps directly
 // onto the Rust `EconomyScopeDto` (internally tagged on `kind` with snake_case
 // variant names) — JS literal `{ kind: "project", project: "/..." }` is the
 // exact payload serde-deserialize expects on the other side.
@@ -331,7 +329,7 @@ export function fetchEconomySummary(
   scope: EconomyScope,
   window: TimeWindow | null,
 ): Promise<EconomySummary> {
-  return invoke<EconomySummary>("dashboard_economy_summary", {
+  return call<EconomySummary>("dashboard_economy_summary", {
     scope: withWindow(scope, window),
   });
 }
@@ -340,7 +338,7 @@ export function fetchEconomySavingsBreakdown(
   scope: EconomyScope,
   window: TimeWindow | null,
 ): Promise<SavingsBreakdown> {
-  return invoke<SavingsBreakdown>("dashboard_economy_savings_breakdown", {
+  return call<SavingsBreakdown>("dashboard_economy_savings_breakdown", {
     scope: withWindow(scope, window),
   });
 }
@@ -349,7 +347,7 @@ export function fetchEconomyContextRouting(
   scope: EconomyScope,
   window: TimeWindow | null,
 ): Promise<ContextRoutingMetrics> {
-  return invoke<ContextRoutingMetrics>("dashboard_economy_context_routing", {
+  return call<ContextRoutingMetrics>("dashboard_economy_context_routing", {
     scope: withWindow(scope, window),
   });
 }
@@ -358,7 +356,7 @@ export function fetchEconomyPerSpecCosts(
   scope: EconomyScope,
   window: TimeWindow | null,
 ): Promise<SpecCost[]> {
-  return invoke<SpecCost[]>("dashboard_economy_per_spec_costs", {
+  return call<SpecCost[]>("dashboard_economy_per_spec_costs", {
     scope: withWindow(scope, window),
   });
 }
@@ -367,7 +365,7 @@ export function fetchEconomyPerWaveCosts(
   scope: EconomyScope,
   window: TimeWindow | null,
 ): Promise<WaveCost[]> {
-  return invoke<WaveCost[]>("dashboard_economy_per_wave_costs", {
+  return call<WaveCost[]>("dashboard_economy_per_wave_costs", {
     scope: withWindow(scope, window),
   });
 }
@@ -422,12 +420,12 @@ export type { WorkspaceHealth } from "@/lib/types/specs";
 
 /**
  * Fetch the hygiene health roll-up for one project. Never throws — returns
- * all-zeros when the DB is absent (Tauri command is fail-open).
+ * all-zeros when the DB is absent (the backend command is fail-open).
  */
 export function fetchWorkspaceHealth(
   repoPath: string,
 ): Promise<import("@/lib/types/specs").WorkspaceHealth> {
-  return invoke("workspace_health", { repoPath });
+  return call("workspace_health", { repoPath });
 }
 
 // --- Wave-3 spec-card commands ---
@@ -452,33 +450,33 @@ export function dashboardSpecCard(
   repoPath: string,
   spec: string,
 ): Promise<import("@/lib/types/specs").SpecCard> {
-  return invoke("dashboard_spec_card", { repoPath, spec });
+  return call("dashboard_spec_card", { repoPath, spec });
 }
 
 /**
  * Batch counterpart of `dashboardSpecCard` for the Specs LIST route: one
- * invoke returns a card for every listed top-level spec, paying a single
+ * call returns a card for every listed top-level spec, paying a single
  * workspace event fold instead of one per row. Fail-open — an empty
  * workspace resolves to an empty array.
  */
 export function fetchSpecCards(
   repoPath: string,
 ): Promise<import("@/lib/types/specs").SpecCard[]> {
-  return invoke("dashboard_spec_cards", { repoPath });
+  return call("dashboard_spec_cards", { repoPath });
 }
 
 export function dashboardSpecWaves(
   repoPath: string,
   spec: string,
 ): Promise<import("@/lib/types/specs").SpecWave[]> {
-  return invoke("dashboard_spec_waves", { repoPath, spec });
+  return call("dashboard_spec_waves", { repoPath, spec });
 }
 
 export function dashboardSpecQuality(
   repoPath: string,
   spec: string,
 ): Promise<import("@/lib/types/specs").SpecQualityItem[]> {
-  return invoke("dashboard_spec_quality", { repoPath, spec });
+  return call("dashboard_spec_quality", { repoPath, spec });
 }
 
 export function dashboardSpecAction(
@@ -486,13 +484,13 @@ export function dashboardSpecAction(
   spec: string,
   action: import("@/lib/types/specs").SpecActionKind,
 ): Promise<import("@/lib/types/specs").SpecAction> {
-  return invoke("dashboard_spec_action", { repoPath, spec, action });
+  return call("dashboard_spec_action", { repoPath, spec, action });
 }
 
 export function dashboardWorkspaceSummary(
   repoPath: string,
 ): Promise<import("@/lib/types/specs").WorkspaceSummary> {
-  return invoke("dashboard_workspace_summary", { repoPath });
+  return call("dashboard_workspace_summary", { repoPath });
 }
 
 /**
@@ -505,7 +503,7 @@ export function dashboardSpecChildren(
   repoPath: string,
   parent: string,
 ): Promise<import("@/lib/types/specs").SpecChild[]> {
-  return invoke("dashboard_spec_children", { repoPath, parent });
+  return call("dashboard_spec_children", { repoPath, parent });
 }
 
 /**
@@ -519,7 +517,7 @@ export function fetchSpecChildrenTree(
   spec: string,
   projectPath: string,
 ): Promise<import("@/lib/types/specs").ChildrenTree> {
-  return invoke("spec_children_tree", { spec, projectPath });
+  return call("spec_children_tree", { spec, projectPath });
 }
 
 // --- Wave-2 (spec 2026-05-21-dashboard-spec-tabs): real file count + wave markdown ---
@@ -540,7 +538,7 @@ export function dashboardSpecWaveFiles(
   spec: string,
   wave: number,
 ): Promise<WaveFilesPayload> {
-  return invoke<WaveFilesPayload>("dashboard_spec_wave_files", {
+  return call<WaveFilesPayload>("dashboard_spec_wave_files", {
     repoPath: path,
     spec,
     wave,
@@ -564,7 +562,7 @@ export function dashboardSpecWavesPlanned(
   repoPath: string,
   spec: string,
 ): Promise<SpecWavePlanned[]> {
-  return invoke<SpecWavePlanned[]>("dashboard_spec_waves_planned", {
+  return call<SpecWavePlanned[]>("dashboard_spec_waves_planned", {
     repoPath,
     spec,
   });
@@ -590,7 +588,7 @@ export function dashboardSpecChecklistProgress(
   repoPath: string,
   spec: string,
 ): Promise<WaveChecklistProgress[]> {
-  return invoke<WaveChecklistProgress[]>("dashboard_spec_checklist_progress", {
+  return call<WaveChecklistProgress[]>("dashboard_spec_checklist_progress", {
     repoPath,
     spec,
   });
@@ -599,7 +597,7 @@ export function dashboardSpecChecklistProgress(
 // --- Wave 4 mustard-unification — language + tone settings ----------------
 //
 // `mustard.json#lang` (BCP-47 `pt-BR`/`en-US`) and `mustard.json#tone`
-// (`didactic`/`technical`/`concise`) are written via these Tauri commands so
+// (`didactic`/`technical`/`concise`) are written via these backend commands so
 // the validation + telemetry contract is centralised on the backend.
 
 /** Shape returned by `commands::settings::read_settings`. Both fields are
@@ -612,26 +610,26 @@ export interface ProjectSettings {
 /** Read `lang` + `tone` from `mustard.json`. Fail-open: a missing or
  *  malformed file resolves to `{ lang: null, tone: null }`. */
 export function readSettings(repoPath: string): Promise<ProjectSettings> {
-  return invoke<ProjectSettings>("read_settings", { repoPath });
+  return call<ProjectSettings>("read_settings", { repoPath });
 }
 
 /** Write `mustard.json#lang` after validating against the BCP-47 catalog
  *  (`pt-BR` / `en-US`). Rejects legacy short forms with a typed error. */
 export function setLanguage(repoPath: string, lang: string): Promise<void> {
-  return invoke<void>("set_language", { repoPath, lang });
+  return call<void>("set_language", { repoPath, lang });
 }
 
 /** Write `mustard.json#tone` after validating against the catalog
  *  (`didactic` / `technical` / `concise`). */
 export function setTone(repoPath: string, tone: string): Promise<void> {
-  return invoke<void>("set_tone", { repoPath, tone });
+  return call<void>("set_tone", { repoPath, tone });
 }
 
 // --- Visão Geral redesign (spec redesenho-rota-visao-geral-dashboard, W2) ---
 //
 // Local git inspection + grain-model project overview for the overview cards.
-// Both Tauri commands are fail-open (mirror `dashboard_git_info` /
-// `dashboard_project_overview` in src-tauri): a missing repo/remote/model
+// Both backend commands are fail-open (`dashboard_git_info` /
+// `dashboard_project_overview` in `server/src/`): a missing repo/remote/model
 // resolves to an empty struct, never a rejected Promise — render an empty
 // state, do not lean on `onError`.
 
@@ -776,7 +774,7 @@ export interface ProjectOverview {
 }
 
 export function fetchGitInfo(repoPath: string): Promise<GitInfo> {
-  return invoke<GitInfo>("dashboard_git_info", { repoPath });
+  return call<GitInfo>("dashboard_git_info", { repoPath });
 }
 
 /**
@@ -807,11 +805,11 @@ export function fetchGitLog(
   gitRef: string,
   limit: number,
 ): Promise<CommitSummary[]> {
-  return invoke<CommitSummary[]>("dashboard_git_log", { repoPath, gitRef, limit });
+  return call<CommitSummary[]>("dashboard_git_log", { repoPath, gitRef, limit });
 }
 
 export function fetchProjectOverview(repoPath: string): Promise<ProjectOverview> {
-  return invoke<ProjectOverview>("dashboard_project_overview", { repoPath });
+  return call<ProjectOverview>("dashboard_project_overview", { repoPath });
 }
 
 /**
@@ -827,7 +825,7 @@ export function fetchDepsOutdated(
   projectDir: string,
   kind: string,
 ): Promise<OutdatedDep[]> {
-  return invoke<OutdatedDep[]>("dashboard_deps_outdated", {
+  return call<OutdatedDep[]>("dashboard_deps_outdated", {
     repoPath,
     projectDir,
     kind,
@@ -865,7 +863,7 @@ export interface FileContent {
  * them to snake_case — do not rename. Always resolves (fail-open contract).
  */
 export function fetchReadFile(repoPath: string, relPath: string): Promise<FileContent> {
-  return invoke<FileContent>("dashboard_read_file", { repoPath, relPath });
+  return call<FileContent>("dashboard_read_file", { repoPath, relPath });
 }
 
 // --- Plan staleness (spec melhorias-pagina-specs, item 4) -------------------
@@ -904,7 +902,7 @@ export function dashboardSpecPlanStaleness(
   spec: string,
   startedAt: string | null,
 ): Promise<Staleness> {
-  return invoke<Staleness>("dashboard_spec_plan_staleness", {
+  return call<Staleness>("dashboard_spec_plan_staleness", {
     repoPath,
     spec,
     startedAt,

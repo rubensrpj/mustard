@@ -9,7 +9,9 @@
 //
 // State model
 // -----------
-// - `projects` from `useProjectsStore` is the curated registry (slice select).
+// - `projects` from `useProjectsStore` is the machine-level registry the
+//   server keeps (slice select). There is no folder picker: the server scans
+//   from where it was started, so the list is what that scan found.
 // - `projectsRoot` from `useStore` is the active workspace path; we expand
 //   that node by default and keep manual toggles in local state for the rest.
 // - Detection state per project comes from `useProjectDetections` (TanStack
@@ -29,7 +31,6 @@ import {
   Gauge,
   Terminal,
   Activity as ActivityIcon,
-  FolderPlus,
   ChevronRight,
   ChevronDown,
   MoreHorizontal,
@@ -38,8 +39,7 @@ import {
   PanelLeftOpen,
   Box,
 } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useT } from "@/lib/i18n";
@@ -64,6 +64,7 @@ import {
   type ProjectEntry,
 } from "@/lib/projects-store";
 import { useProjectDetections } from "@/hooks/useProjectDetections";
+import { discoveryRoot } from "@/api/discovery";
 import { useArtifactDrift } from "@/hooks/useArtifactDrift";
 import {
   uninstallMustard,
@@ -133,18 +134,6 @@ function StatusDotInline({ kind }: { kind: StatusKind }) {
       aria-hidden
       className={cn("w-2 h-2 rounded-full ring-1 shrink-0", color)}
     />
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Tauri runtime detection (parity with deleted AddProjectButton)
-// ---------------------------------------------------------------------------
-
-function isTauriRuntime(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof (window as unknown as { __TAURI_INTERNALS__?: unknown })
-      .__TAURI_INTERNALS__ !== "undefined"
   );
 }
 
@@ -513,24 +502,28 @@ function RailButton({
 
 export function Sidebar() {
   const { t } = useTranslation();
-  // `tLib` powers W2-audit keys (`sidebar.add_project`, `sidebar.tools`,
-  // `sidebar.commands`). The i18next
-  // `t` still drives project-detection toasts, empty states, and the
-  // `projects.addDialogTitle` Tauri dialog title (keys not duplicated here).
+  // `tLib` powers the W2-audit keys (`sidebar.tools`, `sidebar.commands`). The
+  // i18next `t` still drives project-detection toasts and empty states (keys
+  // not duplicated here).
   const tLib = useT();
   const navigate = useNavigate();
   const location = useLocation();
   const projects = useProjectsStore((s) => s.projects);
-  const addProject = useProjectsStore((s) => s.addProject);
   const activateProject = useProjectsStore((s) => s.activateProject);
   const activeProjectsRoot = useStore((s) => s.projectsRoot);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const detections = useProjectDetections();
   const driftByPath = useArtifactDrift();
-  const [busyAdd, setBusyAdd] = useState(false);
+  // Which tree the server scans. Only ever rendered in the empty state, but
+  // that is exactly where it answers the operator's question — an empty list
+  // is otherwise indistinguishable from a server pointed at the wrong folder.
+  const { data: scanRoot } = useQuery({
+    queryKey: ["discovery-root"],
+    queryFn: discoveryRoot,
+    staleTime: Infinity,
+  });
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const tauri = isTauriRuntime();
 
   // Auto-expand the project whose path matches the active workspace root.
   // We only seed when the user has not manually toggled the node yet so a
@@ -544,25 +537,6 @@ export function Sidebar() {
     );
   }, [activeProjectsRoot]);
 
-  async function handleAddProject() {
-    if (!tauri || busyAdd) return;
-    setBusyAdd(true);
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: t("projects.addDialogTitle"),
-      });
-      if (typeof selected !== "string" || !selected) return;
-      await addProject(selected);
-      // Adding activates the project (see projects-store), so seed it
-      // expanded immediately rather than waiting for the effect tick.
-      setExpanded((prev) => ({ ...prev, [selected]: true }));
-    } finally {
-      setBusyAdd(false);
-    }
-  }
-
   // Tools group, shared between the rail and the full tree so the icon set
   // stays in sync. `end` marks an exact-match active route.
   const tools: { to: string; icon: typeof Home; label: string }[] = [
@@ -570,7 +544,7 @@ export function Sidebar() {
   ];
 
   // -------------------------------------------------------------------------
-  // Collapsed icon rail (~56px): add-project, project dots, tools, prefs.
+  // Collapsed icon rail (~56px): project dots, tools, prefs.
   // Projects collapse to a single status-dotted box icon that activates +
   // jumps to that project's overview (the full tree needs width it lacks here).
   // -------------------------------------------------------------------------
@@ -583,13 +557,6 @@ export function Sidebar() {
               icon={PanelLeftOpen}
               label={tLib("sidebar.expand", "Expandir")}
               onClick={toggleSidebar}
-            />
-            <RailButton
-              icon={busyAdd ? Loader2 : FolderPlus}
-              spinning={busyAdd}
-              disabled={!tauri || busyAdd}
-              label={tLib("sidebar.add_project")}
-              onClick={handleAddProject}
             />
 
             <Separator className="my-2" />
@@ -638,25 +605,7 @@ export function Sidebar() {
   return (
     <aside className="row-span-2 col-start-1 bg-background text-sidebar-foreground border-r border-border flex flex-col">
       <div className="px-2 pt-3 flex flex-col flex-1 min-h-0">
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={handleAddProject}
-            disabled={!tauri || busyAdd}
-            title={tauri ? undefined : t("sidebar.addProjectDesktopOnly")}
-            className={cn(
-              "flex flex-1 items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors duration-150",
-              "text-sidebar-foreground/80 hover:bg-muted/40 hover:text-foreground",
-              (!tauri || busyAdd) && "opacity-50 cursor-not-allowed",
-            )}
-          >
-            {busyAdd ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <FolderPlus className="h-3.5 w-3.5" />
-            )}
-            <span>{tLib("sidebar.add_project")}</span>
-          </button>
+        <div className="flex items-center justify-end gap-1">
           <button
             type="button"
             onClick={toggleSidebar}
@@ -677,6 +626,11 @@ export function Sidebar() {
               <p className="text-[12px] text-muted-foreground mt-1">
                 {t("sidebar.empty.description")}
               </p>
+              {scanRoot && (
+                <p className="text-[11px] text-muted-foreground/70 mt-2 font-mono break-all">
+                  {t("sidebar.empty.root", { root: scanRoot })}
+                </p>
+              )}
             </div>
           ) : (
             detections.map((row) => {

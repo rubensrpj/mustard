@@ -154,7 +154,7 @@ export interface SpecChild {
    *    store has caught up)
    *
    * Optional for backwards compatibility — payloads from the pre-Wave-6
-   * Tauri command never populate this field.
+   * backend command never populate this field.
    */
   source?: "event" | "header" | "both";
   /**

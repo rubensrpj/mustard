@@ -7,15 +7,15 @@
 #   dist/mustard-windows-x64.zip       (binários .exe MSVC, compilados aqui)
 #
 # Linux (COM dashboard — instalação completa): um único pacote Debian que traz
-# os binários do CLI E o Mustard Dashboard (app Tauri), compilados num Docker
-# Ubuntu 22.04 (glibc 2.35 -> roda em Ubuntu 22.04+; o webkit2gtk-4.1 do Tauri 2
-# não existe no 20.04):
+# os binários do CLI E o servidor do Mustard Dashboard, compilados num Docker
+# Ubuntu 22.04 (glibc 2.35 -> roda em Ubuntu 22.04+):
 #   dist/mustard_<versao>_amd64.deb    + install.sh (apt) + TUTORIAL-LINUX.md
 #
 # O pacote Windows contém: bin/ (scan, mustard-rt, mustard-mcp, mustard, rtk),
-# templates/, install.ps1 e README.txt. O .deb Linux instala tudo via `apt`
-# (que resolve as dependências de sistema do dashboard sozinho) — ver
-# packaging/linux/Dockerfile + packaging/linux/build-deb.sh.
+# templates/, install.ps1 e README.txt — the NSIS installer that also carries
+# the dashboard is built by the release workflow (packaging/windows/mustard.nsi),
+# not here. O .deb Linux instala tudo via `apt` — ver packaging/linux/Dockerfile
+# + packaging/linux/build-deb.sh.
 #
 # Uso:
 #   .\packaging\build-packages.ps1                 # windows + linux
@@ -85,26 +85,32 @@ if ($Targets -in 'linux', 'both') {
         throw "docker não encontrado — necessário para o build Linux."
     }
 
-    # A imagem traz Rust + Node + as dependências de build do Tauri (webkit etc.)
-    # e o ferramental .deb. É cacheada por camadas do Docker — só a 1ª vez é
-    # demorada. O build em si (CLI + dashboard + fusão no .deb) roda no container
-    # via packaging/linux/build-deb.sh, lendo o repo montado em /work.
+    # A imagem traz Rust + Node e o ferramental .deb. É cacheada por camadas do
+    # Docker — só a 1ª vez é demorada. O build em si (CLI + servidor + assets do
+    # React, empacotados no .deb) roda no container via
+    # packaging/linux/build-deb.sh, lendo o repo montado em /work.
     $img        = 'mustard-linux-builder'
     $linuxCtx   = Join-Path $PkgDir 'linux'
-    Write-Host "==> [linux] docker build $img  (Ubuntu 22.04 + Rust + Node + Tauri/webkit)"
+    Write-Host "==> [linux] docker build $img  (Ubuntu 22.04 + Rust + Node)"
     docker build -t $img $linuxCtx
     if ($LASTEXITCODE -ne 0) { throw "docker build da imagem Linux falhou (exit $LASTEXITCODE)." }
 
     # Volumes nomeados cacheiam registry/target/pnpm entre execuções (re-empacotar
-    # fica rápido). Limpe com:
+    # fica rápido). O volume do target do Tauri saiu junto com ele — há um único
+    # target agora. Limpe com:
     #   docker volume rm mustard-deb-cargo-registry mustard-deb-cargo-git `
-    #     mustard-deb-cli-target mustard-deb-dash-target mustard-deb-pnpm
-    Write-Host "==> [linux] docker run — compila CLI + dashboard e funde no .deb (pode levar vários minutos)"
+    #     mustard-deb-cli-target mustard-deb-pnpm
+    #
+    # MUSTARD_RELEASE_VERSION travels INTO the container: build-deb.sh names the
+    # package with it and cargo compiles it into the binaries. Without the -e the
+    # container would only see the workspace version, and a release built from a
+    # tag would ship binaries stamped with whatever Cargo.toml happened to say.
+    Write-Host "==> [linux] docker run — compila CLI + dashboard e monta o .deb (pode levar vários minutos)"
     docker run --rm `
+        -e "MUSTARD_RELEASE_VERSION=$env:MUSTARD_RELEASE_VERSION" `
         -v "mustard-deb-cargo-registry:/opt/cargo/registry" `
         -v "mustard-deb-cargo-git:/opt/cargo/git" `
         -v "mustard-deb-cli-target:/tmp/cli-target" `
-        -v "mustard-deb-dash-target:/tmp/dash-target" `
         -v "mustard-deb-pnpm:/tmp/pnpm-store" `
         -v "${Root}:/work" `
         -v "${Dist}:/dist" `

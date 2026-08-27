@@ -39,7 +39,7 @@ On Windows and macOS, download **one** file from the [**Releases**](https://gith
 
 | OS | What to download | What to do |
 |---|---|---|
-| 🪟 **Windows** 10/11 | `Mustard Dashboard_<version>_x64-setup.exe` | Double-click. On the SmartScreen warning (the installer is unsigned): **"More info" → "Run anyway"**. When done, **open a new terminal** — PATH only applies to terminals opened after the install. |
+| 🪟 **Windows** 10/11 | `Mustard_<version>_x64-setup.exe` | Double-click. On the SmartScreen warning (the installer is unsigned): **"More info" → "Run anyway"**. When done, **open a new terminal** — PATH only applies to terminals opened after the install. |
 | 🍎 **macOS** 11+ (Intel + Apple Silicon) | `Mustard-<version>-universal.pkg` | The package is unsigned: **right-click → Open** (Gatekeeper). Follow the wizard, then open a new terminal. |
 | 🐧 **Linux** (Ubuntu 22.04+) | none — install in one line:<br>`curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh \| sh` | The script downloads the `.deb` from the latest Release and hands it to `apt` (which resolves the dependencies). Manual route, for whoever wants to check the `sha256` first: download `mustard_<version>_amd64.deb` + `install.sh` into the same folder and run `chmod +x install.sh && ./install.sh` — Release assets arrive **without** the executable bit, and without the `chmod` the shell answers `Permission denied`. |
 
@@ -183,21 +183,30 @@ The gate `merge` crosses, in order: **build + tests** → **QA** (only a recorde
 
 ## Dashboard
 
-The **Mustard Dashboard** is the desktop telemetry app (Tauri + React) for the harness: it reads the NDJSON events the hooks write under each project's `.claude/`, **straight from disk and live** — no server, no database, no open session required.
+The **Mustard Dashboard** is the harness telemetry: an HTTP **server** (`mustard-dashboard`, Rust + `tiny_http`) serving a React screen to your browser. It reads the NDJSON events the hooks write under each project's `.claude/`, **straight from disk and live** — no database, no open session required; the screen redraws over Server-Sent Events, which reconnect on their own.
 
 ### Opening it
 
-| OS | How |
+```bash
+cd ~/code            # the folder where your projects live
+mustard-dashboard    # serves http://127.0.0.1:7777/ and opens the browser
+```
+
+On Windows and Linux the **"Mustard Dashboard"** menu shortcut does the same, from your home folder.
+
+| Option | What for |
 |---|---|
-| Windows | Start Menu → **"Mustard Dashboard"** |
-| macOS | Launchpad / **Applications** folder → **"Mustard Dashboard"** |
-| Linux | Application menu → **"Mustard Dashboard"** |
+| `--root DIR` | scan another folder instead of the current directory |
+| `--port N` | another port (or `MUSTARD_DASHBOARD_PORT`); a taken port is not fatal — the next free one is used and printed |
+| `--host ADDR` | **exposes it on the network** (e.g. `0.0.0.0`); without it the dashboard only answers on `127.0.0.1` |
+| `--no-open` | never launch a browser |
+
+> Why `--host` is required to expose it: the dashboard reads the `.claude/` of **every** project on the machine. Opening it to the network has to be an act, not a forgotten flag — the same contract as the OTLP collector.
 
 ### First use
 
-1. Open **Settings** in the sidebar.
-2. Point the **projects root folder** — the directory containing your repositories (e.g. `C:\Atiz` or `~/code`).
-3. The dashboard **auto-discovers** every Mustard-initialized project (`mustard.json` + `.claude/`) inside it.
+1. The scan starts at the directory the server was started from — the projects shown are the ones on the machine running the backend.
+2. The dashboard **auto-discovers** every Mustard-initialized project (`mustard.json` + `.claude/`) inside it.
 
 ### What each area shows
 
@@ -237,10 +246,10 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 | `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
 | `apps/mcp` | `mustard-mcp` | Rust | MCP server (harness memory/queries). |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
-| `apps/dashboard` | `mustard-dashboard` | Tauri + React | Telemetry UI (specs, runs, trace, metrics). Reads NDJSON; outside the Cargo workspace. |
+| `apps/dashboard` | `mustard-dashboard` | Rust (`tiny_http`) + React | Telemetry UI (specs, runs, trace, metrics). The server (`apps/dashboard/server`) is a normal Cargo workspace member; the screen is served as static assets. |
 | `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents, MCP, and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
 
-`cargo build --workspace` covers the Rust crates; the dashboard builds via `pnpm`.
+`cargo build --workspace` covers the Rust crates — the dashboard server included; the screen builds via `pnpm`.
 
 ---
 
@@ -252,9 +261,10 @@ cargo build --workspace            # or: pnpm build:rust
 cargo test  --workspace            # or: pnpm test:rust
 cargo clippy --workspace           # lint
 
-# Dashboard (Tauri + React)
-pnpm dashboard:dev                 # dev with HMR
-pnpm dashboard:build               # production build
+# Dashboard (Rust server + React)
+pnpm --filter mustard-dashboard dev   # screen with HMR (Vite)
+pnpm dashboard:build                  # production build (React + server)
+pnpm dashboard:serve -- --root ~/code # run the server from the checkout
 
 # Everything
 pnpm build                         # Rust workspace + dashboard
@@ -297,7 +307,7 @@ apps/
   scan/       repository miner (Rust)
   cli/        mustard — installer/scaffold (Rust)
   mcp/        MCP server (Rust)
-  dashboard/  Tauri + React — telemetry
+  dashboard/  Rust server (server/) + React screen — telemetry
 packages/
   core/       shared types/logic (Rust)
 plugin/       Claude Code plugin (commands, hooks, agents, bootstrap)

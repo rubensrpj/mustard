@@ -1,10 +1,12 @@
 # ============================================================================
 # Ambiente de build do pacote Linux do Mustard (CLI + dashboard num único .deb).
 #
-# Base Ubuntu 22.04 -> glibc 2.35: o artefato roda em Ubuntu 22.04+ (o dashboard
-# Tauri 2 depende de webkit2gtk-4.1, que NÃO existe no 20.04). Os 5 binários do
-# CLI e o dashboard são compilados aqui dentro e empacotados num só .deb pelo
-# packaging/linux/build-deb.sh.
+# Base Ubuntu 22.04 -> glibc 2.35: o artefato roda em Ubuntu 22.04+. The floor
+# used to be webkit2gtk-4.1 (absent on 20.04) and is now just the glibc this
+# image links against — the dashboard is a `tiny_http` server with no system
+# dependency at all, so the WebKitGTK/GTK/librsvg/appindicator build packages
+# left with Tauri. Os binários do CLI e o servidor do dashboard são compilados
+# aqui dentro e empacotados num só .deb pelo packaging/linux/build-deb.sh.
 #
 # A imagem é cacheada por camadas do Docker; o build-packages.ps1 faz `docker
 # build` (rápido após a 1ª vez) e depois `docker run` montando o repo + o dist.
@@ -13,16 +15,12 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Dependências de build do Tauri 2 (Linux) + pré-requisitos de Rust/Node + as
-# ferramentas de empacotamento .deb (dpkg-dev, fakeroot) e cópia (rsync).
+# Pré-requisitos de Rust/Node + as ferramentas de empacotamento .deb (dpkg-dev,
+# fakeroot) e cópia (rsync).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config file curl wget ca-certificates xz-utils git \
       rsync dpkg-dev fakeroot \
       libssl-dev \
-      libwebkit2gtk-4.1-dev \
-      libgtk-3-dev \
-      librsvg2-dev \
-      libayatana-appindicator3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 (NodeSource) + pnpm fixado na versão do dashboard (packageManager).

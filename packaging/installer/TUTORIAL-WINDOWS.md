@@ -2,24 +2,25 @@
 
 Este tutorial explica, passo a passo, como instalar o Mustard **completo** no
 Windows 10/11: os comandos de linha (`mustard`, `mustard-rt`, `mustard-mcp`,
-`scan`, `rtk`) **e** o **Mustard Dashboard** (aplicativo desktop). Tudo num
+`scan`, `rtk`) **e** o **Mustard Dashboard**, que é um **servidor**: ele abre
+uma porta na sua máquina e você vê o painel no navegador. Tudo num
 único instalador `.exe` — você não precisa instalar Rust, Node ou qualquer
 ferramenta de desenvolvimento.
 
 O arquivo a baixar é:
 
 ```
-Mustard Dashboard_<versao>_x64-setup.exe
+Mustard_<versao>_x64-setup.exe
 ```
 
 O que o instalador faz:
 
 ```
-- instala o Mustard Dashboard (app) na pasta do programa
-- instala junto os binários do CLI (mustard, mustard-rt, mustard-mcp, scan, rtk)
-  e os templates do `mustard init`
+- instala os binários (mustard, mustard-rt, mustard-mcp, scan, rtk e
+  mustard-dashboard) e os templates do `mustard init` na pasta do programa
+- instala junto os arquivos da tela do dashboard, ao lado do mustard-dashboard
 - adiciona o CLI ao PATH do seu usuário
-- cria o atalho "Mustard Dashboard" no Menu Iniciar
+- cria o atalho "Mustard Dashboard" no Menu Iniciar — ele INICIA O SERVIDOR
 ```
 
 O que ele **não** faz: instalar o plugin do Claude Code. Esse é o item 6 deste
@@ -41,7 +42,7 @@ Se ainda não tiver o Claude Code, instale seguindo
 
 ## 2. Baixar
 
-Baixe o arquivo **`Mustard Dashboard_<versao>_x64-setup.exe`** da página de
+Baixe o arquivo **`Mustard_<versao>_x64-setup.exe`** da página de
 releases (seção **Assets**).
 
 ---
@@ -67,8 +68,40 @@ mustard-rt --version
 rtk --version
 ```
 
-Os três devem responder com a versão. E o **dashboard**: procure
-**"Mustard Dashboard"** no **Menu Iniciar**.
+Os três devem responder com a versão.
+
+E o **dashboard**: procure **"Mustard Dashboard"** no **Menu Iniciar**. Ele
+abre uma janela de console e é essa janela que **é** o servidor — ela mostra a
+linha
+
+```
+mustard-dashboard: serving C:\Users\voce at http://127.0.0.1:7777/
+```
+
+e o navegador abre sozinho nesse endereço. **Fechar a janela para o servidor.**
+
+Prefere o terminal? Rode `mustard-dashboard` de dentro da pasta onde ficam seus
+projetos — a varredura começa no diretório de onde o servidor foi iniciado:
+
+```powershell
+cd C:\Atiz
+mustard-dashboard
+```
+
+Opções úteis:
+
+| Opção | Para quê |
+|---|---|
+| `--root C:\outra\pasta` | varre outra pasta em vez do diretório atual |
+| `--port 8080` | outra porta (ou a variável `MUSTARD_DASHBOARD_PORT`). Porta ocupada não é erro: ele usa a próxima livre e imprime qual |
+| `--host 0.0.0.0` | **expõe na rede** — só assim outra máquina alcança o painel |
+| `--no-open` | não abre o navegador |
+
+> ⚠️ Sem `--host`, o painel só responde na própria máquina (`127.0.0.1`). Isso é
+> proposital: ele lê o `.claude/` de **todos** os seus projetos, então expor à
+> rede tem de ser um ato, não um esquecimento. Para alcançar de outro
+> computador (por exemplo por Tailscale), rode
+> `mustard-dashboard --host 0.0.0.0` e acesse `http://<ip-da-maquina>:7777/`.
 
 ---
 
@@ -155,7 +188,13 @@ velha É o binário velho. Confira qual está sendo achado com
 ## 8. Desinstalar
 
 Vá em **Configurações → Aplicativos → Aplicativos instalados**, procure
-**"Mustard Dashboard"** e clique em **Desinstalar**. Isso remove o app e o CLI.
+**"Mustard"** e clique em **Desinstalar**. Isso remove os binários, os templates,
+o atalho do Menu Iniciar e a entrada do PATH.
+
+> Se a lista ainda mostrar uma entrada antiga chamada **"Mustard Dashboard"**,
+> ela é de uma versão anterior (a que instalava o aplicativo de janela).
+> Desinstale-a também: o instalador novo limpa o PATH das duas, mas os arquivos
+> velhos só saem por ali.
 
 Em projetos testados, a pasta `.claude/` e o `mustard.json` podem ser apagados à
 vontade.
