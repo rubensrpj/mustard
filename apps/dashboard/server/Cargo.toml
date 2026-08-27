@@ -29,10 +29,6 @@ chrono = { workspace = true }
 # (`<home>/.claude/projects/<encoded-cwd>/<session_id>.jsonl`) that supply the
 # assistant narration behind each tool.use.
 dirs = { workspace = true }
-# Mustard CLI as a native library (B5 Wave 3): the dashboard installs/updates
-# Mustard into a selected folder by calling `mustard_cli::init`/`update`
-# directly — no sidecar process.
-mustard-cli = { path = "../../cli" }
 mustard-core = { path = "../../../packages/core" }
 
 [[test]]
@@ -43,6 +39,13 @@ path = "tests/telemetry_test.rs"
 name = "mustard_cli_test"
 path = "tests/mustard_cli_test.rs"
 
-# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
 [dev-dependencies]
+# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
 tempfile = { workspace = true }
+# `mustard-cli` was a normal dependency, described as "the dashboard
+# installs/updates Mustard by calling `mustard_cli::init`/`update` directly".
+# Nothing under `src/` names it — the only consumer left is
+# `tests/mustard_cli_test.rs`, so the server binary was linking a CLI it never
+# calls. Moved here rather than deleted: the smoke test still asserts the two
+# crates compose.
+mustard-cli = { path = "../../cli" }

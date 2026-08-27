@@ -6,6 +6,29 @@ description = "Mine a codebase's recurring conventions into a rich, language-agn
 license = "MIT"
 build = "build.rs"
 
+# Every `grammar_*` alias below IS used, but never from a file under `src/`: the
+# only reference is the `grammar` column of `languages.toml`, which `build.rs`
+# pastes into `$OUT_DIR/langs_generated.rs` (the file `extract.rs` includes).
+# `cargo shear` (scripts/ac/deps-no-unused.sh) parses `src/`, not `OUT_DIR`, so
+# it reports all seven as unused. Removing any of them drops that language from
+# the scanner; they are ignored one by one — never by muting the tool — so a
+# genuinely dead dependency added later is still reported.
+#
+# `ignored-paths`: the `.rs` files under `tests/fixtures/` are DATA the mining
+# end-to-end tests scan, not modules of any target; without this the tool
+# advises deleting them.
+[package.metadata.cargo-shear]
+ignored = [
+    "grammar_cs",
+    "grammar_dart",
+    "grammar_go",
+    "grammar_php",
+    "grammar_py",
+    "grammar_rs",
+    "grammar_ts",
+]
+ignored-paths = ["tests/fixtures/**/*.rs"]
+
 [[bin]]
 name = "scan"
 path = "src/main.rs"

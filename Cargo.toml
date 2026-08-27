@@ -44,7 +44,6 @@ serde_json = "1.0.149"
 thiserror = "2.0.18"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
-jiff = "0.2.24"
 tempfile = "3.27.0"
 # Interactive terminal prompts for the CLI port (`mustard init` git-flow wizard).
 # Replaces the JS `inquirer` dependency. Pure-Rust, no async runtime.
@@ -57,10 +56,6 @@ ureq = { version = "3.3", features = ["json"] }
 # Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
 tar = "0.4.46"
 flate2 = "1.1.9"
-# Zip extraction for the Windows RTK auto-installer (`init`/`update`): RTK
-# GitHub releases ship the Windows binary as a `.zip`. Latest stable on
-# crates.io, May 2026.
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # Official Rust SDK for the Model Context Protocol — backs the `mcp` face of
 # `mustard-rt` (the re-port of the `mustard-memory` TypeScript MCP server).
 # The `server` feature already pulls `macros` (in `default`) and `schemars`;
@@ -88,10 +83,11 @@ tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # `CoreBPE::encode`/`count` fallible (`Result<_, EncodeError>`) — the
 # estimator only calls `encode_with_special_tokens`, which stays infallible.
 tiktoken-rs = "0.12"
-# Cross-platform filesystem notification — `mustard-rt`'s transcript-watcher
-# daemon (Wave 3) and the dashboard server's per-project `.claude/` watcher.
-# Updated to notify 8.2 (May 2026); both crates consume this entry, so there is
-# a single `notify` graph now that the dashboard is a workspace member.
+# Cross-platform filesystem notification — the dashboard server's per-project
+# `.claude/` watcher. Updated to notify 8.2 (May 2026). `mustard-rt` also
+# declared this entry, for a transcript-watcher daemon that no longer exists;
+# the declaration was removed in the prune, so the dashboard is now the sole
+# consumer and the entry stays here only because that is where versions live.
 notify = "8"
 # Debounced wrapper over `notify` — the dashboard server coalesces a write burst
 # into one ~200 ms batch before pushing it down the server-sent-events channel.
@@ -109,11 +105,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
 rayon = "1.10"
 # SHA-256 — `mustard-core::model::provenance` fingerprints vendored template
-# trees and `mustard-rt` digests backup-specs MANIFEST.json entries. Centralised
-# here so both crates share one `sha2` graph. Bumped to the 0.11 line (May 2026),
-# which moves the digest output from `generic-array` to `hybrid-array`; this
-# crate only consumes the output as a byte slice / iterator / `[u8; 32]`, all of
-# which stay source-compatible.
+# trees. `mustard-rt` also declared this entry but never imported it (its
+# backup-specs digest runs on the crate's own `util::sha256`), so the prune left
+# `mustard-core` as the only consumer. Bumped to the 0.11 line (May 2026), which
+# moves the digest output from `generic-array` to `hybrid-array`; this crate
+# only consumes the output as a byte slice / iterator / `[u8; 32]`, all of which
+# stay source-compatible.
 sha2 = "0.11"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
