@@ -8,11 +8,11 @@ members = [
     "apps/scan",
     "packages/core",
 ]
-# `apps/dashboard/server` was excluded while it was a Tauri shell: the wrapper
-# pinned it to edition 2021 with its own Cargo.lock and a dependency set that
-# could not consume `[workspace.dependencies]`. Tauri is gone — the dashboard
-# backend is now a plain `tiny_http` server — so the reason evaporated and the
-# crate is a normal member: `cargo build --workspace` compiles it.
+# `apps/dashboard/server` was excluded while it was a desktop-shell wrapper: that
+# wrapper pinned it to edition 2021 with its own Cargo.lock and a dependency set
+# that could not consume `[workspace.dependencies]`. The shell is gone — the
+# dashboard backend is now a plain `tiny_http` server — so the reason evaporated
+# and the crate is a normal member: `cargo build --workspace` compiles it.
 #
 # Still excluded: the mustard-translate sidecar (apps/translate) — candle +
 # lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the

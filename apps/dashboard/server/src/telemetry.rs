@@ -1607,7 +1607,7 @@ pub enum EconomyScopeDto {
     },
 }
 
-// ── Tauri-command surface ────────────────────────────────────────────────────
+// ── Dashboard-command surface ──────────────────────────────────────────────
 //
 // W7D of [[2026-05-26-no-sqlite-git-source-of-truth]] wired these commands
 // against the real NDJSON readers in `mustard_core::domain::economy::reader::*`
@@ -1615,7 +1615,7 @@ pub enum EconomyScopeDto {
 // dashboard pages now see live data instead of `Default::default()`.
 
 impl EconomyScopeDto {
-    /// Translate the Tauri DTO into the core `(project_root, scope)` tuple
+    /// Translate the wire DTO into the core `(project_root, scope)` tuple
     /// the readers expect. Returns the absolute project root the scope is
     /// rooted at (used to open NDJSON files), plus the core scope value.
     /// `AllProjects` returns the first project's root as the lookup anchor
@@ -2270,13 +2270,15 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
     })
 }
 
-// The five `dashboard_economy_*` commands below are async + `spawn_blocking`
+// The five `dashboard_economy_*` commands below are wrapped in `catch_panic`
 // for the same reason as the heavy `lib.rs` commands: the core economy
 // readers walk NDJSON on disk per call (and may fan out across every project
-// under `EconomyScope::AllProjects`), and a synchronous Tauri command runs on
-// the main thread — blocking every queued `invoke` (observed as a frozen
-// route switch away from the Economia page). A join error degrades to the
-// same empty JSON shape the old sync body returned.
+// under `EconomyScope::AllProjects`), so a panic deep in a reader must not take
+// the worker thread down. They used to be async + `spawn_blocking` because the
+// desktop shell ran a synchronous command on the UI thread — blocking every
+// queued call (observed as a frozen route switch away from the Economia page);
+// the HTTP worker is already off the accept loop, so only the panic guard is
+// left, degrading to the same empty JSON shape the old body returned.
 
 pub fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
     crate::catch_panic(move || {

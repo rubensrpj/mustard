@@ -1,4 +1,5 @@
-//! The HTTP face of the dashboard backend — the seam that replaced Tauri.
+//! The HTTP face of the dashboard backend — the seam that replaced the
+//! desktop shell's `invoke` bridge.
 //!
 //! Modelled on `apps/rt/src/commands/economy/otel/collector.rs`: a blocking
 //! [`tiny_http`] server with no async runtime, bound to `127.0.0.1` unless the
@@ -155,16 +156,16 @@ impl Drop for Subscription {
 
 /// Everything a request handler may need beyond its own arguments.
 ///
-/// The Tauri equivalents were `tauri::State` (the watcher registry) and
-/// `AppHandle` (the emit target); both collapse into this one value, shared by
-/// every worker thread.
+/// The desktop shell held these as two framework handles — managed state (the
+/// watcher registry) and an app handle (the emit target); both collapse into
+/// this one value, shared by every worker thread.
 pub struct Ctx {
     /// Per-repo filesystem watchers, keyed by repo path.
     pub watchers: Arc<Mutex<watcher::WatcherState>>,
     /// Where watcher notifications go.
     pub bus: EventBus,
     /// The discovery root: the directory the server was started in, or
-    /// `--root`. The native folder dialog died with Tauri, so this is the only
+    /// `--root`. The native folder dialog died with the desktop shell, so this is the only
     /// answer to "which machine's projects?" — the server's own.
     pub root: PathBuf,
     /// Directory of built React assets served by `GET /*`.
@@ -259,7 +260,7 @@ pub fn bind(host: &str, port: u16) -> Result<(Server, u16), String> {
 ///
 /// `workers` threads share the accept loop; each request is handled on the
 /// thread that accepted it, which is why every command body below is plain
-/// synchronous code (the Tauri versions had to hop to `spawn_blocking` to keep
+/// synchronous code (the desktop versions had to hop to `spawn_blocking` to keep
 /// the UI thread free — there is no UI thread here).
 pub fn serve(server: Server, ctx: Arc<Ctx>, workers: usize) {
     let server = Arc::new(server);
@@ -370,8 +371,8 @@ enum DispatchError {
     Unknown,
     /// The command returned `Err` — the `invoke` rejection, verbatim.
     Failed(String),
-    /// The command panicked. Tauri's `spawn_blocking(..).await` join error
-    /// used to absorb this per-command; the server absorbs it here so one bad
+    /// The command panicked. The desktop shell's `spawn_blocking(..).await` join
+    /// error used to absorb this per-command; the server absorbs it here so one bad
     /// request cannot take a worker thread down with it.
     Panicked,
 }
@@ -549,7 +550,7 @@ type Handler = fn(&Arc<Ctx>, &Value) -> Result<Value, String>;
 /// Read one `invoke`-style argument out of the request body.
 ///
 /// The frontend passes these keys in camelCase (`repoPath`, `specName`) and
-/// Tauri's serde used to map them onto the snake_case parameters. That mapping
+/// the shell's serde used to map them onto the snake_case parameters. That mapping
 /// is explicit now: each table entry names the camelCase key it reads, and the
 /// snake_case spelling is accepted as well so a `curl` probe can use either.
 ///
@@ -610,9 +611,9 @@ macro_rules! cmd_ok {
 
 /// Every command the dashboard can call, by the name the frontend uses.
 ///
-/// This is what `tauri::generate_handler![]` used to be. Forgetting an entry
-/// still compiles — but `GET /api/commands` lists the table, so a probe can
-/// tell the two apart, which the macro never allowed.
+/// This is what the desktop shell's handler-registration macro used to be.
+/// Forgetting an entry still compiles — but `GET /api/commands` lists the table,
+/// so a probe can tell the two apart, which the macro never allowed.
 static COMMANDS: &[(&str, Handler)] = &[
     // --- workspace --------------------------------------------------------
     ("dashboard_subprojects", cmd!(crate::dashboard_subprojects, "repoPath")),
@@ -684,7 +685,7 @@ static COMMANDS: &[(&str, Handler)] = &[
 ];
 
 /// `discover_projects` without a `root` scans from where the server was
-/// started. The native folder dialog died with Tauri, and the operator's
+/// started. The native folder dialog died with the desktop shell, and the operator's
 /// decision was that the machine running the backend is the machine whose
 /// projects are shown — so the default is not a guess, it is the contract.
 fn discover_projects_handler(ctx: &Arc<Ctx>, args: &Value) -> Result<Value, String> {

@@ -92,9 +92,10 @@ jobs:
           bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan   # o lock realmente andou
 
           # O selo tinha uma QUARTA perna: o dashboard era workspace root PROPRIO
-          # (o involucro Tauri o prendia a edition 2021), tinha o SEU Cargo.lock, e
-          # o `cargo update --workspace` acima nao o alcancava — ficou tres releases
-          # para tras sem ninguem notar. Sem Tauri o crate virou membro normal do
+          # (o involucro de aplicativo de mesa o prendia a edition 2021), tinha o SEU
+          # Cargo.lock, e o `cargo update --workspace` acima nao o alcancava — ficou
+          # tres releases para tras sem ninguem notar. Sem esse involucro o crate
+          # virou membro normal do
           # workspace (`apps/dashboard/server`) e seu lock foi apagado: o lock da
           # raiz acima ja o cobre, e uma perna que nao existe mais nao pode ficar
           # para tras. Sao tres pernas agora.
@@ -144,7 +145,7 @@ jobs:
             cargo update --workspace
             bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan
             # O lock proprio do dashboard era a quarta perna e nao existe mais:
-            # sem Tauri o crate e membro do workspace, entao o `cargo update
+            # o crate agora e membro do workspace, entao o `cargo update
             # --workspace` acima ja o alcanca. Ver a nota na perna da main.
             git add "$manifest" "$cargo_toml" Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"

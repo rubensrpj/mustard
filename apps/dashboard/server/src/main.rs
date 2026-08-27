@@ -1,8 +1,8 @@
 //! `mustard-dashboard` — serve the Mustard dashboard over HTTP.
 //!
-//! Replaces the Tauri desktop shell. On Linux that shell drew through
-//! WebKitGTK, the weakest of the three engines Tauri uses and the source of
-//! the sluggishness that motivated this change; it also panicked from inside
+//! Replaces the desktop shell this dashboard used to ship as. On Linux that
+//! shell drew through WebKitGTK, the weakest of its three webview engines and
+//! the source of the sluggishness that motivated this change; it also panicked from inside
 //! `gtk`/`tao` when there was no graphical session, printing library paths
 //! instead of anything actionable. This binary prints where the dashboard is
 //! listening and keeps serving.
@@ -88,7 +88,7 @@ fn main() -> ExitCode {
     if args.open && has_graphical_session() {
         open_browser(&url);
     } else if args.open {
-        // The Tauri shell panicked here. Saying where the dashboard is, is the
+        // The old desktop shell panicked here. Saying where the dashboard is, is the
         // whole of what a headless host needs.
         println!("mustard-dashboard: no graphical session — open {url} yourself");
     }
@@ -132,7 +132,7 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
 ///
 /// On Linux the answer is `DISPLAY` or `WAYLAND_DISPLAY` being set and
 /// non-empty — over SSH or in a container both are empty, and that is exactly
-/// the case the Tauri shell used to die in. Other platforms have no equivalent
+/// the case the old desktop shell used to die in. Other platforms have no equivalent
 /// convention: a desktop session is assumed, and a failing launcher is
 /// harmless because the URL was already printed.
 fn has_graphical_session() -> bool {

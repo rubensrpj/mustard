@@ -1,11 +1,11 @@
 //! The dashboard's read model over a Mustard workspace.
 //!
 //! Every function the frontend can call lives here or in a sibling module and
-//! is a plain synchronous function. They used to carry `#[tauri::command]` and
-//! be registered in `tauri::generate_handler![]`; the attribute only generated
-//! the `invoke` wrapper, so removing Tauri left the functions untouched. What
-//! reaches them now is `server::COMMANDS`, the name → function table behind
-//! `POST /api/{command}`.
+//! is a plain synchronous function. Under the old desktop shell they carried an
+//! attribute macro that generated the `invoke` wrapper and a macro-built handler
+//! registry; the macros only wrapped, so dropping the shell left the functions
+//! untouched. What reaches them now is `server::COMMANDS`, the name → function
+//! table behind `POST /api/{command}`.
 
 mod artifact_update;
 pub mod commands;
@@ -30,9 +30,9 @@ use std::path::PathBuf;
 
 /// Run `f`, turning a panic into `Err(())`.
 ///
-/// This is the degradation seam the Tauri commands used to get for free: each
-/// one hopped to `tauri::async_runtime::spawn_blocking(..).await` and treated
-/// the join error — a panic in the closure — as "answer empty/zeroed instead
+/// This is the degradation seam the commands used to get for free: each one
+/// hopped to a `spawn_blocking(..).await` on the desktop shell's runtime and
+/// treated the join error — a panic in the closure — as "answer empty/zeroed instead
 /// of surfacing a toast". There is no runtime to hop to any more (the HTTP
 /// worker thread is already off the accept loop), so the hop is gone and only
 /// the panic guard remains, keeping every per-command fallback exactly as it
@@ -993,7 +993,7 @@ fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
 /// (`kind`, `payload`, optional metadata).
 ///
 /// Fail-open: every IO error degrades to an `eprintln!` + return — emitting
-/// telemetry must never block a user-facing Tauri command.
+/// telemetry must never block a user-facing command.
 pub(crate) fn lib_emit_ndjson(
     repo_path: &str,
     spec: &str,

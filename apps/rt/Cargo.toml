@@ -61,7 +61,7 @@ tempfile = { workspace = true }
 # `notify` powers the opt-in `transcript-watcher` daemon (Wave 3, economia-moat-
 # unification). The watcher re-ingests `~/.claude/projects/**/*.jsonl` into the
 # economy `spans` table whenever Claude Code appends a turn. Pinned to the same
-# 6.x line as `apps/dashboard/src-tauri` so the workspace shares one `notify`
+# 6.x line as `apps/dashboard/server` so the workspace shares one `notify`
 # resolution. Production callers are fail-open: a missing/unparseable event is
 # warned via `eprintln!` and the loop continues.
 notify = { workspace = true }

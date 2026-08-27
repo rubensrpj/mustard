@@ -5,7 +5,7 @@
 # used to be webkit2gtk-4.1 (absent on 20.04) and is now just the glibc this
 # image links against — the dashboard is a `tiny_http` server with no system
 # dependency at all, so the WebKitGTK/GTK/librsvg/appindicator build packages
-# left with Tauri. Os binários do CLI e o servidor do dashboard são compilados
+# left with the desktop shell. Os binários do CLI e o servidor do dashboard são compilados
 # aqui dentro e empacotados num só .deb pelo packaging/linux/build-deb.sh.
 #
 # A imagem é cacheada por camadas do Docker; o build-packages.ps1 faz `docker

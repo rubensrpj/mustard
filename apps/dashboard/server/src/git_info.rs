@@ -176,7 +176,7 @@ fn parse_porcelain_line(line: &str) -> Option<GitChangedFile> {
 }
 
 /// Synchronous body of [`dashboard_git_info`], kept separate so unit tests call
-/// it directly without a Tauri runtime.
+/// it directly without an HTTP request.
 fn git_info_impl(repo_path: &str) -> GitInfo {
     let base = Path::new(repo_path);
     let mut info = GitInfo::default();
@@ -337,8 +337,8 @@ fn parse_commit_log(out: &str) -> Vec<CommitSummary> {
 /// ref, or a zero limit degrades to an empty `Vec`, never an `Err` toast —
 /// the same fail-open contract as [`dashboard_git_info`].
 ///
-/// The ref arrives from the front as `gitRef` (camelCase); Tauri maps it to the
-/// `git_ref` argument automatically.
+/// The ref arrives from the front as `gitRef` (camelCase); the argument table in
+/// `server.rs` maps it to the `git_ref` parameter.
 pub fn dashboard_git_log(
     repo_path: String,
     git_ref: String,
@@ -353,7 +353,7 @@ pub fn dashboard_git_log(
 }
 
 /// Synchronous body of [`dashboard_git_log`], kept separate so unit tests call
-/// it directly without a Tauri runtime.
+/// it directly without an HTTP request.
 fn git_log_impl(repo_path: &str, git_ref: &str, limit: u32) -> Vec<CommitSummary> {
     // A zero limit means "nothing to show"; short-circuit before spawning git.
     if limit == 0 {

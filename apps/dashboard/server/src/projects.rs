@@ -12,8 +12,8 @@
 //! - [`list_registered`] / [`register`] / [`unregister`] — the registry
 //!   itself, persisted at [`registry_path`].
 //!
-//! The registry used to live in the desktop app's `projects.json`, written by
-//! `@tauri-apps/plugin-store` from the browser side. It is server state now,
+//! The registry used to live in the desktop app's `projects.json`, written by a
+//! browser-side key/value store plugin. It is server state now,
 //! under `~/.claude/`: the dashboard covers EVERY Mustard project on the
 //! machine, so the list is a fact about the machine. Kept in browser storage,
 //! opening the dashboard from a second browser — or from a phone over

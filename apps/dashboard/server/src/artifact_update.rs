@@ -6,7 +6,7 @@
 //! probes each upstream, and emits a JSON report with one entry per record
 //! (status: `up-to-date` | `stale` | `unknown` | `tracked`).
 //!
-//! This module exposes two Tauri commands consumed by the sidebar:
+//! This module exposes two dashboard commands consumed by the sidebar:
 //!
 //! - [`artifact_update_check`] — invokes the `--check` probe for a given
 //!   project path and reduces the report to a `{ total, stale, items }` shape
@@ -32,7 +32,7 @@ use serde::Serialize;
 
 /// One row of the `--check` report, mirroring the shape emitted by
 /// `apps/rt/src/run/artifact_update.rs::CheckResult`. Field renames keep the
-/// JSON wire format snake_case'd by Tauri while letting the frontend consume
+/// JSON wire format snake_case'd on the wire while letting the frontend consume
 /// camelCase-ish keys.
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]

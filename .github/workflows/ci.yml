@@ -49,9 +49,10 @@ jobs:
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt /
-      # mustard-dashboard). The dashboard used to be excluded because the Tauri
-      # wrapper needed per-OS system libraries (webkit2gtk on Linux, etc.) that
-      # made this matrix slow and brittle. Tauri is gone — the backend is a
+      # mustard-dashboard). The dashboard used to be excluded because its
+      # desktop-shell wrapper needed per-OS system libraries (webkit2gtk on Linux,
+      # etc.) that made this matrix slow and brittle. That wrapper is gone — the
+      # backend is a
       # `tiny_http` server with no system dependency at all — so its suite runs
       # here like every other crate's.
       #

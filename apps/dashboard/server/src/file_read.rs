@@ -61,8 +61,8 @@ pub struct FileContent {
 /// degrades to `Ok(FileContent { readable: false, .. })` — never an `Err`
 /// toast. `Err` is reserved for an unrecoverable runtime fault.
 ///
-/// The path arrives from the front as `relPath`/`repoPath` (camelCase); Tauri
-/// maps them to the snake_case arguments automatically.
+/// The path arrives from the front as `relPath`/`repoPath` (camelCase); the
+/// argument table in `server.rs` maps them to the snake_case parameters.
 pub fn dashboard_read_file(
     repo_path: String,
     rel_path: String,
@@ -108,7 +108,7 @@ fn language_from_path(path: &Path) -> String {
 }
 
 /// Synchronous body of [`dashboard_read_file`], kept separate so unit tests call
-/// it directly without a Tauri runtime. Never panics on a missing/binary file;
+/// it directly without an HTTP request. Never panics on a missing/binary file;
 /// every failure path returns an unreadable [`FileContent`].
 fn read_file_impl(repo_path: &str, rel_path: &str) -> FileContent {
     // Path safety gate: out-of-repo / traversal / missing repo → not readable.

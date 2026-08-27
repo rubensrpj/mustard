@@ -35,11 +35,11 @@
 //! `--locked` was passed", before a line compiled).
 //!
 //! **The dashboard lock is gone**, and with it the test that read it. That file
-//! existed because the Tauri wrapper pinned `apps/dashboard/src-tauri` to
-//! edition 2021, which forced the crate out of the workspace and gave it a lock
-//! of its own that no root build ever resolved — measured on 2026-08-22 three
-//! releases behind at `0.1.41` while the workspace was at `0.1.44`, and nothing
-//! in the repository had noticed. Tauri is gone, the crate is a normal member
+//! existed because the old desktop-shell wrapper pinned the dashboard crate to
+//! edition 2021, which forced it out of the workspace and gave it a lock of its
+//! own that no root build ever resolved — measured on 2026-08-22 three releases
+//! behind at `0.1.41` while the workspace was at `0.1.44`, and nothing in the
+//! repository had noticed. That wrapper is gone, the crate is a normal member
 //! (`apps/dashboard/server`) and its lock was deleted, so the root lock covers
 //! it like every other crate. A lock that does not exist cannot lag: the guard
 //! for it would be the decoration this file refuses, so it was removed rather
@@ -747,9 +747,9 @@ fn assignment(line: &str) -> Option<(&str, &str)> {
 
 /// `true` when `haystack` names `token` as a whole word.
 ///
-/// The boundary is what separates the legs: `Cargo.lock` occurs inside
-/// `apps/dashboard/src-tauri/Cargo.lock`, and treating that as a mention would
-/// let one reader stand in for two different files.
+/// The boundary is what separates the legs: `Cargo.lock` occurs inside a
+/// nested path such as `apps/dashboard/server/Cargo.lock`, and treating that as
+/// a mention would let one reader stand in for two different files.
 fn mentions(haystack: &str, token: &str) -> bool {
     let boundary = |c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '.');
     haystack.match_indices(token).any(|(at, _)| {

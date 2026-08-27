@@ -16,7 +16,7 @@
 //! Each writer process owns one file (the `{ts-ns}-{run-id}-{pid}` triple is
 //! collision-proof inside a single project) and appends one JSON object per
 //! line. The file name doubles as the chronological cursor for the dashboard
-//! tailer (`notify-rs` watcher in `src-tauri`).
+//! tailer (`notify-rs` watcher in `apps/dashboard/server`).
 //!
 //! ## Hot-path target
 //!

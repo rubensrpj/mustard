@@ -124,7 +124,7 @@ enum ExistingAction {
 
 /// Run `mustard init` against `project_path`.
 ///
-/// This is the library entry point the Tauri backend calls. The binary passes
+/// This is the library entry point the dashboard backend calls. The binary passes
 /// the process working directory; a caller may pass any folder. The bundled
 /// `templates/` directory is located via [`resolve_templates_dir`]; callers
 /// that already know its location use [`init_with_templates`].
@@ -136,7 +136,7 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<()> {
 /// [`init`] with the `templates/` directory supplied explicitly.
 ///
 /// Splitting this out keeps template resolution (an environment concern) out
-/// of the install logic, so tests can drive a fixture tree and the Tauri
+/// of the install logic, so tests can drive a fixture tree and the dashboard
 /// backend can point at its own bundled payload — no process-global env var.
 pub fn init_with_templates(
     project_path: &Path,
@@ -519,7 +519,7 @@ fn templates_beside_exe(exe: &Path) -> Option<PathBuf> {
 ///
 /// Resolution order:
 /// 1. the `MUSTARD_TEMPLATES_DIR` environment variable (explicit override —
-///    used by tests and by the Tauri backend, which knows its own layout);
+///    used by tests and by the dashboard backend, which knows its own layout);
 /// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout),
 ///    resolved from the CANONICALIZED executable path;
 /// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout, for `cargo run`).
@@ -596,7 +596,8 @@ fn decide_existing_action(claude_path: &Path, options: &InitOptions) -> Result<E
         println!("  .claude/ exists - updating without overwriting user files");
         return Ok(ExistingAction::Merge);
     }
-    // Non-interactive stdin (CI, tests, Tauri): default to the safe merge
+    // Non-interactive stdin (CI, tests, the dashboard backend): default to the
+    // safe merge
     // rather than blocking on a prompt that can never be answered.
     if !std::io::stdin().is_terminal() {
         println!("  .claude/ exists - merging (non-interactive)");
@@ -843,8 +844,8 @@ fn rtk_on_path() -> bool {
 /// failing later in a confusing way.
 ///
 /// This is **not** fail-open — unlike [`ensure_rtk`], which is best-effort
-/// during the install phase. The exit code is `1` so CI/Tauri callers can
-/// detect the failure and surface it to the user.
+/// during the install phase. The exit code is `1` so CI and library callers
+/// can detect the failure and surface it to the user.
 fn probe_rtk() {
     // Skip the hard gate under unit tests: a clean CI runner has no `rtk`, and a
     // `process::exit` here would kill the whole test process.

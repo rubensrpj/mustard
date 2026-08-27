@@ -15,9 +15,9 @@ name: Release
 #   macOS   : Mustard-<versao>-universal.pkg            (app em /Applications + CLI no PATH)
 #   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: CLI + servidor + symlinks)
 #
-# The dashboard is a `tiny_http` server now, not a Tauri desktop app: every
-# installer ships `mustard-dashboard` as one more binary, with the built React
-# assets beside it. No `tauri build`, no bundler, no WebKitGTK.
+# The dashboard is a `tiny_http` server now, not a desktop app: every installer
+# ships `mustard-dashboard` as one more binary, with the built React assets
+# beside it. No webview bundler step, and no WebKitGTK.
 
 on:
   push:
@@ -98,8 +98,8 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # One workspace now. `apps/dashboard/src-tauri` was a second Cargo root
-      # only because the Tauri wrapper pinned its own edition and lock; the
+      # One workspace now. `apps/dashboard/server` was a second Cargo root
+      # only because its desktop-shell wrapper pinned its own edition and lock; the
       # dashboard backend is a plain member (`apps/dashboard/server`).
       - name: Rust cache
         uses: swatinem/rust-cache@v2

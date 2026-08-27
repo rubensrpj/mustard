@@ -851,7 +851,7 @@ Tipo: cargo · 1 arquivos
         );
         assert!(breadcrumb("apps/dashboard").contains("[../../CLAUDE.md](../../CLAUDE.md)"));
         assert!(breadcrumb("apps/dashboard").contains("../../.claude/mustard/orchestrator.md"));
-        assert!(breadcrumb("apps/dashboard/src-tauri").contains("[../../../CLAUDE.md]"));
+        assert!(breadcrumb("apps/dashboard/server").contains("[../../../CLAUDE.md]"));
 
         // fix_breadcrumb heals a wrong fixed-`../` line to the depth-correct one.
         let wrong = "# Dashboard\n\n> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)\n\n## Stack\n";

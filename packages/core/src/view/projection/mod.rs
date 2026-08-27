@@ -46,9 +46,8 @@ use std::time::SystemTime;
 /// Unknown / missing fields default safely (fail-open).
 ///
 /// W8A-2 (no-sqlite Wave 8): lifted from `apps/rt/src/run/event_projections.rs`
-/// to the shared core so both the rt run-face and the dashboard Tauri layer
-/// can fold over the same canonical event slice without duplicating the
-/// converter.
+/// to the shared core so both the rt run-face and the dashboard backend can
+/// fold over the same canonical event slice without duplicating the converter.
 #[must_use]
 pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
     harness_from_raw(&e.raw, e.payload)
@@ -117,8 +116,8 @@ fn harness_from_raw(raw: &Value, payload: Value) -> HarnessEvent {
 /// never load-bearing, the projection callers always render *something*.
 ///
 /// W8A-2 (no-sqlite Wave 8): the canonical disk-walking event-slice loader.
-/// `apps/rt` (one-shot CLI) consumes this directly; the dashboard Tauri layer
-/// now feeds the same projections from its incremental parsed-events cache via
+/// `apps/rt` (one-shot CLI) consumes this directly; the dashboard backend now
+/// feeds the same projections from its incremental parsed-events cache via
 /// [`harness_events_from_values`] instead of re-walking the disk per command
 /// (spec `performance-dashboard-rotas-lentas-cache`, wave 1). Conversion stays
 /// shared (`harness_from_raw`), so the projection inputs remain identical

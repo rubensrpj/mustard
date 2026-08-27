@@ -4,7 +4,7 @@
 # graphical session, says where it is listening, and never reaches for a
 # browser.
 #
-# This is the case the Tauri shell died in: with DISPLAY and WAYLAND_DISPLAY
+# This is the case the old desktop shell died in: with DISPLAY and WAYLAND_DISPLAY
 # both empty it panicked from inside gtk/tao, printing paths into the library
 # instead of anything the operator could act on. The replacement prints the URL
 # and keeps serving.

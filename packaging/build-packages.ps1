@@ -96,7 +96,7 @@ if ($Targets -in 'linux', 'both') {
     if ($LASTEXITCODE -ne 0) { throw "docker build da imagem Linux falhou (exit $LASTEXITCODE)." }
 
     # Volumes nomeados cacheiam registry/target/pnpm entre execuções (re-empacotar
-    # fica rápido). O volume do target do Tauri saiu junto com ele — há um único
+    # fica rápido). O volume do target do aplicativo de mesa saiu junto com ele — há um único
     # target agora. Limpe com:
     #   docker volume rm mustard-deb-cargo-registry mustard-deb-cargo-git `
     #     mustard-deb-cli-target mustard-deb-pnpm

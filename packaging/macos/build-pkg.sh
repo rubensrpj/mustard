@@ -8,7 +8,8 @@
 #
 #   dist/Mustard-<versao>-universal.pkg
 #
-# There is no `.app` any more. It existed because Tauri produced one, and what
+# There is no `.app` any more. It existed because the desktop-app bundler
+# produced one, and what
 # is installed now is a folder of executables plus the built React assets — the
 # same shape the .deb installs. Layout, mirroring the Linux package:
 #
@@ -45,7 +46,8 @@ DIST="$REPO/dist"
 CLI_BINS="scan mustard-rt mustard-mcp mustard"
 PREFIX=/usr/local/mustard
 
-# The version used to come from tauri.conf.json, which no longer exists. The
+# The version used to come from the desktop shell's config file, which no
+# longer exists. The
 # release job exports MUSTARD_RELEASE_VERSION (it is also what gets compiled
 # into the binaries); a local run falls back to the workspace version, which
 # `bump-on-main` keeps equal to plugin.json.

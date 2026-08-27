@@ -12,7 +12,8 @@
 ;   $INSTDIR\mustard-templates\  the payload `mustard init` copies
 ;
 ; THE FOLDER NAME `mustard-cli` IS A CONTRACT WITH mustard.nsi. It used to be a
-; contract with tauri.windows.json instead, and the two disagreed until 0.1.52:
+; contract with the old desktop-app bundler's Windows config instead, and the two
+; disagreed until 0.1.52:
 ; the bundler copied the binaries to $INSTDIR\mustard-cli while this file sent a
 ; `resources\mustard-cli` that never existed to the Path, so NOTHING new entered
 ; the Path. Anyone with an older install kept being answered by it — that is how

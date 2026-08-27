@@ -2,8 +2,8 @@
 //! Binary entry point for the `mustard` CLI.
 //!
 //! Thin shell: parse arguments ([`mustard_cli::cli`]) and hand off to the
-//! dispatch table. All real logic lives in the library so the Tauri backend
-//! can reuse it.
+//! dispatch table. All real logic lives in the library so the dashboard
+//! backend can reuse it.
 
 use std::process::ExitCode;
 

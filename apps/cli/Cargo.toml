@@ -13,8 +13,8 @@ build = "build.rs"
 name = "mustard"
 path = "src/main.rs"
 
-# The library surface — consumed by the Tauri dashboard backend (B5 Wave 3),
-# which calls `mustard_cli::init` / `mustard_cli::update` natively instead of
+# The library surface — consumed by the dashboard backend (B5 Wave 3), which
+# calls `mustard_cli::init` / `mustard_cli::update` natively instead of
 # spawning a sidecar. Only `src/` is compiled; `templates/` stays a data
 # payload copied at runtime, never a module.
 [lib]

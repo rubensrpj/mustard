@@ -1,4 +1,4 @@
-//! Project-scoped settings Tauri commands.
+//! Project-scoped settings commands.
 //!
 //! Wave 4 of `mustard-unification` — `mustard.json` gains `lang` (BCP-47) and
 //! `tone` (didactic / technical / concise). The dashboard Settings page lets

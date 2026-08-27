@@ -10,8 +10,8 @@
 //! expects (so React contracts stay untouched). The legacy hand-rolled SQL functions
 //! (`spec_card`, `spec_waves`, `spec_quality`, `spec_timeline`,
 //! `workspace_summary`) were removed in Wave 2 of spec
-//! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
-//! already delegated to the `*_v2` adapters since Wave 4 of the audit.
+//! `2026-05-20-sdd-domain-finalization`; the commands in `lib.rs` already
+//! delegated to the `*_v2` adapters since Wave 4 of the audit.
 
 use mustard_core::io::fs;
 use serde::{Deserialize, Serialize};
@@ -233,7 +233,7 @@ pub struct WorkspaceHealth {
 //
 // These produce the *same* JSON shape as the legacy functions above (the
 // shapes themselves did not move), but the projection layer is now the SDD
-// domain crate. The Tauri commands in `lib.rs` call these — the legacy
+// domain crate. The commands in `lib.rs` call these — the legacy
 // functions stay alongside until `spec_views_test.rs` is retired.
 // ===========================================================================
 
@@ -1038,7 +1038,7 @@ fn parse_wave_plan_row(line: &str) -> Option<(i64, Option<String>, Option<String
 /// linked to `parent` via the **union** of two sources — the SQLite
 /// `spec.link` projection AND a filesystem scan for `### Parent: <slug>` in
 /// every `.claude/spec/*/spec.md` header. The union lives in `mustard-rt run
-/// spec-children` so the Tauri command stays a thin subprocess wrapper (same
+/// spec-children` so the dashboard command stays a thin subprocess wrapper (same
 /// pattern as [`dashboard_spec_wave_files_run`]).
 ///
 /// Previously this delegated to a `SpecReader::children_of` projection that

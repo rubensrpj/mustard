@@ -15,11 +15,11 @@
 #   /usr/share/applications/…    atalho .desktop que INICIA O SERVIDOR
 # E o postinst cria os symlinks em /usr/bin para tudo entrar no PATH.
 #
-# The .deb used to be built by EXTRACTING the one `tauri build --bundles deb`
+# The .deb used to be built by EXTRACTING the one the desktop-app bundler
 # produced and injecting the CLI into it — that is where the .desktop entry, the
-# icons and the webkit2gtk/gtk `Depends` came from. Tauri is gone: the tree below
-# is written from scratch, and the dependency list shrank to the C runtime every
-# Rust binary already needs.
+# icons and the webkit2gtk/gtk `Depends` came from. That bundler is gone: the
+# tree below is written from scratch, and the dependency list shrank to the C
+# runtime every Rust binary already needs.
 #
 # Por que /usr/lib/mustard/bin + symlinks (e não /usr/bin direto): o mustard e o
 # dashboard resolvem a pasta templates como `<dir-do-exe>/../templates`. Com os
@@ -57,7 +57,8 @@ rsync -a --delete \
   --exclude='dist/' \
   "$REPO"/ "$BUILD"/
 
-# The version used to come from tauri.conf.json, which no longer exists. The
+# The version used to come from the desktop shell's config file, which no
+# longer exists. The
 # release job exports MUSTARD_RELEASE_VERSION (it is also what gets compiled
 # into the binaries); a local run falls back to the workspace version, which
 # `bump-on-main` keeps equal to plugin.json.
@@ -114,8 +115,8 @@ cp -R "$BUILD/apps/cli/templates/." "$MERGE/usr/lib/mustard/templates/"
 # 5b. atalho .desktop. It starts a SERVER: the entry runs the binary in a
 #     terminal so the URL it prints is visible and Ctrl+C stops it — an app
 #     window is exactly what there no longer is. The icon is a stock
-#     freedesktop name because the icon set came from the Tauri bundle and left
-#     with it; dropping a real icon in later only changes this line.
+#     freedesktop name because the icon set came from the old desktop-app bundle
+#     and left with it; dropping a real icon in later only changes this line.
 cat > "$MERGE/usr/share/applications/mustard-dashboard.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -128,7 +129,7 @@ Categories=Development;
 Keywords=mustard;claude;dashboard;
 EOF
 
-# 5c. control. Depends shrank with Tauri: what is left is the C runtime any Rust
+# 5c. control. Depends shrank with the desktop shell: what is left is the C runtime any Rust
 #     binary links. webkit2gtk-4.1/gtk-3/librsvg/appindicator are gone, and with
 #     them the reason the package could not be installed on older systems for
 #     anything but glibc.
