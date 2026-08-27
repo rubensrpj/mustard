@@ -894,7 +894,7 @@ mod tests {
     /// port, the context (for the shutdown flag and the bus) and the join
     /// handle.
     fn spawn(root: PathBuf, dist: PathBuf) -> (u16, Arc<Ctx>, std::thread::JoinHandle<()>) {
-        let (server, port) = bind("127.0.0.1", 0).unwrap();
+        let (server, port) = bind("127.0.0.1", 0).expect("bind an ephemeral port");
         // `bound_to` is not optional decoration: the `/api/` guard compares the
         // request's `Host` against it, so a context that never learned its port
         // refuses every call in this module with 403.
@@ -908,18 +908,18 @@ mod tests {
 
     fn stop(ctx: &Arc<Ctx>, handle: std::thread::JoinHandle<()>) {
         ctx.shutdown.store(true, Ordering::SeqCst);
-        handle.join().unwrap();
+        handle.join().expect("the server thread joins");
     }
 
     /// Minimal blocking HTTP request — avoids pulling in a client crate, the
     /// same shape the collector's tests use.
     fn http(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the test server");
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(req.as_bytes()).expect("write the request");
         let mut raw = Vec::new();
         let _ = stream.read_to_end(&mut raw);
         let resp = String::from_utf8_lossy(&raw).into_owned();
@@ -1018,13 +1018,13 @@ mod tests {
 
     #[test]
     fn command_answers_with_the_same_json_invoke_returned() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".claude").join("spec")).unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join(".claude").join("spec")).expect("mkdir");
         let (port, ctx, handle) = spawn(tmp.path().to_path_buf(), tmp.path().join("dist"));
 
         let body = format!(
             r#"{{"repoPath":{}}}"#,
-            serde_json::to_string(&tmp.path().to_string_lossy()).unwrap()
+            serde_json::to_string(&tmp.path().to_string_lossy()).expect("serialize")
         );
         let (status, out) = http(port, "POST", "/api/dashboard_specs", &body);
         assert_eq!(status, 200);
@@ -1035,11 +1035,11 @@ mod tests {
 
     #[test]
     fn snake_case_key_is_accepted_too() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
         let (port, ctx, handle) = spawn(tmp.path().to_path_buf(), tmp.path().join("dist"));
         let body = format!(
             r#"{{"repo_path":{}}}"#,
-            serde_json::to_string(&tmp.path().to_string_lossy()).unwrap()
+            serde_json::to_string(&tmp.path().to_string_lossy()).expect("serialize")
         );
         let (status, _) = http(port, "POST", "/api/dashboard_specs", &body);
         assert_eq!(status, 200);
@@ -1048,7 +1048,7 @@ mod tests {
 
     #[test]
     fn unknown_command_is_404_and_a_bad_argument_is_400() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
         let (port, ctx, handle) = spawn(tmp.path().to_path_buf(), tmp.path().join("dist"));
 
         let (status, _) = http(port, "POST", "/api/nope", "{}");
@@ -1079,11 +1079,11 @@ mod tests {
 
     #[test]
     fn assets_fall_back_to_index_html() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
         let dist = tmp.path().join("dist");
-        std::fs::create_dir_all(dist.join("assets")).unwrap();
-        std::fs::write(dist.join("index.html"), "<!doctype html><title>x</title>").unwrap();
-        std::fs::write(dist.join("assets").join("app.js"), "export {};").unwrap();
+        std::fs::create_dir_all(dist.join("assets")).expect("mkdir");
+        std::fs::write(dist.join("index.html"), "<!doctype html><title>x</title>").expect("write");
+        std::fs::write(dist.join("assets").join("app.js"), "export {};").expect("write");
         let (port, ctx, handle) = spawn(tmp.path().to_path_buf(), dist);
 
         let (status, body) = http(port, "GET", "/assets/app.js", "");
@@ -1100,11 +1100,11 @@ mod tests {
 
     #[test]
     fn traversal_out_of_dist_is_refused() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
         let dist = tmp.path().join("dist");
-        std::fs::create_dir_all(&dist).unwrap();
-        std::fs::write(dist.join("index.html"), "<!doctype html>").unwrap();
-        std::fs::write(tmp.path().join("secret.txt"), "SECRET").unwrap();
+        std::fs::create_dir_all(&dist).expect("mkdir");
+        std::fs::write(dist.join("index.html"), "<!doctype html>").expect("write");
+        std::fs::write(tmp.path().join("secret.txt"), "SECRET").expect("write");
 
         // `..` never resolves — the request degrades to the SPA shell.
         assert!(safe_join(&dist, "/../secret.txt").is_none());
@@ -1117,10 +1117,10 @@ mod tests {
 
     #[test]
     fn events_stream_opens_and_carries_an_emitted_frame() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
         let (port, ctx, handle) = spawn(tmp.path().to_path_buf(), tmp.path().join("dist"));
 
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the test server");
         // The `Host` must name the bound port: `/api/events` is behind the same
         // guard as the command dispatcher, because `EventSource` sends `Origin`
         // exactly like `fetch` and a hostile page reading the stream is
@@ -1132,10 +1132,10 @@ mod tests {
                 )
                 .as_bytes(),
             )
-            .unwrap();
+            .expect("write the SSE request");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+            .expect("set the read timeout");
 
         // Wait for the subscription to register before emitting, so the frame
         // cannot race ahead of the reader.
@@ -1152,7 +1152,7 @@ mod tests {
         let mut buf = [0u8; 1024];
         let mut seen = String::new();
         while !seen.contains("dashboard:fs-change") {
-            let n = stream.read(&mut buf).unwrap();
+            let n = stream.read(&mut buf).expect("read the response");
             assert!(n > 0, "stream closed before the frame arrived");
             seen.push_str(&String::from_utf8_lossy(&buf[..n]));
         }
@@ -1165,9 +1165,9 @@ mod tests {
 
     #[test]
     fn bind_walks_past_a_taken_port() {
-        let held = TcpListener::bind("127.0.0.1:0").unwrap();
-        let taken = held.local_addr().unwrap().port();
-        let (server, got) = bind("127.0.0.1", taken).unwrap();
+        let held = TcpListener::bind("127.0.0.1:0").expect("hold an ephemeral port");
+        let taken = held.local_addr().expect("the held listener reports its address").port();
+        let (server, got) = bind("127.0.0.1", taken).expect("bind falls back off the taken port");
         assert_ne!(got, taken, "a held port must not be reused");
         assert!(got > taken && got < taken + PORT_WALK);
         drop(server);

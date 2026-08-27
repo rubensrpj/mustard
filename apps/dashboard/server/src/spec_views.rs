@@ -1844,14 +1844,14 @@ mod tests {
     fn write_file(root: &std::path::Path, rel: &str, body: &str) {
         let path = root.join(rel);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
+            std::fs::create_dir_all(parent).expect("mkdir");
         }
-        std::fs::write(path, body).unwrap();
+        std::fs::write(path, body).expect("write");
     }
 
     #[test]
     fn checklist_progress_folds_meta_totals_and_marked_events() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         // Spec's own sidecar (wave 0): 2 items, 1 already done in meta.
         write_file(
             tmp.path(),
@@ -1876,7 +1876,7 @@ mod tests {
 
         let repo = tmp.path().to_string_lossy().into_owned();
         crate::telemetry::invalidate_events_cache(&repo);
-        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        let rows = spec_checklist_progress_v2(&repo, "alpha").expect("the checklist rows are built");
         assert_eq!(rows.len(), 2);
         let w0 = rows.iter().find(|r| r.wave == 0).expect("wave 0");
         assert_eq!((w0.done, w0.total), (1, 2), "meta done flag counts");
@@ -1886,18 +1886,18 @@ mod tests {
 
     #[test]
     fn checklist_progress_empty_when_no_sidecars_and_no_events() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         write_file(tmp.path(), ".claude/spec/alpha/spec.md", "# alpha\n");
         let repo = tmp.path().to_string_lossy().into_owned();
         crate::telemetry::invalidate_events_cache(&repo);
-        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        let rows = spec_checklist_progress_v2(&repo, "alpha").expect("the checklist rows are built");
         assert!(rows.is_empty(), "no checklist data → honest empty payload");
     }
 
     #[test]
     fn checklist_progress_event_only_wave_has_no_invented_total() {
         // Legacy markdown checklist: events exist but no sidecar was seeded.
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         let line = r#"{"event":"checklist.item.marked","ts":"2026-06-10T10:00:00Z","spec":"alpha","wave":2,"payload":{"spec":"alpha","wave":2,"item":"legacy"}}"#;
         write_file(
             tmp.path(),
@@ -1906,7 +1906,7 @@ mod tests {
         );
         let repo = tmp.path().to_string_lossy().into_owned();
         crate::telemetry::invalidate_events_cache(&repo);
-        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        let rows = spec_checklist_progress_v2(&repo, "alpha").expect("the checklist rows are built");
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].wave, rows[0].done, rows[0].total), (2, 1, 0));
     }
@@ -1914,7 +1914,7 @@ mod tests {
     #[test]
     fn checklist_progress_clamps_done_to_total() {
         // A re-seeded (shrunk) checklist must not overshoot from stale events.
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         write_file(
             tmp.path(),
             ".claude/spec/alpha/wave-1-impl/meta.json",
@@ -1932,7 +1932,7 @@ mod tests {
         );
         let repo = tmp.path().to_string_lossy().into_owned();
         crate::telemetry::invalidate_events_cache(&repo);
-        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        let rows = spec_checklist_progress_v2(&repo, "alpha").expect("the checklist rows are built");
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].done, rows[0].total), (1, 1), "done clamped to total");
     }
@@ -1948,7 +1948,7 @@ mod tests {
 
     #[test]
     fn spec_card_folds_latest_digest_summary_for_the_spec() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         // Older summary says unused — the NEWEST one must win. A summary for
         // ANOTHER spec must be ignored even though it is newer still.
         // `kind` is mandatory for the typed NDJSON reader (`io::events::Event`);
@@ -1963,14 +1963,14 @@ mod tests {
         );
         let repo = tmp.path().to_string_lossy().into_owned();
         crate::telemetry::invalidate_events_cache(&repo);
-        let card = spec_card_v2(&repo, "alpha").unwrap().expect("card");
+        let card = spec_card_v2(&repo, "alpha").expect("the card query runs").expect("a card for `alpha`");
         assert!(card.digest_used, "latest summary for the spec wins");
         assert_eq!(card.source_reads_before_digest, 2);
     }
 
     #[test]
     fn spec_card_defaults_digest_fields_when_no_summary_event() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         let line = r#"{"kind":"pipeline","event":"pipeline.phase","ts":"2026-06-10T10:00:00Z","spec":"alpha","wave":0,"payload":{"to":"ANALYZE"}}"#;
         write_file(
             tmp.path(),
@@ -1979,7 +1979,7 @@ mod tests {
         );
         let repo = tmp.path().to_string_lossy().into_owned();
         crate::telemetry::invalidate_events_cache(&repo);
-        let card = spec_card_v2(&repo, "alpha").unwrap().expect("card");
+        let card = spec_card_v2(&repo, "alpha").expect("the card query runs").expect("a card for `alpha`");
         assert!(!card.digest_used, "absent summary → default false");
         assert_eq!(card.source_reads_before_digest, 0);
     }

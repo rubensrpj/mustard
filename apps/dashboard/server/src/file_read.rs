@@ -187,9 +187,9 @@ mod tests {
 
     #[test]
     fn text_file_inside_repo_is_readable_with_language_and_content() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
-        std::fs::write(base.join("hello.ts"), b"export const x = 1;\n").unwrap();
+        std::fs::write(base.join("hello.ts"), b"export const x = 1;\n").expect("write");
 
         let fc = read_file_impl(&base.to_string_lossy(), "hello.ts");
         assert!(fc.readable, "a text file inside the repo is readable");
@@ -202,10 +202,10 @@ mod tests {
 
     #[test]
     fn backslash_separator_resolves_into_nested_dir() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
-        std::fs::create_dir_all(base.join("src").join("api")).unwrap();
-        std::fs::write(base.join("src").join("api").join("git.rs"), b"fn x() {}").unwrap();
+        std::fs::create_dir_all(base.join("src").join("api")).expect("mkdir");
+        std::fs::write(base.join("src").join("api").join("git.rs"), b"fn x() {}").expect("write");
 
         // A Windows-style separator must resolve the same as `/`.
         let fc = read_file_impl(&base.to_string_lossy(), "src\\api\\git.rs");
@@ -217,10 +217,10 @@ mod tests {
     #[test]
     fn traversal_escaping_the_repo_is_rejected() {
         // A secret file outside the repo must never be exposed via `..`.
-        let outer = tempfile::tempdir().unwrap();
-        std::fs::write(outer.path().join("secret.txt"), b"top secret").unwrap();
+        let outer = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outer.path().join("secret.txt"), b"top secret").expect("write");
         let repo = outer.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&repo).expect("mkdir");
 
         let fc = read_file_impl(&repo.to_string_lossy(), "../secret.txt");
         assert!(!fc.readable, "a traversal escaping the repo is not readable");
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_not_readable_and_never_panics() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let fc = read_file_impl(&dir.path().to_string_lossy(), "does-not-exist.rs");
         assert!(!fc.readable, "a missing file degrades to readable=false");
         assert!(fc.content.is_empty());
@@ -237,10 +237,10 @@ mod tests {
 
     #[test]
     fn binary_file_returns_empty_content_flagged_binary() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
         // A null byte in the sniff window marks the file binary.
-        std::fs::write(base.join("blob.bin"), [0x00u8, 0x01, 0x02, 0x03]).unwrap();
+        std::fs::write(base.join("blob.bin"), [0x00u8, 0x01, 0x02, 0x03]).expect("write");
 
         let fc = read_file_impl(&base.to_string_lossy(), "blob.bin");
         assert!(fc.is_binary, "a null byte marks the file binary");

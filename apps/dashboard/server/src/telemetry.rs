@@ -3473,8 +3473,8 @@ mod tests {
             .join("spec")
             .join(spec)
             .join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-        std::fs::write(events_dir.join(name), body).unwrap();
+        std::fs::create_dir_all(&events_dir).expect("mkdir");
+        std::fs::write(events_dir.join(name), body).expect("write");
     }
 
     fn span_line(session: &str, tool_use: Option<&str>, spec: &str, ts: &str) -> String {
@@ -3491,12 +3491,12 @@ mod tests {
         if let Some(tu) = tool_use {
             payload["extra"]["tool_use_id"] = Value::String(tu.to_string());
         }
-        serde_json::to_string(&payload).unwrap()
+        serde_json::to_string(&payload).expect("serialize")
     }
 
     #[test]
     fn attribution_tier1_matches_by_tool_use_id() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines = format!(
             "{}\n{}\n",
             span_line("sess-A", Some("tu-1"), "spec-alpha", "2026-05-27T10:00:00.000Z"),
@@ -3513,7 +3513,7 @@ mod tests {
 
     #[test]
     fn attribution_tier2_picks_last_span_before_ts() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines = format!(
             "{}\n{}\n",
             span_line("sess-B", Some("tu-x"), "spec-old", "2026-05-27T09:00:00.000Z"),
@@ -3521,7 +3521,7 @@ mod tests {
         );
         write_event(tmp.path(), "spec-old", "otel.ndjson", &lines);
 
-        let started_at_ms = iso_to_ms("2026-05-27T10:00:00.000Z").unwrap();
+        let started_at_ms = iso_to_ms("2026-05-27T10:00:00.000Z").expect("a well-formed ISO timestamp parses");
         let attr = lookup_attribution_extra(tmp.path(), "sess-B", None, started_at_ms)
             .expect("tier2 should hit");
         assert_eq!(attr.spec.as_deref(), Some("spec-new"));
@@ -3529,7 +3529,7 @@ mod tests {
 
     #[test]
     fn attribution_returns_none_when_session_unknown() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         write_event(
             tmp.path(),
             "spec-z",
@@ -3542,7 +3542,7 @@ mod tests {
 
     #[test]
     fn agent_activity_aggregates_start_stop_pairs() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines = concat!(
             r#"{"event":"agent.start","kind":"agent","ts":"2026-05-27T09:00:00.000Z","spec":"a","session_id":"s","actor":"explore-1","payload":{"subagentType":"Explore"}}"#, "\n",
             r#"{"event":"agent.stop","kind":"agent","ts":"2026-05-27T09:00:30.000Z","spec":"a","session_id":"s","actor":"explore-1","payload":{"subagentType":"Explore","isError":false}}"#, "\n",
@@ -3558,7 +3558,7 @@ mod tests {
 
     #[test]
     fn spec_trace_lists_tool_use_events_under_spec_root() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines = concat!(
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"alpha","payload":{"tool":"Read","target":{"file_path":"src/foo.rs"}}}"#, "\n",
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:01:00.000Z","spec":"alpha","payload":{"tool":"Edit","target":{"file_path":"src/bar.rs"}}}"#, "\n",
@@ -3586,13 +3586,13 @@ mod tests {
             .join(".session")
             .join(session)
             .join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-        std::fs::write(events_dir.join(name), body).unwrap();
+        std::fs::create_dir_all(&events_dir).expect("mkdir");
+        std::fs::write(events_dir.join(name), body).expect("write");
     }
 
     #[test]
     fn sessions_aggregate_per_dir_with_unknown_bucket_labelled() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // A real session: session.start (carries cwd) + later tool.use events.
         // Two Reads on the SAME file + one Edit on a second file exercise the
         // fold: tools_used=3, files_touched=2 (distinct), breakdown Read>Edit.
@@ -3641,14 +3641,14 @@ mod tests {
 
     #[test]
     fn sessions_empty_when_no_session_dir() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
         assert!(rows.is_empty());
     }
 
     #[test]
     fn sessions_derive_category_and_title_from_skill_invoked() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // A mustard:task skill carrying the request text → category "task",
         // title from `payload.args`. A later mustard:bugfix must NOT win
         // (earliest mustard skill decides). A non-mustard skill is ignored once
@@ -3670,7 +3670,7 @@ mod tests {
 
     #[test]
     fn sessions_category_outros_for_non_mustard_skill_and_prompt_title_fallback() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // No mustard skill: a non-mustard skill (no args) → category "outros".
         // No skill args anywhere → title falls back to the user.prompt text.
         let lines = concat!(
@@ -3687,7 +3687,7 @@ mod tests {
 
     #[test]
     fn sessions_category_none_when_no_skill_invoked() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Only tool.use — no skill.invoked at all → category None ("avulsa").
         let lines = concat!(
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-3","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
@@ -3701,7 +3701,7 @@ mod tests {
 
     #[test]
     fn sessions_derive_kind_and_scope_from_earliest_pipeline_kind() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // The earliest `pipeline.kind` decides — it is emitted when the router
         // dispatches the flow, so a later one (a second request in the same
         // session) must NOT override the original classification.
@@ -3720,7 +3720,7 @@ mod tests {
 
     #[test]
     fn sessions_kind_none_when_no_pipeline_kind_event() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // A session with work but no `pipeline.kind` (older session, or untagged
         // work) reports no kind/scope rather than guessing one.
         let lines = concat!(
@@ -3736,7 +3736,7 @@ mod tests {
 
     #[test]
     fn session_trace_groups_session_tool_events() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Two orchestrator-level tools in a session — no `agent.start`/`agent.stop`
         // bracket, no waves — so the session trace must nest
         // session → orchestrator agent → the two tools, exactly like the spec
@@ -3764,7 +3764,7 @@ mod tests {
 
     #[test]
     fn session_trace_surfaces_user_prompt_node_before_agents() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // A user prompt plus one orchestrator tool in the same session. The
         // `user.prompt` event must surface as a root-level `kind:"prompt"` node
         // carrying the full text, positioned BEFORE the agent node.
@@ -3800,7 +3800,7 @@ mod tests {
 
     #[test]
     fn session_trace_fail_open_when_session_missing() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let trace = dashboard_session_trace_impl(
             tmp.path().to_string_lossy().into_owned(),
             "nope".to_string(),
@@ -3823,7 +3823,7 @@ mod tests {
         let stage = r#"{"event":"pipeline.stage","kind":"pipeline","ts":"2026-05-27T10:00:00.000Z","session_id":"sess-1","spec":"spec-Y","payload":{"to":"EXECUTE"}}"#;
         let records: Vec<Value> = [scope, stage]
             .iter()
-            .map(|l| serde_json::from_str(l).unwrap())
+            .map(|l| serde_json::from_str(l).expect("parse json"))
             .collect();
         let timeline = build_session_spec_timeline_from(&records);
 
@@ -3831,7 +3831,7 @@ mod tests {
             serde_json::from_str(&format!(
                 r#"{{"event":"tool.use","kind":"tool","ts":"{ts}","session_id":"sess-1","spec":null,"payload":{{"tool":"Read"}}}}"#
             ))
-            .unwrap()
+            .expect("parse json")
         };
         assert_eq!(
             timeline.attributed_spec(&mk("2026-05-27T09:30:00.000Z")),
@@ -3847,7 +3847,7 @@ mod tests {
         let other = serde_json::from_str::<Value>(
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-other","spec":null,"payload":{}}"#,
         )
-        .unwrap();
+        .expect("parse json");
         assert_eq!(timeline.attributed_spec(&other), None);
     }
 
@@ -3856,12 +3856,12 @@ mod tests {
         // An event that already carries a non-empty spec is returned verbatim,
         // even if a binding for its session points elsewhere.
         let scope = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"spec-X","payload":{}}"#;
-        let records: Vec<Value> = vec![serde_json::from_str(scope).unwrap()];
+        let records: Vec<Value> = vec![serde_json::from_str(scope).expect("parse json")];
         let timeline = build_session_spec_timeline_from(&records);
         let ev = serde_json::from_str::<Value>(
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-1","spec":"spec-explicit","payload":{}}"#,
         )
-        .unwrap();
+        .expect("parse json");
         assert_eq!(timeline.attributed_spec(&ev), Some("spec-explicit"));
     }
 
@@ -3872,7 +3872,7 @@ mod tests {
         // With a `pipeline.scope` binding (session=sess-1 → spec=alpha at an
         // EARLIER ts) under the spec's own `.events/`, the spec trace must surface
         // the spec-less session `tool.use`.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Binding event lives under the spec dir (as on disk).
         let binding = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"scope":"full"}}"#;
         write_event(tmp.path(), "alpha", "scope.ndjson", &format!("{binding}\n"));
@@ -4097,14 +4097,14 @@ mod tests {
         // brackets a tool, and a run event books that agent's tokens under the
         // economy `agent_id` key. The agent node must surface those tokens —
         // proving the lookup keys on agent_id, not the description label.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let mut start = start_with_spec("s", 100, "Explore", "Trace blast radius", "alpha");
         start["session_id"] = Value::String("s".to_string());
         start["payload"]["agent_id"] = Value::String("Explore".to_string());
         let lines: Vec<String> = vec![
-            serde_json::to_string(&start).unwrap(),
-            serde_json::to_string(&use_with_spec("s", 120, "Grep", "alpha")).unwrap(),
-            serde_json::to_string(&stop_with_spec("s", 200, "alpha")).unwrap(),
+            serde_json::to_string(&start).expect("serialize"),
+            serde_json::to_string(&use_with_spec("s", 120, "Grep", "alpha")).expect("serialize"),
+            serde_json::to_string(&stop_with_spec("s", 200, "alpha")).expect("serialize"),
             // The economy run event for this agent (per_agent_costs keys on agent_id).
             r#"{"event":"pipeline.economy.run","kind":"pipeline.economy.run","ts":"2026-06-05T00:00:00.200Z","spec":"alpha","session_id":"s","payload":{"spec":"alpha","agent_id":"Explore","input_tokens":1000,"output_tokens":500,"cost_usd_micros":1234}}"#.to_string(),
         ];
@@ -4144,7 +4144,7 @@ mod tests {
                     .join(spec)
                     .join(format!("wave-{n}-{role}")),
             )
-            .unwrap();
+            .expect("mkdir");
         }
     }
 
@@ -4152,7 +4152,7 @@ mod tests {
     fn read_wave_role_map_parses_dir_names() {
         // The real painel-financeiro wave layout: wave-1-backend-ledger …
         // wave-5-app-caixa. Each dir name yields (role tokens, N).
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let spec_dir = tmp.path().join(".claude").join("spec").join("pf");
         make_wave_dirs(
             tmp.path(),
@@ -4166,8 +4166,8 @@ mod tests {
             ],
         );
         // A noise dir (no `wave-` prefix) and a `.events` dir must be ignored.
-        std::fs::create_dir_all(spec_dir.join(".events")).unwrap();
-        std::fs::create_dir_all(spec_dir.join("notes")).unwrap();
+        std::fs::create_dir_all(spec_dir.join(".events")).expect("mkdir");
+        std::fs::create_dir_all(spec_dir.join("notes")).expect("mkdir");
 
         let mut map = read_wave_role_map(&spec_dir);
         map.sort_by_key(|(_, w)| *w);
@@ -4186,7 +4186,7 @@ mod tests {
     #[test]
     fn read_wave_role_map_failsoft_on_missing_dir() {
         // A non-wave (Light) spec whose dir doesn't exist → empty map, no panic.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         assert!(read_wave_role_map(&tmp.path().join("nope")).is_empty());
     }
 
@@ -4254,7 +4254,7 @@ mod tests {
         assert_eq!(ivs[2].wave, None, "no wave token, no role token → wave-less");
         // With an empty role map the role-named dispatch falls back to wave-less.
         let ivs_norole = build_agent_intervals(&events, &[]);
-        let review = ivs_norole.iter().find(|iv| iv.name == "Review backend-ledger").unwrap();
+        let review = ivs_norole.iter().find(|iv| iv.name == "Review backend-ledger").expect("`Review backend-ledger` is listed");
         assert_eq!(review.wave, None, "no role map → role-named dispatch stays wave-less");
     }
 
@@ -4264,15 +4264,15 @@ mod tests {
         // `wave-{N}-{role}` dirs on disk, so a `Review backend-ledger` dispatch
         // (no "wave N" token) attributes to the `wave-1` node, while an
         // unmatched orchestrator dispatch hangs straight off the spec.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         make_wave_dirs(tmp.path(), "pf", &[("backend-ledger", 1), ("core", 3)]);
         let lines: Vec<String> = vec![
-            serde_json::to_string(&start_with_spec("s", 100, "mustard-review", "Review backend-ledger", "pf")).unwrap(),
-            serde_json::to_string(&use_with_spec("s", 120, "Read", "pf")).unwrap(),
-            serde_json::to_string(&stop_with_spec("s", 200, "pf")).unwrap(),
-            serde_json::to_string(&start_with_spec("s", 300, "general-purpose", "Build tabbed shell", "pf")).unwrap(),
-            serde_json::to_string(&use_with_spec("s", 320, "Edit", "pf")).unwrap(),
-            serde_json::to_string(&stop_with_spec("s", 400, "pf")).unwrap(),
+            serde_json::to_string(&start_with_spec("s", 100, "mustard-review", "Review backend-ledger", "pf")).expect("serialize"),
+            serde_json::to_string(&use_with_spec("s", 120, "Read", "pf")).expect("serialize"),
+            serde_json::to_string(&stop_with_spec("s", 200, "pf")).expect("serialize"),
+            serde_json::to_string(&start_with_spec("s", 300, "general-purpose", "Build tabbed shell", "pf")).expect("serialize"),
+            serde_json::to_string(&use_with_spec("s", 320, "Edit", "pf")).expect("serialize"),
+            serde_json::to_string(&stop_with_spec("s", 400, "pf")).expect("serialize"),
         ];
         write_event(tmp.path(), "pf", "events.ndjson", &format!("{}\n", lines.join("\n")));
 
@@ -4289,11 +4289,11 @@ mod tests {
             .expect("wave-1 node for the role-matched review");
         let review = wave1["children"]
             .as_array()
-            .unwrap()
+            .expect("the wave node carries a children array")
             .iter()
             .find(|a| a["label"] == "Review backend-ledger")
             .expect("review agent under wave-1");
-        assert_eq!(review["children"].as_array().unwrap().len(), 1, "the Read tool");
+        assert_eq!(review["children"].as_array().expect("children is an array").len(), 1, "the Read tool");
 
         // The unmatched orchestrator-style dispatch hangs off the spec, not a wave.
         assert!(
@@ -4308,16 +4308,16 @@ mod tests {
         // tools, and a `Wave 2` general-purpose dispatch brackets one more. The
         // Explore tools nest under its description (NOT "metrics-tracker") with no
         // wave; the Wave 2 tool nests under a `wave-2` node.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines: Vec<String> = vec![
-            serde_json::to_string(&use_with_spec("s", 50, "Read", "alpha")).unwrap(),
-            serde_json::to_string(&start_with_spec("s", 100, "Explore", "Trace payable blast radius", "alpha")).unwrap(),
-            serde_json::to_string(&use_with_spec("s", 120, "Grep", "alpha")).unwrap(),
-            serde_json::to_string(&use_with_spec("s", 140, "Read", "alpha")).unwrap(),
-            serde_json::to_string(&stop_with_spec("s", 200, "alpha")).unwrap(),
-            serde_json::to_string(&start_with_spec("s", 300, "general-purpose", "Wave 2 impl — frontend", "alpha")).unwrap(),
-            serde_json::to_string(&use_with_spec("s", 320, "Edit", "alpha")).unwrap(),
-            serde_json::to_string(&stop_with_spec("s", 400, "alpha")).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 50, "Read", "alpha")).expect("serialize"),
+            serde_json::to_string(&start_with_spec("s", 100, "Explore", "Trace payable blast radius", "alpha")).expect("serialize"),
+            serde_json::to_string(&use_with_spec("s", 120, "Grep", "alpha")).expect("serialize"),
+            serde_json::to_string(&use_with_spec("s", 140, "Read", "alpha")).expect("serialize"),
+            serde_json::to_string(&stop_with_spec("s", 200, "alpha")).expect("serialize"),
+            serde_json::to_string(&start_with_spec("s", 300, "general-purpose", "Wave 2 impl — frontend", "alpha")).expect("serialize"),
+            serde_json::to_string(&use_with_spec("s", 320, "Edit", "alpha")).expect("serialize"),
+            serde_json::to_string(&stop_with_spec("s", 400, "alpha")).expect("serialize"),
         ];
         write_event(tmp.path(), "alpha", "events.ndjson", &format!("{}\n", lines.join("\n")));
 
@@ -4335,7 +4335,7 @@ mod tests {
             .expect("Explore agent node under spec");
         assert_eq!(explore["kind"], "agent");
         assert_eq!(explore["subagent_type"], "Explore");
-        let explore_tools = explore["children"].as_array().unwrap();
+        let explore_tools = explore["children"].as_array().expect("children is an array");
         assert_eq!(explore_tools.len(), 2, "Grep + Read inside Explore");
         // NOT attributed to the hardcoded observer name.
         assert!(children.iter().all(|c| c["label"] != "metrics-tracker"));
@@ -4345,17 +4345,17 @@ mod tests {
             .iter()
             .find(|c| c["label"] == ORCHESTRATOR)
             .expect("orchestrator node");
-        assert_eq!(orch["children"].as_array().unwrap().len(), 1);
+        assert_eq!(orch["children"].as_array().expect("children is an array").len(), 1);
 
         // The Wave 2 dispatch lives under a `wave-2` node.
         let wave2 = children
             .iter()
             .find(|c| c["kind"] == "wave" && c["label"] == "wave-2")
             .expect("wave-2 node");
-        let agent = &wave2["children"].as_array().unwrap()[0];
+        let agent = &wave2["children"].as_array().expect("children is an array")[0];
         assert_eq!(agent["label"], "Wave 2 impl — frontend");
         assert_eq!(agent["subagent_type"], "general-purpose");
-        assert_eq!(agent["children"].as_array().unwrap().len(), 1);
+        assert_eq!(agent["children"].as_array().expect("children is an array").len(), 1);
     }
 
     fn use_with_spec(session: &str, ts_ms: u64, tool: &str, spec: &str) -> Value {
@@ -4388,7 +4388,7 @@ mod tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:32:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Edit","target":{"file_path":"src/live.rs"}}}"#,
         ]
         .iter()
-        .map(|l| serde_json::from_str(l).unwrap())
+        .map(|l| serde_json::from_str(l).expect("parse json"))
         .collect();
 
         let counts = attributed_spec_counts_from(&records);
@@ -4404,7 +4404,7 @@ mod tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-2","spec":null,"payload":{"tool":"Read"}}"#,
         ]
         .iter()
-        .map(|l| serde_json::from_str(l).unwrap())
+        .map(|l| serde_json::from_str(l).expect("parse json"))
         .collect();
         let pre_counts = attributed_spec_counts_from(&pre);
         // beta only sees its own binding event; the pre-binding tool.use is dropped.
@@ -4518,7 +4518,7 @@ mod tests {
         // End-to-end: a spec dir with a paired tool.use + tool.result must
         // surface `payload.result.content_excerpt` on the tool node so the
         // frontend stops rendering "tool_result pendente".
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines = format!(
             "{}\n{}\n",
             r##"{"event":"tool.use","kind":"tool","ts":"2026-06-05T10:00:00.000Z","ts_ms":1000,"session_id":"s","spec":"alpha","wave":1,"actor":"metrics-tracker","payload":{"tool":"Read","target":{"file_path":"/tmp/r.md"}}}"##,
@@ -4558,7 +4558,7 @@ mod tests {
         // A JSONL with: assistant text → tool_use (captures it) → another
         // assistant text → tool_use (captures the NEW text), then a real user
         // record clears narration so a following tool_use gets nothing.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("session.jsonl");
         let lines = [
             // Turn 1: narration "first" motivates tu-A.
@@ -4572,7 +4572,7 @@ mod tests {
             // tu-C has no preceding assistant text → no motivation recorded.
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-C","name":"Grep","input":{}}]}}"#,
         ];
-        std::fs::write(&path, lines.join("\n")).unwrap();
+        std::fs::write(&path, lines.join("\n")).expect("write");
 
         let map = transcript_motivations(&path);
         assert_eq!(map.get("tu-A").map(String::as_str), Some("first reason"));
@@ -4587,14 +4587,14 @@ mod tests {
     fn transcript_motivations_concatenates_consecutive_text_blocks() {
         // Two text blocks before a tool_use (a single assistant turn split into
         // multiple records) join with a newline.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("session.jsonl");
         let lines = [
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"line one"}]}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private"},{"type":"text","text":"line two"}]}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-X","name":"Bash","input":{}}]}}"#,
         ];
-        std::fs::write(&path, lines.join("\n")).unwrap();
+        std::fs::write(&path, lines.join("\n")).expect("write");
 
         let map = transcript_motivations(&path);
         assert_eq!(
@@ -4608,14 +4608,14 @@ mod tests {
     fn transcript_motivations_consecutive_tools_share_one_narration() {
         // The real transcript pattern: one rationale text, then several tool_use
         // blocks with no text between them — all share that narration.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("session.jsonl");
         let lines = [
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"shared why"}]}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{}}]}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-2","name":"Bash","input":{}}]}}"#,
         ];
-        std::fs::write(&path, lines.join("\n")).unwrap();
+        std::fs::write(&path, lines.join("\n")).expect("write");
 
         let map = transcript_motivations(&path);
         assert_eq!(map.get("tu-1").map(String::as_str), Some("shared why"));
@@ -4628,7 +4628,7 @@ mod tests {
 
     #[test]
     fn transcript_motivations_fail_open_on_missing_file() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let map = transcript_motivations(&tmp.path().join("does-not-exist.jsonl"));
         assert!(map.is_empty(), "a missing transcript yields an empty map");
     }
@@ -4829,7 +4829,7 @@ mod tests {
     fn events_cache_hit_reuses_arc_then_invalidate_reparses() {
         // Each test gets a fresh TempDir, so its path is a unique cache key —
         // no contamination from the process-global `EVENTS_CACHE` across tests.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
         write_event(tmp.path(), "a", "events.ndjson", &format!("{line}\n"));
 
@@ -4866,7 +4866,7 @@ mod tests {
         // The incremental contract (wave-1 task 6): with a warm cache the
         // second call performs ZERO shard reads; after touching ONE shard,
         // exactly that shard is re-read — asserted via the parse counter.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let line1 = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
         let line2 = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:01:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#;
         write_event(tmp.path(), "a", "one.ndjson", &format!("{line1}\n"));
@@ -4896,7 +4896,7 @@ mod tests {
             .join(".events")
             .join("one.ndjson");
         let line3 = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:02:00.000Z","spec":"a","payload":{"tool":"Bash"}}"#;
-        std::fs::write(&one_path, format!("{line1}\n{line3}\n")).unwrap();
+        std::fs::write(&one_path, format!("{line1}\n{line3}\n")).expect("write");
         invalidate_events_cache_path(&tmp.path().to_string_lossy(), &one_path);
 
         let fresh = walk_ndjson_events_cached(tmp.path());
@@ -4912,7 +4912,7 @@ mod tests {
     fn full_invalidation_sweeps_but_reparses_only_changed_fingerprints() {
         // The generic sweep re-enumerates + re-stats, but an unchanged shard
         // keeps its parsed chunk — only the NEW shard costs a parse.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
         write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
         assert_eq!(walk_ndjson_events_cached(tmp.path()).len(), 1);
@@ -4930,7 +4930,7 @@ mod tests {
 
     #[test]
     fn harness_cache_converts_once_and_tracks_value_invalidation() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let line = r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"to":"EXECUTE"}}"#;
         write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
 
@@ -4952,7 +4952,7 @@ mod tests {
             .join(".events")
             .join("two.ndjson");
         let line2 = r#"{"event":"qa.result","kind":"qa","ts":"2026-06-10T09:05:00.000Z","spec":"a","payload":{"criteria":[]}}"#;
-        std::fs::write(&two_path, format!("{line2}\n")).unwrap();
+        std::fs::write(&two_path, format!("{line2}\n")).expect("write");
         invalidate_events_cache_path(&tmp.path().to_string_lossy(), &two_path);
 
         let h3 = workspace_harness_events_cached(tmp.path());
@@ -4964,7 +4964,7 @@ mod tests {
     fn non_ndjson_path_invalidation_is_ignored() {
         // Only parsed `.ndjson` shards feed the snapshot — a write to any
         // other file must not dirty the cache.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
         write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
         let first = walk_ndjson_events_cached(tmp.path());
@@ -5009,7 +5009,7 @@ mod tests {
     #[test]
     fn dashboard_prompt_economy_filters_by_period() {
         use mustard_core::domain::economy::TimeWindow;
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Two MEASURED cost metrics: one inside the window, one after it.
         let lines = concat!(
             r#"{"event":"pipeline.telemetry.metric","kind":"pipeline","ts":"2026-05-10T00:00:00.000Z","spec":"alpha","payload":{"metric":"claude_code.cost.usage","sum":1.0,"session_id":"s-in","model":"m"}}"#, "\n",

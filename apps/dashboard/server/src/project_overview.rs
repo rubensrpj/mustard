@@ -744,9 +744,9 @@ mod tests {
 
     #[test]
     fn missing_model_yields_empty_overview() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let overview =
-            dashboard_project_overview(dir.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_project_overview(dir.path().to_string_lossy().into_owned()).expect("the project overview is built");
         assert!(!overview.is_monorepo);
         assert_eq!(overview.project_count, 0);
         assert!(overview.languages.is_empty());
@@ -765,9 +765,9 @@ mod tests {
         let mut deps = parse_npm_deps(content);
         finalize_deps(&mut deps);
         assert_eq!(deps.len(), 2);
-        let a = deps.iter().find(|d| d.name == "a").unwrap();
+        let a = deps.iter().find(|d| d.name == "a").expect("`a` is listed");
         assert_eq!(a.version, "^1.0.0");
-        let b = deps.iter().find(|d| d.name == "b").unwrap();
+        let b = deps.iter().find(|d| d.name == "b").expect("`b` is listed");
         assert_eq!(b.version, "~2.0.0");
     }
 
@@ -792,14 +792,14 @@ tempfile = "3"
 "#;
         let mut deps = parse_cargo_deps(content);
         finalize_deps(&mut deps);
-        let serde = deps.iter().find(|d| d.name == "serde").unwrap();
+        let serde = deps.iter().find(|d| d.name == "serde").expect("`serde` is listed");
         assert_eq!(serde.version, "1.0.190");
-        let tokio = deps.iter().find(|d| d.name == "tokio").unwrap();
+        let tokio = deps.iter().find(|d| d.name == "tokio").expect("`tokio` is listed");
         assert_eq!(tokio.version, "1.35");
         // Path dep has no version → empty string, still listed.
-        let local = deps.iter().find(|d| d.name == "local").unwrap();
+        let local = deps.iter().find(|d| d.name == "local").expect("`local` is listed");
         assert_eq!(local.version, "");
-        let tempfile = deps.iter().find(|d| d.name == "tempfile").unwrap();
+        let tempfile = deps.iter().find(|d| d.name == "tempfile").expect("`tempfile` is listed");
         assert_eq!(tempfile.version, "3");
         // `[package]` keys must not leak in as deps.
         assert!(deps.iter().all(|d| d.name != "name"));
@@ -816,24 +816,24 @@ tempfile = "3"
 </Project>"#;
         let mut deps = parse_csproj_deps(content);
         finalize_deps(&mut deps);
-        let nj = deps.iter().find(|d| d.name == "Newtonsoft.Json").unwrap();
+        let nj = deps.iter().find(|d| d.name == "Newtonsoft.Json").expect("`Newtonsoft.Json` is listed");
         assert_eq!(nj.version, "13.0.3");
         // Attributes can appear in either order.
-        let serilog = deps.iter().find(|d| d.name == "Serilog").unwrap();
+        let serilog = deps.iter().find(|d| d.name == "Serilog").expect("`Serilog` is listed");
         assert_eq!(serilog.version, "6.0.0");
         // CPM/no-version reference → empty version, still listed.
-        let nv = deps.iter().find(|d| d.name == "NoVersionPkg").unwrap();
+        let nv = deps.iter().find(|d| d.name == "NoVersionPkg").expect("`NoVersionPkg` is listed");
         assert_eq!(nv.version, "");
     }
 
     #[test]
     fn read_manifest_deps_reads_package_json() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("package.json"),
             r#"{"dependencies":{"a":"^1.0.0"},"devDependencies":{"b":"~2.0.0"}}"#,
         )
-        .unwrap();
+        .expect("write");
         let deps = read_manifest_deps(dir.path(), "npm");
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.name == "a" && d.version == "^1.0.0"));
@@ -842,7 +842,7 @@ tempfile = "3"
 
     #[test]
     fn read_manifest_deps_missing_manifest_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         assert!(read_manifest_deps(dir.path(), "npm").is_empty());
         assert!(read_manifest_deps(dir.path(), "cargo").is_empty());
         assert!(read_manifest_deps(dir.path(), "dotnet").is_empty());
@@ -851,11 +851,11 @@ tempfile = "3"
 
     #[test]
     fn find_relative_doc_detects_readme_and_claude() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("tempdir");
         let unit = base.path().join("apps").join("web");
-        std::fs::create_dir_all(&unit).unwrap();
-        std::fs::write(unit.join("README.md"), "# readme").unwrap();
-        std::fs::write(unit.join("CLAUDE.md"), "# guards").unwrap();
+        std::fs::create_dir_all(&unit).expect("mkdir");
+        std::fs::write(unit.join("README.md"), "# readme").expect("write");
+        std::fs::write(unit.join("CLAUDE.md"), "# guards").expect("write");
 
         let readme = find_relative_doc(base.path(), "apps/web", &["README.md", "readme.md"]);
         assert_eq!(readme.as_deref(), Some("apps/web/README.md"));
@@ -867,10 +867,10 @@ tempfile = "3"
 
     #[test]
     fn find_relative_doc_lowercase_readme() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("tempdir");
         let unit = base.path().join("pkg");
-        std::fs::create_dir_all(&unit).unwrap();
-        std::fs::write(unit.join("readme.md"), "# lower").unwrap();
+        std::fs::create_dir_all(&unit).expect("mkdir");
+        std::fs::write(unit.join("readme.md"), "# lower").expect("write");
         let readme = find_relative_doc(base.path(), "pkg", &["README.md", "readme.md"]);
         // A lowercase `readme.md` is detected. On a case-insensitive FS
         // (Windows/macOS) the first candidate `README.md` matches the same
@@ -896,7 +896,7 @@ tempfile = "3"
 
     #[test]
     fn outdated_impl_fail_open() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         // Unknown kind → empty.
         assert!(outdated_impl(&dir.path().to_string_lossy(), "", "weird").is_empty());
         // Missing project dir → empty.
@@ -905,25 +905,25 @@ tempfile = "3"
 
     #[test]
     fn detect_js_pm_walks_up_to_the_repo_lockfile() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         // pnpm-lock at the repo root; the unit lives two levels down.
-        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").expect("write");
         let nested = dir.path().join("apps").join("admin");
-        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&nested).expect("mkdir");
         assert_eq!(detect_js_pm(&nested), "pnpm");
     }
 
     #[test]
     fn detect_js_pm_prefers_pnpm_then_yarn_then_npm_and_defaults_npm() {
-        let none = tempfile::tempdir().unwrap();
+        let none = tempfile::tempdir().expect("tempdir");
         assert_eq!(detect_js_pm(none.path()), "npm");
 
-        let yarn = tempfile::tempdir().unwrap();
-        std::fs::write(yarn.path().join("yarn.lock"), "").unwrap();
+        let yarn = tempfile::tempdir().expect("tempdir");
+        std::fs::write(yarn.path().join("yarn.lock"), "").expect("write");
         assert_eq!(detect_js_pm(yarn.path()), "yarn");
 
-        let npm = tempfile::tempdir().unwrap();
-        std::fs::write(npm.path().join("package-lock.json"), "{}").unwrap();
+        let npm = tempfile::tempdir().expect("tempdir");
+        std::fs::write(npm.path().join("package-lock.json"), "{}").expect("write");
         assert_eq!(detect_js_pm(npm.path()), "npm");
     }
 

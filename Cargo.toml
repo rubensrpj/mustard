@@ -114,8 +114,19 @@ rayon = "1.10"
 sha2 = "0.11"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
-# Only `mustard-core` opts in today; `mustard-dashboard` deliberately does not
-# (its command surface predates the `unwrap_used = "deny"` rule).
+#
+# Every member opts in except `apps/scan`, which still carries no `[lints]`
+# table. `mustard-dashboard` was the other holdout — the note here used to read
+# "deliberately does not (its command surface predates the `unwrap_used = deny`
+# rule)", which is how the workspace's NEWEST code came to be the only code the
+# rule did not reach.
+#
+# `unwrap_used` below is `deny`, and clippy does NOT exempt `#[cfg(test)]` code
+# from it on its own: `mustard-core`, `mustard-cli`, `mustard-rt` and
+# `mustard-mcp` each open their crate root with
+# `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]`, and THAT
+# is what exempts their tests. `mustard-dashboard` deliberately carries no such
+# line — see its `src/lib.rs` header.
 [workspace.lints.rust]
 # A hook on the critical path must never reach for `unsafe`.
 unsafe_code = "forbid"

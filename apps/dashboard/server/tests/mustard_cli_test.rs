@@ -18,21 +18,21 @@ use mustard_cli::commands::init::{InitOptions, init_with_templates};
 /// (commands/skills/agents/refs) ships in the plugin.
 fn fake_templates(root: &std::path::Path) -> std::path::PathBuf {
     let templates = root.join("templates");
-    fs::create_dir_all(templates.join("mustard")).unwrap();
+    fs::create_dir_all(templates.join("mustard")).expect("mkdir");
     fs::write(templates.join("mustard/orchestrator.md"), "# Orchestrator Rules
-").unwrap();
-    fs::write(templates.join("settings.json"), r#"{"env":{"MUSTARD_TEST":"1"}}"#).unwrap();
+").expect("write");
+    fs::write(templates.join("settings.json"), r#"{"env":{"MUSTARD_TEST":"1"}}"#).expect("write");
     fs::write(templates.join(".gitignore"), "spec/*/.events/
-").unwrap();
+").expect("write");
     templates
 }
 
 #[test]
 fn init_runs_non_interactively_and_is_idempotent() {
-    let work = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().expect("tempdir");
     let templates = fake_templates(work.path());
     let project = work.path().join("project");
-    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&project).expect("mkdir");
 
     // Non-interactive init: seed a fresh project the way the dashboard would.
     init_with_templates(

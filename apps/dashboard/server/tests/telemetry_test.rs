@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn clean_repo() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    std::fs::create_dir_all(tmp.path().join(".claude").join("spec")).unwrap();
+    let tmp = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmp.path().join(".claude").join("spec")).expect("mkdir");
     tmp
 }
 

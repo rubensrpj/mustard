@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn defaults_are_loopback_and_open() {
-        let parsed = parse(args(&[]).into_iter()).unwrap();
+        let parsed = parse(args(&[]).into_iter()).expect("the default args parse");
         assert_eq!(parsed.host, DEFAULT_HOST);
         assert!(parsed.port.is_none());
         assert!(parsed.root.is_none());
@@ -205,7 +205,7 @@ mod tests {
             args(&["--port", "9001", "--host", "0.0.0.0", "--root", "/tmp/x", "--no-open"])
                 .into_iter(),
         )
-        .unwrap();
+        .expect("every flag parses");
         assert_eq!(parsed.port, Some(9001));
         assert_eq!(parsed.host, "0.0.0.0");
         assert_eq!(parsed.root.as_deref(), Some(std::path::Path::new("/tmp/x")));

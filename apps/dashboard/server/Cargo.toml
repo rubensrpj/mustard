@@ -49,3 +49,8 @@ tempfile = { workspace = true }
 # calls. Moved here rather than deleted: the smoke test still asserts the two
 # crates compose.
 mustard-cli = { path = "../../cli" }
+
+# Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
+# unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.
+[lints]
+workspace = true

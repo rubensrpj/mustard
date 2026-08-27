@@ -390,15 +390,15 @@ mod tests {
     #[test]
     fn parse_iso_handles_z_and_offset() {
         // 2026-06-23T12:24:05Z → known epoch.
-        let z = parse_iso_to_epoch("2026-06-23T12:24:05Z").unwrap();
+        let z = parse_iso_to_epoch("2026-06-23T12:24:05Z").expect("a well-formed ISO timestamp parses");
         // Same instant expressed with a +00:00 offset.
-        let zero = parse_iso_to_epoch("2026-06-23T12:24:05+00:00").unwrap();
+        let zero = parse_iso_to_epoch("2026-06-23T12:24:05+00:00").expect("a well-formed ISO timestamp parses");
         assert_eq!(z, zero);
         // A +03:00 offset is three hours EARLIER in UTC.
-        let plus3 = parse_iso_to_epoch("2026-06-23T12:24:05+03:00").unwrap();
+        let plus3 = parse_iso_to_epoch("2026-06-23T12:24:05+03:00").expect("a well-formed ISO timestamp parses");
         assert_eq!(plus3, z - 3 * 3_600);
         // Fractional seconds are tolerated (integer head taken).
-        let frac = parse_iso_to_epoch("2026-06-23T12:24:05.478Z").unwrap();
+        let frac = parse_iso_to_epoch("2026-06-23T12:24:05.478Z").expect("a well-formed ISO timestamp parses");
         assert_eq!(frac, z);
     }
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn missing_spec_md_is_unknown() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let s = plan_staleness_impl(&dir.path().to_string_lossy(), "no-such-spec", None);
         assert_eq!(s.verdict, "unknown");
         assert_eq!(s.reason, "spec.md inexistente");
@@ -445,10 +445,10 @@ mod tests {
 
     #[test]
     fn no_census_is_unknown_not_stale() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let spec_dir = dir.path().join(".claude").join("spec").join("s1");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# Spec\n\nNo census here.\n").unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
+        std::fs::write(spec_dir.join("spec.md"), "# Spec\n\nNo census here.\n").expect("write");
         let s = plan_staleness_impl(&dir.path().to_string_lossy(), "s1", None);
         assert_eq!(s.verdict, "unknown");
         assert_eq!(s.reason, "sem censo de arquivos");
@@ -456,14 +456,14 @@ mod tests {
 
     #[test]
     fn missing_file_marks_stale() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let spec_dir = dir.path().join(".claude").join("spec").join("s1");
-        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
         std::fs::write(
             spec_dir.join("spec.md"),
             "## Arquivos\n\n- `src/gone.rs`\n",
         )
-        .unwrap();
+        .expect("write");
         let s = plan_staleness_impl(
             &dir.path().to_string_lossy(),
             "s1",
@@ -481,19 +481,19 @@ mod tests {
         // was last modified BEFORE that plan date, must resolve to `fresh` — age
         // alone no longer marks a plan stale (it used to flip to `stale` once
         // `age_days >= STALE_AGE_DAYS`).
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let spec_dir = dir.path().join(".claude").join("spec").join("s1");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "## Arquivos\n\n- `keep.rs`\n").unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
+        std::fs::write(spec_dir.join("spec.md"), "## Arquivos\n\n- `keep.rs`\n").expect("write");
 
         // Create the census file and backdate its mtime to 2010, well before the
         // plan date below. There is no git in this tempdir, so the impl compares
         // against the filesystem mtime; backdating it keeps the file from being
         // flagged `changed` against an old (2020) plan date.
-        let f = std::fs::File::create(dir.path().join("keep.rs")).unwrap();
+        let f = std::fs::File::create(dir.path().join("keep.rs")).expect("create the tracked file");
         // 2010-01-01T00:00:00Z = 1_262_304_000s since epoch.
         let mtime_2010 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_262_304_000);
-        f.set_modified(mtime_2010).unwrap();
+        f.set_modified(mtime_2010).expect("set the mtime");
         drop(f);
 
         // Plan date in 2020 → already very old (high `age_days`), yet the file's
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn rejects_traversal_spec_name() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let s = plan_staleness_impl(&dir.path().to_string_lossy(), "../evil", None);
         assert_eq!(s.verdict, "unknown");
     }

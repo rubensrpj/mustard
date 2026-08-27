@@ -6,6 +6,21 @@
 //! registry; the macros only wrapped, so dropping the shell left the functions
 //! untouched. What reaches them now is `server::COMMANDS`, the name → function
 //! table behind `POST /api/{command}`.
+//!
+//! # No `cfg_attr(test, allow(clippy::unwrap_used))` here — deliberately
+//!
+//! `mustard-core`, `mustard-cli`, `mustard-rt` and `mustard-mcp` each open their
+//! crate root with that line, so `unwrap_used` — `deny` workspace-wide — is off
+//! in their test code. This crate opted into `[lints] workspace = true` last,
+//! and rather than inherit the escape hatch, all 269 `.unwrap()` calls its test
+//! modules carried were rewritten as `.expect("<reason>")`: a test that fails on
+//! a setup step now says which step, instead of pointing at a line number.
+//!
+//! That only holds while something checks it. The default target set does not
+//! compile `#[cfg(test)]` code, so `cargo clippy -p mustard-dashboard` alone
+//! reports a pass it did not earn — the CI step runs `--all-targets` for exactly
+//! this reason. If a red build here tempts you to add the one-line allow, the
+//! honest fix is the `.expect` the rest of this crate's tests already use.
 
 mod artifact_update;
 pub mod commands;
@@ -1676,13 +1691,13 @@ mod onda2_tests {
 
     fn write_event(dir: &std::path::Path, spec: &str, name: &str, body: &str) {
         let events_dir = dir.join(".claude").join("spec").join(spec).join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-        std::fs::write(events_dir.join(name), body).unwrap();
+        std::fs::create_dir_all(&events_dir).expect("mkdir");
+        std::fs::write(events_dir.join(name), body).expect("write");
     }
 
     #[test]
     fn knowledge_rows_project_decision_and_lesson_events() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         write_event(
             tmp.path(),
             "my-spec",
@@ -1720,7 +1735,7 @@ mod onda2_tests {
 
     #[test]
     fn knowledge_rows_tolerate_null_body_and_skip_titleless_records() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         write_event(
             tmp.path(),
             "s1",
@@ -1740,7 +1755,7 @@ mod onda2_tests {
 
     #[test]
     fn knowledge_rows_empty_without_events() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         assert!(knowledge_rows_from_events(tmp.path()).is_empty());
     }
 
@@ -1764,13 +1779,13 @@ mod onda2_tests {
 
     #[test]
     fn recent_events_are_newest_first() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let lines = concat!(
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:05:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
         );
         write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = dashboard_recent_events_impl(tmp.path().to_string_lossy().into_owned(), None).unwrap();
+        let rows = dashboard_recent_events_impl(tmp.path().to_string_lossy().into_owned(), None).expect("the recent-event rows are built");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].ts.as_deref(), Some("2026-05-27T09:05:00.000Z"));
         assert_eq!(rows[0].tool_name.as_deref(), Some("Edit"));
@@ -1778,19 +1793,19 @@ mod onda2_tests {
 
     #[test]
     fn dashboard_specs_returns_parent_but_not_wave_children() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let spec_root = tmp.path().join(".claude").join("spec");
         // A wave-plan parent: has wave-plan.md + a wave-1-x/spec.md child.
         let parent = spec_root.join("epic");
-        std::fs::create_dir_all(&parent).unwrap();
-        std::fs::write(parent.join("wave-plan.md"), "# epic plan\n").unwrap();
+        std::fs::create_dir_all(&parent).expect("mkdir");
+        std::fs::write(parent.join("wave-plan.md"), "# epic plan\n").expect("write");
         let child = parent.join("wave-1-frontend");
-        std::fs::create_dir_all(&child).unwrap();
-        std::fs::write(child.join("spec.md"), "# wave 1\n### Phase: EXECUTE\n").unwrap();
+        std::fs::create_dir_all(&child).expect("mkdir");
+        std::fs::write(child.join("spec.md"), "# wave 1\n### Phase: EXECUTE\n").expect("write");
         // A standalone top-level spec for good measure.
         let solo = spec_root.join("solo");
-        std::fs::create_dir_all(&solo).unwrap();
-        std::fs::write(solo.join("spec.md"), "# solo\n").unwrap();
+        std::fs::create_dir_all(&solo).expect("mkdir");
+        std::fs::write(solo.join("spec.md"), "# solo\n").expect("write");
 
         // specs_from_fs still walks the wave child (used elsewhere).
         let fs_rows = specs_from_fs(tmp.path());
@@ -1800,7 +1815,7 @@ mod onda2_tests {
         );
 
         // dashboard_specs filters to top-level only.
-        let rows = dashboard_specs_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
+        let rows = dashboard_specs_impl(tmp.path().to_string_lossy().into_owned()).expect("the spec list is built");
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"epic"), "parent spec must be kept");
         assert!(names.contains(&"solo"), "standalone spec must be kept");
@@ -1815,11 +1830,11 @@ mod onda2_tests {
     fn specs_cache_serves_warm_list_until_invalidated() {
         // Wave-1 task 4: the spec LIST never waits on a directory walk when
         // warm; the watcher (kind `spec`) is the invalidation path.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let spec_root = tmp.path().join(".claude").join("spec");
         let solo = spec_root.join("solo");
-        std::fs::create_dir_all(&solo).unwrap();
-        std::fs::write(solo.join("spec.md"), "# solo\n").unwrap();
+        std::fs::create_dir_all(&solo).expect("mkdir");
+        std::fs::write(solo.join("spec.md"), "# solo\n").expect("write");
 
         let first = specs_from_fs_cached(tmp.path());
         assert!(first.iter().any(|r| r.name == "solo"));
@@ -1827,8 +1842,8 @@ mod onda2_tests {
         // A new spec lands on disk: the warm cache still serves the shared
         // list (same Arc — no re-walk happened).
         let late = spec_root.join("later");
-        std::fs::create_dir_all(&late).unwrap();
-        std::fs::write(late.join("spec.md"), "# later\n").unwrap();
+        std::fs::create_dir_all(&late).expect("mkdir");
+        std::fs::write(late.join("spec.md"), "# later\n").expect("write");
         let warm = specs_from_fs_cached(tmp.path());
         assert!(
             std::sync::Arc::ptr_eq(&first, &warm),
@@ -1844,23 +1859,23 @@ mod onda2_tests {
 
     #[test]
     fn spec_action_emits_status_and_returns_ok() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Seed a spec dir so the header sync has a file (sync is fail-open anyway).
         let spec_dir = tmp.path().join(".claude").join("spec").join("a");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# a\n### Status: implementing\n").unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
+        std::fs::write(spec_dir.join("spec.md"), "# a\n### Status: implementing\n").expect("write");
 
         let res = dashboard_spec_action(
             tmp.path().to_string_lossy().into_owned(),
             "a".to_string(),
             "close".to_string(),
         )
-        .unwrap();
+        .expect("the close action runs");
         assert_eq!(res.result, "ok");
         assert_eq!(res.message.as_deref(), Some("completed"));
         // A pipeline.status event was appended to the dashboard sink.
         let ndjson = spec_dir.join(".events").join("dashboard.ndjson");
-        let body = std::fs::read_to_string(&ndjson).unwrap();
+        let body = std::fs::read_to_string(&ndjson).expect("read");
         assert!(body.contains("pipeline.status"));
         assert!(body.contains("completed"));
 
@@ -1875,7 +1890,7 @@ mod onda2_tests {
 
     #[test]
     fn active_pipelines_excludes_terminal_and_no_events() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Spec "live": has phase events, non-terminal.
         write_event(
             tmp.path(),
@@ -1889,7 +1904,7 @@ mod onda2_tests {
             tmp.path().join(".claude").join("spec").join("live").join("spec.md"),
             "# live\n",
         )
-        .unwrap();
+        .expect("write");
         // Spec "done": completed status → terminal.
         write_event(
             tmp.path(),
@@ -1904,10 +1919,10 @@ mod onda2_tests {
             tmp.path().join(".claude").join("spec").join("done").join("spec.md"),
             "# done\n",
         )
-        .unwrap();
+        .expect("write");
 
         let actives =
-            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).expect("the active-pipeline rows are built");
         let names: Vec<&str> = actives.iter().map(|p| p.spec_name.as_str()).collect();
         assert!(names.contains(&"live"), "live spec should be active: {names:?}");
         assert!(!names.contains(&"done"), "completed spec must be excluded");
@@ -1922,8 +1937,8 @@ mod onda2_tests {
             .join(".session")
             .join(session)
             .join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-        std::fs::write(events_dir.join(name), body).unwrap();
+        std::fs::create_dir_all(&events_dir).expect("mkdir");
+        std::fs::write(events_dir.join(name), body).expect("write");
     }
 
     #[test]
@@ -1934,7 +1949,7 @@ mod onda2_tests {
         // lives under the spec's own `.events/`. The core fold keys on
         // `event.spec` and so reports tools 0 / arquivos 0; the dashboard layer
         // must re-attribute and surface non-zero tool + file counts.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Binding event under the spec dir (carries explicit spec + session_id).
         let binding = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"scope":"full"}}"#;
         write_event(tmp.path(), "alpha", "scope.ndjson", &format!("{binding}\n"));
@@ -1942,7 +1957,7 @@ mod onda2_tests {
             tmp.path().join(".claude").join("spec").join("alpha").join("spec.md"),
             "# alpha\n",
         )
-        .unwrap();
+        .expect("write");
         // Two spec-less session tool.use events touching two distinct files,
         // both after the binding ts → attribute to alpha.
         let work = concat!(
@@ -1956,7 +1971,7 @@ mod onda2_tests {
             tmp.path().to_string_lossy().into_owned(),
             "alpha".to_string(),
         )
-        .unwrap();
+        .expect("the spec card is built");
         assert_eq!(card.tools_used, 2, "two attributed session tool.use events");
         assert_eq!(card.files_touched, 2, "two distinct attributed file targets");
         assert_eq!(
@@ -1968,7 +1983,7 @@ mod onda2_tests {
         // Active-pipelines: the spec stays listed and its updated_at advances to
         // the attributed session activity.
         let actives =
-            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).expect("the active-pipeline rows are built");
         let alpha = actives
             .iter()
             .find(|p| p.spec_name == "alpha")
@@ -1983,7 +1998,7 @@ mod onda2_tests {
         // `attributed_spec_counts` workspace fold — the per-row re-fold was
         // the Specs-page latency bug. Counter is per-repo (TempDir), so
         // parallel tests never skew the delta.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         for spec in ["alpha", "beta"] {
             let line = format!(
                 r#"{{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"{spec}","payload":{{"tool":"Read","target":{{"file_path":"src/x.rs"}}}}}}"#
@@ -1993,17 +2008,17 @@ mod onda2_tests {
                 tmp.path().join(".claude").join("spec").join(spec).join("spec.md"),
                 format!("# {spec}\n"),
             )
-            .unwrap();
+            .expect("write");
         }
         // A third spec with NO events: the batch must still emit its card as
         // the "no-events" empty state (parity with the per-spec command).
         let gamma_dir = tmp.path().join(".claude").join("spec").join("gamma");
-        std::fs::create_dir_all(&gamma_dir).unwrap();
-        std::fs::write(gamma_dir.join("spec.md"), "# gamma\n").unwrap();
+        std::fs::create_dir_all(&gamma_dir).expect("mkdir");
+        std::fs::write(gamma_dir.join("spec.md"), "# gamma\n").expect("write");
 
         let before = telemetry::attributed_spec_counts_calls(tmp.path());
         let cards =
-            dashboard_spec_cards_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_spec_cards_impl(tmp.path().to_string_lossy().into_owned()).expect("the spec cards are built");
         assert_eq!(cards.len(), 3, "one card per listed spec");
         assert!(cards.iter().any(|c| c.spec == "alpha" && c.tools_used > 0));
         assert!(cards.iter().any(|c| c.spec == "beta" && c.tools_used > 0));
@@ -2021,8 +2036,8 @@ mod onda2_tests {
     /// Write a spec's `meta.json` sidecar beside its `spec.md`.
     fn write_meta_json(dir: &std::path::Path, spec: &str, meta: &mustard_core::Meta) {
         let spec_dir = dir.join(".claude").join("spec").join(spec);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        mustard_core::write_meta(&spec_dir.join("meta.json"), meta).unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
+        mustard_core::write_meta(&spec_dir.join("meta.json"), meta).expect("write meta.json");
     }
 
     // ── Fix A: lifecycle status sourced from meta.json ───────────────────────
@@ -2032,7 +2047,7 @@ mod onda2_tests {
         // event), but `meta.json` says (Close, Completed). The card status must
         // reflect meta → `completed` so the frontend classifies it as Encerradas
         // (both the group and the filter bucket), not Ativas with a follow-up.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         write_event(
             tmp.path(),
             "payable",
@@ -2046,7 +2061,7 @@ mod onda2_tests {
             tmp.path().join(".claude").join("spec").join("payable").join("spec.md"),
             "# payable\n",
         )
-        .unwrap();
+        .expect("write");
         let mut meta = mustard_core::Meta::new(
             Some("Close"), Some("Completed"), Some("CLOSE"), None, None, None, None,
         );
@@ -2058,13 +2073,13 @@ mod onda2_tests {
             tmp.path().to_string_lossy().into_owned(),
             "payable".to_string(),
         )
-        .unwrap();
+        .expect("the spec card is built");
         assert_eq!(card.status, "completed", "meta.json (Close, Completed) must win over event-derived status");
 
         // And the active-pipelines list (which mirrors the Ativas taxonomy on
         // the backend) must drop it as terminal.
         let actives =
-            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).expect("the active-pipeline rows are built");
         assert!(
             !actives.iter().any(|p| p.spec_name == "payable"),
             "a meta-Completed spec must not appear as an active pipeline",
@@ -2074,7 +2089,7 @@ mod onda2_tests {
     #[test]
     fn meta_absent_falls_back_to_event_status() {
         // No meta.json → keep the event-derived status (here `closed-followup`).
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         write_event(
             tmp.path(),
             "nometa",
@@ -2087,19 +2102,19 @@ mod onda2_tests {
             tmp.path().join(".claude").join("spec").join("nometa").join("spec.md"),
             "# nometa\n",
         )
-        .unwrap();
+        .expect("write");
         let card = dashboard_spec_card_impl(
             tmp.path().to_string_lossy().into_owned(),
             "nometa".to_string(),
         )
-        .unwrap();
+        .expect("the spec card is built");
         assert_eq!(card.status, "closed-followup", "no meta.json → event status preserved");
     }
 
     // ── Fix B: AC list carries the parsed description ────────────────────────
     #[test]
     fn quality_ac_label_carries_parsed_spec_description() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // qa.result event with NO label → projection falls back to bare id.
         write_event(
             tmp.path(),
@@ -2113,12 +2128,12 @@ mod onda2_tests {
             tmp.path().join(".claude").join("spec").join("acme").join("spec.md"),
             "# acme\n\n## Critérios de Aceitação\n\n- **AC-1** — Build passes on Windows.\n  Command: `rtk cargo build`\n- **AC-2** — Lint is clean.\n  Command: `rtk lint`\n",
         )
-        .unwrap();
+        .expect("write");
         let items = spec_views::spec_quality_v2(
             &tmp.path().to_string_lossy(),
             "acme",
         )
-        .unwrap();
+        .expect("the quality items are built");
         let ac1 = items.iter().find(|i| i.ac_id == "AC-1").expect("AC-1");
         let ac2 = items.iter().find(|i| i.ac_id == "AC-2").expect("AC-2");
         assert_eq!(ac1.ac_label.as_deref(), Some("Build passes on Windows."));
@@ -2131,7 +2146,7 @@ mod onda2_tests {
     // ── Fix C: wave list carries the role (+ summary) ────────────────────────
     #[test]
     fn waves_carry_role_and_summary_from_wave_plan() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         // Dispatch with no `role` in payload → projection role is None, so the
         // dashboard must enrich it from wave-plan.md / the wave dir name.
         write_event(
@@ -2144,21 +2159,21 @@ mod onda2_tests {
             ),
         );
         let spec_dir = tmp.path().join(".claude").join("spec").join("epic");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# epic\n").unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
+        std::fs::write(spec_dir.join("spec.md"), "# epic\n").expect("write");
         // wave-N-{role} dir (role fallback) + wave-plan.md table (role + summary).
-        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).expect("mkdir");
         std::fs::write(
             spec_dir.join("wave-plan.md"),
             "# epic\n\n| Wave | Spec | Role | Depends on | Summary |\n| --- | --- | --- | --- | --- |\n| 1 | [[wave-1-impl]] | impl | — | Implement the backend reader |\n",
         )
-        .unwrap();
+        .expect("write");
 
         let waves = spec_views::spec_waves_v2(
             &tmp.path().to_string_lossy(),
             "epic",
         )
-        .unwrap();
+        .expect("the wave rows are built");
         let w1 = waves.iter().find(|w| w.wave == 1).expect("wave 1");
         assert_eq!(w1.role.as_deref(), Some("impl"), "role from wave-plan.md");
         assert_eq!(

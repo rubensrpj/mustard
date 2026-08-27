@@ -278,9 +278,9 @@ mod tests {
     /// Create `.claude/spec/{spec}/.events/{name}` under `root` with `body`.
     fn write_shard(root: &Path, spec: &str, name: &str, body: &str) -> PathBuf {
         let dir = root.join(".claude").join("spec").join(spec).join(".events");
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("mkdir");
         let p = dir.join(name);
-        std::fs::write(&p, body).unwrap();
+        std::fs::write(&p, body).expect("write");
         p
     }
 
@@ -288,7 +288,7 @@ mod tests {
     fn ndjson_burst_yields_one_snapshot_schedule_and_one_fs_change() {
         // A burst of NDJSON writes arrives as ONE debounced batch — it must
         // schedule exactly ONE snapshot rebuild and ONE `events` fs-change.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let repo = tmp.path().to_string_lossy().into_owned();
         let paths: Vec<PathBuf> = (0..4)
             .map(|i| {
@@ -323,7 +323,7 @@ mod tests {
     fn non_snapshot_kinds_do_not_schedule_a_rebuild() {
         // pipeline-state files keep their fs-change channel without ever
         // scheduling the aggregated snapshot rebuild.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let repo = tmp.path().to_string_lossy().into_owned();
         let state = Mutex::new(WatcherState::default());
         let paths = vec![tmp
@@ -339,12 +339,12 @@ mod tests {
     #[test]
     fn spec_write_schedules_a_rebuild() {
         // A spec.md write changes the spec list — the snapshot must follow.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let repo = tmp.path().to_string_lossy().into_owned();
         let spec_dir = tmp.path().join(".claude").join("spec").join("s1");
-        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
         let spec_md = spec_dir.join("spec.md");
-        std::fs::write(&spec_md, "# s1\n").unwrap();
+        std::fs::write(&spec_md, "# s1\n").expect("write");
         let state = Mutex::new(WatcherState::default());
         let out = process_batch(&state, &repo, std::slice::from_ref(&spec_md), Instant::now());
         assert_eq!(out.fs_change_kinds, vec!["spec"]);
@@ -355,11 +355,11 @@ mod tests {
     fn touched_shard_is_the_only_file_reparsed_by_the_rebuild() {
         // The incremental contract THROUGH the snapshot path: a warm rebuild
         // reads nothing; touching one shard re-parses exactly that file.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let repo = tmp.path().to_string_lossy().into_owned();
         let spec_dir = tmp.path().join(".claude").join("spec").join("s1");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# s1\n").unwrap();
+        std::fs::create_dir_all(&spec_dir).expect("mkdir");
+        std::fs::write(spec_dir.join("spec.md"), "# s1\n").expect("write");
         let a = write_shard(
             tmp.path(),
             "s1",
@@ -388,8 +388,8 @@ mod tests {
         // does, rebuild: exactly one extra parse.
         {
             use std::io::Write as _;
-            let mut f = std::fs::OpenOptions::new().append(true).open(&a).unwrap();
-            writeln!(f, "{}", event_line("s1", "2026-06-11T10:00:02.000Z")).unwrap();
+            let mut f = std::fs::OpenOptions::new().append(true).open(&a).expect("open the shard for append");
+            writeln!(f, "{}", event_line("s1", "2026-06-11T10:00:02.000Z")).expect("append the event line");
         }
         let state = Mutex::new(WatcherState::default());
         let out = process_batch(&state, &repo, std::slice::from_ref(&a), Instant::now());
@@ -484,16 +484,16 @@ mod tests {
         // End-to-end through the batch path: writing a `pipeline.kind` shard
         // invalidates exactly that shard and schedules one snapshot rebuild,
         // so the new work-type signal reaches the fold on the next read.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("tempdir");
         let repo = tmp.path().to_string_lossy().into_owned();
         let dir = tmp.path().join(".claude").join(".session").join("sess-k").join(".events");
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("mkdir");
         let shard = dir.join("k.ndjson");
         std::fs::write(
             &shard,
             "{\"event\":\"pipeline.kind\",\"kind\":\"pipeline\",\"ts\":\"2026-06-27T10:00:00.000Z\",\"session_id\":\"sess-k\",\"payload\":{\"kind\":\"task\",\"scope\":\"lean\"}}\n",
         )
-        .unwrap();
+        .expect("write");
         let state = Mutex::new(WatcherState::default());
         let out = process_batch(&state, &repo, std::slice::from_ref(&shard), Instant::now());
         assert_eq!(out.fs_change_kinds, vec!["events"]);

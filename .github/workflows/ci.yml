@@ -114,9 +114,18 @@ jobs:
       # Plain clippy: the workspace lint table makes `unwrap_used` (and other
       # correctness lints) deny-level while keeping pedantic lints at warn, so
       # this fails the build on real problems without drowning in style noise.
-      # `mustard-dashboard` is absent on purpose: it does not opt into
-      # `[lints] workspace = true`, so clippy there is pure style noise with no
-      # deny-level lint behind it. Its TESTS run above, which is the coverage
-      # that was missing while the crate sat outside the workspace.
+      #
+      # `mustard-dashboard` is IN now. It used to be absent because it did not
+      # opt into `[lints] workspace = true` — so clippy there had no deny-level
+      # lint behind it — and the exception outlived its reason: the crate carries
+      # the table like every sibling, and leaving it out meant `unwrap_used` was
+      # not enforced on the newest code in the workspace.
+      #
+      # `--all-targets` is what makes the dashboard's entry mean anything. The
+      # crate's `.unwrap()` calls lived entirely in `#[cfg(test)]` modules and
+      # `tests/`, which the default target set never compiles — adding `-p
+      # mustard-dashboard` alone would have linted a surface that was already
+      # clean and reported a pass nobody earned. All 269 were rewritten as
+      # `.expect("<reason>")`; this flag is what keeps them from coming back.
       - name: Clippy
-        run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
+        run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard

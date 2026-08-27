@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn non_repo_path_returns_empty_state() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let info = git_info_impl(&dir.path().to_string_lossy());
         assert!(!info.is_repo);
         assert!(info.remote_url.is_empty());
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn repo_without_remote_reports_branch_and_commit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
         let run = |args: &[&str]| {
             no_window_command("git")
@@ -425,11 +425,11 @@ mod tests {
         }
         let _ = run(&["config", "user.email", "qa@example.com"]);
         let _ = run(&["config", "user.name", "QA Bot"]);
-        std::fs::write(base.join("a.txt"), b"hello").unwrap();
+        std::fs::write(base.join("a.txt"), b"hello").expect("write");
         let _ = run(&["add", "."]);
         let _ = run(&["commit", "-m", "initial commit"]);
         // An untracked file so `pending.untracked` has something to count.
-        std::fs::write(base.join("untracked.txt"), b"new").unwrap();
+        std::fs::write(base.join("untracked.txt"), b"new").expect("write");
 
         let info = git_info_impl(&base.to_string_lossy());
         assert!(info.is_repo);
@@ -459,7 +459,7 @@ mod tests {
         // Stage one new file and leave another untracked, then assert the
         // per-file `changes` list carries the right flags and that the counts
         // still match the list (no entry was dropped under the 100 cap).
-        std::fs::write(base.join("staged.txt"), b"staged").unwrap();
+        std::fs::write(base.join("staged.txt"), b"staged").expect("write");
         let _ = run(&["add", "staged.txt"]);
         let info = git_info_impl(&base.to_string_lossy());
 
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn git_log_returns_commits_for_head_and_empty_for_missing_ref() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
         let run = |args: &[&str]| {
             no_window_command("git")
@@ -517,7 +517,7 @@ mod tests {
         }
         let _ = run(&["config", "user.email", "qa@example.com"]);
         let _ = run(&["config", "user.name", "QA Bot"]);
-        std::fs::write(base.join("a.txt"), b"hello").unwrap();
+        std::fs::write(base.join("a.txt"), b"hello").expect("write");
         let _ = run(&["add", "."]);
         let _ = run(&["commit", "-m", "initial commit"]);
 
@@ -556,14 +556,14 @@ mod tests {
 
     #[test]
     fn git_log_on_non_repo_returns_empty() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let commits = git_log_impl(&dir.path().to_string_lossy(), "HEAD", 10);
         assert!(commits.is_empty(), "a non-repo path yields an empty log");
     }
 
     #[test]
     fn multiline_commit_body_is_captured_without_splitting_records() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
         let run = |args: &[&str]| {
             no_window_command("git")
@@ -579,14 +579,14 @@ mod tests {
         let _ = run(&["config", "user.name", "QA Bot"]);
 
         // First commit: subject only (empty body).
-        std::fs::write(base.join("a.txt"), b"a").unwrap();
+        std::fs::write(base.join("a.txt"), b"a").expect("write");
         let _ = run(&["add", "."]);
         let _ = run(&["commit", "-m", "first commit"]);
 
         // Second commit: a subject plus a TWO-LINE body. The newline inside the
         // body is exactly what broke the old per-line split — the RS separator
         // must keep it as one record.
-        std::fs::write(base.join("b.txt"), b"b").unwrap();
+        std::fs::write(base.join("b.txt"), b"b").expect("write");
         let _ = run(&["add", "."]);
         let _ = run(&["commit", "-m", "second commit", "-m", "linha1 do corpo\nlinha2"]);
 
