@@ -35,13 +35,11 @@
 //!      the file goes back to being fully the user's;
 //! 4. copy `templates/.github/` → project-root `.github/` when a GitHub remote
 //!    is detected (project-level scaffolding, not part of the plugin);
-//! 5. ensure global Claude Code permissions in `~/.claude/settings.json` (opt-in);
-//! 6. install RTK + ripgrep (token economy) if missing — fail-open;
-//! 7. write the single project-root `mustard.json`: git-flow + agnostically
+//! 5. write the single project-root `mustard.json`: git-flow + agnostically
 //!    detected build/test/lint/type-check commands + spec language + tone +
 //!    the `runtime`/`version` stamp + the default `inject` declarations
 //!    (seeded only when the user has none — a curated list is preserved);
-//! 8. settle that stamp (`mustard_core::record_version_stamp`): where the host
+//! 6. settle that stamp (`mustard_core::record_version_stamp`): where the host
 //!    repository TRACKS `mustard.json`, an install that found a clean tree
 //!    commits the line it just wrote, so the install never hands the next
 //!    command a dirty file to blame on the operator. A tree that already held
@@ -84,6 +82,11 @@
 //! of a file it had already hidden — two settings layers, hooks registered
 //! twice. There is no prompt: an ordinary install is never asked a question it
 //! does not need.
+//! What is NOT a step of `init`, though it still happens on a `mustard init`
+//! run: the global-permissions write and the RTK/ripgrep installers. Both live
+//! in `cli::dispatch`, because they act on the MACHINE and a library call must
+//! never take that on its caller's behalf — three reviews in a row found that
+//! same shape in this file. `apps/cli/tests/library_is_pure.rs` measures it.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -145,9 +148,13 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
 pub enum InitOutcome {
     /// The project was seeded: `.claude/` and `mustard.json` are on disk.
     Installed,
-    /// An existing `.claude/` was found and the operator chose to stop. Nothing
-    /// was written, so nothing about the machine may change on this run's
-    /// account either.
+    /// An existing `.claude/` was found and the operator chose to stop.
+    ///
+    /// NOT "nothing was written": `hide_footprint` runs BEFORE the prompt, and a
+    /// cancelled run was measured appending 31 rules to the project's
+    /// `.git/info/exclude`. What this variant promises is narrower and is the
+    /// part the caller needs — no install completed, so nothing about the
+    /// MACHINE may change on this run's account.
     Cancelled,
     /// `--dry-run`: the plan was printed and no path was touched.
     DryRun,
@@ -754,15 +761,6 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     println!("  wrote mustard.json");
     Ok(())
 }
-/// Ensure `~/.claude/settings.json` grants `Read`/`Write`/`Edit` and sets the
-/// `CLAUDE_CODE_NO_FLICKER` env var. Non-destructive: only adds what is
-/// missing, preserves everything else.
-///
-/// **Opt-in.** Mutating the user's *global* `~/.claude/settings.json` is off by
-/// default — user policy is to never touch global settings unprompted. The
-/// write only runs when `MUSTARD_GLOBAL_PERMISSIONS` is set to `1`/`true`;
-/// otherwise this is a no-op and the project-local `.claude/settings.json` is
-
 /// The binary-side face of [`ensure_global_permissions`].
 ///
 /// Exists so `cli::dispatch` can take this environment act without the library
@@ -773,6 +771,15 @@ pub(crate) fn ensure_global_permissions_if_opted_in() {
         eprintln!("[mustard] warning: could not update global permissions: {err}");
     });
 }
+
+/// Ensure `~/.claude/settings.json` grants `Read`/`Write`/`Edit` and sets the
+/// `CLAUDE_CODE_NO_FLICKER` env var. Non-destructive: only adds what is
+/// missing, preserves everything else.
+///
+/// **Opt-in.** Mutating the user's *global* `~/.claude/settings.json` is off by
+/// default — user policy is to never touch global settings unprompted. The
+/// write only runs when `MUSTARD_GLOBAL_PERMISSIONS` is set to `1`/`true`;
+/// otherwise this is a no-op and the project-local `.claude/settings.json` is
 /// the only thing `init` writes.
 fn ensure_global_permissions() -> Result<()> {
     if !global_permissions_opt_in() {
@@ -1074,7 +1081,8 @@ fn install_ripgrep() -> bool {
 /// installer resolves that on its side: when it ran init itself it points back
 /// at these lines instead of reprinting them (`packaging/installer/install.sh`).
 /// NOTE: in a DIRECT run this is no longer the last thing on screen — the
-/// RTK/ripgrep setup lines now follow it, because those acts moved to
+/// global-settings line AND the RTK/ripgrep setup lines now follow it, because
+/// all three moved to
 /// `cli::dispatch` and run after `init` returns. The block is still the last
 /// word of the INSTALL; what trails it is tool setup, not project state.
 /// Keep these two commands here regardless; they are what the direct run needs.

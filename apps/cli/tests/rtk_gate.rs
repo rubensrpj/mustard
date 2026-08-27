@@ -145,9 +145,59 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
     );
 }
 
+/// `--dry-run` prints a plan and changes nothing — including the machine.
+///
+/// This pins one half of `InitOutcome`'s mapping by CONSEQUENCE. Review measured
+/// that flipping `Ok(InitOutcome::DryRun)` to `::Installed` left the whole suite
+/// green while the flipped binary went on to write `~/.claude/settings.json` and
+/// run `rtk init -g --no-patch` on a run that was supposed to touch nothing.
+/// Dispatch has no `!dry_run` guard of its own any more; the enum is the guard,
+/// so the enum needs a test.
+#[test]
+#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
+fn a_dry_run_changes_neither_the_project_nor_the_machine() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let bin = shim_dir(&log, true);
+    let project = fresh_repo(tmp.path());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard"))
+        .args(["init", "--yes", "--dry-run"])
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", &bin)
+        .env("HOME", &home)
+        // Armed on purpose: with the opt-in off this would pass even if the
+        // dry run wrote global settings.
+        .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
+        .output()
+        .expect("the mustard binary runs");
+
+    assert!(out.status.success(), "a dry run must succeed");
+    assert!(
+        !project.join(".claude").exists() && !project.join("mustard.json").exists(),
+        "a dry run wrote into the project"
+    );
+    assert!(
+        !home.join(".claude").join("settings.json").exists(),
+        "a dry run wrote the operator's global settings"
+    );
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
+        "a dry run ran a tool installer; log was:\n{spawned}"
+    );
+}
+
 /// The library must not take environment acts. This reads the source rather than
 /// running anything, because the regression it guards is a CALL coming back —
 /// and a behavioural test cannot see that from inside the same process.
+///
+/// It is the WEAKER of the two guards on that invariant and is kept only as a
+/// fast, readable signpost: `library_is_pure.rs` is the one that actually holds,
+/// because it measures the acts instead of matching their spelling.
 ///
 /// Why a ratchet at all: review measured that restoring `ensure_rtk()` /
 /// `ensure_ripgrep()` into `init_with_templates` left the entire suite green,
@@ -191,5 +241,69 @@ fn the_library_half_of_init_calls_no_environment_installer() {
         "the installers must be gated on InitOutcome::Installed; `is_ok()` also \
          means the operator cancelled, and acting on a refusal is the defect this \
          whole exercise is about"
+    );
+}
+
+/// Answering **Cancel** to an existing `.claude/` must leave the machine alone.
+///
+/// This is the defect `InitOutcome` exists for: the installers were once gated
+/// on `outcome.is_ok()`, and `Ok` covers Cancel, so a refused run still wrote
+/// RTK's global config. Two independent pty measurements found it; this pins it.
+///
+/// Linux only, and deliberately not `unix`: the prompt is an arrow-key menu, so
+/// the run needs a real terminal, and `script -qec` is the Linux spelling —
+/// macOS's `script` takes neither flag. The ubuntu runner is where a regression
+/// would be caught, and saying so beats a test that quietly skips everywhere.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "needs `script -qec` for a pty")]
+fn answering_cancel_leaves_the_machine_untouched() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let bin = shim_dir(&log, true);
+    let project = fresh_repo(tmp.path());
+
+    // First install, so the second run meets an existing `.claude/`.
+    let first = run_init(&project, &bin);
+    assert!(first.status.success(), "the seeding run must succeed");
+    fs::write(&log, "").expect("truncate log");
+
+    // Second run, interactive: one arrow-down moves from the Merge default to
+    // Cancel, then Enter.
+    let script = format!(
+        "cd {} && env -i PATH={} HOME={} MUSTARD_GLOBAL_PERMISSIONS=1 {} init",
+        project.display(),
+        bin.display(),
+        home.display(),
+        env!("CARGO_BIN_EXE_mustard"),
+    );
+    let mut child = Command::new("script")
+        .args(["-qec", &script, "/dev/null"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("script(1) runs");
+    {
+        use std::io::Write as _;
+        let stdin = child.stdin.as_mut().expect("child stdin");
+        stdin.write_all(b"\x1b[B\n").expect("send arrow-down + enter");
+    }
+    let out = child.wait_with_output().expect("the cancelled run finishes");
+    let screen = String::from_utf8_lossy(&out.stdout).replace('\r', "");
+    assert!(
+        screen.contains("Cancel"),
+        "the run did not reach the Cancel choice; screen was:\n{screen}"
+    );
+
+    assert!(
+        !home.join(".claude").join("settings.json").exists(),
+        "a cancelled run wrote the operator's global settings"
+    );
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
+        "a cancelled run ran a tool installer; log was:\n{spawned}"
     );
 }
